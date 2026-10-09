@@ -1,0 +1,85 @@
+# Dependency update configuration.
+#
+# One entry per lockfile-owning directory, because Dependabot reads one
+# manifest/lockfile pair per entry:
+#   - npm "/": the npm workspace root. Its package-lock.json also covers every
+#     workspace package (apps/*, packages/typescript/*, services/qc-remote-cloud).
+#   - cargo "/": the root Cargo workspace (packages/rust/*, services/*).
+#   - cargo "/apps/windows/src-tauri": deliberately its own workspace with its
+#     own Cargo.lock (see the comment at the top of Cargo.toml), so Dependabot
+#     never sees it from the root entry.
+#   - github-actions "/": every action in .github/workflows is pinned to a full
+#     commit SHA with a trailing "# vX.Y.Z" comment. Dependabot understands that
+#     form: it proposes the new commit SHA and rewrites the version comment, so
+#     the pinning convention survives updates. Review the diff like any other.
+#
+# Not configured: Gradle (apps/android/android). Its versions are held in
+# Capacitor-generated files and an `ext` block in variables.gradle that
+# Dependabot cannot update reliably, and the Android Gradle plugin has to move
+# together with Capacitor. Maintainers bump those by hand.
+#
+# Updates are weekly and capped at a few open pull requests per ecosystem so
+# review load stays bounded. Minor and patch updates are grouped into a single
+# pull request; major updates arrive one at a time so each can be assessed.
+# Security updates are not limited by these settings.
+#
+# Dependabot commits carry no DCO sign-off. CONTRIBUTING.md asks for sign-off
+# from outside contributors; the `DCO sign-off` job (.github/workflows/dco.yml)
+# is skipped for pull requests opened by a Bot account (and for maintainers),
+# and maintainers handle those.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "deps(npm)"
+
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "deps(cargo)"
+
+  - package-ecosystem: cargo
+    directory: "/apps/windows/src-tauri"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      tauri-cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "deps(windows)"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps(actions)"

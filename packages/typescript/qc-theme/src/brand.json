@@ -1,0 +1,21 @@
+{
+  "appName": "QC Remote",
+  "appWordmark": "QC REMOTE",
+  "deviceName": "Quad Cortex",
+  "deviceWordmark": "QUADCORTEX",
+  "surfaceCaption": "CONTROL SURFACE",
+  "companionCaption": "INDEPENDENT DEVICE CONTROL",
+  "copyrightNotice": "Copyright (c) 2026 Freevia EOOD. Source code licensed MIT OR Apache-2.0; device reference material, brand assets and third-party components keep separate terms.",
+  "publisherPublicWebsite": "https://freevia.org",
+  "publicRelayEndpoint": "https://qcrc.freevia.org",
+  "securityPolicyUrl": "https://freevia.org/qcremote/security/",
+  "privacyPolicyUrl": "https://freevia.org/qcremote/privacy",
+  "termsUrl": "",
+  "sourceRepositoryUrl": "https://github.com/freevia-org/QC-Remote",
+  "androidPackage": "org.freevia.qcremote",
+  "androidSigningSha256": "489fcccee2a097e30505a8d0d38c1b4fa844c69380b72b74ceb1e0f6c3dec28e",
+  "windowsIdentifier": "org.freevia.qcremote",
+  "windowsPublisher": "Freevia",
+  "windowsShortDescription": "Independent controller for compatible guitar hardware",
+  "windowsLongDescription": "Independent, unofficial Windows controller with guarded live controls, workspaces, typed commands, and explicit device-save confirmation. Works with compatible Quad Cortex devices. Not affiliated with or endorsed by Neural DSP Technologies Oy."
+}

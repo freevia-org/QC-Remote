@@ -1,0 +1,30 @@
+/* Paint and the one size only. The track length, the track height and the
+   zero-length mark live in qc-bar-slider.tsx, so a screen can recolour or
+   place a bar but cannot quietly reshape it into a second variant. */
+.qc-bar-slider {
+  display: block;
+  width: 10.25cqw;
+  height: .75cqw;
+}
+
+/* 81 x 5 device pixels on an 800px screen. The viewBox is stretched rather
+   than uniformly scaled, so a call site that needs a different track length
+   keeps the 5px height the unit draws. */
+
+/* Several call sites used to paint their own bar on the element that now
+   carries the shared vector - a linear-gradient with a literal stop per cell,
+   and a leftover rotary pointer riding on top of it. Those are gone from the
+   stylesheets, and this keeps any that come back from doubling up. */
+svg.qc-bar-slider {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+}
+svg.qc-bar-slider::before,
+svg.qc-bar-slider::after { content: none !important; }
+
+/* An SVG presentation attribute would beat every rule that only inherits, so
+   the component writes no fill of its own and these rules own the paint. A
+   screen overrides by setting the two custom properties. */
+.qc-bar-track { fill: var(--qc-bar-track, var(--qc-screen-background)); }
+.qc-bar-fill { fill: var(--qc-bar-fill, var(--qc-screen-accent)); }

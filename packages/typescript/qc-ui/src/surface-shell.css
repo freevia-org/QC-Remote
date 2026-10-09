@@ -1,0 +1,945 @@
+.qc-chassis { position: relative; width: min(1280px, 100%); aspect-ratio: 1.58; min-height: 500px; max-height: calc(100vh - 128px); border: 1px solid var(--qc-palette-40434a); border-radius: 26px; background: linear-gradient(145deg, var(--qc-palette-303238) 0%, var(--qc-palette-1d1f23) 38%, var(--qc-palette-292b30) 70%, var(--qc-palette-17191c) 100%); box-shadow: inset 0 1px 1px var(--qc-palette-ffffff26), inset 0 -4px 10px var(--qc-palette-0008), 0 28px 60px var(--qc-palette-000b); overflow: hidden; }
+.qc-chassis::before { content: ""; position: absolute; inset: 0; opacity: .17; pointer-events: none; background-image: repeating-linear-gradient(105deg, var(--qc-palette-fff0) 0 2px, var(--qc-primary-text) .5px 3px, var(--qc-palette-0000) 4px 7px); }
+.chassis-mark { position: absolute; top: 3%; left: 2.4%; display: grid; gap: 2px; font-weight: 700; font-size: clamp(9px, .8vw, 13px); letter-spacing: .13em; }
+.chassis-mark small { font: clamp(5px, .38vw, 7px) var(--qc-font-mono); color: var(--qc-palette-878b91); letter-spacing: .08em; }
+/* padding stays 0 on every .qc-screen-bezel rule - see the production rule below. */
+.qc-screen-bezel { position: absolute; left: 15%; right: 15%; top: 17%; bottom: 17%; padding: 0; border: 1px solid var(--qc-palette-45484e); border-radius: 13px; background: var(--qc-palette-090a0c); box-shadow: inset 0 0 14px var(--qc-screen), 0 2px 2px var(--qc-palette-ffffff12); }
+.qc-screen-bezel.is-grid-edge-gesture-surface { touch-action: none; }
+.qc-screen { width: 100%; height: 100%; display: grid; grid-template-rows: 12% 12% 1fr 9%; overflow: hidden; border-radius: 6px; background: radial-gradient(circle at 50% 0, var(--qc-palette-262d36), var(--qc-palette-11151a) 46%, var(--qc-palette-090b0e)); box-shadow: 0 0 30px var(--qc-palette-65b7d515); }
+.screen-header { display: grid; grid-template-columns: 12% 1fr 15%; align-items: center; border-bottom: 1px solid var(--qc-palette-343943); background: var(--qc-palette-1a1e24); }
+.preset-location { height: 100%; display: grid; place-items: center; background: var(--qc-palette-e3e8ed); color: var(--qc-palette-111317); font: 700 clamp(14px, 1.8vw, 28px) var(--qc-font-mono); }
+.preset-title { display: grid; gap: 2px; padding-left: 3%; }
+.preset-title strong { font-size: clamp(9px, 1vw, 16px); }
+.preset-title span { font: clamp(6px, .55vw, 9px) var(--qc-font-mono); color: var(--qc-palette-818894); }
+.screen-tempo { display: flex; align-items: center; justify-content: center; gap: 8px; font: clamp(10px, .85vw, 14px) var(--qc-font-mono); color: var(--qc-palette-b8bec7); }
+.scene-strip { display: grid; grid-template-columns: repeat(8, 1fr); gap: 1px; padding: 1px; background: var(--qc-app-canvas); }
+.scene-strip button { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 5px; padding: 0 5px; border: 0; background: var(--qc-palette-20242a); color: var(--qc-palette-777e88); font-size: clamp(5px, .47vw, 8px); overflow: hidden; white-space: nowrap; cursor: pointer; }
+.scene-strip button span { display: grid; place-items: center; width: clamp(11px, 1.2vw, 18px); aspect-ratio: 1; border-radius: 50%; background: var(--qc-palette-353a43); font: 600 clamp(6px, .55vw, 9px) var(--qc-font-mono); }
+.scene-strip button.is-active { color: var(--qc-primary-text); background: var(--qc-palette-1f5266); box-shadow: inset 0 -2px var(--qc-palette-73dbff); }
+.scene-strip button.is-active span { background: var(--qc-palette-7fdfff); color: var(--qc-palette-101418); }
+.signal-grid { display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(4, 1fr); padding: 3% 2.5%; }
+.grid-cell { position: relative; display: grid; place-items: center; min-width: 0; }
+.signal-line { position: absolute; z-index: 0; left: 50%; width: 100%; height: 2px; background: var(--qc-palette-343942); }
+.empty-node { z-index: 1; width: 5px; height: 5px; border-radius: 50%; background: var(--qc-palette-424852); }
+.effect-block { position: relative; z-index: 2; width: 84%; height: 68%; min-height: 32px; display: grid; grid-template-rows: 1fr auto; place-items: center; padding: 4px; border: 1px solid var(--qc-palette-515967); border-radius: 4px; background: linear-gradient(var(--qc-palette-303640), var(--qc-palette-1c2026)); box-shadow: 0 3px 7px var(--qc-palette-0008); cursor: pointer; }
+.effect-block > span:last-child { width: 100%; overflow: hidden; color: var(--qc-palette-dadddf); font-size: clamp(5px, .5vw, 8px); text-overflow: ellipsis; white-space: nowrap; }
+.block-icon { font: 700 clamp(7px, .72vw, 12px) var(--qc-font-mono); color: var(--block-color); }
+.effect-block::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: var(--block-color); box-shadow: 0 0 8px var(--block-color); }
+.effect-block.is-selected { outline: 2px solid var(--qc-primary-text); outline-offset: 2px; }
+.effect-block.is-bypassed { opacity: .34; filter: saturate(.35); }
+.block-cyan { --block-color: var(--qc-palette-55d7f4); } .block-slate { --block-color: var(--qc-palette-b8c2cc); } .block-orange { --block-color: var(--qc-palette-ff9f43); } .block-red { --block-color: var(--qc-palette-ff5d5d); } .block-amber { --block-color: var(--qc-palette-ffc558); } .block-violet { --block-color: var(--qc-palette-bf85ff); } .block-blue { --block-color: var(--qc-palette-65a3ff); } .block-purple { --block-color: var(--qc-palette-d66dff); } .block-green { --block-color: var(--qc-palette-53df91); }
+.screen-footer { display: grid; grid-template-columns: 15% 15% 1fr 10%; align-items: center; gap: 1px; background: var(--qc-palette-161a20); color: var(--qc-palette-89909a); font: clamp(5px, .48vw, 8px) var(--qc-font-mono); }
+.screen-footer > span { height: 100%; display: grid; place-items: center; border-right: 1px solid var(--qc-palette-30353d); }
+.screen-footer-center { color: var(--qc-palette-e7b85d); }
+.switch-row { position: absolute; left: 18%; right: 20%; display: grid; grid-template-columns: repeat(4, 1fr); align-items: center; }
+.switch-row-top { top: 1.5%; }
+.switch-row-bottom { bottom: 1%; }
+.navigation-switches { position: absolute; right: 2%; top: 20%; bottom: 15%; width: 11%; display: grid; grid-template-rows: repeat(3, 1fr); }
+.hardware-switch { position: relative; display: grid; place-items: center; align-content: center; gap: 2px; padding: 0; border: 0; background: var(--qc-transparent); cursor: pointer; user-select: none; touch-action: none; }
+.switch-label { position: absolute; left: 50%; top: 1%; transform: translateX(-50%); color: var(--qc-palette-bec1c5); font: 600 clamp(6px, .62vw, 10px) var(--qc-font-mono); white-space: nowrap; }
+.switch-ring { display: grid; place-items: center; width: clamp(34px, 4.1vw, 62px); aspect-ratio: 1; margin-top: 6px; border: clamp(2px, .3vw, 5px) solid var(--qc-palette-44484f); border-radius: 50%; background: radial-gradient(circle, var(--qc-palette-a7abb0) 0 37%, var(--qc-palette-555a61) 39% 45%, var(--qc-palette-16181b) 47% 100%); box-shadow: inset 0 0 8px var(--qc-screen), 0 3px 7px var(--qc-palette-000b); transition: border-color .12s, box-shadow .12s, transform .08s; }
+.switch-cap { width: 46%; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle at 38% 30%, var(--qc-palette-f8f8f8), var(--qc-palette-9ea2a6) 38%, var(--qc-palette-4e5358) 72%, var(--qc-palette-191b1e)); box-shadow: 0 2px 4px var(--qc-palette-000a); }
+.hardware-switch:hover .switch-ring { border-color: color-mix(in srgb, var(--switch-accent) 50%, var(--qc-palette-555)); }
+.hardware-switch:active .switch-ring { transform: scale(.93); }
+.hardware-switch.is-active .switch-ring { border-color: var(--switch-accent); box-shadow: 0 0 9px var(--switch-accent), inset 0 0 8px var(--qc-screen); }
+.switch-hint { color: var(--qc-palette-5d6269); font: clamp(4px, .35vw, 6px) var(--qc-font-mono); letter-spacing: .08em; }
+.skin-high-contrast { background: var(--qc-palette-050505); border-color: var(--qc-primary-text); }
+.skin-high-contrast .qc-screen-bezel { border-color: var(--qc-primary-text); }
+.skin-high-contrast .switch-label, .skin-high-contrast .chassis-mark { color: var(--qc-primary-text); }
+
+/* Quad Cortex large form factor — proportions derived from the official 29 × 19.5 cm top-panel diagram. */
+.qc-chassis {
+  width: min(1120px, 100%);
+  aspect-ratio: 29 / 19.5;
+  min-height: 540px;
+  max-height: calc(100vh - 270px);
+  border: 1px solid var(--qc-palette-6c6e72);
+  border-radius: 3.8% / 5.6%;
+  background:
+    linear-gradient(90deg, var(--qc-palette-fff1) 0, var(--qc-transparent) 12%, var(--qc-palette-0002) 78%, var(--qc-palette-fff1) 100%),
+    repeating-linear-gradient(102deg, var(--qc-palette-ffffff0b) 0 1px, var(--qc-palette-0000000a) 1px 3px),
+    linear-gradient(145deg, var(--qc-palette-5a5b5f) 0%, var(--qc-palette-3d3e42) 38%, var(--qc-palette-4b4c50) 68%, var(--qc-palette-343539) 100%);
+  box-shadow: inset 0 2px 2px var(--qc-palette-ffffff55), inset 0 -5px 12px var(--qc-palette-1118), 0 30px 70px var(--qc-palette-000c);
+}
+.qc-chassis::before { opacity: .045; background-image: repeating-linear-gradient(112deg, var(--qc-transparent) 0 4px, var(--qc-primary-text) .5px 5px, var(--qc-transparent) 6px 10px); }
+.chassis-edge { position: absolute; z-index: 0; inset: 59% 0 0; border-top: 1px solid var(--qc-palette-1c1d20); box-shadow: inset 0 2px var(--qc-palette-ffffff20), 0 -1px var(--qc-palette-ffffff12); pointer-events: none; }
+
+.master-volume { position: absolute; z-index: 2; left: 3.2%; top: 5%; width: 14.5%; height: 49%; display: grid; grid-template-rows: 16% 1fr 12%; place-items: center; }
+.power-button { justify-self: start; align-self: start; width: clamp(19px, 2.2vw, 32px); aspect-ratio: 1; margin-left: 18%; display: grid; place-items: center; border: 1px solid var(--qc-palette-8c8e92); border-radius: 7px; background: linear-gradient(var(--qc-palette-6d6f73), var(--qc-palette-404145)); box-shadow: inset 0 1px var(--qc-palette-fff6), 0 2px 4px var(--qc-palette-1118); cursor: pointer; }
+.power-button span { width: 40%; height: 40%; border: 1px solid var(--qc-palette-d9dbde); border-top-color: var(--qc-transparent); border-radius: 50%; position: relative; }
+.power-button span::before { content: ""; position: absolute; left: 50%; top: -30%; width: 1px; height: 58%; background: var(--qc-palette-e7e8e9); transform: translateX(-50%); }
+.volume-knob { position: relative; width: min(76%, 104px); aspect-ratio: 1; align-self: center; border: 0; border-radius: 50%; background: repeating-conic-gradient(from -4deg, var(--qc-palette-151619) 0 2deg, var(--qc-palette-2c2d30) 2deg 5deg); box-shadow: inset 0 0 0 3px var(--qc-palette-17181a), inset 8px 8px 15px var(--qc-palette-5556), 0 5px 12px var(--qc-palette-111b); cursor: ns-resize; touch-action: none; }
+.volume-knob::before { content: ""; position: absolute; left: 23%; top: 23%; width: 54%; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle at 38% 30%, var(--qc-palette-45464a), var(--qc-palette-17181b) 65%, var(--qc-palette-090a0b)); box-shadow: inset 0 1px var(--qc-palette-aaa5); }
+.volume-knob .volume-pointer { position: absolute; width: 2px; height: 22%; top: 17%; left: 50%; background: var(--qc-palette-ddd); transform: translateX(-50%) rotate(var(--volume-angle, -27deg)); transform-origin: 50% 150%; transition: transform 60ms linear; }
+.rotation-readout { position: absolute; z-index: 10; left: 50%; top: 50%; min-width: 28px; padding: 3px 5px; border: 1px solid var(--qc-palette-8edcff99); border-radius: 5px; background: var(--qc-palette-0c1116e8); color: var(--qc-palette-e8f7ff); font: 700 11px var(--qc-font-mono); line-height: 1; text-align: center; opacity: 0; transform: translate(-50%, -50%) scale(.88); transition: opacity 80ms, transform 80ms; pointer-events: none; }
+.rotation-readout.is-visible { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+.master-volume strong { color: var(--qc-palette-e5e5e6); font: 600 clamp(6px, .55vw, 9px) var(--qc-font-mono); letter-spacing: .11em; }
+
+.device-plate { position: absolute; z-index: 2; right: 4%; top: 5%; padding: .6% 1.1%; border: 1px solid var(--qc-palette-8b8c90); border-radius: 4px; color: var(--qc-palette-f0f0f0); font: 600 clamp(6px, .62vw, 10px) var(--qc-font-mono); letter-spacing: .15em; box-shadow: inset 0 1px var(--qc-palette-fff3); }
+.device-plate small { display: none; }
+.pulse-mark { width: 1.05em; height: 1.05em; fill: currentColor; }
+
+.qc-screen-bezel { left: 20.5%; right: 21.5%; top: 7.5%; bottom: 42%; padding: 0; border: 1px solid var(--qc-palette-77797d); border-radius: 8px; background: var(--qc-palette-171719); box-shadow: inset 0 0 0 2px var(--qc-palette-050506), inset 0 0 16px var(--qc-screen), 0 3px 4px var(--qc-palette-111a); }
+.qc-screen { display: grid; grid-template-rows: 24% 1fr; border-radius: 2px; background: var(--qc-screen); color: var(--qc-app-text); font-family: var(--qc-font-app); box-shadow: none; overflow: hidden; }
+.coros-header { position: relative; z-index: 5; display: flex; align-items: flex-start; justify-content: space-between; padding: 4.5% 3.4% 0; background: var(--qc-screen); }
+.coros-title { display: flex; align-items: baseline; min-width: 0; font-weight: 700; letter-spacing: -.035em; white-space: nowrap; }
+.coros-title span, .coros-title em { font-size: clamp(22px, 3.5vw, 50px); font-style: normal; }
+.coros-title em { color: var(--qc-palette-39df78); margin-right: .35em; }
+.coros-title strong { max-width: 17ch; overflow: hidden; text-overflow: ellipsis; font-size: clamp(18px, 2.9vw, 44px); font-weight: 700; }
+.coros-actions { position: relative; display: grid; grid-template-columns: repeat(4, auto); grid-template-rows: auto auto; align-items: center; gap: 4px 9px; }
+.coros-actions > button, .scene-control > button { width: clamp(15px, 1.75vw, 27px); height: clamp(15px, 1.75vw, 27px); display: grid; place-items: center; padding: 0; border: 0; background: var(--qc-transparent); color: var(--qc-palette-ececec); font-size: clamp(10px, 1.2vw, 19px); cursor: pointer; }
+.coros-actions > button > svg { width: 88%; height: 88%; }
+.scene-indicator span { display: grid; place-items: center; width: 82%; aspect-ratio: 1; border-radius: 3px; background: var(--qc-scene-badge); color: var(--qc-device-panel); font-weight: 800; font-size: .8em; box-shadow: 0 0 0 2px var(--qc-palette-35d86b00); }
+.scene-indicator[aria-expanded="true"] span { box-shadow: 0 0 0 2px var(--qc-palette-35d86b); }
+.mode-readout { grid-column: 1 / -1; justify-self: end; display: flex; align-items: center; gap: .4em; color: var(--qc-palette-e7e7e7); font-size: clamp(6px, .65vw, 11px); font-weight: 700; letter-spacing: .05em; }
+.mode-readout svg { width: 1.55em; height: 1.55em; flex: 0 0 auto; }
+.scene-dropdown { position: absolute; z-index: 20; right: 10%; top: 75%; width: clamp(145px, 19vw, 270px); padding: 3%; border-radius: 6px; background: var(--qc-palette-3a3a3b); box-shadow: 0 12px 30px var(--qc-palette-000c); }
+.scene-dropdown button { width: 100%; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: .65em; padding: 4.5% 5%; border: 0; border-radius: 3px; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font-size: clamp(7px, .72vw, 12px); cursor: pointer; }
+.scene-dropdown button:hover, .scene-dropdown button.is-active { background: var(--qc-palette-4b4b4c); }
+.scene-dropdown button span { display: grid; place-items: center; width: 1.65em; aspect-ratio: 1; border-radius: 3px; background: var(--qc-scene-badge); color: var(--qc-palette-151515); font-weight: 800; }
+/* A dropdown dismisses on any outside tap and swallows it: without this layer the tap fell through to the control under the menu (an Add-device cell). Clear, so it adds no wash the unit does not draw. */
+.scene-menu-backdrop { position: absolute; z-index: 19; inset: 0; padding: 0; border: 0; background: var(--qc-transparent); cursor: default; }
+
+.coros-workspace { min-height: 0; display: grid; grid-template-columns: 8.5% 1fr 8.5%; padding: 0 1.2% 3%; }
+.row-rail { display: grid; grid-template-rows: repeat(4, 1fr); gap: 5%; padding: 4% 0; }
+.row-rail span { display: grid; place-items: center; align-content: center; border-radius: 5px; background: var(--qc-route-pill); color: var(--qc-route-text); font-size: clamp(5px, .53vw, 9px); line-height: 1.15; text-align: center; }
+.io-pill { position: relative; }
+.io-pill i { position: absolute; top: 0; left: 20%; right: 20%; height: 2px; border-radius: 2px; background: var(--qc-palette-ff8c21); }
+.row-rail .add-row { color: var(--qc-utility-mark); font-size: clamp(14px, 1.6vw, 25px); font-weight: 200; }
+.routing-lanes { display: grid; grid-template-rows: 1fr 1fr; gap: 18%; padding: 6% 1.2%; }
+.routing-lane { position: relative; display: grid; grid-template-columns: repeat(6, 1fr); align-items: center; }
+.lane-wire { position: absolute; z-index: 0; left: -2%; right: -2%; height: 1px; background: var(--qc-route-rail); box-shadow: 0 0 1px var(--qc-primary-text); }
+.lane-wire::before, .lane-wire::after { content: ""; position: absolute; top: 50%; width: 6px; aspect-ratio: 1; border-radius: 50%; border: 1px solid var(--qc-palette-ddd); background: var(--qc-screen-background); transform: translateY(-50%); }
+.lane-wire::before { left: -2px; } .lane-wire::after { right: -2px; }
+.coros-slot { position: relative; z-index: 1; display: grid; place-items: center; min-width: 0; }
+.coros-block, .empty-slot { position: relative; width: clamp(24px, 4.1vw, 63px); aspect-ratio: 1; display: grid; place-items: center; padding: 14%; border: clamp(1px, .13vw, 2px) solid var(--block-color, var(--qc-palette-252527)); border-radius: 14%; background: var(--qc-palette-050506); color: var(--qc-palette-ececee); box-shadow: 0 0 0 1px var(--qc-screen), 0 0 7px color-mix(in srgb, var(--block-color, var(--qc-transparent)) 22%, var(--qc-transparent)); cursor: pointer; }
+.coros-block svg { width: 82%; height: 82%; }
+.coros-block.is-selected { border-color: var(--qc-palette-ededed); box-shadow: 0 0 0 1px var(--qc-palette-ededed), 0 0 0 3px var(--qc-palette-070707); }
+.coros-block.is-bypassed { opacity: .27; filter: saturate(.15); }
+.empty-slot { opacity: 1; color: var(--qc-utility-mark); border-color: var(--qc-screen); background: var(--qc-route-pill); font-size: clamp(11px, 1.3vw, 20px); }
+.block-tooltip { position: absolute; z-index: 12; left: 50%; bottom: -42%; max-width: 130px; padding: 3px 6px; border-radius: 3px; background: var(--qc-palette-303032); color: var(--qc-primary-text); font-size: clamp(5px, .47vw, 8px); white-space: nowrap; opacity: 0; pointer-events: none; transform: translateX(-50%); transition: opacity .1s; }
+.coros-block:hover .block-tooltip, .coros-block:focus-visible .block-tooltip { opacity: 1; }
+
+.screen-nav-control { position: absolute; z-index: 3; top: 18%; right: 5.2%; width: 9.5%; height: 27%; display: grid; grid-template-rows: 12% 1fr 12%; place-items: center; }
+.nav-arrow { width: clamp(12px, 1.1vw, 17px); height: clamp(12px, 1.1vw, 17px); }
+/* The bank arrows are chassis silkscreen, not screen ink: they reuse the
+   registry's triangle but take the chassis's own colour, so the up arrow
+   overrides the palette role the up selector carries for directory-categories. */
+.nav-arrow-up path { fill: currentColor; }
+.footswitch-deck { position: absolute; z-index: 2; left: 2.5%; right: 2.5%; top: 61.5%; bottom: 2.2%; display: grid; grid-template-rows: 1fr 1fr; gap: 2%; }
+.footswitch-row { display: grid; grid-template-columns: repeat(5, 1fr); align-items: center; }
+.hardware-switch { height: 100%; display: grid; grid-template-rows: 14% 62% 14%; place-items: center; align-content: center; gap: 1%; overflow: visible; }
+.switch-led { width: clamp(5px, .7vw, 11px); aspect-ratio: 1; border: 1px solid var(--qc-palette-202124); border-radius: 50%; background: var(--qc-palette-16171a); box-shadow: inset 0 1px var(--qc-palette-fff3); }
+.switch-ring { width: clamp(34px, 4.7vw, 68px); margin: 0; border: 0; background: var(--qc-transparent); box-shadow: none; }
+.switch-cap { width: 68%; border: 1px solid var(--qc-palette-222327); background: repeating-conic-gradient(var(--qc-palette-c5c6c8) 0 3deg, var(--qc-palette-696b6f) 3deg 6deg); box-shadow: inset 0 0 0 5px var(--qc-palette-8f9194), inset 2px 2px 5px var(--qc-palette-fff7), 0 4px 5px var(--qc-palette-17181bbb); }
+.switch-label { position: static; transform: none; color: var(--qc-palette-f0f0f0); font: 500 clamp(8px, 1.05vw, 16px) var(--qc-font-app); letter-spacing: .02em; }
+.hardware-switch.is-active .switch-led,
+.hardware-switch.is-pressed .switch-led { background: var(--switch-accent); border-color: var(--switch-accent); box-shadow: 0 0 9px var(--switch-accent); }
+.hardware-switch.is-active .switch-ring { border: 0; box-shadow: none; }
+.hardware-switch:active .switch-ring { transform: scale(.94); }
+.hardware-switch.is-compact { grid-template-rows: 12% 70% 0; }
+.hardware-switch.is-compact .switch-label { position: absolute; left: -9999px; }
+.mode-bracket { position: absolute; right: 1.2%; top: 43%; width: 10%; display: flex; justify-content: space-around; color: var(--qc-palette-ededed); font: clamp(5px, .45vw, 8px) var(--qc-font-mono); }
+.mode-bracket strong { font-weight: 600; }
+.tuner-hint { position: absolute; right: 1.5%; bottom: -1%; color: var(--qc-palette-d4d4d5); font: clamp(4px, .38vw, 7px) var(--qc-font-mono); }
+
+.skin-high-contrast { background: var(--qc-palette-111); border-color: var(--qc-primary-text); }
+.skin-high-contrast .chassis-edge, .skin-high-contrast .qc-screen-bezel { border-color: var(--qc-primary-text); }
+.skin-high-contrast .switch-label, .skin-high-contrast .device-plate, .skin-high-contrast .master-volume strong { color: var(--qc-primary-text); }
+
+/* Photo comparison refinements: physical depth, smooth anodizing, and the full four-row Grid. */
+.qc-chassis {
+  overflow: visible;
+  background:
+    linear-gradient(90deg, var(--qc-palette-ffffff06), var(--qc-transparent) 18%, var(--qc-palette-00000016) 80%, var(--qc-palette-ffffff05)),
+    linear-gradient(160deg, var(--qc-palette-45464a) 0%, var(--qc-palette-393a3e) 44%, var(--qc-palette-303135) 100%);
+}
+.qc-chassis::before {
+  border-radius: inherit;
+  opacity: .045;
+  background-image: radial-gradient(circle, var(--qc-primary-text) 0 .35px, var(--qc-transparent) .5px);
+  background-size: 4px 4px;
+}
+.qc-chassis::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  right: 0;
+  top: 60.9%;
+  height: 3px;
+  border-top: 1px solid var(--qc-palette-17181780);
+  border-bottom: 1px solid var(--qc-palette-b2b2af26);
+  pointer-events: none;
+}
+.rear-connectors { position: absolute; z-index: 1; left: 31%; right: 5%; top: -2.1%; height: 4%; display: flex; align-items: flex-end; justify-content: space-around; }
+.rear-connectors span { width: 7%; height: 72%; border: 1px solid var(--qc-palette-1c1d1f); border-radius: 3px 3px 0 0; background: linear-gradient(90deg, var(--qc-palette-17181a), var(--qc-palette-5d5e61) 45%, var(--qc-palette-1a1b1d)); box-shadow: inset 0 1px var(--qc-palette-aaa5); }
+.rear-connectors span:nth-child(1), .rear-connectors span:nth-child(8) { width: 4%; height: 54%; }
+.rear-connectors span:nth-child(4), .rear-connectors span:nth-child(5) { width: 5%; height: 86%; }
+
+.volume-knob { width: min(80%, 112px); background: linear-gradient(145deg, var(--qc-palette-a8a9aa) 0%, var(--qc-palette-626366) 45%, var(--qc-palette-343538) 100%); box-shadow: inset 0 0 0 2px var(--qc-palette-222326), inset 3px 3px 4px var(--qc-palette-fff5), 8px 9px 14px var(--qc-palette-16171999); }
+.volume-knob::before { left: 7%; top: 7%; width: 86%; background: radial-gradient(circle at 38% 28%, var(--qc-palette-9a9b9d), var(--qc-palette-66676a) 52%, var(--qc-palette-3b3c3f) 100%); box-shadow: inset 0 1px 1px var(--qc-palette-fff8), inset 0 -2px 3px var(--qc-palette-15161999); }
+.volume-knob .volume-pointer { z-index: 2; top: 11%; height: 24%; background: var(--qc-palette-2b2c2e); box-shadow: 1px 0 var(--qc-palette-ddd5); }
+
+.routing-lanes { grid-template-rows: repeat(4, 1fr); gap: 1%; padding: 3% 1.2%; }
+.routing-lane { min-height: 0; }
+.coros-block, .empty-slot { width: clamp(20px, 3.25vw, 50px); padding: 13%; }
+.qc-screen { background: linear-gradient(180deg, var(--qc-palette-111215) 0%, var(--qc-palette-050506) 58%, var(--qc-palette-0a0a0c) 100%); }
+.empty-slot { opacity: 0; }
+.empty-slot:hover, .empty-slot:focus-visible { opacity: .2; }
+.block-tooltip { bottom: -48%; }
+
+.footswitch-deck .hardware-switch { grid-template-rows: 13% 67% 12%; }
+.footswitch-deck .switch-ring { width: clamp(46px, 5.6vw, 80px); background: radial-gradient(circle, var(--qc-palette-c3c4c5) 0 27%, var(--qc-palette-77797b) 28% 35%, var(--qc-palette-1c1d1f) 36% 41%, var(--qc-palette-96989a) 42% 49%, var(--qc-transparent) 50%); filter: drop-shadow(4px 7px 4px var(--qc-palette-101114aa)); }
+.footswitch-deck .switch-cap { width: 37%; transform: translate(-3%, -13%); border: 1px solid var(--qc-palette-65676a); background: linear-gradient(140deg, var(--qc-palette-dbdcdd) 4%, var(--qc-palette-929496) 45%, var(--qc-palette-66686a) 100%); box-shadow: inset 2px 2px 3px var(--qc-palette-fff8), inset -2px -2px 3px var(--qc-palette-3337), 1px 4px 3px var(--qc-palette-111a); }
+.footswitch-deck .switch-label { position: absolute; left: 69%; top: 53%; transform: translateY(-50%); color: var(--qc-palette-e5e5e5); font-size: clamp(11px, 1.35vw, 20px); font-weight: 400; }
+.footswitch-deck .hardware-switch[aria-label^="BANK DOWN"] .switch-label,
+.footswitch-deck .hardware-switch[aria-label^="TEMPO"] .switch-label { left: -9999px; }
+.footswitch-deck .switch-led { align-self: end; }
+.screen-nav-control .switch-ring { width: clamp(44px, 5.1vw, 74px); background: radial-gradient(circle, var(--qc-palette-d0d1d2) 0 27%, var(--qc-palette-747678) 28% 35%, var(--qc-palette-17181a) 36% 41%, var(--qc-palette-9a9b9d) 42% 49%, var(--qc-transparent) 50%); filter: drop-shadow(4px 7px 4px var(--qc-palette-101114aa)); }
+.screen-nav-control .switch-cap { width: 37%; transform: translate(-3%, -13%); border: 1px solid var(--qc-palette-65676a); background: linear-gradient(140deg, var(--qc-palette-dedfe0), var(--qc-palette-8c8e90) 52%, var(--qc-palette-626466)); box-shadow: inset 2px 2px 3px var(--qc-palette-fff8), 1px 4px 3px var(--qc-palette-111a); }
+.mode-bracket { right: 8.2%; top: 39%; width: 4%; height: 30%; flex-direction: column; align-items: center; justify-content: space-between; }
+.mode-bracket::before { content: ""; position: absolute; left: -25%; top: 0; bottom: 0; width: 45%; border: 1px solid var(--qc-palette-d5d5d5); border-right: 0; border-radius: 5px 0 0 5px; opacity: .8; }
+.tuner-hint { right: .4%; bottom: 44%; width: 8.5%; text-align: center; line-height: 1.4; }
+
+/* Orthographic top panel and CorOS 4.1 Grid fidelity. */
+.qc-chassis {
+  /* All screen and hardware geometry is absolute to the chassis. Keep the
+     containing block on the final production rule as well as the base rule so
+     CSS extraction/hot reload cannot rebase the chrome to the workspace. */
+  position: relative;
+  width: min(1120px, 100%);
+  min-height: 0;
+  max-height: none;
+  container-type: inline-size;
+  /* Scale physical controls from the device, not the application viewport.
+     The compact floors preserve legibility; interaction targets remain larger. */
+  --qc-hardware-switch-diameter: max(32px, 5.47cqi);
+  --qc-hardware-hit-diameter: max(44px, 7.84cqi);
+  --qc-hardware-led-diameter: max(8px, 1.28cqi);
+  --qc-master-volume-diameter: max(52px, 11.49cqi);
+  --qc-power-control-diameter: max(18px, 2.74cqi);
+  --qc-footswitch-led-lift: max(4px, .73cqi);
+  /* Normalized from the official top-panel SVG view: 1096 × 718. */
+  aspect-ratio: 1096 / 718;
+  overflow: hidden;
+  border-color: var(--qc-palette-858582);
+  background:
+    linear-gradient(180deg, var(--qc-transparent) 0 61%, var(--qc-palette-11111118) 68%, var(--qc-palette-05050538) 100%),
+    radial-gradient(ellipse at 72% 15%, var(--qc-palette-6a6a67) 0%, var(--qc-transparent) 40%),
+    linear-gradient(145deg, var(--qc-palette-50504e) 0%, var(--qc-palette-414140) 48%, var(--qc-palette-353534) 100%);
+  box-shadow: inset 0 0 0 1px var(--qc-palette-b9b9b73d), inset 0 -3px 5px var(--qc-palette-17171799), 0 22px 48px var(--qc-palette-000a);
+}
+.qc-chassis::before {
+  opacity: .065;
+  background-image:
+    radial-gradient(circle, var(--qc-primary-text) 0 .35px, var(--qc-transparent) .55px),
+    radial-gradient(circle, var(--qc-screen) 0 .4px, var(--qc-transparent) .6px);
+  background-position: 0 0, 2px 3px;
+  background-size: 4px 5px, 5px 7px;
+}
+.chassis-edge, .rear-connectors { display: none; }
+
+.master-volume { display: block; }
+.power-button { position: absolute; left: 50%; top: 10%; justify-self: auto; margin-left: 0; transform: translateX(-50%); }
+.volume-knob { position: absolute; left: 50%; top: 32.5%; width: min(80%, var(--qc-master-volume-diameter)); transform: translateX(-50%); }
+.master-volume strong { position: absolute; left: 0; top: 74%; width: 100%; text-align: center; }
+.master-volume strong { font-size: clamp(9px, .9vw, 14px); font-weight: 500; }
+.device-plate { right: 5.1%; top: 5.6%; width: 12.2%; padding: .55% .5%; display: flex; align-items: center; justify-content: center; text-align: center; font-size: clamp(9px, .9vw, 14px); border-color: var(--qc-palette-aaa9a5); letter-spacing: .12em; }
+.pulse-mark { margin-right: .18em; }
+
+.qc-screen-bezel {
+  /* SVG landmarks: x 252.8–844.2, y 78.1–411.9 within the panel outline. */
+  left: 23.02%;
+  right: 23.02%;
+  top: 8.86%;
+  bottom: 44.65%;
+  /* The bezel is the size container screens measure their cqw/cqh from,
+     so it may not pad itself: a container's cq units are 1% of its CONTENT box,
+     and self-padding is subtracted from the very box the screen is measured
+     against. The screen root is `position: absolute; inset: 0`, which resolves
+     against the padding box, so any nonzero padding here would inset nothing
+     and only shrink cqw, making every width a percent or two short of the
+     800px box the screen is designed against.
+     Keep it at zero: `100cqw` must equal the width of .qc-screen-fixture-root. */
+  padding: 0;
+  border-color: var(--qc-palette-68696c);
+  border-radius: 7px;
+  background: var(--qc-palette-111214);
+  box-shadow: inset 0 0 0 2px var(--qc-palette-020203), 0 2px 3px var(--qc-palette-111b);
+  container-type: size;
+}
+/* Every screen paints its own ground over this one, so what is left visible is
+   only what a scrim or a faded canvas lets through - which makes this a
+   composite input rather than a surface role. See the note on
+   .coros-vector-screen below before replacing the token. */
+.qc-screen {
+  grid-template-rows: 20.5% 79.5%;
+  border-radius: 1px;
+  background: var(--qc-palette-020202);
+  color: var(--qc-screen-text-primary);
+  font-family: var(--qc-font-device-plain);
+}
+.coros-header {
+  align-items: flex-start;
+  padding: 0 3% 0 1.4%;
+  background: var(--qc-palette-020202);
+}
+.coros-title { transform: translateY(-2.3cqi) scaleX(.78); transform-origin: left top; }
+.coros-actions { transform: translateY(1cqi); }
+.coros-title { font-family: var(--qc-font-device-plain); letter-spacing: 0; }
+.coros-title span, .coros-title em { font-size: 10.2cqi; font-weight: 800; }
+.coros-title em { color: var(--qc-palette-39e77a); margin-right: .28em; }
+.coros-title strong { max-width: 13ch; font-size: 9.8cqi; font-weight: 800; letter-spacing: -.01em; }
+.coros-actions { gap: 2px 2.35cqi; }
+.coros-actions > button, .scene-control > button { width: clamp(14px, 1.6vw, 24px); height: clamp(14px, 1.6vw, 24px); }
+.mode-readout { font-size: clamp(10px, 2.7cqi, 17px); transform: translateY(1.1cqi); }
+.coros-actions > button, .scene-control > button { color: var(--qc-primary-text); font-size: clamp(14px, 3.1cqi, 20px); }
+
+.coros-workspace {
+  position: relative;
+  grid-template-columns: 5.7% 1fr 5.7%;
+  padding: 0 1.1%;
+}
+.row-rail { gap: 4%; padding: 0; }
+.row-rail span {
+  border-radius: 6px;
+  background: var(--qc-palette-18181a);
+  color: var(--qc-palette-d7d7d9);
+  font-size: clamp(8px, 2cqi, 13px);
+  font-weight: 500;
+  box-shadow: inset 0 1px var(--qc-palette-ffffff05);
+}
+.io-pill i { left: 25%; right: 25%; height: 2px; background: var(--qc-palette-efd90f); }
+.output-pill i { position: absolute; top: auto; bottom: 0; background: var(--qc-palette-f0443b); }
+.row-rail .add-row { font-size: clamp(19px, 3.2cqi, 27px); color: var(--qc-palette-d0d0d2); font-weight: 300; }
+
+.routing-lanes { grid-template-rows: repeat(4, 1fr); gap: 0; padding: 0 .8%; }
+.routing-lane { min-height: 0; grid-template-columns: repeat(8, 1fr); }
+.routing-lane:nth-child(2) .lane-wire,
+.routing-lane:nth-child(4) .lane-wire { opacity: 0; }
+.lane-wire { left: -1.5%; right: -1.5%; background: var(--qc-palette-c9c9ca); }
+.lane-wire::before, .lane-wire::after { width: 4px; border-color: var(--qc-palette-f0f0f0); }
+.coros-block, .empty-slot {
+  width: min(78%, 50px);
+  padding: 10%;
+  border-width: 2px;
+  border-radius: 13%;
+  background: var(--qc-palette-030304);
+  box-shadow: 0 0 0 1px var(--qc-screen), 0 0 5px color-mix(in srgb, var(--block-color, var(--qc-transparent)) 18%, var(--qc-transparent));
+}
+.coros-block svg { width: 92%; height: 92%; }
+.coros-block.is-bypassed { opacity: .16; }
+.empty-slot { opacity: 0; }
+
+.screen-nav-control { top: 16.8%; right: 1.08%; }
+.footswitch-deck { top: 61.5%; bottom: .5%; grid-template-rows: 34% 34%; align-content: space-between; }
+.footswitch-row > :nth-child(1) { transform: translateX(-32.5%); }
+.footswitch-row > :nth-child(2) { transform: translateX(-16.25%); }
+.footswitch-row > :nth-child(4) { transform: translateX(16.25%); }
+.footswitch-row > :nth-child(5) { transform: translateX(32.5%); }
+.footswitch-row:first-child .switch-led { position: relative; top: clamp(6px, .7vw, 9px); }
+.footswitch-row:first-child .switch-ring { position: relative; top: clamp(7px, 1.1vw, 13px); }
+.footswitch-row:nth-child(3) .switch-led { position: relative; top: 2px; }
+.footswitch-row:nth-child(3) .switch-ring { position: relative; top: clamp(3px, .5vw, 6px); }
+.footswitch-deck .switch-led { width: var(--qc-hardware-led-diameter); border-width: 2px; }
+.footswitch-deck .switch-ring,
+.screen-nav-control .switch-ring { width: var(--qc-hardware-switch-diameter); }
+.footswitch-deck .switch-label { left: 68%; top: 54%; font-size: clamp(18px, 2.5vw, 36px); font-weight: 400; }
+.nav-arrow { width: clamp(13px, 1.2vw, 18px); height: clamp(13px, 1.2vw, 18px); }
+.mode-bracket { right: 5.9%; top: 31.5%; width: 4.5%; height: 36%; font-size: clamp(8px, .8vw, 12px); font-weight: 600; }
+.mode-bracket::before { left: -35%; width: 58%; border-width: 2px; }
+.tuner-hint { right: .4%; bottom: 47.5%; width: 8.6%; font-size: clamp(7px, .65vw, 10px); font-weight: 600; line-height: 1.15; }
+
+.footswitch-deck .switch-ring,
+.screen-nav-control .switch-ring {
+  background: radial-gradient(circle, var(--qc-transparent) 0 42%, var(--qc-palette-18191b) 43% 51%, var(--qc-palette-96989a) 52% 64%, var(--qc-palette-515356) 65% 77%, var(--qc-transparent) 79%);
+  filter: drop-shadow(4px 7px 4px var(--qc-palette-101114aa));
+}
+.footswitch-deck .switch-cap,
+.screen-nav-control .switch-cap {
+  width: 48%;
+  transform: translate(-3%, -12%);
+  background: linear-gradient(140deg, var(--qc-palette-c8c9ca) 2%, var(--qc-palette-858789) 45%, var(--qc-palette-555759) 100%);
+}
+.footswitch-deck .switch-cap,
+.screen-nav-control .switch-cap { position: relative; background: repeating-conic-gradient(from -6deg, var(--qc-palette-aeb0b1) 0 4deg, var(--qc-palette-686a6c) 4deg 7deg); }
+.footswitch-deck .switch-cap::before,
+.screen-nav-control .switch-cap::before {
+  content: "";
+  position: absolute;
+  inset: 14%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 28%, var(--qc-palette-d7d8d9) 0%, var(--qc-palette-9a9c9e) 48%, var(--qc-palette-66686a) 100%);
+  box-shadow: inset 1px 1px 2px var(--qc-palette-fff7), 1px 2px 2px var(--qc-palette-1117);
+}
+
+/* Neutral chassis vector owns the static geometry; React supplies the live
+   display, state lights, and accessible interaction targets. */
+.chassis-vector-viewport { display: none; }
+.skin-neutral-svg {
+  --qc-switch-led-size: var(--qc-hardware-led-diameter);
+  aspect-ratio: 1096.94 / 719.079;
+  border: 0;
+  border-radius: 3.49% / 5.26%;
+  background: var(--qc-palette-494a4e);
+  box-shadow: inset 0 1px 1px var(--qc-palette-ffffff5c), inset 0 -4px 8px var(--qc-palette-10111488), 0 22px 48px var(--qc-palette-000a);
+}
+.skin-neutral-svg::before { display: none; }
+.skin-neutral-svg::after {
+  display: block;
+  z-index: 2;
+  /* Match the 17.003-unit bend between y=451.853 and y=468.856 in
+     the chassis vector, stopping at its continuous inner side rails. */
+  left: .85%;
+  right: .85%;
+  top: 60.89%;
+  height: 2.365%;
+  border: 0;
+  background: linear-gradient(180deg,
+    var(--qc-transparent) 0%, var(--qc-palette-00000008) 52%, var(--qc-transparent) 100%);
+  box-shadow: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.skin-neutral-svg .chassis-vector-viewport {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 28% 2%, var(--qc-palette-ffffff20) 0%, var(--qc-transparent) 44%),
+    linear-gradient(96deg, var(--qc-transparent) 0 11%, var(--qc-palette-ffffff0c) 26%, var(--qc-transparent) 43% 78%, var(--qc-palette-00000016)),
+    repeating-linear-gradient(103deg, var(--qc-palette-ffffff03) 0 1px, var(--qc-transparent) 1px 4px, var(--qc-palette-00000004) 4px 5px),
+    linear-gradient(165deg, var(--qc-palette-5b5c60) 0%, var(--qc-palette-4a4b4f) 47%, var(--qc-palette-3e3f43) 100%);
+  pointer-events: none;
+}
+.skin-neutral-svg .chassis-vector-viewport::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  left: 0;
+  right: 0;
+  /* Cross-fade from the upper face to the lower face over the complete vector
+     bend (y=451.853–468.856), reaching full opacity at its lower seam. */
+  top: 60.89%;
+  bottom: 0;
+  background:
+    radial-gradient(ellipse 115% 105% at 50% -8%, var(--qc-palette-515256) 0%, var(--qc-palette-45464a) 48%, var(--qc-palette-393a3e) 100%),
+    repeating-linear-gradient(103deg, var(--qc-palette-ffffff03) 0 1px, var(--qc-transparent) 1px 4px, var(--qc-palette-00000005) 4px 5px);
+  box-shadow: inset 0 10px 20px var(--qc-palette-11121622);
+  -webkit-mask-image: linear-gradient(180deg, var(--qc-transparent) 0%, var(--qc-screen) 6.05%, var(--qc-screen) 100%);
+  mask-image: linear-gradient(180deg, var(--qc-transparent) 0%, var(--qc-screen) 6.05%, var(--qc-screen) 100%);
+}
+.skin-neutral-svg .chassis-vector-source {
+  position: absolute;
+  z-index: 2;
+  display: block;
+  height: auto;
+  max-width: none;
+  filter: invert(1) grayscale(1) contrast(1.3);
+  mix-blend-mode: screen;
+  opacity: .72;
+  user-select: none;
+}
+.skin-neutral-svg .chassis-edge,
+.skin-neutral-svg .device-plate,
+.skin-neutral-svg .master-volume strong,
+.skin-neutral-svg .mode-bracket,
+.skin-neutral-svg .tuner-hint { display: none; }
+.skin-neutral-svg .qc-screen-bezel {
+  z-index: 3;
+  border-color: var(--qc-transparent);
+  background: var(--qc-transparent);
+  box-shadow: none;
+}
+.skin-neutral-svg .qc-screen-bezel::after {
+  content: "";
+  position: absolute;
+  z-index: 8;
+  inset: 1%;
+  border-radius: 2px;
+  background: linear-gradient(155deg, var(--qc-palette-ffffff0b), var(--qc-transparent) 25% 76%, var(--qc-palette-6f8ca008));
+  box-shadow: inset 0 0 12px var(--qc-palette-000b);
+  pointer-events: none;
+}
+.skin-neutral-svg .power-button {
+  width: var(--qc-power-control-diameter);
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: var(--qc-transparent);
+  box-shadow: none;
+}
+.skin-neutral-svg .power-icon { visibility: hidden; }
+.skin-neutral-svg .volume-knob {
+  width: min(80%, var(--qc-master-volume-diameter));
+  border: 1px solid var(--qc-palette-202125);
+  background: linear-gradient(145deg, var(--qc-palette-85878a) 0%, var(--qc-palette-626468) 55%, var(--qc-palette-44464a) 100%);
+  box-shadow: inset 2px 2px 4px var(--qc-palette-ffffff28), inset -3px -3px 6px var(--qc-palette-22232788), 5px 7px 9px var(--qc-palette-16171970);
+}
+.skin-neutral-svg .volume-knob::before { display: block; inset: 2px; width: auto; background: linear-gradient(145deg, var(--qc-palette-8b8d90), var(--qc-palette-66686a) 58%, var(--qc-palette-484a4e)); box-shadow: inset 1px 1px 2px var(--qc-palette-ffffff42), inset -2px -2px 3px var(--qc-palette-25262a88); }
+.skin-neutral-svg .volume-knob .volume-pointer { display: block; top: 2%; height: 22%; width: 2px; background: var(--qc-palette-343538); box-shadow: inset 1px 0 var(--qc-palette-1b1c1e); transform-origin: 50% 218%; }
+.skin-neutral-svg .screen-nav-control,
+.skin-neutral-svg .footswitch-deck,
+.skin-neutral-svg .master-volume { z-index: 4; }
+.skin-neutral-svg .switch-label,
+.skin-neutral-svg .nav-arrow { visibility: hidden; }
+.skin-neutral-svg .switch-ring {
+  visibility: visible;
+  position: relative;
+  width: 27%;
+  border: 0;
+  border-radius: 50%;
+  clip-path: none;
+  background: linear-gradient(145deg, var(--qc-palette-85878a) 0%, var(--qc-palette-5d5f63) 55%, var(--qc-palette-3e4044) 100%);
+  box-shadow: inset 1px 1px 1px var(--qc-palette-ffffff55), inset -1px -1px 2px var(--qc-palette-20212599), 0 0 0 1px var(--qc-palette-303236);
+  filter: drop-shadow(3px 5px 3px var(--qc-palette-17181a99));
+}
+.skin-neutral-svg .switch-ring::before {
+  content: "";
+  position: absolute;
+  inset: 2.5%;
+  border-radius: 0;
+  clip-path: polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0 50%);
+  background: linear-gradient(145deg,
+    var(--qc-palette-a5a7aa) 0%,
+    var(--qc-palette-8d8f92) 34%,
+    var(--qc-palette-727478) 68%,
+    var(--qc-palette-626468) 100%);
+  box-shadow:
+    inset 1px 1px 1px var(--qc-palette-ffffff72),
+    inset -1px -1px 2px var(--qc-palette-24252988),
+    0 0 0 1px var(--qc-palette-484a4e);
+}
+.skin-neutral-svg .switch-cap {
+  position: relative;
+  z-index: 2;
+  visibility: visible;
+  width: 66%;
+  border-radius: 50%;
+  border: 1px solid var(--qc-palette-55575b);
+  background: var(--qc-palette-77797d);
+  box-shadow: inset 0 1px var(--qc-palette-ffffff30), 1px 2px 2px var(--qc-palette-1118);
+  transform: none;
+  transition: transform .08s, box-shadow .08s;
+}
+.skin-neutral-svg .switch-cap::before {
+  display: none;
+}
+.skin-neutral-svg .switch-led {
+  position: relative;
+  z-index: 1;
+  width: var(--qc-switch-led-size);
+  border: 1px solid var(--qc-palette-aaabae);
+  background: var(--qc-palette-626367);
+  box-shadow: none;
+}
+.skin-neutral-svg .hardware-switch.is-assigned:not(.is-active) .switch-led {
+  border-color: var(--qc-palette-aaabae);
+  background: var(--qc-palette-626367);
+  box-shadow: none;
+}
+.skin-neutral-svg .switch-led::before {
+  content: "";
+  display: block;
+  position: absolute;
+  inset: 1px;
+  border-radius: 50%;
+  background: var(--switch-accent);
+  box-shadow: 0 0 7px var(--switch-accent);
+  opacity: 0;
+}
+.skin-neutral-svg .screen-nav-control .switch-led {
+  width: var(--qc-switch-led-size);
+  top: clamp(6px, 1cqi, 11px);
+}
+.skin-neutral-svg .footswitch-deck .switch-ring,
+.skin-neutral-svg .screen-nav-control .switch-ring {
+  width: var(--qc-hardware-switch-diameter);
+}
+.skin-neutral-svg .footswitch-row:first-child .switch-ring {
+  top: clamp(4px, .73cqi, 8px);
+}
+.skin-neutral-svg .footswitch-row:first-child .switch-led {
+  top: calc(5px - var(--qc-footswitch-led-lift));
+}
+.skin-neutral-svg .footswitch-row:nth-child(3) .switch-ring {
+  top: clamp(2px, .36cqi, 4px);
+}
+.skin-neutral-svg .footswitch-row:nth-child(3) .switch-led {
+  top: calc(2px - var(--qc-footswitch-led-lift));
+}
+.skin-neutral-svg .hardware-switch.is-active .switch-led {
+  visibility: visible;
+  border-color: var(--qc-palette-aaabae);
+  background: var(--qc-palette-626367);
+  box-shadow: none;
+}
+.skin-neutral-svg .hardware-switch.is-active .switch-led::before,
+.skin-neutral-svg .hardware-switch.is-pressed .switch-led::before {
+  opacity: 1;
+}
+.skin-neutral-svg .hardware-switch:active .switch-ring {
+  transform: none;
+}
+.skin-neutral-svg .hardware-switch:active .switch-cap {
+  transform: translateY(2px);
+  box-shadow: inset 0 1px var(--qc-palette-ffffff20), 0 1px 1px var(--qc-palette-111a);
+}
+.skin-neutral-svg .hardware-switch { pointer-events: none; }
+.skin-neutral-svg .hardware-switch::after {
+  content: "";
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  top: 57%;
+  width: var(--qc-hardware-hit-diameter);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
+.skin-neutral-svg .hardware-switch > * { pointer-events: none; }
+.skin-neutral-svg .hardware-switch:focus-visible { outline: none; }
+.skin-neutral-svg .hardware-switch:focus-visible .switch-ring {
+  outline: 2px solid var(--qc-palette-1687c8);
+  outline-offset: 5px;
+}
+.skin-neutral-svg .power-button:focus-visible,
+.skin-neutral-svg .volume-knob:focus-visible {
+  outline: 2px solid var(--qc-palette-1687c8);
+  outline-offset: 3px;
+}
+
+/* CorOS reference canvas. The visual surface stays in the native 800×480
+   coordinate system; accessible HTML hit targets are aligned over the SVG.
+   The ground here is a composite input, not a surface the unit ever shows: the
+   canvas covers it opaquely except under the port selector, which fades the
+   canvas to .38 and then washes it. At var(--qc-palette-020202) that composite
+   lands on the unit's scrimmed black; at var(--qc-screen-surface-base) it lands
+   six counts high and the four route-selector frames collapse to 28%. It is not
+   a literal standing in for a screen role - do not migrate it to one. */
+.coros-vector-screen { position: relative; display: block; container-type: normal; background: var(--qc-palette-020202); }
+.coros-vector-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.coros-vector-canvas svg { overflow: visible; }
+.coros-vector-canvas .official-block-tile { overflow: hidden !important; }
+.coros-vector-actions { position: absolute; inset: 0; pointer-events: none; }
+.vector-action-hit,
+.vector-route-hit,
+.coros-vector-block-hit,
+.coros-vector-add-hit,
+.coros-vector-route-node-hit {
+  position: absolute;
+  z-index: 6;
+  padding: 0;
+  border: 0;
+  background: var(--qc-transparent);
+  color: var(--qc-transparent);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.vector-action-hit { top: 1.5%; min-width: 24px; min-height: 24px; height: 8%; }
+.preset-title-hit { left: 1%; width: 73.5%; height: 17%; }
+.undo-hit { left: 75.8%; width: 5%; }
+.scene-hit { left: 81.7%; width: 4.5%; }
+.save-hit { left: 87.8%; width: 5%; }
+.more-hit { left: 93.5%; width: 4%; }
+.mode-hit { top: 10.5%; left: 81%; width: 16%; height: 8%; }
+.vector-route-hit { position: absolute; z-index: 7; min-width: 24px; width: 6%; height: 18%; padding: 0; border: 0; background: var(--qc-transparent); cursor: pointer; pointer-events: auto; }
+.input-route-hit { left: 1%; }
+.output-route-hit { right: 1%; }
+.coros-vector-block-hit { width: 8.7%; height: 14.6%; transform: translate(-50%, -50%); border-radius: 12%; }
+.coros-vector-route-node-hit { z-index: 9; width: 5.2%; height: 8.7%; transform: translate(-50%, -50%); border-radius: 50%; }
+/* Empty Grid cells stay invisible so the screen matches the device, and reveal
+   their insertion plus only while the user is pointing at or tabbed onto them. */
+.coros-vector-add-hit { z-index: 5; width: 8.7%; height: 14.6%; display: grid; place-items: center; transform: translate(-50%, -50%); border-radius: 12%; }
+.coros-vector-add-hit > span { position: relative; width: 34%; height: 34%; opacity: 0; transition: opacity .12s ease; }
+.coros-vector-add-hit > span::before, .coros-vector-add-hit > span::after { position: absolute; background: var(--qc-palette-ffffff80); content: ""; }
+.coros-vector-add-hit > span::before { left: 0; right: 0; top: calc(50% - 1px); height: 2px; }
+.coros-vector-add-hit > span::after { top: 0; bottom: 0; left: calc(50% - 1px); width: 2px; }
+.coros-vector-add-hit:hover > span, .coros-vector-add-hit:focus-visible > span { opacity: 1; }
+.coros-vector-add-hit:hover { box-shadow: inset 0 0 0 1px var(--qc-palette-ffffff55); }
+.vector-action-hit:focus-visible,
+.vector-route-hit:focus-visible,
+.coros-vector-block-hit:focus-visible,
+.coros-vector-add-hit:focus-visible,
+.coros-vector-route-node-hit:focus-visible { outline: 2px solid var(--qc-palette-69cbf3); outline-offset: 1px; }
+.vector-action-hit:hover, .vector-route-hit:hover { box-shadow: inset 0 0 0 1px var(--qc-palette-ffffff70); }
+.coros-vector-block-hit:hover { box-shadow: inset 0 0 0 1px var(--qc-palette-ffffff80); }
+.coros-vector-route-node-hit:hover { box-shadow: inset 0 0 0 1px var(--qc-palette-ffffff90); }
+/* Grid block gestures. A block's hit target takes the pointer for itself so a
+   touch drag moves the block instead of panning the page. While dragged, the
+   block and its hit target follow the pointer; the empty cell it would land
+   in gets a ring in the screen accent green, never the selection or focus colours,
+   and a drag that has left the Grid turns the block into a red-outlined
+   ghost so a removal is announced before the pointer is released. Both are
+   on the panel's RGB565 ladders, like every other screen colour. */
+.coros-vector-block-hit { touch-action: none; }
+/* An IN/OUT rail hit target runs the same tap-and-hold gesture as a block
+   (beginRailGesture/trackRailGesture/endRailGesture in quad-cortex-surface.tsx),
+   waiting out a timer before opening Input Gate/Lane Output. Without this,
+   a touch WebView's own gesture recognizer can still arm for the hold and
+   cancel the pointer sequence before that timer fires - the app never sees
+   it as anything but a cancelled gesture, so the panel silently never opens. */
+.vector-route-hit { touch-action: none; }
+/* The Android WebView otherwise claims a top/bottom edge drag for page
+   scrolling before the surface has crossed its swipe threshold and delivers a
+   pointercancel. Keep the complete Grid gesture stream on the QC display;
+   taps still reach their existing targets because this changes only the
+   browser's default touch action. */
+.qc-screen-bezel.is-grid-edge-gesture-surface { touch-action: none; }
+/* The lifted block carries no outline of its own on the unit (long_amp walk frame); only the removal state below does. */
+.coros-vector-block-hit.is-dragging { z-index: 8; cursor: grabbing; }
+.coros-vector-block-hit.is-dragging.is-removing { box-shadow: inset 0 0 0 2px var(--qc-palette-ff594a); }
+.coros-vector-add-hit[data-drop-target] { box-shadow: inset 0 0 0 2px var(--qc-screen-accent); }
+.coros-vector-add-hit[data-drop-target] > span { opacity: 1; }
+.coros-grid-drag-glyph { filter: drop-shadow(0 4px 6px var(--qc-palette-000d)); }
+.coros-grid-drag-glyph.is-removing { opacity: .4; }
+.vector-scene-dropdown { right: 4%; top: 10%; }
+.vector-mode-dropdown { right: 2.5%; top: 19%; min-width: 29%; }
+.coros-screen-menu { position: absolute; z-index: 21; right: 1.5%; top: 9%; width: 35%; max-height: 89%; overflow-y: auto; padding: .8% 0; border: 1px solid var(--qc-palette-4a4a4a); border-radius: 4px; background: var(--qc-palette-292a2a); box-shadow: 0 12px 32px var(--qc-palette-000d); }
+.coros-screen-menu button { display: flex; width: 100%; align-items: center; gap: 7%; padding: 3.2% 7%; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 600 clamp(7px, .72vw, 12px) var(--qc-font-device-plain); text-align: left; cursor: pointer; }
+.coros-screen-menu button:hover, .coros-screen-menu button:focus-visible { outline: 0; background: var(--qc-palette-3a3b3b); color: var(--qc-primary-text); }
+.coros-screen-menu .context-menu-icon { display: grid; flex: 0 0 13%; place-items: center; color: var(--qc-screen-text-primary); font-size: 1.2em; font-weight: 800; }
+.coros-screen-menu .context-danger .context-menu-icon { color: var(--qc-palette-d4423c); }
+.coros-save-preset { position: absolute; z-index: 30; inset: 0; display: grid; grid-template-rows: 15% 15% 17% minmax(0, 1fr); padding: 2.5% 4%; background: linear-gradient(145deg, var(--qc-palette-252627), var(--qc-palette-111) 58%, var(--qc-palette-080808)); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
+.coros-save-preset header { display: grid; grid-template-columns: 24% 1fr 24%; align-items: center; gap: 3%; border-bottom: 1px solid var(--qc-palette-555); }
+.coros-save-preset header strong { text-align: center; font-size: clamp(9px, 1vw, 17px); }
+.coros-save-preset button { border: 1px solid var(--qc-palette-636566); border-radius: 4px; background: var(--qc-palette-303132); color: var(--qc-palette-f3f3f3); font: 700 clamp(7px, .7vw, 12px) var(--qc-font-device-plain); cursor: pointer; }
+.coros-save-preset button:hover, .coros-save-preset button:focus-visible { outline: 1px solid var(--qc-primary-text); background: var(--qc-palette-444); }
+.coros-save-preset button:disabled { cursor: default; opacity: .38; }
+.coros-save-preset .is-primary { border-color: var(--qc-palette-23b75b); background: var(--qc-palette-14733a); }
+.coros-save-location { display: grid; grid-template-columns: 24% 1fr auto; align-items: center; gap: 3%; font-size: clamp(7px, .72vw, 12px); }
+.coros-save-location span, .coros-save-name span { color: var(--qc-palette-9c9d9e); font-size: .78em; letter-spacing: .08em; }
+.coros-save-location b { padding: 4% 18%; border-radius: 3px; background: var(--qc-palette-3ee77b); color: var(--qc-palette-07130b); font-size: 1.2em; }
+.coros-save-name { display: grid; grid-template-columns: 24% 1fr; align-items: center; gap: 3%; }
+.coros-save-name input { min-width: 0; padding: 2.5% 3%; border: 1px solid var(--qc-palette-6d6f70); border-radius: 3px; outline: 0; background: var(--qc-screen-background); color: var(--qc-primary-text); font: 700 clamp(9px, 1vw, 17px) var(--qc-font-device-plain); }
+.coros-save-name input:focus { border-color: var(--qc-palette-3ee77b); box-shadow: 0 0 0 1px var(--qc-palette-3ee77b); }
+.coros-save-keyboard { display: grid; align-content: stretch; gap: 3%; padding-top: 2%; }
+.coros-save-keyboard > div { display: flex; justify-content: center; gap: 1.2%; min-height: 0; }
+.coros-save-keyboard button { width: 8%; min-height: 0; }
+.coros-save-keyboard .keyboard-actions button { width: 12%; }
+.coros-save-keyboard .keyboard-actions .space-key { width: 42%; }
+.coros-route-picker-dismiss { position: absolute; z-index: 22; inset: 0; padding: 0; border: 0; background: var(--qc-transparent); cursor: default; }
+.coros-route-focus-layer { position: absolute; z-index: 23; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.coros-route-picker { position: absolute; z-index: 24; top: 3%; bottom: 3%; width: 31%; display: grid; grid-template-rows: 15% minmax(0, 1fr); border: 1px solid var(--qc-palette-555); border-radius: 7px; background: linear-gradient(100deg, var(--qc-palette-424344), var(--qc-palette-373839)); box-shadow: 0 5px 14px var(--qc-palette-000b); overflow: hidden; }
+.coros-route-picker.is-input { left: 7.2%; }
+.coros-route-picker.is-output { right: 7.2%; }
+.coros-route-picker > header { display: grid; grid-template-columns: 13% minmax(0, 1fr); align-items: center; gap: 4%; padding: 0 8%; color: var(--qc-palette-f5f5f5); font: 700 clamp(8px, .8vw, 13px) var(--qc-font-device-plain); text-align: left; }
+.coros-route-picker svg { width: 100%; fill: none; stroke: currentColor; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; }
+/* The unassigned-route plate is two filled paths, the same pair the Internal
+   glyph draws: a 2px plate ring and a 2px plus. It used to be a <rect> plus a
+   stroked <path>, and the leftover stroke rules were still turning both paths
+   into 2.1px outlines - a 3px ring in the plus's own ink where the unit draws
+   a 2px ring in the plate ink, and a 4px plus where the unit draws 2px. */
+.coros-route-picker .route-plus-plate path:first-child { fill: var(--qc-route-glyph-surface); stroke: none; }
+.coros-route-picker .route-plus-plate path:last-child { fill: var(--qc-utility-mark); stroke: none; }
+.coros-route-picker .route-internal-glyph path:first-child { fill: var(--qc-route-glyph-surface); stroke: none; }
+.coros-route-picker .route-internal-glyph path:last-child { fill: var(--qc-utility-mark); stroke: none; }
+/* The rail is .qc-scroll-rail in qc-screen-elements.css; only the thumb colour
+   is this pane's own, matching the surface it sits on. */
+.coros-route-options { min-height: 0; overflow-y: auto; padding: 0 3% 3% 7%; --qc-scroll-thumb: var(--qc-palette-96999b); }
+.coros-route-group > strong { display: block; padding: 4.5% 2% 2%; color: var(--qc-palette-bfc1c2); font: 800 clamp(6px, .58vw, 9px) var(--qc-font-device-plain); letter-spacing: .02em; }
+.coros-route-options button { width: 100%; display: grid; grid-template-columns: 13% minmax(0, 1fr); align-items: center; gap: 4%; min-height: 16%; padding: 3.5% 2%; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font: 700 clamp(7px, .74vw, 12px) var(--qc-font-device-plain); cursor: pointer; }
+.coros-route-options button:hover, .coros-route-options button:focus-visible { outline: 0; background: var(--qc-palette-ffffff12); color: var(--qc-primary-text); }
+.coros-route-options button[aria-selected="true"] { background: var(--qc-palette-ffffff0a); color: var(--qc-primary-text); }
+.coros-route-options button:disabled { cursor: wait; opacity: .55; }
+.context-menu-section { margin: 2% 0 1%; padding: 3% 7%; border-top: 1px solid var(--qc-palette-4b4c4c); border-bottom: 1px solid var(--qc-palette-4b4c4c); background: var(--qc-palette-232424); color: var(--qc-palette-989a9a); font: 800 clamp(6px, .58vw, 9px) var(--qc-font-device-plain); letter-spacing: .08em; }
+
+.coros-directory { position: absolute; z-index: 30; inset: 0; display: grid; grid-template-rows: 12.5% minmax(0, 1fr); overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
+.coros-directory button { border: 0; color: inherit; font: inherit; cursor: pointer; }
+.coros-directory-header { display: flex; align-items: stretch; justify-content: space-between; gap: 1%; padding: 1%; background: var(--qc-screen-surface-base); }
+.directory-category { width: 32%; display: flex; align-items: center; gap: 5%; padding: 0 2%; border-radius: 0.875cqw; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); font-size: 1.875cqw; }
+.directory-category:hover { background: var(--qc-palette-303631); }
+.directory-grid-icon { width: 11%; color: var(--qc-screen-text-primary); line-height: 1; }
+.directory-grid-icon svg { display: block; width: 100%; height: auto; fill: currentColor; }
+.directory-chevron { width: 3cqw; height: 3cqw; display: block; flex: none; margin-left: auto; color: var(--qc-screen-text-primary); font-size: 0; line-height: 0; }
+/* The nudge places the header triangle at the unit's own ink position: the
+   drawing sat one pixel left and two rows high of it otherwise. */
+.directory-chevron .qc-ui-icon { width: 3cqw !important; height: 3cqw !important; display: block !important; transform: translate(1.4563cqw, 0); }
+.directory-tools { width: 42%; display: flex; align-items: stretch; justify-content: flex-end; gap: 2.2%; }
+.directory-tools button { flex: 0 0 19%; display: grid; place-items: center; padding: 0; border-radius: 0.875cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
+.directory-tools button:hover { background: var(--qc-palette-2c322d); color: var(--qc-palette-43ed73); }
+.directory-tools button.is-active { background: var(--qc-palette-183b24); color: var(--qc-palette-43ef72); }
+.directory-tools svg { width: 38%; height: auto; aspect-ratio: 1; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.directory-tool-divider { width: 1px; margin: 8% 0; background: var(--qc-palette-434844); }
+.directory-tools .directory-close { flex-basis: 28%; background: var(--qc-screen-surface-control); }
+.coros-directory-body { min-height: 0; display: grid; grid-template-columns: 32% 15% minmax(0, 1fr); gap: 1%; padding: 0 1% 1%; }
+.directory-folders, .directory-banks, .directory-presets { --qc-scroll-thumb: var(--qc-palette-737974); }
+.directory-folders, .directory-banks { min-height: 0; overflow-y: auto; border: 0; }
+.directory-folders { padding: 1% 0; border-radius: 0.875cqw; background: var(--qc-screen-surface-control); }
+/* 16px of leading pad: this panel starts at x=8 and the unit inks the row mark
+   from x=24, so the pad is 16, not the fractional value a straight percentage
+   of the panel width gives. */
+.directory-folders button { width: 100%; height: 15%; display: flex; align-items: center; gap: 5%; padding: 0 2cqw; overflow: hidden; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 1.625cqw; font-weight: 500; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+/* The unit does not centre the row mark. The 60px folder-table rows start at
+   y=60 and three of their assets ink all 24 rows of their box, which pins the
+   box at row + 16, not the row + 18 a centred 24px box gives. Only an asset
+   that fills its box can pin it; the categories dropdown centres the same
+   three drawings at +18, which is why +18 reads as right and is not.
+   The box is 24 square and does not shrink: a percentage-based width would
+   scale the 24-unit art fractionally and put a false row and a false column
+   on the far side of every mark. */
+.directory-folders button span { position: relative; flex: none; width: 3cqw; height: 3cqw; translate: 0 -0.25cqw; color: var(--qc-screen-text-primary); }
+.directory-folders button svg { display: block; width: 100%; height: 100%; fill: currentColor; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.directory-folders button svg .folder-number { fill: var(--qc-screen-surface-control); stroke: none; }
+.directory-folders button b { margin-left: auto; color: var(--qc-palette-707570); font-size: 1.3em; }
+.directory-folders button:hover { background: var(--qc-palette-303531); }
+.directory-folders button.is-active { background: var(--qc-rotary-face); color: var(--qc-palette-43ef72); }
+.directory-folders button.is-active span { color: var(--qc-screen-text-primary); }
+.directory-folders .directory-new-setlist { color: var(--qc-palette-7e837f); }
+.directory-folders .directory-new-setlist:disabled { cursor: default; opacity: .8; }
+.directory-banks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 13%; align-content: start; gap: 1.8% 6%; overflow-y: auto; background: var(--qc-transparent); }
+.directory-banks button { display: grid; place-items: center; padding: 0; border-radius: 0.875cqw; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); font-size: 1.875cqw; font-weight: 500; }
+.directory-banks button:hover { background: var(--qc-palette-303631); }
+.directory-banks button.is-active { background: var(--qc-palette-131714); color: var(--qc-palette-43ef72); }
+.directory-presets { min-height: 0; overflow-x: hidden; overflow-y: auto; border-radius: 0.875cqw; background: var(--qc-screen-surface-control); }
+.directory-preset-row { position: relative; width: 100%; min-height: 12.5%; display: grid; grid-template-columns: minmax(0, 1fr) 12%; align-items: stretch; border-bottom: 1px solid var(--qc-palette-303531); background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.directory-preset-row.is-upload-mode { grid-template-columns: minmax(0, 1fr) 20%; }
+.directory-preset-row:hover { background: var(--qc-palette-303631); }
+.directory-preset-row.is-current { background: var(--qc-screen-surface-control); }
+.preset-recall { min-width: 0; display: grid; grid-template-columns: 15% minmax(0, 1fr); align-items: center; padding: 0 2% 0 5%; background: var(--qc-transparent); color: inherit; text-align: left; }
+.preset-recall strong { color: var(--qc-screen-text-primary); font: 500 1.625cqw var(--qc-font-device-plain); }
+.directory-preset-row.is-current .preset-recall strong { color: var(--qc-palette-43ef72); }
+.preset-recall.is-arrange-source { outline: 1px solid var(--qc-rotary-accent); outline-offset: -0.125cqw; }
+.preset-arrange-hint { align-self: center; padding-right: 5%; color: var(--qc-rotary-accent); font: 600 1.375cqw var(--qc-font-device-plain); letter-spacing: .04em; }
+.preset-recall span { overflow: hidden; font-size: 1.625cqw; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.preset-row-more { padding: 0; background: var(--qc-transparent); color: var(--qc-palette-6f746f); font-size: 1.1em; text-align: center; }
+.preset-row-more:hover { color: var(--qc-screen-text-primary); }
+.preset-upload-action { min-width: 0; margin: 14% 8%; overflow: hidden; border-radius: 0.5cqw; background: var(--qc-palette-20472c); color: var(--qc-palette-43ef72) !important; font-size: 1.125cqw !important; font-weight: 700 !important; }
+/* The preset item menu is a screen-level black popover, as on the unit (corpus
+   `directory-item-context`): five 6.5cqw rows in a 32cqw x 32.5cqw box held to
+   the bottom-right corner so it clears the foot of a screen shorter than 5:3. */
+.preset-context-menu { position: absolute; z-index: 7; right: 2cqw; bottom: 1cqw; box-sizing: border-box; width: 32cqw; height: 32.5cqw; display: flex; flex-direction: column; padding: 0; border: 0; border-radius: 1cqw; background: var(--qc-screen); box-shadow: none; }
+.preset-context-menu button { flex: 0 0 6.5cqw; box-sizing: border-box; padding: 0 2cqw; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 2cqw; text-align: left; }
+.preset-context-menu button:hover { background: var(--qc-palette-3a3f3b); }
+.preset-context-menu button:disabled { background: var(--qc-transparent); color: var(--qc-palette-686b69); cursor: default; }
+.preset-context-menu button.context-danger { color: var(--qc-palette-ef7770); }
+.preset-context-menu button.context-danger:disabled { color: var(--qc-palette-74514e); }
+.directory-loading { display: block; padding: 12%; color: var(--qc-palette-6e7276); font-size: 1.125cqw; font-weight: 800; text-align: center; letter-spacing: .08em; }
+.coros-directory .directory-search-field { position: sticky; z-index: 1; top: 0; height: 12%; min-height: 5.25cqw; display: grid; grid-template-columns: 12% minmax(0, 1fr) 12%; align-items: center; margin: 1.5%; padding: 0 2%; border: 1px solid var(--qc-palette-3ce971); border-radius: 0.5cqw; background: var(--qc-rotary-face-edge); }
+.coros-directory .directory-search-field > svg { width: 2.5cqw; height: 2.5cqw; color: var(--qc-palette-999); }
+.coros-directory .directory-search-field input { width: 100%; min-width: 0; border: 0; outline: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 400 1.75cqw var(--qc-font-device-plain); }
+.coros-directory .directory-search-field input::placeholder { color: var(--qc-palette-999); }
+.coros-directory .directory-search-field button { background: var(--qc-transparent); color: var(--qc-palette-999); font-size: 2.75cqw; }
+.coros-directory > .directory-context-scrim { position: absolute; z-index: 6; inset: 0; width: 100%; height: 100%; background: var(--qc-palette-rgba-88-92-88-a694); }
+.coros-directory > .directory-tool-menu { position: absolute; z-index: 7; left: 46.375%; top: 11.875%; width: 28.875%; padding: 0; border: 0; border-radius: 1cqw; background: var(--qc-screen); box-shadow: none; }
+.coros-directory > .directory-tool-menu > strong { display: block; height: 6.5cqw; padding: 0 2cqw; border-bottom: 1px solid var(--qc-palette-424142); color: var(--qc-utility-mark); font: 400 2cqw var(--qc-font-device-plain); line-height: 6.5cqw; }
+.coros-directory > .directory-tool-menu > button { box-sizing: border-box; width: 100%; height: 6.5cqw; display: flex; align-items: center; justify-content: flex-start; padding: 0 2cqw; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 400 2.25cqw var(--qc-font-device-plain); }
+.coros-directory > .directory-tool-menu > button.is-active { color: var(--qc-rotary-accent); }
+.coros-directory > .directory-tool-menu > button:disabled { color: var(--qc-screen-text-muted); cursor: default; opacity: .48; }
+/* The category dropdown: a black popover under the header chip, five 60px rows
+   with a 24px mark at x=24, the label at x=69 and a tick at the far end of the
+   selected row (corpus `directory-categories`). The chip rises above the scrim
+   and turns black with it, as on the unit. */
+.coros-directory > .directory-category-menu { position: absolute; z-index: 7; left: 1cqw; top: 7.5cqw; box-sizing: border-box; width: 32cqw; height: 37.5cqw; display: block; padding: 0; border: 0; border-radius: 1cqw; background: var(--qc-screen); box-shadow: none; }
+.coros-directory > .directory-category-menu > button { box-sizing: border-box; width: 100%; height: 7.5cqw; border-bottom: 0; display: grid; grid-template-columns: 7.5cqw 1fr 5cqw; align-items: center; padding: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 400 2cqw var(--qc-font-device-plain); text-align: left; }
+.coros-directory > .directory-category-menu > button.is-active { color: var(--qc-screen-accent); }
+.coros-directory > .directory-category-menu > button > span { display: grid; place-items: center start; padding-left: 2cqw; color: inherit; font-size: 2.5cqw; }
+.coros-directory > .directory-category-menu > button > span svg { width: 3cqw; height: 3cqw; fill: currentColor; stroke: currentColor; stroke-width: 1.5; }
+.coros-directory > .directory-category-menu > button > b { color: inherit; font-size: 2.25cqw; font-weight: 400; text-align: center; }
+.coros-directory > .directory-category-menu > button > b > .qc-ui-icon-check { --qc-screen-glyph-size: 3cqw; width: 3cqw; height: 3cqw; }
+.coros-directory-header .directory-category strong { flex: none; text-align: left; white-space: nowrap; }
+.coros-directory-header .directory-category[aria-expanded="true"] { position: relative; z-index: 8; background: var(--qc-screen); }
+/* Favorites, Neural Captures, Impulse Responses and Plugin Presets share the
+   Presets browser's panels; they have two panes where Presets has three. */
+.coros-directory-body.is-library { grid-template-columns: 32.65% minmax(0, 1fr); }
+.directory-folders button:disabled { cursor: default; }
+.directory-folders button.is-child { padding-left: 4cqw; }
+.directory-folders button .directory-count { color: var(--qc-palette-707570); font-size: 1em; font-weight: 400; }
+.directory-library-list { display: flex; flex-direction: column; align-content: flex-start; }
+.directory-library-list .directory-loading { padding: 8% 6%; color: var(--qc-palette-737974); font-size: 1.75cqw; font-weight: 400; letter-spacing: 0; line-height: 1.6; }
+.directory-library-row { box-sizing: border-box; min-height: 7.5cqw; flex: none; display: flex; flex-direction: column; justify-content: center; gap: 0.25cqw; padding: 0 2cqw; border-bottom: 1px solid var(--qc-palette-182018); color: var(--qc-screen-text-primary); }
+.directory-library-row strong { overflow: hidden; font: 400 2cqw var(--qc-font-device-plain); text-overflow: ellipsis; white-space: nowrap; }
+.directory-library-row small { overflow: hidden; color: var(--qc-palette-737974); font: 400 1.5cqw var(--qc-font-device-plain); text-overflow: ellipsis; white-space: nowrap; }
+.directory-library-tabs { display: flex; flex: none; gap: 1cqw; padding: 1cqw 1cqw 0; }
+.directory-library-tabs button { width: 9.25cqw; height: 5.5cqw; display: grid; place-items: center; border-radius: 1cqw; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); }
+.directory-library-tabs button.is-active { background: var(--qc-screen-surface-control); color: var(--qc-screen-accent); }
+.directory-library-tabs svg { width: 3cqw; height: 3cqw; fill: currentColor; stroke: currentColor; }
+/* Sizes below are cqw of the screen (the unit's px / 8): the screen is only
+   ever as wide as the app window allows, so a fixed px pin renders 2x too big
+   at the shipping size and clips the menus it holds. */
+/* Sort By raises its own button above the scrim and turns it black, as the unit does. */
+.coros-directory-header .directory-tools button[aria-expanded="true"] { position: relative; z-index: 8; background: var(--qc-screen); color: var(--qc-screen-text-primary); }
+/* The signed-out cloud-account mark in the slot the upload cloud holds when signed in. */
+.coros-directory-header .directory-account { cursor: default; }
+.coros-directory-header .directory-account .directory-account-status { width: 3cqw; height: 3cqw; overflow: visible; fill: none; stroke-width: 1.5; stroke-linecap: square; }
+.coros-directory-header .directory-account .status-error { stroke: var(--qc-palette-ff2421); }
+.coros-directory-header .directory-account .status-person { stroke: var(--qc-screen-text-muted); }
+/* Captures, Impulse Responses and Favorites carry the unit's full tool strip:
+   four 8.25cqw buttons on an 8px (1cqw) pitch, a hairline, then Done. It is
+   its own class, not .directory-tools: that strip's percentage widths are
+   !important and sized for three buttons. */
+.coros-directory-header .directory-library-tools { flex: 0 0 50.5cqw; display: flex; align-items: stretch; justify-content: flex-end; gap: 1cqw; }
+.coros-directory-header .directory-library-tools button { flex: 0 0 8.25cqw; display: grid; place-items: center; padding: 0; border-radius: .875cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
+.coros-directory-header .directory-library-tools button:disabled { cursor: default; }
+.coros-directory-header .directory-library-tools button.is-active { background: var(--qc-palette-183b24); color: var(--qc-palette-43ef72); }
+.coros-directory-header .directory-library-tools button[aria-expanded="true"] { position: relative; z-index: 8; background: var(--qc-screen); }
+.coros-directory-header .directory-library-tools .directory-tool-divider { flex: none; width: 1px; margin: 1.5cqw 0; background: var(--qc-palette-434844); }
+.coros-directory-header .directory-library-tools .directory-close { flex: 0 0 12.25cqw; background: var(--qc-screen-surface-control); }
+.coros-directory-header .directory-library-tools svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; }
+/* Favorites / Recent sit in the header beside the chip; the selected one is the list's own colour and joins it. */
+.coros-directory-header .directory-library-tabs { flex: none; align-self: stretch; margin-bottom: -1cqw; gap: .5cqw; padding: 0; }
+.coros-directory-header .directory-library-tabs button { width: 10.5cqw; height: auto; border-radius: 1cqw 1cqw 0 0; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
+.coros-directory-header .directory-library-tabs button.is-active { background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.coros-directory-header .directory-library-tabs svg { width: 3cqw; height: 3cqw; }
+/* The header keeps its own 1cqw foot, so the chip stays the 44px (5.5cqw) the other categories draw; the tabs hang 1cqw below it into the list. The selected tab runs the full 6.5cqw and the other stops 0.5cqw short of it, and both keep the glyph on the chip's own centre line (frame: tab 8..60 and 8..56, glyph at y 30). */
+.coros-directory-header .directory-library-tabs button { padding: 0 0 1cqw; }
+.coros-directory-header .directory-library-tabs button:not(.is-active) { margin-bottom: .5cqw; padding-bottom: .5cqw; }
+/* Nested capture and IR folders step in 2cqw (16px) per level. */
+.directory-folders button.is-child { padding-left: calc(2cqw + 2cqw * var(--qc-directory-depth, 1)); }
+/* The capture list and the A-Z scrubber at its right edge share one panel. */
+.directory-library-pane { position: relative; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; overflow: hidden; border-radius: .875cqw; background: var(--qc-screen-surface-control); }
+.directory-library-pane > .directory-library-list { border-radius: 0; }
+.directory-alpha-index { width: 4.5cqw; display: flex; flex-direction: column; align-items: stretch; justify-content: space-between; padding: .5cqw 0; }
+.directory-alpha-index button { flex: 1 1 0; display: grid; place-items: center; padding: 0; background: var(--qc-transparent); color: var(--qc-screen-text-muted); font-size: 1.25cqw; }
+.directory-alpha-index button:hover { color: var(--qc-screen-text-primary); }
+.coros-directory-footer { display: flex; align-items: center; justify-content: space-between; padding: 0 2.5%; border-top: 1px solid var(--qc-palette-303234); background: var(--qc-palette-191a1c); color: var(--qc-palette-73777a); font-size: 1.125cqw; font-weight: 800; letter-spacing: .08em; }
+.coros-directory-footer button { height: 64%; padding: 0 2.5%; border-radius: 0.375cqw; background: var(--qc-palette-2c2e30); color: var(--qc-palette-d7d9db); font-size: inherit; font-weight: 800; }
+.coros-directory-footer button:hover { background: var(--qc-palette-315c3c); color: var(--qc-palette-57f17e); }
+.coros-directory-footer button:disabled { opacity: .45; cursor: default; }
+/* Block move mode (see moveModeOverlay in quad-cortex-surface.tsx); measured from the unit's lifted-block frame. */
+.coros-grid-move-mode .move-trash-zone { fill: var(--qc-palette-ff2421); }
+.coros-grid-move-mode .move-trash-glyph path { fill: none; stroke: var(--qc-screen-text-primary); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.coros-grid-move-mode .move-dotted-path { fill: none; stroke: var(--qc-route-rail); stroke-width: 2; stroke-dasharray: 4 4; }
+.coros-grid-move-mode .move-drop-slot { fill: var(--qc-route-glyph-surface); }
+.coros-directory-header .directory-library-tools.is-compact { flex-basis: 41.25cqw; }
+.directory-alpha-index button[data-dot] { font-size: 2.5cqw; }
+
+/* Directory fidelity (walk of firmware 4.1.0, 2026-10-04). Every size is a share
+   of the screen's own width, so it holds at the ~370px the shipping window
+   draws it at as well as at the unit's 800. */
+/* The Cloud rows are greyed while no cloud account is signed in, and do nothing. */
+.directory-folders button.is-signed-out, .directory-folders button.is-signed-out span { color: var(--qc-palette-4a514a); }
+/* The registry's cloud art carries its white as a presentation attribute on the path, which an inherited colour cannot reach. */
+.directory-folders button.is-signed-out svg path { fill: var(--qc-palette-4a514a); }
+.directory-folders button:disabled:not(.is-active):hover { background: var(--qc-transparent); }
+/* The unit's Directory lists draw no scrollbar at all; they still scroll. */
+.coros-directory .qc-scroll-rail { scrollbar-width: none; }
+.coros-directory .qc-scroll-rail::-webkit-scrollbar { display: none; width: 0; }
+/* A Recent row: name over its date on the left, the binoculars button on the right. */
+.directory-library-row.has-locate { display: grid; grid-template-columns: minmax(0, 1fr) 8.25cqw; grid-template-rows: auto auto; align-content: center; column-gap: 1cqw; padding-right: 1cqw; }
+.directory-library-row.has-locate > strong, .directory-library-row.has-locate > small { grid-column: 1; }
+.directory-library-row.has-locate > small { color: var(--qc-screen-text-muted); }
+.directory-library-row .directory-locate { grid-column: 2; grid-row: 1 / span 2; align-self: center; height: 5.5cqw; display: grid; place-items: center; padding: 0; border-radius: .875cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
+.directory-library-row .directory-locate svg { width: 3cqw; height: 3cqw; fill: currentColor; }
+/* A Favorites row: the binoculars and the broken heart, two 8.25cqw buttons 0.75cqw apart at the row's right edge. */
+.directory-library-row.has-unfavorite { grid-template-columns: minmax(0, 1fr) 8.25cqw 8.25cqw; column-gap: .75cqw; }
+.directory-library-row .directory-unfavorite { grid-column: 3; }
+.directory-library-row .directory-unfavorite:disabled { cursor: default; opacity: 1; }
+/* A Neural Captures row: name over author on the left, the unit's three-dot button on the right (centre 3.4cqw in from the list's edge, as in the frame). The count the unit draws beside it has no catalog field and is not drawn. */
+.directory-library-row.has-more { display: grid; grid-template-columns: minmax(0, 1fr) 5cqw; grid-template-rows: auto auto; align-content: center; column-gap: 0; padding-right: .625cqw; }
+.directory-library-row.has-more > strong, .directory-library-row.has-more > small { grid-column: 1; }
+.directory-library-row .directory-library-more { --qc-screen-glyph-size: 3cqw; grid-column: 2; grid-row: 1 / span 2; align-self: center; justify-self: center; display: grid; place-items: center; width: 5cqw; height: 5cqw; cursor: default; }
+.directory-library-row.is-name-only { grid-template-rows: auto; }
+.directory-library-row.is-name-only > strong { align-self: center; }
+.directory-library-row.is-name-only .directory-locate, .directory-library-row.is-name-only .directory-library-more { grid-row: 1; }
+/* The downloaded badge on the My Captures folder, and the three dots every user folder carries: the frame draws both and no factory pack has either. */
+.directory-folders button span .directory-nav-badge { position: absolute; left: 2cqw; top: 1.875cqw; width: 2cqw; height: 2cqw; }
+.directory-folders button span .directory-nav-badge svg { display: block; width: 100%; height: 100%; overflow: visible; fill: none; stroke: none; }
+.directory-folders button span .directory-nav-badge .badge-plate { fill: var(--qc-editor-disabled-shadow); }
+.directory-folders button span .directory-nav-badge .badge-disc { fill: var(--qc-screen-text-primary); }
+.directory-folders button span .directory-nav-badge .badge-arrow { fill: var(--qc-editor-disabled-shadow); stroke: none; }
+.directory-folders button .directory-folder-more { --qc-screen-glyph-size: 3cqw; margin-right: -.75cqw; display: grid; place-items: center; color: var(--qc-palette-747976); }

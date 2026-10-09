@@ -1,0 +1,156 @@
+/* App chrome that both shells show: the dialogs QC Remote draws itself,
+ * rather than anything the Quad Cortex's own screen displays.
+ *
+ * It lives here and not beside the component it styles, which is the obvious
+ * place, because `qc-ui/src/*.css` is not a neutral directory. A gate treats
+ * every stylesheet there as painting the unit's panel, and ratchets down the
+ * count of off-ladder palette tokens those files name in device-screen
+ * scope - that count may only ever decrease, never grow, because the panel's
+ * RGB565 ladders cannot show those colours. A dialog's chrome is not a colour
+ * on the panel, so filing it there both fails that gate and tells a reader
+ * something untrue about what the file is. qc-ui depends on @qc-remote/theme
+ * already, so the component imports this across the package boundary.
+ *
+ * Every colour is a shared `--qc-palette-*` token, never one of the Windows
+ * shell's `--qc-app-button-*` tokens: those are declared in
+ * apps/windows/src/styles.css alone, so a dialog reaching for them renders
+ * unstyled buttons in the Android webview. That is exactly what happened to
+ * QcTextPrompt, whose rules lived only in that shell until they joined this
+ * file; the four values under its footer buttons are the palette tokens those
+ * aliases resolved to, so the Windows appearance is unchanged. */
+.qc-confirm-wash {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: var(--qc-palette-050608c7);
+  backdrop-filter: blur(5px);
+}
+
+.qc-confirm-dialog {
+  display: grid;
+  gap: 12px;
+  width: min(360px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--qc-palette-4a5059);
+  border-radius: 8px;
+  background: var(--qc-palette-1c2025);
+  box-shadow: 0 20px 55px var(--qc-palette-000c);
+}
+
+.qc-confirm-dialog p {
+  margin: 0;
+  color: var(--qc-palette-eff1f3);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.qc-confirm-dialog footer {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.qc-confirm-dialog footer button {
+  min-height: 34px;
+  border: 1px solid var(--qc-palette-4a5059);
+  border-radius: 6px;
+  background: var(--qc-palette-171a1e);
+  color: var(--qc-palette-eff1f3);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.qc-confirm-dialog footer button:hover { background: var(--qc-palette-1c2025); }
+
+.qc-confirm-dialog footer button.primary {
+  border-color: var(--qc-palette-3b7b64);
+  background: var(--qc-palette-20553f);
+  color: var(--qc-palette-d9ffec);
+}
+
+.qc-confirm-dialog footer button:focus-visible {
+  outline: 2px solid var(--qc-palette-3b7b64);
+  outline-offset: 1px;
+}
+
+.qc-text-prompt-wash {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: var(--qc-palette-050608c7);
+  backdrop-filter: blur(5px);
+}
+
+.qc-text-prompt-dialog {
+  display: grid;
+  gap: 12px;
+  width: min(360px, calc(100vw - 32px));
+  padding: 16px;
+  border: 1px solid var(--qc-palette-4a5059);
+  border-radius: 8px;
+  background: var(--qc-palette-1c2025);
+  box-shadow: 0 20px 55px var(--qc-palette-000c);
+}
+
+.qc-text-prompt-dialog strong {
+  color: var(--qc-palette-eff1f3);
+  font-size: 14px;
+}
+
+.qc-text-prompt-dialog p {
+  margin: 0;
+  color: var(--qc-palette-aab2bc);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.qc-text-prompt-dialog input {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--qc-palette-4a5059);
+  border-radius: 6px;
+  background: var(--qc-palette-171a1e);
+  color: var(--qc-palette-eff1f3);
+  font-size: 12px;
+}
+
+.qc-text-prompt-dialog input:focus-visible {
+  outline: 2px solid var(--qc-palette-3b7b64);
+  outline-offset: 1px;
+}
+
+.qc-text-prompt-dialog footer {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+/* --qc-app-button-border / -surface / -text, resolved to the shared tokens. */
+.qc-text-prompt-dialog footer button {
+  min-height: 34px;
+  border: 1px solid var(--qc-palette-69717d);
+  border-radius: 6px;
+  background: var(--qc-palette-414852);
+  color: var(--qc-palette-eceef1);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* --qc-app-button-surface-hover. */
+.qc-text-prompt-dialog footer button:hover:not(:disabled) {
+  background: var(--qc-palette-515967);
+}
+
+.qc-text-prompt-dialog footer button.primary {
+  border-color: var(--qc-palette-3b7b64);
+  background: var(--qc-palette-20553f);
+  color: var(--qc-palette-d9ffec);
+}
+
+.qc-text-prompt-dialog footer button.primary:disabled {
+  opacity: .5;
+}

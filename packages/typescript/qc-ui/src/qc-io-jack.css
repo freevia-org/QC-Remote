@@ -1,0 +1,55 @@
+/* Paint and the state only. Every extent lives in the registry entry the
+   component draws, and the rim's geometry lives in qc-io-jack.tsx, so a
+   screen can place a socket but cannot quietly reshape it into a third lit
+   variant. */
+.qc-io-jack {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Several screens used to draw their own socket on the element that now carries
+   the shared vector - a bordered circle with a box-shadow ring, a 38px plate
+   instead of the shared control's 48px. Those are gone from the stylesheets,
+   and this keeps any that come back from doubling up on it. */
+svg.qc-io-jack {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+svg.qc-io-jack::before,
+svg.qc-io-jack::after { content: none !important; }
+
+/* The state vocabulary's inks, named once for both drawings of this control.
+   Three of the four are the same token on the I/O pages and on the capture
+   panel, which is what made the panel's hand-rolled copy a duplicate. `idle`
+   is the exception and is deliberately not here: the I/O pages ink an unlit
+   socket reference.routeGlyphSurface against their ground and the capture
+   panel inks it reference.contextCaptureMuted against its own, so each family
+   states its own. `:where` keeps all four out of the specificity arithmetic. */
+:where(.qc-io-jack, .capture-jack) {
+  --qc-io-jack-active: var(--qc-screen-accent);
+  --qc-io-jack-plugged: var(--qc-palette-ffffff);
+  --qc-io-jack-disabled: var(--qc-palette-313031);
+}
+
+/* The idle and plugged inks are the registry's own: io.usb's metal layer is
+   reference.primaryText, the white plate, and every other entry's metal is
+   reference.routeGlyphSurface, the unlit grey. Neither state restates a layer,
+   so neither has a rule here.
+
+   Only active and disabled do. An SVG presentation attribute
+   beats every rule that merely inherits, so the paint has to name the layer's
+   own element - the registry writes fill on each path. */
+.qc-io-jack[data-state="active"] [data-qc-role="reference.routeGlyphSurface"],
+.qc-io-jack[data-state="active"] [data-qc-role="reference.primaryText"] { fill: var(--qc-io-jack-active); }
+.qc-io-jack[data-state="disabled"] [data-qc-role="reference.routeGlyphSurface"],
+.qc-io-jack[data-state="disabled"] [data-qc-role="reference.primaryText"] { fill: var(--qc-io-jack-disabled); }
+
+/* The rim the unit draws on the selected input only. Stroked, because it is a
+   radius and a width, not a filled annulus. */
+.qc-io-jack-rim {
+  fill: none;
+  stroke: var(--qc-screen-accent);
+}

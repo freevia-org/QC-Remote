@@ -1,0 +1,502 @@
+.qc-screen-fixture-root.is-live-grid { position: absolute; inset: 0; }
+
+@scope (.qc-screen-fixture-root.is-live-grid) {
+/* The wash the Grid menu lays over the chain. The washed Grid reads 66,65,66
+   outside the panel; a neutral grey composited to 67,67,67, which the 16-bit
+   panel cannot display. */
+.coros-screen-dimmer { position: absolute; z-index: 20; inset: 0; padding: 0; border: 0; background: var(--qc-screen-wash-grid-menu); }
+/* grid-scene-selector's dropdown ground reads 49,52,49, which is on the
+   5/6/5 ladders; 48,51,50 is not. */
+.coros-vector-screen .vector-scene-dropdown { left: 56.75%; right: auto; top: 9.17%; box-sizing: border-box; width: 29%; height: 86.67%; padding: 0; border-radius: 9px; background: var(--qc-palette-313431); box-shadow: none; }
+.coros-vector-screen .vector-scene-dropdown button { height: 12.5%; gap: 4%; padding: 0 2cqw; border-radius: 0; font-size: 2cqw; font-weight: 400; }
+.coros-vector-screen .vector-scene-dropdown button:hover,
+.coros-vector-screen .vector-scene-dropdown button.is-active { background: var(--qc-palette-080808); }
+.coros-vector-screen .vector-scene-dropdown button.is-active { color: var(--qc-palette-20f25a); }
+.coros-vector-screen .vector-scene-dropdown button span { width: 3cqw; height: 3cqw; border-radius: 4px; font-size: 2.5cqw; line-height: 1; }
+/* The menu is a 7-row list of 60px rows starting at y=16, each context-menu
+   glyph cropped at a multiple of 60 from 94. Expressed as 3.33%/87.5% the top
+   landed on 15.969 and each 14.3% row on 60.047, so the rows drifted half a
+   pixel further down the list and every glyph needed its own nudge. */
+.coros-vector-screen .coros-screen-menu { left: 59%; right: auto; top: 2cqw; box-sizing: border-box; width: 33.75%; height: 52.5cqw; max-height: none; overflow-y: auto; padding: 0 1%; border: 0; border-radius: 8px; background: var(--qc-screen-surface-base); box-shadow: none; --qc-scroll-thumb: var(--qc-palette-343838); }
+.coros-vector-screen .context-menu-heading { height: 7.5cqw; display: flex; align-items: center; padding: 0 3%; color: var(--qc-palette-d9d9d9); font: 400 1.55cqw var(--qc-font-device-plain); }
+/* The label starts at x=528 in every menu state: the icon cell's right
+   edge plus 3.75% of the menu, which is what remaining-fixtures-fixes.css has
+   always asked for and this rule was overriding with 7%, an 8px overshoot. */
+.coros-vector-screen .coros-screen-menu button { height: 7.5cqw; gap: 3.75%; padding: 0 1cqw; font: 400 2.25cqw var(--qc-font-device-plain); }
+/* 13% of the button's content box is 30.94px, and centring a 24px glyph in it
+   put the glyph on a fractional x. The device draws it flush with the button's
+   content edge (x=488 in every case), which 8px of padding now lands on. */
+.coros-vector-screen .coros-screen-menu .context-menu-icon { flex: 0 0 13%; place-items: center start; }
+/* The device draws these at 24px. Plain selectors cannot reach them:
+   qc-device-typography.css sizes every bezel icon at 1em from behind a
+   doubled #root#root selector, and that 1em resolves against this span's
+   own 1.2em, landing the glyph on 21.59px - at which crispEdges drops rows
+   instead of blending them. Hence !important, as elsewhere in screen CSS. */
+.coros-vector-screen .coros-screen-menu .context-menu-icon svg { width: 3cqw !important; height: 3cqw !important; transform: none; }
+/* One more 60px row, not a band: in grid-context-menu-bottom the reference has
+   the delete row's glyph at y=34 and the capture row's at y=154, exactly two
+   rows apart, and rows 76-100 and 114-136 of that frame are a flat var(--qc-route-pill) with
+   no rule and no tint. The 51px margin box this used to build is what the -8px
+   translates on favorite and delete were paying for. */
+/* The unit does not grey this section header down: `QUAD CORTEX`'s ink tops
+   out at white, same as the item rows beside it. The caps are small and thin,
+   which is what makes the header read dimmer; the ink is the same white.
+   --qc-palette-aaa stood here instead - a grey off the device's own palette
+   ladders. On grid-context-menu the row is below the fold on the unit and on
+   us alike. */
+.coros-vector-screen .context-menu-section { display: flex; box-sizing: border-box; height: 7.5cqw; align-items: center; margin: 0; padding: 0 1cqw; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 500 1.55cqw var(--qc-font-device-plain); letter-spacing: .04em; }
+.coros-directory { font-family: var(--qc-font-device-plain); }
+.coros-directory-header { justify-content: flex-start; gap: 1%; }
+.coros-directory-header .directory-category { flex: 0 0 32.65%; font-size: 2cqw; }
+.coros-directory-header .directory-cloud { flex: 0 0 12.5%; display: grid; place-items: center; padding: 0; border-radius: .875cqw; background: var(--qc-screen-surface-raised); }
+.coros-directory-header .directory-cloud.is-active { background: var(--qc-palette-183b24); color: var(--qc-screen-accent); }
+.coros-directory-header .directory-cloud svg { width: 35%; height: auto; aspect-ratio: 1; fill: currentColor; stroke: currentColor; stroke-width: 1.7; }
+.coros-directory-header .directory-header-spacer { flex: 1; }
+.coros-directory-header .directory-tools { flex: 0 0 42.1%; width: auto; gap: 2.5%; }
+.coros-directory-header .directory-tools button { flex-basis: 20%; }
+.coros-directory-header .directory-tools .directory-close { flex-basis: 30%; }
+.coros-directory-body { grid-template-columns: 32.65% 14.42% minmax(0, 1fr); }
+.coros-directory .directory-folders { padding: 0; }
+/* The row's leading pad and the mark's box are the unit's, declared once in
+   surface-shell.css off `preset-directory`: 16px and a 24px square, which put
+   the mark on the unit's 24..47 and 197..217. The `padding: 0 6%` and
+   `width: 11%` this rule used to re-spell were the whole of that frame's column
+   error - 15.36px of pad and a 24.77px box - and they won on specificity, so a
+   correction in the base rule alone did nothing. */
+.coros-directory .directory-folders button { height: 7.5cqw; gap: 7%; font-size: 2cqw; font-weight: 400; }
+.coros-directory .directory-folders button.is-active { background: var(--qc-screen-surface-raised); }
+.coros-directory .directory-banks { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 6.5cqw; gap: 1cqw 6%; }
+.coros-directory .directory-banks button { font-size: 2cqw; font-weight: 400; }
+.coros-directory .directory-banks button.is-active { background: var(--qc-editor-disabled); }
+.coros-directory .directory-presets,
+.coros-directory .directory-preset-row { background: var(--qc-screen-surface-control); }
+.coros-directory .directory-preset-row { min-height: 6.375cqw; border-bottom: 0; }
+.coros-directory .directory-preset-row.is-current { background: var(--qc-rotary-face); }
+.coros-directory .preset-recall { grid-template-columns: 13% minmax(0, 1fr); padding: 0 4%; }
+.coros-directory .preset-recall strong,
+.coros-directory .preset-recall span { color: var(--qc-palette-a5a9a6); font-size: 2cqw; font-weight: 400; }
+.coros-directory .directory-preset-row.is-current .preset-recall strong,
+.coros-directory .directory-preset-row.is-current .preset-recall span { color: var(--qc-palette-31f46b); }
+.coros-directory .directory-multiselect-header { align-items: center; height: 12.5%; padding: 1%; }
+.coros-directory .directory-multiselect-header > strong { color: var(--qc-screen-accent); font-size: 2.5cqw; font-weight: 400; }
+.coros-directory .directory-select-all { flex: 0 0 12.25%; height: 100%; display: grid; place-items: center; background: var(--qc-screen-surface-raised); border-radius: .875cqw; }
+.coros-directory .directory-select-all > span,
+.coros-directory .directory-selection-box { width: 2.7cqw; height: 2.7cqw; display: grid; place-items: center; border: 1px solid var(--qc-screen-text-muted); border-radius: .45cqw; color: var(--qc-screen-accent); font-style: normal; }
+.coros-directory .directory-batch-action { position: relative; height: 100%; min-width: 10.5cqw; display: grid; grid-template-columns: auto auto; align-items: center; justify-content: center; gap: .8cqw; border-radius: .875cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
+.coros-directory .directory-batch-action.is-danger { color: var(--qc-palette-ef7770); }
+.coros-directory .directory-batch-action:disabled { color: var(--qc-screen-text-muted); opacity: .55; }
+.coros-directory .directory-batch-action > b { font-size: 3cqw; font-weight: 400; }
+.coros-directory .directory-batch-action > span { font-size: 1.5cqw; }
+.coros-directory .directory-batch-action > i { position: absolute; right: .4cqw; top: .25cqw; min-width: 2cqw; height: 2cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-screen-accent); color: var(--qc-screen-surface-base); font-size: 1.2cqw; font-style: normal; }
+.coros-directory .directory-multiselect-header .directory-close { flex: 0 0 12.25%; height: 100%; border-radius: .875cqw; background: var(--qc-screen-surface-control); }
+.coros-directory .directory-multiselect-glyph { width: 2.5cqw; height: 2.5cqw; display: grid; place-items: center; border: 1px solid currentColor; border-radius: .4cqw; }
+.coros-directory .directory-preset-row.is-multiselect .preset-recall { grid-template-columns: 9% 13% minmax(0, 1fr); }
+.coros-directory .directory-preset-row.is-selected { background: var(--qc-screen-surface-raised); }
+.coros-directory .directory-preset-row.is-selected .preset-recall strong,
+.coros-directory .directory-preset-row.is-selected .preset-recall span { color: var(--qc-screen-text-primary); }
+.coros-directory .preset-row-more { color: var(--qc-palette-747976); font-size: 2.4cqw; }
+/* No shadow: on all four route captures the wash is flat right up to the
+   panel's own edge - x 42..57 of input-route-selector row 3 is 66,69,66 then
+   66,65,66 and then the panel at 58 - where a 14px blur ramped ours from 65
+   down to 43 across those same sixteen columns. */
+.coros-route-picker { top: 6.25%; bottom: 6.25%; width: 33.75%; display: block; box-sizing: border-box; border: 0; border-radius: 1.25cqw; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); box-shadow: none; font-family: var(--qc-font-device-plain); }
+.coros-route-picker.is-input { left: 7.25%; }
+.coros-route-picker.is-output { right: 7.25%; }
+.coros-route-picker > header { height: 16%; display: flex; box-sizing: border-box; align-items: center; gap: 7.4%; padding: 0 8%; border-bottom: 1px solid var(--qc-palette-343636); color: var(--qc-screen-text-primary); font: 400 2.5cqw var(--qc-font-device-plain); }
+.coros-route-picker > header > svg { width: 4cqw; height: 4cqw; flex: 0 0 auto; }
+.coros-route-picker .coros-route-options { height: 84%; box-sizing: border-box; overflow-y: auto; padding: 7% 5% 6%; margin-right: 1.75cqw; --qc-scroll-thumb: var(--qc-palette-313431); }
+/* The unit's one scrollbar here is a 2px (.25cqw) flat thumb in the panel's 49,52,49, standing 14px in from the
+   panel's right edge and starting 8px below its top (input-route-selector x 312-313, y 38..218). It is the real
+   thumb, not a drawing of one: the container stops 1.75cqw short of the edge and its track starts 1cqw down, so
+   the thumb is as long as the list is and moves with it. */
+.coros-route-picker .coros-route-options::-webkit-scrollbar { width: .25cqw; }
+.coros-route-picker .coros-route-options::-webkit-scrollbar-track { margin-top: 1cqw; }
+.coros-route-picker .coros-route-options::-webkit-scrollbar-thumb { border-radius: 0; }
+.coros-route-picker.is-input .coros-route-options { height: 100%; }
+.coros-route-picker.is-input .coros-route-group:nth-child(2) > strong { margin-top: 2.125cqw; }
+.coros-route-picker .coros-route-group > strong { display: block; margin: 0 3% 9%; padding: .5cqw 0; background: var(--qc-screen-surface-base); color: var(--qc-palette-dedede); font: 400 1.5cqw var(--qc-font-device-plain); letter-spacing: 0; }
+.coros-route-picker .coros-route-options button { width: 100%; min-height: 7.5cqw; display: flex; align-items: center; gap: 7%; padding: 0 3%; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 400 2.5cqw var(--qc-font-device-plain); }
+.coros-route-picker .coros-route-options button > svg { width: 4cqw; height: 4cqw; flex: 0 0 auto; }
+.coros-route-picker .coros-route-options button > span { display: grid; gap: .25cqw; }
+.coros-route-picker .coros-route-options button small { color: var(--qc-device-split-path); font: 400 1.75cqw var(--qc-font-device-plain); }
+.coros-route-picker .coros-route-options button[aria-selected="true"] > span { color: var(--qc-palette-20ed5b); }
+.coros-route-picker.is-output > header { display: none; }
+.coros-route-picker.is-output .coros-route-options { position: relative; height: 100%; padding-top: 1.25cqw; padding-left: 2.5%; }
+.coros-route-picker.is-output .coros-route-group:nth-child(2) > strong { display: none; }
+.coros-route-picker.is-output .coros-route-group:nth-child(3) { margin-top: 3.75cqw; }
+.coros-route-picker.is-output .coros-route-group:nth-child(3) > strong { transform: translateY(-1.25cqw); }
+.coros-route-picker.is-output .coros-route-options button { padding-left: 6%; font-size: 2.25cqw; }
+.coros-route-picker.is-output .coros-route-group { transform: translateY(1cqw); }
+/* The native PortSelector fades the Grid canvas before adding its pale focus
+   wash. The route panel and the focused port live above that layer. */
+.coros-vector-screen:has(.coros-route-picker) > .coros-vector-canvas { opacity: .38; }
+/* The wash itself carries the near-white the rest of the screen uses for ink,
+   and at .27 over the faded canvas that lands on 67,67,67 where all four route
+   captures read 66,65,66 - the same scrimmed black the Grid menu shows. The
+   rect keeps the shared ink as its presentation attribute; this repoints the
+   wash alone, so the near-white role stays what it is everywhere else. */
+.coros-route-focus-layer > rect:first-child { fill: var(--qc-screen-wash-port-selector); }
+/* The port the wash lifts back out keeps the slot's own 16,16,16 on all four
+   captures. The near-black it carried is off the 5/6/5 ladders in red and in
+   blue, so the unit cannot show it whatever the wash does. */
+.coros-route-focus-layer > rect:nth-child(2) { fill: var(--qc-screen-surface-base); }
+/* The Grid the two washes cover keeps its I/O slots and its own white, and the
+   unit substitutes rather than blends there too: the slots read 66,69,66 and
+   the white 132,134,132 on all seven washed frames. Neither is reachable by
+   washing the real colour, so both are authored pre-wash. The slots are the
+   canvas's only rx=15 rects - the focused port is drawn again above the wash by
+   the focus layer, which is why this cannot simply recolour the shared role. */
+.coros-vector-screen:has(.coros-screen-dimmer) > .coros-vector-canvas { --qc-grid-white-ink: var(--qc-screen-ink-pre-menu-wash); }
+.coros-vector-screen:has(.coros-screen-dimmer) > .coros-vector-canvas rect[rx="15"] { fill: var(--qc-grid-route-slot-pre-menu-wash); }
+.coros-vector-screen:has(.coros-route-picker) > .coros-vector-canvas { --qc-grid-white-ink: var(--qc-screen-ink-pre-port-wash); }
+.coros-vector-screen:has(.coros-route-picker) > .coros-vector-canvas rect[rx="15"] { fill: var(--qc-grid-route-slot-pre-port-wash); }
+.coros-reference-parameter-editor { position: absolute; z-index: 32; left: 0; right: 0; top: 40.83%; bottom: 0; display: grid; grid-template-rows: 21.1% 37.7%; align-content: start; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); box-shadow: 0 -24.5cqw 0 var(--qc-palette-00000078); container-type: inline-size; font-family: var(--qc-font-device-plain); }
+.coros-reference-parameter-editor:has(.coros-parameter-controls.is-two-row) { grid-template-rows: 21.1% 76%; }
+/* The band the editor throws over the Grid above it. The alpha is one step
+   deeper than the shorthand it used to carry, because the shorthand left the
+   base surface a value above the one the unit paints under this band - the
+   arithmetic is on --qc-palette-00000078. The box-shadow draws the same band. */
+.coros-reference-parameter-editor::before { content: ""; position: absolute; left: 0; right: 0; bottom: 100%; height: 24.5cqw; background: var(--qc-palette-00000078); pointer-events: none; }
+/* Everything of the Grid still visible behind an open editor is under that
+   band, so its ink is authored pre-scrim: the unit substitutes its dimmed ink
+   there rather than blending the Grid's white down. The mode glyph needs its
+   own selector - its layers are drawn from the vector table without the role
+   attribute the other screen glyphs carry. */
+:scope:has(.coros-reference-parameter-editor) .coros-vector-canvas { --qc-grid-white-ink: var(--qc-screen-ink-pre-scrim); }
+:scope:has(.coros-reference-parameter-editor) .coros-vector-canvas [data-qc-role="reference.iconPrimary"],
+:scope:has(.coros-reference-parameter-editor) .coros-vector-canvas .qc-mode-glyph path { fill: var(--qc-screen-ink-pre-scrim); }
+.coros-reference-parameter-editor > header { position: relative; z-index: 1; display: flex; align-items: center; gap: 1%; padding: 1%; background: var(--qc-screen-surface-base); }
+.coros-reference-parameter-editor > header button,
+.coros-reference-parameter-editor > header > span:not(.editor-spacer):not(.editor-title) { height: 100%; display: grid; place-items: center; box-sizing: border-box; border: 0; border-radius: .875cqw; background: var(--qc-palette-1b201c); color: var(--qc-screen-text-primary); }
+.coros-reference-parameter-editor:not(.coros-cab-editor) > header button,
+.coros-reference-parameter-editor:not(.coros-cab-editor) > header > span:not(.editor-spacer):not(.editor-title) { background: var(--qc-screen-surface-raised); }
+.coros-reference-parameter-editor:not(.coros-cab-editor) > header .editor-done { background: var(--qc-screen-surface-control); }
+.coros-reference-parameter-editor .editor-more { flex: 0 0 5.5%; padding: 0; color: var(--qc-screen-text-primary); background: var(--qc-palette-1b201c); font-size: 3.5cqw; }
+.coros-reference-parameter-editor .editor-more svg { width: 42%; fill: currentColor; stroke: none; }
+.coros-reference-parameter-editor .editor-title { display: flex; width: 38%; align-items: flex-start; justify-content: center; flex-direction: column; }
+.coros-reference-parameter-editor header small { color: var(--qc-palette-9da19f); font-size: 1.75cqw; font-weight: 400; }
+.coros-reference-parameter-editor header strong { font-size: 2.375cqw; font-weight: 400; }
+.coros-reference-parameter-editor .editor-spacer { flex: 1; }
+.coros-reference-parameter-editor .editor-stomp { flex: 0 0 8.2%; grid-template-columns: 45% 1fr; font-size: 2.25cqw; font-weight: 700; }
+.coros-reference-parameter-editor .editor-stomp svg { width: 85%; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.coros-reference-parameter-editor .editor-scene { flex: 0 0 17%; display: grid !important; grid-template-columns: 1fr 5cqw 1fr !important; gap: 0; font-size: 2.2cqw; }
+/* 3.75cqw is the 30px a shuttle arrow's box is on the unit's 800px screen; a grid item's button is only as wide as its content, and its svg is 70% of it. */
+.coros-reference-parameter-editor .editor-scene button { display: grid; flex: 1; width: 3.75cqw; height: 100%; place-items: center; padding: 0; border: 0; background: var(--qc-transparent); cursor: pointer; }
+.coros-reference-parameter-editor .editor-scene button svg { width: 70%; height: 3cqw; fill: currentColor; stroke: none; }
+.coros-reference-parameter-editor .editor-scene b { padding: 6% 12%; border-radius: .5cqw; background: var(--qc-palette-f2cf25); color: var(--qc-palette-111); }
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .editor-stomp,
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .editor-scene,
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .editor-bypass,
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .editor-done { position: absolute; top: 1cqw; height: 5.5cqw; }
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .editor-stomp { left: 53.5%; width: 8.25%; }
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .editor-scene { left: 62.75%; width: 16.5%; }
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .editor-bypass { left: 81.5%; width: 8.25%; }
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .editor-done { left: 90.75%; width: 8.25%; }
+.coros-reference-parameter-editor:not(.coros-special-editor) .editor-scene b { position: relative; height: 100%; display: grid; place-items: center; padding: 0; border-radius: 0; background: var(--qc-transparent); isolation: isolate; }
+.coros-reference-parameter-editor:not(.coros-special-editor) .editor-scene b::before { content: ""; position: absolute; z-index: -1; left: 50%; top: 50%; width: 3cqw; height: 3cqw; translate: -50% -50%; border-radius: .5cqw; background: var(--qc-palette-f2cf25); }
+.coros-reference-parameter-editor .editor-bypass,
+.coros-reference-parameter-editor .editor-done { flex: 0 0 8.2%; font-size: 3cqw; }
+/* editor.confirm is a filled pixel path, not an outline, and it is drawn at its
+   own size. Two faults compounded: a 42% width letterboxed the 30x24 art to a
+   0.756 scale that crispEdges then snapped, and `fill: none` with a 2px stroke
+   traced the border of each 1px rect - so the unit's clean tick at x 752..765,
+   y 222..231 came out as scattered dots. At 30x24 and filled it lands on the
+   frame. The special editors were already 1:1 by accident, their box being
+   wider than 30 so height 24 capped the scale, and a fixed 30x24 keeps them. */
+.coros-reference-parameter-editor .editor-bypass svg { width: 3cqw; height: 3cqw; }
+.coros-reference-parameter-editor .editor-done svg { width: 3.75cqw; height: 3cqw; fill: currentColor; stroke: none; }
+.coros-reference-parameter-editor .editor-pages { flex: 0 0 17%; grid-template-columns: 1fr 1fr; gap: 1cqw; background: var(--qc-transparent) !important; border-left: 1px solid var(--qc-palette-353a36); border-radius: 0 !important; }
+.coros-reference-parameter-editor .editor-pages button { width: 100%; height: 100%; display: grid; place-items: center; border: 0; border-radius: .6cqw; background: var(--qc-palette-111512); color: var(--qc-palette-858b86); font-size: 1.6cqw; font-weight: 400; cursor: pointer; }
+.coros-reference-parameter-editor .editor-pages button:last-child { color: var(--qc-palette-434944); }
+.coros-reference-parameter-editor .coros-parameter-controls { display: grid; grid-template-columns: repeat(5, 1fr); min-width: 0; overflow: hidden; border-radius: .875cqw; margin: 0 1%; background: var(--qc-screen-surface-control); }
+.coros-reference-parameter-editor .coros-parameter-controls label { position: relative; min-width: 0; display: grid; grid-template-rows: auto 1fr auto; padding: 7% 7% 5%; box-sizing: border-box; border-right: 1px solid var(--qc-screen-surface-overlay); }
+.coros-reference-parameter-editor .coros-parameter-controls.is-two-row label:nth-child(-n+5) { border-bottom: .25cqw solid var(--qc-screen-surface-base); }
+/* The unit puts 156px of cell between 1px rules: on editor-digital-flanger and
+   editor-ambience the rules stand at x 164, 321, 478 and 635, and the fifth
+   cell runs to 791 with no rule after it. repeat(5, 1fr) over the 784px strip
+   gives 156.8, which lands the third and fourth rules a pixel early and paints
+   a spurious fifth one against the panel edge.
+   Fixed px froze that measurement to one container size - correct on Windows,
+   where this panel renders close to its own 784px reference width, but this
+   editor's own `container-type: inline-size` above means every other cqw
+   value here already scales with a phone's much narrower container, so a
+   fixed-px sibling just clips instead (grid-template-columns never shrinks
+   below its own explicit lengths - Android's coros-parameter-controls
+   measured 784px of actual column width packed into a ~350px box). 157/784
+   and 156/784 as cqw keep the exact same proportions, so the reference size
+   still lands the dividers on the same measured pixels, and any narrower
+   container now shrinks with everything else instead of overflowing it. */
+.coros-reference-parameter-editor:not(.coros-special-editor) .coros-parameter-controls { grid-template-columns: repeat(4, 20.0255cqw) 19.898cqw; }
+.coros-reference-parameter-editor:not(.coros-special-editor) .coros-parameter-controls label:nth-child(5n) { border-right-width: 0; }
+/* A rule is 78px of a 107px cell - 15px clear above and 14px below, the same on
+   both parameter rows of editor-digital-flanger and on the single row of
+   editor-simple-gate - so the border can only hold the column pitch. */
+.coros-reference-parameter-editor:not(.coros-special-editor) .coros-parameter-controls label { border-right-color: var(--qc-transparent); }
+.coros-reference-parameter-editor:not(.coros-special-editor) .coros-parameter-controls label:not(:nth-child(5n))::after { content: ""; position: absolute; right: -1px; top: 1.875cqw; bottom: 1.75cqw; width: 1px; background: var(--qc-screen-surface-overlay); }
+.coros-reference-parameter-editor .coros-parameter-controls label > strong { font-size: 1.75cqw; font-weight: 400; }
+.coros-reference-parameter-editor .coros-parameter-controls input { position: absolute; inset: 25% 10% 7%; z-index: 2; opacity: 0; cursor: ew-resize; }
+/* The dial itself is QcRotaryDial. This span only places it, so the ring it
+   used to draw here - a border, a face fill and an offset box-shadow crescent
+   standing in for the value arc - is gone: it was painting a second, differently
+   shaped dial behind the vector one. 72px is the unit's own scale, at which one
+   SVG unit is one device pixel and the knob body comes out 49px. */
+.coros-reference-parameter-editor .coros-dial { position: relative; place-self: center; width: 9cqw; aspect-ratio: 1; }
+.coros-reference-parameter-editor .coros-parameter-controls label > small { font-size: 1.75cqw; }
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .coros-parameter-controls label:not(.is-toggle) .coros-dial { position: absolute; left: calc(53% - .5625cqw); top: calc(35.5% - 1px); width: 9cqw; place-self: unset; translate: 0; }
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .coros-parameter-controls label:nth-child(-n+5):not(.is-toggle) .coros-dial { top: calc(37.5% - .375cqw); }
+.coros-reference-parameter-editor:not(.coros-special-editor):not(.editor-digital-flanger) .coros-parameter-controls label:not(.is-toggle) > small { position: absolute; left: 7%; bottom: 1.625cqw; }
+.coros-reference-parameter-editor.is-bypassed .coros-parameter-controls { filter: brightness(.3); }
+.coros-reference-parameter-editor.is-bypassed header .editor-title { opacity: .65; }
+.coros-reference-parameter-editor.is-bypassed header .editor-bypass { color: var(--qc-palette-7130ff); }
+.coros-reference-parameter-editor .coros-parameter-controls label.is-toggle { grid-template-rows: auto 1fr; }
+.coros-reference-parameter-editor .coros-toggle { display: flex; align-items: center; padding: 0 0 0 4.1cqw; border: 0; background: var(--qc-transparent); color: inherit; text-align: left; }
+/* The toggle is QcPillToggle; this is placement only. It used to be a 20.8 x
+   51.2 box with a ring at 64% of the device's, pinned by a margin that no
+   detent could move. Against the parameter cell - which is the stable box here,
+   because the button's own top is nudged per editor - all four instances agree:
+   editor-ambience, editor-ukc30-topboost and both of editor-digital-flanger's
+   put the pill 15.96 +- .01 in from the cell's left and 46.97 +- .12 down from
+   its top. */
+.coros-reference-parameter-editor .coros-toggle > .qc-pill-toggle { position: absolute; left: 2cqw; top: 5.875cqw; --qc-pill-detent: var(--editor-color); }
+.coros-reference-parameter-editor .coros-toggle > span { display: grid; gap: .7cqw; }
+.coros-reference-parameter-editor .coros-toggle b { color: var(--qc-palette-737873); font-size: 1.75cqw; font-weight: 400; }
+.coros-reference-parameter-editor .coros-toggle b.is-active { color: var(--qc-header-save); }
+.coros-reference-parameter-editor.coros-special-editor { top: 0; grid-template-rows: 12.5% minmax(0, 1fr); background: var(--qc-palette-0c0d0d); }
+.coros-reference-parameter-editor.coros-special-editor::before { display: none; }
+.coros-reference-parameter-editor.coros-special-editor > header { grid-row: 1; }
+.coros-reference-parameter-editor.coros-special-editor .editor-title { width: 29%; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header { position: relative; display: block; padding: 0; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header > * { position: absolute; top: 1cqw; height: 5.5cqw; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-more { left: 1%; width: 5.375%; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-title { left: 7.5%; width: 21.5%; height: 5.5cqw; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-title small { font-size: 2cqw; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-title strong { display: flex; align-items: center; gap: .7cqw; white-space: nowrap; font-size: 2.1cqw; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-title strong i { color: inherit; font-size: 1.5cqw; font-style: normal; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-stomp { left: 30.25%; width: 8.125%; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-scene { left: 39.625%; width: 17.5%; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-header-divider { top: 2.5cqw; width: 1px; height: 2.5cqw; background: var(--qc-palette-303430); }
+.coros-reference-parameter-editor.coros-cab-editor .divider-one { left: 57.125%; }
+.coros-reference-parameter-editor.coros-cab-editor .divider-two { left: 76.375%; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-header-mode { width: 8.125%; font-size: 2cqw; border: 0; border-radius: .875cqw; background: var(--qc-screen-surface-raised); color: var(--qc-palette-959a96); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-header-mode.is-active { left: 58.25%; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-header-mode:not(.is-active) { left: 67.125%; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-bypass { left: 77.5%; width: 8.125%; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-done { left: 86.75%; width: 12.125%; }
+.coros-reference-parameter-editor .cab-halves { display: grid; grid-template-columns: repeat(2, 1fr); gap: .5%; padding: 0 1% 1%; }
+.coros-reference-parameter-editor .cab-halves > section { position: relative; overflow: hidden; border-radius: .875cqw; background: var(--qc-screen-surface-control); }
+.coros-reference-parameter-editor .cab-values { display: grid; grid-template-columns: repeat(4, 1fr); padding: 4% 3% 0; }
+.coros-reference-parameter-editor .cab-values span { position: relative; font-size: 1.75cqw; }
+/* The bar is QcBarSlider; these rules place and colour it and nothing more.
+   They replace a linear-gradient carrying a literal stop per cell - eight of
+   them across the two panels - so no value could move, and PAN's mark was
+   drawn at the track's left end where the unit puts it at the centre. */
+.coros-reference-parameter-editor .cab-values .qc-bar-slider { position: absolute; left: -.0625cqw; top: 2.6cqw; --qc-bar-fill: var(--cab-accent); }
+.coros-reference-parameter-editor .cab-halves > section:first-child { --cab-accent: var(--qc-palette-6b55ff); }
+.coros-reference-parameter-editor .cab-halves > section:nth-child(2) { --cab-accent: var(--qc-palette-ffd331); }
+.coros-reference-parameter-editor .cab-values b { display: block; margin-top: 24%; font-weight: 400; }
+.coros-reference-parameter-editor .cab-values b small { color: var(--qc-palette-8f9490); font-size: .78em; }
+.coros-reference-parameter-editor .cab-speaker { position: absolute; left: 19%; top: 21.25%; width: 62%; aspect-ratio: 1; border: .25cqw solid var(--qc-screen-background); border-radius: 50%; background: radial-gradient(circle, var(--qc-screen-surface-raised) 0 19%, var(--qc-editor-disabled) 20% 48%, var(--qc-screen-surface-control) 49% 70%, var(--qc-palette-101310) 71%); }
+.coros-reference-parameter-editor .cab-footer { position: absolute; left: 2%; right: 2%; bottom: 2%; height: 10.5%; display: grid; grid-template-columns: 18% 1fr 18%; gap: 2%; }
+.coros-reference-parameter-editor .cab-footer button { border: 0; border-radius: .875cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font-size: 2cqw; }
+.coros-reference-parameter-editor .cab-phase .qc-ui-icon { width: 2.75cqw; height: 2.75cqw; vertical-align: middle; }
+.coros-reference-parameter-editor .cab-mic { display: flex; align-items: center; justify-content: space-between; padding: 0 7%; }
+.coros-reference-parameter-editor .cab-mic strong { font-weight: 400; }
+.coros-reference-parameter-editor .cab-mic svg { width: 1.6cqw; fill: none; stroke: currentColor; stroke-width: 2; }
+.coros-reference-parameter-editor .cab-mic .qc-ui-icon-cab-previous,
+.coros-reference-parameter-editor .cab-mic .qc-ui-icon-cab-next { width: 3cqw !important; height: 3cqw !important; flex: none; }
+.coros-reference-parameter-editor .cab-mic .qc-ui-icon-cab-previous { transform: translateX(-.75cqw); }
+.coros-reference-parameter-editor .cab-mic .qc-ui-icon-cab-next { transform: translateX(.75cqw); }
+.coros-reference-parameter-editor .cab-enable { display: grid; place-items: center; }
+.coros-reference-parameter-editor .cab-enable i { width: 2.8cqw; height: 1.5cqw; border-radius: 1cqw; background: var(--qc-screen-text-primary); }
+.coros-reference-parameter-editor .cab-enable i::after { content: ""; display: block; width: 1.2cqw; height: 1.2cqw; margin: .15cqw; border-radius: 50%; background: var(--qc-palette-333333); }
+.coros-reference-parameter-editor.coros-eq-editor { background: var(--qc-screen-surface-base); }
+.coros-reference-parameter-editor.coros-eq-editor .eq-graph { position: absolute; left: 4%; right: 4%; top: 12.5%; height: 52.5%; margin: 0; background: linear-gradient(var(--qc-transparent) 49.2%, var(--qc-screen-text-primary) 49.6%, var(--qc-screen-text-primary) 50%, var(--qc-transparent) 50.4%); }
+.coros-reference-parameter-editor.coros-eq-editor .eq-graph::after { content: ""; position: absolute; left: -4.35%; right: -4.35%; top: 49.2%; border-top: .25cqw solid var(--qc-screen-text-primary); }
+.coros-reference-parameter-editor.coros-eq-editor > header .editor-stomp,
+.coros-reference-parameter-editor.coros-eq-editor > header .editor-scene,
+.coros-reference-parameter-editor.coros-eq-editor > header .editor-bypass,
+.coros-reference-parameter-editor.coros-eq-editor > header .editor-done { position: absolute; top: 1cqw; height: 5.5cqw; }
+.coros-reference-parameter-editor.coros-eq-editor > header .editor-stomp { left: 49.5%; width: 8.75%; }
+.coros-reference-parameter-editor.coros-eq-editor > header .editor-scene { left: 58.75%; width: 17.125%; }
+.coros-reference-parameter-editor.coros-eq-editor > header .editor-bypass { left: 77.5%; width: 8.25%; }
+.coros-reference-parameter-editor.coros-eq-editor > header .editor-done { left: 86.75%; width: 12.25%; }
+.coros-reference-parameter-editor .eq-grid-lines { position: absolute; inset: 0; overflow: hidden; }
+.coros-reference-parameter-editor .eq-grid-lines > i { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--qc-screen-surface-raised); }
+.coros-reference-parameter-editor .eq-graph span { position: absolute; top: 39.5%; display: grid; width: 6.5%; aspect-ratio: 1; place-items: center; border: .25cqw solid var(--qc-screen-background); border-radius: 50%; background: var(--qc-screen-surface-control); font-size: 2cqw; }
+.coros-reference-parameter-editor .eq-graph span:nth-of-type(1) { left: 6.4%; background: var(--qc-palette-0875e7); color: var(--qc-screen-background); }
+.coros-reference-parameter-editor .eq-graph span:nth-of-type(2) { left: 17%; }
+.coros-reference-parameter-editor .eq-graph span:nth-of-type(3) { left: 42.2%; }
+.coros-reference-parameter-editor .eq-graph span:nth-of-type(4) { left: 53%; }
+.coros-reference-parameter-editor .eq-tabs { position: absolute; left: 3%; right: 3%; top: 65.2%; height: 10%; display: grid; grid-template-columns: repeat(9, 1fr); gap: .7%; }
+.coros-reference-parameter-editor .eq-tabs span { display: grid; place-items: center; border-radius: .875cqw .875cqw 0 0; background: var(--qc-screen-surface-raised); color: var(--qc-palette-929694); font-size: 2cqw; }
+/* Bands past the fourth are unassigned, and the unit outlines those rather
+   than filling them. The markup carries no state class, so position is the only
+   handle; border-box keeps the outline from widening a track of the grid. */
+.coros-reference-parameter-editor .eq-tabs span:nth-child(n + 5):not(:last-child) { box-sizing: border-box; border: .25cqw solid var(--qc-screen-surface-raised); background: var(--qc-screen-surface-base); color: var(--qc-screen-surface-control); }
+.coros-reference-parameter-editor .eq-tabs span:first-child { background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.coros-reference-parameter-editor .eq-values { position: absolute; left: 1%; right: 1%; bottom: 1.7%; height: 22.1%; display: grid; grid-template-columns: repeat(5, 1fr); border-radius: .875cqw; background: var(--qc-screen-surface-control); }
+.coros-reference-parameter-editor .eq-values span { position: relative; padding: 6% 7%; border-right: 1px solid var(--qc-palette-3c403d); font-size: 1.75cqw; }
+.coros-reference-parameter-editor .eq-values strong { display: block; font-weight: 400; }
+.coros-reference-parameter-editor .eq-values strong small { color: var(--qc-palette-929693); font-size: .8em; }
+.coros-reference-parameter-editor .eq-values .eq-type strong { position: absolute; left: 7%; right: 7%; bottom: 13%; height: 35%; display: flex; align-items: center; padding: 0 8%; border-radius: .75cqw; background: var(--qc-screen-background); font-size: .86em; white-space: nowrap; }
+.coros-reference-parameter-editor .eq-values .eq-type strong svg { width: 1.4cqw; margin-left: auto; fill: none; stroke: currentColor; stroke-width: 2; }
+.coros-reference-parameter-editor .eq-values .eq-type strong .eq-filter-icon { width: 2.5cqw; margin: 0 1cqw 0 0; }
+.coros-reference-parameter-editor .eq-values .eq-dial-value > strong { position: absolute; left: 7%; bottom: 13%; }
+/* The parametric EQ's three dials are the same control as every other screen's,
+   so they are QcRotaryDial now and this rule is placement only. It used to be a
+   conic-gradient ring with a pseudo-element pointer, rotated per band to fake
+   the reading. */
+.coros-reference-parameter-editor .eq-control-dial { position: absolute; left: calc(53% - .4375cqw); top: calc(33% + .25cqw); width: 9cqw; }
+.coros-reference-parameter-editor .eq-values .eq-bypass-value strong { position: absolute; left: 7%; bottom: 13%; width: 43%; height: 42%; display: grid; place-items: center; border-radius: .75cqw; background: var(--qc-screen-surface-raised); font-size: 2.8cqw; }
+.coros-reference-parameter-editor .eq-values .eq-bypass-value strong svg { width: 3cqw !important; height: 3cqw !important; }
+/* The vertical half of this offset was the crop: editor-parametric-8 draws the
+   band-power glyph in [665,424,24,24] and the ledger recorded [665,420,24,24],
+   so the artwork sat four rows low in its viewBox. Only the horizontal offset
+   is layout. */
+.coros-reference-parameter-editor .eq-values .eq-bypass-value strong svg[data-qc-icon="band-power"] { transform: translate(-.375cqw, 0); }
+
+/* The paged Flanger header has fixed CorOS slots; an even control matrix keeps
+   both encoder rows aligned with the physical 800x480 framebuffer. */
+.editor-digital-flanger .coros-parameter-controls.is-two-row { grid-template-rows: 50.5% 49.5%; }
+.editor-digital-flanger > header .editor-stomp,
+.editor-digital-flanger > header .editor-scene,
+.editor-digital-flanger > header .editor-pages,
+.editor-digital-flanger > header .editor-bypass,
+.editor-digital-flanger > header .editor-done { position: absolute; top: 1cqw; height: 5.5cqw; transform: none; }
+.editor-digital-flanger > header .editor-stomp { left: 34.25%; width: 8.25%; }
+.editor-digital-flanger > header .editor-scene { left: 43.5%; width: 16.5%; }
+/* The unit's page-1 tile is 66px wide, x 498..563, and a 2px rule 22px tall
+   stands either side of the pair at x 488-489 and x 642-643. Splitting the
+   19.5% slot evenly made the tile 75px and left both rules unpainted. */
+.editor-digital-flanger > header .editor-pages { left: 61%; width: 19.5%; box-sizing: border-box; padding-left: 1.25%; grid-template-columns: 8.25cqw 1fr; }
+.editor-digital-flanger > header .editor-pages::before,
+.editor-digital-flanger > header .editor-pages::after { content: ""; position: absolute; top: 1.375cqw; width: .25cqw; height: 2.75cqw; background: var(--qc-screen-surface-control); }
+.editor-digital-flanger > header .editor-pages::before { left: 0; }
+.editor-digital-flanger > header .editor-pages::after { right: 0; }
+.editor-digital-flanger > header .editor-pages > button { position: static; width: 100%; height: 100%; }
+/* Every other editor gives both page buttons the raised surface. This one does
+   not: the unit fills page 1 and leaves page 2 as the bare header strip. */
+.coros-parameter-editor.editor-digital-flanger > header .editor-pages > button { background: var(--qc-editor-disabled); }
+.coros-parameter-editor.editor-digital-flanger > header .editor-pages > button:last-child { background: var(--qc-transparent); }
+.editor-digital-flanger > header .editor-bypass { left: 81.5%; width: 8.25%; }
+.editor-digital-flanger > header .editor-done { left: 90.75%; width: 8.25%; }
+.editor-digital-flanger .coros-parameter-controls label > small { position: absolute; left: 1.5cqw; bottom: 2cqw; }
+.editor-digital-flanger .coros-parameter-controls label:not(.is-toggle) .coros-dial { translate: 4.375cqw 0; }
+.editor-digital-flanger .coros-parameter-controls label:not(.is-toggle):not(.parameter-sync-note) .coros-dial { width: 9cqw; }
+.coros-parameter-editor.editor-digital-flanger.is-bypassed .coros-parameter-controls { filter: brightness(.35); background: var(--qc-palette-2e392e); }
+.coros-parameter-editor.editor-digital-flanger .coros-parameter-controls label { border-right-color: var(--qc-device-control-surface); }
+.coros-parameter-editor.editor-digital-flanger .coros-parameter-controls.is-two-row label:nth-child(-n+5) { border-bottom-color: var(--qc-device-control-surface); }
+/* The bypassed pane above is drawn through brightness(.35), so every colour in
+   it is authored pre-divided - a fifth of the way up from the value the unit
+   shows. The span behind the dial already carries such a compensated face; the
+   SVG dial drew over it with the uncompensated var(--qc-rotary-face) it is
+   handed inline, which dims to a shade darker than the unit's. Match the span
+   rather than adding a second scheme. */
+.coros-parameter-editor.editor-digital-flanger .coros-dial .qc-rotary-face { fill: var(--qc-palette-2e452e); }
+/* The rim needs the same pre-division: the unit shows it at 8,12,8 on
+   editor-digital-flanger, and black through brightness(.35) stays black. */
+.coros-parameter-editor.editor-digital-flanger .coros-dial .qc-rotary-rim { fill: var(--qc-palette-172217); }
+/* The flanger screen is seen through its own scrim, so this is a solved
+   composite input, not the body colour the frame reads. */
+.coros-parameter-editor.editor-digital-flanger .coros-toggle > .qc-pill-toggle { --qc-pill-body: var(--qc-palette-172e17); }
+/* The flanger's bypass button holds the same glyph as every other editor's, so
+   it is sized here too; excluded, it fell back to the svg's width/height
+   attributes. The .flanger-link-icon rule that used to sit above this went with
+   the link glyph the button no longer renders. */
+.coros-reference-parameter-editor:not(.coros-special-editor) .editor-bypass svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.coros-reference-parameter-editor:not(.coros-special-editor) .editor-title small { transform: translate(1px, -1px); }
+.coros-reference-parameter-editor:not(.coros-special-editor) .editor-title strong { font-size: 2.5cqw; transform: translate(1px, .375cqw); }
+.coros-reference-parameter-editor .editor-stomp { grid-template-columns: 65% 35%; }
+.coros-reference-parameter-editor .editor-stomp svg { transform: translate(.5cqw, -.375cqw) scale(2.2, 1.3); }
+/* The footswitch control draws the same asset the STOMP mode chip draws, and
+   that asset's box is 26x26 with the ink inset two units from the left.
+   Sized at 26px the box is one art unit per device pixel, and the two-unit
+   bearing that used to come from the translate now comes from the art, so
+   only the vertical bearing is left here. */
+.coros-reference-parameter-editor .editor-stomp svg[data-qc-icon="footswitch"] { width: 3.25cqw !important; height: 3.25cqw !important; transform: translate(0, .25cqw); }
+.coros-reference-parameter-editor .editor-scene > button:first-child svg { transform: translateX(.5cqw); }
+.coros-reference-parameter-editor .editor-scene > button:last-child svg { transform: translateX(-.5cqw); }
+.editor-digital-flanger .coros-parameter-controls label:nth-child(-n+5) .coros-dial { transform: translateY(1cqw); }
+.editor-digital-flanger .coros-parameter-controls label:nth-child(n+6) .coros-dial { transform: translateY(1cqw); }
+.editor-digital-flanger .parameter-sync-note .coros-dial { width: 9cqw; transform: translateY(1cqw) !important; }
+/* The dotted ring here was a hand-drawn stand-in for the detents the shared
+   dial now draws: the unit marks 16 of them at a 16.9 degree pitch. */
+/* These four nudges belong to the caption, not to the control. They used to sit
+   on the button, and a transform makes an element a containing block, so the
+   pill inside it inherited four different origins for what the frames say is
+   one offset: the button's own top is 28.96 +- .04 below its parameter cell on
+   all four, and every nudge here is the caption's alone. */
+.editor-digital-flanger .parameter-sync .coros-toggle,
+.editor-digital-flanger .parameter-polarity .coros-toggle { padding-left: 5.475cqw; }
+.editor-digital-flanger .parameter-sync .coros-toggle > span { transform: translateY(.75cqw); }
+.editor-digital-flanger .parameter-polarity .coros-toggle > span { transform: translateY(.5cqw); }
+.editor-ukc30-topboost .parameter-boost .coros-toggle > span { transform: translateY(1.25cqw); }
+.editor-ambience .parameter-trails .coros-toggle > span { transform: translateY(1cqw); }
+.editor-ambience .parameter-size .coros-dial { width: 9cqw; }
+/* The rule between the two parameter rows is at y 363-364 on the unit's
+   editor-ambience and editor-ukc30-topboost frames, the same place as on
+   editor-digital-flanger; 49.5% first put it at 361-362. */
+.editor-ukc30-topboost .coros-parameter-controls.is-two-row,
+.editor-ambience .coros-parameter-controls.is-two-row { grid-template-rows: 50.5% 49.5%; }
+.coros-cab-editor .cab-speaker::before,
+.coros-cab-editor .cab-speaker::after { display: none; }
+.coros-cab-editor .cab-speaker > i { top: 42%; transform: none; }
+.coros-cab-editor .cab-preset-mark { display: block; width: 2.5cqw; height: 2.5cqw; font-size: 0; }
+.coros-cab-editor .cab-preset-mark svg,
+.coros-eq-editor .eq-preset-mark svg { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.coros-eq-editor .editor-title.is-eq strong { display: flex; align-items: center; gap: .5cqw; font-size: 2.7cqw; }
+.coros-eq-editor .eq-preset-mark { width: 2cqw; height: 2cqw; display: grid; place-items: center; }
+.coros-eq-editor .eq-axis-labels { position: absolute; inset: 0; pointer-events: none; }
+.coros-eq-editor .eq-axis-labels b { position: absolute; top: .25cqw; color: var(--qc-palette-303330); font-size: 1.5cqw; font-weight: 400; }
+.coros-eq-editor .eq-axis-labels b:nth-child(1) { left: 21.75%; }
+.coros-eq-editor .eq-axis-labels b:nth-child(2) { left: 58.5%; }
+.coros-eq-editor .eq-axis-labels b:nth-child(3) { left: 94%; }
+.coros-reference-parameter-editor.coros-cab-editor,
+.coros-reference-parameter-editor.coros-cab-editor * { font-family: var(--qc-font-device-plain); }
+.coros-reference-parameter-editor.coros-cab-editor,
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header { background: var(--qc-screen-surface-base); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-more,
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-stomp,
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-scene,
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-bypass { background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-done,
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .cab-header-mode.is-active { background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .cab-header-mode:not(.is-active) { background: var(--qc-screen-surface-raised); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-scene { left: 39.5%; width: 16.625%; display: grid !important; grid-template-columns: 1fr 5cqw 1fr !important; gap: 0; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-scene > button { height: 100%; display: grid; place-items: center; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-scene > b { position: relative; height: 100%; display: grid; place-items: center; padding: 0; border-left: 1px solid var(--qc-palette-353a36); border-right: 1px solid var(--qc-palette-353a36); border-radius: 0; background: var(--qc-transparent); isolation: isolate; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-scene > b::before { content: ""; position: absolute; z-index: -1; left: 50%; top: 50%; width: 3cqw; height: 3cqw; translate: -50% -50%; border-radius: .5cqw; background: var(--qc-scene-badge); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-halves > section { background: var(--qc-screen-surface-control); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-speaker { top: 21.5%; translate: 0 1px; background: radial-gradient(circle, var(--qc-screen-surface-raised) 0 22%, var(--qc-editor-disabled) 23% 49%, var(--qc-screen-surface-control) 50% 70%, var(--qc-palette-101310) 71%); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-speaker > i { top: 42.75%; left: 22.75%; width: 17%; transform: none; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-halves > section:nth-child(2) .cab-speaker > i { left: 59.75%; }
+
+/* The generic header rule has two :not() selectors and used to win the
+   cascade, stretching Digital Flanger's scene shuttle to the full 60px bar.
+   All parameter editors now use the shared 44px navigation control. */
+.coros-reference-parameter-editor > header > .editor-scene.qc-scene-selector.qc-scene-selector { height: var(--qc-nav-bar-button); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-footer { bottom: 1.5%; height: 11%; grid-template-columns: 17.65% 1fr 17.65%; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-footer button { background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
+.coros-reference-parameter-editor.coros-cab-editor .cab-values { position: relative; display: block; height: 8.75cqw; padding: 0; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-values > span { position: absolute; top: 1.75cqw; width: 10.25cqw; display: block; font-size: 2cqw; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-values > span:nth-child(1) { left: 1.375cqw; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-values > span:nth-child(2) { left: 13.5cqw; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-values > span:nth-child(3) { left: 25.625cqw; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-values > span:nth-child(4) { left: 37.75cqw; }
+/* The unit puts the four tracks at x 19.5 + 97i on the first panel and
+   412.5 + 97i on the second, 81 wide and 5 tall with their centreline on
+   y 103. The span already starts at the track's own left edge; the half pixel
+   back and the 25.8 down are the component's viewBox bleed and the caption's
+   descent. */
+.coros-reference-parameter-editor.coros-cab-editor .cab-values .qc-bar-slider { top: 3.225cqw; }
+.coros-reference-parameter-editor.coros-cab-editor .cab-values b { position: absolute; left: .375cqw; top: 5.125cqw; margin: 0; white-space: nowrap; }
+.coros-eq-editor .eq-graph span:nth-of-type(1) { left: 6.1%; top: 38.5%; width: 7.65%; background: var(--qc-palette-0875e7); }
+.coros-eq-editor .eq-graph span:nth-of-type(n+2) { top: 41.25%; width: 5.8%; background: var(--qc-screen-surface-control); }
+.coros-eq-editor .eq-graph span:nth-of-type(2) { left: 17.9%; }
+.coros-eq-editor .eq-graph span:nth-of-type(3) { left: 42.9%; }
+.coros-eq-editor .eq-graph span:nth-of-type(4) { left: 53.7%; }
+}
+
+/* Opt-in measured title decoration; inherits title ink and has no action. */
+.coros-reference-parameter-editor .editor-preset-mark { display: inline-flex; width: 2cqw; height: 2cqw; margin-left: .5cqw; vertical-align: -1px; }
+.coros-reference-parameter-editor .editor-preset-mark > svg { display: block; width: 100%; height: 100%; }

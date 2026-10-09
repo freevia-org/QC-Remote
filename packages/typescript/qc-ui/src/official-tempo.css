@@ -1,0 +1,160 @@
+/* Tempo & Metronome screen (CorOsTempoScreen in tempo-screen.tsx), ported
+ * from coros-screen-fixtures.tsx's CorOsTempo.
+ *
+ * The geometry for `.coros-tempo`/`.tempo-*` already existed as
+ * production-style rules, but every one of them was written only inside
+ * `@scope (.qc-screen-fixture-root)` - split across two files and, for the
+ * refinement passes, two successive `@scope` blocks within
+ * remaining-fixtures-fixes.css. That scope root is quad-cortex-surface.tsx's
+ * own live-grid wrapper div - real for content rendered *inside*
+ * QuadCortexSurface, never true for this overlay, which (like
+ * CorOsSceneCommand/CorOsDeviceSettings before it) renders as a sibling of
+ * QuadCortexSurface in App.tsx instead. This file duplicates that same
+ * box - proportions, padding, colors, typography - under the same class
+ * names, the same fix official-settings.css/official-scene-command.css/
+ * official-routing.css/official-lane-controls.css already established, the
+ * same CSS-scope gap caught and fixed several times this session.
+ *
+ * fixture-live-surface.css layers a base pass and then its own "CorOS 4.1
+ * manual-reference refinements" pass over the same selectors; remaining-
+ * fixtures-fixes.css (loaded after it, per coros-screen-fixtures.tsx's own
+ * import order) layers three more passes on top of that. The values below
+ * are the *final*, cascade-resolved result of all of those passes as the
+ * fixture actually renders today (last-writer-wins at equal specificity),
+ * not any single pass read in isolation - the same reading discipline
+ * official-scene-command.css's own module comment already documents.
+ *
+ * The fixture's own `official` flag (a `?tempoState=official` URL param) is
+ * dropped here, along with the handful of `.tempo-official`-scoped rules it
+ * drove; this component always renders the one real, always-live state.
+ * `.tempo-scene`/`.tempo-scene strong`/`.tempo-scene b` in remaining-
+ * fixtures-fixes.css likewise predate this session's shared QcSceneSelector
+ * component - its actual markup has no bare `<strong>`/`<b>` for that rule
+ * to reach, so only the container's own box (still real and still applied)
+ * is ported; QcSceneSelector's own base geometry
+ * (`.qc-scene-selector`/`.qc-scene-selector > button`/
+ * `.qc-scene-selector-badge-slot`/`.qc-scene-letter-badge`, qc-screen-
+ * elements.css) is duplicated unscoped below for the same reason as
+ * `.coros-tempo` itself - this is the first sibling-rendered overlay to use
+ * that shared component, so nothing had unscoped it yet.
+ *
+ * The fixture's own inert `<button>{value}<b><QcUiIcon kind="down" /></b>
+ * </button>` per select row (T/SIGNATURE/SUBDIVISIONS/SOUND/ROUTING) becomes
+ * a real `<select>` here, the same swap DeviceDetail's own MIDI Channel/MIDI
+ * Clock Out rows already made in device-settings-screen.tsx - so the
+ * fixture's own CSS-drawn chevron triangle on that `<b>` is not ported
+ * (nothing in the real markup needs it); the select instead reuses the same
+ * box position/size as the button it replaces.
+ */
+
+.coros-tempo, .coros-tempo * { box-sizing: border-box; }
+.coros-tempo, .coros-tempo * { font-family: var(--qc-font-device-plain) !important; }
+.coros-tempo {
+  position: absolute; inset: 0; overflow: hidden auto;
+  background: var(--qc-screen-background);
+  color: var(--qc-palette-eef0ef);
+  container-type: inline-size;
+  /* qc-screen-elements.css's own navigation bar constant (7.5cqw), but only
+     ever declared inside `@scope (.qc-screen-fixture-root) { :scope { ... } }`
+     - invisible here, the same gap official-settings.css's own module
+     comment already names. */
+  --qc-nav-bar-height: 7.5cqw;
+}
+.coros-tempo button, .coros-tempo select { border: 0; color: inherit; font: inherit; background: none; }
+
+.coros-tempo > header {
+  position: absolute; inset: 0 0 auto; z-index: 2;
+  box-sizing: border-box; height: var(--qc-nav-bar-height);
+  display: flex; align-items: center; gap: 2cqw;
+  padding: 1cqw 1cqw 1cqw 2.375cqw;
+  background: var(--qc-transparent);
+  color: var(--qc-palette-999c9a); font-size: 2cqw;
+}
+.coros-tempo > header button {
+  width: 12.25cqw; height: 5.5cqw; margin-left: 2.25cqw;
+  border-radius: 1cqw; background: var(--qc-screen-surface-control);
+  color: var(--qc-palette-f3f4f3); font-size: 3cqw;
+}
+
+/* -- QcSceneSelector's own shared geometry, unscoped (qc-screen-elements.css, content unchanged) -- */
+.qc-scene-letter-badge { box-sizing: border-box; width: 3cqw; height: 3cqw; display: grid; flex: 0 0 3cqw; place-items: center; border-radius: .5cqw; background: var(--qc-scene-badge); color: var(--qc-screen-surface-base); font-size: 2.75cqw; font-weight: 800; line-height: 1; }
+.qc-scene-letter-badge.is-inactive { background: var(--qc-screen-text-muted); color: var(--qc-screen-surface-base); }
+.qc-scene-selector { display: grid; grid-template-columns: 1fr 5cqw 1fr; align-items: center; }
+.qc-scene-selector > button { min-width: 0; height: 100%; display: grid; place-items: center; padding: 0; border: 0; background: var(--qc-transparent); color: inherit; }
+.qc-scene-selector-badge-slot { box-sizing: border-box; height: 3.5cqw; display: grid; place-items: center; border-inline: 1px solid var(--qc-screen-surface-muted); }
+
+/* -- the tempo screen's own box for that shared control -- */
+.tempo-scene.qc-scene-selector {
+  width: 16.5cqw; height: 5.5cqw;
+  grid-template-columns: 4.5cqw 4.75cqw 4.5cqw;
+  justify-content: center; gap: .75cqw; margin-left: auto;
+  border-radius: 1cqw; background: var(--qc-screen-surface-raised);
+  color: var(--qc-palette-8e938f); font-size: 2.5cqw;
+}
+
+.tempo-display {
+  position: relative; display: block;
+  box-sizing: border-box; height: 53.54%; padding-top: 0;
+  background: var(--qc-screen-background);
+}
+.tempo-display strong { position: absolute; left: 0; right: 0; top: 5.125cqw; text-align: center; color: var(--qc-screen-accent); font-size: 11.5cqw; font-weight: 300; line-height: .9; }
+.tempo-display small { position: absolute; left: 0; right: 0; top: 16.5cqw; margin: 0; text-align: center; color: var(--qc-palette-f32835); font-size: 2cqw; }
+.tempo-display div { position: absolute; left: 0; right: 0; top: 25.125cqw; display: flex; justify-content: center; gap: 13cqw; margin: 0; }
+.tempo-display i { width: 3cqw; height: 3cqw; border-radius: 50%; background: var(--qc-palette-424142); box-shadow: 0 -3cqw 0 -1cqw var(--qc-palette-181a19); }
+.tempo-display i.is-active { background: var(--qc-screen-text-primary); box-shadow: 0 -3cqw 0 -1cqw var(--qc-palette-777a78); }
+
+.tempo-controls {
+  box-sizing: border-box; height: 45%; margin: 0 1%;
+  display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: repeat(2, 1fr);
+  overflow: hidden; border-radius: 1cqw; background: var(--qc-screen-surface-control);
+}
+.tempo-control { position: relative; min-width: 0; padding: 1.25cqw; border-right: 1px solid var(--qc-screen-surface-base); border-bottom: 1px solid var(--qc-screen-background); }
+.tempo-control > span { display: block; color: var(--qc-screen-text-primary); font-size: 2cqw; }
+.tempo-control > strong { position: absolute; left: 1.5cqw; bottom: 1.75cqw; color: var(--qc-screen-text-primary); font-size: 2cqw; font-weight: 400; }
+.tempo-control .tempo-dial { position: absolute; bottom: 1cqw; width: 72px; height: 72px; transform: translateY(1.25cqw); }
+.tempo-control.is-tempo .tempo-dial, .tempo-control.is-volume .tempo-dial { right: .625cqw; }
+.tempo-control.is-pan .tempo-dial { right: .75cqw; }
+.tempo-control.is-radio { display: block; border-top: 0; border-left: 0; background: var(--qc-transparent); color: inherit; text-align: left; font: inherit; }
+/* A <button> centres its content vertically unless it is a flex or grid container; the unit
+   sets MODE and TEMPO LED on the same line as TEMPO, from the cell's top. */
+.tempo-control.is-radio { display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; }
+.tempo-control.is-radio > .qc-pill-toggle ~ span { position: relative; display: flex; align-items: center; gap: 2.5cqw; height: 3.2cqw; padding-left: 4.85cqw; color: var(--qc-palette-737d73); font-size: 2cqw; }
+.tempo-control.is-radio > .qc-pill-toggle ~ span.is-active { color: var(--qc-screen-text-primary); }
+/* The first caption follows the pill, not the heading (the pill is the span's sibling, taken out of
+   flow); .coros-tempo in front also keeps remaining-fixtures-
+   fixes.css's unscoped rules from winning on source order. */
+.coros-tempo .tempo-control.is-radio > .qc-pill-toggle + span { margin-top: 1.75cqw; }
+.coros-tempo .tempo-control.is-radio > .qc-pill-toggle ~ span { padding-left: 5.5cqw; }
+.tempo-control.is-radio > .qc-pill-toggle { position: absolute; left: 2cqw; top: 5.875cqw; }
+.tempo-info { position: absolute; right: 1.125cqw; top: 1.125cqw; width: 2.75cqw; height: 2.75cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-screen-text-muted); color: var(--qc-palette-303431); font-size: 1.75cqw; }
+.tempo-control.is-mute { display: grid; place-items: center; }
+.tempo-control.is-mute button { width: 100%; height: 4.75cqw; border-radius: 1cqw; background: var(--qc-screen-background); font-size: 1.5cqw; transform: translateY(1cqw); }
+.tempo-control.is-pan { grid-column: 1; }
+/* The unit's dropdown is a dark box with a filled down triangle at its right,
+   not the host's native chevron. The select keeps the whole box (so it stays a
+   real, keyboard-operable control) and the triangle is drawn over it by the
+   wrapper, the same triangle remaining-fixtures-fixes.css draws on the fixture's
+   static button (1.25cqw wide, .875cqw tall, 2cqw from the right). */
+.tempo-control.is-select .tempo-select { position: absolute; inset: auto 1.25cqw 1.5cqw; height: 4.75cqw; }
+.tempo-control.is-select .tempo-select::after {
+  content: ""; position: absolute; right: 2cqw; top: 50%; width: 0; height: 0; margin-top: -.25cqw; pointer-events: none;
+  border-left: .625cqw solid var(--qc-transparent); border-right: .625cqw solid var(--qc-transparent);
+  border-top: .875cqw solid var(--qc-screen-text-primary);
+}
+.tempo-control.is-select select {
+  width: 100%; height: 100%; padding: 0 4.5cqw 0 1cqw; border-radius: .75cqw;
+  -webkit-appearance: none; appearance: none;
+  background: var(--qc-screen-surface-base); color: inherit;
+  text-align: left; font-size: 2cqw;
+}
+
+/* -- interaction affordances with no fixture geometry to measure, this
+      component's own addition (BrightnessDetail's step buttons in
+      device-settings-screen.tsx are the same category of precedent) -- */
+.tempo-control .tempo-dial { cursor: ns-resize; }
+.coros-tempo .is-pending, .coros-tempo button:disabled, .coros-tempo select:disabled, .coros-tempo .tempo-dial[aria-disabled="true"] { opacity: .6; cursor: default; pointer-events: none; }
+
+/* The tempo screen's headings and values are white on the unit (corpus tempo-metronome:
+   TEMPO, PAN, T/SIGNATURE... all 255); only the unselected MODE / TEMPO LED option
+   (737d73) and the unit beside a value (949694) are dimmed. */
+.coros-tempo .tempo-control > strong > .tempo-unit { color: var(--qc-screen-text-muted); }

@@ -1,0 +1,31 @@
+/* Paint and the one size only. The track's length, height and the column the
+   zero tick breaks it at live in qc-level-meter.tsx, so a screen can place a
+   meter or recolour it, but cannot quietly reshape it into a fifth variant. */
+.qc-level-meter {
+  display: block;
+  width: 17.125cqw;
+  height: 2cqw;
+}
+
+/* 137 x 16 device pixels on an 800px screen, on all thirty-one instances. The
+   four panes that used to draw their own each carried a different box - 135x16,
+   135x14, 136x16, a percentage - and this keeps any of them from coming back on
+   the element that now carries the shared control. */
+svg.qc-level-meter {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+svg.qc-level-meter::before,
+svg.qc-level-meter::after { content: none !important; }
+
+/* An SVG presentation attribute would beat every rule that only inherits, so
+   the component writes no fill of its own and these rules own the paint. The
+   track is the screen's base surface on every I/O frame; the output pane used
+   to paint --qc-editor-disabled here, one step off the unit's own ink. */
+.qc-level-meter-track { fill: var(--qc-level-meter-track, var(--qc-screen-surface-base)); }
+
+/* The accent is the family's own lit ink, and a screen that needs something
+   else restates the property. */
+.qc-level-meter-lit { fill: var(--qc-level-meter-lit, var(--qc-screen-accent)); }

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "QC Remote",
+  "version": "0.1.181",
+  "identifier": "org.freevia.qcremote",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "QC Remote",
+        "width": 1440,
+        "height": 820,
+        "minWidth": 920,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "targets": [
+      "nsis"
+    ],
+    "externalBin": [
+      "binaries/qc-device-broker"
+    ],
+    "shortDescription": "Independent controller for compatible guitar hardware",
+    "longDescription": "Independent, unofficial Windows controller with guarded live controls, workspaces, typed commands, and explicit device-save confirmation. Works with compatible Quad Cortex devices. Not affiliated with or endorsed by Neural DSP Technologies Oy.",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "QC Remote",
+        "installerHooks": "./windows/hooks.nsh"
+      }
+    },
+    "copyright": "Copyright (c) 2026 Freevia EOOD. Source code licensed MIT OR Apache-2.0; device reference material, brand assets and third-party components keep separate terms.",
+    "category": "Music",
+    "resources": {
+      "../../../THIRD_PARTY-NOTICES.md": "legal/THIRD_PARTY-NOTICES.md",
+      "../../../legal/THIRD_PARTY-LICENSE-INVENTORY.json": "legal/THIRD_PARTY-LICENSE-INVENTORY.json",
+      "../../../legal/THIRD_PARTY-LICENSE-TEXTS.txt": "legal/THIRD_PARTY-LICENSE-TEXTS.txt",
+      "../../../legal/THIRD_PARTY-SOURCE-OFFER.md": "legal/THIRD_PARTY-SOURCE-OFFER.md",
+      "../../../legal/COMMUNITY-PROTOCOL-LICENSE.txt": "legal/COMMUNITY-PROTOCOL-LICENSE.txt",
+      "../../../LICENSE": "legal/LICENSE.md",
+      "../../../LICENSES/LicenseRef-QC-Remote-Reference.txt": "legal/LicenseRef-QC-Remote-Reference.txt",
+      "../../../LICENSE-MIT": "legal/LICENSE-MIT.txt",
+      "../../../LICENSE-APACHE": "legal/LICENSE-APACHE.txt"
+    },
+    "publisher": "Freevia"
+  }
+}

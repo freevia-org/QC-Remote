@@ -1,0 +1,29 @@
+{
+  "name": "qc-remote-workers-runtime-test",
+  "main": "./src/index.ts",
+  "compatibility_date": "2026-09-08",
+  "compatibility_flags": ["global_fetch_strictly_public", "nodejs_compat"],
+  "vars": {
+    "QCRC_ENVIRONMENT": "production",
+    "GOOGLE_CLIENT_ID": "runtime-smoke-client.apps.example.test",
+    "GOOGLE_CLIENT_SECRET": "runtime-smoke-placeholder",
+    "COOKIE_ENCRYPTION_KEY": "runtime-smoke-cookie-key-not-for-production"
+  },
+  "kv_namespaces": [
+    { "binding": "TEST_KV", "id": "00000000000000000000000000000001" },
+    { "binding": "QCRC_OAUTH", "id": "00000000000000000000000000000002" },
+    { "binding": "OAUTH_KV", "id": "00000000000000000000000000000002" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "DEVICE_SESSION", "class_name": "DeviceSession" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["DeviceSession"] }
+  ],
+  "ratelimits": [
+    { "name": "QCRC_OAUTH_RATE_LIMIT", "namespace_id": "41002", "simple": { "limit": 30, "period": 60 } },
+    { "name": "QCRC_PAIRING_RATE_LIMIT", "namespace_id": "41001", "simple": { "limit": 10, "period": 60 } }
+  ]
+}

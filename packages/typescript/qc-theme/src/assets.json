@@ -1,0 +1,39 @@
+{
+  "chassisVector": {
+    "sourcePath": "packages/typescript/qc-theme/assets/qc-chassis-neutral.svg",
+    "sha256": "9e107a358e260d26e48b4e07979df9b17b34c24da463ae204352f02a7683e3a6",
+    "sourceWidth": 1096.94,
+    "sourceHeight": 719.079,
+    "crop": { "x": 0, "y": 0, "width": 1096.94, "height": 719.079 },
+    "source": "QC Remote-authored SVG source for depicting compatible hardware",
+    "license": "SVG source: MIT OR Apache-2.0. No license to third-party product design or trademarks; see TRADEMARKS.md"
+  },
+  "appIcon": {
+    "sourcePath": "packages/typescript/qc-theme/assets/app-icon.svg",
+    "sha256": "1ec412cab547af8675a2a8694cfa161c000d70fe237b397b0d526f357539fda3",
+    "derivedPathPrefixes": [
+      "apps/windows/src-tauri/icons/",
+      "apps/android/android/app/src/main/res/drawable",
+      "apps/android/android/app/src/main/res/mipmap-"
+    ],
+    "generators": [
+      "Tauri icon generator from the canonical SVG",
+      "scripts/generate-android-branding.ps1"
+    ]
+  },
+  "corosFontRegular": {
+    "sourcePath": "packages/typescript/qc-theme/assets/fonts/IBMPlexSans.ttf",
+    "sha256": "1306c741d8d26fab364dd6d4b0dc73852de42d42523979f452c77e2e7753dbce",
+    "source": "IBM Plex Sans Regular under SIL Open Font License 1.1"
+  },
+  "corosFontMedium": {
+    "sourcePath": "packages/typescript/qc-theme/assets/fonts/IBMPlexSans-Medium.ttf",
+    "sha256": "d19b58422cc69c86166ed39dc28b3151b27482a64e7661bd642c5d5f7b9e7f95",
+    "source": "IBM Plex Sans Medium under SIL Open Font License 1.1"
+  },
+  "corosFontBold": {
+    "sourcePath": "packages/typescript/qc-theme/assets/fonts/IBMPlexSans-Bold.ttf",
+    "sha256": "afb18cee6998d476be0964c0058cfcceb02f066cc6319c1edeff49aa78cd3517",
+    "source": "IBM Plex Sans Bold under SIL Open Font License 1.1"
+  }
+}

@@ -1,0 +1,735 @@
+{
+  "schemaVersion": 2,
+  "declared": 72,
+  "decodable": 72,
+  "encodedByApp": 44,
+  "handledInbound": 41,
+  "transportRejected": 6,
+  "sentOnWire": 44,
+  "receivedOnWire": 41,
+  "receivedButUnhandled": 1,
+  "sentButNeverReceived": 5,
+  "drivenByApp": 47,
+  "rows": [
+    {
+      "number": 1,
+      "name": "Grid",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 2,
+      "name": "SetlistPosition",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 3,
+      "name": "IOSettings",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 4,
+      "name": "File",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 5,
+      "name": "IOMeter",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 6,
+      "name": "Tuner",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 7,
+      "name": "Diagnostics",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": false
+    },
+    {
+      "number": 8,
+      "name": "MIDISettings",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 9,
+      "name": "GeneralSettings",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 10,
+      "name": "Version",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 11,
+      "name": "ProductionAutomationMode",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 12,
+      "name": "GridMove",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 13,
+      "name": "Scene",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 14,
+      "name": "Mode",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 15,
+      "name": "RecallPreset",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 16,
+      "name": "EnableCaptureOut",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 17,
+      "name": "MasterVolume",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 18,
+      "name": "CloudLogin",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": true,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 19,
+      "name": "DefaultParameters",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 20,
+      "name": "RecentsFavorites",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 21,
+      "name": "UndoRedo",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 22,
+      "name": "SceneCopy",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 23,
+      "name": "SceneLabel",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 24,
+      "name": "ShowGigView",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 25,
+      "name": "Screenshot",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 26,
+      "name": "CPULoad",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 27,
+      "name": "ShowTuner",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": false
+    },
+    {
+      "number": 28,
+      "name": "Looper",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 29,
+      "name": "ProductForward",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": true,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 30,
+      "name": "BackupsForward",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": true,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 31,
+      "name": "LogsForward",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": true,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 32,
+      "name": "KeepAlive",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": false
+    },
+    {
+      "number": 33,
+      "name": "GlobalTempo",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 34,
+      "name": "PresetDirty",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 35,
+      "name": "ModuleStats",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 36,
+      "name": "NeuralCapture",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 37,
+      "name": "GridModelMeter",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 38,
+      "name": "GlobalEQ",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 39,
+      "name": "RecentSearches",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 40,
+      "name": "LocalBackup",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": false
+    },
+    {
+      "number": 41,
+      "name": "CloudBackup",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": true,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 42,
+      "name": "CompilerInhibitedModules",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 43,
+      "name": "SystemTimeSync",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": false
+    },
+    {
+      "number": 44,
+      "name": "Logs",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 45,
+      "name": "ProcessDownloadsQueue",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 46,
+      "name": "CloudProduct",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 47,
+      "name": "Confirmation",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 48,
+      "name": "SceneColor",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 49,
+      "name": "Connection",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 50,
+      "name": "NewModels",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 51,
+      "name": "ModelRepo",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 52,
+      "name": "ResetCommsBuffers",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 53,
+      "name": "SuspendConnection",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": true
+    },
+    {
+      "number": 54,
+      "name": "PinnedModels",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 55,
+      "name": "GigViewButton",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 56,
+      "name": "GenericError",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": true
+    },
+    {
+      "number": 57,
+      "name": "BulkOperation",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 58,
+      "name": "License",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": true,
+      "transportRejected": true,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 59,
+      "name": "PresetSpeedTest",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 60,
+      "name": "Updater",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 61,
+      "name": "UpdaterForward",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 62,
+      "name": "GainCalibration",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 63,
+      "name": "NeuralCapture2",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 64,
+      "name": "Serialization",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 65,
+      "name": "TestFarm",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 66,
+      "name": "ProductionTest",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 67,
+      "name": "LoadAutomatedTestPreset",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 68,
+      "name": "SetTestPresetInputOutputPorts",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 69,
+      "name": "SetTestPresetSplitMixPoints",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 70,
+      "name": "GenerateTestPreset",
+      "decodable": true,
+      "encodedByApp": false,
+      "handledInbound": false,
+      "transportRejected": false,
+      "sentOnWire": false,
+      "receivedOnWire": false
+    },
+    {
+      "number": 71,
+      "name": "ModelPreset",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    },
+    {
+      "number": 72,
+      "name": "RemoteControl",
+      "decodable": true,
+      "encodedByApp": true,
+      "handledInbound": true,
+      "transportRejected": false,
+      "sentOnWire": true,
+      "receivedOnWire": true
+    }
+  ]
+}

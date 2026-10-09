@@ -1,0 +1,19 @@
+{
+  "browser": {
+    "windowsThemeColor": "#111317",
+    "androidThemeColor": "#08090b"
+  },
+  "android": {
+    "background": "#08090b",
+    "primary": "#101419",
+    "accent": "#73dcff",
+    "launcherBackground": "#080a0d",
+    "brandScreen": "#2d8daf",
+    "splashText": "#f4f6f8",
+    "splashCaption": "#71808b",
+    "splashFontFamily": "IBM Plex Sans",
+    "splashFontRegular": "assets/fonts/IBMPlexSans.ttf",
+    "splashFontBold": "assets/fonts/IBMPlexSans-Bold.ttf",
+    "appFontFamily": "sans"
+  }
+}

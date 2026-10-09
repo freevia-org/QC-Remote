@@ -1,0 +1,49 @@
+/* Paint and the two outer sizes only. Every extent, stroke and corner lives in
+   qc-radio-button.tsx, so a screen can recolour a mark or place it, but
+   cannot quietly reshape it into an eighth variant. */
+.qc-radio-button {
+  display: block;
+  width: 3cqw;
+  height: 3cqw;
+}
+
+/* The plate is 44 tall on every frame that draws one and as wide as its call
+   site says, so the width follows the viewBox the component emitted: one
+   device pixel is .125cqw on the unit's 800px screen. */
+.qc-radio-button[data-plate="true"] {
+  width: calc(var(--qc-radio-plate-width, 66) * .125cqw);
+  height: 5.5cqw;
+}
+
+/* Several screens used to draw their own mark on the element that now carries
+   the shared vector - a border-radius box, an ::after square, a 66 x 44 plate
+   with nothing inside it at all. Those are gone from the stylesheets, and this
+   keeps any that come back from doubling up on it. */
+svg.qc-radio-button {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+svg.qc-radio-button::before,
+svg.qc-radio-button::after { content: none !important; }
+
+/* An SVG presentation attribute would beat every rule that only inherits, so
+   the component writes no fill or stroke of its own and these rules own the
+   paint. A screen overrides by setting the two custom properties. */
+.qc-radio-plate { fill: var(--qc-radio-surface, var(--qc-screen-surface-raised)); }
+.qc-radio-mark {
+  fill: none;
+  stroke: var(--qc-radio-ink, var(--qc-screen-text-primary));
+  stroke-width: 2;
+}
+.qc-radio-dot { fill: var(--qc-radio-ink, var(--qc-screen-text-primary)); }
+
+/* Selection inverts the pair: the plate becomes the screen accent and the
+   mark becomes the screen background - exact palette roles, not a blend of
+   the unselected pair. An `ink` or `surface` prop lands inline on this same
+   element and still wins. */
+.qc-radio-button[data-selected="true"][data-plate="true"] {
+  --qc-radio-ink: var(--qc-screen-background);
+  --qc-radio-surface: var(--qc-screen-accent);
+}

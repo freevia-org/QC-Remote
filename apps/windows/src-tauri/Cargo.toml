@@ -1,0 +1,145 @@
+# Its own workspace root, stated rather than inferred.
+#
+# The root manifest excludes this package, and cargo reads an exclusion as "not
+# part of that workspace" - so it keeps walking up for another one. In the
+# primary checkout there may be nothing above it and the package ends up
+# standalone by accident. A nested checkout can instead discover an unrelated
+# ancestor manifest that does not list this package, producing "current package
+# believes it's in a workspace when it's not". Declaring the boundary here
+# makes Cargo resolution independent of checkout placement.
+#
+# An empty table ends the search here. It is also what the profile overrides
+# below already assume - cargo applies a non-root package's profiles nowhere -
+# and it matches the comment on them that this workspace has exactly one
+# member.
+[workspace]
+
+[package]
+name = "qc-remote"
+default-run = "qc-remote"
+version = "0.1.181"
+publish = false
+description = "Unofficial modular desktop controller for Quad Cortex"
+edition = "2021"
+license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
+
+# Build and test the sidecar explicitly. Tauri must package only the verified
+# (and optionally signed) externalBin copy, not also its discovered Cargo bin.
+#
+# The sidecar is the shipped `qc-device-broker.exe`: the device broker, its
+# icon and the background MCP host in one process. The feature keeps its
+# historical name so the build and test commands that use it need no change;
+# the broker crate is linked only with it, so the app itself builds exactly as
+# before.
+[features]
+tray-sidecar = ["dep:qc-device-broker"]
+
+[[bin]]
+name = "qc-device-broker"
+path = "src/bin/qc-device-broker.rs"
+required-features = ["tray-sidecar"]
+
+[lib]
+name = "qc_remote_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+qc-broker-framing = { path = "../../../packages/rust/qc-broker-framing" }
+qc-owner-only-file = { path = "../../../packages/rust/qc-owner-only-file" }
+# The broker half of the shipped sidecar; see [features].
+qc-device-broker = { path = "../../../services/device-broker", optional = true }
+async-trait = "0.1"
+axum = "0.8"
+keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
+# The loopback MCP listener is served through hyper directly, not
+# `axum::serve`, which offers no request-head timeout. Both are already in the
+# lock file as axum's own dependencies.
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["server-graceful", "service", "tokio"] }
+base64 = "0.22"
+# Locates the Documents folder (SHGetKnownFolderPath) for backups a remote or
+# MCP caller asks for. Already in the lock file through Tauri.
+dirs = "6"
+rand = "0.9"
+quadcortex = { path = "../../../packages/rust/quadcortex" }
+qc-windows-midi = { path = "../../../packages/rust/qc-windows-midi" }
+qc-windows-process = { path = "../../../packages/rust/qc-windows-process" }
+qc-relay-client = { path = "../../../packages/rust/qc-relay-client" }
+qc-remote-mcp = { path = "../../../services/rust-mcp" }
+rfd = "0.15"
+reqwest = { version = "0.13", features = ["form", "json"] }
+rmcp = { version = "3.2", features = ["server", "transport-io"] }
+serde = { version = "1", features = ["derive"] }
+# `preserve_order` keeps `Value::Object` an insertion-ordered map. Without it a
+# pair or unpair rewrites another vendor's whole configuration file with every
+# key at every depth sorted alphabetically, which is a total diff of a file QC
+# Remote was only asked to add one entry to.
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+subtle = "2"
+tauri = { version = "2", default-features = false, features = ["wry"] }
+tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+toml_edit = "0.25"
+webbrowser = "1"
+zip = { version = "8.1", default-features = false }
+
+# `os_version.rs` reads the Windows version from the registry for a bug
+# report's Platform field. Already in the lock file as a transitive dependency
+# of reqwest (through hyper-util), so this adds no crate to the build.
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
+# The broker owns the native tray through windows-sys. The GUI has no direct
+# tray-icon, muda or tao API dependency; Tauri owns its own window/menu graph.
+# Used (lib.rs). Exact so a plugin release cannot change how a second launch
+# hands its arguments to the running app without a reviewed manifest change.
+tauri-plugin-single-instance = "=2.4.5"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+# No debuginfo for dependencies in debug builds.
+#
+# Dependency debuginfo dominates shared build caches because each dependency
+# can produce several hash-suffixed debug artifacts. Almost none of that is
+# application code.
+#
+# `package."*"` matches non-workspace packages, and this manifest's workspace
+# has exactly one member -- qc-remote itself. The shell keeps full debuginfo;
+# the repository's own libraries reach this build as path dependencies from
+# outside the workspace directory, so unlike the root manifest the wildcard
+# would cover them too. The five overrides below take them back out of it.
+# What is lost is line numbers in frames that pass through a third-party
+# dependency: a backtrace through tokio or tauri still names the function, not
+# the file and line.
+[profile.dev.package."*"]
+debug = false
+
+# Our own code, exempted from the rule above: the wildcard would otherwise
+# strip the line numbers from every frame of ours that the shell calls into,
+# which is most of what anyone debugging this binary is actually looking at.
+# The cost is about 100 MB a build across the five, most of it quadcortex --
+# against the several hundred the wildcard saves on third-party crates.
+[profile.dev.package.quadcortex]
+debug = true
+
+[profile.dev.package.qc-windows-midi]
+debug = true
+
+[profile.dev.package.qc-relay-client]
+debug = true
+
+[profile.dev.package.qc-remote-mcp]
+debug = true
+
+# Reached transitively, through qc-relay-client rather than named in the
+# dependency list above, and ours all the same.
+[profile.dev.package.qc-relay-protocol]
+debug = true
+
+# The broker half of the shipped sidecar, linked through the tray-sidecar
+# feature. Ours, so it keeps its line numbers like the crates above.
+[profile.dev.package.qc-device-broker]
+debug = true

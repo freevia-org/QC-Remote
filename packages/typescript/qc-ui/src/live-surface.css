@@ -1,0 +1,479 @@
+@keyframes qc-tempo-led-pulse {
+  /* The QC's physical TEMPO lamp holds its on state for roughly one third of
+     a beat. Keep that envelope independent of the beat-message phase lock. */
+  0%, 31.9% { opacity: 1; filter: brightness(1.25); }
+  32%, 100% { opacity: .16; filter: brightness(.55); }
+}
+
+.hardware-switch.is-tempo-pulse.is-active .switch-led::before {
+  /* The beat phase is anchored by QcHardwareSwitch through the animation's
+     startTime; a CSS delay cannot express an absolute clock origin. */
+  animation: qc-tempo-led-pulse var(--tempo-period, 1s) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hardware-switch.is-tempo-pulse.is-active .switch-led::before { animation: none; }
+}
+
+.coros-parameter-editor {
+  position: absolute;
+  /* The unit parks the editor's header at y 196 of 480 (40.83%), which leaves
+     the whole block row above it visible; 36% covered its lower edge. */
+  inset: 40.83% 0 0;
+  z-index: 8;
+  display: grid;
+  grid-template-rows: 21.2% 1fr;
+  overflow: hidden;
+  container-type: inline-size;
+  background: var(--qc-screen);
+  color: var(--qc-route-text);
+  font-family: var(--qc-font-device);
+  /* The unit dims the page header and the block row while an editor is open
+     (a white mark reads 132,134,132 there). The shadow is the editor's own box
+     thrown 24.5cqw (196px at the unit's 800) up over them, the same band the
+     reference editors draw with ::before; in cqw so it lands on the row at any
+     width rather than at 196 CSS px. */
+  box-shadow: 0 -24.5cqw 0 var(--qc-palette-00000078);
+}
+
+.coros-parameter-editor.has-tabs { grid-template-rows: 21.2% 15% 1fr; }
+.coros-parameter-editor.is-full-screen { inset: 0; grid-template-rows: 12.5% 1fr; box-shadow: none; }
+.coros-parameter-editor.is-full-screen.has-tabs { grid-template-rows: 12.5% 9% 1fr; }
+
+.parameter-editor-header {
+  position: relative;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: 5.5% minmax(0, 1fr) 7.5% 17% .25% 8.25% 8.25%;
+  /* One row exactly as tall as the header: a title that wraps to a third line at a small size must
+     clip inside its cell, not stretch every button past the editor's own 12.5% header band. */
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 1%;
+  padding: 1% 1%;
+  background: var(--qc-device-panel);
+}
+
+.parameter-editor-header button { min-width: 0; padding: 0; border: 0; border-radius: 1cqw; color: var(--qc-route-text); background: var(--qc-device-panel-raised); }
+.parameter-more { display: grid; place-content: center; gap: .65cqw; }
+.parameter-more i { width: .5cqw; aspect-ratio: 1; border-radius: 50%; background: var(--qc-primary-text); }
+.parameter-device-name { min-height: 0; display: grid; align-content: center; justify-items: start; padding: 0 3%; overflow: hidden; text-align: left; background: var(--qc-transparent) !important; }
+/* The unit sets both lines in the plain face at regular weight: the category
+   in the reference grey above the model name, which is the block's accent and
+   never bold (Adaptive Gate (S/C) and 412 Brit TV GB75Hz 69 (ST) read 15 px
+   regular on a physical unit; 17 px bold ellipsised the second). Same sizes as
+   the reference editors' own headers (reference-parameter-editor.css). */
+.parameter-device-name small { color: var(--qc-palette-9da19f); font-size: 1.75cqw; font-weight: 400; line-height: 1.15; }
+.parameter-device-name strong { max-width: 100%; overflow: hidden; font-size: 2.375cqw; font-weight: 400; line-height: 1.12; text-overflow: ellipsis; white-space: nowrap; }
+.family-cab .parameter-device-name strong { font-size: 2.1cqw; }
+/* A name too long for one line (see useWrappedEditorTitle) is run on after its category
+   as one wrapped text in the 15px the unit sets both in, the name keeping its accent. */
+.parameter-device-name.is-wrapped { display: block; align-content: center; font-size: 1.875cqw; line-height: 1.2; }
+.parameter-device-name.is-wrapped small,
+.parameter-device-name.is-wrapped strong { display: inline; font-size: 1.875cqw; line-height: 1.2; }
+.parameter-device-name.is-wrapped small { margin-right: .5em; }
+.parameter-device-name.is-wrapped strong { overflow: visible; text-overflow: clip; white-space: normal; }
+.parameter-footswitch { position: relative; display: grid; grid-template-columns: 58% 42%; place-items: center; color: var(--qc-palette-777) !important; }
+.parameter-footswitch svg { width: 92%; height: 72%; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.parameter-footswitch span { font-size: 1.75cqw; font-weight: 800; }
+.parameter-footswitch.is-assigned { color: var(--qc-screen-text-primary) !important; }
+.parameter-footswitch.is-assigning { box-shadow: inset 0 0 0 .42cqw var(--qc-category-compressor); color: var(--qc-palette-f3f3f3) !important; }
+/* The scene shuttle is the shared QcSceneSelector, whose badge colour comes from
+   --qc-scene-badge; this sheet only places it and paints its two arrows. */
+.parameter-scene { overflow: hidden; border-radius: 1cqw; background: var(--qc-device-panel-raised); color: var(--qc-palette-57575a); }
+.parameter-scene > button { border-radius: 0; background: var(--qc-transparent); }
+/* The shuttle art is 30x24 on the unit; sized in the editor's cqw so it scales with the screen. */
+.parameter-scene > button svg { width: 3.75cqw; height: 3cqw; fill: currentColor; }
+.parameter-scene .qc-scene-selector-badge-slot { height: 100%; border-inline: 0; }
+.parameter-header-divider { align-self: center; width: 100%; height: 50%; background: var(--qc-device-panel-raised); }
+.parameter-bypass { color: var(--qc-screen-text-primary) !important; }
+.parameter-bypass svg, .parameter-close svg { width: 48%; height: 48%; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.parameter-bypass.is-bypassed { color: var(--qc-palette-777) !important; }
+.parameter-close { background: var(--qc-device-control-surface) !important; font-weight: 400; }
+
+.parameter-context-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% - .3cqw);
+  display: grid;
+  padding: .7cqw;
+  border: 1px solid var(--qc-palette-444548);
+  border-radius: .75cqw;
+  background: var(--qc-palette-232426);
+  box-shadow: 0 1.2cqw 3cqw var(--qc-palette-rgb-0-0-0-65);
+}
+.parameter-context-menu { left: 1%; width: 38cqw; max-height: 42cqw; overflow-y: auto; padding: .7cqw 0; border-radius: .25cqw; background: var(--qc-device-context-menu); --qc-scroll-thumb: var(--qc-device-disabled); }
+.parameter-context-menu button { min-height: 4.4cqw; padding: 0 1.3cqw; border-radius: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 600 1.65cqw var(--qc-font-device); text-align: left; }
+.parameter-context-menu button { display: grid; grid-template-columns: 3cqw minmax(0, 1fr); align-items: center; gap: .8cqw; }
+.parameter-context-menu button svg { width: 2.25cqw; height: 2.25cqw; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.parameter-context-menu button.has-separator { border-top: 1px solid var(--qc-palette-444548); }
+.parameter-context-menu button:disabled { color: var(--qc-palette-68696b); cursor: default; }
+.parameter-context-menu button:hover, .parameter-context-menu button:focus-visible { background: var(--qc-device-context-menu-hover); }
+.parameter-context-menu button.is-danger { color: var(--qc-palette-ff7e79); }
+
+/* The device's own block-context menu: a solid panel of icon+label rows, no
+   rounded per-item hover fill, a separator line before Save/Model-update/Remove,
+   and a disabled row that keeps its label ink but drops its glyph to the
+   disabled ground. Positioned as a dropdown off the header, like the menu it
+   replaces, rather than the fixture's own full-height 320px side panel: this
+   container isn't
+   guaranteed full-screen (routing/reference editors run inset, not
+   .is-full-screen), and a fixed pixel panel would either overflow or float
+   short of the header depending on which one is showing. */
+.qc-block-context-menu {
+  position: absolute;
+  z-index: 20;
+  left: 1%;
+  top: calc(100% - .3cqw);
+  width: 44cqw;
+  max-height: 46cqw;
+  display: grid;
+  overflow-y: auto;
+  border-radius: .5cqw;
+  background: var(--qc-screen-surface-base);
+  box-shadow: 0 1.2cqw 3cqw var(--qc-palette-rgb-0-0-0-65);
+}
+.qc-block-context-menu button { min-height: 8cqw; display: grid; grid-template-columns: 8cqw 1fr; align-items: center; padding: 0 1.5cqw 0 0; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 1.65cqw var(--qc-font-device-plain); text-align: left; }
+.qc-block-context-menu button > span { display: grid; place-items: center; }
+.qc-block-context-menu button > span svg { width: 2.5cqw; height: 2.5cqw; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.qc-block-context-menu button.has-separator { border-top: 1px solid var(--qc-palette-313431); }
+.qc-block-context-menu button.is-disabled { color: var(--qc-context-capture-dark); }
+.qc-block-context-menu button.is-disabled > span { color: var(--qc-editor-disabled); }
+.qc-block-context-menu button.is-danger { color: var(--qc-palette-ff7e79); }
+.qc-block-context-menu button:hover:not(:disabled), .qc-block-context-menu button:focus-visible:not(:disabled) { background: var(--qc-screen-surface-raised); }
+
+/* The "Press the target footswitch to assign" prompt. The
+   assign/reassign/unassign behavior already runs off a key press or a
+   physical footswitch release (useQcSurfaceActions); this only narrates it. */
+.qc-footswitch-assignment-wash {
+  position: absolute;
+  z-index: 21;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--qc-palette-rgb-0-0-0-65);
+}
+.qc-footswitch-assignment-dialog {
+  box-sizing: border-box;
+  width: 52cqw;
+  padding: 3cqw 2cqw;
+  display: grid;
+  gap: 1.5cqw;
+  justify-items: center;
+  border-radius: 1cqw;
+  background: var(--qc-screen-surface-raised);
+  color: var(--qc-screen-text-primary);
+  font-family: var(--qc-font-device-plain);
+  text-align: center;
+}
+.qc-footswitch-assignment-dialog h1 { margin: 0; font-size: 2.75cqw; font-weight: 400; }
+.qc-footswitch-assignment-dialog p { margin: 0; color: var(--qc-screen-text-muted); font-size: 2cqw; }
+.qc-footswitch-assignment-dialog footer { display: flex; gap: 1cqw; }
+.qc-footswitch-assignment-dialog footer button { min-width: 14cqw; height: 4.5cqw; padding: 0 1.5cqw; border: 0; border-radius: .75cqw; background: var(--qc-screen-background); color: var(--qc-screen-text-primary); font: 1.75cqw var(--qc-font-device-plain); }
+.qc-footswitch-assignment-dialog footer button.is-primary { background: var(--qc-palette-1838ff); }
+.qc-footswitch-assignment-dialog footer button:disabled { opacity: .45; }
+
+.parameter-tabs {
+  z-index: 2;
+  display: flex;
+  align-items: end;
+  gap: .45cqw;
+  min-width: 0;
+  padding: .6cqw 1cqw 0;
+  overflow-x: auto;
+  background: var(--qc-palette-151517);
+}
+.parameter-tabs button { min-width: 9cqw; height: 100%; padding: 0 1.2cqw; border: 0; border-radius: .65cqw .65cqw 0 0; background: var(--qc-palette-242527); color: var(--qc-palette-8f9093); font: 700 1.5cqw var(--qc-font-device); letter-spacing: .045em; white-space: nowrap; }
+.parameter-tabs button.is-active { box-shadow: inset 0 .35cqw 0 var(--parameter-accent); background: var(--qc-device-control-surface); color: var(--qc-screen-text-primary); }
+
+.parameter-controls {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  min-height: 0;
+  margin: 0 1% 1%;
+  overflow: hidden;
+  border-radius: 1cqw;
+  background: var(--qc-device-control-surface);
+}
+
+.coros-parameter {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border-right: 1px solid var(--qc-device-divider);
+  border-bottom: 1px solid var(--qc-device-divider);
+  background: var(--qc-device-control-surface);
+}
+
+.coros-parameter:nth-child(5n), .parameter-empty-slot:nth-child(5n) { border-right: 0; }
+.coros-parameter:nth-child(n+6), .parameter-empty-slot:nth-child(n+6) { border-bottom: 0; }
+/* One row of controls is half the panel, drawn at the top; empty cells draw no divider of their own. */
+.parameter-controls.is-single-row { grid-template-rows: minmax(0, 1fr); align-self: start; height: 49.5%; }
+.parameter-controls.is-single-row > * { border-bottom: 0; }
+.parameter-controls.is-single-row > .parameter-empty-slot { display: none; }
+.parameter-empty-slot { min-width: 0; min-height: 0; border-right: 0; border-bottom: 1px solid var(--qc-device-divider); background: var(--qc-device-control-surface); }
+
+/* The label box runs to the cell's right edge (5.2% + 94.8%), not 90%: the device draws NOISE REDUCTION and GAIN REDUCTION whole at the cell width and never ellipsises them. At 90% the box was 4px short at 800 wide and every 15-character label lost its tail at any size (the ratio does not change with scale). */
+.parameter-name { position: absolute; top: 5%; left: 5.2%; width: 94.8%; overflow: hidden; color: var(--qc-screen-text-primary); font-weight: 400; font-size: 2.05cqw; line-height: 1.1; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+.parameter-expression { position: absolute; z-index: 3; top: 30%; left: 5.5%; display: flex; align-items: center; gap: .35cqw; color: var(--qc-palette-7cff9a); font-size: 1.05cqw; line-height: 1; }
+.parameter-expression svg { width: 2.3cqw; height: 2.3cqw; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.parameter-expression b { font-size: 1.05cqw; white-space: nowrap; }
+.parameter-value { position: absolute; left: 6.4%; bottom: 10%; max-width: 45%; overflow: hidden; color: var(--qc-screen-text-primary); font-size: 2.05cqw; font-weight: 400; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+.parameter-encoder { display: none; }
+
+.parameter-knob {
+  position: absolute;
+  right: 5.5%;
+  bottom: 9%;
+  width: 8.35cqw;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--qc-transparent);
+  touch-action: none;
+}
+
+/* The live editor's knob is the control the unit draws, so it is QcRotaryDial:
+   the conic-gradient ring, the raised cap, the pseudo-element pointer and the
+   hand-placed step dots were a second dial with its own geometry and its own
+   sweep. What is left here is the button's box and its input affordances. The
+   cap survives only for the cab channel strip, which reuses this same button as
+   a horizontal fader and needs a thumb rather than a rotary. */
+.parameter-knob > .qc-rotary { position: absolute; inset: 0; width: 100%; height: 100%; }
+.parameter-knob:disabled { opacity: 1; }
+
+.parameter-fader { position: absolute; top: 29%; right: 22%; bottom: 16%; width: 3.75cqw; padding: 0; border: 0; background: var(--qc-transparent); touch-action: none; }
+.parameter-fader::before { content: ""; position: absolute; right: 50%; bottom: 0; width: .25cqw; height: 100%; border-radius: .13cqw; transform: translateX(50%); background: var(--qc-screen); }
+.parameter-fader span { position: absolute; left: 50%; bottom: calc(var(--parameter-position) - 1.5cqw); width: 3cqw; aspect-ratio: 1; border: .13cqw solid var(--qc-screen); border-radius: 50%; transform: translateX(-50%); background: var(--parameter-accent); box-shadow: 0 .2cqw .35cqw var(--qc-palette-rgb-0-0-0-65); }
+
+.parameter-gr-meter { position: absolute; right: 5%; bottom: 8%; left: 5%; height: 1cqw; overflow: hidden; border: 0; border-radius: .25cqw; background: var(--qc-device-panel); }
+.parameter-gr-meter span { display: block; width: var(--meter-level); height: 100%; background: var(--qc-category-overdrive); }
+.coros-parameter.is-meter .parameter-value { left: 5%; bottom: 22%; max-width: 40%; }
+.parameter-signal-led { position: absolute; top: 34%; right: 7%; width: 1.5cqw; aspect-ratio: 1; border: .18cqw solid var(--qc-palette-080808); border-radius: 50%; background: var(--qc-palette-55575a); }
+.parameter-signal-led.is-active { background: var(--qc-category-compressor); box-shadow: 0 0 1cqw var(--qc-palette-rgb-69-248-98-8); }
+
+.parameter-switch { position: absolute; left: 6%; top: 40%; width: 13.5%; height: 48%; padding: 0; border: .25cqw solid var(--qc-palette-151515); border-radius: 1.6cqw; background: var(--qc-palette-151617); }
+.is-3-way .parameter-switch { top: 30%; height: 58%; }
+/* The unit's switch thumb is a ring in the block's accent colour with a white dot, not a solid white ball. */
+.parameter-switch span { position: absolute; left: 9%; box-sizing: border-box; width: 82%; aspect-ratio: 1; border: .35cqw solid var(--parameter-accent, var(--qc-screen-text-primary)); border-radius: 50%; background: radial-gradient(circle, var(--qc-screen-text-primary) 0 22%, var(--qc-screen-surface-base) 25% 100%); transition: top .12s ease; }
+.parameter-switch-labels { position: absolute; top: 40%; right: 0; bottom: 17%; left: 25%; display: flex; flex-direction: column; justify-content: space-between; }
+.is-3-way .parameter-switch-labels { top: 24%; bottom: 10%; }
+.parameter-switch-labels button { min-width: 0; padding: 0; overflow: hidden; border: 0; background: var(--qc-transparent); color: var(--qc-category-neutral); font: 400 2cqw var(--qc-font-control); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.parameter-switch-labels button.is-active { color: var(--qc-screen-text-primary); }
+.parameter-toggle-button { position: absolute; top: 42%; left: 50%; width: 75%; height: 4cqw; padding: 0 6%; overflow: hidden; border: 0; border-radius: .75cqw; transform: translateX(-50%); background: var(--qc-device-panel); color: var(--qc-palette-ababab); font: 400 1.65cqw var(--qc-font-control); text-overflow: ellipsis; white-space: nowrap; }
+.parameter-toggle-button::before { content: ""; position: absolute; top: .5cqw; left: 50%; width: .5cqw; aspect-ratio: 1; border-radius: 50%; transform: translateX(-50%); background: var(--qc-palette-616161); }
+.parameter-toggle-button.is-on { background: var(--qc-device-control-surface); color: var(--qc-primary-text); }
+.parameter-toggle-button.is-on::before { background: var(--parameter-accent); }
+.coros-parameter select { position: absolute; min-width: 0; left: 50%; bottom: 10%; width: 87.5%; height: 4cqw; padding: 0 4cqw 0 1.5cqw; border: .13cqw solid var(--qc-device-panel); border-radius: .75cqw; appearance: none; transform: translateX(-50%); background-color: var(--qc-device-panel); background-image: linear-gradient(45deg, var(--qc-transparent) 50%, var(--qc-primary-text) 50%), linear-gradient(135deg, var(--qc-primary-text) 50%, var(--qc-transparent) 50%); background-position: calc(100% - 1.7cqw) 48%, calc(100% - 1.2cqw) 48%; background-repeat: no-repeat; background-size: .55cqw .55cqw, .55cqw .55cqw; color: var(--qc-primary-text); font: 400 1.65cqw var(--qc-font-control); text-align: left; }
+.coros-parameter.is-switch .parameter-value, .coros-parameter.is-dropdown .parameter-value, .coros-parameter.is-button .parameter-value { display: none; }
+/* The unit dims a control by substituting its roles, never by washing them.
+   The Global EQ bypass ring is the reference: the same ink is painted
+   --qc-icon-primary on the ordinary ground with the EQ on and
+   --qc-global-eq-bypass-off on --qc-editor-disabled with it off, both exact
+   palette roles. An `opacity: .55` stood here instead. A wash lands between
+   rungs by construction - it cannot help but ask the panel for colours it has
+   no code for - and it dims the mark while leaving the ground alone, which is
+   the opposite of what the unit does.
+   Only the two inks that are confirmed are named. No screen shows a disabled
+   parameter otherwise, so the control's own surfaces keep their roles rather
+   than being given invented dim ones. */
+.coros-parameter.is-disabled .parameter-name,
+.coros-parameter.is-disabled .parameter-value { color: var(--qc-global-eq-bypass-off); }
+
+.parameter-family-widget { grid-column: span var(--widget-span); position: relative; min-width: 0; overflow: hidden; border-top: 1px solid var(--qc-palette-1a1a1b); background: var(--qc-palette-29292a); color: var(--qc-palette-bfc0c2); }
+.parameter-family-widget > span:first-child { position: absolute; top: 9%; left: 4%; font-size: 1.55cqw; font-weight: 700; letter-spacing: .05em; }
+.eq-response { padding: 2.2cqw 1.2cqw .8cqw; }
+.eq-response svg { width: 100%; height: 100%; overflow: visible; }
+.eq-response svg::before { content: ""; }
+.eq-response .eq-zero { fill: none; stroke: var(--qc-palette-555); stroke-width: 1; stroke-dasharray: 3 4; }
+.eq-response .eq-curve { fill: none; stroke: var(--parameter-accent, var(--qc-palette-f2c134)); stroke-width: 3; }
+.eq-response circle { fill: var(--qc-screen-text-primary); stroke: var(--qc-palette-111); stroke-width: 2; }
+
+.eq-editor-body { min-height: 0; margin: 0 1% 1%; overflow: hidden; border-radius: 1cqw; background: var(--qc-palette-242527); }
+.eq-editor-body.is-parametric { display: grid; grid-template-rows: minmax(0, 1.7fr) 4.2cqw minmax(11cqw, 1fr); }
+.eq-response-panel { position: relative; min-height: 0; overflow: hidden; border-bottom: 1px solid var(--qc-palette-111); background: linear-gradient(var(--qc-palette-292a2c), var(--qc-palette-202123)); }
+.eq-response-panel > svg { position: absolute; inset: 4% 2.2% 2%; width: 95.6%; height: 94%; overflow: visible; }
+.eq-grid path { fill: none; stroke: var(--qc-palette-505155); stroke-width: .28; opacity: .72; }
+.eq-live-curve { fill: none; stroke: var(--qc-palette-f3f3f3); stroke-width: 1.15; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.eq-axis-labels { fill: var(--qc-palette-8d8f92); stroke: none; font: 4.2px var(--qc-font-device-plain); }
+.eq-band-node { position: absolute; z-index: 3; width: 3.8cqw; aspect-ratio: 1; padding: 0; border: .22cqw solid var(--qc-palette-1a1b1d); border-radius: 50%; transform: translate(-50%, -50%); background: var(--qc-palette-86888b); color: var(--qc-palette-111); box-shadow: 0 .15cqw .4cqw var(--qc-palette-rgb-0-0-0-55); font: 800 1.45cqw var(--qc-font-device-plain); touch-action: none; }
+.eq-band-node.is-selected { border-color: var(--qc-screen-text-primary); background: var(--eq-accent); color: var(--qc-palette-f7f7f7); box-shadow: 0 0 0 .22cqw var(--qc-palette-111), 0 0 1cqw color-mix(in srgb, var(--eq-accent) 70%, var(--qc-transparent)); }
+.eq-band-node.is-bypassed { opacity: .82; border-color: var(--qc-palette-9a9b9e); background: var(--qc-palette-303133); color: var(--qc-palette-aeb0b3); box-shadow: inset 0 0 0 .18cqw var(--qc-palette-171819), 0 .15cqw .4cqw var(--qc-palette-rgb-0-0-0-55); }
+.eq-band-node.is-bypassed.is-selected { border-color: var(--qc-screen-text-primary); color: var(--qc-screen-text-primary); box-shadow: 0 0 0 .22cqw var(--qc-palette-111), 0 0 .75cqw var(--qc-palette-rgb-242-242-242-35); }
+.eq-band-tabs { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: .35cqw; padding: 0 .8cqw; background: var(--qc-palette-191a1c); }
+.eq-band-tabs button { min-width: 0; padding: 0; border: 0; border-radius: .45cqw .45cqw 0 0; background: var(--qc-palette-252628); color: var(--qc-palette-9b9c9e); font: 600 1.45cqw var(--qc-font-device-plain); }
+.eq-band-tabs button.is-active { box-shadow: inset 0 -.3cqw 0 var(--parameter-accent); background: var(--qc-palette-303133); color: var(--qc-screen-text-primary); }
+.eq-band-tabs button.is-bypassed { color: var(--qc-palette-6f7174); text-decoration: line-through; text-decoration-thickness: .12cqw; }
+.eq-band-tabs button.is-bypassed.is-active { color: var(--qc-palette-c8c9cb); }
+.eq-selected-controls { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); min-height: 0; }
+.eq-selected-controls.is-output .coros-parameter { grid-column: 1 / 2; }
+.eq-selected-controls .coros-parameter { border-bottom: 0; }
+.eq-selected-controls .parameter-name { top: 8%; font-size: 1.5cqw; }
+.eq-selected-controls .parameter-value { bottom: 8%; font-size: 1.55cqw; }
+.eq-selected-controls .parameter-knob { width: 6.7cqw; bottom: 7%; }
+.eq-selected-controls .coros-parameter select { top: 34%; bottom: auto; height: 4.2cqw; min-height: 0; padding-top: .2cqw; padding-bottom: .2cqw; font-size: 1.45cqw; line-height: 1.2; }
+.eq-bypass-control > button { position: absolute; right: 18%; bottom: 18%; width: 7cqw; aspect-ratio: 1.45; padding: 0; border: .22cqw solid var(--qc-palette-111); border-radius: .65cqw; background: var(--qc-palette-171819); color: var(--qc-palette-8a8b8d); }
+.eq-bypass-control > button.is-on { box-shadow: inset .45cqw 0 0 var(--parameter-accent); color: var(--qc-screen-text-primary); }
+.eq-bypass-control svg { width: 42%; height: 58%; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+
+.eq-editor-body.is-graphic { display: grid; grid-template-columns: minmax(0, 3fr) minmax(13cqw, 1fr); }
+.graphic-eq-faders { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); min-height: 0; padding: 1% 1.5%; background: linear-gradient(var(--qc-palette-2b2c2e), var(--qc-palette-222325)); }
+.graphic-eq-faders .coros-parameter { border: 0; background: var(--qc-transparent); }
+.graphic-eq-faders .parameter-name { top: 87.5%; left: 0; width: 100%; text-align: center; font-size: 1.1cqw; }
+.graphic-eq-faders .parameter-value { top: 3%; left: 0; bottom: auto; max-width: 100%; width: 100%; text-align: center; font-size: 1.05cqw; }
+.graphic-eq-faders .parameter-fader { top: 8.5%; right: 50%; bottom: 8.5%; width: 3.75cqw; transform: translateX(50%); }
+.graphic-eq-faders .parameter-fader span { width: 3cqw; height: auto; aspect-ratio: 1; }
+.graphic-eq-aux { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); border-left: 1px solid var(--qc-palette-111); }
+.graphic-eq-aux .coros-parameter { background: var(--qc-palette-2b2c2e); }
+.graphic-eq-aux .parameter-name, .graphic-eq-aux .parameter-value { font-size: 1.15cqw; }
+.graphic-eq-aux .parameter-knob { width: 5.2cqw; }
+.eq-simple-controls { grid-template-rows: repeat(2, minmax(0, 1fr)); }
+.eq-simple-controls .coros-parameter { border-bottom: 0; }
+.synth-sections { display: flex; align-items: center; justify-content: space-around; gap: 3%; padding: 10% 4% 3%; }
+.synth-sections span { color: var(--qc-screen-text-primary); font-size: 1.35cqw; font-weight: 700; }
+.synth-sections b { color: var(--qc-palette-737477); font-size: 2cqw; }
+.synth-sections svg { position: absolute; right: 5%; bottom: 7%; width: 26%; height: 28%; }
+.synth-sections svg path { fill: none; stroke: var(--parameter-accent, var(--qc-palette-25c2ac)); stroke-width: 2; }
+/* The oscillator mark is the unit's own icon, a filled soft-edged contour.
+   Stroking a contour draws its outline a second time, so the widget's own
+   mark takes the accent as a fill; the chevrons nested in the row stay
+   stroked art. */
+.synth-sections > svg path { fill: var(--parameter-accent, var(--qc-palette-25c2ac)); stroke: none; }
+
+.family-cab.is-full-screen.has-tabs { grid-template-rows: 12.5% 1fr; }
+/* The cab header leaves a gap after the scene shuttle for the CAB / EQ tabs, which sit between it and the power button. */
+.family-cab .parameter-editor-header { grid-template-columns: 5.5% 21.5% 8.1% 17.5% minmax(0, 1fr) .25% 8.1% 12.1%; }
+.family-cab .parameter-editor-header > .parameter-header-divider { grid-column: 6; }
+.family-cab .parameter-editor-header > .parameter-bypass { grid-column: 7; }
+.family-cab .parameter-editor-header > .parameter-close { grid-column: 8; }
+.family-cab .parameter-tabs { position: absolute; z-index: 6; top: 1.78%; left: 58.3%; width: 17%; height: 9.76%; padding: 0; gap: .75cqw; overflow: visible; background: var(--qc-transparent); }
+/* Regular 2cqw on a 7 px plate, as the reference Cab editor draws CAB and EQ. */
+.family-cab .parameter-tabs button { flex: 1; min-width: 0; border-radius: .875cqw; background: var(--qc-device-panel-raised); font-size: 2cqw; font-weight: 400; }
+.family-cab .parameter-tabs button.is-active { box-shadow: none; background: var(--qc-device-control-surface); color: var(--qc-primary-text); }
+
+.cab-editor-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .5%;
+  min-height: 0;
+  padding: 0 1% 1%;
+  background: var(--qc-screen);
+}
+
+.cab-channel {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 1cqw;
+  background: var(--qc-device-control-surface);
+}
+.cab-channel.is-bypassed > :not(.cab-channel-footer) { opacity: .42; }
+
+.cab-channel-controls { position: absolute; z-index: 2; inset: 2% 2% auto; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); height: 18%; }
+.cab-channel-controls .coros-parameter { border: 0; background: var(--qc-transparent); }
+.cab-channel-controls .parameter-name { top: 8.9%; left: 4%; width: 92%; font-size: 2cqw; font-weight: 400; letter-spacing: 0; }
+.cab-channel-controls .parameter-value { left: 7.4%; bottom: 2.5%; max-width: 92%; font-size: 2cqw; font-weight: 400; letter-spacing: 0; }
+/* The bar is QcBarSlider; this places it and nothing more. It used to be a
+   linear-gradient on the button itself with the rotary's pointer still riding
+   on top as a white tick - a mark the unit draws nowhere on this control - and
+   the fill always started at the left, which is wrong for PAN. */
+.cab-channel-controls .parameter-knob {
+  right: 4%;
+  bottom: 45%;
+  width: 92%;
+  height: .84cqw;
+  aspect-ratio: auto;
+  border-radius: 0;
+  background: var(--qc-transparent);
+}
+.cab-channel-controls .parameter-knob .qc-bar-slider { width: 100%; height: 100%; --qc-bar-fill: var(--cab-accent); --qc-bar-track: var(--qc-palette-070707); }
+.cab-channel-controls .parameter-switch { top: 36%; left: 7%; width: 13%; height: 52%; }
+
+/* The same box and rings the reference Cab editor draws (left 19%, top 21.25%,
+   62% wide; reference-parameter-editor.css): a 241 px speaker on a 389 px
+   panel, where 60% at 25% drew it 7% small and 4% low. */
+.cab-speaker { position: absolute; top: 21.75%; left: 19%; width: 62%; aspect-ratio: 1; padding: 0; border: .25cqw solid var(--qc-screen-background); border-radius: 50%; background: radial-gradient(circle, var(--qc-screen-surface-raised) 0 19%, var(--qc-editor-disabled) 20% 48%, var(--qc-screen-surface-control) 49% 70%, var(--qc-palette-101310) 71%); touch-action: none; }
+.cab-speaker:disabled { opacity: 1; }
+
+.cab-channel-footer { position: absolute; z-index: 3; right: 2%; bottom: 2%; left: 2%; display: grid; grid-template-columns: 18% minmax(0, 1fr) 18%; gap: 2%; height: 10.5%; }
+.cab-channel-footer > button { padding: 0; border: 0; border-radius: .8cqw; background: var(--qc-device-panel-raised); color: var(--qc-screen-text-primary); font: 600 2.4cqw var(--qc-font-device-plain); }
+.cab-phase.is-active { color: var(--cab-accent); }
+.cab-phase .qc-ui-icon { width: 2.7cqw; height: 2.7cqw; vertical-align: middle; }
+/* The unit's enable switch is a small pill: white with the knob at the right while the channel is on. */
+.cab-channel-power { display: grid; place-items: center; }
+.cab-channel-power i { display: flex; width: 3.4cqw; height: 1.9cqw; align-items: center; justify-content: flex-start; border-radius: 1cqw; background: var(--qc-palette-777); }
+.cab-channel-power i::after { content: ""; display: block; width: 1.5cqw; height: 1.5cqw; margin: 0 .2cqw; border-radius: 50%; background: var(--qc-palette-333333); }
+.cab-channel-power.is-active i { background: var(--qc-screen-text-primary); justify-content: flex-end; }
+.cab-microphone-selector { display: grid; grid-template-columns: 14% minmax(0, 1fr) 14%; align-items: center; min-width: 0; overflow: hidden; border-radius: .8cqw; background: var(--qc-device-panel-raised); }
+.cab-microphone-selector button { display: grid; height: 100%; padding: 0; border: 0; place-items: center; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 300 3.2cqw var(--qc-font-device-plain); }
+.cab-microphone-selector button .qc-ui-icon { width: 3cqw; height: 3cqw; }
+.cab-microphone-selector button:disabled { color: var(--qc-palette-454648); }
+.cab-microphone-selector strong { overflow: hidden; color: var(--qc-screen-text-primary); font: 400 2.1cqw var(--qc-font-device-plain); text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+
+.cab-eq-body { display: grid; grid-template-rows: minmax(0, 1fr) 28%; min-height: 0; margin: 0 1% 1%; overflow: hidden; border-radius: 1cqw; background: var(--qc-device-control-surface); }
+.cab-eq-graph { position: relative; min-height: 0; overflow: hidden; background: linear-gradient(var(--qc-palette-292a2c), var(--qc-palette-202123)); }
+.cab-eq-graph svg { position: absolute; inset: 5% 2%; width: 96%; height: 90%; }
+.cab-eq-grid { fill: none; stroke: var(--qc-palette-505155); stroke-width: .25; vector-effect: non-scaling-stroke; }
+.cab-eq-curve { fill: none; stroke: var(--qc-screen-text-primary); stroke-width: .42; vector-effect: non-scaling-stroke; }
+.cab-eq-node { position: absolute; top: 48%; display: grid; width: 4.4cqw; aspect-ratio: 1; place-items: center; border: .25cqw solid var(--qc-palette-111); border-radius: 50%; transform: translate(-50%, -50%); color: var(--qc-device-panel); font: 800 1.8cqw var(--qc-font-device-plain); }
+.cab-eq-node.is-high { background: var(--qc-palette-6954ff); }
+.cab-eq-node.is-low { background: var(--qc-category-overdrive); }
+.cab-eq-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); min-height: 0; border-top: 1px solid var(--qc-palette-111); }
+.cab-eq-controls .coros-parameter { border-bottom: 0; }
+.cab-eq-controls .parameter-name { font-size: 1.55cqw; }
+.cab-eq-controls .parameter-value { font-size: 1.55cqw; }
+.cab-eq-controls .parameter-knob { width: 7.2cqw; }
+
+.family-ir.is-full-screen.has-tabs { grid-template-rows: 12.5% 1fr; }
+.family-ir .parameter-tabs { position: absolute; z-index: 6; top: 1%; left: 24.5%; width: 9%; height: 10.5%; padding: 0; gap: .3cqw; overflow: visible; background: var(--qc-transparent); }
+.family-ir .parameter-tabs button { flex: 1; min-width: 0; padding: 0; border-radius: .65cqw .65cqw 0 0; font-size: 1.65cqw; }
+.family-ir .parameter-tabs button.is-active { box-shadow: none; background: var(--qc-device-control-surface); color: var(--qc-primary-text); }
+.ir-loader-body { display: grid; grid-auto-rows: minmax(0, 1fr); gap: .65cqw; min-height: 0; padding: 0 1% 1%; background: var(--qc-screen); }
+.ir-loader-channel { display: grid; grid-template-rows: 35% 65%; min-height: 0; overflow: hidden; border-radius: .8cqw; background: var(--qc-device-control-surface); }
+.ir-loader-channel.is-bypassed { opacity: .56; }
+.ir-loader-selector { display: grid; grid-template-columns: 12% minmax(0, 1fr) 12%; min-height: 0; border-bottom: 1px solid var(--qc-palette-111); background: var(--qc-palette-151517); }
+.ir-loader-state, .ir-loader-arrows { display: grid; grid-template-rows: 1fr 1fr; min-height: 0; }
+.ir-loader-state { border-right: 1px solid var(--qc-screen-background); }
+.ir-loader-arrows { border-left: 1px solid var(--qc-screen-background); }
+.ir-loader-state button, .ir-loader-arrows button { padding: 0; border: 0; border-bottom: 1px solid var(--qc-screen-background); background: var(--qc-palette-151517); color: var(--qc-palette-efefef); font: 600 2.1cqw var(--qc-font-device-plain); }
+.ir-loader-state button:last-child, .ir-loader-arrows button:last-child { border-bottom: 0; }
+.ir-loader-state button.is-active { color: var(--ir-accent); }
+/* The step arrows are this panel's own control, not a screen mark, so they take
+   the button's ink rather than the palette role the up selector carries for
+   directory-categories. */
+.ir-loader-arrows .qc-ui-icon-up path { fill: currentColor; }
+.ir-loader-state .qc-ui-icon { width: 2.4cqw; height: 2.4cqw; vertical-align: middle; }
+.ir-loader-name { display: flex; min-width: 0; flex-direction: column; align-items: center; justify-content: center; gap: .35cqw; padding: 0 1cqw; }
+.ir-loader-name small { color: var(--qc-palette-8c8d90); font: 700 1.05cqw var(--qc-font-device-plain); letter-spacing: .08em; }
+.ir-loader-name strong { max-width: 100%; overflow: hidden; color: var(--qc-screen-text-primary); font: 500 1.45cqw var(--qc-font-control); text-overflow: ellipsis; white-space: nowrap; }
+.ir-loader-controls { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); min-height: 0; }
+.ir-loader-controls .coros-parameter { border-bottom: 0; }
+.ir-loader-controls .parameter-name, .ir-loader-controls .parameter-value { font-size: 1.35cqw; }
+.ir-loader-controls .parameter-knob { width: 6.5cqw; }
+.ir-loader-room-controls { margin-bottom: 1%; }
+
+.parameter-empty { grid-column: 1 / -1; align-self: center; color: var(--qc-palette-aaa); font-size: 2.8cqw; }
+.coros-parameter-editor.is-full-screen .parameter-controls { background: var(--qc-device-control-surface); }
+
+/* Host affordances the device screen has no equivalent for: which tile the
+   trim panel is currently showing, and a way to clear an assignment now that
+   pedal 0 is confirmed to do that. Kept out of official-expression.css,
+   which is device chrome only, so the two kinds of rule stay visibly apart. */
+.expression-parameter-grid section.is-selected-tile { box-shadow: inset 0 0 0 2px var(--qc-screen-accent); }
+.expression-unassign { margin-top: .4cqw; padding: .3cqw .9cqw; border: 1px solid var(--qc-palette-ff7e79); border-radius: .5cqw; background: var(--qc-transparent); color: var(--qc-palette-ff7e79); font-size: 1.5cqw; justify-self: start; }
+.expression-unassign:disabled { opacity: .45; }
+
+/* Splitter/Mixer editor body interactivity - not a device fact, just the
+   affordance a mouse/keyboard host needs for a control the unit itself only
+   ever touches directly. Kept out of official-routing.css, which is device
+   chrome only, for the same reason the expression screen's own invented
+   rules stay out of official-expression.css. */
+.splitter-controls .routing-toggle { cursor: pointer; }
+.splitter-controls .routing-toggle.is-disabled { cursor: default; opacity: .45; }
+.splitter-knob { cursor: pointer; }
+
+.splitter-knob:disabled { cursor: default; opacity: .45; }

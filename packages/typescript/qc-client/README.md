@@ -1,0 +1,3 @@
+# qc-client
+
+Platform-neutral TypeScript gateway contract: the generated domain, gateway-method and payload types, the `GatewayTransport` interface and the shared result and state types built on them, and a few small helpers. It carries no device-derived names or colours: the demo snapshot and the device colour tables live in `@qc-remote/core` under `src/device-reference/`, which LICENSE carves out, so this package stays plain `MIT OR Apache-2.0`. It holds no cache, subscription or state-transition logic; state reconciliation lives in `@qc-remote/core`. It has no React, DOM, Tauri, or Node-specific dependency.

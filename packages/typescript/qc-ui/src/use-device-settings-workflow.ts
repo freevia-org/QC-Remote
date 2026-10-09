@@ -1,0 +1,203 @@
+import { useCallback, useState } from "react";
+import type { DeviceActionResult, DeviceIdentity, GeneralIntegerSetting, GeneralSettings, GeneralToggleSetting } from "@qc-remote/client";
+import { useGuardedMutation } from "./use-guarded-mutation.ts";
+import type { DeviceGatewayWorkflowOptions } from "./workflow-options";
+
+/** Section of the device's own Settings dialog - the header/left-nav pill the
+ * unit itself draws (coros-screen-fixtures.tsx's CorOsOfficialSettings).
+ * Account, System, Device, and Support are peers. MIDI is not a fifth peer:
+ * SETTINGS_DEVICE_ROWS (that fixture file's own
+ * shared row table) lists "MIDI" as the eighth Device row, and its own
+ * `view === "settings-midi"` branch still renders the header pill labelled
+ * "Device" - MIDI is a scrolled state of Device's row nav, not its own
+ * category. This hook and CorOsDeviceSettings both follow that, not the
+ * literal 4-way `view` union CorOsOfficialSettings's TypeScript happens to
+ * spell (an artifact of how the fixture's own two components split up, not a
+ * separate thing the device draws). */
+export type DeviceSettingsSection = "account" | "system" | "device" | "support";
+
+export const DEVICE_SETTINGS_ACCOUNT_ROWS = ["user", "backup"] as const;
+export type DeviceSettingsAccountRow = typeof DEVICE_SETTINGS_ACCOUNT_ROWS[number];
+
+export const DEVICE_SETTINGS_SYSTEM_ROWS = ["wifi", "updates", "brightness", "power", "volume", "storage", "factory"] as const;
+export type DeviceSettingsSystemRow = typeof DEVICE_SETTINGS_SYSTEM_ROWS[number];
+
+/** SETTINGS_DEVICE_ROWS in coros-screen-fixtures.tsx, verbatim order. */
+export const DEVICE_SETTINGS_DEVICE_ROWS = ["bypass", "scene-bypass", "stomp-bypass", "hold", "swap", "gig-access", "latency", "midi"] as const;
+export type DeviceSettingsDeviceRow = typeof DEVICE_SETTINGS_DEVICE_ROWS[number];
+
+export const DEVICE_SETTINGS_SUPPORT_ROWS = ["about", "info", "report", "diagnostics", "licenses"] as const;
+export type DeviceSettingsSupportRow = typeof DEVICE_SETTINGS_SUPPORT_ROWS[number];
+
+/** `holdTiming`'s six wire steps (`GeneralIntegerSetting`), and the
+ * `holdTimingMs` each one reads back as: 500ms to 1000ms in six steps. The
+ * millisecond figures are what the unit showed for indices 0, 3 and 5 (observed
+ * on a CorOS 4.1.0 unit, 2026-10-06). */
+export const HOLD_TIMING_STEPS_MS = [500, 600, 700, 800, 900, 1000] as const;
+
+/** `midiClockOut`'s wire ordinal for `setGeneralInteger`, against the string
+ * `generalSettings()` reads it back as: off/midiDinOnly/usbMidiOnly/
+ * bothUsbAndDinMidi, 0 through 3. */
+export const MIDI_CLOCK_OUT_VALUES = ["off", "midiDinOnly", "usbMidiOnly", "bothUsbAndDinMidi"] as const;
+export type MidiClockOutValue = typeof MIDI_CLOCK_OUT_VALUES[number];
+
+export type DeviceSettingsWorkflowOptions = DeviceGatewayWorkflowOptions;
+
+/**
+ * The device's own Settings screen (Account/System/Device/Support, with MIDI
+ * inside Device), reached from the Grid's own context menu (coros-ui.ts
+ * GRID_CONTEXT_MENU, action "settings") - never the generic app-preferences
+ * window `appWindows.open("settings")` opens (App.tsx's MenuBar "Settings…"
+ * item, untouched by this hook). `GeneralSettings` is device state, not
+ * preset state: it has no place on `PresetSnapshot` and no undo path either
+ * (`gateway.undo`/`redo` operate on the preset's command history, which
+ * device settings were never part of), so unlike every sibling workflow in
+ * this file's family this one carries no `snapshot`/`reconcile`/
+ * `recordHistory` - there is nothing of either shape to reconcile against or
+ * record.
+ *
+ * Every setter re-reads `generalSettings()` after a successful write instead
+ * of trusting an optimistic merge or a write's own `readback`, which keeps
+ * this hook honest on the virtual device: `setMasterVolumeAssignment`/
+ * `setSceneBypassBehavior` are real there but `generalSettings()` itself is
+ * not (virtual-gateway.ts's own "not offered by a virtual device" list), so
+ * the refresh is allowed to fail silently after a write that itself
+ * succeeded - the write's own `result.detail` notice already told the user
+ * what happened.
+ */
+export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions) {
+  const { gateway, pending, notice, fail } = options;
+  const guarded = useGuardedMutation(options, "changing device settings");
+  const [opening, setOpening] = useState<{ open: boolean; returnFocusTarget?: "grid-menu" }>({ open: false });
+  const { open, returnFocusTarget } = opening;
+  const [loading, setLoading] = useState(false);
+  const [settings, setSettings] = useState<GeneralSettings>();
+  const [identity, setIdentity] = useState<DeviceIdentity>();
+  // The unit opens Settings on System with its first row, Connection, selected
+  // (walked on the device from the Grid menu, twice: the Connection pane with
+  // its network list). corpus settings-system.png shows Brightness selected
+  // only because that capture tapped the row first. Which section and row the
+  // unit shows on a LATER open is not established by any frame, so the choice
+  // made here is simply kept for as long as this hook lives.
+  const [section, setSection] = useState<DeviceSettingsSection>("system");
+  const [accountRow, setAccountRow] = useState<DeviceSettingsAccountRow>("user");
+  const [systemRow, setSystemRow] = useState<DeviceSettingsSystemRow>("wifi");
+  const [deviceRow, setDeviceRow] = useState<DeviceSettingsDeviceRow>("bypass");
+  const [supportRow, setSupportRow] = useState<DeviceSettingsSupportRow>("about");
+  // `generalSettings()` projects no `midiThru` field at all - grep
+  // packages/typescript/qc-client/src/generated-payloads.ts's `GeneralSettings`
+  // interface - so unlike every other MIDI row this one has no authoritative
+  // read path to refresh from. Tracked locally, optimistically, from this
+  // hook's own successful writes only; `undefined` until the first one.
+  const [midiThru, setMidiThruState] = useState<boolean>();
+
+  const refresh = useCallback(async () => {
+    try {
+      setSettings(await gateway.generalSettings());
+    } catch {
+      // Reading is unavailable on the virtual device and possibly other
+      // gateways; leave whatever was last observed (every GeneralSettings
+      // field is optional, so the screen still renders, just without that
+      // row's live value) rather than surfacing a second error on top of a
+      // write that may have just succeeded.
+    }
+  }, [gateway]);
+
+  const openSettings = useCallback((returnFocusTarget?: "grid-menu") => {
+    setOpening({ open: true, returnFocusTarget });
+    setLoading(true);
+    void Promise.allSettled([
+      gateway.generalSettings().then(setSettings),
+      gateway.identity().then(setIdentity)
+    ]).then(([settingsResult, identityResult]) => {
+      if (settingsResult.status === "rejected" && identityResult.status === "rejected") fail(settingsResult.reason);
+    }).finally(() => setLoading(false));
+  }, [fail, gateway]);
+
+  const close = useCallback(() => setOpening({ open: false }), []);
+
+  const commit = useCallback(async (labelText: string, action: () => Promise<DeviceActionResult>) => {
+    await guarded.run({
+      progress: `${labelText}…`,
+      write: action,
+      settle: async (result) => {
+        notice(result.detail);
+        await refresh();
+      }
+    });
+  }, [guarded.run, notice, refresh]);
+
+  const setToggle = useCallback((setting: GeneralToggleSetting, label: string, enabled: boolean) =>
+    commit(`${enabled ? "Enabling" : "Disabling"} ${label}`, () => gateway.setGeneralToggle(setting, enabled)), [commit, gateway]);
+
+  const setInteger = useCallback((setting: GeneralIntegerSetting, label: string, value: number) =>
+    commit(`Setting ${label}`, () => gateway.setGeneralInteger(setting, value)), [commit, gateway]);
+
+  // -- Device ---------------------------------------------------------------
+  const setGlobalBypass = useCallback(async (category: "cab" | "ir", row: 1 | 2 | 3 | 4, bypassed: boolean) => {
+    const current = category === "cab" ? settings?.globalBypassCab : settings?.globalBypassIr;
+    const rows: [boolean, boolean, boolean, boolean] = [
+      row === 1 ? bypassed : current?.row1 ?? false,
+      row === 2 ? bypassed : current?.row2 ?? false,
+      row === 3 ? bypassed : current?.row3 ?? false,
+      row === 4 ? bypassed : current?.row4 ?? false
+    ];
+    const cab = category === "cab" ? rows : [settings?.globalBypassCab?.row1 ?? false, settings?.globalBypassCab?.row2 ?? false, settings?.globalBypassCab?.row3 ?? false, settings?.globalBypassCab?.row4 ?? false] as [boolean, boolean, boolean, boolean];
+    const ir = category === "ir" ? rows : [settings?.globalBypassIr?.row1 ?? false, settings?.globalBypassIr?.row2 ?? false, settings?.globalBypassIr?.row3 ?? false, settings?.globalBypassIr?.row4 ?? false] as [boolean, boolean, boolean, boolean];
+    await commit(`Updating Global Bypass row ${row}`, () => gateway.setGlobalBypass(cab, ir));
+  }, [commit, gateway, settings]);
+
+  const setSceneBypassBehavior = useCallback((behavior: "alwaysOverwrite" | "nonstompOverwrite" | "neverOverwrite") =>
+    commit("Setting Scene Bypass Behavior", () => gateway.setSceneBypassBehavior(behavior)), [commit, gateway]);
+
+  const setStompModeAutoAssign = useCallback((enabled: boolean) => setToggle("stompModeAutoAssign", "Stomp Mode Bypass", enabled), [setToggle]);
+  const setHoldTimingIndex = useCallback((index: number) => setInteger("holdTiming", "Hold Timing", index), [setInteger]);
+  const setSwapTempoTunerAccess = useCallback((enabled: boolean) => setToggle("swapTempoTunerAccess", "Swap Tempo and Tuner", enabled), [setToggle]);
+  const setGigViewStompAccess = useCallback((enabled: boolean) => setToggle("gigViewStompAccess", "Gig View Access", enabled), [setToggle]);
+  const setDynamicDelayCompensation = useCallback((enabled: boolean) => setToggle("dynamicDelayCompensation", "Latency Compensation", enabled), [setToggle]);
+
+  // -- MIDI (the Device row's own eighth entry) ------------------------------
+  const setMidiChannel = useCallback((channel: number) => setInteger("midiChannel", "MIDI Channel", channel), [setInteger]);
+  const setMidiThru = useCallback(async (enabled: boolean) => {
+    await guarded.run({
+      progress: `${enabled ? "Enabling" : "Disabling"} MIDI Thru…`,
+      write: () => gateway.setMidiThru(enabled),
+      settle: (result) => {
+        notice(result.detail);
+        setMidiThruState(enabled);
+      }
+    });
+  }, [gateway, guarded.run, notice]);
+  const setMidiOverUsb = useCallback((enabled: boolean) => setToggle("midiOverUsb", "MIDI Over USB", enabled), [setToggle]);
+  const setIgnoreDuplicatePc = useCallback((enabled: boolean) => setToggle("ignoreDuplicatePc", "Ignore Duplicate PC", enabled), [setToggle]);
+  const setMidiClockOut = useCallback((value: MidiClockOutValue) => setInteger("midiClockOut", "MIDI Clock Out", MIDI_CLOCK_OUT_VALUES.indexOf(value)), [setInteger]);
+  const setMidiClockIn = useCallback((enabled: boolean) => setToggle("midiClockIn", "MIDI Clock In", enabled), [setToggle]);
+
+  // -- System -----------------------------------------------------------------
+  const setScreenBrightness = useCallback((value: number) => setInteger("screenBrightness", "Screen brightness", value), [setInteger]);
+  const setLedBrightness = useCallback((value: number) => setInteger("ledBrightness", "LED brightness", value), [setInteger]);
+  const setDimmedLedBrightness = useCallback((value: number) => setInteger("dimmedLedBrightness", "Dimmed LED brightness", value), [setInteger]);
+  // Which modes dim their LEDs: the three marks along the bottom of Brightness.
+  const setModeDimmed = useCallback((mode: "PRESET" | "SCENE" | "STOMP", enabled: boolean) =>
+    mode === "PRESET" ? setToggle("presetDimmed", "Preset mode dimmed LEDs", enabled)
+      : mode === "SCENE" ? setToggle("sceneDimmed", "Scene mode dimmed LEDs", enabled)
+      : setToggle("stompDimmed", "Stomp mode dimmed LEDs", enabled), [setToggle]);
+  const setMasterVolumeAssignment = useCallback((out12: boolean, out34: boolean, send12: boolean, headphones: boolean) =>
+    commit("Setting Master Volume Knob assignment", () => gateway.setMasterVolumeAssignment(out12, out34, send12, headphones)), [commit, gateway]);
+
+  return {
+    open, returnFocusTarget, openSettings, close, loading, refresh, announce: notice,
+    settings, identity, midiThru,
+    section, setSection,
+    accountRow, setAccountRow,
+    systemRow, setSystemRow,
+    deviceRow, setDeviceRow,
+    supportRow, setSupportRow,
+    pending,
+    setGlobalBypass, setSceneBypassBehavior, setStompModeAutoAssign, setHoldTimingIndex, setSwapTempoTunerAccess, setGigViewStompAccess, setDynamicDelayCompensation,
+    setMidiChannel, setMidiThru, setMidiOverUsb, setIgnoreDuplicatePc, setMidiClockOut, setMidiClockIn,
+    setScreenBrightness, setLedBrightness, setDimmedLedBrightness, setModeDimmed, setMasterVolumeAssignment
+  };
+}
+
+export type DeviceSettingsWorkflow = ReturnType<typeof useDeviceSettingsWorkflow>;

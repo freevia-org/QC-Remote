@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">QC Remote</title>
+  <desc id="desc">An original top-down floor-modeler symbol with a central routing screen, volume encoder, navigation controls, and eight footswitches.</desc>
+  <defs>
+    <linearGradient id="back" x1="70" y1="45" x2="440" y2="480" gradientUnits="userSpaceOnUse"><stop stop-color="#293039"/><stop offset="1" stop-color="#090c10"/></linearGradient>
+    <linearGradient id="deck" x1="256" y1="82" x2="256" y2="452" gradientUnits="userSpaceOnUse"><stop stop-color="#4d545c"/><stop offset=".58" stop-color="#2b3036"/><stop offset="1" stop-color="#1a1e23"/></linearGradient>
+    <linearGradient id="screen" x1="153" y1="124" x2="369" y2="263" gradientUnits="userSpaceOnUse"><stop stop-color="#101923"/><stop offset="1" stop-color="#05080b"/></linearGradient>
+    <filter id="glow" x="-90%" y="-90%" width="280%" height="280%"><feGaussianBlur stdDeviation="5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#back)"/>
+  <rect x="28" y="101" width="462" height="325" rx="42" fill="#11151a" opacity=".72"/>
+  <rect x="25" y="92" width="462" height="325" rx="42" fill="url(#deck)" stroke="#707983" stroke-width="8"/>
+  <path d="M40 371h432" stroke="#11151a" stroke-width="4" opacity=".7"/>
+  <rect x="139" y="115" width="238" height="145" rx="17" fill="#090c10" stroke="#77818b" stroke-width="7"/>
+  <rect x="153" y="129" width="210" height="117" rx="9" fill="url(#screen)"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M170 163h50l22 22h38l22-22h44" stroke="#5edfff" stroke-width="8"/><path d="M170 216h42l22-22h46l22 22h44" stroke="#6cf09b" stroke-width="8"/></g>
+  <g fill="#d9e0e6" stroke="#69737d" stroke-width="6"><circle cx="78" cy="182" r="31"/><circle cx="444" cy="182" r="17"/><circle cx="68" cy="310" r="20"/><circle cx="162" cy="310" r="20"/><circle cx="256" cy="310" r="20"/><circle cx="350" cy="310" r="20"/><circle cx="444" cy="310" r="20"/><circle cx="68" cy="383" r="20"/><circle cx="162" cy="383" r="20"/><circle cx="256" cy="383" r="20"/><circle cx="350" cy="383" r="20"/><circle cx="444" cy="383" r="20"/></g>
+  <g fill="#8b949d"><circle cx="68" cy="281" r="5"/><circle cx="162" cy="281" r="5"/><circle cx="256" cy="281" r="5"/><circle cx="350" cy="281" r="5"/><circle cx="444" cy="153" r="5"/><circle cx="444" cy="281" r="5"/><circle cx="68" cy="354" r="5"/><circle cx="162" cy="354" r="5"/><circle cx="256" cy="354" r="5"/><circle cx="350" cy="354" r="5"/><circle cx="444" cy="354" r="5"/></g>
+  <path d="M444 158l-7 9h14Zm0 112l-7-9h14Z" fill="#d9e0e6"/>
+  <g filter="url(#glow)"><g fill="#5edfff"><circle cx="68" cy="281" r="6"/><circle cx="256" cy="281" r="6"/></g><g fill="#6cf09b"><circle cx="162" cy="354" r="6"/><circle cx="350" cy="354" r="6"/></g><circle cx="444" cy="354" r="6" fill="#f0f3f5"/></g>
+</svg>
