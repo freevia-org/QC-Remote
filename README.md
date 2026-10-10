@@ -26,8 +26,8 @@ tools. QC Remote is free, open-source software from Freevia.
 
 The [release page](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.182)
 has release notes and SHA-256 checksums for the signed downloads.
-These are prerelease builds; hardware and installed-device acceptance are not
-claimed by this release. See the [changelog](CHANGELOG.md) for version history.
+These are early, pre-1.0 releases; hardware and installed-device acceptance are
+not claimed by this release. See the [changelog](CHANGELOG.md) for version history.
 
 QC Remote was developed and tested with Quad Cortex firmware (CorOS) 4.1.0. It
 does not contain, replace, or modify Quad Cortex firmware, and it does not
@@ -108,10 +108,12 @@ only confirmation, and the paired app does not ask a second time.
 - **`packages/rust/qc-windows-midi/`**, **`packages/rust/qc-windows-process/`**,
   **`packages/rust/quadcortex-windows/`**, **`packages/rust/qc-owner-only-file/`**,
   **`packages/rust/qc-relay-client/`**, **`packages/rust/qc-relay-protocol/`**,
-  **`packages/rust/quadcortex-android/`** — supporting Rust crates: Windows MIDI
-  transport, Windows process-liveness checks, the Windows USB/HID transport the
-  broker uses, owner-only credential file storage, the outbound relay client,
-  its shared wire frames, and the Android JNI binding.
+  **`packages/rust/quadcortex-android/`**, **`packages/rust/qc-broker-framing/`**
+  — supporting Rust crates: Windows MIDI transport, Windows process-liveness
+  checks, the Windows USB/HID transport the broker uses, owner-only credential
+  file storage, the outbound relay client, its shared wire frames, the Android
+  JNI binding, and the length-prefixed framing that local broker clients and
+  servers share.
 - **`packages/typescript/{qc-client,qc-core,qc-form-factors,qc-theme,qc-ui}`**
   — the shared frontend layer used by both apps: generated action/gateway
   bindings, device-state reducers, form-factor-aware layout, the shared
@@ -126,8 +128,11 @@ only confirmation, and the paired app does not ask a second time.
   are generated from and tested against: the device action catalogue
   (`qc-actions.v1.json`), the gateway method list (`gateway-methods.v1.json`),
   the device domain model (`qc-domain.v1.json`), the relay wire profile
-  (`qc-relay-profile.v1.json`), and the broker and tray schemas
-  (`native-broker.v1.schema.json`, `broker-tray-surface.v1.json`). The
+  (`qc-relay-profile.v1.json`), the broker and tray schemas
+  (`native-broker.v1.schema.json`, `broker-tray-surface.v1.json`), and the host
+  policy (`qc-host-policy.v1.json`: the suspended-device and uncertain-effect
+  refusal markers, the preset-directory refresh message, and the dispatch kinds
+  the Android host serves from its suspension cache). The
   `generated_*`, `generated-*` and `Generated*` files in the tree are snapshots
   of these contracts. Their generators and additional reference specifications remain private.
   Run `npm run contracts:check` for public value-level drift checks, and propose contract changes in an issue or pull request
@@ -175,8 +180,10 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-CI builds and tests the Rust workspace on `windows-latest` only; several
-crates are Windows-specific.
+On pull requests, CI builds and tests the Rust workspace on `windows-latest`
+only; several crates are Windows-specific. A second job also tests and documents
+the `quadcortex` crate on `ubuntu-latest`. A push to `master` runs only the
+public-history audit.
 
 ### TypeScript packages and apps
 

@@ -7,6 +7,61 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## Released 10 October 2026 — Windows 0.1.182 / Android 0.3.36
+
+Changes since Windows 0.1.181 / Android 0.3.35.
+
+### Windows
+
+- USB startup progress is reported more precisely. The device
+  broker now looks for a Quad Cortex before it reports `connecting`. Before,
+  a computer with no unit attached reported an opening phase on every retry
+  even though there was nothing to open. Now `searching` means no matching unit
+  was found (the broker stays in it while it retries), and `connecting` means a
+  matching unit was found and its USB connection is being opened. The Windows
+  app treats `connecting` as the first sign that a unit is present: its status
+  text moves from "Looking for a Quad Cortex…" to "Quad Cortex found; opening
+  its USB connection…", then "USB open; handshaking with the Quad Cortex…" and
+  "Quad Cortex connected; synchronizing its live state…", and the
+  synchronization progress bar starts at the first of these. The area where the
+  preset name goes shows "Opening the Quad Cortex…", "Handshaking with the Quad
+  Cortex…" or "Synchronizing the Quad Cortex…" while it connects.
+- A reconnect or session-reset request made while the broker is searching, and
+  while USB enumeration shows no matching unit (the selected one, or any unit
+  when none is selected), now returns the searching state at once instead of
+  waiting for the ready timeout. The search stays armed, so a unit plugged in
+  afterwards is still picked up. The connection epoch, and the counters it
+  resets, now start when a unit is found rather than on every retry.
+- The broker publishes a phase update when only its detail text changes, not
+  just when the phase or the connected or synchronized flag changes.
+- Known limitation: the published domain contract
+  (`contracts/public/qc-domain.v1.json`) still maps the broker phase
+  `connecting` to `searching` for clients that normalize broker phases, and
+  that mapping was not changed. The Windows app's own phase listener reads the
+  raw phase, but the result of a reconnect or reset call is normalized, so one
+  that arrives while the unit is being opened may still read as searching.
+- Managed MCP routes are repaired at every start. Once per start of the app, on
+  a background thread, QC Remote checks the `qc-remote` entry it manages in the
+  configuration of ChatGPT Desktop/Codex, Google Antigravity, Bionic (or
+  pre-rename LM Studio) and Jan. An entry counts as QC Remote's own when it
+  carries the managed client identity in its `env` and its command's file name
+  matches the QC Remote executable (compared without regard to case); the
+  folder may differ, so an app that moved is repaired. Such an entry is now
+  rewritten with the current definition whenever it differs from what this
+  build would write, unless a newer build recorded it. That includes a changed
+  executable path, an older recorded version, arguments or environment keys you
+  added to that entry, and a disabled flag: a route you switched off in the
+  host is switched back on. Earlier builds left an entry you had edited, and a
+  route you had disabled, as they were. A command that names another program,
+  or an entry without a valid managed identity, is still left alone, and so are
+  your other MCP servers. A timestamped backup copy of the host's configuration
+  file is made before the entry is rewritten.
+
+### Android
+
+- Version change only (0.3.36, version code 41). The Android app's code is
+  otherwise unchanged since 0.3.35.
+
 ## Released 10 October 2026 — Windows 0.1.181 / Android 0.3.35
 
 Changes since Windows 0.1.170 / Android 0.3.29.

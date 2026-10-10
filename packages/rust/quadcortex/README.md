@@ -30,10 +30,11 @@ two such hosts sharing this one implementation.
   stabilized in 1.87. The dependency floor is lower (Rust 1.85, `prost` 0.14).
   The test suite also builds and passes on 1.87
   (`cargo +1.87 test -p quadcortex --locked`). CI runs that command in its
-  `rust-msrv` job, on pushes to `master` and on pull requests, besides building
-  on current stable. A dependency update may raise the minimum. When you
-  depend on the crate without `--locked`, Cargo may resolve newer dependency
-  versions with a higher floor than the one verified here.
+  `rust-msrv` job on pull requests, besides building and testing on current
+  stable; a push to `master` runs only the public-history audit. A dependency
+  update may raise the minimum. When you depend on the crate without `--locked`,
+  Cargo may resolve newer dependency versions with a higher floor than the one
+  verified here.
 - **Device compatibility.** The compatibility profile (`quadcortex::profile`)
   follows the wire protocol of Neural DSP Cortex Control 4.1.0 and the USB
   vendor/product identifiers it lists. This repository records no per-firmware

@@ -1,3 +1,5 @@
+# Tutorial: read the current preset and watch state updates
+
 A step-by-step walk through the job most programs start with: get the unit's
 current preset and then follow its state as it changes. Each step names the type
 involved and says what it does. Steps 1 to 6 run offline against synthetic

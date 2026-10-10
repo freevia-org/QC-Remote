@@ -1,3 +1,5 @@
+# Transports: what the crate provides and what the host provides
+
 What the crate gives you for the USB side, and what your host program must
 supply. The short version: the crate decides *what* goes on the wire and *when*,
 and never touches the wire itself.
