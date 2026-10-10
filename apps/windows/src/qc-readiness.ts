@@ -135,8 +135,8 @@ export function qcConnectionDuringBrokerPhase(
  * the moment it stops being the active view), so there is nothing else to
  * special-case here.
  */
-export function qcShouldConnectOnDetection(connection: ConnectionState): boolean {
-  if (connection.source === "virtual") return true;
+export function qcShouldConnectOnDetection(connection: ConnectionState, demoCanYield = true): boolean {
+  if (connection.source === "virtual") return demoCanYield;
   if (["ready", "disconnected", "discovering", "opening", "handshaking", "syncing"].includes(connection.phase)) return false;
   return !connection.detail.startsWith("Live synchronization");
 }
