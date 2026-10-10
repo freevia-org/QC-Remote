@@ -1,0 +1,1537 @@
+.qc-screen-fixture-root { position: absolute; inset: 0; }
+/*
+ * Many device-accurate fixture screens carry literal 800x480 measurements:
+ * their socket artwork, the Gig-mode marks and several selector tracks are
+ * intentionally one device pixel per CSS pixel. Rendering those pages straight
+ * into a narrower Android bezel made only their fixed-pixel pieces stay large
+ * while cqw-based neighbours shrank. Keep one canonical canvas, then scale the
+ * entire fixture as a unit. `cqw` on this container is 800px for descendants;
+ * in its own transform it resolves to the outer bezel. The actual bezel is
+ * 16:9 while these fixtures are 800:480, so scale each axis to the bezel
+ * independently: scaling only the width lets every panel spill below it.
+ *
+ * The live Grid deliberately does not use this class: it is an SVG viewBox and
+ * already scales natively, while its HTML editor overlays use their own query
+ * units.
+ */
+.qc-screen-fixture-root.is-canonical-canvas {
+  inset: 0 auto auto 0;
+  width: 800px;
+  height: 480px;
+  container-type: inline-size;
+  transform: scale(calc(100cqw / 800px), calc(100cqh / 480px));
+  transform-origin: top left;
+}
+@scope (.qc-screen-fixture-root) {
+@keyframes qc-tempo-led-pulse {
+  0%, 12% { opacity: 1; filter: brightness(1.25); }
+  38%, 100% { opacity: .16; filter: brightness(.55); }
+}
+
+.hardware-switch.is-tempo-pulse.is-active .switch-led::before {
+  animation: qc-tempo-led-pulse var(--tempo-period, 1s) steps(2, jump-none) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hardware-switch.is-tempo-pulse.is-active .switch-led::before { animation: none; }
+}
+
+/* CorOS in-screen pickers are shared by desktop and mobile clients. */
+.coros-vector-empty-hit {
+  position: absolute;
+  z-index: 6;
+  width: 7.5%;
+  height: 12.5%;
+  padding: 0;
+  transform: translate(-50%, -50%);
+  border: 0;
+  border-radius: 12px;
+  background: var(--qc-transparent);
+  cursor: pointer;
+}
+.coros-vector-empty-hit:focus-visible,
+.coros-vector-empty-hit:hover { outline: 1px solid var(--qc-palette-ffffff55); }
+.coros-picker-dismiss,
+.coros-device-dismiss {
+  position: absolute;
+  z-index: 30;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  /* The backdrop must be dimmed as well as washed to keep every covered
+     surface at the device value; one flat overlay does both. */
+  background: var(--qc-palette-rgba-72-75-72-a917);
+  cursor: default;
+}
+.coros-route-picker {
+  position: absolute;
+  z-index: 31;
+  top: 6.25%;
+  bottom: 6.25%;
+  width: 33.75%;
+  overflow: hidden;
+  border-radius: 1.25cqw;
+  background: var(--qc-screen-surface-base);
+  color: var(--qc-screen-text-primary);
+  font-family: var(--qc-font-device-plain);
+}
+.coros-route-picker.is-input { left: 7.25%; }
+.coros-route-picker.is-output { right: 7.25%; }
+.coros-route-picker header {
+  height: 16%;
+  display: flex;
+  align-items: center;
+  gap: 7%;
+  padding: 0 8%;
+  border-bottom: 1px solid var(--qc-palette-343636);
+  font-size: clamp(10px, 2.5cqw, 20px);
+  font-weight: 400;
+}
+.route-symbol {
+  width: 3.125cqw;
+  height: 3.125cqw;
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--qc-screen-text-primary);
+  font-size: 3.125cqw;
+  line-height: 1;
+}
+.route-symbol svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.route-symbol.route-fx,
+.route-symbol.route-unused { border: 1px solid var(--qc-palette-414545); border-radius: 4px; font-size: 10px; }
+.route-symbol.route-unused { font-size: 2.5cqw; font-weight: 200; }
+.route-picker-list { height: 84%; overflow-y: auto; padding: 5% 5% 6%; scrollbar-color: var(--qc-palette-3a3c3b) var(--qc-transparent); scrollbar-width: thin; }
+.route-picker-list > b { position: sticky; z-index: 1; top: 0; display: block; margin: 0 3% 4%; padding: .5cqw 0; background: var(--qc-screen-surface-base); color: var(--qc-palette-dedede); font-size: clamp(7px, 1.5cqw, 12px); font-weight: 400; }
+.route-picker-list button {
+  width: 100%;
+  min-height: 7.5cqw;
+  display: flex;
+  align-items: center;
+  gap: 7%;
+  padding: 0 3%;
+  border: 0;
+  background: var(--qc-transparent);
+  color: var(--qc-screen-text-primary);
+  font: 400 clamp(9px, 2.5cqw, 20px) var(--qc-font-device-plain);
+  text-align: left;
+}
+.route-picker-list button:hover,
+.route-picker-list button:focus-visible { outline: 0; background: var(--qc-palette-282a29); }
+.coros-route-picker.is-output header { display: none; }
+.coros-route-picker.is-output .route-picker-list { height: 100%; }
+.coros-route-picker.is-output .route-picker-list > b:first-child { display: none; }
+.coros-route-picker.is-output .route-picker-list button { padding-left: 6%; }
+.coros-route-picker.is-output .route-picker-list button.output-usb-tail { transform: translateY(-2.5cqw); }
+
+/* The device browser's wash over the half-screen it covers is a per-channel
+   affine map: out = ink * (66, 69, 66) / 255 + (66, 69, 66), truncated to the
+   5/6/5 ladder. Red and blue take the slope 66/255 and green 69/255, so a
+   single alpha composite - which gives every channel one slope - cannot
+   express it at all. Two layers do, and exactly: multiply the covered half
+   by 848a84, then lay 848a84 at half alpha over that. .5 * (ink * 132/255)
+   + 66 is the map. */
+.coros-vector-screen:has(> .coros-device-dismiss)::before { content: ""; position: absolute; z-index: 29; right: 50%; top: 0; bottom: 0; left: 0; background: var(--qc-palette-848a84); mix-blend-mode: multiply; pointer-events: none; }
+.coros-device-dismiss { right: 50%; width: 50%; background: var(--qc-palette-rgba-132-138-132-a50); }
+.coros-device-empty-slot { position: absolute; z-index: 31; left: 322px; top: 206px; width: 70px; height: 70px; display: grid; place-items: center; border-radius: 14px; background: var(--qc-screen); color: var(--qc-primary-text); }
+.coros-device-empty-slot .qc-ui-icon { width: 32%; height: 32%; }
+.coros-device-browser {
+  position: absolute;
+  z-index: 31;
+  inset: 0 0 0 50%;
+  display: grid;
+  grid-template-columns: 26% 74%;
+  overflow: hidden;
+  background: var(--qc-screen-surface-raised);
+  color: var(--qc-screen-text-primary);
+  font-family: var(--qc-font-device-plain);
+}
+.coros-device-browser:not(:has(.coros-device-models)) { grid-template-columns: 100%; }
+.coros-device-browser:has(.coros-device-models) > nav button { grid-template-columns: 1fr; justify-items: center; padding-left: 0; }
+.coros-device-browser:has(.coros-device-models) > nav button > span,
+.coros-device-browser:has(.coros-device-models) > nav button > b { display: none; }
+/* The category list runs on a 78px pitch whose first row starts at y 8 with
+   the list unscrolled - a 70px plate centred in the row, so its 3px border
+   puts the coloured ring at y 15. The fixture's own marginTop already
+   carries a -1, so the list inset here has to be 9px for the row to land at
+   8; 2% of the 400px column was 8 and left every plate and glyph a pixel
+   high. */
+.coros-device-browser > nav { overflow-y: auto; padding: 9px 0 8px; border-right: 1px solid var(--qc-palette-303332); scrollbar-width: none; }
+/* No scrollbar here: this pane's thumb is drawn as a ::after in
+   remaining-fixtures-fixes.css, parked where the list is scrolled to rather
+   than where a live scrollbar would put it. The thin rail this used to ask
+   for was already switched back off there. */
+.coros-device-browser:not(:has(.coros-device-models)) > nav { width: calc(100% - 8px); }
+.coros-device-browser > nav button {
+  position: relative;
+  width: 100%;
+  min-height: 9.75cqw;
+  display: grid;
+  grid-template-columns: 10.5cqw 1fr;
+  align-items: center;
+  padding: 0 0 0 18px;
+  border: 0;
+  background: var(--qc-transparent);
+  color: var(--qc-screen-text-primary);
+  text-align: left;
+}
+.coros-device-browser > nav button.is-active { background: var(--qc-screen-surface-raised); }
+.coros-device-browser > nav i {
+  width: 8.5cqw;
+  height: 8.5cqw;
+  display: grid;
+  place-items: center;
+  border: 3px solid var(--qc-screen-background);
+  border-radius: 1.875cqw;
+  box-shadow: inset 0 0 0 2px var(--device-color);
+  background: var(--qc-screen);
+  color: var(--qc-primary-text);
+  font: normal 3.75cqw var(--qc-font-device-plain);
+}
+.coros-device-browser > nav i > svg { width: 40px; height: 40px; }
+/* Per-category bearings: these glyphs are not centred on their own art the
+   way the rest are, so each carries a whole-pixel offset between our ink and
+   the device's. Derived against the 40px glyph box and the 9px list inset
+   above - the old values were tuned to a 60% glyph. */
+.coros-device-browser > nav button[data-category="Equalizer"] svg { transform: translate(1px, 4px); }
+.coros-device-browser > nav button[data-category="IR Loader"] svg { transform: translate(1px, 3px); }
+.coros-device-browser > nav button[data-category="Wah"] svg { transform: translate(1px, 2px); }
+.coros-device-browser > nav button[data-category="FX Loop"] svg { transform: translate(1px, 1px); }
+.coros-device-browser > nav button[data-category="Looper"] svg { transform: translate(1px, 0); }
+.coros-device-browser > nav button[data-category="Utility"] svg { transform: translate(1px, -1px); }
+/* The seven the deeper lists carry sit one pixel the other way, matching the
+   device's own crop coordinates rather than the manual's sprite sheet. */
+.coros-device-browser > nav button[data-category="Compressor"] svg,
+.coros-device-browser > nav button[data-category="Filter"] svg,
+.coros-device-browser > nav button[data-category="Modulation"] svg,
+.coros-device-browser > nav button[data-category="Morph"] svg,
+.coros-device-browser > nav button[data-category="Pitch"] svg,
+.coros-device-browser > nav button[data-category="Reverb"] svg,
+.coros-device-browser > nav button[data-category="Synth"] svg { transform: translate(1px, -1px); }
+/* The unit draws the same nineteen marks down several rails, and the two rules
+   above reach only the one this file calls the device browser. The remaining
+   six - plugins, amp, capture, cab, overdrive, delay - are anchored to
+   `device-favorites` and `device-presets-user`, which are the Favourites/search
+   rail (`.capture-library-rail`, styled in remaining-fixtures-fixes.css) and the
+   preset browser's own rail. Both draw the 40px glyph box one pixel high, and
+   the preset rail one pixel right as well: its 103px column centres a 66px
+   plate on a half pixel, and the raster falls the wrong side of it.
+
+   The art needs no bearing of its own: rasterised in its own 40 units it
+   matches every declared crop, and all nineteen marks are placed wrong, not
+   drawn wrong. What delay and cab still miss is art, not bearing: delay's
+   stipple layer is drawn thinner than the unit's.
+
+   The preset rail's horizontal offset belongs on the plate, not the mark.
+   Giving that rail the unit's own 70px chip needs a 102px content box to
+   centre it on a whole pixel (see remaining-fixtures-fixes.css), and that box
+   centres the 40px glyph on x 31 outright instead of on the half pixel this
+   -1px was rounding off. Plate and mark are one pixel apart on the same axis,
+   so correcting one without the other breaks it; both together hold every
+   mark in place and gain the plate's own pixels back. */
+.capture-library-rail button svg { transform: translate(0, 1px); }
+.coros-device-presets > nav button svg { transform: translate(0, 1px); }
+/* A fourth rail, the one the DSP-limited browser draws over the Grid
+   (`.coros-dsp-browser`, in remaining-fixtures-fixes.css). Its rows keep the
+   unit's 78px pitch but start two pixels right and one pixel low of it, and
+   share the same (31, 28) origin the other rails have. */
+.coros-dsp-browser > nav button svg { transform: translate(-2px, -1px); }
+.coros-device-browser > nav i > span { font-size: 3.75cqw; }
+.coros-device-browser > nav span { font-size: clamp(8px, 1.9cqw, 16px); }
+.coros-device-browser > nav b { position: absolute; right: 4%; top: 50%; padding: 7px 16px; border-radius: 14px; background: var(--qc-scene-badge); color: var(--qc-palette-181818); font-size: 11px; font-weight: 400; transform: translateY(-50%); }
+.coros-device-models { overflow-y: auto; background: var(--qc-screen-surface-control); --qc-scroll-thumb: var(--qc-palette-343736); }
+.coros-device-models header { position: sticky; z-index: 1; top: 0; height: var(--qc-nav-bar-height); display: flex; background: var(--qc-screen-surface-raised); }
+.coros-device-models header button { width: 34%; border: 0; background: var(--qc-palette-141615); color: var(--qc-palette-858585); font-size: clamp(8px, 1.9cqw, 16px); }
+.coros-device-models header button.is-active { border-radius: 10px 10px 0 0; background: var(--qc-palette-303231); color: var(--qc-screen-text-primary); }
+.coros-device-models > button { width: 100%; min-height: 7.375cqw; display: flex; align-items: center; justify-content: space-between; padding: 0 3% 0 6%; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: clamp(8px, 1.9cqw, 16px); text-align: left; }
+.coros-device-models > button:hover,
+.coros-device-models > button:focus-visible { outline: 0; background: var(--qc-palette-242625); }
+.coros-device-models > button i { width: 4.875cqw; height: 4.875cqw; display: grid; place-items: center; border-radius: 1.125cqw; background: var(--qc-palette-313431); color: var(--qc-screen-text-muted); font-style: normal; }
+.coros-device-models > button i svg { width: 62%; height: 62%; }
+.device-model-pin { display: inline-block; margin-right: 1cqw; color: var(--qc-palette-20ef59); font-size: 1.5cqw; transform: rotate(-18deg); }
+.coros-device-preset-tip {
+  position: absolute;
+  z-index: 33;
+  left: 2%;
+  top: 3.5%;
+  width: 46%;
+  min-height: 19.4%;
+  display: grid;
+  align-content: center;
+  gap: .75cqw;
+  padding: 1.4cqw;
+  border: 1px solid var(--qc-palette-00a8ff);
+  border-radius: 1cqw;
+  background: var(--qc-palette-1838ff);
+  color: var(--qc-route-text);
+  font: 400 clamp(8px, 1.9cqw, 16px)/1.35 var(--qc-font-device-plain);
+}
+.coros-device-preset-tip strong { font-weight: 400; }
+.coros-device-preset-tip > button { position: absolute; top: .35cqw; right: .75cqw; padding: 0; border: 0; background: var(--qc-transparent); color: var(--qc-route-text); font-size: 3.5cqw; line-height: 1; }
+
+/* Manual-derived Splitter/Mixer and empty-slot states. */
+.coros-routing-screen { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-background); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
+.routing-grid-diagram { position: absolute; inset: 0 0 auto; width: 100%; height: 52.1%; }
+.routing-editor-panel { position: absolute; inset: 48% 0 0; border-top: 1px solid var(--qc-palette-333333); background: var(--qc-palette-171717); }
+.routing-editor-panel > header { height: 20%; display: flex; align-items: center; border-bottom: 1px solid var(--qc-palette-333333); background: var(--qc-palette-111); }
+.routing-editor-panel > header button { width: 6%; height: 100%; border: 0; border-right: 1px solid var(--qc-palette-292929); background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 3cqw; }
+.routing-editor-panel > header span { display: flex; min-width: 28%; flex-direction: column; padding-left: 2%; line-height: 1.08; }
+.routing-editor-panel > header span small { color: var(--qc-palette-a8a8a8); font-size: 1.2cqw; }
+.routing-editor-panel > header span strong { color: var(--qc-splitter-accent); font-size: 2.1cqw; font-weight: 500; }
+.routing-editor-panel.is-mixer > header span strong { color: var(--qc-palette-e73e60); }
+.routing-editor-panel > header i { flex: 1; }
+.routing-editor-panel > header b { padding: 0 2.5%; color: var(--qc-screen-text-primary); font-size: 1.6cqw; font-weight: 400; }
+.routing-editor-panel > header em { width: 7%; color: var(--qc-screen-text-primary); font-size: 2.4cqw; font-style: normal; text-align: center; }
+.coros-routing-screen.is-placement > header { position: absolute; z-index: 2; top: 2.5%; left: 4%; display: flex; flex-direction: column; }
+.coros-routing-screen.is-placement > header strong { font-size: 2.2cqw; font-weight: 500; }
+.coros-routing-screen.is-placement > header span { color: var(--qc-palette-999); font-size: 1.45cqw; }
+.coros-routing-screen.is-placement .routing-grid-diagram { top: 8%; height: 55%; }
+.placement-target { opacity: .58; }
+.placement-target.is-active { opacity: 1; filter: drop-shadow(0 0 7px var(--qc-palette-31f36b)); }
+.routing-placement-choices { position: absolute; inset: 63% 0 0; display: grid; grid-template-columns: 19% 19% 1fr; gap: 1.5%; align-items: center; padding: 2% 5%; border-top: 1px solid var(--qc-palette-282828); background: var(--qc-palette-151515); }
+.routing-placement-choices button { height: 74%; display: flex; align-items: center; gap: 8%; padding: 0 10%; border: 1px solid var(--qc-palette-3b3b3b); border-radius: .6cqw; background: var(--qc-palette-222222); color: var(--qc-screen-text-primary); }
+.routing-placement-choices button:first-child { border-color: var(--qc-splitter-accent); }
+.routing-placement-choices button:nth-child(2) { border-color: var(--qc-palette-e73e60); }
+.routing-placement-choices button svg { width: 3.8cqw; height: 3.8cqw; }
+.routing-placement-choices button span { font-size: 1.5cqw; }
+.routing-placement-choices small { padding-left: 3%; color: var(--qc-palette-999); font-size: 1.35cqw; line-height: 1.4; }
+.routing-device-list { position: absolute; inset: 63% 0 0; display: grid; grid-template-columns: repeat(7, 1fr); border-top: 1px solid var(--qc-palette-282828); background: var(--qc-palette-151515); }
+.routing-device-list button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8%; border: 0; border-right: 1px solid var(--qc-palette-303030); background: var(--qc-transparent); color: var(--qc-screen-text-primary); }
+.routing-device-list button:first-child { background: var(--qc-palette-202220); }
+.routing-device-list button i { width: 4.5cqw; height: 4.5cqw; display: grid; place-items: center; border: 2px solid var(--device-color); border-radius: 1.1cqw; color: var(--device-color); font-style: normal; }
+.routing-device-list button i svg { width: 72%; height: 72%; }
+.routing-device-list button span { font-size: 1.3cqw; }
+
+.coros-browser-fixture { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-background); color: var(--qc-header-save); font-family: var(--qc-font-device-plain); }
+.browser-fixture-panel { position: absolute; z-index: 2; inset: 0 50% 0 0; display: grid; grid-template-columns: 26% 74%; box-shadow: 8px 0 18px var(--qc-palette-0008); }
+.browser-fixture-panel > nav { display: grid; grid-template-rows: repeat(8, 1fr); background: var(--qc-screen-surface-raised); }
+.browser-fixture-panel > nav button { display: grid; place-items: center; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); }
+.browser-fixture-panel > nav button.is-active { background: var(--qc-palette-242b25); }
+.browser-fixture-panel > nav button i { width: 4.2cqw; height: 4.2cqw; display: grid; place-items: center; border-radius: 1cqw; color: var(--device-color); font-style: normal; }
+.browser-fixture-panel > nav button.is-active i { border: 2px solid var(--device-color); box-shadow: none; }
+.browser-fixture-panel > nav button svg { width: 72%; height: 72%; }
+.browser-fixture-panel > main { overflow: hidden; background: var(--qc-screen-surface-control); }
+.browser-fixture-panel > main > header { height: var(--qc-nav-bar-height); display: flex; align-items: center; justify-content: space-between; padding-left: 5%; border-bottom: 1px solid var(--qc-palette-333934); background: var(--qc-palette-202420); }
+.browser-fixture-panel > main > header strong { font-size: 1.7cqw; font-weight: 400; }
+.browser-fixture-panel > main > header button { width: 18%; align-self: stretch; border: 0; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font-size: 3cqw; }
+.browser-fixture-panel > main > header button.is-refreshing { color: var(--qc-palette-43ef78); animation: device-refresh-spin 1s linear infinite; }
+@keyframes device-refresh-spin { to { transform: rotate(360deg); } }
+.browser-search { height: 11%; display: grid; grid-template-columns: 12% 1fr 12%; align-items: center; margin: 3% 4%; border-radius: .6cqw; background: var(--qc-palette-151815); color: var(--qc-palette-aaa); }
+.browser-search span { font-size: 2.4cqw; text-align: center; }
+.browser-search b { color: var(--qc-screen-text-primary); font-size: 1.45cqw; font-weight: 400; }
+.browser-search button { border: 0; background: var(--qc-transparent); color: var(--qc-palette-aaa); font-size: 2cqw; }
+.browser-result-list button, .plugin-folder-list button { width: 100%; min-height: 6.55cqw; display: grid; grid-template-columns: 19% 1fr 15%; align-items: center; padding: 0 3%; border: 0; border-bottom: 1px solid var(--qc-screen-surface-control); background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; }
+.browser-result-list button > i { width: 3.8cqw; height: 3.8cqw; display: grid; place-items: center; border: 2px solid var(--result-color); border-radius: .85cqw; color: var(--result-color); font-size: 1.8cqw; font-style: normal; }
+.browser-result-list button > span { display: flex; flex-direction: column; gap: .3cqw; }
+.browser-result-list button > span strong { font-size: 1.35cqw; font-weight: 400; }
+.browser-result-list button > span small { color: var(--qc-palette-7e837f); font-size: .9cqw; }
+.browser-result-list button > b { color: var(--qc-palette-f0cf34); font-size: 1.5cqw; text-align: center; }
+.plugin-folder-list button { grid-template-columns: 15% 1fr 12%; min-height: 6.75cqw; }
+.plugin-folder-list button i { color: var(--qc-screen-text-primary); font-size: 2.2cqw; font-style: normal; }
+.plugin-folder-list button span { font-size: 1.35cqw; }
+.plugin-folder-list button em, .plugin-folder-list button b { color: var(--qc-palette-959a96); font-size: 1.8cqw; font-style: normal; font-weight: 400; text-align: center; }
+.plugin-refresh-state { height: 87%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--qc-palette-929792); }
+.plugin-refresh-state i { color: var(--qc-palette-43ef78); font-size: 5cqw; font-style: normal; animation: device-refresh-spin 1s linear infinite; }
+.plugin-refresh-state strong { margin-top: 2%; color: var(--qc-screen-text-primary); font-size: 1.55cqw; font-weight: 400; }
+.plugin-refresh-state span { margin-top: 1%; font-size: 1.1cqw; }
+.browser-grid-ghost { position: absolute; inset: 0 0 0 50%; opacity: .18; background: var(--qc-palette-313732); }
+.browser-grid-ghost b { position: absolute; top: 5%; left: 5%; color: var(--qc-screen-text-primary); font-size: 5cqw; }
+.browser-grid-ghost span { position: absolute; top: 11%; right: 7%; font-size: 2.1cqw; }
+.browser-grid-ghost i { position: relative; top: 30%; display: inline-grid; width: 26%; height: 20%; place-items: center; margin-left: 5%; border-radius: 1.2cqw; background: var(--qc-palette-111); color: var(--qc-screen-text-primary); font-size: 3.5cqw; font-style: normal; }
+
+.qc-screen.coros-looper { position: absolute; inset: 0; display: grid; grid-template-rows: 12% 43% 45%; background: var(--qc-screen-background); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
+.coros-looper > header { display: flex; align-items: center; gap: 1%; padding: 0 1%; background: var(--qc-palette-151915); }
+.coros-looper > header button { height: 76%; min-width: 12%; border: 0; border-radius: .7cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font-size: 1.7cqw; }
+/* The unit lifts only the trailing confirm to the control surface. */
+.coros-looper > header button:last-child { background: var(--qc-screen-surface-control); }
+.coros-looper > header button:first-child { min-width: 5%; font-size: 2.5cqw; }
+.coros-looper > header span { display: flex; min-width: 26%; flex-direction: column; }
+.coros-looper > header span small { color: var(--qc-palette-9da19d); font-size: 1.2cqw; }
+.coros-looper > header span strong { color: var(--qc-palette-ff2940); font-size: 1.9cqw; font-weight: 400; }
+.coros-looper > header i { flex: 1; }
+.coros-looper > header button b { padding: .2cqw .7cqw; border-radius: .3cqw; background: var(--qc-palette-ffd331); color: var(--qc-palette-111); }
+.looper-timeline { position: relative; display: flex; flex-direction: column; gap: 4%; padding: 1.3% 1.5%; border-top: 1px solid var(--qc-palette-343934); border-bottom: 1px solid var(--qc-palette-343934); background: var(--qc-palette-242a25); font-size: 1.45cqw; }
+.looper-timeline span b { color: var(--qc-palette-ff263b); font-size: 2.2cqw; }
+.looper-timeline em { position: absolute; top: 8%; right: 1.5%; color: var(--qc-screen-text-primary); font-style: normal; }
+.looper-actions { display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(2, 1fr); gap: 1%; padding-top: .7%; background: var(--qc-palette-0c0e0c); }
+.looper-actions button { position: relative; display: grid; place-items: center; border: 0; border-radius: .5cqw; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.looper-actions button small { position: absolute; top: 8%; left: 5%; font-size: 1.15cqw; }
+.looper-actions button strong { color: var(--qc-screen-text-primary); font-size: 4.4cqw; font-weight: 500; }
+.looper-actions button:nth-child(1) strong, .looper-actions button:nth-child(4) strong, .looper-actions button:nth-child(5) strong { color: var(--qc-palette-ff263b); }
+.looper-actions button b { position: absolute; top: 8%; right: 6%; font-size: 2.7cqw; font-weight: 400; }
+.qc-screen.coros-device-presets { position: absolute; inset: 0; display: grid; grid-template-columns: 13% 87%; grid-template-rows: 100%; background: var(--qc-palette-0a0c0a); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
+.coros-device-presets > nav { display: grid; grid-template-rows: repeat(6, 1fr); background: var(--qc-screen-surface-raised); }
+.coros-device-presets > nav button { display: grid; place-items: center; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); }
+.coros-device-presets > nav button i { width: 4.5cqw; height: 4.5cqw; display: grid; place-items: center; color: var(--device-color); font-style: normal; }
+.coros-device-presets > nav button.is-active i { border: 2px solid var(--device-color); border-radius: 1cqw; background: var(--qc-screen); }
+.coros-device-presets > nav svg { width: 72%; height: 72%; }
+.coros-device-presets > main { display: grid; grid-template-columns: 43% 57%; }
+.coros-device-presets > main > section { overflow: hidden; background: var(--qc-screen-surface-control); }
+.coros-device-presets > main > section + section { border-left: 1px solid var(--qc-palette-111); }
+.coros-device-presets section header { height: var(--qc-nav-bar-height); display: flex; background: var(--qc-screen-surface-raised); }
+.coros-device-presets section header button { flex: 1; border: 0; background: var(--qc-transparent); color: var(--qc-palette-8b908b); font-size: 1.25cqw; }
+.coros-device-presets section header button.is-active { border-radius: .7cqw .7cqw 0 0; background: var(--qc-palette-282e29); color: var(--qc-screen-text-primary); }
+.coros-device-presets section header button.preset-confirm { max-width: 18%; border-radius: .6cqw; background: var(--qc-palette-2045ff); color: var(--qc-screen-text-primary); font-size: 2.2cqw; }
+.coros-device-presets section > button { width: 100%; height: 12.55%; display: flex; align-items: center; justify-content: space-between; padding: 0 4%; border: 0; border-bottom: 1px solid var(--qc-screen-surface-control); background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 1.4cqw; text-align: left; }
+.coros-device-presets section > button.is-active { background: var(--qc-screen-surface-raised); color: var(--qc-palette-45ee78); }
+.coros-device-presets section > button span { display: flex; flex-direction: column; }
+.coros-device-presets section > button small { color: var(--qc-palette-858a86); font-size: .9cqw; }
+.qc-screen.coros-device-preset-save { position: absolute; inset: 0; display: block; background: var(--qc-palette-181c19); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
+.coros-device-preset-save header { height: 14%; display: flex; align-items: center; justify-content: space-between; padding: 0 2%; background: var(--qc-palette-101310); }
+.coros-device-preset-save header button { width: 10%; height: 72%; border: 0; border-radius: .6cqw; background: var(--qc-palette-272b28); color: var(--qc-screen-text-primary); font-size: 2cqw; }
+.coros-device-preset-save header button:last-child { background: var(--qc-palette-2045ff); }
+.coros-device-preset-save header strong { font-size: 1.9cqw; font-weight: 400; }
+.coros-device-preset-save label { display: flex; flex-direction: column; gap: 1.2cqw; margin: 7% 15% 3%; color: var(--qc-palette-9da19d); font-size: 1.15cqw; }
+.coros-device-preset-save input { padding: 1.4cqw; border: 1px solid var(--qc-palette-3fec75); border-radius: .5cqw; background: var(--qc-palette-0f120f); color: var(--qc-screen-text-primary); font-size: 1.8cqw; }
+.coros-device-preset-save > div { display: flex; width: 36%; margin-left: 15%; }
+.coros-device-preset-save > div button { flex: 1; padding: 1cqw; border: 1px solid var(--qc-palette-313431); background: var(--qc-palette-222622); color: var(--qc-palette-999); }
+.coros-device-preset-save > div button.is-active { border-bottom-color: var(--qc-palette-3fed75); color: var(--qc-screen-text-primary); }
+.coros-device-preset-save p { margin-left: 15%; color: var(--qc-palette-858a86); font-size: 1.1cqw; }
+.coros-device-preset-save footer { position: absolute; right: 3%; bottom: 4%; display: flex; gap: 1cqw; }
+.coros-device-preset-save footer button { padding: 1.1cqw 3cqw; border: 0; border-radius: .5cqw; background: var(--qc-palette-303430); color: var(--qc-screen-text-primary); }
+.coros-device-preset-save footer button:last-child { background: var(--qc-palette-2045ff); }
+.qc-screen.coros-assignment { position: absolute; inset: 0; display: block; background: var(--qc-palette-121512); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
+/* Retired with the unreachable screens they painted.
+   .browser-tabs was CorOsDeviceBrowserFixture's FAVORITES/RECENT strip, on a
+   device-favorites branch the dispatcher has always routed to
+   CorOsCaptureLibrary instead. The two `.browser-result-list button > b`
+   state rules never matched at all: is-licensed and is-locked sit on the
+   button, and no list in that panel has a <b> under one. The assignment and
+   expression families below them drew a construction PhysicalEditorUnderlay
+   replaced and an EXPRESSION PEDAL ASSIGNMENT screen that sat after an
+   unconditional return, so none of the three had any markup left to style.
+   These rules are intentionally unreferenced by any reachable screen. */
+.coros-assignment.is-stomp, .coros-assignment.is-scene { overflow: hidden; background: var(--qc-screen-surface-base); container-type: inline-size; }
+.assignment-parameters { height: 76.3%; display: grid; grid-template-columns: 20.5% 20% 19.375% 19.5% 20.625%; grid-template-rows: 1fr 1fr; gap: 1px 0; background: var(--qc-editor-disabled); }
+.assignment-parameters section { position: relative; overflow: hidden; background: var(--qc-palette-303130); }
+.assignment-parameters section > span { position: absolute; left: 1.25cqw; top: 1.05cqw; color: var(--qc-screen-text-primary); font-size: 2cqw; letter-spacing: .08cqw; }
+.assignment-parameters section > strong { position: absolute; left: 1.25cqw; bottom: 1.05cqw; font-size: 1.85cqw; font-weight: 400; }
+.assignment-parameters section > em { position: absolute; left: 1.3cqw; top: 4.9cqw; z-index: 2; color: var(--qc-palette-152519); font: bold 1.3cqw/1.05 var(--qc-font-device-plain); letter-spacing: .35cqw; }
+.assignment-parameters section.is-assigned { box-shadow: inset 0 0 0 .65cqw var(--qc-palette-40ef70); border-radius: 1.7cqw; }
+.assignment-stomp-message { height: 78.8%; display: grid; place-content: center; gap: 1.5cqw; background: var(--qc-palette-292b2a); text-align: center; }
+/* The dialog is 418x286 at x 191, y 97, over a dimmed copy of the editor -
+   not a panel standing in for it. */
+/* Two washes, not a ramp between them: above the Grid's black the unit dims to
+   one value and below it to another, and the boundary is the underlay grid's
+   own bottom edge. A linear-gradient cannot say that - Chrome dithers a
+   gradient even across a hard stop, and even between two identical colours, so
+   the flat areas came out cycling over a four-row pitch. Two flat layers render
+   flat. The negative index keeps them under the dialog; this element is its own
+   stacking context, so it stays inside. */
+.assignment-stomp-message { position: absolute; inset: 0; z-index: 6; height: auto; background: none; }
+.assignment-stomp-message::before { content: ""; position: absolute; z-index: -1; left: 0; right: 0; top: 0; height: 196px; background: var(--qc-palette-rgba-102-100-102-a65); }
+.assignment-stomp-message::after { content: ""; position: absolute; z-index: -1; left: 0; right: 0; top: 196px; bottom: 0; background: var(--qc-palette-rgba-88-92-88-a694); }
+.assignment-stomp-message > .assignment-stomp-dialog { position: absolute; left: 191px; top: 97px; box-sizing: border-box; width: 418px; height: 286px; display: grid; place-content: center; gap: 1.5cqw; border-radius: 10px; background: var(--qc-screen-surface-raised); text-align: center; }
+.assignment-stomp-message strong { font-size: 2.5cqw; }.assignment-stomp-message span { color: var(--qc-screen-text-muted); font-size: 1.5cqw; }
+.qc-screen.coros-block-context { position: absolute; inset: 0; display: block; overflow: hidden; background: var(--qc-screen-surface-base); }
+.context-grid { position: absolute; inset: 0; opacity: .22; }
+.context-grid .routing-grid-diagram { width: 100%; height: 100%; }
+.coros-block-context aside { position: absolute; inset: 0 0 0 52%; display: flex; flex-direction: column; background: var(--qc-palette-222622); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); box-shadow: -8px 0 18px var(--qc-palette-0008); }
+.coros-block-context aside header { display: flex; flex-direction: column; padding: 5% 6%; border-bottom: 1px solid var(--qc-palette-363a36); }
+.coros-block-context aside header small { color: var(--qc-palette-999); font-size: 1.1cqw; }
+.coros-block-context aside header strong { color: var(--qc-palette-ff7900); font-size: 1.8cqw; font-weight: 400; }
+.coros-block-context aside button { flex: 1; display: grid; grid-template-columns: 17% 1fr; align-items: center; border: 0; border-bottom: 1px solid var(--qc-palette-313431); background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 1.25cqw; text-align: left; }
+/* This span named --qc-palette-aaa is never actually painted - spelled
+   without var() so a token-usage scan does not read the note as a paint.
+   The physical rule far below repaints the same span
+   var(--qc-screen-text-primary), and its disabled variant
+   var(--qc-editor-disabled); the markup always carries `qc-screen` beside
+   `coros-block-context`, so that pair outranks this one, and the literal
+   here only ever lost a cascade it should never have entered. */
+.coros-block-context aside button span { font-size: 1.5cqw; text-align: center; }
+.coros-block-context aside button.is-danger { color: var(--qc-palette-ff5969); }
+
+.qc-screen.coros-directory-fixture { position: absolute; inset: 0; display: block; overflow: hidden; border-radius: 0; background: var(--qc-screen-surface-base); color: var(--qc-header-save); font-family: var(--qc-font-device-plain); }
+.coros-directory-fixture > header { height: var(--qc-nav-bar-height); display: flex; align-items: stretch; gap: 1%; padding: 1%; background: var(--qc-screen-surface-base); }
+.coros-directory-fixture button { border: 0; color: inherit; font: inherit; }
+.coros-directory-fixture > header > button { min-width: 7%; border-radius: .6cqw; background: var(--qc-screen-surface-control); font-size: 1.8cqw; }
+.coros-directory-fixture > header .directory-fixture-category { width: 32%; display: flex; align-items: center; gap: 6%; padding: 0 2%; text-align: left; }
+.directory-fixture-category span { color: var(--qc-palette-44ef76); font-size: 2.2cqw; }.directory-fixture-category strong { flex: 1; font-size: 1.5cqw; font-weight: 400; }.directory-fixture-category b { font-weight: 400; }
+.coros-directory-fixture > header > i { flex: 1; }.coros-directory-fixture > header > em { width: 1px; margin: .5% 0; background: var(--qc-palette-313431); }.coros-directory-fixture > header > button.is-cloud { color: var(--qc-palette-43ef76); }
+.coros-directory-fixture > header > button > .qc-ui-icon-check { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.coros-directory-fixture > main { height: 87.5%; display: grid; grid-template-columns: 32.65% 14.42% minmax(0,1fr); gap: 1%; padding: 0 1% 1%; }
+.directory-fixture-folders, .directory-fixture-banks, .directory-fixture-items { min-height: 0; overflow: hidden; border-radius: .6cqw; background: var(--qc-screen-surface-control); }
+.coros-directory-fixture .qc-directory-icon { width: 24px; height: 24px; flex: none; }
+.directory-fixture-folders button { width: 100%; height: 13.2%; display: flex; align-items: center; gap: 5%; padding: 0 6%; background: var(--qc-transparent); font-size: 1.3cqw; text-align: left; }.directory-fixture-folders button span { flex: 1; }.directory-fixture-folders button b { color: var(--qc-palette-777); }.directory-fixture-folders button.is-active { background: var(--qc-screen-surface-raised); color: var(--qc-screen-accent); }.directory-fixture-folders button.is-child { padding-left: 10%; color: var(--qc-palette-cdd0cd); }.directory-fixture-folders button.is-new { color: var(--qc-palette-858a86); }
+.directory-fixture-banks { display: flex; flex-direction: column; }.directory-fixture-banks button { min-height: 14.28%; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 1.7cqw; }.directory-fixture-banks button.is-active { background: var(--qc-palette-1c211d); color: var(--qc-screen-accent); }
+.directory-fixture-items button { width: 100%; height: 14.28%; display: grid; grid-template-columns: 14% 1fr 10%; align-items: center; padding: 0 3%; border-bottom: 1px solid var(--qc-palette-363a36); background: var(--qc-transparent); text-align: left; }.directory-fixture-items button.is-current { background: var(--qc-palette-1b211c); }.directory-fixture-items button > strong { color: var(--qc-screen-accent); font-size: 1.4cqw; }.directory-fixture-items button > span { display: flex; flex-direction: column; font-size: 1.3cqw; }.directory-fixture-items button small { margin-top: .25cqw; color: var(--qc-palette-7e837f); font-size: .8cqw; }.directory-fixture-items button > b, .directory-fixture-items button > i { color: var(--qc-palette-858a86); font-size: 1.7cqw; font-style: normal; font-weight: 400; text-align: center; }
+.directory-search-field { height: 14%; display: grid; grid-template-columns: 12% 1fr 12%; align-items: center; margin: 1.5%; border: 1px solid var(--qc-palette-3ce971); border-radius: .5cqw; background: var(--qc-rotary-face-edge); }.directory-search-field span, .directory-search-field button { text-align: center; }.directory-search-field strong { font-size: 1.25cqw; font-weight: 400; }.directory-search-field button { background: var(--qc-transparent); color: var(--qc-palette-999); font-size: 1.8cqw; }
+.directory-category-menu, .directory-tool-menu, .directory-item-menu, .directory-copy-dialog, .directory-name-dialog, .directory-favorites-panel { position: absolute; z-index: 5; border: 1px solid var(--qc-palette-3a3e3a); border-radius: .65cqw; background: var(--qc-screen-surface-control); box-shadow: 0 .8cqw 2cqw var(--qc-palette-000b); }
+.directory-category-menu { left: 1%; top: 12%; width: 32%; padding: .6%; }.directory-category-menu button { width: 100%; height: 5.7cqw; display: grid; grid-template-columns: 18% 1fr 12%; align-items: center; border-bottom: 1px solid var(--qc-palette-383c38); background: var(--qc-transparent); font-size: 1.4cqw; text-align: left; }.directory-category-menu button span { color: var(--qc-screen-accent); font-size: 2cqw; text-align: center; }.directory-category-menu button b { color: var(--qc-palette-888888); font-weight: 400; }
+.directory-category-menu button > b > .qc-ui-icon-check { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.directory-tool-menu { right: 10%; top: 11%; width: 29%; padding: 1%; }.directory-tool-menu.is-filter { right: 18%; }.directory-tool-menu > strong { display: block; padding: 6% 5%; color: var(--qc-palette-8d928e); font-size: 1.1cqw; }.directory-tool-menu button { width: 100%; height: 5cqw; display: flex; align-items: center; justify-content: space-between; padding: 0 6%; border-top: 1px solid var(--qc-palette-363a36); background: var(--qc-transparent); font-size: 1.25cqw; }.directory-tool-menu button.is-active { color: var(--qc-palette-42ef74); }
+.directory-favorites-panel { inset: 12.5% 1% 1% 48%; }.directory-favorites-panel > header { height: 12%; display: flex; }.directory-favorites-panel > header button { flex: 1; background: var(--qc-screen-surface-raised); color: var(--qc-palette-888888); }.directory-favorites-panel > header button.is-active { border-bottom: 2px solid var(--qc-screen-accent); color: var(--qc-screen-text-primary); }.directory-favorites-panel > button { width: 100%; height: 15%; display: grid; grid-template-columns: 12% 1fr 10%; align-items: center; border-bottom: 1px solid var(--qc-palette-373b37); background: var(--qc-transparent); text-align: left; }.directory-favorites-panel > button span { color: var(--qc-palette-f0cf32); text-align: center; }.directory-favorites-panel > button b { color: var(--qc-palette-888888); }
+.directory-copy-dialog, .directory-name-dialog { left: 25%; top: 16%; width: 50%; }.directory-copy-dialog > header, .directory-name-dialog > header { padding: 5%; border-bottom: 1px solid var(--qc-palette-393d39); font-size: 1.6cqw; }.directory-copy-dialog > button { width: 100%; height: 5.1cqw; display: flex; align-items: center; padding: 0 6%; border-bottom: 1px solid var(--qc-palette-383c38); background: var(--qc-transparent); font-size: 1.25cqw; }.directory-copy-dialog > button.is-active { color: var(--qc-screen-accent); }.directory-copy-dialog > button b { margin-left: auto; color: var(--qc-palette-888888); }.directory-copy-dialog footer, .directory-name-dialog footer { display: flex; justify-content: flex-end; gap: 2%; padding: 4%; }.directory-copy-dialog footer button, .directory-name-dialog footer button { padding: 1cqw 2cqw; border-radius: .4cqw; background: var(--qc-screen-surface-control); }.directory-copy-dialog footer button:last-child, .directory-name-dialog footer button:last-child { background: var(--qc-palette-1f49ff); }
+.directory-copy-dialog button > i > .qc-ui-icon-check { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.directory-name-dialog label { display: flex; flex-direction: column; gap: 1cqw; padding: 6%; color: var(--qc-palette-999); font-size: 1.05cqw; }.directory-name-dialog input { padding: 1.2cqw; border: 1px solid var(--qc-screen-accent); border-radius: .4cqw; background: var(--qc-rotary-face-edge); color: var(--qc-screen-text-primary); font-size: 1.5cqw; }
+.directory-item-menu { right: 1%; top: 13%; width: 38%; }.directory-item-menu header { display: flex; flex-direction: column; padding: 5%; border-bottom: 1px solid var(--qc-palette-393d39); }.directory-item-menu header small { color: var(--qc-screen-accent); }.directory-item-menu header strong { font-size: 1.5cqw; font-weight: 400; }.directory-item-menu button { width: 100%; height: 4.6cqw; padding: 0 6%; border-bottom: 1px solid var(--qc-palette-393d39); background: var(--qc-transparent); font-size: 1.25cqw; text-align: left; }.directory-item-menu button.is-danger { color: var(--qc-palette-ff5b6c); }
+
+/* The done button sits on the nav bar's own box - y 8..51, 44 rows inset 8 -
+   so the first row is the 60px bar, not the 62.4 that 13% made. At 13% the
+   button centred one row low, at y 9, and the string readout under it sat
+   4 rows below where it belongs. */
+.coros-tuner {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: var(--qc-nav-bar-height) 1fr 24%;
+  overflow: hidden;
+  background: var(--qc-screen-surface-base);
+  color: var(--qc-screen-text-primary);
+  container-type: inline-size;
+  font-family: var(--qc-font-device-plain);
+}
+.coros-tuner button { border: 0; font: inherit; }
+.coros-tuner > header { display: flex; align-items: center; justify-content: space-between; padding-left: 2%; color: var(--qc-palette-9a9b9b); font-size: 2cqw; }
+/* The confirm plate is 98x44 at x 694, y 8 - the same box the modes header
+   uses. 12.25%/70%/1% of the header's padded box made it 96.03 wide at
+   696.14, and its glyph then sat on a text baseline at y 18.48. */
+.coros-tuner > header button { width: 98px; height: 44px; margin-top: 8px; margin-right: 8px; display: grid; align-self: flex-start; place-items: center; padding: 0; border-radius: 1cqw; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); font-size: 2.8cqw; }
+.coros-tuner > header button > .qc-ui-icon-check { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.tuner-scale { position: relative; }
+/* Re-anchored when the bar above went from 62.4 to its true 60: these are
+   percentages of the row the bar leaves behind, so correcting the bar moved
+   all three. The rail sits on rows 189..190, the pitch ring's ink at
+   y 148..229 and the scale captions at y 84..97, which is what these now put
+   them on - the caption had been four rows low. */
+.tuner-scale > span { position: absolute; top: 5.67%; color: var(--qc-palette-8d9090); font-size: 2.5cqw; }
+.tuner-scale > span:first-child { left: 3%; }
+.tuner-scale > span:last-child { right: 3%; }
+.tuner-scale > i { position: absolute; left: 3.25%; right: 3.25%; top: 42.32%; height: 2px; background: var(--qc-palette-e8e8e8); }
+.tuner-scale > b { position: absolute; left: 50%; top: 42.32%; width: 10.25%; aspect-ratio: 1; transform: translate(-50%, -50%); border: 2px solid var(--qc-palette-efefef); border-radius: 50%; background: var(--qc-screen-surface-base); }
+.coros-tuner > footer { margin: 0 1% .9%; display: grid; grid-template-columns: 20% 20% 20% 40%; border-radius: 1cqw; background: var(--qc-screen-surface-control); }
+.coros-tuner > footer > section { min-width: 0; padding: 1.5cqw 1.2cqw; border-right: 1px solid var(--qc-palette-191a1a); }
+.coros-tuner > footer > section > span { display: block; margin-bottom: 1.2cqw; font-size: 2cqw; }
+.tuner-frequency { position: relative; height: 7cqw; }
+/* The tuner's reference-frequency control is the same rotary as every other
+   screen's; it used to be a conic wedge with an inset shadow standing in for a
+   face. This is placement only. */
+.tuner-frequency > .qc-rotary { position: absolute; left: 8.6625cqw; top: -.5125cqw; width: 72px; height: 72px; }
+.tuner-frequency strong { position: absolute; left: 0; top: 4.7cqw; font-size: 2cqw; font-weight: 400; }
+.coros-tuner > footer > section:nth-child(2), .coros-tuner > footer > section:nth-child(3) { display: grid; place-items: center; }
+.coros-tuner > footer button { width: 100%; height: 4.7cqw; padding: 0 1cqw; border-radius: .8cqw; background: var(--qc-screen-background); color: var(--qc-screen-text-primary); text-align: left; font-size: 2cqw; }
+.coros-tuner > footer button b { float: right; }
+.coros-tuner > footer .tuner-muted { background: var(--qc-palette-ff2421); text-align: center; }
+.coros-tuner > footer > section:last-child { position: relative; }
+.coros-tuner > footer > section:last-child .tuner-choice { display: flex; align-items: center; height: 2.7cqw; padding-left: 4.7cqw; color: var(--qc-palette-838585); font-size: 1.75cqw; }
+/* The toggle is QcPillToggle; this is placement only. The pill sits at
+   x 495.00, y 412.98 in both states, with its detent at the other end when
+   enabled. */
+.coros-tuner > footer > section:last-child > .qc-pill-toggle { position: absolute; left: 2.075cqw; top: 6cqw; }
+.coros-tuner > footer > section:last-child .tuner-choice b { font-weight: 400; }
+
+.coros-tempo, .coros-midi-out, .coros-cpu-monitor { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-palette-eef0ef); container-type: inline-size; font-family: var(--qc-font-device-plain); }
+.coros-tempo button, .coros-midi-out button, .coros-cpu-monitor button { border: 0; color: inherit; font: inherit; }
+.coros-tempo > header, .coros-midi-out > header, .coros-cpu-monitor > header { box-sizing: border-box; height: var(--qc-nav-bar-height); display: flex; align-items: center; gap: 2cqw; padding: 1%; color: var(--qc-palette-999c9a); font-size: 2cqw; }
+.coros-tempo > header button, .coros-midi-out > header button, .coros-cpu-monitor > header button { width: 12.25%; height: 100%; margin-left: auto; border-radius: 1cqw; background: var(--qc-screen-surface-control); color: var(--qc-palette-f3f4f3); font-size: 2.8cqw; }
+.tempo-main { height: 31%; display: grid; grid-template-columns: 42% 29% 29%; padding: 0 1%; }
+.tempo-main > section { display: grid; align-content: center; padding: 1.5cqw 2cqw; border-right: 1px solid var(--qc-screen-surface-raised); background: var(--qc-screen-surface-control); }
+.tempo-main > section:first-child { border-radius: 1cqw 0 0 1cqw; }.tempo-main > section:last-child { border-radius: 0 1cqw 1cqw 0; border-right: 0; }
+.tempo-main span, .metronome-grid span { color: var(--qc-palette-b7b9b8); font-size: 1.75cqw; }
+.tempo-bpm { grid-template-columns: auto 1fr auto; grid-template-rows: auto 1fr; column-gap: 1cqw; }.tempo-bpm > span { grid-column: 1 / -1; }.tempo-bpm > strong { align-self: center; color: var(--qc-palette-25f45b); font-size: 9cqw; font-weight: 300; line-height: .9; }.tempo-bpm > small { align-self: end; padding-bottom: 1cqw; color: var(--qc-palette-8e918f); font-size: 2cqw; }
+.tempo-pulse { display: flex; align-self: center; justify-content: flex-end; gap: .6cqw; }.tempo-pulse i { width: 1.2cqw; height: 1.2cqw; border-radius: 50%; background: var(--qc-palette-414542); }.tempo-pulse i:first-child { background: var(--qc-palette-25f45b); }
+.tempo-mode > div, .tempo-led > div { display: grid; grid-template-columns: 1fr 1fr; gap: 1cqw; margin-top: 1.5cqw; }.tempo-mode button, .tempo-led button { height: 6cqw; border-radius: .8cqw; background: var(--qc-screen-surface-base); color: var(--qc-palette-797d7a); }.tempo-mode button.is-active { border: .2cqw solid var(--qc-palette-23ef58); background: var(--qc-palette-092010); color: var(--qc-palette-26f15a); }.tempo-led button { display: flex; align-items: center; justify-content: center; gap: 1cqw; }.tempo-led button i { width: 2.1cqw; height: 2.1cqw; border-radius: .55cqw; background: var(--qc-screen-surface-base); }.tempo-led button.is-active i { border: .35cqw solid var(--qc-palette-26f15a); }
+.metronome-grid { height: 53.5%; display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(2, 1fr); padding: 1%; gap: .3cqw; }.metronome-grid > section { position: relative; display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto 1fr; align-items: center; padding: 1.2cqw; background: var(--qc-screen-surface-control); }.metronome-grid > section:nth-child(1) { border-radius: 1cqw 0 0 0; }.metronome-grid > section:nth-child(4) { border-radius: 0 1cqw 0 0; }.metronome-grid > section:nth-child(5) { border-radius: 0 0 0 1cqw; }.metronome-grid > section:nth-child(7) { border-radius: 0 0 1cqw 0; }.metronome-grid strong { align-self: end; color: var(--qc-screen-text-primary); font-size: 2.4cqw; font-weight: 400; }.metronome-grid strong small { margin-left: .5cqw; color: var(--qc-palette-979a98); font-size: 1.5cqw; }.tempo-dial { grid-row: 1 / 3; grid-column: 2; width: 6cqw; height: 6cqw; }.metronome-grid .is-switch { grid-template-columns: 1fr; }.metronome-grid .is-switch button { width: 80%; height: 5cqw; margin: auto; border-radius: .8cqw; background: var(--qc-screen-surface-base); color: var(--qc-palette-898c8a); }.metronome-grid .is-switch button i { display: inline-block; width: 2cqw; height: 2cqw; margin-right: 1cqw; border-radius: .5cqw; background: var(--qc-screen-surface-base); }
+
+.midi-tabs { height: 11%; display: grid; grid-template-columns: 2.4fr repeat(8, 1fr) 1.4fr 1.4fr; gap: .3cqw; padding: 0 1%; }.midi-tabs button { border-radius: .55cqw .55cqw 0 0; background: var(--qc-palette-222623); color: var(--qc-palette-8c908d); font-size: 1.5cqw; }.midi-tabs button.is-active { border-bottom: .35cqw solid var(--qc-palette-23ef58); background: var(--qc-palette-29302b); color: var(--qc-palette-26f15a); }
+.midi-table { height: 64%; margin: 0 1%; border-radius: 0 0 1cqw 1cqw; background: var(--qc-palette-272b28); }.midi-head, .midi-row { display: grid; grid-template-columns: 1.3fr 1.2fr 2fr 1.5fr .5fr; gap: 1cqw; align-items: center; padding: 0 2cqw; }.midi-head { height: 18%; color: var(--qc-palette-929593); font-size: 1.45cqw; }.midi-row { height: 26%; border-top: 1px solid var(--qc-screen-surface-base); }.midi-row button { height: 5cqw; padding: 0 1.2cqw; border-radius: .7cqw; background: var(--qc-palette-101211); text-align: left; font-size: 1.8cqw; }.midi-row button b { float: right; color: var(--qc-palette-7d807e); }.midi-row .midi-remove { background: var(--qc-transparent); color: var(--qc-palette-a3a6a4); font-size: 3cqw; text-align: center; }.midi-add { height: 20%; margin: 1.5cqw 2cqw; background: var(--qc-transparent); color: var(--qc-palette-25ef59) !important; font-size: 1.6cqw !important; }.midi-add b { margin-right: 1cqw; font-size: 2.5cqw; }.coros-midi-out > footer { height: 9%; display: flex; align-items: center; justify-content: space-between; padding: 0 3%; color: var(--qc-palette-888b89); font-size: 1.45cqw; }.coros-midi-out > footer b { color: var(--qc-palette-b9bcba); }
+
+.coros-cpu-monitor > header strong { margin-left: auto; color: var(--qc-palette-25ef59); font-size: 2cqw; }.coros-cpu-monitor > header button { margin-left: 0; }.cpu-summary { height: 10%; display: grid; grid-template-columns: 18% 1fr 8%; align-items: center; gap: 2cqw; padding: 0 3%; background: var(--qc-palette-242825); color: var(--qc-screen-text-muted); font-size: 1.5cqw; }.cpu-summary div { height: 1.5cqw; overflow: hidden; border-radius: 1cqw; background: var(--qc-screen-surface-base); }.cpu-summary div i { display: block; height: 100%; background: var(--qc-palette-24ef59); }.cpu-summary strong { color: var(--qc-screen-text-primary); font-size: 2cqw; font-weight: 400; }.cpu-grid { height: 65%; display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(4, 1fr); gap: .35cqw; padding: 1.2cqw 2cqw; }.cpu-grid > div { position: relative; min-width: 0; border: 1px solid var(--qc-palette-1d201e); border-radius: .6cqw; }.cpu-grid > div.has-block { background: var(--qc-palette-202421); }.cpu-block-icon { position: absolute; left: .6cqw; top: .5cqw; width: 6cqw; height: 6cqw; }.cpu-block-icon svg { width: 100%; height: 100%; }.cpu-grid strong { position: absolute; right: .5cqw; top: .5cqw; padding: .35cqw .5cqw; border-radius: .4cqw; background: var(--qc-screen-surface-base); color: var(--qc-palette-25ef59); font-size: 1.35cqw; }.cpu-grid small { position: absolute; inset: auto .35cqw .35cqw; overflow: hidden; color: var(--qc-palette-c7cac8); font-size: 1cqw; text-align: center; text-overflow: ellipsis; white-space: nowrap; }.coros-cpu-monitor > footer { height: 10%; display: flex; align-items: center; gap: 3cqw; padding: 0 3%; background: var(--qc-palette-232724); color: var(--qc-screen-text-muted); font-size: 1.35cqw; }.coros-cpu-monitor > footer span:nth-last-child(2) { margin-left: auto; }.coros-cpu-monitor > footer i { display: inline-block; width: 1.6cqw; height: 1.6cqw; margin-right: .5cqw; border: .2cqw solid var(--qc-palette-22ec57); border-radius: .3cqw; vertical-align: middle; }.coros-cpu-monitor > footer .cpu-legend-bypassed { border-color: var(--qc-palette-6f7370); }.coros-cpu-monitor > footer b { color: var(--qc-palette-27ef5b); }
+
+.coros-gig-view { position: absolute; inset: 0; display: grid; grid-template-rows: var(--qc-nav-bar-height) minmax(0, 1fr); overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); container-type: inline-size; font-family: var(--qc-font-device-plain); }
+.coros-gig-view header { display: flex; align-items: center; gap: 1%; padding: 1% 2%; background: var(--qc-screen-surface-base); }
+.coros-gig-view header strong { min-width: 0; flex: 1; overflow: hidden; font-size: clamp(11px, 3.75cqw, 30px); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.coros-gig-view header > span, .coros-gig-view header button { height: 100%; display: grid; place-items: center; border: 0; border-radius: 7px; }
+.coros-gig-view .gig-mode { flex: 0 0 8.2%; background: var(--qc-screen-surface-raised); font-size: clamp(11px, 3cqw, 24px); }
+.coros-gig-view .gig-scene { flex: 0 0 5.2%; color: var(--qc-palette-111); background: var(--qc-palette-f4cf25); font-size: clamp(11px, 3.4cqw, 27px); font-weight: 800; }
+.coros-gig-view header button { flex: 0 0 12.25%; color: var(--qc-screen-text-primary); background: var(--qc-screen-surface-control); font-size: clamp(12px, 3cqw, 24px); cursor: pointer; }
+.coros-gig-view .gig-mode, .coros-gig-view .gig-scene { padding: 0; font-family: inherit; cursor: pointer; }
+.gig-selector-popover { position: absolute; z-index: 30; top: var(--qc-nav-bar-height); right: 1.5%; width: 34%; max-height: calc(100% - var(--qc-nav-bar-height) - 2%); overflow-y: auto; padding: 1%; border: 1px solid var(--qc-palette-4a4a4a); border-radius: .7cqw; background: var(--qc-palette-292a2a); box-shadow: 0 1.5cqw 4cqw var(--qc-palette-000d); }
+.gig-selector-popover button { width: 100%; min-height: 5.25cqw; display: grid; grid-template-columns: 4cqw minmax(0, 1fr); align-items: center; gap: 1.5cqw; padding: .75cqw 1.25cqw; border: 0; border-radius: .5cqw; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 600 1.8cqw var(--qc-font-device-plain); text-align: left; cursor: pointer; }
+.gig-selector-popover button:hover, .gig-selector-popover button:focus-visible, .gig-selector-popover button.is-active { outline: 0; background: var(--qc-palette-3a3b3b); }
+.gig-selector-popover button > :is(svg, .qc-scene-letter-badge) { width: 3cqw; height: 3cqw; }
+.gig-selector-popover button > .qc-scene-letter-badge { display: grid; place-items: center; border-radius: .5cqw; background: var(--qc-scene-badge); color: var(--qc-screen-surface-base); font-size: 2.25cqw; font-weight: 800; }
+.gig-mode-selector { right: 10%; width: 29%; }
+.gig-preset-tile:disabled { opacity: 1; cursor: default; }
+.gig-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 0 8px 8px; }
+.gig-tiles > :is(button, article) { position: relative; min-width: 0; overflow: hidden; margin: 0; padding: 2% 8%; border: 0; border-radius: 7px; background: var(--gig-color, var(--qc-screen-surface-raised)); color: var(--qc-screen-background); text-align: left; cursor: pointer; }
+.gig-tiles > article.gig-stomp-tile { padding: 0; }
+.gig-stomp-tile > .gig-stomp-select { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 2% 8%; border: 0; border-radius: 7px; background: var(--qc-transparent); color: inherit; text-align: left; cursor: pointer; font: inherit; }
+/* A lit stomp tile inks its letter, label and edit mark in the screen's black;
+   a bypassed one and an empty slot ink theirs in the screen's white. That is
+   the block's own state, not its position in the row - the third tile carried
+   the rule only because `Digital Flanger` happens to be the bypassed block on
+   gig-view and gig-view-live-tuner. */
+.gig-tiles > :is(button.is-bypassed, button.is-empty, article.gig-stomp-tile.is-bypassed, article.gig-stomp-tile.is-empty) { color: var(--qc-screen-text-primary); }
+.gig-device-icon { position: absolute; left: 7%; top: 4%; width: 40%; aspect-ratio: 1; }
+.gig-device-icon > svg { width: 100%; height: 100%; }
+.gig-edit { position: absolute; right: 34%; top: 9%; width: 17px; height: 17px; border: 2px solid currentColor; background: var(--qc-transparent); color: inherit; font-size: 14px; line-height: 12px; text-align: center; }
+.gig-stomp-tile > button.gig-edit { z-index: 1; display: grid; place-items: center; padding: 0; cursor: pointer; }
+.gig-tiles b { position: absolute; right: 9%; top: 6%; font-size: clamp(14px, 4.5cqw, 36px); font-weight: 400; }
+.gig-tiles strong { position: absolute; left: 8%; right: 5%; bottom: 9%; font-size: clamp(12px, 4cqw, 32px); line-height: 1.3; overflow-wrap: anywhere; }
+/* A stomp label the unit could not wrap. Every label lays out at 4cqw and
+   steps the size down until each line fits the tile's ~158px text box -
+   `Ambience` (150px at 4cqw) and `Chief DS1` (147) stay, an unbreakable
+   twelve-character word lands at 3cqw and inks 148px. 2.8cqw was 10px
+   short. */
+.gig-tiles strong.is-compact { right: 2%; font-size: 3cqw; white-space: nowrap; }
+.coros-gig-view .gig-preset-tile { background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary) !important; }
+.gig-preset-tile > span { position: absolute; left: 8%; top: 5%; display: block; font-size: 4.5cqw; font-weight: 400; }
+.gig-preset-tile > span b { position: static !important; font-size: inherit; }
+.coros-gig-view .gig-preset-tile > strong { top: 30%; bottom: auto !important; font-weight: 700; }
+.gig-preset-tile.is-active { background: var(--qc-palette-ff292f); color: var(--qc-screen-background) !important; }
+.gig-preset-tile.is-active > span b, .gig-preset-tile.is-active strong { color: var(--qc-screen-background) !important; }
+.gig-scene-tile { background: var(--gig-color) !important; }
+.gig-scene-tile > b { left: 16%; right: auto; top: 12%; color: color-mix(in srgb, var(--gig-color) 72%, var(--qc-screen-background)); font-size: 18cqw; line-height: 1; }
+.coros-gig-view .gig-scene-tile > strong { left: 0; right: 0; top: 41%; bottom: auto; color: var(--qc-screen-text-primary); font-size: 3.8cqw; font-weight: 700; text-align: center; }
+.coros-gig-view .gig-scene-tile.is-active > strong { top: 34%; }
+.gig-scene-tools { position: absolute; z-index: 1; left: 10%; right: 10%; top: 8%; color: var(--qc-palette-afb6b3); font-size: 2.8cqw; letter-spacing: .7cqw; }
+.gig-scene-tile.is-active { background: var(--gig-active-color) !important; }
+.gig-scene-tile.is-active > b { color: var(--qc-palette-e82a2f); }
+.gig-scene-tile.is-active > strong, .gig-scene-tile.is-active .gig-scene-tools { color: var(--qc-screen-background); }
+
+/* CorOS 4.1 manual-reference refinements. */
+.coros-tempo > header { position: absolute; inset: 0 0 auto; z-index: 2; background: var(--qc-transparent); }
+.tempo-display { box-sizing: border-box; height: 64%; display: grid; grid-template-rows: 1fr auto auto; justify-items: center; padding-top: 5.5cqw; background: var(--qc-palette-080808); }
+.tempo-display strong { color: var(--qc-screen-accent); font-size: 8.3cqw; font-weight: 300; line-height: .95; }.tempo-display small { margin-top: .7cqw; color: var(--qc-palette-f32835); font-size: 1.25cqw; }.tempo-display div { display: flex; gap: 8.3cqw; margin: 3.5cqw 0 2cqw; }.tempo-display i { width: 2.1cqw; height: 2.1cqw; border-radius: 50%; background: var(--qc-palette-424142); box-shadow: 0 -1.7cqw 0 -.65cqw var(--qc-screen-background); }.tempo-display i.is-active { background: var(--qc-screen-text-primary); box-shadow: 0 -1.7cqw 0 -.65cqw var(--qc-palette-777a78); }
+.tempo-controls { box-sizing: border-box; height: 34.5%; margin: 0 1%; display: grid; grid-template-columns: 1fr 1.05fr 1.15fr 1.2fr 1fr; grid-template-rows: 1fr 1fr; overflow: hidden; border-radius: 1cqw; background: var(--qc-screen-surface-control); }.tempo-control { position: relative; min-width: 0; padding: .9cqw 1.1cqw; border-right: 1px solid var(--qc-screen-surface-raised); border-bottom: 1px solid var(--qc-screen-surface-raised); }.tempo-control > span { display: block; color: var(--qc-screen-text-primary); font-size: 1.25cqw; }.tempo-control > strong { position: absolute; left: 1.1cqw; bottom: .55cqw; color: var(--qc-screen-text-primary); font-size: 1.25cqw; font-weight: 400; }.tempo-control .tempo-dial { position: absolute; right: 1.2cqw; bottom: .7cqw; width: 4.7cqw; height: 4.7cqw; }.tempo-control.is-radio > .qc-pill-toggle ~ span { display: flex; align-items: center; gap: 1cqw; height: 2.7cqw; color: var(--qc-palette-737d73); font-size: 1.25cqw; }.tempo-control.is-mute { display: grid; place-items: center; }.tempo-control.is-mute button { width: 100%; height: 4cqw; border-radius: .6cqw; background: var(--qc-screen-background); font-size: 1.3cqw; }.tempo-control.is-pan { grid-column: 1; }.tempo-control.is-select button { position: absolute; inset: auto 1cqw .7cqw; height: 3.5cqw; padding: 0 .8cqw; border-radius: .55cqw; background: var(--qc-screen-surface-base); text-align: left; font-size: 1.25cqw; }.tempo-control.is-select button b { float: right; }.tempo-main, .metronome-grid { display: none; }
+.coros-midi-out > header { height: var(--qc-nav-bar-height); }.coros-midi-out > header .midi-trash { width: 7%; margin-left: auto; color: var(--qc-palette-193620); }.coros-midi-out > header button:last-child { margin-left: 0; }.midi-assignment-surface { height: 82%; display: grid; grid-template-columns: 62% 38%; align-items: center; padding: 2cqw 3.2cqw 3cqw; }.midi-footswitches { position: relative; height: 28cqw; display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: 1.2fr 1fr 1fr; align-items: center; justify-items: center; overflow: hidden; border-radius: 2cqw; background: var(--qc-screen-surface-control); }.midi-footswitches::after { content: ""; position: absolute; left: 0; right: 0; top: 10.3cqw; border-top: 1px solid var(--qc-palette-1b1e1c); }.midi-preset-load { grid-column: 2 / 5; width: 17cqw; height: 8.5cqw; border: .45cqw solid var(--qc-screen-background) !important; border-radius: .7cqw; background: var(--qc-screen-surface-base); color: var(--qc-palette-e4e6e5) !important; font-size: 1.35cqw !important; line-height: 1.4; }.midi-switch { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; gap: .8cqw; background: var(--qc-transparent); color: var(--qc-palette-d3d5d4) !important; font-size: 1.35cqw !important; }.midi-switch i { width: 2cqw; height: 2cqw; border-radius: 50%; background: var(--qc-screen-surface-raised); }.midi-expression { height: 28cqw; display: grid; grid-template-columns: 1fr 1fr; gap: 4cqw; padding-left: 4cqw; }.midi-expression label { display: grid; grid-template-rows: 3cqw 1fr; color: var(--qc-palette-d5d7d6); font-size: 1.5cqw; text-align: center; }.midi-expression label div { position: relative; border: .45cqw solid var(--qc-screen-surface-base); border-radius: 1.2cqw; background: var(--qc-screen-surface-control); box-shadow: inset 0 0 0 .35cqw var(--qc-palette-080808); }.midi-tabs, .midi-table, .coros-midi-out > footer { display: none; }
+.midi-switch:nth-of-type(2) { grid-area: 2 / 1; }.midi-switch:nth-of-type(3) { grid-area: 2 / 2; }.midi-switch:nth-of-type(4) { grid-area: 2 / 3; }.midi-switch:nth-of-type(5) { grid-area: 2 / 4; }.midi-switch:nth-of-type(6) { grid-area: 3 / 1; }.midi-switch:nth-of-type(7) { grid-area: 3 / 2; }.midi-switch:nth-of-type(8) { grid-area: 3 / 3; }.midi-switch:nth-of-type(9) { grid-area: 3 / 4; }
+
+.coros-io-settings, .coros-global-eq { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-palette-e9ebea); container-type: inline-size; font-family: var(--qc-font-device-plain); }
+.coros-io-settings button, .coros-global-eq button { border: 0; color: inherit; font: inherit; }
+.coros-io-settings > header { box-sizing: border-box; height: 12%; display: flex; align-items: center; gap: 1.2cqw; padding: 1%; color: var(--qc-palette-858987); font-size: 2cqw; }.coros-io-settings > header span strong { color: var(--qc-palette-25ef59); font-weight: 400; }.coros-io-settings > header .io-global-eq { width: 10cqw; height: 5cqw; margin-left: auto; border-radius: .7cqw; background: var(--qc-palette-1e2420); color: var(--qc-palette-8d928e); font-size: 1.2cqw; }.coros-io-settings > header button:last-child { width: 12.25%; height: 100%; border-radius: 1cqw; background: var(--qc-palette-292d2a); font-size: 2.8cqw; }
+.io-ports { height: 31%; display: grid; grid-template-columns: repeat(10, 1fr); align-items: center; padding: 0 2.2cqw; background: var(--qc-palette-090a0a); }.io-ports button { height: 12cqw; display: grid; grid-template-rows: 2.5cqw 6cqw 2.5cqw; align-items: center; justify-items: center; background: var(--qc-transparent); color: var(--qc-palette-7f8380); font-size: 1.15cqw; }.io-ports button > i { width: 4.5cqw; height: 4.5cqw; display: grid; place-items: center; border: .55cqw solid var(--qc-palette-242825); border-radius: 50%; background: var(--qc-palette-0c0d0d); color: var(--qc-palette-171a18); font-size: 2.2cqw; font-style: normal; box-shadow: inset 0 0 0 .35cqw var(--qc-palette-030404); }.io-ports button.is-square > i { border-radius: .5cqw; }.io-ports button.is-midi > i { font-size: .8cqw; letter-spacing: -.2cqw; }.io-ports button.is-active { color: var(--qc-palette-e4e6e5); }.io-ports button.is-active > i { border-color: var(--qc-palette-26f05a); color: var(--qc-palette-26f05a); box-shadow: 0 0 0 .4cqw var(--qc-palette-0a3517), inset 0 0 0 .35cqw var(--qc-palette-030404); }
+.io-editor { box-sizing: border-box; height: 56%; margin: 0 1%; overflow: hidden; border-radius: 1cqw; background: var(--qc-screen-surface-control); }.io-editor.is-analog { display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: 58% 42%; }.io-editor.is-analog > section { position: relative; padding: 1.1cqw; border-right: 1px solid var(--qc-screen-background); }.io-editor section > span, .io-level-meter > span { color: var(--qc-palette-b7bab8); font-size: 1.35cqw; }.io-dial-wrap { position: absolute; inset: 2.9cqw 1cqw auto; height: 7cqw; }.io-dial { position: absolute; right: .5cqw; width: 5.8cqw; height: 5.8cqw; }.io-dial-wrap > strong { position: absolute; left: 0; bottom: .2cqw; color: var(--qc-palette-bdc0be); font-size: 1.25cqw; font-weight: 400; }.io-switch label { display: flex; align-items: center; height: 2.8cqw; padding-left: 2.5cqw; color: var(--qc-palette-999d9a); font-size: 1.25cqw; }.io-switch.is-disabled > * { opacity: .35; }.io-select { width: 100%; height: 4cqw; margin-top: 2cqw; border-radius: .6cqw; background: var(--qc-palette-101211); font-size: 1.3cqw !important; }.io-level-meter { grid-column: 1 / -1; position: relative; padding: 1.1cqw; border-top: 1px solid var(--qc-screen-surface-raised); }.io-level-meter strong { display: block; margin-top: 1.2cqw; color: var(--qc-palette-969a97); font-size: 1.25cqw; font-weight: 400; }/* The meter is QcLevelMeter, one control with the unit's own zero tick. The two rules that stood here drew 18% x 1.4cqw and 1.1cqw tall out of a linear-gradient whose two stops were the same colour - the ghost of an abandoned attempt at that tick - and neither box was the unit's. */
+.io-editor.is-usb { display: grid; grid-template-columns: 20% 80%; grid-template-rows: 1fr 1fr; }.io-editor.is-usb > section { position: relative; padding: 1cqw; border-right: 1px solid var(--qc-screen-surface-raised); border-bottom: 1px solid var(--qc-screen-surface-raised); }.io-meter-grid { grid-row: 1 / 3; grid-column: 2; display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: 1fr 1fr; }.io-meter-grid > span { position: relative; padding: 1cqw; border-right: 1px solid var(--qc-screen-surface-raised); border-bottom: 1px solid var(--qc-screen-surface-raised); }.io-meter-grid b { display: block; color: var(--qc-palette-b8bbb9); font-size: 1.25cqw; font-weight: 400; }.io-meter-grid i { display: block; margin: .5cqw 0; color: var(--qc-screen-surface-raised); font-size: 1.3cqw; font-style: normal; }.io-meter-grid small { color: var(--qc-palette-8d918e); font-size: 1.05cqw; }
+.coros-global-eq > header { box-sizing: border-box; height: var(--qc-nav-bar-height); display: grid; grid-template-columns: 6cqw 1fr 9cqw 12.25cqw; align-items: center; gap: 1cqw; padding: 1%; }.global-eq-more, .global-eq-power, .coros-global-eq > header button:last-child { height: 100%; border-radius: .8cqw; background: var(--qc-screen-surface-control); }.global-eq-more { font-size: 2.7cqw !important; }.coros-global-eq > header span { display: grid; color: var(--qc-palette-858987); }.coros-global-eq > header span small { font-size: 1.3cqw; }.coros-global-eq > header span strong { color: var(--qc-palette-1565ae); font-size: 1.8cqw; font-weight: 400; }.global-eq-power { color: var(--qc-screen-text-muted) !important; }.global-eq-power i { display: inline-block; width: .45cqw; height: 4cqw; margin-right: 1cqw; background: var(--qc-palette-25ef59); vertical-align: middle; }.coros-global-eq > header button:last-child { font-size: 2.8cqw; }
+.global-eq-graph { position: relative; height: 49%; overflow: hidden; background: var(--qc-palette-070808); }.global-eq-graph > div i { position: absolute; inset: 0 auto; border-left: 1px solid var(--qc-screen-surface-raised); }.global-eq-graph svg { position: absolute; inset: 0; width: 100%; height: 100%; }.global-eq-graph path { fill: none; stroke: var(--qc-palette-e1e3e2); stroke-width: 2; vector-effect: non-scaling-stroke; }.global-eq-graph circle { fill: var(--qc-palette-101410); stroke: var(--qc-palette-0c0d0d); stroke-width: 2; vector-effect: non-scaling-stroke; }.global-eq-graph circle.is-active { fill: var(--qc-palette-0776df); }.global-eq-graph text { fill: var(--qc-palette-d8dad9); font: 15px var(--qc-font-device-plain); text-anchor: middle; }
+.global-eq-tabs { height: 8%; display: grid; grid-template-columns: repeat(6, 1fr); padding: 0 2%; }.global-eq-tabs button { border-right: 1px solid var(--qc-screen-surface-raised); border-radius: .7cqw .7cqw 0 0; background: var(--qc-rotary-face); color: var(--qc-palette-8b8f8c); }.global-eq-tabs button.is-active { color: var(--qc-palette-e5e7e6); }
+.global-eq-controls { height: 30%; display: grid; grid-template-columns: 1.4fr repeat(3, 1fr) 1fr; margin: 0 1% 1%; overflow: hidden; border-radius: 0 0 1cqw 1cqw; background: var(--qc-screen-surface-control); }.global-eq-controls > section { position: relative; padding: 1cqw; border-right: 1px solid var(--qc-screen-background); }.global-eq-controls > section > span { color: var(--qc-palette-b2b5b3); font-size: 1.2cqw; }.global-eq-controls > section:first-child button { position: absolute; inset: auto 1cqw 1cqw; height: 4cqw; border-radius: .6cqw; background: var(--qc-editor-disabled-shadow); font-size: 1.25cqw; }.global-eq-bypass button { width: 5cqw; height: 5cqw; display: block; margin: 1.4cqw auto; border-radius: .6cqw; background: var(--qc-editor-disabled); font-size: 2.5cqw; }
+
+.coros-power-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at 50% 45%,var(--qc-palette-181b19),var(--qc-palette-060707) 70%); color: var(--qc-palette-eef0ef); container-type: inline-size; font-family: var(--qc-font-device-plain); }
+.power-actions { width: 81.5cqw; display: grid; gap: 1.25cqw; }
+.power-actions button { height: 5.625cqw; border: 0; border-radius: 1cqw; background: var(--qc-palette-1a3af8); color: var(--qc-screen-text-primary); font: 2cqw var(--qc-font-device-plain); }
+.power-actions .power-lock { width: 50.5cqw; height: 4.75cqw; display: flex; align-items: center; justify-content: center; gap: 1.5cqw; justify-self: center; }
+.power-actions .power-lock svg { width: 2cqw; height: 2.5cqw; overflow: visible; fill: var(--qc-screen-text-primary); stroke: var(--qc-screen-text-primary); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.power-actions .power-lock svg path { fill: none; }
+.power-actions > div { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1cqw; }
+.power-actions > div button:first-child { height: 5.375cqw; background: var(--qc-screen-background); }
+
+.coros-modes-configuration { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); container-type: inline-size; font-family: var(--qc-font-device-plain); }
+.coros-modes-configuration header { height: var(--qc-nav-bar-height); display: flex; align-items: center; justify-content: space-between; padding: 1% 2%; color: var(--qc-palette-9d9f9e); font-size: 2cqw; }
+.coros-modes-configuration header div { height: 100%; display: flex; gap: 2cqw; }
+.coros-modes-configuration header button { width: 12.25cqw; border: 0; border-radius: 1cqw; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); font-size: 2.8cqw; }
+.coros-modes-configuration header button:first-child { width: 8.25cqw; color: var(--qc-screen-text-muted); }
+/* Both header glyphs were a text baseline's 0.7px above their box: the plate
+   is already 44px at y 8, so blockifying the cell centres the 24px glyph on
+   y 18 without moving the plate. */
+.coros-modes-configuration:not(.modes-official) header button { display: grid; place-items: center; padding: 0; }
+.coros-modes-configuration > p { margin: 2.7% 0 0; font-size: 2cqw; line-height: 1.35; text-align: center; }
+.modes-cycle { position: relative; height: 31%; margin-top: 4%; }
+.modes-cycle > span { position: absolute; z-index: 2; left: 46%; top: 0; padding: 0 1.8%; background: var(--qc-screen-surface-base); color: var(--qc-palette-262927); font-size: 1.5cqw; }
+.modes-cycle > i { position: absolute; left: 5%; right: 5%; top: 0; height: 52%; border: 1px solid var(--qc-palette-29302b); border-radius: 5cqw; }
+.modes-cycle > i:nth-of-type(2) { display: none; }
+.modes-cycle > div { position: absolute; left: calc(15% - .9cqw); right: calc(15% + .9cqw); top: 25%; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4.3%; }
+.modes-cycle button { height: 10cqw; display: flex; align-items: center; gap: 2cqw; padding: 0 2cqw; border: 0; border-radius: 1cqw; background: var(--qc-palette-292c2a); color: var(--qc-screen-text-primary); font-size: 2.25cqw; }
+.modes-cycle button b { font-size: 3cqw; }
+
+.coros-save-as { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); container-type: inline-size; font-family: var(--qc-font-device-plain); }
+.coros-save-as header { height: var(--qc-nav-bar-height); display: grid; grid-template-columns: 32cqw 1fr 12.25cqw; align-items: center; gap: 1cqw; padding: 1% 1%; font-size: 2.25cqw; }
+/* Both header pills sit on the nav bar's box, y 8..51. `height: 100%` did not
+   give it: the close glyph's own line box is taller than the 44px row, and a
+   grid item's automatic minimum floored the pill at 49, so the row overran
+   the bar by five and the first list row lost its top edge. */
+.coros-save-as header button { height: var(--qc-nav-bar-button); min-height: 0; border: 0; border-radius: 1cqw; background: var(--qc-palette-272b28); color: var(--qc-screen-text-primary); }
+.coros-save-as .save-as-type { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 1.5cqw; padding: 0 2cqw; color: var(--qc-palette-3e433f); text-align: left; }
+.coros-save-as .save-as-type b { width: 3cqw; height: 3cqw; display: grid; place-items: center; }.coros-save-as .save-as-type b svg { width: 100%; height: 100%; fill: currentColor; }.coros-save-as .save-as-type i { font-size: 1.5cqw; font-style: normal; }
+.coros-save-as .save-as-close { font-size: 4cqw; font-weight: 200; }
+.coros-save-as .save-as-type > i > .qc-ui-icon-down { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.save-as-content { height: 87.5%; display: grid; grid-template-columns: 32cqw 14cqw 1fr; gap: 1cqw; padding: 0 1% 1%; }
+.save-as-content nav, .save-as-content > aside, .save-as-content > section { overflow: hidden; border-radius: 1cqw; background: var(--qc-palette-292d2a); }
+.save-as-content nav { display: grid; grid-template-rows: repeat(6, 7.5cqw) minmax(0, 1fr); }
+.save-as-content nav button, .save-as-content > section button { min-height: 0; display: grid; align-items: center; border: 0; border-bottom: 1px solid var(--qc-palette-202321); background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 2cqw; text-align: left; }
+.save-as-content nav button { grid-template-columns: 3.6cqw 1fr 2cqw; gap: 1cqw; padding: 0 1.5cqw 0 2cqw; }.save-as-content nav button.is-active { color: var(--qc-palette-22f058); }/* Row + 16, anchored to the row's top rather than centred in it: the
+   FolderDirTable cell is 16 down from the row, where all six folder marks ink
+   77..97, 137..157, ..., 377..397 and the new-folder mark 438..458 - and this
+   nav's own rows are still modelled as 53px cards with 7px between them, so
+   anything centred here lands on 14.5 and every mark came out a pixel and a
+   half high. Taking the 16 from the top makes that reading independent of
+   the row box. */
+.save-as-content nav button > b { width: 3cqw; height: 3cqw; display: grid; place-items: center; align-self: start; margin-top: 16px; }.save-as-content nav button > b svg { width: 100%; height: 100%; fill: currentColor; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }.save-as-content nav button > b svg text { stroke: none; }.save-as-content nav button > span { transform: translate(1px, 2px); }.save-as-content nav button > i { justify-self: end; color: var(--qc-palette-6a6d6b); font-size: 2.5cqw; font-style: normal; }
+/* The unit's own muted mark ink applies to both halves of this row: the
+   new-folder mark's 141 pixels and the label's are all var(--qc-icon-muted).
+   The value this replaced is a step off the red and blue ladders, so the
+   panel could not have shown it. */
+.save-as-content nav .save-as-new { color: var(--qc-icon-muted); }
+.save-as-content > aside { display: grid; grid-template-columns: 1fr 1fr; gap: .9cqw; background: var(--qc-transparent); }
+.save-as-content > aside button { border: 0; border-radius: 1cqw; background: var(--qc-palette-292d2a); color: var(--qc-palette-e3e5e4); font-size: 2cqw; }.save-as-content > aside button.is-active { background: var(--qc-screen-surface-base); color: var(--qc-palette-22f058); }
+.save-as-content > section { display: grid; grid-template-rows: repeat(8, 1fr); }
+.save-as-content > section button { grid-template-columns: 1fr auto; padding: 0 3.125cqw 0 2.125cqw; }.save-as-content > section button.is-active { background: var(--qc-palette-232723); color: var(--qc-palette-22f058); }.save-as-content > section button.is-disabled { color: var(--qc-palette-8d908e); }.save-as-content > section button i { color: var(--qc-palette-303431); font-size: 2.5cqw; font-style: normal; }
+.coros-parameter-editor.editor-simple-gate,
+.coros-parameter-editor.editor-chief-ds1,
+.coros-parameter-editor.editor-ambience,
+.coros-parameter-editor.editor-parametric-8,
+.coros-parameter-editor.editor-simple-gate *,
+.coros-parameter-editor.editor-chief-ds1 *,
+.coros-parameter-editor.editor-ambience *,
+.coros-parameter-editor.editor-parametric-8 * { font-family: var(--qc-font-device-plain); }
+.coros-parameter-editor.editor-ukc30-topboost,
+.coros-parameter-editor.editor-ukc30-topboost * { font-family: var(--qc-font-device-plain); }
+
+.coros-name-editor { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); container-type: inline-size; font-family: var(--qc-font-device-plain); }
+.coros-name-editor header { height: var(--qc-nav-bar-height); display: grid; grid-template-columns: 12.25cqw 0 22.6cqw 9.5cqw 8.25cqw 1fr 12.25cqw; align-items: center; gap: 1cqw; padding: 1%; }
+.coros-name-editor header button { height: 100%; border: 0; border-radius: 1cqw; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); font-size: 2.2cqw; }
+.coros-name-editor .name-editor-close { font-size: 4cqw; font-weight: 200; }
+.name-editor-divider { height: 55%; border-left: 1px solid var(--qc-palette-656966); }
+.coros-name-editor .name-editor-folder { display: flex; align-items: center; gap: 1.5cqw; overflow: hidden; padding: 0 1.5cqw; color: var(--qc-palette-313c31); text-align: left; white-space: nowrap; }
+.coros-name-editor .name-editor-folder > .qc-directory-icon { width: 3cqw; height: 3cqw; flex: 0 0 3cqw; fill: currentColor; stroke: none; }
+.name-editor-folder > span { overflow: hidden; text-overflow: ellipsis; }
+.coros-name-editor .name-editor-tab { border: 1px solid var(--qc-palette-20ef55); background: var(--qc-palette-07170b); color: var(--qc-palette-21f05a); }
+.coros-name-editor .name-editor-metadata { font-size: 2.8cqw; }
+.coros-name-editor .name-editor-metadata > .qc-ui-icon-document { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.coros-name-editor .name-editor-next { width: 100%; grid-column: 7; justify-self: end; display: grid; place-items: center; background: var(--qc-palette-1733ff); font-size: 4cqw; }
+.coros-name-editor .name-editor-next .qc-ui-icon { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.capture-routing-map em .qc-ui-icon { display: block; width: 2.4cqw; height: 2.4cqw; }
+.name-editor-value { box-sizing: border-box; width: 72.75%; height: 9.75cqw; margin: 4.6cqw auto 6.1cqw; overflow: hidden; padding-left: 0; background: var(--qc-palette-082812); color: var(--qc-palette-23fa5c); font-size: 7.5cqw; letter-spacing: 0; line-height: 1.25; white-space: nowrap; }
+.name-editor-keyboard { display: grid; gap: 1cqw; padding: 0 .9%; }
+.name-key-row { height: 7cqw; display: flex; justify-content: center; gap: 1.1cqw; }
+.name-key-row button { position: relative; width: 8.75cqw; border: 0; border-radius: 1cqw; background: var(--qc-palette-242824); color: var(--qc-screen-text-primary); font-size: 2.25cqw; }
+.name-key-row button small { position: absolute; right: .8cqw; top: .3cqw; color: var(--qc-palette-737773); font-size: 1.2cqw; }
+.name-key-row .is-wide, .name-key-row.row-4 button:first-child, .name-key-row.row-4 button:last-child { width: 13.75cqw; }
+.name-key-row.row-4 .name-key-space { width: 48.375cqw; }
+.name-key-row.row-4 button:nth-child(2), .name-key-row.row-4 button:nth-child(4) { background: var(--qc-palette-021807); color: var(--qc-palette-093c13); }
+
+.qc-screen.coros-settings-fixture { position: absolute; inset: 0; display: grid; grid-template-rows: 12.5% 87.5%; overflow: hidden; border-radius: 0; background: var(--qc-palette-101310); color: var(--qc-header-save); font-family: var(--qc-font-device-plain); }
+.coros-settings-fixture button { border: 0; color: inherit; font: inherit; }.coros-settings-fixture > header { display: grid; grid-template-columns: 10% 1fr 10%; align-items: center; border-bottom: 1px solid var(--qc-palette-313431); background: var(--qc-palette-0e110e); }.coros-settings-fixture > header button { height: 100%; background: var(--qc-transparent); font-size: 2.5cqw; }.coros-settings-fixture > header strong { font-size: 1.8cqw; font-weight: 400; text-align: center; }
+.coros-settings-fixture > main { min-height: 0; display: grid; grid-template-columns: 24% 76%; }.coros-settings-fixture > main > nav { display: flex; flex-direction: column; padding: 2% 0; border-right: 1px solid var(--qc-palette-313431); background: var(--qc-screen-surface-raised); }.coros-settings-fixture > main > nav button { flex: 1; display: grid; grid-template-columns: 34% 1fr; align-items: center; padding: 0 9%; background: var(--qc-transparent); color: var(--qc-palette-999e99); font-size: 1.2cqw; text-align: left; }.coros-settings-fixture > main > nav button b { font-size: 2cqw; text-align: center; }.coros-settings-fixture > main > nav button.is-active { border-left: .45cqw solid var(--qc-screen-accent); background: var(--qc-palette-242925); color: var(--qc-screen-accent); }
+.settings-content { min-height: 0; overflow: hidden; background: var(--qc-palette-242925); }.settings-content > button, .settings-status { width: 100%; min-height: 5.9cqw; display: flex; align-items: center; padding: 0 4%; border-bottom: 1px solid var(--qc-palette-373c38); background: var(--qc-transparent); text-align: left; }.settings-content > button > span { display: flex; flex: 1; flex-direction: column; gap: .35cqw; }.settings-content > button strong, .settings-status span { font-size: 1.25cqw; font-weight: 400; }.settings-content > button small { color: var(--qc-palette-858a86); font-size: .95cqw; }.settings-content > button em { color: var(--qc-palette-888d89); font-size: 2cqw; font-style: normal; }.settings-content > button.is-danger strong { color: var(--qc-palette-ff5d6d); }
+.settings-content i { width: 4.4cqw; height: 2.2cqw; padding: .2cqw; border-radius: 1.3cqw; background: var(--qc-rotary-face-edge); }.settings-content i b { display: block; width: 1.8cqw; height: 1.8cqw; border-radius: 50%; background: var(--qc-palette-6d726e); }.settings-content i.is-on { background: var(--qc-palette-1c9d4b); }.settings-content i.is-on b { margin-left: 2.2cqw; background: var(--qc-screen-text-primary); }.settings-status { justify-content: space-between; color: var(--qc-palette-aaa); }
+.settings-update { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }.settings-update > span { color: var(--qc-palette-888d89); font-size: 1cqw; }.settings-update > strong { margin-top: 1%; font-size: 2.4cqw; font-weight: 400; }.settings-update > i { width: 46%; height: 1.1cqw; margin: 5% 0 2%; padding: 0; background: var(--qc-rotary-face-edge); }.settings-update > i b { width: 100%; height: 100%; border-radius: inherit; background: var(--qc-screen-accent); }.settings-update > small { color: var(--qc-palette-a0a5a1); font-size: 1.1cqw; }.settings-update > button { margin-top: 5%; padding: 1.3cqw 3cqw; border-radius: .5cqw; background: var(--qc-screen-surface-control); font-size: 1.1cqw; }
+.storage-summary { height: 22%; display: grid; grid-template-columns: 1fr auto; align-content: center; gap: 1cqw; padding: 0 5%; border-bottom: 1px solid var(--qc-palette-383d39); }.storage-summary strong { font-size: 1.35cqw; font-weight: 400; }.storage-summary span { color: var(--qc-palette-aaa); font-size: 1.1cqw; }.storage-summary i { grid-column: 1 / -1; width: 100%; height: 1.4cqw; padding: 0; }.storage-summary i b { width: 62%; height: 100%; border-radius: inherit; background: var(--qc-screen-accent); }
+.device-info-card { display: grid; grid-template-columns: 18% 1fr; align-items: center; margin: 5%; padding: 4%; border: 1px solid var(--qc-palette-3a3f3b); border-radius: .8cqw; background: var(--qc-palette-1c211d); }.device-info-card > b { grid-row: 1 / 6; color: var(--qc-screen-accent); font-size: 6cqw; text-align: center; }.device-info-card > strong { margin-bottom: 3%; font-size: 2cqw; font-weight: 400; }.device-info-card > span { display: grid; grid-template-columns: 38% 1fr; padding: 1.5% 0; border-top: 1px solid var(--qc-palette-343934); font-size: 1.2cqw; }.device-info-card small { color: var(--qc-palette-8a8f8b); font-size: .95cqw; }
+.diagnostics-grid { height: 100%; display: grid; grid-template-columns: repeat(2,1fr); grid-template-rows: repeat(3,1fr); gap: 1%; padding: 2%; }.diagnostics-grid > span { display: grid; grid-template-columns: 1fr auto; align-content: center; gap: 1.4cqw; padding: 0 6%; border: 1px solid var(--qc-palette-373c38); border-radius: .6cqw; background: var(--qc-screen-surface-raised); }.diagnostics-grid small { color: var(--qc-palette-8c918d); font-size: 1cqw; }.diagnostics-grid strong { font-size: 1.7cqw; font-weight: 400; }.diagnostics-grid i { grid-column: 1 / -1; width: 100%; height: .8cqw; padding: 0; }.diagnostics-grid i b { width: 64%; height: 100%; border-radius: inherit; background: var(--qc-screen-accent); }
+
+.qc-screen.coros-capture-fixture { position: absolute; inset: 0; display: grid; grid-template-rows: 12.5% 87.5%; overflow: hidden; border-radius: 0; background: radial-gradient(circle at 50% 40%,var(--qc-palette-202520),var(--qc-palette-0c0f0c) 72%); color: var(--qc-palette-f0f2f0); font-family: var(--qc-font-device-plain); }
+.coros-capture-fixture button { border: 0; color: inherit; font: inherit; }.coros-capture-fixture > header { display: grid; grid-template-columns: 10% 1fr 10%; align-items: center; border-bottom: 1px solid var(--qc-palette-343a35); background: var(--qc-palette-0d100d); }.coros-capture-fixture > header button { height: 100%; background: var(--qc-transparent); font-size: 3cqw; }.coros-capture-fixture > header strong { font-size: 1.8cqw; font-weight: 400; text-align: center; }
+.capture-intro { display: flex; flex-direction: column; align-items: center; justify-content: center; }.capture-intro h1,.capture-workspace h1 { margin: 0; font-size: 2.8cqw; font-weight: 400; }.capture-intro p,.capture-workspace > p { margin: 1.2cqw 0 2cqw; color: var(--qc-palette-9da39e); font-size: 1.25cqw; }.capture-orbit { position: relative; width: 9cqw; height: 9cqw; margin-bottom: 1cqw; display: grid; place-items: center; border: 1px solid var(--qc-palette-3c4740); border-radius: 50%; }.capture-orbit i { width: 5.5cqw; height: 5.5cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-palette-13331c); color: var(--qc-palette-42f173); font-size: 2.6cqw; font-style: normal; }.capture-orbit span { position: absolute; width: 1cqw; height: 1cqw; border-radius: 50%; background: var(--qc-screen-accent); }.capture-orbit span:nth-child(2) { left: -.5cqw; }.capture-orbit span:nth-child(3) { right: 1cqw; top: .2cqw; }.capture-orbit span:nth-child(4) { right: .6cqw; bottom: .5cqw; }
+.capture-intro aside { display: grid; grid-template-columns: 2.5cqw auto 2.5cqw auto 2.5cqw auto; align-items: center; gap: .7cqw; margin-bottom: 2.2cqw; color: var(--qc-palette-a9aeaa); font-size: 1.05cqw; }.capture-intro aside b { width: 2.3cqw; height: 2.3cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-palette-283029); color: var(--qc-palette-45f176); }.capture-intro > button,.capture-next,.capture-save-button { min-width: 16cqw; padding: 1.35cqw 2.6cqw; border-radius: .6cqw; background: var(--qc-palette-193dff); font-size: 1.2cqw; }
+.capture-steps { display: grid; grid-template-columns: repeat(6,1fr); position: absolute; left: 5%; right: 5%; top: 14.5%; height: 7cqw; }.capture-steps::before { content: ""; position: absolute; left: 7%; right: 7%; top: 1.5cqw; border-top: 1px solid var(--qc-palette-394039); }.capture-steps span { z-index: 1; display: flex; flex-direction: column; align-items: center; gap: .65cqw; color: var(--qc-palette-707671); font-size: .85cqw; }.capture-steps b { width: 3cqw; height: 3cqw; display: grid; place-items: center; border: .25cqw solid var(--qc-palette-394039); border-radius: 50%; background: var(--qc-palette-111511); font-size: 1.1cqw; }.capture-steps .is-active { color: var(--qc-palette-ebeeeb); }.capture-steps .is-active b,.capture-steps .is-done b { border-color: var(--qc-screen-accent); color: var(--qc-screen-accent); }.capture-steps .is-done b { background: var(--qc-palette-14351c); }
+.capture-workspace { position: absolute; left: 5%; right: 5%; top: 28%; bottom: 4%; text-align: center; }.capture-workspace > p { margin-bottom: 2.2cqw; }.capture-next,.capture-save-button { position: absolute; right: 0; bottom: 0; min-width: 12cqw; }.capture-type-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 1.1cqw; }.capture-type-grid button { height: 14cqw; display: grid; grid-template-rows: 5.5cqw auto 1fr; align-items: center; padding: 1cqw; border: 1px solid var(--qc-palette-3a413b); border-radius: .8cqw; background: var(--qc-palette-1e241f); }.capture-type-grid button.is-active { border-color: var(--qc-screen-accent); background: var(--qc-palette-18301e); }.capture-type-grid b { color: var(--qc-screen-accent); font-size: 3.5cqw; }.capture-type-grid strong { font-size: 1.25cqw; }.capture-type-grid small { color: var(--qc-palette-8e948f); font-size: .9cqw; }
+.capture-routing-map { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; align-items: center; gap: .7cqw; }.capture-routing-map span { height: 9cqw; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1cqw; border: 1px solid var(--qc-palette-3c433d); border-radius: .8cqw; background: var(--qc-palette-1d231e); }.capture-routing-map span.capture-gear { border-color: var(--qc-screen-accent); }.capture-routing-map b { font-size: 1.1cqw; }.capture-routing-map i { color: var(--qc-palette-858b86); font-size: .85cqw; font-style: normal; }.capture-routing-map em { color: var(--qc-screen-accent); font-size: 2.4cqw; font-style: normal; }.capture-check { width: 48%; display: grid; grid-template-columns: 3cqw 1fr; align-items: center; gap: 1cqw; margin: 1.7cqw auto 0; text-align: left; }.capture-check > i { width: 2.7cqw; height: 2.7cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-palette-173a20); color: var(--qc-screen-accent); font-style: normal; }.capture-check span { display: flex; flex-direction: column; }.capture-check strong { font-size: 1.05cqw; }.capture-check small { color: var(--qc-palette-858b86); font-size: .8cqw; }
+.capture-meters { display: grid; grid-template-columns: repeat(2,1fr); gap: 2cqw; }.capture-meters section { display: grid; grid-template-columns: 4cqw 1fr 4cqw; align-items: center; gap: 1cqw; padding: 1.6cqw 2cqw; border: 1px solid var(--qc-palette-3b423c); border-radius: .8cqw; background: var(--qc-palette-1c221d); }.capture-meters span,.capture-meters strong,.capture-meters i { grid-column: 1 / -1; }.capture-meters span { color: var(--qc-palette-989e99); font-size: .9cqw; }.capture-meters strong { font-size: 2.1cqw; font-weight: 400; }.capture-meters i { height: 1.4cqw; border-radius: 1cqw; background: linear-gradient(90deg,var(--qc-palette-30362f) 72%,var(--qc-palette-71343a) 72%); }.capture-meters i b { display: block; height: 100%; border-radius: inherit; background: var(--qc-screen-accent); }.capture-meters button { height: 3cqw; border-radius: .5cqw; background: var(--qc-palette-2b312c); }.capture-meters em { font-size: 1.05cqw; font-style: normal; }.capture-listen,.capture-retry { margin-top: 1.5cqw; padding: 1cqw 2cqw; border-radius: .5cqw; background: var(--qc-palette-2d332e); font-size: 1cqw; }
+.capture-progress-ring { width: 13cqw; height: 13cqw; display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 1cqw auto; border: 1cqw solid var(--qc-palette-283029); border-top-color: var(--qc-screen-accent); border-right-color: var(--qc-screen-accent); border-radius: 50%; }.capture-progress-ring b { font-size: 2.3cqw; }.capture-progress-ring span { color: var(--qc-palette-8b918c); font-size: .8cqw; }.capture-wave { height: 4cqw; display: flex; align-items: center; justify-content: center; gap: .22cqw; }.capture-wave i { width: .3cqw; background: var(--qc-screen-accent); opacity: .72; }.capture-time { color: var(--qc-palette-8c928d); font-size: .9cqw; }
+.capture-ab { display: grid; grid-template-columns: repeat(2,1fr); gap: 1cqw; width: 50%; margin: auto; }.capture-ab button { height: 7cqw; display: flex; align-items: center; justify-content: center; gap: 1cqw; border: 1px solid var(--qc-palette-3a413b); border-radius: .7cqw; background: var(--qc-palette-1d231e); }.capture-ab button.is-active { border-color: var(--qc-screen-accent); }.capture-ab b { width: 3cqw; height: 3cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-palette-2a312b); color: var(--qc-screen-accent); }.capture-ab strong { font-size: 1cqw; }.capture-result-controls { display: grid; grid-template-columns: repeat(2,1fr); gap: 1cqw; width: 62%; margin: 1.5cqw auto 0; }.capture-result-controls section { display: grid; grid-template-columns: 1fr auto; gap: .5cqw; text-align: left; }.capture-result-controls span { color: var(--qc-palette-8d938e); font-size: .85cqw; }.capture-result-controls strong { font-size: 1.1cqw; }.capture-result-controls i { grid-column: 1 / -1; height: .7cqw; border-radius: 1cqw; background: var(--qc-palette-2d332e); }.capture-result-controls i b { display: block; width: 74%; height: 100%; border-radius: inherit; background: var(--qc-screen-accent); }
+.capture-form { display: grid; grid-template-columns: repeat(2,1fr); gap: 1cqw; margin-top: 2cqw; text-align: left; }.capture-form label { display: flex; flex-direction: column; gap: .6cqw; color: var(--qc-palette-919792); font-size: .85cqw; }.capture-form label.is-wide { grid-column: 1 / -1; }.capture-form input,.capture-form label button { box-sizing: border-box; width: 100%; height: 4cqw; padding: 0 1.2cqw; border: 1px solid var(--qc-palette-3a413b); border-radius: .5cqw; background: var(--qc-palette-1c221d); color: var(--qc-palette-edf0ed); font: 1.15cqw var(--qc-font-device-plain); text-align: left; }
+
+.qc-screen.coros-recovery { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; border-radius: 0; background: radial-gradient(circle at 50% 38%,var(--qc-screen-surface-control),var(--qc-palette-090b09) 70%); color: var(--qc-palette-f0f2f0); font-family: var(--qc-font-device-plain); }.coros-recovery .recovery-logo { width: 7cqw; height: 7cqw; display: grid; place-items: center; border: .35cqw solid var(--qc-palette-42f173); border-radius: 1.2cqw; color: var(--qc-palette-42f173); }.coros-recovery .recovery-logo svg { width: 4cqw; height: 4cqw; }.coros-recovery h1 { margin: 1.5cqw 0 .8cqw; font-size: 2.8cqw; font-weight: 400; }.coros-recovery > p { margin: 0 0 2cqw; color: var(--qc-palette-9ba19c); font-size: 1.2cqw; }.recovery-switches { display: flex; align-items: center; gap: 2cqw; }.recovery-switches b { width: 5cqw; height: 5cqw; display: grid; place-items: center; border: .4cqw solid var(--qc-palette-42f173); border-radius: 50%; color: var(--qc-palette-42f173); font-size: 1.8cqw; }.recovery-switches span { color: var(--qc-palette-777d78); font-size: .9cqw; }.coros-recovery > small { margin-top: 1.4cqw; color: var(--qc-palette-777d78); font-size: .9cqw; }.recovery-options { width: 58%; display: grid; gap: .7cqw; }.recovery-options button { height: 5.6cqw; display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto auto; align-content: center; padding: 0 1.5cqw; border: 1px solid var(--qc-palette-383f39); border-radius: .6cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); text-align: left; }.recovery-options button.is-active { border-color: var(--qc-palette-42f173); }.recovery-options button.is-danger strong { color: var(--qc-palette-ff6572); }.recovery-options strong { font-size: 1.05cqw; }.recovery-options small { color: var(--qc-palette-818782); font-size: .8cqw; }.recovery-options b { grid-column: 2; grid-row: 1 / 3; color: var(--qc-palette-8c928d); font-size: 1.8cqw; }
+.qc-screen.coros-system-overlay { position: absolute; inset: 0; overflow: hidden; border-radius: 0; background: var(--qc-palette-090b09); color: var(--qc-palette-f0f2f0); font-family: var(--qc-font-device-plain); }.overlay-underlay { position: absolute; inset: 0; opacity: .22; filter: blur(1px); }.overlay-underlay header { height: 12%; display: flex; align-items: center; justify-content: space-between; padding: 0 4%; border-bottom: 1px solid var(--qc-palette-383d39); font-size: 1.6cqw; }.overlay-underlay header b { width: 5cqw; height: 5cqw; display: grid; place-items: center; border-radius: .5cqw; background: var(--qc-palette-ffd23e); color: var(--qc-palette-111); }.overlay-underlay main { display: flex; align-items: center; gap: 4cqw; padding: 12% 10%; }.overlay-underlay main i { width: 9cqw; height: 9cqw; border: .4cqw solid var(--qc-palette-526056); border-radius: 1cqw; }
+.overlay-underlay.is-directory { opacity: 1; filter: none; }.overlay-underlay.is-directory::after { content: ""; position: absolute; inset: 0; background: var(--qc-palette-c7cbc7); opacity: .22; }
+.system-keyboard { position: absolute; inset: 0; background: var(--qc-rotary-face-edge); }.system-keyboard > header { height: 12%; display: grid; grid-template-columns: 10% 1fr 10%; align-items: center; }.system-keyboard > header button { height: 100%; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 2.4cqw; }.system-keyboard > header strong { font-size: 1.6cqw; font-weight: 400; text-align: center; }.system-keyboard-value { box-sizing: border-box; width: 70%; height: 8cqw; margin: 1cqw auto 2cqw; padding: .8cqw 1.2cqw; border-bottom: .3cqw solid var(--qc-palette-42f173); background: var(--qc-palette-1d231e); color: var(--qc-palette-42f173); font-size: 3.8cqw; }.system-keyboard > section { display: grid; gap: .65cqw; padding: 0 1.5%; }.system-keyboard > section > div { height: 5.4cqw; display: flex; justify-content: center; gap: .7cqw; }.system-keyboard > section button { min-width: 7.7cqw; border: 0; border-radius: .6cqw; background: var(--qc-screen-surface-control); color: var(--qc-palette-f0f2f0); font-size: 1.35cqw; }.system-keyboard > section button.is-space { width: 45cqw; }
+.system-dialog { position: absolute; left: 50%; top: 50%; width: 47%; transform: translate(-50%,-50%); display: flex; flex-direction: column; align-items: center; padding: 2.3cqw; border: 1px solid var(--qc-palette-424943); border-radius: 1cqw; background: var(--qc-rotary-face); box-shadow: 0 1cqw 4cqw var(--qc-screen-background); text-align: center; }.system-dialog .dialog-icon { width: 4cqw; height: 4cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-palette-183920); color: var(--qc-palette-42f173); font-size: 2cqw; }.system-dialog .dialog-icon.is-error { background: var(--qc-palette-401b20); color: var(--qc-palette-ff6674); }.system-dialog h1 { margin: 1.1cqw 0 .7cqw; font-size: 2cqw; font-weight: 400; }.system-dialog p { margin: 0; color: var(--qc-palette-9ba19c); font-size: 1.05cqw; line-height: 1.4; }.system-dialog footer { width: 100%; display: grid; grid-template-columns: repeat(2,1fr); gap: 1cqw; margin-top: 2cqw; }.system-dialog footer button { height: 4.5cqw; border: 0; border-radius: .5cqw; background: var(--qc-palette-303631); color: var(--qc-palette-f0f2f0); font-size: 1.05cqw; }.system-dialog footer button.is-danger { background: var(--qc-palette-bd2638); }.system-dialog footer button:only-child { grid-column: 1 / -1; background: var(--qc-palette-193dff); }.system-dialog.is-busy { width: 38%; }.dialog-spinner { width: 5cqw; height: 5cqw; border: .6cqw solid var(--qc-palette-384039); border-top-color: var(--qc-palette-42f173); border-radius: 50%; }
+
+/* The physical pedal has a recessed housing around a separately inset tread.
+   The tread is drawn once, here, on the inset `i`. It used to be declared three
+   times - twice more on the housing's own ::before/::after, at a second period
+   in remaining-fixtures-fixes.css - and neither of those ever painted: the pair
+   was switched off two rules below this one and nothing restored `display`.
+   Thirteen rule blocks aimed at those two pseudo-elements were dead code and
+   have been removed. */
+.midi-expression label div { background: var(--qc-palette-080808); }
+
+.midi-expression label div > i { position: absolute; left: 1cqw; right: 1.125cqw; top: 2.625cqw; bottom: .75cqw; border-radius: .5cqw; background: var(--qc-screen-surface-control); }
+.midi-expression label div > i::before,
+.midi-expression label div > i::after { content: ""; position: absolute; left: 18%; right: 18%; height: 6cqw; background: repeating-linear-gradient(to bottom, var(--qc-rotary-face) 0 .3cqw, var(--qc-transparent) .3cqw .65cqw); }
+.midi-expression label div > i::before { top: 1.5cqw; }
+.midi-expression label div > i::after { bottom: 1cqw; }
+}
+
+/* Virtual Device naming uses the full native keyboard. */
+.qc-screen.coros-physical-keyboard {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  overflow: hidden;
+  background: var(--qc-screen-surface-base);
+  color: var(--qc-screen-text-primary);
+  font-family: var(--qc-font-device-plain);
+}
+.coros-physical-keyboard > header { position: relative; height: var(--qc-nav-bar-height); background: var(--qc-screen-surface-base); }
+.coros-physical-keyboard > header button { position: absolute; top: 8px; height: 44px; border: 0; border-radius: 7px; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); font: 31px var(--qc-font-device-plain); }
+.coros-physical-keyboard > header button:first-child { left: 8px; width: 98px; background: var(--qc-screen-surface-control); }
+.coros-physical-keyboard > header button:first-child .qc-ui-icon-close { position: absolute; left: 37px; top: 10px; width: 24px !important; height: 24px !important; }
+/* The default-preset button carries QcRadioButton with the plate: the tile and
+   the 22px checkbox at (157, 30) are one vector, so the button keeps only its
+   position. It drew an empty tile before - icons/24/checkbox_unchecked was
+   missing entirely. */
+.coros-physical-keyboard > header .keyboard-default-mark { left: 124px; width: 66px; padding: 0; border-radius: 0; background: none; }
+.coros-physical-keyboard > header .keyboard-default-mark > .qc-radio-button { width: 66px; height: 44px; }
+.coros-physical-keyboard > header span { position: absolute; left: 198px; top: 21px; color: var(--qc-palette-999c9a); font-size: 18px; }
+.coros-physical-keyboard > header b { position: absolute; left: 430px; top: 14px; color: var(--qc-palette-9a9d9b); font: 26px var(--qc-font-device-plain); }
+.coros-physical-keyboard > header .keyboard-save-mark { right: 8px; width: 98px; background: var(--qc-palette-081439); color: var(--qc-palette-3e4657); font-size: 23px; }
+.coros-physical-keyboard > h1 { position: absolute; left: 0; right: 0; top: 102px; margin: 0; color: var(--qc-palette-2e3130); font: 40px/1.2 var(--qc-font-device-plain); text-align: center; }
+.physical-keyboard-rows { position: absolute; inset: 224px 8px 8px 7px; display: grid; grid-template-rows: repeat(4,56px); gap: 8px; }
+.physical-keyboard-rows > div { display: grid; gap: 8px; }
+.physical-keyboard-rows > div:nth-child(1) { grid-template-columns: repeat(10,1fr); }
+.physical-keyboard-rows > div:nth-child(2) { grid-template-columns: repeat(9,71px); justify-content: center; }
+.physical-keyboard-rows > div:nth-child(3) { grid-template-columns: 112px repeat(7,1fr) 112px; }
+.physical-keyboard-rows > div:nth-child(4) { grid-template-columns: 112px 71px 1fr 71px 112px; }
+.physical-keyboard-rows button { position: relative; border: 0; border-radius: 7px; background: var(--qc-rotary-face); color: var(--qc-screen-text-primary); font: 18px var(--qc-font-device-plain); }
+.physical-keyboard-rows button small { position: absolute; right: 6px; top: 3px; color: var(--qc-palette-686d69); font-size: 12px; }
+.physical-keyboard-rows button.is-shift,
+.physical-keyboard-rows button.is-backspace,
+.physical-keyboard-rows button.is-numeric { font-size: 20px; background: var(--qc-screen-surface-raised); }
+.physical-keyboard-rows button.is-backspace .qc-ui-icon-backspace { width: 24px !important; height: 24px !important; transform: translateY(2px); }
+.physical-keyboard-rows button.is-space { font-size: 19px; }
+.physical-keyboard-rows button.is-done { background: var(--qc-editor-disabled-accent); color: var(--qc-palette-213523); }
+
+/* Physical Directory action drawer and confirmation overlay. */
+.coros-directory-fixture .directory-context-scrim { position: absolute; inset: 0; z-index: 4; background: var(--qc-palette-rgba-88-92-88-a694); }
+.coros-directory-fixture.is-physical-context > header { position: relative; display: block; padding: 0; }
+/* 66 wide on an 8px gutter, not 56. The unit plates a header tool tile only
+   while its own menu is open, and `directory-sort` catches one: the raised
+   plate inks 536..601, a 66-wide box, where a 56-wide one inked 541..596. The
+   staged-upload tool tile below already carries the same 66 at left 610, and
+   610 - 536 = 74 is the pitch, so the three tool slots are 462, 536 and 610 and
+   the last closes on 676, 8 clear of the divider at 684. The lefts under this
+   rule were set for the narrower box and each put its mark 1 to 3 columns left
+   of the unit's. */
+.coros-directory-fixture.is-physical-context > header > button { position: absolute; top: 8px; width: 66px; min-width: 0; height: 44px; background: var(--qc-transparent); }
+/* Each holds one inline 24px svg, so the line box carries the 14.4px font's
+   4px descender under the glyph and stands 28 tall; centring that in the 42px
+   content box at 9..51 drew the mark on 16..40. The unit centres it on the
+   44px row - `directory-item-context` inks the arrange mark 558..579 by
+   19..40, a 22 square on 569.0 and 30.0 - and a grid box drops the descender
+   and lands the 24px mark on 18..42, as the multi-select header already does. */
+.coros-directory-fixture.is-physical-context > header > button:not(.directory-fixture-category) { display: grid; place-items: center; }
+/* 16px of leading pad and 4px of trailing, not the 16 and 16 the `0 2%` on the
+   percentage layout above resolves to here. A percentage pad measures the
+   containing block, and this panel is absolutely positioned, so both its pads
+   come from the 800px header rather than from its own 256px - the lead lands on
+   16 by arithmetic and is right by coincidence, the trail lands on 16 and is
+   12px too much. The unit inks its ComboBoxWithSelector triangle at 241..254
+   across every directory view - preset-directory, directory-captures,
+   -categories, -cloud-upload, -favorites, -filter, -irs, -item-context,
+   -nested, -plugins, -sort and cloud-upload-overwrite - and the lead glyph at
+   24..47 throughout. The panel's own box runs 8..264, so a 24px mark box
+   closing on 260 puts the mark's ink centroid at 248.0, matching the unit's
+   centroid to within 0.03px. */
+.coros-directory-fixture.is-physical-context > header .directory-fixture-category { left: 8px; width: 256px; padding: 0 4px 0 16px; }
+/* The mark's wrapper holds an inline svg, so its box carries the font's
+   descender below the 24px glyph and stands 26.2px tall; `align-items: center`
+   then centres that box in the 44px row and leaves the glyph 1.1px high. The
+   unit inks the down triangle on rows 26..33 and the up triangle on 25..32;
+   ours inked one row above each. Giving the wrapper a flex box of its own
+   drops the descender and the glyph centres on the row. */
+.coros-directory-fixture.is-physical-context > header .directory-fixture-category > b { display: flex; }
+/* Nothing ever plates this tile outside the staged-upload state, so only the
+   mark it centres is visible - and the unit draws that mark on an integer
+   310..333, a clean 24 columns, which centres the box on 322. At width 96 the
+   box centred on 320 instead. The width stays a placement input rather than a
+   drawn plate: `is-cloud-upload` below overrides it with the 99x45 bordered
+   pill the upload views do draw, at this same left.
+   The `:not()` matters. `.directory-multiselect` is also a `header`, so this
+   rule's `:nth-of-type(2)` reached the multiselect bar's second button, and at
+   (0,3,2) its width beat the bar's own (0,3,1) `width: 64px`. That widened one
+   64px tile to 96 and, with the tile absolutely placed and its mark centred,
+   pushed the mark 16 columns right - `directory-arrange`'s edit mark inked
+   426..447 against the unit's 410..431. The bar's other tiles were spared only
+   because their lefts come from `nth-last-of-type`, which outranks this.
+   The guard is wrapped in `:where()` so it adds no specificity of its own: a
+   bare `:not(.directory-multiselect)` would lift this rule to (0,4,2) and it
+   would then outrank the `is-cloud-upload` width below, which is (0,3,2) and
+   carries the one plate this tile actually draws. */
+.coros-directory-fixture.is-physical-context > header:not(:where(.directory-multiselect)) > button:nth-of-type(2) { left: 272px; width: 100px; }
+.coros-directory-fixture.is-physical-context > header > button:nth-of-type(3) { left: 462px; }
+.coros-directory-fixture.is-physical-context > header > button:nth-of-type(4) { left: 536px; }
+.coros-directory-fixture.is-physical-context > header > button:nth-of-type(5) { left: 610px; }
+.coros-directory-fixture.is-physical-context > header > em { position: absolute; left: 684px; top: 12px; width: 1px; height: 36px; margin: 0; }
+.coros-directory-fixture.is-physical-context > header > button:last-child { left: 694px; width: 98px; min-width: 98px; background: var(--qc-screen-surface-control); }
+/* The blanket 24px is for the header's glyphs. A shared control carries its own
+   declared box - QcRadioButton's plate is 98x44 - and an !important width here
+   would beat every placement rule that tried to say so. */
+.coros-directory-fixture.is-physical-context > header svg:not(.qc-radio-button) { width: 24px !important; height: 24px !important; fill: currentColor; stroke: currentColor; stroke-width: 1.5; }
+/* var(--qc-palette-aaa) was one hand-picked average of four inks the unit draws
+   here, and it is off the device's own palette ladders entirely. The unit
+   substitutes a whole ink per state rather than fading one, and each of the
+   four physical-context states that draw this combo has its own: unwashed,
+   `directory-cloud-upload` inks it 57,60,57. `directory-categories` lifts the
+   combo over its own scrim and inks the category mark 255,255,255, beside the
+   selector's own reference.utilityMark. `directory-item-context` and
+   `directory-sort` read 132,134,132 under the menu wash, and
+   `cloud-upload-overwrite` 74,81,74 under the confirmation - and no ink reaches
+   either of those through the wash from above it, so those two name the ground
+   that composites to the unit's value, the way the rows below already do.
+   Solving var(--qc-palette-rgba-88-92-88-a694) for the ground gives 232,229,232
+   and 42,56,42, which Chrome composites to exactly those two values. */
+.coros-directory-fixture.is-physical-context > header .directory-fixture-category svg { flex: none; color: var(--qc-context-capture-dark); }
+.coros-directory-fixture.is-physical-context:has(> .directory-category-menu) > header .directory-fixture-category svg { color: var(--qc-screen-text-primary); }
+.coros-directory-fixture.is-physical-context:has(> .directory-context-scrim):not(:has(> .directory-category-menu)) > header .directory-fixture-category svg { color: var(--qc-screen-ink-pre-confirmation-scrim); }
+.coros-physical-confirmation:not(.is-over-grid) > .coros-directory-fixture.is-physical-context > header .directory-fixture-category svg { color: var(--qc-directory-selector-mark-pre-confirmation-scrim); }
+.coros-directory-fixture.is-physical-context .physical-directory-status { width: 24px; height: 24px; overflow: visible; fill: none; stroke-width: 1.5; stroke-linecap: square; }
+.coros-directory-fixture.is-physical-context .physical-directory-status .status-error { stroke: var(--qc-palette-dc464d); }
+.coros-directory-fixture.is-physical-context .physical-directory-status .status-bars { stroke: var(--qc-palette-9a9d9b); }
+.coros-directory-fixture.is-physical-context > main { background: var(--qc-screen-surface-base); }
+.coros-directory-fixture.is-physical-context .directory-fixture-banks { display: grid; grid-template-columns: repeat(2, 1fr); grid-template-rows: repeat(7, 1fr); gap: 8px 6px; background: var(--qc-transparent); }
+.coros-directory-fixture.is-physical-context .directory-fixture-banks button { min-height: 0; border-radius: 8px; background: var(--qc-screen-surface-control); font-size: 16px; }
+/* The bank the unit is showing is recessed to the screen's own ground, not
+   raised onto the rotary face: `directory-cloud-upload` inks bank 4 at
+   x 334..382, y 122..168 in var(--qc-screen-surface-base) unwashed, and the
+   scrimmed rule below already names that same surface. The rotary face is
+   never actually shown here. */
+.coros-directory-fixture.is-physical-context .directory-fixture-banks button.is-active { background: var(--qc-screen-surface-base); }
+/* 16px of leading pad, not the 6% the percentage layout above gives. The unit
+   puts the row mark at x=24 on every directory view, and this panel starts
+   at x=8 on both sides: the control surface runs 8..263 in the device and in
+   the render alike. 6% of the panel's 255.98px is 15.36, so the box landed
+   at 23.34 and the mark inked one column left of the unit's. The child rows
+   take the same pad because the unit does not indent them. */
+.coros-directory-fixture.is-physical-context .directory-fixture-folders button { height: 60px; padding: 0 16px; gap: 6%; font-size: 16px; }
+.coros-directory-fixture.is-physical-context .directory-fixture-folders button.is-child { padding-left: 16px; gap: 5%; }
+/* The unit draws these folder glyphs in plain white, not in a grey of its own.
+   Under a menu or confirmation wash it substitutes the dimmed ink instead of
+   fading the white, which no white reaches through that wash - hence the
+   pre-scrim ground, the same remedy the rows below already take. */
+/* Row + 16, not the row + 18 `align-items: center` gives a 24px box in a 60px
+   row: three of these marks ink all 24 rows of their box, and the first is
+   the same drawing anchored in the header. See the twin rule in
+   surface-shell.css for `.coros-directory`. */
+.coros-directory-fixture.is-physical-context .directory-fixture-folders button > b:first-child { flex: none; width: 24px; height: 24px; translate: 0 -2px; color: var(--qc-screen-text-primary); }
+.coros-directory-fixture.is-physical-context:has(> .directory-context-scrim) .directory-fixture-folders button > b:first-child,
+.coros-physical-confirmation:not(.is-over-grid) > .coros-directory-fixture.is-physical-context .directory-fixture-folders button > b:first-child { color: var(--qc-screen-ink-pre-confirmation-scrim); }
+.coros-directory-fixture.is-physical-context .directory-fixture-folders button > b:first-child svg { width: 24px; height: 24px; fill: currentColor; stroke: currentColor; stroke-width: 1.5; }
+.coros-directory-fixture.is-physical-context .directory-fixture-folders .folder-number { fill: var(--qc-palette-202421); stroke: none; }
+.coros-directory-fixture.is-physical-context .directory-fixture-items { display: flex; flex-direction: column; gap: 0; background: var(--qc-screen-surface-control); }
+/* The unit's item rows are 51px, not 52. At 52 the drift is one pixel per row,
+   so by row five a ground correction misses the top of the row and overshoots
+   its bottom. */
+.coros-directory-fixture.is-physical-context .directory-fixture-items button { flex: none; height: 51px; grid-template-columns: 1fr 10%; padding: 0 16px; border: 0; border-radius: 8px; background: var(--qc-screen-surface-control); font-size: 16px; }
+.coros-directory-fixture.is-physical-context .directory-fixture-items button.is-current { background: var(--qc-rotary-face); }
+.coros-directory-fixture.is-physical-context .directory-fixture-items button > strong { font-size: 16px; }
+.coros-directory-fixture.is-physical-context .directory-fixture-items button > span { font-size: 16px; }
+.coros-directory-fixture.is-physical-context .directory-fixture-items button.is-current .physical-preset-name { color: var(--qc-screen-accent); }
+.coros-directory-fixture.is-physical-context .directory-fixture-items button small { font-size: 9px; }
+.coros-directory-fixture .directory-item-menu { left: 528px; right: auto; top: 212px; width: 256px; height: 260px; overflow: hidden; border: 0; border-radius: 8px; background: var(--qc-screen-background); box-shadow: none; }
+/* Same collapse as the Presets actions drawer: under the wash the unit stops
+   telling the raised and rotary surfaces apart from base and control. The
+   :has() gate keeps this to the scrimmed state, since unscrimmed those
+   surfaces are right as they stand. */
+.coros-directory-fixture.is-physical-context:has(> .directory-context-scrim) .directory-fixture-folders button.is-active { background: var(--qc-screen-surface-base); }
+/* Select-all is a vector now, so the same substitution reaches it as the plate
+   role the component paints with rather than as a CSS background. */
+.coros-directory-fixture.is-physical-context:has(> .directory-context-scrim) > .directory-multiselect > .multiselect-all { --qc-radio-surface: var(--qc-screen-surface-base); }
+/* Under a menu scrim the unit gives the current row the rotary face's own
+   scrimmed result, which no wash reaches from the face itself - hence the
+   pre-scrim ground. Under the copy dialog it collapses that row onto the
+   control surface instead, so the two states part company here. */
+.coros-directory-fixture.is-physical-context:has(> .directory-context-scrim):not(:has(> .directory-copy-dialog)) .directory-fixture-items button.is-current { background: var(--qc-rotary-face-pre-scrim); }
+.coros-directory-fixture.is-physical-context:has(> .directory-context-scrim):has(> .directory-copy-dialog) .directory-fixture-items button.is-current { background: var(--qc-screen-surface-control); }
+/* The category combo is lifted over the scrim and blacked out while its own
+   dropdown is open, the way a nested header button already is; closed under one
+   of the tool menus it reads as the control surface instead. The gate is the
+   menu, not the scrim: under a dialog scrim it stays as it is. */
+.coros-directory-fixture.is-physical-context:has(> .directory-category-menu, > .directory-tool-menu, > .directory-item-menu) > header > .directory-fixture-category { background: var(--qc-screen-surface-control); }
+.coros-directory-fixture.is-physical-context:has(> .directory-category-menu) > header > .directory-fixture-category { position: relative; z-index: 6; background: var(--qc-screen); }
+.coros-directory-fixture.is-physical-context:has(> .directory-context-scrim) > header > button:last-child { background: var(--qc-screen-surface-control); }
+.coros-directory-fixture.is-physical-context:has(> .directory-context-scrim) .directory-fixture-banks button.is-active { background: var(--qc-screen-surface-base); }
+.coros-directory-fixture.is-physical-context:has(> .directory-tool-menu:not(.is-filter)) > header > button:nth-of-type(4) { position: relative; z-index: 6; background: var(--qc-screen); }
+.coros-directory-fixture .directory-item-menu button { box-sizing: border-box; width: 100%; height: 52px; padding: 0 16px; border: 0; background: var(--qc-screen-background); color: var(--qc-screen-text-primary); font: 16px var(--qc-font-device-plain); text-align: left; }
+.qc-screen.coros-physical-confirmation { position: absolute; inset: 0; z-index: 11; width: 100%; max-width: none; height: 100%; aspect-ratio: auto; overflow: hidden; background: var(--qc-palette-111); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
+.coros-physical-confirmation > .coros-directory-fixture { position: absolute; inset: 0; }
+.coros-physical-confirmation > .confirmation-scrim { position: absolute; inset: 0; z-index: 4; background: var(--qc-palette-rgba-88-92-88-a694); }
+/* Over the Grid the device dims far harder than over the Directory: black
+   reads var(--qc-palette-212021) there and the preset title's white reads var(--qc-palette-636563), which fits
+   this pair and not the one above. */
+.coros-physical-confirmation.is-over-grid > .confirmation-scrim { background: var(--qc-palette-rgba-36-35-36-a917); }
+/* Same ground collapse as the context menus, for the confirmation scrim's own
+   Directory underlay. The current row keeps its pre-scrim ground rather than
+   the control surface, since the unit gives the rotary face its own result. */
+.coros-physical-confirmation:not(.is-over-grid) > .coros-directory-fixture.is-physical-context .directory-fixture-folders button.is-active,
+.coros-physical-confirmation:not(.is-over-grid) > .coros-directory-fixture.is-physical-context .directory-fixture-items .preset-upload { background: var(--qc-screen-surface-base); }
+.coros-physical-confirmation:not(.is-over-grid) > .coros-directory-fixture.is-physical-context .directory-fixture-items button.is-current { background: var(--qc-rotary-face-pre-scrim); }
+.coros-physical-confirmation:not(.is-over-grid) > .coros-directory-fixture.is-cloud-upload > header > button:nth-of-type(2) { background: var(--qc-palette-101c10); }
+/* The unit puts no upload badge on an empty slot, scrimmed or not. */
+.coros-directory-fixture .directory-fixture-items button.is-empty .preset-upload { display: none; }
+.coros-physical-confirmation > .physical-grid-underlay { position: absolute; inset: 0; z-index: 1; }
+.physical-grid-underlay.is-full-grid .underlay-grid { height: 480px; }
+.qc-screen.coros-cpu-monitor { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen); color: var(--qc-cab-arrow-dark); font-family: var(--qc-font-device-plain); }
+.coros-cpu-monitor > .physical-grid-underlay { position: absolute; inset: 0; }
+.coros-cpu-monitor .cpu-readout { position: absolute; z-index: 3; left: 606px; top: 12px; width: 180px; height: 78px; border-radius: 10px; background: var(--qc-context-capture-black); }
+.coros-cpu-monitor .cpu-readout button { position: absolute; left: 14px; top: 14px; width: 24px; height: 24px; padding: 0; border: 0; background: var(--qc-transparent); color: var(--qc-cab-arrow-dark); }
+.coros-cpu-monitor .cpu-readout button svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; }
+.coros-cpu-readout-placeholder { display: none; }
+.coros-cpu-monitor .cpu-readout .cpu-mixer { position: absolute; left: 84px; top: 14px; width: 24px; height: 24px; color: var(--qc-cab-arrow-dark); }
+.coros-cpu-monitor .cpu-readout .cpu-mixer svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; }
+.coros-cpu-monitor .cpu-readout > b { position: absolute; right: 12px; top: 12px; width: 32px; height: 28px; display: grid; place-items: center; border: 1px solid var(--qc-palette-6c706c); border-radius: 5px; color: var(--qc-cab-arrow-dark); font: 14px var(--qc-font-device-plain); font-weight: 400; }
+.coros-cpu-monitor .cpu-readout > span { position: absolute; left: 14px; bottom: 10px; font: 17px var(--qc-font-device-plain); }
+.coros-cpu-monitor .cpu-readout > strong { position: absolute; right: 12px; bottom: 4px; color: var(--qc-rotary-accent); font: 30px var(--qc-font-device-plain); font-weight: 400; }
+.physical-grid-underlay .underlay-route.is-row-2,
+.physical-grid-underlay .underlay-output.is-row-2 { top: 201px; }
+.physical-grid-underlay .underlay-cable.is-row-2 { top: 238px; }
+.physical-grid-underlay .underlay-slot { position: absolute; width: 44px; height: 76px; top: 107px; display: grid; place-items: center; border-radius: 14px; background: var(--qc-palette-080808); color: var(--qc-utility-mark); font-size: 44px; font-style: normal; }
+.physical-grid-underlay.is-lit .underlay-slot { background: var(--qc-route-pill); }
+.physical-grid-underlay .underlay-slot.is-left { left: 8px; }
+.physical-grid-underlay .underlay-slot.is-right { right: 6px; }
+.physical-grid-underlay .underlay-slot.is-row-2 { top: 295px; }
+.physical-grid-underlay .underlay-slot > .qc-ui-icon-add { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+/* These four marks ink 74,73,74 on the 33,36,33 the dialog leaves of the
+   port, and the scrim cannot
+   produce that pair. At alpha .917 it composites the port's ground to exactly
+   the 33,36,33 the unit shows - that half is right and must not move - while
+   the 148,150,148 mark beneath it lands on 45,44,45; reaching 74 through that
+   alpha would need a 494 to start from. So the mark alone is lifted over the
+   scrim and painted at the value the unit substitutes, the way
+   `.coros-grid-popup:has(> .popup-scrim)` lifts the Grid's own ports. The
+   underlay has to give up its own z-index for that: at `z-index: 1` it is a
+   stacking context and nothing inside it can rise above a sibling. Its two
+   siblings both carry explicit z-indices above it, so the paint order it had is
+   the paint order it keeps. The rule names the `path` because the registry
+   writes `fill` there as a presentation attribute, which an inherited value on
+   the `<svg>` cannot outrank. */
+.coros-physical-confirmation > .physical-grid-underlay { z-index: auto; }
+.coros-physical-confirmation .underlay-slot > .qc-ui-icon-add { position: relative; z-index: 5; }
+.coros-physical-confirmation .underlay-slot > .qc-ui-icon-add path { fill: var(--qc-screen-mark-dimmed-confirmation); }
+/* The Grid stays undimmed here. */
+.physical-grid-underlay.is-lit > .underlay-grid > header > strong { color: var(--qc-palette-84dbff); }
+.physical-grid-underlay.is-lit > .underlay-grid > header > strong span,
+.physical-grid-underlay.is-lit > .underlay-grid > header h1 { color: var(--qc-route-text); }
+.physical-grid-underlay.is-lit > .underlay-grid > header nav,
+.physical-grid-underlay.is-lit > .underlay-grid > header em { color: var(--qc-palette-e7e3e7); }
+.physical-grid-underlay.is-lit .underlay-route,
+.physical-grid-underlay.is-lit .underlay-output { background: var(--qc-route-pill); color: var(--qc-palette-e7e3e7); }
+.physical-grid-underlay.is-lit .underlay-cable { background: var(--qc-route-rail); }
+/* The two variants are not the same colour: the default (not-over-grid,
+   cloud-upload overwrite) state draws this panel var(--qc-route-pill) with
+   white copy, while the over-grid (generic confirmation) state draws it
+   salmon with black copy. */
+.coros-physical-confirmation > aside { position: absolute; z-index: 5; left: 190px; top: 125px; box-sizing: border-box; width: 420px; height: 230px; border-radius: 10px; background: var(--qc-route-pill); color: var(--qc-route-text); text-align: center; }
+.coros-physical-confirmation.is-over-grid > aside { background: var(--qc-palette-ff594a); color: var(--qc-screen); }
+/* The overwrite dialog carries a two-line message, so this state draws it
+   253px tall from y 113, with its buttons on y 290. */
+.coros-physical-confirmation:not(.is-over-grid) > aside { top: 113px; height: 253px; }
+.coros-physical-confirmation:not(.is-over-grid) > aside footer { bottom: 33px; }
+.coros-physical-confirmation:not(.is-over-grid) > aside button { height: 43px; }
+.coros-physical-confirmation > aside h1 { margin: 43px 0 24px; font: 20px var(--qc-font-device-plain); }
+.coros-physical-confirmation > aside p { margin: 0; font: 18px var(--qc-font-device-plain); }
+.coros-physical-confirmation > aside footer { position: absolute; left: 32px; right: 32px; bottom: 32px; display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.coros-physical-confirmation > aside button { height: 45px; border: 0; border-radius: 8px; background: var(--qc-screen-background); color: var(--qc-screen-text-primary); font: 16px var(--qc-font-device-plain); }
+.coros-physical-confirmation > aside button:last-child { background: var(--qc-palette-1838ff); }
+
+/* Physical editor overflow menu. */
+.qc-screen.coros-block-context { position: absolute; inset: 0; overflow: hidden; background: var(--qc-palette-111); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
+.iconography-audit-fixture { position: absolute; inset: 0; background: var(--qc-screen-background); color: var(--qc-primary-text); }
+.iconography-audit-fixture > main { position: absolute; inset: 40px; display: grid; grid-template-columns: repeat(5, 120px); grid-auto-rows: 100px; gap: 20px; }
+.iconography-audit-fixture figure { position: relative; width: 120px; height: 100px; margin: 0; border-radius: 8px; background: var(--qc-screen-surface-raised); color: var(--qc-primary-text); }
+.iconography-audit-fixture figure > svg { position: absolute; left: 44px; top: 12px; width: 32px; height: 32px; overflow: visible; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.iconography-audit-fixture figure[data-icon="waveform"] > svg { left: 20px; width: 80px; }
+.iconography-audit-fixture .iconography-gap-row { position: absolute; left: 140px; top: 240px; display: flex; gap: 10px; }
+.iconography-audit-fixture figure[data-icon="pin"] > svg { fill: currentColor; stroke: none; }
+.iconography-audit-fixture figcaption { position: absolute; left: 4px; right: 4px; top: 55px; overflow: hidden; color: var(--qc-editor-muted); font: 12px var(--qc-font-device-plain); text-align: center; white-space: nowrap; }
+.physical-eq-underlay { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); }
+.physical-eq-underlay header { position: absolute; inset: 0 0 auto; height: var(--qc-nav-bar-height); color: var(--qc-palette-919591); }
+.physical-eq-underlay header .physical-eq-more { position: absolute; left: 20px; top: 8px; width: 22px; height: 44px; padding: 0; border: 0; background: var(--qc-transparent); color: var(--qc-palette-a2a5a2); font-size: 24px; }
+.physical-eq-underlay header .physical-eq-title small { position: absolute; left: 60px; top: 12px; font-size: 14px; }
+.physical-eq-underlay header .physical-eq-title strong { position: absolute; left: 60px; top: 34px; color: var(--qc-palette-008dff); font-size: 18px; font-weight: 400; }
+.physical-eq-underlay header nav { position: absolute; inset: 0 8px 0 auto; display: flex; align-items: center; gap: 7px; }
+.physical-eq-underlay header nav button { width: 32px; height: 44px; padding: 0; border: 0; background: var(--qc-transparent); color: var(--qc-palette-a3a6a3); }
+.physical-eq-underlay header nav button svg { width: 24px; height: 24px; fill: currentColor; }
+.physical-eq-underlay header nav b { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 3px; background: var(--qc-palette-ffd42d); color: var(--qc-palette-111); font-size: 18px; font-weight: 600; }
+.physical-eq-underlay header nav i { width: 1px; height: 24px; margin: 0 7px; background: var(--qc-palette-6c706c); }
+.physical-eq-underlay header nav .physical-eq-save { width: 52px; color: var(--qc-palette-0aa9ff); }
+.physical-eq-underlay header nav .physical-eq-save svg,.physical-eq-underlay header nav .physical-eq-confirm svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.physical-eq-underlay header nav .physical-eq-confirm { width: 98px; margin-left: 8px; border-radius: 8px; background: var(--qc-palette-202421); color: var(--qc-screen-text-primary); }
+.physical-eq-underlay > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.physical-eq-underlay > svg .physical-eq-curve { fill: none; stroke: var(--qc-palette-8f9490); stroke-width: 2; }
+.physical-eq-underlay > svg .physical-eq-grid path { fill: none; stroke: var(--qc-palette-343835); stroke-width: 1; }
+.physical-eq-underlay > svg text { fill: var(--qc-palette-737773); font: 14px var(--qc-font-device-plain); }
+.physical-eq-underlay > svg circle { fill: var(--qc-palette-1c211d); stroke: var(--qc-screen-background); stroke-width: 2; }
+.physical-eq-underlay footer { position: absolute; left: 8px; right: 8px; bottom: 8px; height: 108px; display: grid; grid-template-columns: repeat(5,1fr); border-radius: 8px; background: var(--qc-screen-surface-control); }
+.physical-eq-underlay footer::before { content: ""; position: absolute; left: -8px; right: -8px; top: -45px; border-top: 1px solid var(--qc-screen-surface-control); }
+.physical-eq-underlay footer span { position: relative; padding: 10px; border-right: 1px solid var(--qc-palette-151715); color: var(--qc-palette-aeb1ae); font-size: 16px; }
+.physical-eq-underlay footer span strong { position: absolute; left: 7%; bottom: 14%; color: var(--qc-palette-b0b3b0); font-size: 16px; font-weight: 400; }
+.physical-eq-underlay footer span strong small { font-size: 12px; }
+.physical-eq-footer-power { position: absolute; left: 7%; top: 40px; width: 50px; height: 45px; border-radius: 7px; background: var(--qc-screen-surface-raised); }
+.physical-eq-footer-power::before { content: ""; position: absolute; left: 50%; top: 50%; width: 17px; height: 17px; translate: -50% -50%; border: 2px solid var(--qc-palette-dfe1df); border-top-color: var(--qc-transparent); border-radius: 50%; }
+.physical-eq-footer-power::after { content: ""; position: absolute; left: calc(50% - 1px); top: 11px; width: 2px; height: 10px; background: var(--qc-palette-dfe1df); }
+/* Same two-zone dimming as the stomp message, and the same boundary: the
+   underlay grid's box ends at 196px. Over the grid's black the a917 wash lands
+   on the unit's value exactly and must be kept; below it, over the panel
+   grounds, the directory wash is the one that matches. Splitting is the whole
+   fix - swapping the single wash for either one makes the other zone worse. */
+.coros-block-context > .block-context-scrim { position: absolute; inset: 0; z-index: 2; background: none; }
+.coros-block-context > .block-context-scrim::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 196px; background: var(--qc-palette-rgba-72-71-72-a917); }
+.coros-block-context > .block-context-scrim::after { content: ""; position: absolute; left: 0; right: 0; top: 196px; bottom: 0; background: var(--qc-palette-rgba-88-92-88-a694); }
+/* The underlay's own grounds, collapsed the way the unit collapses them under
+   this scrim: the editor bar reads as base, the knob faces take the pre-scrim
+   rotary ground, and the row ports and slots stay the screen's black. */
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-editor-more,
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-editor-bar button:not(:last-child),
+.qc-screen.coros-assignment.is-stomp .physical-grid-underlay .underlay-editor-more,
+.qc-screen.coros-assignment.is-stomp .physical-grid-underlay .underlay-editor-bar button:not(:last-child) { background: var(--qc-screen-surface-base); }
+/* Under the context menu's wash the unit substitutes its own results rather
+   than blending, so the dial's three surfaces are authored pre-scrim like the
+   face already was. Solving 0.3059g + 61.1 for the unit's 66,65,66 rim gives
+   16,4,16 - the pre-scrim black this theme already carries - and its 74,73,74
+   scale lands on the same ground as the face. */
+.qc-screen.coros-block-context .assignment-parameters .assignment-rotary .qc-rotary-face,
+.qc-screen.coros-assignment.is-stomp .assignment-parameters .assignment-rotary .qc-rotary-face { fill: var(--qc-rotary-face-pre-scrim); }
+.qc-screen.coros-block-context .assignment-parameters .assignment-rotary .qc-rotary-track,
+.qc-screen.coros-assignment.is-stomp .assignment-parameters .assignment-rotary .qc-rotary-track { stroke: var(--qc-rotary-face-pre-scrim); }
+.qc-screen.coros-block-context .assignment-parameters .assignment-rotary .qc-rotary-rim,
+.qc-screen.coros-assignment.is-stomp .assignment-parameters .assignment-rotary .qc-rotary-rim { fill: var(--qc-screen-background-pre-scrim); }
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-route,
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-output,
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-slot,
+.qc-screen.coros-assignment.is-stomp .physical-grid-underlay .underlay-route,
+.qc-screen.coros-assignment.is-stomp .physical-grid-underlay .underlay-output,
+.qc-screen.coros-assignment.is-stomp .physical-grid-underlay .underlay-slot { background: var(--qc-screen-background); }
+/* The parameter strip is what differs between the two: with the context menu
+   open the editor is disabled and the whole strip reads as base, while the
+   footswitch dialog leaves it live and it reads as control - both in place of
+   the disabled ink the unscrimmed screens use. The container carries the same
+   ground as its cells so the one-pixel gaps do not show that ink through. The
+   :not(.is-bottom) is load-bearing: without it this outranks the bottom
+   variant's own rule below and paints the wrong ground across the whole
+   panel. */
+.qc-screen.coros-block-context:not(.is-bottom) .assignment-parameters,
+.qc-screen.coros-block-context:not(.is-bottom) .assignment-parameters > section { background: var(--qc-screen-surface-base); }
+.qc-screen.coros-assignment.is-stomp .physical-grid-underlay .assignment-parameters,
+.qc-screen.coros-assignment.is-stomp .physical-grid-underlay .assignment-parameters > section,
+.qc-screen.coros-block-context.is-bottom .physical-grid-underlay .assignment-parameters { background: var(--qc-screen-surface-control); }
+/* The Grid's own chrome is the one thing the upper wash cannot be solved for.
+   Its ground composites black to 66,65,66 - red above green - while every mark
+   the unit leaves standing puts green above red, and even a white ground only
+   reaches 87 through alpha .917. So the header, the row ports and the chain
+   rail are lifted over the scrim and painted at the value the frames carry,
+   which also puts their antialiasing on the 66-to-99 ramp the unit uses. The
+   aside is later in the document at the same layer, so the menu still covers
+   them. */
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header > strong,
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header h1 { position: relative; }
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header > strong,
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header h1,
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header nav,
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header em,
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-route,
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-output,
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-cable { z-index: 3; }
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header > strong span,
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header h1,
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header nav,
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header em { color: var(--qc-grid-ink-scrimmed); }
+/* The mode mark carries its fill on the path, so lifting it over the scrim left
+   it at full white where the unit shows the same dimmed ink as the caption. */
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header em svg path { fill: var(--qc-grid-ink-scrimmed); }
+.qc-screen.coros-block-context .physical-grid-underlay > .underlay-grid > header nav b { background: var(--qc-grid-scene-badge-scrimmed); color: var(--qc-palette-424142); }
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-cable { background: var(--qc-grid-rail-scrimmed); }
+/* Lifted, the ports carry their own washed ground: the unit's 8,8,8 pill reads
+   as the same 66,65,66 the screen around it does. */
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-route,
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-output { background: var(--qc-palette-424142); color: var(--qc-grid-ink-scrimmed); }
+/* Below the grid's edge the heavier wash can be solved for, so the editor bar
+   keeps its scrim and takes the pre-scrim grounds instead: white lands on
+   132,134,132, the amber badge on 132,121,74, the muted arrow half on 82,85,82
+   and the badge's own letter on the washed 66,65,66. The glyphs carry their
+   fill on the path, so the override has to name the layer role. */
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-editor-bar button { color: var(--qc-screen-ink-pre-confirmation-scrim); }
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-editor-bar svg path[data-qc-role="reference.primaryText"],
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-editor-bar svg path[data-qc-role="reference.iconPrimary"] { fill: var(--qc-screen-ink-pre-confirmation-scrim); }
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-editor-bar svg path[data-qc-role="reference.sceneControlMuted"] { fill: var(--qc-scene-control-muted-pre-confirmation-scrim); }
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-editor-bar .editor-scene b { background: var(--qc-scene-badge-pre-confirmation-scrim); color: var(--qc-screen-background-pre-scrim); }
+.qc-screen.coros-block-context .physical-grid-underlay .underlay-editor-bar .qc-scene-letter-badge { background: var(--qc-scene-badge-pre-confirmation-scrim); color: var(--qc-screen-background-pre-scrim); }
+/* The menu box measures 320x420 at (32, 30) - the last black column is 351
+   and the last black row 449 - and its corner turns over eight pixels, not
+   seven. The icon column is 54px wide so the 24px glyph box lands whole on
+   the unit's 47-71 and the label starts at 86. */
+.qc-screen.coros-block-context > aside { position: absolute; z-index: 3; left: 32px; right: auto; top: 30px; bottom: 30px; width: 320px; display: block; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; border-radius: 8px; background: var(--qc-screen-surface-base); box-shadow: none; }
+.qc-screen.coros-block-context > aside::-webkit-scrollbar { display: none; }
+/* Ten rows of 60 in a 420 viewport put the thumb at 400 * 420/600 = 280px in a
+   track inset 10px top and bottom, and the unit paints it 49.52.49 - 52.55.53
+   is off the 5/6/5 ladder in all three channels and cannot be shown at all. */
+.qc-screen.coros-block-context > aside::after { content: ""; position: absolute; right: 8px; top: 10px; bottom: 130px; border-right: 2px solid var(--qc-palette-313431); }
+/* Scrolled to the bottom the same thumb sits against the foot of the track. */
+.qc-screen.coros-block-context.is-bottom > aside::after { top: 130px; bottom: 10px; }
+.qc-screen.coros-block-context > aside button { box-sizing: border-box; flex: none; width: 100%; height: 60px; display: grid; grid-template-columns: 54px 1fr; align-items: center; padding: 0; border: 0; border-bottom: 0; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); font: 16px var(--qc-font-device-plain); text-align: left; }
+.qc-screen.coros-block-context > aside button span { display: grid; place-items: center; color: var(--qc-screen-text-primary); text-align: center; }
+.qc-screen.coros-block-context > aside button span svg { width: 24px; height: 24px; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* A greyed row keeps its label at 57,60,57 - the same dark capture ink the rest
+   of the screen greys with - while only its glyph falls to the disabled ground. */
+.qc-screen.coros-block-context > aside button.is-disabled { color: var(--qc-context-capture-dark); }
+.qc-screen.coros-block-context > aside button.is-disabled span { color: var(--qc-editor-disabled); }
+
+/* The trim hint spans the left of the panel with the two range knobs beside
+   it, and neither tile is assigned. */
+
+.expression-bypass-official .expression-switch-panel .trim-hint { display: grid; align-content: center; gap: .6cqw; padding: 0 1.5cqw; text-align: left; }
+.expression-bypass-official .expression-switch-panel .trim-hint span { color: var(--qc-palette-e7e3e7); font-size: 2cqw; }
+.expression-bypass-official .expression-switch-panel .trim-hint span b { display: inline-block; width: 2.4cqw; vertical-align: -.3cqw; color: var(--qc-screen-accent); }
+.expression-bypass-official .expression-switch-panel .trim-hint small { color: var(--qc-palette-9aa09a); font-size: 1.7cqw; line-height: 1.3; }
+.expression-bypass-official .expression-parameter-grid section button.is-assigned { color: var(--qc-screen-accent); }
+
+/* The option rows are 45px and the two footer buttons 157x45, centred on the
+   dialog at x 239 and 404 rather than right-aligned. */
+.coros-directory-fixture .directory-copy-dialog footer { justify-content: center; gap: 1.125cqw; padding: 0 0 4%; }
+.coros-directory-fixture .directory-copy-dialog footer button { width: 19.625cqw; height: 5.625cqw; padding: 0; border-radius: .8cqw; font-size: 2.25cqw; }
+.coros-directory-fixture .directory-copy-dialog footer button:last-child { background: var(--qc-palette-1838ff); }
+.coros-directory-fixture .directory-copy-dialog > button b { margin-left: 0; color: inherit; font-weight: 700; }
+
+/* In Multi Select mode, it replaces the directory header rather than sitting
+   under it. Select-all is a 98x44 tile at x 8 on var(--qc-screen-surface-raised), the title is
+   var(--qc-screen-accent) from x 115, the actions are 64x44 tiles on a 74px pitch whose last
+   ends at 674, a hairline divides at 684 and the done tick is 98 wide at 694 on
+   var(--qc-screen-surface-control). The copy-dialog variant has one action fewer and keeps the
+   same slots, so they are placed from the right. */
+.coros-directory-fixture.is-physical-context > .directory-multiselect { position: relative; display: block; height: 60px; padding: 0; background: var(--qc-screen-surface-base); }
+/* Select-all is QcRadioButton with the plate; this is placement only. The tile
+   and its mark are one vector now, which also recentres the box: the ::after
+   that used to draw it sat at x 44..66, where the unit inks 46..68. */
+.coros-directory-fixture.is-physical-context > .directory-multiselect > .multiselect-all { position: absolute; left: 8px; top: 8px; width: 98px; height: 44px; }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > strong { position: absolute; left: 115px; top: 0; color: var(--qc-screen-accent); font-size: 20px; font-weight: 400; line-height: 60px; }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > i { display: none; }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > em { position: absolute; left: 684px; top: 12px; width: 1px; height: 36px; margin: 0; background: var(--qc-screen-surface-muted); }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > button { position: absolute; top: 8px; width: 64px; height: 44px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: var(--qc-editor-disabled-accent); color: var(--qc-palette-313c31); }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > button:nth-last-of-type(2) { left: 611px; }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > button:nth-last-of-type(3) { left: 537px; }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > button:nth-last-of-type(4) { left: 463px; }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > button:nth-last-of-type(5) { left: 389px; }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > button:nth-last-of-type(6) { left: 305px; }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > button.is-done { left: 694px; width: 98px; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.coros-directory-fixture.is-physical-context > .directory-multiselect > button.has-count > i { position: absolute; right: -7px; top: -2px; width: 16px; height: 16px; display: grid; place-items: center; border-radius: 50%; background: var(--qc-screen-accent); color: var(--qc-screen-surface-base); font-size: 11px; font-style: normal; }
+
+/* In that mode each preset row carries a 22px box at x 416 and drops its
+   overflow dots; the rows still empty on the unit are var(--qc-palette-adaaad), not white. */
+.coros-directory-fixture.is-physical-context .directory-fixture-items button:has(> .preset-select) { grid-template-columns: 44px 1fr; padding-left: 22px; }
+/* The row box is QcRadioButton; this is placement only. The unit ships the mark
+   in a 24px sprite with a pixel of margin, so the negative margin keeps the 22
+   the row used to reserve while the vector paints its whole box. */
+.coros-directory-fixture.is-physical-context .directory-fixture-items button > .preset-select { width: 24px; height: 24px; margin: -1px; }
+/* The mark takes the row's own ink, and all three inks are the device's own:
+   the five ordinary rows ring --qc-screen-text-primary, the two trailing
+   empty slots --qc-palette-4a514a, and 4F - the empty slot in view -
+   --qc-palette-424d42 over its highlight. All three sit on the panel's 5/6/5
+   ladders. What stood in for this was a border-color on a ::before that
+   an earlier change removed along with the hand-drawn box, under a wrapper class no
+   fixture emits any more: it named one invented colour, --qc-palette-4a554c,
+   for both states, off the blue ladder, and painted nothing at all.
+   `is-current` follows `is-empty` here for the same reason the two name rules
+   below do - 4F is both. */
+.coros-directory-fixture.is-physical-context .directory-fixture-items button.is-empty > .preset-select { --qc-radio-ink: var(--qc-palette-4a514a); }
+.coros-directory-fixture.is-physical-context .directory-fixture-items button.is-current > .preset-select { --qc-radio-ink: var(--qc-palette-424d42); }
+.coros-directory-fixture.is-physical-context .directory-fixture-items button.is-empty .physical-preset-name { color: var(--qc-palette-adaaad); }
+/* 4F is both the slot in view and still unsaved; the unit paints it green. */
+.coros-directory-fixture.is-physical-context .directory-fixture-items button.is-current .physical-preset-name { color: var(--qc-screen-accent); }
+
+/* The dialog is 472x434 at (164, 22). Its paragraph is 376 wide so it breaks
+   after "paste", and the options are 366-wide rows at x 217 - 45 tall for the
+   chosen one, 62 for the two that wrap - with the label flowing as one
+   paragraph around its bold word. */
+/* The shared dialog shell casts a blurred shadow, and over a scrimmed screen
+   Chrome dithers it into a ramp across the whole ground - the same artefact as
+   a gradient between two identical colours. The unit draws no shadow at all;
+   the item menu already opts out and the copy dialog must too. */
+.coros-directory-fixture .directory-copy-dialog { height: 54.25cqw; box-shadow: none; }
+.coros-directory-fixture .directory-copy-dialog > p { width: 51cqw; margin: 0 auto 4.5cqw; padding: 0; }
+.coros-directory-fixture .directory-copy-dialog > button { box-sizing: border-box; width: 45.75cqw; min-height: 5.625cqw; margin: 0 auto 1cqw; padding: .625cqw 2.125cqw; gap: 0; border-radius: .75cqw; background: var(--qc-screen-surface-raised); color: var(--qc-directory-copy-text); line-height: 1.45; }
+.coros-directory-fixture .directory-copy-dialog > button > span { flex: 1; max-width: 38cqw; }
+.coros-directory-fixture .directory-copy-dialog > button.is-active { background: var(--qc-screen-text-primary); color: var(--qc-screen-surface-base); }
+.coros-directory-fixture .directory-copy-dialog > button > i { flex: none; margin-left: 1cqw; }
+.coros-directory-fixture .directory-copy-dialog footer { padding: .375cqw 0 0; }
+.coros-directory-fixture .directory-copy-dialog footer button { background: var(--qc-screen-background); }
+/* The unit's pre-confirmation layer suppresses the right-hand preset rows;
+   directory-copy shows no slot-name ink outside the modal. Our deliberately
+   long fixture label otherwise escaped past the modal's right edge by three
+   characters, so hide the row contents while retaining the drawn plates. */
+.coros-directory-fixture:has(> .directory-copy-dialog) .directory-fixture-items > button > * { visibility: hidden; }
+
+/* The menu is 231x312 at (371, 57) - a 39px "Sort By" caption over five 52px
+   rows, black, no border. */
+.coros-directory-fixture .directory-tool-menu { left: 371px; right: auto; top: 57px; width: 231px; padding: 0; border-radius: 8px; }
+.coros-directory-fixture .directory-tool-menu > strong { padding: 0 16px; color: var(--qc-utility-mark); font: 16px var(--qc-font-device-plain); line-height: 52px; border-bottom: 1px solid var(--qc-palette-424142); }
+.coros-directory-fixture .directory-tool-menu button { box-sizing: border-box; height: 52px; justify-content: flex-start; padding: 0 16px; border-top: 0; color: var(--qc-screen-text-primary); font: 18px var(--qc-font-device-plain); }
+.coros-directory-fixture .directory-tool-menu button.is-active { color: var(--qc-rotary-accent); }
+
+/* The category list opens under the header button as a 256x300 panel at
+   (8, 60) - five 60px rows, the current one ticked. */
+.coros-directory-fixture .directory-category-menu { left: 8px; top: 60px; width: 256px; height: 300px; padding: 0; border-radius: 8px; }
+.coros-directory-fixture .directory-category-menu button { box-sizing: border-box; height: 60px; grid-template-columns: 60px 1fr 40px; padding: 0; border-bottom: 0; color: var(--qc-screen-text-primary); font: 16px var(--qc-font-device-plain); }
+.coros-directory-fixture .directory-category-menu button.is-active { color: var(--qc-screen-accent); }
+/* The 24px mark starts at the menu's own 16px pad, the same pad the rows behind
+   this menu take, not centred in the 60px track: all five of these marks ink
+   from x=24, where centring put their boxes at 26. The track keeps its 60px,
+   so the label stays on the unit's x=69. */
+.coros-directory-fixture .directory-category-menu button > span { display: grid; place-items: center start; padding-left: 16px; color: inherit; font-size: 20px; }
+.coros-directory-fixture .directory-category-menu button > span svg { width: 24px; height: 24px; fill: currentColor; stroke: currentColor; stroke-width: 1.5; }
+.coros-directory-fixture .directory-category-menu button > b { color: inherit; font-size: 18px; font-weight: 400; text-align: center; }
+
+/* The name comes up selected - var(--qc-screen-accent) on a var(--qc-palette-102818)
+   block 234x78 at (283, 97) - with a plain close at the left, a var(--qc-palette-1838ff) save at
+   the right and Done live, because the field already holds a name. */
+.coros-physical-keyboard.is-name-editor > h1 { top: 97px; height: 78px; line-height: 78px; font-size: 48px; }
+.coros-physical-keyboard.is-name-editor > h1 > b { padding: 0 6px; background: var(--qc-palette-102818); color: var(--qc-screen-accent); font-weight: 400; }
+.coros-physical-keyboard.is-name-editor > header .keyboard-save-mark { display: grid; place-items: center; background: var(--qc-palette-1838ff); color: var(--qc-screen-text-primary); }
+.coros-physical-keyboard.is-name-editor > header .keyboard-save-mark svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.coros-physical-keyboard.is-name-editor .physical-keyboard-rows button.is-done { background: var(--qc-rotary-face); color: var(--qc-screen-text-primary); }
+
+/* The funnel opens a 231x416 panel at (300, 57) - eight 52px rows, no
+   caption - over the same dimmed directory the other menus use. */
+.directory-official .directory-context-scrim { position: absolute; inset: 0; z-index: 4; background: var(--qc-palette-rgba-88-92-88-a694); }
+/* The open filter keeps its own ground above the wash, and that ground is
+   black rather than the toolbar's var(--qc-route-glyph-surface). */
+.directory-nested-official > header button.is-open { position: relative; z-index: 6; background: var(--qc-screen); }
+.directory-official .directory-tool-menu.is-filter { left: 300px; right: auto; top: 57px; width: 231px; height: 416px; padding: 0; border: 0; border-radius: 8px; background: var(--qc-screen); box-shadow: none; }
+.directory-official .directory-tool-menu.is-filter button { box-sizing: border-box; width: 100%; height: 52px; display: flex; align-items: center; gap: 16px; justify-content: flex-start; padding: 0 16px; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 18px var(--qc-font-device-plain); }
+.directory-official .directory-tool-menu.is-filter button > b { display: grid; place-items: center; width: 24px; height: 24px; font-weight: 400; }
+.directory-official .directory-tool-menu.is-filter button > b svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+/* The same ground collapse for the official Directory: under its scrim the
+   raised surface reads as base, and the row rule takes the dimmed value the
+   unit gives that ink rather than its own. */
+.directory-official:has(> .directory-context-scrim) > main > nav > .directory-nested-root,
+.directory-official:has(> .directory-context-scrim) > header > button:not(.is-open):not(:first-of-type):not(:last-of-type):not(.directory-official-category) { background: var(--qc-screen-surface-base); }
+.directory-official:has(> .directory-context-scrim) .directory-official-list > button { --qc-list-rule-ink: var(--qc-palette-101c10); }
+.directory-official:has(> .directory-context-scrim) .directory-nested-index { border-left-color: var(--qc-screen-surface-control); }
+
+/* The block's own card sits at the left of the action bar - a 44px overflow
+   button at x 8 and the category over the device name from x 59 - and the
+   parameters run as five 156px cells on var(--qc-editor-disabled) between
+   y 256 and 363. */
+.physical-grid-underlay { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-cab-arrow-dark); font-family: var(--qc-font-device-plain); }
+.physical-grid-underlay .underlay-grid { position: absolute; inset: 0 0 auto; height: 196px; background: var(--qc-screen-background); }
+.physical-grid-underlay > .underlay-grid > header { position: relative; height: 96px; display: flex; align-items: flex-start; padding: 20px 12.6px; box-sizing: border-box; }
+/* The Grid's own SVG header already reproduces this unit's screens exactly,
+   and it sets the bank and letter at 69px with no letter spacing and the
+   preset name at 63px - the title glyphs land exactly on the device's
+   columns. block-context, delete-confirmation and cloud-upload-overwrite
+   carry the same "QC MCP TEST_2" and all three sit on the same columns
+   (217, 267, 310, 363, 403, 439, 476, 544), so the DOM header takes the SVG's
+   own metrics: 71px with 1.4px of tracking ran the bank three columns wide and
+   the name a tenth short. */
+.physical-grid-underlay > .underlay-grid > header > strong { color: var(--qc-palette-427184); font-size: 69px; line-height: .82; font-weight: 700; letter-spacing: 0; transform: translateY(3px); }
+.physical-grid-underlay > .underlay-grid > header > strong span { color: var(--qc-cab-arrow-dark); }
+/* The name's caps sit between y 31 and 74 on every underlay view; at margin-top
+   6 ours ran four rows low. Medium, not Bold: at 700 the name ran wider than
+   the unit's and carried more ink. */
+.physical-grid-underlay > .underlay-grid > header h1 { margin: 2px 0 0 20.6px; color: var(--qc-cab-arrow-dark); font-size: 63px; line-height: 1; font-weight: 600; }
+/* CorOS slants the name of a preset with unsaved edits, and both states whose
+   underlay header carries the unsaved mark - scene-assignment and
+   fixture-editor-pages, "QC MCP TEST_2*" - show it slanted. The other underlay
+   states hold clean names and stand upright, so this stays keyed to the two.
+   The extra character also no longer fits: the unit steps the name down to 58px
+   for these two, which puts its caps on 32..71 and starts it eight columns left
+   of where the 63px name starts. */
+.coros-assignment.is-scene .physical-grid-underlay > .underlay-grid > header h1,
+.coros-assignment.is-amp-editor .physical-grid-underlay > .underlay-grid > header h1 { margin-left: 12.6px; font-size: 58px; font-style: italic; font-synthesis-style: auto; }
+.physical-grid-underlay > .underlay-grid > header nav { position: absolute; right: 24px; top: 12px; display: flex; align-items: center; gap: 24px; color: var(--qc-cab-arrow-dark); font-style: normal; }
+.physical-grid-underlay > .underlay-grid > header nav i { width: 24px; height: 24px; display: grid; place-items: center; font-style: normal; }
+.physical-grid-underlay > .underlay-grid > header nav i svg { width: 26px; height: 26px; overflow: visible; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.physical-grid-underlay > .underlay-grid > header nav i:last-child svg circle { fill: currentColor; stroke: none; }
+.physical-grid-underlay > .underlay-grid > header nav b { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 4px; background: var(--qc-palette-846d18); color: var(--qc-screen-surface-base); font-size: 17px; font-weight: 700; }
+/* The mode caption hangs off its left edge, not the screen's right: the unit
+   starts STOMP and PRESET on the same column 656 and lets them end at 765 and
+   773, so a right anchor of 35 pulled PRESET nine columns left. Its caps run
+   y 64..79 - one row taller than 21px sets and five rows above where a top of
+   62 put them. */
+.physical-grid-underlay > .underlay-grid > header em { position: absolute; left: 656px; right: auto; top: 57px; display: flex; align-items: center; gap: 12px; color: var(--qc-cab-arrow-dark); font-size: 22px; font-style: normal; font-weight: 700; }
+/* These marks are crispEdges pixel art, so one art unit has to land on one CSS
+   pixel. mode.scene and mode.stomp are 26-unit vectors and mode.preset is 24, so
+   a single shared size cannot serve both: at 24 the 26-unit art drops its last
+   column, which is what the scene mark was doing here. */
+.physical-grid-underlay > .underlay-grid > header em svg { width: 26px; height: 26px; fill: currentColor; }
+.physical-grid-underlay > .underlay-grid > header em > .qc-mode-glyph-preset { width: 24px; height: 24px; }
+/* The stomp mark is a 26-unit vector and the unit draws it at 26: at 24 its
+   crisp edges lost a fifth of the glyph. PRESET's really is 24. */
+.physical-grid-underlay > .underlay-grid > header em > .qc-mode-glyph-stomp { margin-right: -2px; }
+.physical-grid-underlay > .underlay-grid > main { position: absolute; left: 0; right: 0; top: 96px; bottom: 0; }
+.physical-grid-underlay .underlay-route,
+.physical-grid-underlay .underlay-output { position: absolute; top: 13px; width: 44px; height: 76px; display: grid; place-items: center; border-radius: 14px; background: var(--qc-palette-080808); color: var(--qc-io-header-low); font-size: 14px; line-height: 1.35; text-align: center; }
+.physical-grid-underlay .underlay-route { left: 8px; }
+/* These slots are only ever seen through the confirmation wash, and the unit's
+   16-bit framebuffer puts the washed slot one green step above the washed
+   background while red and blue stay in the same bucket. No neutral ink reaches
+   that through a flat overlay, so the ink is authored pre-dim. */
+.physical-grid-underlay.is-full-grid .underlay-route,
+.physical-grid-underlay.is-full-grid .underlay-output,
+.physical-grid-underlay.is-full-grid .underlay-slot { background: var(--qc-grid-route-slot-pre-dim); }
+.physical-grid-underlay .underlay-output { right: 6px; font-size: 15px; }
+.physical-grid-underlay .underlay-cable { position: absolute; left: 52px; right: 52px; top: 50px; height: 2px; background: var(--qc-palette-636563); }
+.physical-grid-underlay .underlay-editor-bar { position: absolute; right: 8px; top: 204px; height: 44px; display: flex; align-items: stretch; gap: 8px; }
+.physical-grid-underlay .underlay-editor-bar button { box-sizing: border-box; width: 66px; padding: 0; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font: 700 17px var(--qc-font-device-plain); }
+.physical-grid-underlay .underlay-editor-bar svg { width: 30px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.physical-grid-underlay .underlay-editor-bar .editor-expression { gap: 1px; }
+.physical-grid-underlay .underlay-editor-bar .editor-expression svg { width: 24px; height: 24px; fill: currentColor; stroke: none; }
+.physical-grid-underlay .underlay-editor-bar .editor-expression small { font-size: 17px; }
+.physical-grid-underlay .underlay-editor-bar .editor-scene { width: 132px; gap: 17px; }
+.physical-grid-underlay .underlay-editor-bar > .editor-scene.qc-scene-selector { box-sizing: border-box; height: 44px; grid-template-columns: 1fr 40px 1fr; gap: 0; border-radius: 8px; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font: 700 17px var(--qc-font-device-plain); }
+.physical-grid-underlay .underlay-editor-bar > .editor-scene.qc-scene-selector > button { width: auto; min-width: 0; }
+.physical-grid-underlay .underlay-editor-bar .editor-scene b { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 4px; background: var(--qc-scene-badge); color: var(--qc-screen-surface-base); font-size: 17px; font-weight: 700; }
+.physical-grid-underlay .underlay-editor-bar .editor-divider { width: 2px; height: 28px; align-self: center; background: var(--qc-screen-surface-control); }
+.physical-grid-underlay .underlay-editor-bar .editor-confirm { background: var(--qc-screen-surface-control); }
+.physical-grid-underlay .underlay-editor-more { position: absolute; left: 8px; top: 204px; width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 8px; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
+.physical-grid-underlay .underlay-editor-more svg { width: 24px; height: 24px; fill: currentColor; stroke: none; }
+.physical-grid-underlay .underlay-editor-label { position: absolute; left: 59px; top: 204px; height: 44px; display: grid; align-content: center; gap: 3px; }
+.physical-grid-underlay .underlay-editor-label small { color: var(--qc-screen-text-muted); font-size: 15px; }
+.physical-grid-underlay .underlay-editor-label strong { color: var(--qc-palette-e7e3e7); font-size: 20px; font-weight: 400; }
+.physical-grid-underlay .underlay-preset-mark { display: inline-flex; width: 14px; height: 14px; margin-left: 3px; vertical-align: -2px; }
+.physical-grid-underlay .underlay-preset-mark svg { display: block; width: 100%; height: 100%; }
+.physical-grid-underlay .assignment-parameters { position: absolute; left: 8px; right: 8px; top: 256px; height: 107px; display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: 1fr; gap: 1px; }
+.physical-grid-underlay .assignment-parameters > section { position: relative; overflow: hidden; background: var(--qc-editor-disabled); }
+.physical-grid-underlay .assignment-parameters > section > span { position: absolute; left: 9px; top: 9px; color: var(--qc-io-header-low); font-size: 15px; }
+.physical-grid-underlay .assignment-parameters > section > em { position: absolute; left: 9px; top: 36px; color: var(--qc-palette-525552); font-size: 11px; font-style: normal; line-height: 1.2; letter-spacing: 2px; }
+.physical-grid-underlay .assignment-parameters > section > .assignment-rotary { position: absolute; left: 79px; top: 37px; width: 72px; height: 72px; }
+.physical-grid-underlay .assignment-parameters > section > .assignment-rotary.is-scene-muted .qc-rotary-progress { stroke: var(--qc-palette-525552); }
+.physical-grid-underlay .assignment-parameters > section > .assignment-rotary.is-scene-muted .qc-rotary-track { stroke: var(--qc-editor-disabled-accent); }
+.physical-grid-underlay .assignment-parameters > section > .assignment-rotary.is-scene-muted .qc-rotary-face { fill: var(--qc-palette-101810); stroke: var(--qc-screen-surface-base); }
+.physical-grid-underlay .assignment-parameters > section > .assignment-rotary.is-scene-muted .qc-rotary-pointer { stroke: var(--qc-palette-525552); }
+/* scene-assignment's rim reads 8,12,8 under its scrim, not black. */
+.physical-grid-underlay .assignment-parameters > section > .assignment-rotary.is-scene-muted .qc-rotary-rim { fill: var(--qc-palette-080c08); }
+.physical-grid-underlay .assignment-parameters > section > strong { position: absolute; left: 9px; bottom: 10px; color: var(--qc-io-header-low); font-size: 16px; font-weight: 400; }
+
+/* The chain's device blocks are 65x64 outlines on an 84px pitch from x 68, and
+   CorOS shrinks the preset header to fit a long name - the 19-character title
+   on 4B (withheld; the fixture stands in `Demo Acoustic Layer`) sets 4B at 66px
+   and the name at 47px against block-context's 71/58. */
+.physical-grid-underlay .underlay-block { position: absolute; top: 19px; width: 65px; height: 64px; border: 2px solid var(--qc-context-capture-muted); border-radius: 14px; }
+.physical-grid-underlay .underlay-block.is-block-1 { left: 68px; }
+.physical-grid-underlay .underlay-block.is-block-2 { left: 152px; }
+/* A name too long for 63px steps down to 51 and keeps the same bank: the unit
+   sets that same 19-character title with its caps on y 31..69 from column 117, and its
+   4B measures the same 14..51 / 59..97 as elsewhere, so the bank has
+   no size of its own here. */
+.physical-grid-underlay.is-long-title > .underlay-grid > header h1 { margin-top: 5px; margin-left: 15.6px; font-size: 51px; }
+
+/* The dialog is 420x294 at (190, 93) on var(--qc-screen-surface-base), its
+   latch pills start at x 260 and 390, and CANCEL / UNASSIGN are 174x44 at
+   x 222 and 404 on the y 311 line. */
+.qc-screen.coros-assignment .assignment-stomp-message > .assignment-stomp-dialog { position: absolute; left: 190px; top: 93px; box-sizing: border-box; width: 420px; height: 294px; display: block; padding: 0; border: 0; border-radius: 8px; background: var(--qc-screen-surface-base); box-shadow: none; }
+.qc-screen.coros-assignment .assignment-stomp-dialog h1 { position: absolute; left: 0; right: 0; top: 40px; margin: 0; color: var(--qc-screen-text-primary); font: 400 21px var(--qc-font-device-plain); text-align: center; }
+.qc-screen.coros-assignment .assignment-stomp-dialog p { position: absolute; left: 0; right: 0; top: 93px; margin: 0; color: var(--qc-palette-d6d9d7); font: 17px var(--qc-font-device-plain); text-align: center; }
+.qc-screen.coros-assignment .assignment-stomp-latch { position: absolute; left: 70px; top: 139px; width: auto; height: 50px; display: flex; gap: 0; margin: 0; padding: 0; border-radius: 0; background: var(--qc-transparent); }
+.qc-screen.coros-assignment .assignment-stomp-latch button { box-sizing: border-box; width: 128px; height: 50px; display: flex; align-items: center; justify-content: flex-start; gap: 8px; padding: 0 0 0 8px; border: 2px solid var(--qc-palette-188a29); border-radius: 8px; background: var(--qc-palette-102818); color: var(--qc-screen-accent); font: 17px var(--qc-font-device-plain); }
+.qc-screen.coros-assignment .assignment-stomp-latch button:last-child { width: 152px; border-color: var(--qc-transparent); background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
+.qc-screen.coros-assignment .assignment-stomp-latch button svg { width: 24px !important; height: 24px !important; fill: currentColor; stroke: none; }
+.qc-screen.coros-assignment .assignment-stomp-latch button:last-child { position: relative; padding-left: 40px; }
+.qc-screen.coros-assignment .assignment-stomp-latch button:last-child svg { position: absolute; left: 8px; top: 10px; }
+.qc-screen.coros-assignment .assignment-stomp-dialog footer { position: absolute; left: 32px; top: 218px; display: flex; gap: 8px; padding: 0; }
+.qc-screen.coros-assignment .assignment-stomp-dialog footer button { box-sizing: border-box; width: 174px; height: 44px; padding: 0; border: 0; border-radius: 8px; background: var(--qc-screen-background); color: var(--qc-screen-text-primary); font: 17px var(--qc-font-device-plain); }
+.qc-screen.coros-assignment .assignment-stomp-dialog footer button.is-primary { background: var(--qc-palette-1838ff); }
+
+/* In upload mode the cloud button is picked out in a green-bordered tile, the
+   one remaining tool keeps the sort slot at x 614, and every preset row ends
+   in an upload tile. */
+/* This header's three left-hand controls carry three separate grounds, and
+   `directory-cloud-upload` is the only state that shows any of them unwashed -
+   every other physical-context directory is under a menu or the overwrite
+   confirmation, where the blanket header default - no ground of its own - is
+   what composites to the unit's value. Unwashed the unit inks the category combo
+   var(--qc-editor-disabled) over x 8..263 - it cannot be opened while an
+   upload is staged, and the manual's own upload directory already names that
+   ink for the same control - the cloud tile var(--qc-palette-102818) over
+   x 272..370, and the sort tile the raised surface over x 610..675. Left on
+   the header's own ground those three read var(--qc-screen-surface-base). The
+   overwrite pair below hands the combo and the sort tile back to the default;
+   the cloud tile keeps the pre-scrim ground the confirmation rule above gives
+   it.
+
+   Both of those two tiles carry their own box, not the header's 56px default:
+   the cloud tile's rows 15..45 all run 272..370 and its corners close on row 8
+   and row 52, so the box is 99x45 at (272, 8) with the 8px radius the corner
+   profile gives; the sort tile inks its raised ground exactly over 610..675 by
+   8..51, so 66x44 at (610, 8) - the same 66 the row upload tile below already
+   measures. Drawn at the default 56 it sat four pixels right of the unit's
+   left edge and ten short of its right, and centred its 24px mark a pixel
+   off with it; the cloud tile at 96 lost three columns and put its cloud two
+   left of the unit's.
+
+   The border is the unit's own selected green, var(--qc-palette-299239). The
+   slightly darker tone along the tile's last row and column is that same
+   green at the rounded corner's partial coverage, quantised by the panel's
+   6-bit green. It is painted directly here, so it is a colour and not a
+   compositing ground - through the confirmation scrim it lands a step
+   darker, inside what the wash can resolve. */
+.coros-directory-fixture.is-cloud-upload > header > .directory-fixture-category { background: var(--qc-editor-disabled); }
+.coros-directory-fixture.is-cloud-upload > header > button:nth-of-type(2) { box-sizing: border-box; width: 99px; height: 45px; border: 2px solid var(--qc-palette-299239); border-radius: 8px; background: var(--qc-palette-102818); color: var(--qc-screen-accent); }
+/* This is the one tile in the header with an odd height, and the unit spends
+   the odd row under the mark rather than splitting it: the unit inks the cloud
+   on 21..39, which is the art's 3..22 path on a box top of 18 - the same 18
+   the 44px tiles beside it centre on. Halved, the box top is 18.5 and the mark
+   inks 22..40, a row low. So the trailing pad carries the row: 2 below the
+   24px box against 1 above, inside the border's 2. */
+.coros-directory-fixture.is-cloud-upload > header > button:nth-of-type(2) { padding: 1px 6px 2px; }
+.coros-directory-fixture.is-cloud-upload > header > button:nth-of-type(3) { left: 610px; width: 66px; background: var(--qc-screen-surface-raised); }
+.coros-physical-confirmation > .coros-directory-fixture.is-cloud-upload > header > .directory-fixture-category,
+.coros-physical-confirmation > .coros-directory-fixture.is-cloud-upload > header > button:nth-of-type(3) { background: var(--qc-transparent); }
+/* The border is the one ink of this tile the confirmation substitutes rather
+   than fades, so it is scoped here instead of repointed above: the wash over
+   41,146,57 lands on 74,109,78 and the unit draws 74,105,74. */
+.coros-physical-confirmation > .coros-directory-fixture.is-cloud-upload > header > button:nth-of-type(2) { border-color: var(--qc-directory-upload-border-pre-confirmation-scrim); }
+/* The combo's label is the unit's own 16.4px, not the 12px the shared rule
+   gives it. Fitting the shipped IBMPlexSans.ttf to the seven ink runs it
+   paints - P 63..70, r 73..77, e 79..85, s 88..93, e 96..102, t 104..108,
+   s 111..116 - puts Regular at 16.40px and origin 62.05 with 3px of total edge
+   error over the 14 edges; 16.0 costs 5 and 17.0 costs 6, and the run's 11-row
+   cap height is 0.698 x 16.4 = 11.45. The error is advance, not origin: our
+   own box already starts the run on the unit's column and lost 14px across
+   the seven letters. The ink is the label's own 57,65,57, the same
+   var(--qc-palette-394139) the official upload directory names for this
+   control - white here was 12 rows of the wrong ink as well as the wrong
+   size. */
+.coros-directory-fixture.is-cloud-upload > header > .directory-fixture-category strong { font-size: 16.4px; color: var(--qc-palette-394139); }
+/* Under the overwrite confirmation the label goes where the two marks beside it
+   already go - the unit inks it 74,81,74, the same dimmed ink the selector
+   mark's ground above already solves, where compositing 57,65,57 through the
+   wash would land on 78,84,78. */
+.coros-physical-confirmation:not(.is-over-grid) > .coros-directory-fixture.is-cloud-upload > header > .directory-fixture-category strong { color: var(--qc-directory-selector-mark-pre-confirmation-scrim); }
+/* The upload tile is 66x38, not the 64x44 it was drawn at: the unit inks it
+   at x 718..783 and y 169..206, 220..257 and 271..308 - 66 wide against the
+   row's 8px trailing pad, and 38 tall centred in the 51px row. At 44 it
+   overhung the row by three pixels top and bottom on every badge. */
+.coros-directory-fixture.is-cloud-upload .directory-fixture-items button { grid-template-columns: 1fr 66px; padding-right: 8px; }
+.coros-directory-fixture.is-cloud-upload .preset-upload { width: 66px; height: 38px; display: grid; place-items: center; border-radius: 8px; background: var(--qc-screen-surface-raised); color: var(--qc-palette-9aa09a); }
+.coros-directory-fixture.is-cloud-upload .preset-upload svg { width: 24px; height: 24px; fill: currentColor; stroke: currentColor; stroke-width: 1.5; }
+
+/* Seven amp parameters over two strips at y 256 and 365, the block in view
+   outlined in var(--qc-palette-ff2421) like its name and knob arcs. */
+.qc-screen.coros-assignment.is-amp-editor .assignment-parameters.is-row-2 { top: 365px; }
+/* Nothing dims this screen, so its cells carry the undimmed var(--qc-screen-surface-control) and the
+   knob is the full 60px, drawn at (80, 38) inside the cell. */
+.qc-screen.coros-assignment.is-amp-editor .assignment-parameters > section { background: var(--qc-screen-surface-control); }
+.qc-screen.coros-assignment.is-amp-editor .assignment-parameters > section > .assignment-rotary { position: absolute; left: 78px; top: 37px; width: 72px; height: 72px; }
+.qc-screen.coros-assignment.is-amp-editor .assignment-parameters > section > span { color: var(--qc-palette-e7e3e7); }
+.qc-screen.coros-assignment.is-amp-editor .assignment-parameters > section > strong { bottom: 15px; color: var(--qc-palette-e7e3e7); }
+.qc-screen.coros-assignment.is-amp-editor .underlay-editor-label strong { color: var(--qc-palette-ff2421); }
+.qc-screen.coros-assignment.is-amp-editor .underlay-block.is-block-2 { border-color: var(--qc-palette-ff2421); }
+
+/* The chain block holds its device's category glyph, 28px, in the block's own
+   ink colour. */
+.physical-grid-underlay .underlay-block { display: grid; place-items: center; color: var(--qc-context-capture-muted); }
+.physical-grid-underlay .underlay-block svg { width: 40px; height: 40px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.qc-screen.coros-assignment.is-amp-editor .underlay-block.is-block-2 { color: var(--qc-palette-ff2421); }
+
+/* The two scrolled browser states are adding a device at row four, column
+   three: the target slot sits at (326, 397), not the unscrolled state's
+   (322, 206). */
+/* The same column as every other empty slot, four pixels left and three up of
+   where this used to put it: the add mark inks at x 346..367, y 418..439,
+   and the mark sits 24 units into the tile's own 70, so the tile opens at
+   (322, 394) here exactly as it does at (322, 206) on the rows above. The old
+   numbers were invisible while the mark was a soft 20-unit stroke; against
+   the registry's 22x22 they are an exact box in the wrong place. */
+.coros-device-empty-slot.is-row-4 { left: 322px; top: 394px; }
+
+/* The reverb editor under the scrolled menu keeps the undimmed cell colour and
+   teal knob arcs, and its strips sit at 256 and 365 like every other
+   editor's. */
+.qc-screen.coros-block-context.is-bottom .assignment-parameters.is-row-2 { top: 365px; }
+.qc-screen.coros-block-context.is-bottom .assignment-parameters > section { background: var(--qc-screen-surface-control); }
+.qc-screen.coros-block-context.is-bottom .assignment-parameters > section > span { color: var(--qc-palette-e7e3e7); }
+.qc-screen.coros-block-context.is-bottom .assignment-parameters > section > strong { bottom: 15px; color: var(--qc-palette-e7e3e7); }
+/* The block under this menu is a Reverb, so its arcs carry the Reverb accent
+   0,255,222 and not the generic green - editor-ambience paints the same knobs
+   in it - and the wash leaves that on 66,134,123. */
+.qc-screen.coros-block-context.is-bottom .assignment-parameters .assignment-rotary .qc-rotary-progress { stroke: var(--qc-reverb-accent-pre-confirmation-scrim); }
+/* CPU Monitor is an annotation on the current Grid, not another Grid skin.
+   Keep the exact same title, routes, nodes and tiles underneath. Only its
+   compact readout and each tile's live load fill are added. The aside itself
+   cannot intercept Grid input; only its close control can. */
+.coros-cpu-overlay{position:absolute;z-index:4;left:606px;top:12px;width:180px;height:80px;box-sizing:border-box;border-radius:10px;background:var(--qc-screen-surface-raised);color:var(--qc-context-capture-muted);font-family:var(--qc-font-device-plain);pointer-events:none}.coros-cpu-overlay button{position:absolute;left:10px;top:8px;width:24px;height:24px;padding:0;border:0;background:var(--qc-transparent);color:var(--qc-context-capture-muted)!important;pointer-events:auto}.coros-cpu-overlay button svg{width:24px;height:24px;opacity:.25}.coros-cpu-overlay .cpu-overlay-eq{position:absolute;left:94px;top:7px;width:30px;height:30px;color:var(--qc-context-capture-muted)!important}.coros-cpu-overlay .cpu-overlay-eq svg{width:30px;height:30px;opacity:.25}.coros-cpu-overlay .cpu-overlay-input{position:absolute;right:11px;top:9px;width:21px;height:26px;display:grid;place-items:center;box-sizing:border-box;border:1px solid var(--qc-context-capture-muted);border-radius:3px;color:var(--qc-context-capture-muted)!important;font-size:9px}.coros-cpu-overlay small{position:absolute;left:12px;bottom:10px;color:var(--qc-context-capture-muted)!important;font-size:14px}.coros-cpu-overlay strong{position:absolute;right:10px;bottom:6px;color:var(--qc-rotary-accent)!important;font-size:37px;font-weight:400;line-height:1}

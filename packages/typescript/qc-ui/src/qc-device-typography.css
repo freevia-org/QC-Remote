@@ -1,0 +1,95 @@
+/*
+ * CorOS typography is app-owned so Windows and Android never choose different
+ * system fallbacks. The bundled IBM Plex family is the default throughout.
+ */
+html body #root#root .qc-screen-bezel,
+html body #root#root .qc-screen-bezel *,
+html body #root#root .qc-screen-bezel *::before,
+html body #root#root .qc-screen-bezel *::after {
+  font-family: var(--qc-font-device-plain);
+}
+
+/*
+ * The unit antialiases text in grey: every partly covered pixel on its panel is
+ * a straight blend between the ink and the ground behind it. Chrome, whenever
+ * it can prove the ground under a run is opaque, antialiases on the LCD's
+ * subpixels instead and paints each glyph edge with red and green fringes the
+ * panel never shows.
+ *
+ * There is no property that asks for grey antialiasing on Windows
+ * (-webkit-font-smoothing is a macOS control and does nothing here). What does
+ * it is giving the screen its own compositing layer, which is what declaring a
+ * will-change buys. The transform itself never changes; only the declaration
+ * matters.
+ */
+html body #root#root .qc-screen-bezel {
+  will-change: transform;
+}
+
+/*
+ * The two #root ids outrank every plain per-screen selector, so a screen sheet
+ * that asks for a glyph size loses and the glyph follows the inherited
+ * font-size instead. With font sizes in cqw that lands pixel art on fractional
+ * boxes, where crispEdges drops whole rows rather than blending them. Routing
+ * the size through a custom property keeps the same 1em default while letting
+ * any screen rule set --qc-screen-glyph-size: <n>px and win, because custom
+ * property lookup does not compete with this rule's specificity.
+ */
+html body #root#root .qc-screen-bezel :is(.qc-ui-icon, .qc-screen-glyph, .qc-looper-action-glyph) {
+  display: inline-block;
+  width: var(--qc-screen-glyph-size, 1em);
+  height: var(--qc-screen-glyph-size, 1em);
+  overflow: visible;
+  vertical-align: -0.125em;
+}
+
+html body #root#root .qc-screen-bezel :is(.qc-screen-glyph, .qc-looper-action-glyph) {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+html body #root#root .qc-screen-bezel :is(
+  .coros-tuner,
+  .coros-tempo,
+  .capture-search-keyboard,
+  .capture-search-results,
+  .capture-editor-physical,
+  .coros-cab-editor,
+  .coros-global-eq,
+  .coros-physical-keyboard,
+  .coros-block-context,
+  .coros-save-preset,
+  .coros-settings-fixture.settings-wifi,
+  .coros-settings-fixture.settings-storage,
+  .coros-settings-official.settings-system,
+  .coros-modes-configuration.modes-official,
+  .gig-official.is-scene,
+  .gig-official.is-stomp,
+  .gig-official.is-hybrid,
+  .coros-gig-view:has(.gig-tiles.is-preset)
+),
+html body #root#root .qc-screen-bezel :is(
+  .coros-tuner,
+  .coros-tempo,
+  .capture-search-keyboard,
+  .capture-search-results,
+  .capture-editor-physical,
+  .coros-cab-editor,
+  .coros-global-eq,
+  .coros-physical-keyboard,
+  .coros-block-context,
+  .coros-save-preset,
+  .coros-settings-fixture.settings-wifi,
+  .coros-settings-fixture.settings-storage,
+  .coros-settings-official.settings-system,
+  .coros-modes-configuration.modes-official,
+  .gig-official.is-scene,
+  .gig-official.is-stomp,
+  .gig-official.is-hybrid,
+  .coros-gig-view:has(.gig-tiles.is-preset)
+) * {
+  font-family: var(--qc-font-device-plain);
+}

@@ -1,0 +1,11 @@
+[package]
+name = "qc-relay-protocol"
+version = "0.1.0"
+publish = false
+edition = "2021"
+description = "Shared wire frames for QC Remote public-relay device clients"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,2987 @@
+{
+  "version": 1,
+  "apiVersion": 31,
+  "capabilities": [
+    "nativePresetIdentity",
+    "modelRepoParameterMetadata",
+    "nativeBroker",
+    "nativeStateEvents",
+    "nativeDeviceIdentity",
+    "nativeDiagnostics",
+    "nativeRemoteScreen",
+    "nativeGraphicsTree",
+    "nativeScreenGestures",
+    "nativeSceneManagement",
+    "nativeParameterAssignments",
+    "nativeDefaultParameters",
+    "nativeStompMetadata",
+    "nativePresetMidiOut",
+    "nativeExpressionBypass",
+    "nativeTunerSettings",
+    "nativeTunerWrites",
+    "nativeTunerMeter",
+    "nativeLaneControls",
+    "nativeGeneralSettings",
+    "nativeIoSettings",
+    "nativeGlobalEq",
+    "nativeModeCycle",
+    "nativeLooper",
+    "nativeLibraryManagement",
+    "nativeSplitMute",
+    "nativeTempoMetronome",
+    "nativeGlobalTempoWrite"
+  ],
+  "pythonCapabilities": [
+    "modelRepoParameterMetadata",
+    "nativeStateEvents",
+    "nativeDeviceIdentity",
+    "nativeDiagnostics",
+    "nativeRemoteScreen",
+    "nativeGraphicsTree",
+    "nativeScreenGestures",
+    "nativeSceneManagement",
+    "nativeParameterAssignments",
+    "nativeDefaultParameters",
+    "nativeStompMetadata",
+    "nativePresetMidiOut",
+    "nativeExpressionBypass",
+    "nativeTunerSettings",
+    "nativeTunerWrites",
+    "nativeTunerMeter",
+    "nativeLaneControls",
+    "nativeGeneralSettings",
+    "nativeIoSettings",
+    "nativeGlobalEq",
+    "nativeModeCycle",
+    "nativeLooper",
+    "nativeLibraryManagement",
+    "nativeSplitMute",
+    "nativeTempoMetronome",
+    "nativeGlobalTempoWrite"
+  ],
+  "androidDispatch": {
+    "SYSTEM": [
+      "system.status"
+    ],
+    "RECONNECT": [
+      "device.reconnect",
+      "device.resetSession"
+    ],
+    "DISCONNECT": [
+      "device.disconnect"
+    ],
+    "SNAPSHOT": [
+      "device.snapshot"
+    ],
+    "CURRENT_PRESET": [
+      "device.currentPreset"
+    ],
+    "STATE_EVENTS": [
+      "device.stateEvents"
+    ],
+    "TEMPO_CLOCK": [
+      "device.tempoClock"
+    ],
+    "MODELS": [
+      "device.listModels"
+    ],
+    "CORRELATED_READ": [
+      "device.identity",
+      "device.diagnostics",
+      "device.inhibitedModules",
+      "device.tunerSettings",
+      "device.globalEq",
+      "device.modeCycle",
+      "device.globalTempoSettings",
+      "device.looperStatus",
+      "device.recents",
+      "device.favorites",
+      "device.pinnedModels",
+      "device.presetScreenshot",
+      "device.captureScreen",
+      "device.graphicsTree"
+    ],
+    "GENERAL_SETTINGS": [
+      "device.generalSettings"
+    ],
+    "IO_SETTINGS": [
+      "device.ioSettings"
+    ],
+    "RETAINED_CATALOG": [
+      "device.listPresets",
+      "device.listPresetFolders",
+      "device.listPresetSlots",
+      "device.captures",
+      "device.irs"
+    ],
+    "MASTER_VOLUME": [
+      "device.masterVolume"
+    ],
+    "BLOCK_DETAILS": [
+      "device.blockDetails",
+      "device.laneControlDetails"
+    ],
+    "SET_DEVICE_NAME": [
+      "device.setDeviceName"
+    ],
+    "TAP_SCREEN": [
+      "device.tapScreen",
+      "device.longTapScreen",
+      "device.swipeScreen",
+      "device.dragScreen",
+      "device.mouseFrame"
+    ],
+    "BACKUP": [
+      "device.createBackup"
+    ],
+    "PREVIEW_PARAMETER": [
+      "device.previewParameter",
+      "device.previewLaneControlParameter"
+    ],
+    "PLANNED_WRITE": [
+      "device.undo",
+      "device.redo",
+      "device.selectScene",
+      "device.copyScene",
+      "device.setSceneLabel",
+      "device.setSceneColor",
+      "device.toggleBypass",
+      "device.moveBlock",
+      "device.addBlock",
+      "device.replaceBlock",
+      "device.createModelPreset",
+      "device.setLooperStompAssignments",
+      "device.removeBlock",
+      "device.resetBlockParameters",
+      "device.setBlockFootswitch",
+      "device.setStompMomentary",
+      "device.setStompLabel",
+      "device.setMidiOut",
+      "device.setPresetLoadMidiOut",
+      "device.setExpressionBypass",
+      "device.setChainInput",
+      "device.setChainOutput",
+      "device.setChainSplit",
+      "device.setSplitMute",
+      "device.setParameter",
+      "device.setParameterSceneMode",
+      "device.setParameterExpression",
+      "device.setLaneControlParameter",
+      "device.setLaneControlSceneMode",
+      "device.setLaneControlExpression",
+      "device.setGeneralInteger",
+      "device.setGeneralToggle",
+      "device.setSceneBypassBehavior",
+      "device.setMasterVolumeAssignment",
+      "device.setGlobalBypass",
+      "device.setTunerInput",
+      "device.setTunerMute",
+      "device.setTunerMeter",
+      "device.setTunerReference",
+      "device.setInputPort",
+      "device.setOutputPort",
+      "device.setUsbPort",
+      "device.setMidiThru",
+      "device.setOutputPairing",
+      "device.setGlobalEqBypassed",
+      "device.setGlobalEqBand",
+      "device.setGlobalEqOutput",
+      "device.loadGlobalEqModelPreset",
+      "device.setModeCycle",
+      "device.setTempoMetronome",
+      "device.setTempoMode",
+      "device.setGlobalTempo",
+      "device.setFavorite",
+      "device.setModelPinned",
+      "device.loadCapture",
+      "device.loadIr",
+      "device.controlLooper",
+      "device.setTempo",
+      "device.setMasterVolume",
+      "device.pressFootswitch",
+      "device.tapTempo",
+      "device.selectModeSlot",
+      "device.showTuner",
+      "device.showGigView"
+    ],
+    "PRESET_WRITE": [
+      "device.navigateBank",
+      "device.recallPreset",
+      "device.reloadPreset"
+    ],
+    "PERSISTENT_WRITE": [
+      "device.savePresetAs",
+      "device.copyPreset",
+      "device.renameCurrentPreset",
+      "device.createSetlist",
+      "device.deleteSetlist",
+      "device.duplicateSetlist",
+      "device.deletePreset",
+      "device.movePreset"
+    ]
+  },
+  "brokerDispatch": {
+    "SYSTEM_STATUS": [
+      "system.status"
+    ],
+    "RECONNECT": [
+      "device.reconnect"
+    ],
+    "RESET_SESSION": [
+      "device.resetSession"
+    ],
+    "DISCONNECT": [
+      "device.disconnect"
+    ],
+    "SNAPSHOT": [
+      "device.snapshot"
+    ],
+    "CURRENT_PRESET": [
+      "device.currentPreset"
+    ],
+    "STATE_EVENTS": [
+      "device.stateEvents"
+    ],
+    "TEMPO_CLOCK": [
+      "device.tempoClock"
+    ],
+    "LIST_MODELS": [
+      "device.listModels"
+    ],
+    "IDENTITY": [
+      "device.identity"
+    ],
+    "SET_DEVICE_NAME": [
+      "device.setDeviceName"
+    ],
+    "UNDO": [
+      "device.undo"
+    ],
+    "REDO": [
+      "device.redo"
+    ],
+    "INHIBITED_MODULES": [
+      "device.inhibitedModules"
+    ],
+    "GATEWAY_READ": [
+      "device.diagnostics",
+      "device.tunerSettings",
+      "device.globalEq",
+      "device.modeCycle",
+      "device.globalTempoSettings",
+      "device.looperStatus",
+      "device.recents",
+      "device.favorites",
+      "device.pinnedModels",
+      "device.graphicsTree"
+    ],
+    "GENERAL_SETTINGS": [
+      "device.generalSettings"
+    ],
+    "IO_SETTINGS": [
+      "device.ioSettings"
+    ],
+    "LIBRARY_READ": [
+      "device.captures",
+      "device.irs"
+    ],
+    "GATEWAY_OPERATION": [
+      "device.setTunerInput",
+      "device.setTunerMute",
+      "device.setTunerMeter",
+      "device.setTunerReference",
+      "device.setInputPort",
+      "device.setOutputPort",
+      "device.setUsbPort",
+      "device.setMidiThru",
+      "device.setOutputPairing",
+      "device.setGlobalEqBypassed",
+      "device.setGlobalEqBand",
+      "device.setGlobalEqOutput",
+      "device.loadGlobalEqModelPreset",
+      "device.setModeCycle",
+      "device.setTempoMetronome",
+      "device.setTempoMode",
+      "device.setGlobalTempo",
+      "device.setFavorite",
+      "device.setModelPinned",
+      "device.loadCapture",
+      "device.loadIr",
+      "device.setGeneralInteger",
+      "device.setGeneralToggle",
+      "device.setSceneBypassBehavior",
+      "device.setMasterVolumeAssignment",
+      "device.setGlobalBypass",
+      "device.copyScene",
+      "device.setSceneLabel",
+      "device.setSceneColor",
+      "device.moveBlock",
+      "device.addBlock",
+      "device.replaceBlock",
+      "device.createModelPreset",
+      "device.setLooperStompAssignments",
+      "device.removeBlock",
+      "device.resetBlockParameters",
+      "device.setBlockFootswitch",
+      "device.setStompMomentary",
+      "device.setStompLabel",
+      "device.setMidiOut",
+      "device.setPresetLoadMidiOut",
+      "device.setExpressionBypass",
+      "device.setChainInput",
+      "device.setChainOutput",
+      "device.setChainSplit",
+      "device.setSplitMute",
+      "device.selectModeSlot",
+      "device.showTuner",
+      "device.showGigView"
+    ],
+    "DELETE_SETLIST": [
+      "device.deleteSetlist"
+    ],
+    "PRESET_SCREENSHOT": [
+      "device.presetScreenshot"
+    ],
+    "CAPTURE_SCREEN": [
+      "device.captureScreen"
+    ],
+    "TAP_SCREEN": [
+      "device.tapScreen",
+      "device.longTapScreen",
+      "device.swipeScreen",
+      "device.dragScreen",
+      "device.mouseFrame"
+    ],
+    "SELECT_SCENE": [
+      "device.selectScene"
+    ],
+    "TOGGLE_BYPASS": [
+      "device.toggleBypass"
+    ],
+    "BLOCK_DETAILS": [
+      "device.blockDetails"
+    ],
+    "LANE_CONTROL_DETAILS": [
+      "device.laneControlDetails"
+    ],
+    "PREVIEW_PARAMETER": [
+      "device.previewParameter"
+    ],
+    "PREVIEW_LANE_CONTROL_PARAMETER": [
+      "device.previewLaneControlParameter"
+    ],
+    "SET_PARAMETER": [
+      "device.setParameter"
+    ],
+    "SET_LANE_CONTROL_PARAMETER": [
+      "device.setLaneControlParameter"
+    ],
+    "SET_LANE_CONTROL_SCENE_MODE": [
+      "device.setLaneControlSceneMode"
+    ],
+    "SET_LANE_CONTROL_EXPRESSION": [
+      "device.setLaneControlExpression"
+    ],
+    "PARAMETER_ASSIGNMENT": [
+      "device.setParameterSceneMode",
+      "device.setParameterExpression"
+    ],
+    "SET_TEMPO": [
+      "device.setTempo"
+    ],
+    "SET_MASTER_VOLUME": [
+      "device.setMasterVolume"
+    ],
+    "MASTER_VOLUME": [
+      "device.masterVolume"
+    ],
+    "PERFORMANCE_MIDI": [
+      "device.pressFootswitch",
+      "device.tapTempo",
+      "device.controlLooper"
+    ],
+    "LIST_PRESETS": [
+      "device.listPresets"
+    ],
+    "LIST_PRESET_FOLDERS": [
+      "device.listPresetFolders"
+    ],
+    "NAVIGATE_BANK": [
+      "device.navigateBank"
+    ],
+    "RECALL_PRESET": [
+      "device.recallPreset"
+    ],
+    "RELOAD_PRESET": [
+      "device.reloadPreset"
+    ],
+    "LIST_PRESET_SLOTS": [
+      "device.listPresetSlots"
+    ],
+    "SAVE_PRESET_AS": [
+      "device.savePresetAs"
+    ],
+    "COPY_PRESET": [
+      "device.copyPreset"
+    ],
+    "RENAME_CURRENT_PRESET": [
+      "device.renameCurrentPreset"
+    ],
+    "CREATE_BACKUP": [
+      "device.createBackup"
+    ],
+    "CREATE_SETLIST": [
+      "device.createSetlist"
+    ],
+    "DUPLICATE_SETLIST": [
+      "device.duplicateSetlist"
+    ],
+    "DELETE_PRESET": [
+      "device.deletePreset"
+    ],
+    "MOVE_PRESET": [
+      "device.movePreset"
+    ]
+  },
+  "methods": [
+    {
+      "rpc": "system.status",
+      "kind": "system",
+      "client": "runtimeStatus",
+      "tauri": "runtime_status",
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "RuntimeStatus"
+      }
+    },
+    {
+      "rpc": "device.reconnect",
+      "target": "reconnect",
+      "client": "reconnect",
+      "tauri": "reconnect_device",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "ConnectionState"
+      }
+    },
+    {
+      "rpc": "device.resetSession",
+      "target": "reset_session",
+      "client": "resetSession",
+      "tauri": "reset_device_session",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "ConnectionState"
+      }
+    },
+    {
+      "rpc": "device.disconnect",
+      "target": "disconnect",
+      "client": "disconnect",
+      "tauri": "disconnect_device",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "ConnectionState"
+      }
+    },
+    {
+      "rpc": "device.snapshot",
+      "target": "snapshot",
+      "client": "currentSnapshot",
+      "tauri": "current_snapshot",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "PresetSnapshot"
+      }
+    },
+    {
+      "rpc": "device.currentPreset",
+      "target": "snapshot",
+      "client": "currentPreset",
+      "tauri": "current_preset",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "PresetSnapshot"
+      }
+    },
+    {
+      "rpc": "device.stateEvents",
+      "target": "state_events",
+      "client": "currentStateEvents",
+      "tauri": "current_state_events",
+      "args": [
+        {
+          "name": "afterSequence",
+          "default": 0
+        },
+        {
+          "name": "limit",
+          "default": 256
+        }
+      ],
+      "typescript": {
+        "parameters": {
+          "afterSequence": "number",
+          "limit": "number"
+        },
+        "optionalParameters": [
+          "limit"
+        ],
+        "result": "NativeStateFrames"
+      }
+    },
+    {
+      "rpc": "device.tempoClock",
+      "target": "tempo_clock_state",
+      "client": "currentTempoClock",
+      "tauri": "current_tempo_clock",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "TempoClockState"
+      }
+    },
+    {
+      "rpc": "device.listModels",
+      "target": "list_models",
+      "client": "listModels",
+      "tauri": "list_models",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "ModelList"
+      }
+    },
+    {
+      "rpc": "device.identity",
+      "target": "identity",
+      "client": "identity",
+      "tauri": "device_identity",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "DeviceIdentity"
+      }
+    },
+    {
+      "rpc": "device.setDeviceName",
+      "target": "set_device_name",
+      "client": "setDeviceName",
+      "tauri": "set_device_name",
+      "args": [
+        "name"
+      ],
+      "typescript": {
+        "parameters": {
+          "name": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.undo",
+      "target": "undo",
+      "client": "undo",
+      "tauri": "undo_device",
+      "args": [
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.redo",
+      "target": "redo",
+      "client": "redo",
+      "tauri": "redo_device",
+      "args": [
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.inhibitedModules",
+      "target": "inhibited_modules",
+      "client": "inhibitedModules",
+      "tauri": "inhibited_modules",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "InhibitedModules"
+      }
+    },
+    {
+      "rpc": "device.tunerSettings",
+      "target": "tuner_settings",
+      "client": "tunerSettings",
+      "tauri": "tuner_settings",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "TunerSettings"
+      }
+    },
+    {
+      "rpc": "device.setTunerInput",
+      "target": "set_tuner_input",
+      "client": "setTunerInput",
+      "tauri": "set_tuner_input",
+      "args": [
+        "inputPortId",
+        "confirmTunerActivation"
+      ],
+      "typescript": {
+        "parameters": {
+          "inputPortId": "number",
+          "confirmTunerActivation": "boolean"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setTunerMute",
+      "target": "set_tuner_mute",
+      "client": "setTunerMute",
+      "tauri": "set_tuner_mute",
+      "args": [
+        "muted",
+        "confirmTunerActivation"
+      ],
+      "typescript": {
+        "parameters": {
+          "muted": "boolean",
+          "confirmTunerActivation": "boolean"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setTunerReference",
+      "target": "set_tuner_reference",
+      "client": "setTunerReference",
+      "tauri": "set_tuner_reference",
+      "args": [
+        "referenceOffsetHz",
+        "confirmTunerActivation"
+      ],
+      "typescript": {
+        "parameters": {
+          "referenceOffsetHz": "number",
+          "confirmTunerActivation": "boolean"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setTunerMeter",
+      "target": "set_tuner_meter",
+      "client": "setTunerMeter",
+      "tauri": "set_tuner_meter",
+      "args": [
+        "enabled",
+        "confirmTunerActivation"
+      ],
+      "typescript": {
+        "parameters": {
+          "enabled": "boolean",
+          "confirmTunerActivation": "boolean"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.generalSettings",
+      "target": "general_settings",
+      "client": "generalSettings",
+      "tauri": "general_settings",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "GeneralSettings"
+      }
+    },
+    {
+      "rpc": "device.ioSettings",
+      "target": "io_settings",
+      "client": "ioSettings",
+      "tauri": "io_settings",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "IoSettings"
+      }
+    },
+    {
+      "rpc": "device.setInputPort",
+      "target": "set_input_port",
+      "client": "setInputPort",
+      "tauri": "set_input_port",
+      "args": [
+        "inputPortId",
+        "levelDb",
+        "impedance",
+        "inputType",
+        "groundLift"
+      ],
+      "typescript": {
+        "parameters": {
+          "inputPortId": "number",
+          "levelDb": "number | null",
+          "impedance": "number | null",
+          "inputType": "number | null",
+          "groundLift": "number | null"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setOutputPort",
+      "target": "set_output_port",
+      "client": "setOutputPort",
+      "tauri": "set_output_port",
+      "args": [
+        "outputPortId",
+        "level",
+        "groundLift",
+        "mute"
+      ],
+      "typescript": {
+        "parameters": {
+          "outputPortId": "number",
+          "level": "number | null",
+          "groundLift": "number | null",
+          "mute": "boolean | null"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setUsbPort",
+      "target": "set_usb_port",
+      "client": "setUsbPort",
+      "tauri": "set_usb_port",
+      "args": [
+        "level",
+        "headphonesSource",
+        "dryWet"
+      ],
+      "typescript": {
+        "parameters": {
+          "level": "number | null",
+          "headphonesSource": "number | null",
+          "dryWet": "number | null"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setMidiThru",
+      "target": "set_midi_thru",
+      "client": "setMidiThru",
+      "tauri": "set_midi_thru",
+      "args": [
+        "enabled"
+      ],
+      "typescript": {
+        "parameters": {
+          "enabled": "boolean"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setOutputPairing",
+      "target": "set_output_pairing",
+      "client": "setOutputPairing",
+      "tauri": "set_output_pairing",
+      "args": [
+        "xlr12Linked",
+        "out34Linked"
+      ],
+      "typescript": {
+        "parameters": {
+          "xlr12Linked": "boolean | null",
+          "out34Linked": "boolean | null"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.globalEq",
+      "target": "get_global_eq",
+      "client": "globalEq",
+      "tauri": "global_eq",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "GlobalEqSettings"
+      }
+    },
+    {
+      "rpc": "device.setGlobalEqBypassed",
+      "target": "set_global_eq_bypassed",
+      "client": "setGlobalEqBypassed",
+      "tauri": "set_global_eq_bypassed",
+      "args": [
+        "bypassed"
+      ],
+      "typescript": {
+        "parameters": {
+          "bypassed": "boolean"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setGlobalEqBand",
+      "target": "set_global_eq_band",
+      "client": "setGlobalEqBand",
+      "tauri": "set_global_eq_band",
+      "args": [
+        "band",
+        "gain",
+        "frequency",
+        "q",
+        "filterType",
+        "enabled"
+      ],
+      "typescript": {
+        "parameters": {
+          "band": "number",
+          "gain": "number | null",
+          "frequency": "number | null",
+          "q": "number | null",
+          "filterType": "number | null",
+          "enabled": "boolean | null"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setGlobalEqOutput",
+      "target": "set_global_eq_output",
+      "client": "setGlobalEqOutput",
+      "tauri": "set_global_eq_output",
+      "args": [
+        "level",
+        "out12",
+        "out34"
+      ],
+      "typescript": {
+        "parameters": {
+          "level": "number | null",
+          "out12": "boolean | null",
+          "out34": "boolean | null"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.loadGlobalEqModelPreset",
+      "target": "load_global_eq_model_preset",
+      "client": "loadGlobalEqModelPreset",
+      "tauri": "load_global_eq_model_preset",
+      "args": [
+        "value",
+        "isFactory",
+        "hash"
+      ],
+      "typescript": {
+        "parameters": {
+          "value": "string",
+          "isFactory": "boolean",
+          "hash": "number"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.modeCycle",
+      "target": "get_mode_cycle",
+      "client": "modeCycle",
+      "tauri": "mode_cycle",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "ModeCycle"
+      }
+    },
+    {
+      "rpc": "device.setModeCycle",
+      "target": "set_mode_cycle",
+      "client": "setModeCycle",
+      "tauri": "set_mode_cycle",
+      "args": [
+        "slots"
+      ],
+      "typescript": {
+        "parameters": {
+          "slots": "number[]"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.globalTempoSettings",
+      "target": "get_global_tempo_settings",
+      "client": "globalTempoSettings",
+      "tauri": "global_tempo_settings",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "TempoSettings"
+      }
+    },
+    {
+      "rpc": "device.setTempoMetronome",
+      "target": "set_tempo_metronome",
+      "client": "setTempoMetronome",
+      "tauri": "set_tempo_metronome",
+      "args": [
+        "ledEnabled",
+        "volumeDb",
+        "running",
+        "pan",
+        "timeSignature",
+        "subdivision",
+        "sound",
+        "routing",
+        "beats"
+      ],
+      "typescript": {
+        "parameters": {
+          "ledEnabled": "boolean | null",
+          "volumeDb": "number | null",
+          "running": "boolean | null",
+          "pan": "number | null",
+          "timeSignature": "string | null",
+          "subdivision": "string | null",
+          "sound": "string | null",
+          "routing": "string | null",
+          "beats": "string[] | null"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setTempoMode",
+      "target": "set_tempo_mode",
+      "client": "setTempoMode",
+      "tauri": "set_tempo_mode",
+      "args": [
+        "mode"
+      ],
+      "typescript": {
+        "parameters": {
+          "mode": "\"PRESET\" | \"GLOBAL\""
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setGlobalTempo",
+      "target": "set_global_tempo",
+      "client": "setGlobalTempo",
+      "tauri": "set_global_tempo",
+      "args": [
+        "bpm",
+        "expectedMode",
+        "expectedGlobalBpm"
+      ],
+      "typescript": {
+        "parameters": {
+          "bpm": "number",
+          "expectedMode": "\"PRESET\" | \"GLOBAL\"",
+          "expectedGlobalBpm": "number"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.looperStatus",
+      "target": "get_looper_status",
+      "client": "looperStatus",
+      "tauri": "looper_status",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "LooperStatus"
+      }
+    },
+    {
+      "rpc": "device.controlLooper",
+      "target": "control_looper",
+      "client": "controlLooper",
+      "tauri": "control_looper",
+      "args": [
+        "command",
+        "value"
+      ],
+      "typescript": {
+        "parameters": {
+          "command": "string",
+          "value": "number | null"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.recents",
+      "target": "list_recents",
+      "client": "recents",
+      "tauri": "recents",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "LibraryEntries"
+      }
+    },
+    {
+      "rpc": "device.favorites",
+      "target": "list_favorites",
+      "client": "favorites",
+      "tauri": "favorites",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "LibraryEntries"
+      }
+    },
+    {
+      "rpc": "device.setFavorite",
+      "target": "set_favorite",
+      "client": "setFavorite",
+      "tauri": "set_favorite",
+      "args": [
+        "name",
+        "folderKey",
+        "productKey",
+        "isFactory",
+        "favorite",
+        "expectedFavorite",
+        {
+          "name": "isPlugin",
+          "default": false
+        }
+      ],
+      "typescript": {
+        "parameters": {
+          "name": "string",
+          "folderKey": "string",
+          "productKey": "string",
+          "isFactory": "boolean",
+          "favorite": "boolean",
+          "expectedFavorite": "boolean",
+          "isPlugin": "boolean"
+        },
+        "optionalParameters": [
+          "isPlugin"
+        ],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.pinnedModels",
+      "target": "list_pinned_models",
+      "client": "pinnedModels",
+      "tauri": "pinned_models",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "PinnedModels"
+      }
+    },
+    {
+      "rpc": "device.setModelPinned",
+      "target": "set_model_pinned",
+      "client": "setModelPinned",
+      "tauri": "set_model_pinned",
+      "args": [
+        "modelId",
+        "pinned",
+        "expectedPinned"
+      ],
+      "typescript": {
+        "parameters": {
+          "modelId": "number",
+          "pinned": "boolean",
+          "expectedPinned": "boolean"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.captures",
+      "target": "list_captures",
+      "client": "captures",
+      "tauri": "captures",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "LibraryEntries"
+      }
+    },
+    {
+      "rpc": "device.loadCapture",
+      "target": "load_capture",
+      "client": "loadCapture",
+      "tauri": "load_capture",
+      "args": [
+        "row",
+        "column",
+        "key",
+        "name",
+        "modelId",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "key": "string",
+          "name": "string",
+          "modelId": "number | null",
+          "expectedModelId": "number | null",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.irs",
+      "target": "list_irs",
+      "client": "irs",
+      "tauri": "irs",
+      "args": [
+        "folder"
+      ],
+      "typescript": {
+        "parameters": {
+          "folder": "string | null"
+        },
+        "optionalParameters": [],
+        "result": "LibraryEntries"
+      }
+    },
+    {
+      "rpc": "device.loadIr",
+      "target": "load_ir",
+      "client": "loadIr",
+      "tauri": "load_ir",
+      "args": [
+        "row",
+        "column",
+        "key",
+        "name",
+        "slot",
+        "modelId",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "key": "string",
+          "name": "string",
+          "slot": "number",
+          "modelId": "number | null",
+          "expectedModelId": "number | null",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.createSetlist",
+      "target": "create_setlist",
+      "client": "createSetlist",
+      "tauri": "create_setlist",
+      "args": [
+        "name"
+      ],
+      "typescript": {
+        "parameters": {
+          "name": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.deleteSetlist",
+      "target": "delete_setlist",
+      "client": "deleteSetlist",
+      "tauri": "delete_setlist",
+      "args": [
+        "name"
+      ],
+      "typescript": {
+        "parameters": {
+          "name": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.duplicateSetlist",
+      "target": "duplicate_setlist",
+      "client": "duplicateSetlist",
+      "tauri": "duplicate_setlist",
+      "args": [
+        "sourceSetlistKey",
+        "expectedSourceName"
+      ],
+      "typescript": {
+        "parameters": {
+          "sourceSetlistKey": "string",
+          "expectedSourceName": "string"
+        },
+        "optionalParameters": [],
+        "result": "DuplicateSetlistResult"
+      }
+    },
+    {
+      "rpc": "device.deletePreset",
+      "target": "delete_preset",
+      "client": "deletePreset",
+      "tauri": "delete_preset",
+      "args": [
+        "setlistKey",
+        "position",
+        "expectedName"
+      ],
+      "typescript": {
+        "parameters": {
+          "setlistKey": "string",
+          "position": "number",
+          "expectedName": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.movePreset",
+      "target": "move_preset",
+      "client": "movePreset",
+      "tauri": "move_preset",
+      "args": [
+        "setlistKey",
+        "sourcePosition",
+        "sourceName",
+        "destinationPosition"
+      ],
+      "typescript": {
+        "parameters": {
+          "setlistKey": "string",
+          "sourcePosition": "number",
+          "sourceName": "string",
+          "destinationPosition": "number"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setGeneralInteger",
+      "target": "set_general_integer",
+      "client": "setGeneralInteger",
+      "tauri": "set_general_integer",
+      "args": [
+        "setting",
+        "value"
+      ],
+      "typescript": {
+        "parameters": {
+          "setting": "GeneralIntegerSetting",
+          "value": "number"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setGeneralToggle",
+      "target": "set_general_toggle",
+      "client": "setGeneralToggle",
+      "tauri": "set_general_toggle",
+      "args": [
+        "setting",
+        "enabled"
+      ],
+      "typescript": {
+        "parameters": {
+          "setting": "GeneralToggleSetting",
+          "enabled": "boolean"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setSceneBypassBehavior",
+      "target": "set_scene_bypass_behavior",
+      "client": "setSceneBypassBehavior",
+      "tauri": "set_scene_bypass_behavior",
+      "args": [
+        "behavior"
+      ],
+      "typescript": {
+        "parameters": {
+          "behavior": "\"alwaysOverwrite\" | \"nonstompOverwrite\" | \"neverOverwrite\""
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setMasterVolumeAssignment",
+      "target": "set_master_volume_assignment",
+      "client": "setMasterVolumeAssignment",
+      "tauri": "set_master_volume_assignment",
+      "args": [
+        "out12",
+        "out34",
+        "send12",
+        "headphones"
+      ],
+      "typescript": {
+        "parameters": {
+          "out12": "boolean",
+          "out34": "boolean",
+          "send12": "boolean",
+          "headphones": "boolean"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setGlobalBypass",
+      "target": "set_global_bypass",
+      "client": "setGlobalBypass",
+      "tauri": "set_global_bypass",
+      "args": [
+        "cab",
+        "ir"
+      ],
+      "typescript": {
+        "parameters": {
+          "cab": "[boolean, boolean, boolean, boolean] | null",
+          "ir": "[boolean, boolean, boolean, boolean] | null"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.presetScreenshot",
+      "target": "preset_screenshot",
+      "client": "presetScreenshot",
+      "tauri": "preset_screenshot",
+      "args": [
+        "folderName",
+        "position",
+        {
+          "name": "isFactory",
+          "default": false
+        }
+      ],
+      "typescript": {
+        "parameters": {
+          "folderName": "string",
+          "position": "number",
+          "isFactory": "boolean"
+        },
+        "optionalParameters": [
+          "isFactory"
+        ],
+        "result": "DeviceImage"
+      }
+    },
+    {
+      "rpc": "device.captureScreen",
+      "target": "capture_screen",
+      "client": "captureScreen",
+      "tauri": "capture_screen",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "DeviceImage"
+      }
+    },
+    {
+      "rpc": "device.diagnostics",
+      "target": "diagnostics",
+      "client": "deviceDiagnostics",
+      "tauri": "device_diagnostics",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "Record<string, unknown>"
+      }
+    },
+    {
+      "rpc": "device.graphicsTree",
+      "target": "graphics_tree",
+      "client": "graphicsTree",
+      "tauri": "graphics_tree",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "GraphicsTree"
+      }
+    },
+    {
+      "rpc": "device.tapScreen",
+      "target": "tap_screen",
+      "client": "tapScreen",
+      "tauri": "tap_screen",
+      "args": [
+        "x",
+        "y"
+      ],
+      "typescript": {
+        "parameters": {
+          "x": "number",
+          "y": "number"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.longTapScreen",
+      "target": "long_tap_screen",
+      "client": "longTapScreen",
+      "tauri": "long_tap_screen",
+      "args": [
+        "x",
+        "y"
+      ],
+      "typescript": {
+        "parameters": {
+          "x": "number",
+          "y": "number"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.swipeScreen",
+      "target": "swipe_screen",
+      "client": "swipeScreen",
+      "tauri": "swipe_screen",
+      "args": [
+        "x",
+        "y",
+        "toX",
+        "toY"
+      ],
+      "typescript": {
+        "parameters": {
+          "x": "number",
+          "y": "number",
+          "toX": "number",
+          "toY": "number"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.dragScreen",
+      "target": "drag_screen",
+      "client": "dragScreen",
+      "tauri": "drag_screen",
+      "args": [
+        "x",
+        "y",
+        "toX",
+        "toY",
+        {
+          "name": "steps",
+          "default": 18
+        },
+        {
+          "name": "holdMs",
+          "default": 200
+        }
+      ],
+      "typescript": {
+        "parameters": {
+          "x": "number",
+          "y": "number",
+          "toX": "number",
+          "toY": "number",
+          "steps": "number",
+          "holdMs": "number"
+        },
+        "optionalParameters": [
+          "steps",
+          "holdMs"
+        ],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.mouseFrame",
+      "target": "mouse_frame",
+      "client": "mouseFrame",
+      "tauri": "mouse_frame",
+      "args": [
+        "type",
+        "x",
+        "y",
+        {
+          "name": "toX",
+          "default": null
+        },
+        {
+          "name": "toY",
+          "default": null
+        }
+      ],
+      "typescript": {
+        "parameters": {
+          "type": "\"press\" | \"release\" | \"move\" | \"tap\" | \"drag\"",
+          "x": "number",
+          "y": "number",
+          "toX": "number | null",
+          "toY": "number | null"
+        },
+        "optionalParameters": [
+          "toX",
+          "toY"
+        ],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.selectScene",
+      "target": "select_scene",
+      "client": "selectScene",
+      "tauri": "select_scene",
+      "args": [
+        "scene",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "scene": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.copyScene",
+      "target": "copy_scene",
+      "client": "copyScene",
+      "tauri": "copy_scene",
+      "args": [
+        "fromScene",
+        "toScene",
+        {
+          "name": "swap",
+          "default": false
+        },
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "fromScene": "number",
+          "toScene": "number",
+          "swap": "boolean",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setSceneLabel",
+      "target": "set_scene_label",
+      "client": "setSceneLabel",
+      "tauri": "set_scene_label",
+      "args": [
+        "scene",
+        "label",
+        "expectedLabel",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "scene": "number",
+          "label": "string | null",
+          "expectedLabel": "string",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setSceneColor",
+      "target": "set_scene_color",
+      "client": "setSceneColor",
+      "tauri": "set_scene_color",
+      "args": [
+        "scene",
+        "color",
+        "expectedColor",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "scene": "number",
+          "color": "number",
+          "expectedColor": "string",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.toggleBypass",
+      "target": "toggle_bypass",
+      "client": "toggleBypass",
+      "tauri": "toggle_bypass",
+      "args": [
+        "row",
+        "column",
+        "expectedScene",
+        "expectedBypassed",
+        "desiredBypassed",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "expectedScene": "number",
+          "expectedBypassed": "boolean",
+          "desiredBypassed": "boolean",
+          "expectedModelId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.moveBlock",
+      "target": "move_block",
+      "client": "moveBlock",
+      "tauri": "move_block",
+      "args": [
+        "row",
+        "fromColumn",
+        "toColumn",
+        "expectedModelId",
+        "toRow",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "fromColumn": "number",
+          "toColumn": "number",
+          "expectedModelId": "number",
+          "toRow": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.addBlock",
+      "target": "add_block",
+      "client": "addBlock",
+      "tauri": "add_block",
+      "args": [
+        "row",
+        "column",
+        "modelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        {
+          "name": "expectedModelId",
+          "default": null
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "modelId": "number",
+          "expectedPresetName": "string",
+          "expectedModelId": "null",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.replaceBlock",
+      "target": "replace_block",
+      "client": "replaceBlock",
+      "tauri": "replace_block",
+      "args": [
+        "row",
+        "column",
+        "modelId",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "modelId": "number",
+          "expectedModelId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.createModelPreset",
+      "target": "create_model_preset",
+      "client": "createModelPreset",
+      "tauri": "create_model_preset",
+      "args": [
+        "row",
+        "column",
+        "modelHash",
+        "name",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "modelHash": "number",
+          "name": "string",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setLooperStompAssignments",
+      "target": "set_looper_stomp_assignments",
+      "client": "setLooperStompAssignments",
+      "tauri": "set_looper_stomp_assignments",
+      "args": [
+        "assignments",
+        "expectedAssignments"
+      ],
+      "typescript": {
+        "parameters": {
+          "assignments": "number[]",
+          "expectedAssignments": "number[]"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.resetBlockParameters",
+      "target": "reset_block_parameters",
+      "client": "resetBlockParameters",
+      "tauri": "reset_block_parameters",
+      "args": [
+        "row",
+        "column",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "expectedModelId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.removeBlock",
+      "target": "remove_block",
+      "client": "removeBlock",
+      "tauri": "remove_block",
+      "args": [
+        "row",
+        "column",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "expectedModelId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setBlockFootswitch",
+      "target": "set_block_footswitch",
+      "client": "setBlockFootswitch",
+      "tauri": "set_block_footswitch",
+      "args": [
+        "row",
+        "column",
+        "footswitch",
+        "assignmentType",
+        "expectedFootswitch",
+        "expectedAssignmentType",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "footswitch": "number | null",
+          "assignmentType": "\"primary\" | \"secondary\"",
+          "expectedFootswitch": "number | null",
+          "expectedAssignmentType": "\"primary\" | \"secondary\" | null",
+          "expectedModelId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setStompMomentary",
+      "target": "set_stomp_momentary",
+      "client": "setStompMomentary",
+      "tauri": "set_stomp_momentary",
+      "args": [
+        "footswitch",
+        "momentary",
+        "expectedMomentary",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "footswitch": "number",
+          "momentary": "boolean",
+          "expectedMomentary": "boolean",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setStompLabel",
+      "target": "set_stomp_label",
+      "client": "setStompLabel",
+      "tauri": "set_stomp_label",
+      "args": [
+        "footswitch",
+        "label",
+        "expectedLabel",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "footswitch": "number",
+          "label": "string",
+          "expectedLabel": "string",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setMidiOut",
+      "target": "set_midi_out",
+      "client": "setMidiOut",
+      "tauri": "set_midi_out",
+      "args": [
+        "source",
+        "messages",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "source": "number",
+          "messages": "MidiOutMessage[]",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setPresetLoadMidiOut",
+      "target": "set_preset_load_midi_out",
+      "client": "setPresetLoadMidiOut",
+      "tauri": "set_preset_load_midi_out",
+      "args": [
+        "messages",
+        "expectedMessages",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "messages": "MidiOutMessage[]",
+          "expectedMessages": "MidiOutMessage[]",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setExpressionBypass",
+      "target": "set_expression_bypass",
+      "client": "setExpressionBypass",
+      "tauri": "set_expression_bypass",
+      "args": [
+        "row",
+        "column",
+        "pedal",
+        "mode",
+        "invert",
+        "delayMs",
+        "latchEmulation",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "pedal": "0 | 1 | 2",
+          "mode": "0 | 1 | 2",
+          "invert": "boolean",
+          "delayMs": "number",
+          "latchEmulation": "boolean",
+          "expectedModelId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setChainInput",
+      "target": "set_chain_input",
+      "client": "setChainInput",
+      "tauri": "set_chain_input",
+      "args": [
+        "row",
+        "inputId",
+        "expectedInputId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "inputId": "number",
+          "expectedInputId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setChainOutput",
+      "target": "set_chain_output",
+      "client": "setChainOutput",
+      "tauri": "set_chain_output",
+      "args": [
+        "row",
+        "outputId",
+        "expectedOutputId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "outputId": "number",
+          "expectedOutputId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setChainSplit",
+      "target": "set_chain_split",
+      "client": "setChainSplit",
+      "tauri": "set_chain_split",
+      "args": [
+        "row",
+        "splitColumn",
+        "mixColumn",
+        "expectedSplitColumn",
+        "expectedMixColumn",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "splitColumn": "number | null",
+          "mixColumn": "number | null",
+          "expectedSplitColumn": "number | null",
+          "expectedMixColumn": "number | null",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setSplitMute",
+      "target": "set_split_mute",
+      "client": "setSplitMute",
+      "tauri": "set_split_mute",
+      "args": [
+        "row",
+        "muted",
+        "expectedMuted",
+        "expectedScene",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "muted": "boolean",
+          "expectedMuted": "boolean",
+          "expectedScene": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.listPresets",
+      "target": "list_presets",
+      "client": "listPresets",
+      "tauri": "list_presets",
+      "args": [
+        {
+          "name": "refresh",
+          "default": false
+        },
+        "setlistKey"
+      ],
+      "typescript": {
+        "parameters": {
+          "refresh": "boolean",
+          "setlistKey": "string"
+        },
+        "optionalParameters": [
+          "refresh",
+          "setlistKey"
+        ],
+        "result": "PresetList"
+      }
+    },
+    {
+      "rpc": "device.listPresetFolders",
+      "target": "list_preset_folders",
+      "client": "listPresetFolders",
+      "tauri": "list_preset_folders",
+      "args": [
+        {
+          "name": "refresh",
+          "default": false
+        }
+      ],
+      "typescript": {
+        "parameters": {
+          "refresh": "boolean"
+        },
+        "optionalParameters": [
+          "refresh"
+        ],
+        "result": "PresetFolderList"
+      }
+    },
+    {
+      "rpc": "device.navigateBank",
+      "target": "navigate_bank",
+      "client": "navigateBank",
+      "tauri": "navigate_bank",
+      "args": [
+        "direction",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPosition",
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "direction": "-1 | 1",
+          "expectedPresetName": "string",
+          "expectedPosition": "number",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.recallPreset",
+      "target": "recall_preset",
+      "client": "recallPreset",
+      "tauri": "recall_preset",
+      "args": [
+        "setlistKey",
+        "position",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPosition",
+        "expectedSetlistKey",
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "setlistKey": "string",
+          "position": "number",
+          "expectedPresetName": "string",
+          "expectedPosition": "number",
+          "expectedSetlistKey": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.reloadPreset",
+      "target": "reload_preset",
+      "client": "reloadPreset",
+      "tauri": "reload_preset",
+      "args": [
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPosition",
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "expectedPresetName": "string",
+          "expectedPosition": "number",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.blockDetails",
+      "target": "block_details",
+      "client": "blockDetails",
+      "tauri": "block_details",
+      "args": [
+        "row",
+        "column",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "BlockDetails"
+      }
+    },
+    {
+      "rpc": "device.laneControlDetails",
+      "target": "lane_control_details",
+      "client": "laneControlDetails",
+      "tauri": "lane_control_details",
+      "args": [
+        "row",
+        "control",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "control": "LaneControl",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "BlockDetails"
+      }
+    },
+    {
+      "rpc": "device.previewParameter",
+      "target": "preview_parameter",
+      "client": "previewParameter",
+      "tauri": "preview_parameter",
+      "args": [
+        "row",
+        "column",
+        "parameterIndex",
+        "value",
+        "expectedValue",
+        "expectedScene",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "parameterIndex": "number",
+          "value": "number",
+          "expectedValue": "number",
+          "expectedScene": "number",
+          "expectedModelId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "{ detail: string; acceptedValue: number }"
+      }
+    },
+    {
+      "rpc": "device.previewLaneControlParameter",
+      "target": "preview_lane_control_parameter",
+      "client": "previewLaneControlParameter",
+      "tauri": "preview_lane_control_parameter",
+      "args": [
+        "row",
+        "control",
+        "parameterIndex",
+        "value",
+        "expectedValue",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "control": "LaneControl",
+          "parameterIndex": "number",
+          "value": "number",
+          "expectedValue": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "{ detail: string; acceptedValue: number }"
+      }
+    },
+    {
+      "rpc": "device.setParameter",
+      "target": "set_parameter",
+      "client": "setParameter",
+      "tauri": "set_parameter",
+      "args": [
+        "row",
+        "column",
+        "parameterIndex",
+        "value",
+        "expectedValue",
+        "expectedScene",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "parameterIndex": "number",
+          "value": "number",
+          "expectedValue": "number",
+          "expectedScene": "number",
+          "expectedModelId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "ParameterActionResult"
+      }
+    },
+    {
+      "rpc": "device.setLaneControlParameter",
+      "target": "set_lane_control_parameter",
+      "client": "setLaneControlParameter",
+      "tauri": "set_lane_control_parameter",
+      "args": [
+        "row",
+        "control",
+        "parameterIndex",
+        "value",
+        "expectedValue",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "control": "LaneControl",
+          "parameterIndex": "number",
+          "value": "number",
+          "expectedValue": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "ParameterActionResult"
+      }
+    },
+    {
+      "rpc": "device.setLaneControlSceneMode",
+      "target": "set_lane_control_scene_mode",
+      "client": "setLaneControlSceneMode",
+      "tauri": "set_lane_control_scene_mode",
+      "args": [
+        "row",
+        "control",
+        "parameterIndex",
+        "enabled",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "control": "LaneControl",
+          "parameterIndex": "number",
+          "enabled": "boolean",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setLaneControlExpression",
+      "target": "set_lane_control_expression",
+      "client": "setLaneControlExpression",
+      "tauri": "set_lane_control_expression",
+      "args": [
+        "row",
+        "control",
+        "parameterIndex",
+        "pedal",
+        "minimum",
+        "maximum",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "control": "LaneControl",
+          "parameterIndex": "number",
+          "pedal": "0 | 1 | 2",
+          "minimum": "number",
+          "maximum": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setParameterSceneMode",
+      "target": "set_parameter_scene_mode",
+      "client": "setParameterSceneMode",
+      "tauri": "set_parameter_scene_mode",
+      "args": [
+        "row",
+        "column",
+        "parameterIndex",
+        "enabled",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "parameterIndex": "number",
+          "enabled": "boolean",
+          "expectedModelId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setParameterExpression",
+      "target": "set_parameter_expression",
+      "client": "setParameterExpression",
+      "tauri": "set_parameter_expression",
+      "args": [
+        "row",
+        "column",
+        "parameterIndex",
+        "pedal",
+        "minimum",
+        "maximum",
+        "expectedModelId",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "row": "number",
+          "column": "number",
+          "parameterIndex": "number",
+          "pedal": "0 | 1 | 2",
+          "minimum": "number",
+          "maximum": "number",
+          "expectedModelId": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setTempo",
+      "target": "set_tempo",
+      "client": "setTempo",
+      "tauri": "set_tempo",
+      "args": [
+        "bpm",
+        "expectedTempo",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "bpm": "number",
+          "expectedTempo": "number",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.setMasterVolume",
+      "target": "set_master_volume",
+      "client": "setMasterVolume",
+      "tauri": "set_master_volume",
+      "args": [
+        "value",
+        "expectedValue"
+      ],
+      "typescript": {
+        "parameters": {
+          "value": "number",
+          "expectedValue": "number"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.masterVolume",
+      "target": "master_volume_state",
+      "client": "currentMasterVolume",
+      "tauri": "current_master_volume",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "MasterVolumeState"
+      }
+    },
+    {
+      "rpc": "device.pressFootswitch",
+      "target": "press_footswitch",
+      "client": "pressFootswitch",
+      "tauri": "press_footswitch",
+      "args": [
+        "index",
+        "expectedMode",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "index": "number",
+          "expectedMode": "PresetSnapshot[\"mode\"]",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.tapTempo",
+      "target": "tap_tempo",
+      "client": "tapTempo",
+      "tauri": "tap_tempo",
+      "args": [
+        "expectedMode",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "expectedMode": "PresetSnapshot[\"mode\"]",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.selectModeSlot",
+      "target": "select_mode_slot",
+      "client": "selectModeSlot",
+      "tauri": "select_mode_slot",
+      "args": [
+        "slot",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "slot": "0 | 1 | 2",
+          "expectedPresetName": "string",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.listPresetSlots",
+      "target": "list_preset_slots",
+      "client": "listPresetSlots",
+      "tauri": "list_preset_slots",
+      "args": [],
+      "typescript": {
+        "parameters": {},
+        "optionalParameters": [],
+        "result": "PresetSlotList"
+      }
+    },
+    {
+      "rpc": "device.savePresetAs",
+      "target": "save_preset_as",
+      "client": "savePresetAs",
+      "tauri": "save_preset_as",
+      "args": [
+        "setlistKey",
+        "position",
+        "name",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPosition",
+        {
+          "name": "confirmOverwrite",
+          "default": false
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "setlistKey": "string",
+          "position": "number",
+          "name": "string",
+          "expectedPresetName": "string",
+          "expectedPosition": "number",
+          "confirmOverwrite": "boolean",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "SavePresetResult"
+      }
+    },
+    {
+      "rpc": "device.copyPreset",
+      "target": "copy_preset",
+      "client": "copyPreset",
+      "tauri": "copy_preset",
+      "args": [
+        "sourceSetlistKey",
+        "sourcePosition",
+        {
+          "name": "sourceName",
+          "default": ""
+        },
+        "destinationSetlistKey",
+        "destinationPosition",
+        {
+          "name": "confirmOverwrite",
+          "default": false
+        }
+      ],
+      "typescript": {
+        "parameters": {
+          "sourceSetlistKey": "string",
+          "sourcePosition": "number",
+          "sourceName": "string",
+          "destinationSetlistKey": "string",
+          "destinationPosition": "number",
+          "confirmOverwrite": "boolean"
+        },
+        "optionalParameters": [],
+        "result": "SavePresetResult"
+      }
+    },
+    {
+      "rpc": "device.renameCurrentPreset",
+      "target": "rename_current_preset",
+      "client": "renameCurrentPreset",
+      "tauri": "rename_current_preset",
+      "args": [
+        "name",
+        {
+          "name": "expectedPresetName",
+          "default": ""
+        },
+        "expectedPosition",
+        {
+          "name": "confirmRename",
+          "default": false
+        },
+        "expectedPresetIdentity"
+      ],
+      "typescript": {
+        "parameters": {
+          "name": "string",
+          "expectedPresetName": "string",
+          "expectedPosition": "number",
+          "confirmRename": "boolean",
+          "expectedPresetIdentity": "string"
+        },
+        "optionalParameters": [],
+        "result": "SavePresetResult"
+      }
+    },
+    {
+      "rpc": "device.createBackup",
+      "target": "create_device_backup",
+      "client": "createDeviceBackup",
+      "tauri": "create_device_backup",
+      "args": [
+        {
+          "name": "name",
+          "default": ""
+        }
+      ],
+      "typescript": {
+        "parameters": {
+          "name": "string"
+        },
+        "optionalParameters": [],
+        "result": "WorkspaceFileResult"
+      }
+    },
+    {
+      "rpc": "device.showTuner",
+      "target": "show_tuner",
+      "client": "showTuner",
+      "tauri": "show_tuner",
+      "args": [
+        {
+          "name": "shown",
+          "default": true
+        }
+      ],
+      "typescript": {
+        "parameters": {
+          "shown": "boolean"
+        },
+        "optionalParameters": [
+          "shown"
+        ],
+        "result": "DeviceActionResult"
+      }
+    },
+    {
+      "rpc": "device.showGigView",
+      "target": "show_gig_view",
+      "client": "showGigView",
+      "tauri": "show_gig_view",
+      "args": [
+        {
+          "name": "shown",
+          "default": true
+        }
+      ],
+      "typescript": {
+        "parameters": {
+          "shown": "boolean"
+        },
+        "optionalParameters": [
+          "shown"
+        ],
+        "result": "DeviceActionResult"
+      }
+    }
+  ]
+}

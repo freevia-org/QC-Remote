@@ -1,0 +1,64 @@
+# Node / web
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Rust
+target/
+
+# Tauri
+apps/windows/src-tauri/gen/
+apps/windows/src-tauri/icons/android/
+apps/windows/src-tauri/icons/ios/
+apps/windows/src-tauri/icons/icon.icns
+apps/windows/src-tauri/binaries/*.exe
+
+# Mobile
+.gradle/
+**/local.properties
+apps/android/android/app/src/main/jniLibs/
+# Firebase client configuration and signing properties are injected at build
+# time and must never be published. Matched by name at any depth, so a build
+# variant directory (app/src/<variant>/google-services.json) is covered too.
+**/google-services.json
+**/GoogleService-Info.plist
+**/keystore.properties
+
+# Cloudflare
+.wrangler/
+.dev.vars
+wrangler.local.jsonc
+wrangler.check.jsonc
+
+# Local configuration, credentials, and diagnostics
+# No !.env.example negation: nothing in this repository is configured through a
+# .env, and services/qc-remote-cloud cannot be - wrangler loads .env into the
+# Worker's vars, which breaks `wrangler types --check` against the committed
+# worker-configuration.d.ts. An example file whose only use is to be copied to an
+# unusable .env is an instruction to break the build, so it was removed.
+.env
+.env.*
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*service-account*.json
+*service_account*.json
+*.log
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local-only material. Nothing under these paths belongs in this repository:
+# generated or captured output, and any directory reserved for private inputs.
+/artifacts/
+/.artifacts/
+/contracts/private/
+/references/private/
+*.pcap
+*.pcapng

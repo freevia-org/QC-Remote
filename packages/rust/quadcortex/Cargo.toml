@@ -1,0 +1,53 @@
+[package]
+name = "quadcortex"
+version = "0.1.0"
+# The package is made artifact-ready before publication is authorized. Keep
+# this lock in place until the repository-wide licence and publisher authority
+# decision is finalized.
+publish = false
+edition = "2021"
+# Lowest toolchain that builds the library, examples and tests, verified with
+# `cargo +1.87 test -p quadcortex --locked`; 1.86 fails on `is_multiple_of`.
+# See the README's Status section.
+rust-version = "1.87"
+description = "Unified Rust library for Quad Cortex protocol, state, sessions, transport, and backups"
+# crates.io parses `license` as SPDX with LicenseRef- ids accepted; the
+# reference-material terms ship as licenses/LicenseRef-QC-Remote-Reference.txt.
+license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
+readme = "README.md"
+repository = "https://github.com/freevia-org/QC-Remote"
+homepage = "https://github.com/freevia-org/QC-Remote"
+documentation = "https://docs.rs/quadcortex"
+keywords = ["audio", "guitar", "interoperability", "usb", "protocol"]
+categories = ["api-bindings", "encoding", "hardware-support"]
+include = [
+    "build.rs",
+    "device-test-fixtures/**",
+    "docs/**",
+    "examples/**",
+    "LICENSE",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "licenses/**",
+    "proptest-regressions/**",
+    "proto/**",
+    "README.md",
+    "src/**",
+    "tests/**",
+]
+
+[dependencies]
+base64.workspace = true
+flate2 = "1"
+prost.workspace = true
+quick-xml = "0.41"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+prost-build.workspace = true
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+proptest = "1"

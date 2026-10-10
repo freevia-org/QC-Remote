@@ -1,0 +1,36 @@
+[
+  {
+    "type": "result",
+    "id": "user-action-contract",
+    "ok": false,
+    "result": null,
+    "error": {
+      "code": "UNSAVED_STATE_UNCONFIRMED",
+      "message": "fixture",
+      "retryable": false,
+      "userActionRequired": true,
+      "details": {
+        "code": "UNSAVED_STATE_UNCONFIRMED",
+        "retryable": false,
+        "userActionRequired": true
+      }
+    }
+  },
+  {
+    "type": "result",
+    "id": "user-action-contract",
+    "ok": false,
+    "result": null,
+    "error": {
+      "code": "UNSAVED_STATE_NOT_YET_OBSERVED",
+      "message": "fixture",
+      "retryable": true,
+      "userActionRequired": false,
+      "details": {
+        "code": "UNSAVED_STATE_NOT_YET_OBSERVED",
+        "retryable": true,
+        "userActionRequired": false
+      }
+    }
+  }
+]

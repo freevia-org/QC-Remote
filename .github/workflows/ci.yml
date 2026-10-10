@@ -1,0 +1,263 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust workspace
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build --workspace --locked
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo fmt --all -- --check
+
+  # packages/rust/quadcortex declares `rust-version = "1.87"`. Everything above
+  # runs on stable, which would not notice a newer-than-1.87 language or std
+  # feature creeping in; this job builds and tests the crate (lib, examples,
+  # integration tests, doctests) on exactly the declared minimum. Keep the
+  # toolchain below equal to that `rust-version`.
+  rust-msrv:
+    name: quadcortex on its declared Rust minimum (1.87)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Same pinned action as the stable jobs; the `toolchain` input overrides
+      # the branch's default of stable.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: '1.87'
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: msrv-1.87
+      - run: cargo +1.87 test -p quadcortex --locked
+
+  rust-windows-app:
+    name: Windows app (Rust backend)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Test Windows native runner command planning and failure cleanup
+        run: node --test scripts/test-windows-native.test.mjs
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          # apps/windows/src-tauri/rust-toolchain.toml pins profile = "minimal",
+          # which carries neither clippy nor rustfmt of its own.
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/windows/src-tauri
+      - name: Stage check-only sidecar placeholders
+        working-directory: apps/windows/src-tauri
+        shell: pwsh
+        run: |
+          New-Item -ItemType File -Force binaries/qc-device-broker-x86_64-pc-windows-msvc.exe | Out-Null
+      - run: cargo fmt --check
+        working-directory: apps/windows/src-tauri
+      # The app on its own, without the broker crate linked in.
+      - run: cargo check --locked
+        working-directory: apps/windows/src-tauri
+      # The shipped qc-device-broker.exe (broker, tray icon and background MCP
+      # host in one binary) is the `qc-device-broker` bin, which declares
+      # `required-features = ["tray-sidecar"]`. Cargo silently skips a bin whose
+      # required features are off, so every step below passes the feature;
+      # without it CI would never compile the executable every install ships.
+      - name: Build the shipped broker executable
+        run: cargo build --locked --features tray-sidecar --bin qc-device-broker
+        working-directory: apps/windows/src-tauri
+      - run: cargo clippy --locked --all-targets --features tray-sidecar -- -D warnings
+        working-directory: apps/windows/src-tauri
+      - name: Test the Windows shell with prebuilt broker and harness
+        run: node scripts/test-windows-native.mjs --root .
+
+  quadcortex-linux:
+    name: Quad Cortex crate docs and Linux tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo test -p quadcortex --locked
+      - run: cargo doc -p quadcortex --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  third-party-notices:
+    name: Third-party notices drift check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Only the root workspace: apps/windows/src-tauri pins a Windows-only
+          # toolchain in rust-toolchain.toml, which rustup refuses on Linux.
+          workspaces: .
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Verify dependency security workflow covers public lockfiles
+        run: node --test scripts/security-audit-workflow.test.mjs
+      - run: node --test scripts/verify-third-party-notices.test.mjs scripts/verify-license-carveout.test.mjs scripts/vite-qc-legal-assets.test.mjs
+      - run: node scripts/verify-third-party-notices.mjs
+      - run: node scripts/verify-license-carveout.mjs
+      # Cargo, npm and Android toolchain manifests agreeing with each other and
+      # with the pins this workflow installs; reads files only, no install.
+      - name: Manifest and toolchain pin tests
+        run: node --test scripts/verify-manifest-pins.test.mjs
+
+  typescript:
+    name: TypeScript packages and apps
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The broker and the Windows app each compile their own copy of the broker
+      # descriptor, generated from contracts/public/broker-tray-surface.v1.json.
+      # A hand edit or a forgotten regeneration desynchronises the two crates
+      # silently; the generator's --check mode catches it.
+      - name: Generated broker tray surface drift check
+        run: npm run contracts:check
+      - run: npm run typecheck
+      - run: npm test
+
+  public-history:
+    name: Public history and path boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      # Pushes to master are the published history: every reachable commit must
+      # carry only public paths, noreply identities and no Co-authored-by trailer.
+      - name: Whole history (strict)
+        if: github.event_name != 'pull_request'
+        run: npm run audit:public-history
+      # A pull request is judged on the commits it adds (base..head), not on every
+      # ref the checkout carries. The path boundary always fails the run. The
+      # identity rules fail it for a branch of this repository and are advisory
+      # for a fork: CONTRIBUTING.md asks outside contributors for a real-name DCO
+      # sign-off, and a maintainer squash-merges the change, so those commits are
+      # never published as they stand. The squashed commit is then held to the
+      # strict whole-history rules by the push run above. Values arrive through
+      # env, never interpolated into the script.
+      - name: Pull request range (path boundary; identity per origin)
+        if: github.event_name == 'pull_request'
+        env:
+          QC_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          QC_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          QC_IDENTITY: ${{ github.event.pull_request.head.repo.full_name == github.repository && 'strict' || 'advisory' }}
+        run: |
+          node --test scripts/verify-public-history.test.mjs
+          node scripts/verify-public-history.mjs --base "$QC_BASE_SHA" --head "$QC_HEAD_SHA" --identity "$QC_IDENTITY"
+      # The `DCO sign-off` job itself lives in dco.yml (a pull_request_target
+      # workflow, so a pull request cannot edit or skip it). These tests cover
+      # its checker and pin that workflow's safety properties; here they run on
+      # the pull request's own copy, so they are an early signal, not the
+      # enforcement.
+      - name: DCO checker and workflow safety tests
+        run: node --test scripts/verify-dco.test.mjs scripts/verify-workflows.test.mjs
+
+  cloud-relay:
+    name: Cloud relay (dry-run deploy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # services/qc-remote-cloud is an npm workspace of the root package.json and
+    # has no lockfile of its own: install from the root lock and run the
+    # workspace's scripts with --workspace. (`npm ci` run from inside the
+    # workspace directory prunes the root node_modules down to this workspace.)
+    # The KV namespace id is a repository secret. A new repository, or a pull
+    # request from a fork, has none: the secret expands to an empty string, and
+    # `npm run check` (via kv:configure:dry-run) then binds the labelled
+    # all-zero DRY-RUN PLACEHOLDER id in wrangler.check.jsonc and says so in the
+    # log. That is enough for `wrangler types --check`, `tsc` and
+    # `wrangler deploy --dry-run`. This job never deploys; the real
+    # `npm run deploy` path refuses the placeholder, and `npm test` pins that.
+    env:
+      QCRC_OAUTH_KV_NAMESPACE_ID: ${{ secrets.QCRC_OAUTH_KV_NAMESPACE_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Placeholder and deploy-guard tests
+        run: npm test --workspace @qc-remote/cloud
+      - name: Types, tsc and dry-run deploy (secret id when set, placeholder otherwise)
+        run: npm run check --workspace @qc-remote/cloud
+
+  android:
+    name: Android app (debug build + unit tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # Deliberately debug-only: no release signing or keystore. Do not set QC_ANDROID_KEYSTORE_BASE64,
+    # QC_ANDROID_KEYSTORE, QC_ANDROID_STORE_PASSWORD, QC_ANDROID_KEY_ALIAS,
+    # or QC_ANDROID_KEY_PASSWORD as secrets
+    # in this job: app/build.gradle only applies a signing config when all
+    # four QC_ANDROID_* variables are present, so leaving them unset keeps
+    # `assembleDebug` on Gradle's own throwaway debug signing.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build Android web assets and sync Capacitor
+        run: npm run android:sync --workspace @qc-remote/android
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+      - name: Install pinned Android SDK platform, build tools and NDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+      # app/build.gradle's preBuild depends on buildSharedQcRust, which
+      # cross-compiles packages/rust/quadcortex-android into the APK's jniLibs
+      # through scripts/build-android-rust.ps1. That runs under pwsh off
+      # Windows (preinstalled on GitHub's ubuntu runners) and needs Rust with
+      # both Android targets, cargo-ndk, and an NDK. This is the real native
+      # build, not a stub: the debug APK carries the same .so files as release.
+      - name: Point the native build at the pinned NDK
+        run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: android
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Gradle debug build and unit tests
+        working-directory: apps/android/android
+        run: ./gradlew assembleDebug testDebugUnitTest --no-daemon

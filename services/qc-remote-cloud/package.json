@@ -1,0 +1,39 @@
+{
+  "name": "@qc-remote/cloud",
+  "private": true,
+  "version": "0.1.0",
+  "license": "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference",
+  "type": "module",
+  "scripts": {
+    "kv:configure": "node scripts/apply-kv-namespace-id.mjs",
+    "kv:configure:dry-run": "node scripts/apply-kv-namespace-id.mjs --dry-run",
+    "check": "npm run kv:configure:dry-run && wrangler types --include-runtime false --check -c wrangler.check.jsonc && tsc --noEmit && wrangler deploy --dry-run -c wrangler.check.jsonc",
+    "deploy:dry": "npm run kv:configure:dry-run && wrangler deploy --dry-run -c wrangler.check.jsonc",
+    "deploy": "npm run kv:configure && node scripts/apply-kv-namespace-id.mjs --verify-deployable && wrangler deploy -c wrangler.local.jsonc",
+    "dev": "npm run kv:configure && wrangler dev -c wrangler.local.jsonc",
+    "test": "node --test scripts/apply-kv-namespace-id.test.mjs",
+    "test:workers:kv-proxy": "tsc --noEmit -p tsconfig.workers-tests.json && vitest run --config vitest.kv-proxy.config.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260908.1",
+    "@cloudflare/vitest-plugin": "^1.4.0",
+    "@msw/cloudflare": "^0.2.0",
+    "msw": "^3.0.2",
+    "typescript": "^5.9.2",
+    "vitest": "^5.0.3",
+    "wrangler": "4.145.0"
+  },
+  "overrides": {
+    "@modelcontextprotocol/client": "2.2.0",
+    "@modelcontextprotocol/sdk": "1.31.0"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "0.10.4",
+    "@modelcontextprotocol/client": "2.2.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "@qc-remote/theme": "file:../../packages/typescript/qc-theme",
+    "agents": "^0.22.0",
+    "zod": "^4.5.4"
+  }
+}

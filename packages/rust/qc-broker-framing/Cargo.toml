@@ -1,0 +1,9 @@
+[package]
+name = "qc-broker-framing"
+version = "0.1.0"
+publish = false
+edition = "2021"
+description = "Shared length-prefixed framing for local broker transports"
+license = "MIT OR Apache-2.0"
+
+[dependencies]

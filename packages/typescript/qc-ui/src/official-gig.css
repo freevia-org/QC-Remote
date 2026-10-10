@@ -1,0 +1,135 @@
+@scope (.qc-screen-fixture-root) {
+.gig-official, .gig-official * { box-sizing: border-box; font-family: var(--qc-font-device-plain); }
+/* First row is the shared navigation bar, declared once in qc-screen-elements.css. */
+.qc-screen.gig-official { position: absolute; inset: 0; display: grid; grid-template-rows: var(--qc-nav-bar-height) 1cqw 51.5cqw; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-palette-f3f4f3); container-type: inline-size; }
+.gig-official > header { display: flex; align-items: center; padding: 0 1cqw 0 2cqw; font-size: 4cqw; }
+.gig-official > header span { flex: 1; }
+.gig-official > header button { width: 8.25cqw; height: var(--qc-nav-bar-button); margin-left: 1cqw; border: 0; border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font: 3cqw var(--qc-font-device-plain); }
+.gig-official > header button b { color: var(--qc-palette-f2d125); }
+.gig-official > header button:last-child svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* .gig-mode-icon is a plain <span> around the mode vector's own <svg>, not a
+   second <svg>: the box is one whole art unit per pixel - 26px for mode.scene
+   and mode.stomp, 24px for mode.preset. The 3cqw sizing and the
+   translate(2px,-1px)/(1px,1px)/(9px,0) below it were written for the old
+   wrapper <svg> and have been restated one class deeper in
+   remaining-fixtures-fixes.css ever since; these are those same values, in
+   the sheet that owns the screen. */
+.gig-official > header .gig-mode-icon { display: block; width: 26px; height: 26px; margin: auto; color: var(--qc-icon-primary); }
+.gig-official > header .gig-mode-icon > svg { display: block; }
+.gig-official > header .gig-mode-icon-preset { width: 24px; height: 24px; transform: translate(0, -1px); }
+.gig-official > header .gig-mode-icon-stomp { transform: translate(8px, 0); }
+.gig-official > header .gig-mode-hybrid { display: grid; place-items: center; width: 100%; }
+/* 74, not 66: the mark's crop ended eight units before its right-hand mode
+   glyph did, so both layers ran into the viewBox edge. Its viewBox is 74x26
+   now, and drawing it at 74x26 keeps one SVG unit on one device pixel. */
+.gig-official > header .gig-mode-hybrid > svg { width: 74px; height: 26px; color: var(--qc-icon-primary); translate: -4px 0; }
+.gig-official > i { margin: 0 1cqw; border-radius: 1cqw; background: var(--qc-screen-surface-raised); }
+.gig-official-tiles { display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(2, 1fr); gap: 1cqw; padding: 1cqw; }
+.gig-official-tiles article { position: relative; overflow: hidden; border-radius: 1cqw; background: var(--qc-screen-surface-raised); padding: 1.5cqw 2cqw; }
+.gig-official-tiles article > small { display: block; font-size: 5cqw; }
+.gig-official-tiles article > strong { display: block; margin-top: 2cqw; font-size: 4cqw; line-height: 1.3; }
+.gig-official.is-preset .gig-official-tiles article:first-child { background: var(--qc-palette-36f45f); color: var(--qc-screen-background); }
+.gig-official.is-preset .gig-official-tiles article:first-child strong { font-weight: 700; }
+.gig-official.is-preset .gig-official-tiles article { padding-top: .625cqw; }
+.gig-official.is-preset .gig-official-tiles article > small { position: relative; top: -.75cqw; }
+.gig-official.is-preset .gig-official-tiles article > small b { font: inherit; }
+.gig-official.is-preset .gig-official-tiles article:first-child > small b { color: var(--qc-screen-background) !important; }
+.gig-official.is-preset .gig-official-tiles article > strong { margin-top: .5cqw; }
+.gig-official.is-preset > header button:first-of-type { transform: translateX(-1.25cqw); }
+.gig-official.is-scene .gig-official-tiles article { display: grid; place-items: center; padding: 4cqw 2cqw 1cqw; text-align: center; }
+.gig-official.is-scene .gig-official-tiles article > small { position: absolute; inset: 1.5cqw 2cqw auto; color: var(--qc-palette-a8aaa8); font-size: 3cqw; text-align: left; }
+.gig-official.is-scene .gig-official-tiles article > strong { margin: 0; font-size: 4cqw; }
+.gig-official.is-scene .gig-official-tiles article::before { content: attr(data-letter); position: absolute; inset: 3cqw 0 auto; color: var(--qc-palette-rgba-0-0-0-a22); font-size: 22cqw; line-height: 1; }
+.gig-official.is-scene > header button:first-of-type { transform: translateX(-.25cqw); }
+.gig-official.is-scene > header button:nth-of-type(2) { width: 5.25cqw; }
+.gig-official.is-scene > header button:nth-of-type(3) { width: 12.25cqw; }
+.gig-official .gig-mode-matrix { width: 3cqw; height: 3cqw; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1px; margin: auto; }
+.gig-official .gig-mode-matrix i { display: grid; place-items: center; background: var(--qc-screen-text-primary); color: var(--qc-palette-111); font-size: 1.1cqw; font-style: normal; font-weight: 700; line-height: 1; }
+.gig-official.is-scene .gig-scene-tools,
+.gig-official.is-hybrid .hybrid-scene .gig-scene-tools { position: absolute; z-index: 2; left: 2.5cqw; right: 2.5cqw; top: 2.375cqw; display: flex; align-items: center; justify-content: space-between; color: var(--qc-palette-a8aaa8); }
+.gig-official.is-scene .gig-scene-tools svg,
+.gig-official.is-hybrid .hybrid-scene .gig-scene-tools svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.gig-official.is-scene .gig-official-tiles article:first-child .gig-scene-tools,
+.gig-official.is-hybrid .hybrid-scene:first-child .gig-scene-tools { color: var(--qc-palette-333333); }
+.gig-official.is-scene .gig-official-tiles article > strong { position: relative; top: -.5cqw; }
+.gig-official.is-scene .gig-official-tiles article:nth-child(1) { background: var(--qc-palette-ff272d); color: var(--qc-screen-background); }
+.gig-official.is-scene .gig-official-tiles article:nth-child(2) { background: var(--qc-palette-0b2027); }
+.gig-official.is-scene .gig-official-tiles article:nth-child(3) { background: var(--qc-palette-302f10); }
+.gig-official.is-scene .gig-official-tiles article:nth-child(4) { background: var(--qc-palette-301021); }
+.gig-official.is-scene .gig-official-tiles article:nth-child(5) { background: var(--qc-palette-0d2716); }
+.gig-official.is-scene .gig-official-tiles article:nth-child(6) { background: var(--qc-palette-321d12); }
+.gig-official.is-scene .gig-official-tiles article:nth-child(7) { background: var(--qc-palette-17182f); }
+.gig-official.is-scene .gig-official-tiles article:nth-child(8) { background: var(--qc-palette-0c3026); }
+.gig-official.is-stomp .gig-official-tiles article { padding: 1.5cqw 2cqw; }
+.gig-official.is-stomp .gig-official-tiles article > small { position: absolute; right: 2cqw; top: 1.25cqw; color: var(--qc-palette-8d928e); font-size: 5cqw; }
+.gig-official.is-stomp .gig-official-tiles article > b { width: 8.75cqw; height: 8.75cqw; display: grid; place-items: center; border: .25cqw solid var(--qc-screen-accent); border-radius: 1.5cqw; background: var(--qc-palette-090a09); font-size: 4cqw; }
+.gig-official .gig-official-tiles article > b.has-device-glyph { border: 0; border-radius: 0; background: var(--qc-transparent); }
+.gig-official .gig-official-tiles article > b.has-device-glyph > svg { display: block; width: 100%; height: 100%; }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(1) > b::after,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(2) > b::after,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(3) > b::after,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(4) > b::after,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(6) > b::after,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(7) > b::after,
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(6) > b::after,
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(7) > b::after { content: ""; position: absolute; left: -.5cqw; right: -.5cqw; top: calc(50% - .25cqw); height: 1px; background: var(--qc-capture-stripe-soft); }
+.gig-official.is-stomp .gig-official-tiles article > strong { position: absolute; left: 2cqw; bottom: .75cqw; margin: 0; font-size: 4cqw; }
+.gig-official.is-stomp > header button:first-of-type { transform: translateX(-1.25cqw); }
+.gig-official.is-stomp > header button:nth-of-type(2) { width: 5.25cqw; }
+.gig-official.is-stomp > header button:nth-of-type(3) { width: 12.25cqw; }
+.gig-official.is-stomp .gig-official-tiles article > small { top: .5cqw; }
+.gig-official.is-stomp .gig-official-tiles article > b { position: relative; top: .25cqw; }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(1) > b,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(5) > b,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(8) > b { margin-left: -.5cqw; }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(2) > b,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(6) > b,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(7) > b { margin-left: -.25cqw; }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(2) > b,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(3) > b,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(4) > b { border-color: var(--qc-palette-6d3405); }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(5) > b,
+.gig-official.is-stomp .gig-official-tiles article:nth-child(8) > b { border-color: var(--qc-palette-090a09); }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(6) > b { border-color: var(--qc-palette-8b8500); }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(7) > b { border-color: var(--qc-palette-4f765f); }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(2) > strong span:nth-child(2) { white-space: nowrap; }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(2) > strong { font-size: 3.75cqw; letter-spacing: -.04cqw; }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(2), .gig-official.is-stomp .gig-official-tiles article:nth-child(3), .gig-official.is-stomp .gig-official-tiles article:nth-child(4) { background: var(--qc-palette-321d12); }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(5) { background: var(--qc-palette-ff272d); color: var(--qc-screen-background); }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(6) { background: var(--qc-palette-302f10); }
+.gig-official.is-stomp .gig-official-tiles article:nth-child(8) { background: var(--qc-palette-10ead5); color: var(--qc-screen-background); }
+.gig-official.is-hybrid > header button:first-of-type { width: 12.25cqw; }
+.gig-official.is-hybrid > header button:first-of-type { transform: translateX(-.25cqw); }
+.gig-official.is-hybrid > header button:nth-of-type(2) { width: 5.25cqw; }
+.gig-official.is-hybrid > header button:nth-of-type(3) { width: 12.25cqw; }
+.qc-screen.gig-official.is-hybrid { grid-template-rows: var(--qc-nav-bar-height) 0 52.5cqw; }
+.gig-official.is-hybrid > i { visibility: hidden; margin: 0; }
+.gig-official.is-hybrid .gig-official-tiles { padding-top: 0; }
+.gig-official.is-hybrid .gig-official-tiles article { padding: 1.5cqw 2cqw; }
+.gig-official.is-hybrid .gig-official-tiles article.hybrid-preset { padding-top: .625cqw; }
+.gig-official.is-hybrid .hybrid-preset > small { position: relative; top: -.75cqw; display: block; font-size: 5cqw; }
+.gig-official.is-hybrid .hybrid-preset > strong { margin-top: .5cqw; font-size: 4cqw; line-height: 1.3; }
+.gig-official.is-hybrid .hybrid-preset > small b { font: inherit; font-weight: 400; }
+.gig-official.is-hybrid .hybrid-preset:nth-child(1) > small b { color: var(--qc-screen-accent); }
+.gig-official.is-hybrid .hybrid-preset:nth-child(3) > small b { color: var(--qc-palette-ff7900); }
+.gig-official.is-hybrid .hybrid-preset:nth-child(4) > small b { color: var(--qc-palette-f000a8); }
+.gig-official.is-hybrid .hybrid-scene { display: grid; place-items: center; text-align: center; }
+.gig-official.is-hybrid .hybrid-scene::before { content: attr(data-letter); position: absolute; inset: 3cqw 0 auto; color: var(--qc-palette-rgba-0-0-0-a22); font-size: 22cqw; line-height: 1; }
+.gig-official.is-hybrid .hybrid-scene > small { position: absolute; inset: 1.5cqw 2cqw auto; color: var(--qc-palette-a8aaa8); font-size: 3cqw; text-align: left; }
+.gig-official.is-hybrid .hybrid-scene > strong { z-index: 1; margin: 0; font-size: 4cqw; }
+.gig-official.is-hybrid .hybrid-scene > strong { position: relative; top: 1cqw; }
+.gig-official.is-hybrid .hybrid-stomp > small { position: absolute; right: 2cqw; top: 1.25cqw; color: var(--qc-palette-8d928e); font-size: 5cqw; }
+.gig-official.is-hybrid .hybrid-stomp > small { top: .25cqw; }
+.gig-official.is-hybrid .hybrid-stomp > b { width: 8.75cqw; height: 8.75cqw; display: grid; place-items: center; border: .25cqw solid var(--qc-screen-accent); border-radius: 1.5cqw; background: var(--qc-palette-090a09); font-size: 4cqw; }
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(5) > b { margin-left: -.5cqw; border-color: var(--qc-palette-090a09); }
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(6) > b,
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(7) > b { position: relative; top: .5cqw; width: 8.125cqw; height: 8.125cqw; margin-left: -.25cqw; }
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(6) > b { border-color: var(--qc-palette-8b8500); }
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(7) > b { border-color: var(--qc-palette-4f765f); }
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(8) > b { margin-left: -.5cqw; border-color: var(--qc-palette-090a09); }
+.gig-official.is-hybrid .hybrid-stomp > strong { position: absolute; left: 2cqw; bottom: .75cqw; margin: 0; font-size: 4cqw; }
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(1),
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(5),
+.gig-official.is-hybrid .gig-official-tiles article:nth-child(8) { color: var(--qc-screen-background); }
+
+}

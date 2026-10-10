@@ -1,0 +1,11 @@
+[
+  { "id": "notices", "label": "Dependency notices", "openLabel": "Open the complete locked dependency notices", "bundledName": "THIRD_PARTY-NOTICES.md", "repositoryPath": "THIRD_PARTY-NOTICES.md" },
+  { "id": "license-texts", "label": "License and NOTICE texts", "openLabel": "Open bundled license and NOTICE texts", "bundledName": "THIRD_PARTY-LICENSE-TEXTS.txt", "repositoryPath": "legal/THIRD_PARTY-LICENSE-TEXTS.txt" },
+  { "id": "source-offer", "label": "Source availability", "openLabel": "Open exact-version third-party source availability", "bundledName": "THIRD_PARTY-SOURCE-OFFER.md", "repositoryPath": "legal/THIRD_PARTY-SOURCE-OFFER.md" },
+  { "id": "inventory", "label": "License inventory (JSON)", "openLabel": "Open the machine-readable license inventory", "bundledName": "THIRD_PARTY-LICENSE-INVENTORY.json", "repositoryPath": "legal/THIRD_PARTY-LICENSE-INVENTORY.json" },
+  { "id": "protocol-license", "label": "Community protocol license", "openLabel": "Open the community protocol license (pyquadcortex)", "bundledName": "COMMUNITY-PROTOCOL-LICENSE.txt", "repositoryPath": "legal/COMMUNITY-PROTOCOL-LICENSE.txt" },
+  { "id": "project-license", "label": "QC Remote license", "openLabel": "Open the QC Remote license", "bundledName": "LICENSE.md", "repositoryPath": "LICENSE" },
+  { "id": "reference-terms", "label": "Device reference material terms", "openLabel": "Open the device reference material terms", "bundledName": "LicenseRef-QC-Remote-Reference.txt", "repositoryPath": "LICENSES/LicenseRef-QC-Remote-Reference.txt" },
+  { "id": "mit-license", "label": "MIT License", "openLabel": "Open the MIT License", "bundledName": "LICENSE-MIT.txt", "repositoryPath": "LICENSE-MIT" },
+  { "id": "apache-license", "label": "Apache License 2.0", "openLabel": "Open the Apache License 2.0", "bundledName": "LICENSE-APACHE.txt", "repositoryPath": "LICENSE-APACHE" }
+]

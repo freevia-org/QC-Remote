@@ -1,0 +1,29 @@
+{
+  "about": "Shared cases for list_models' query filter, which both MCP surfaces apply after device.listModels answers: filter_models in services/rust-mcp/src/server.rs and filterModelResult in services/qc-remote-cloud/src/model-query.ts. Each case lists the ids the filter must keep, in catalog order.",
+  "models": [
+    { "id": 1, "name": "US Double Nrm", "category": "Guitar Amp", "basedOn": "" },
+    { "id": 2, "name": "Brit 2203", "category": "Guitar Amp", "basedOn": "Marshall JCM800" },
+    { "id": 3, "name": "4x12 Brit", "category": "Guitar Cab", "basedOn": "" },
+    { "id": 4, "name": "Myth Drive", "category": "Overdrive", "basedOn": "Klon Centaur" },
+    { "id": 5, "name": "Parametric EQ", "category": "EQ", "basedOn": "" },
+    { "id": 6, "name": "Gate", "category": "Dynamics", "basedOn": "" },
+    { "id": 7, "name": "Bass Amp", "category": "Bass Amp", "basedOn": null },
+    { "id": 8, "name": "Mystery", "basedOn": "" }
+  ],
+  "cases": [
+    { "query": null, "ids": [1, 2, 3, 4, 5, 6, 7, 8] },
+    { "query": "", "ids": [1, 2, 3, 4, 5, 6, 7, 8] },
+    { "query": "   ", "ids": [1, 2, 3, 4, 5, 6, 7, 8] },
+    { "query": "brit", "ids": [2, 3] },
+    { "query": "  BRIT ", "ids": [2, 3] },
+    { "query": "jcm800", "ids": [2] },
+    { "query": "klon", "ids": [4] },
+    { "query": "amplifier", "ids": [1, 2, 7] },
+    { "query": "guitar amplifier", "ids": [1, 2] },
+    { "query": "cabinet", "ids": [3] },
+    { "query": "eq", "ids": [5] },
+    { "query": "gate", "ids": [6] },
+    { "query": "a", "ids": [1, 2, 3, 4, 5, 6, 7] },
+    { "query": "zzz", "ids": [] }
+  ]
+}

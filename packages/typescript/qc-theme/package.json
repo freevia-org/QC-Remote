@@ -1,0 +1,19 @@
+{
+  "name": "@qc-remote/theme",
+  "version": "0.1.0",
+  "license": "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server-theme.ts",
+    "./theme.css": "./src/theme.css",
+    "./app-dialog.css": "./src/app-dialog.css"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

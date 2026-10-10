@@ -1,0 +1,1114 @@
+@scope (.qc-screen-fixture-root) {
+.qc-screen.coros-fixture-dialog>aside{position:absolute!important;left:50%!important;top:50%!important;right:auto!important;bottom:auto!important;transform:translate(-50%,-50%)!important;margin:0!important;max-height:none!important}
+.qc-screen.coros-detail-editor>header>span{height:100%;justify-content:center}
+.capture-official-settings .capture-input-type label{position:absolute;left:2cqw;top:5.875cqw;display:grid;grid-template-columns:4.75cqw 1fr;grid-template-rows:3cqw 3cqw;margin:0}
+/* The toggle is QcPillToggle; this is placement only. The unit puts the two
+   pills at x 337.99 and 495.00, y 303.94. */
+.capture-official-settings .capture-input-type label>.qc-pill-toggle{grid-row:1/3}
+/* IN 2 TYPE sits a pixel right of IN 1 TYPE: 495.00 against 337.99 on a 157px
+   column pitch. */
+.capture-official-settings .capture-input-type+.capture-input-type label{left:2.125cqw}
+.capture-official-settings .capture-input-type label>small,.capture-official-settings .capture-input-type label>b{font-size:2cqw;font-weight:400;line-height:3cqw}
+.capture-official-settings .capture-input-type label>small{color:var(--qc-screen-text-muted)}
+.coros-route-picker.is-input .route-picker-list>b{margin-bottom:3.8cqw}
+.coros-directory .directory-category{width:32.65%}.coros-directory .directory-category strong{font-weight:400}.coros-directory .directory-cloud{flex-basis:12.5%}.coros-directory .directory-tools{width:42.1%;justify-content:flex-start!important}.coros-directory .directory-tools button{flex-basis:20%!important}.coros-directory .directory-tools button:nth-child(1) svg{width:48%}.coros-directory .directory-tools button:nth-child(2) svg{width:45%}.coros-directory .directory-tools .directory-close{flex-basis:30%!important}.coros-directory .directory-tools .directory-close svg{width:22%}.coros-directory .directory-folders button,.coros-directory .directory-banks button{font-weight:400}.coros-directory .directory-presets>button{grid-template-columns:9% minmax(0,1fr) 8%}.coros-directory .directory-presets>button strong,.coros-directory .directory-presets>button>span:nth-child(2){font-weight:400}
+.qc-screen.coros-fixture-dialog.is-scene-command{background:var(--qc-palette-454545)}.coros-fixture-dialog.is-scene-command .scene-command-grid{position:absolute;inset:0;opacity:.45}.scene-command-grid header{position:relative;height:20%;display:flex;align-items:center;padding:0 1.7%;font-size:8cqw}.scene-command-grid header strong{color:var(--qc-palette-ff00bd)}.scene-command-grid header strong>span{margin:0;color:var(--qc-screen-text-primary)}.scene-command-grid header>span{margin-left:2cqw;color:var(--qc-palette-777)}.scene-command-grid header nav{position:absolute;right:4%;top:10%;display:flex;align-items:center;gap:2cqw;height:4cqw}.scene-command-grid header nav>svg{width:3cqw;height:3cqw}.scene-command-grid header nav>b{width:3cqw;height:3cqw;display:grid;place-items:center;border-radius:.4cqw;background:var(--qc-palette-f3d327);color:var(--qc-palette-111);font-size:1.8cqw}.scene-command-grid main{position:absolute;left:1%;right:1%;top:23.125%;height:74.17%;display:grid;grid-template-columns:5.5cqw 5.5cqw;grid-template-rows:repeat(4,9.5cqw);justify-content:space-between;align-content:space-between;padding:0}.scene-command-grid main::before{content:"";position:absolute;left:5.5cqw;right:5.5cqw;top:4.375cqw;border-top:1px solid var(--qc-screen-text-primary)}.scene-command-grid main i,.scene-command-grid main .scene-command-insert{position:relative;height:9.5cqw;border:0;border-radius:1.5cqw;background:var(--qc-screen-surface-control);display:grid;place-items:center;color:var(--qc-screen-text-primary);font-size:1.8cqw;font-style:normal;text-align:center}.scene-command-grid main .scene-command-insert{position:absolute;left:7.625cqw;top:-.125cqw;width:8.375cqw}.scene-command-grid main i>svg,.scene-command-grid main .scene-command-insert>svg{--qc-screen-glyph-size:24px;width:24px;height:24px}.coros-fixture-dialog.is-scene-command>aside{box-sizing:border-box;width:52.5%;height:47.9%;padding:5.3cqw 4cqw 3.8cqw;background:var(--qc-palette-0b0c0b)}.coros-fixture-dialog.is-scene-command>aside>h1{margin:0 0 3.2cqw;font-size:2.5cqw}.coros-fixture-dialog.is-scene-command>aside>p{color:var(--qc-screen-text-primary);font-size:2.25cqw}.coros-fixture-dialog.is-scene-command>aside footer{display:block;margin-top:5cqw}.coros-fixture-dialog.is-scene-command>aside footer button{width:100%;height:5.75cqw;background:var(--qc-palette-030403);font-size:1.7cqw}
+
+.coros-fixture-dialog.is-scene-command .scene-command-grid header strong,.coros-fixture-dialog.is-scene-command .scene-command-grid header span{font-size:9cqw;line-height:1;transform:translateY(6px)}
+
+
+.coros-fixture-dialog.is-scene-command>aside>h1,.coros-fixture-dialog.is-scene-command>aside>p{font-weight:400}
+
+.scene-command-mode{position:absolute;z-index:1;right:3.625cqw;top:7.625cqw;display:flex;align-items:center;gap:1.125cqw;color:var(--qc-screen-text-primary)}
+.scene-command-mode svg{width:26px;height:26px}.scene-command-mode>b{font-size:2.7cqw;font-weight:700}
+
+.coros-fixture-dialog.is-scene-command,.coros-fixture-dialog.is-scene-command *{font-family:var(--qc-font-device-plain)}
+.coros-fixture-dialog.is-scene-command>aside{box-shadow:none}
+.coros-vector-screen .vector-scene-dropdown{padding:0;box-shadow:none;font-family:var(--qc-font-device-plain)}
+.coros-vector-screen .vector-scene-dropdown button{padding:0 2cqw}
+.coros-vector-screen .vector-scene-dropdown button.is-active{background:var(--qc-palette-080808)}
+.coros-vector-screen .vector-scene-dropdown button span{width:3cqw;height:3cqw;font-size:2.5cqw}
+.coros-vector-screen:has(.vector-scene-dropdown) .grid-scene-badge rect{fill:var(--qc-palette-686868)}
+.coros-vector-screen:has(.vector-scene-dropdown) .scene-hit{outline:0;box-shadow:none!important}
+.coros-route-picker.is-output,.coros-route-picker.is-output .route-picker-list,.coros-route-picker.is-output .route-picker-list>b{background:var(--qc-screen-surface-base)}
+.coros-route-picker.is-output,.coros-route-picker.is-output *{font-family:var(--qc-font-device-plain)}
+.coros-route-picker.is-output .route-picker-list{padding-left:2.5%}
+.coros-route-picker.is-output .route-picker-list button{color:var(--qc-screen-text-primary);font:400 2.5cqw var(--qc-font-device-plain)}
+.coros-route-picker.is-output .route-symbol{width:4cqw;height:4cqw}
+.coros-route-picker.is-output .route-symbol.route-unused{width:3.625cqw;height:3.625cqw}
+.coros-route-picker.is-output .route-picker-list>b:last-of-type~button{transform:translateY(1.25cqw)}
+.coros-vector-screen .coros-screen-menu{background:var(--qc-screen-surface-base);font-family:var(--qc-font-device-plain)}
+/* The thumb is drawn only while the menu overflows and no scrollbar takes layout width (an overlay native thumb is not
+   detected: possible duplicate, unmeasured): quad-cortex-surface.tsx sets data-qc-thumb plus the three --qc-menu-* values
+   from the menu's real scroll geometry. Same 2px colour and 1.375cqw insets as before. */
+.coros-vector-screen .coros-screen-menu::after{content:"";display:none;position:absolute;pointer-events:none;right:1cqw;width:2px;background:var(--qc-palette-353735);--qc-menu-thumb-inset:1.375cqw;--qc-menu-thumb-size:calc((100% - 2 * var(--qc-menu-thumb-inset)) * var(--qc-menu-thumb-ratio,1));height:var(--qc-menu-thumb-size);top:calc(var(--qc-menu-scroll-top,0px) + var(--qc-menu-thumb-inset) + (100% - 2 * var(--qc-menu-thumb-inset) - var(--qc-menu-thumb-size)) * var(--qc-menu-thumb-progress,0))}
+.coros-vector-screen .coros-screen-menu[data-qc-thumb]::after{display:block}
+.coros-vector-screen .coros-screen-menu .context-menu-heading{font:400 1.55cqw var(--qc-font-device-plain)}
+.coros-vector-screen .coros-screen-menu button{gap:3.75%;font:400 2.25cqw var(--qc-font-device-plain)}
+/* The device draws these at 24px. Two rules already asked for 3cqw and both
+   lost: qc-device-typography.css sizes every bezel icon at 1em behind a
+   doubled #root#root selector, which no plain selector can outrank, and the
+   1em resolves against this span's own 1.2em. Hence !important, as elsewhere
+   in the screen CSS. Without it the glyph lands on 21.59px and crispEdges
+   drops rows rather than blending them. */
+.coros-vector-screen .coros-screen-menu .context-menu-icon svg{width:3cqw!important;height:3cqw!important;transform:translateX(-.375cqw)}
+.coros-modes-configuration:not(.modes-official),.coros-modes-configuration:not(.modes-official) *{font-family:var(--qc-font-device-plain)}
+.coros-modes-configuration:not(.modes-official){background:var(--qc-screen-surface-base)}
+.coros-modes-configuration:not(.modes-official) header{padding-right:1%;font-size:2.25cqw}
+.coros-modes-configuration:not(.modes-official) header div{gap:2.25cqw}
+.coros-modes-configuration:not(.modes-official) header button:first-child svg{--qc-screen-glyph-size:24px;width:24px;height:24px;fill:var(--qc-palette-aeb1af);stroke:var(--qc-screen-surface-control);stroke-width:2;stroke-linecap:round}
+.coros-modes-configuration:not(.modes-official) header button:last-child svg{display:block;--qc-screen-glyph-size:24px;width:24px;height:24px;margin:auto}
+.coros-modes-configuration:not(.modes-official)>p{margin-top:3%}
+.coros-modes-configuration:not(.modes-official) .modes-cycle>span{background:var(--qc-screen-surface-base)}
+.coros-modes-configuration:not(.modes-official) .modes-cycle>i:first-of-type::before,.coros-modes-configuration:not(.modes-official) .modes-cycle>i:first-of-type::after{content:"";position:absolute;top:3.875cqw;width:0;height:0;border-top:1.125cqw solid var(--qc-transparent);border-bottom:1.125cqw solid var(--qc-transparent)}
+.coros-modes-configuration:not(.modes-official) .modes-cycle>i:first-of-type::before{left:-1.5cqw;border-right:1.5cqw solid var(--qc-palette-29302b)}
+.coros-modes-configuration:not(.modes-official) .modes-cycle>i:first-of-type::after{right:-1.5cqw;border-left:1.5cqw solid var(--qc-palette-29302b)}
+.coros-modes-configuration:not(.modes-official) .modes-cycle>div{left:15.125%;right:15.125%}
+.coros-modes-configuration:not(.modes-official) .modes-cycle button{background:var(--qc-screen-surface-control);font-size:2.25cqw;font-weight:400}
+.coros-modes-configuration:not(.modes-official) .modes-cycle button b{width:3cqw;height:3cqw;display:grid;place-items:center}
+.coros-modes-configuration.modes-official .modes-cycle button b svg{width:26px;height:26px}.coros-modes-configuration.modes-official .modes-cycle button b svg.qc-mode-glyph-preset{width:24px;height:24px}
+.coros-modes-configuration:not(.modes-official) .modes-cycle button b svg{width:26px;height:26px;transform:translate(-1px,-3px)}.coros-modes-configuration:not(.modes-official) .modes-cycle button b svg.qc-mode-glyph-scene{transform:translate(-1px,-2px)}.coros-modes-configuration:not(.modes-official) .modes-cycle button b svg.qc-mode-glyph-preset{width:24px;height:24px;transform:translate(0,-2px)}
+.coros-midi-out.coros-midi-out{background:var(--qc-screen-surface-base);font-family:var(--qc-font-device-plain)}.coros-midi-out>header{padding:1% 1% 1% 2%}.coros-midi-out>header .midi-trash{width:8.25%}.coros-midi-out>header .midi-trash svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.coros-midi-out,.coros-midi-out *{font-family:var(--qc-font-device-plain)!important}
+.coros-save-as,.coros-save-as *{font-family:var(--qc-font-device-plain)!important}
+.coros-midi-out .midi-assignment-surface{position:relative;height:87.5%;display:block;padding:0}.coros-midi-out .midi-footswitches{position:absolute;left:3.125cqw;top:6.125cqw;width:57.25cqw;height:36.125cqw;display:grid;grid-template-columns:repeat(4,11.875cqw) 1fr;grid-template-rows:18.75cqw 1fr 1fr;align-items:center;justify-items:stretch;border-radius:1.875cqw;background:radial-gradient(circle at 91.3% 24.6%,var(--qc-palette-343834) 0 1.5cqw,var(--qc-transparent) 1.6cqw),radial-gradient(circle at 91.3% 63%,var(--qc-screen-surface-raised) 0 1.5cqw,var(--qc-transparent) 1.6cqw),radial-gradient(circle at 91.3% 87.7%,var(--qc-screen-surface-raised) 0 1.5cqw,var(--qc-transparent) 1.6cqw),linear-gradient(var(--qc-screen-surface-control) 0 18.75cqw,var(--qc-rotary-face) 18.75cqw)}.coros-midi-out .midi-footswitches::before{content:"";position:absolute;left:4.625cqw;top:6.25cqw;width:5.5cqw;height:5.5cqw;border-radius:50%;background:var(--qc-palette-343834)}.coros-midi-out .midi-footswitches::after{top:18.75cqw}.coros-midi-out .midi-preset-load{position:absolute;z-index:1;grid-column:auto;grid-row:auto;left:14.75cqw;top:1.5cqw;width:27.75cqw;height:15.875cqw;border:.5cqw solid var(--qc-screen-background)!important;border-radius:.875cqw;font-size:2.25cqw!important;line-height:1.35}.coros-midi-out .midi-preset-load::after{content:"";position:absolute;left:35.75cqw;top:4.375cqw;width:3cqw;height:3cqw;border-radius:50%;background:var(--qc-palette-343834)}.coros-midi-out .midi-switch{grid-row:auto;width:100%;height:100%;justify-content:flex-start;gap:1.5cqw;padding-left:3.25cqw;font-size:2.25cqw!important}.coros-midi-out .midi-switch i{width:3cqw;height:3cqw;flex:0 0 3cqw}.coros-midi-out .midi-switch:nth-of-type(2){grid-column:1;grid-row:2}.coros-midi-out .midi-switch:nth-of-type(3){grid-column:2;grid-row:2}.coros-midi-out .midi-switch:nth-of-type(4){grid-column:3;grid-row:2}.coros-midi-out .midi-switch:nth-of-type(5){grid-column:4;grid-row:2}.coros-midi-out .midi-switch:nth-of-type(6){grid-column:1;grid-row:3}.coros-midi-out .midi-switch:nth-of-type(7){grid-column:2;grid-row:3}.coros-midi-out .midi-switch:nth-of-type(8){grid-column:3;grid-row:3}.coros-midi-out .midi-switch:nth-of-type(9){grid-column:4;grid-row:3}
+.coros-midi-out .midi-expression{position:absolute;left:65.5cqw;top:6.375cqw;width:31.25cqw;height:36.125cqw;display:grid;grid-template-columns:13cqw 13cqw;gap:5.25cqw;padding:0}.coros-midi-out .midi-expression label{grid-template-rows:3.25cqw 1fr;font-size:2.25cqw}.coros-midi-out .midi-expression label div{border:.45cqw solid var(--qc-screen-surface-base);border-radius:1.5cqw}
+.coros-midi-out>header{gap:2.25cqw}.coros-midi-out>header>span{font-size:2.25cqw;transform:translateY(-2px)}.coros-midi-out>header button{flex-shrink:0}
+.coros-midi-out .midi-preset-load::after{top:4.875cqw}
+.coros-midi-out .midi-switch:nth-of-type(2),.coros-midi-out .midi-switch:nth-of-type(3),.coros-midi-out .midi-switch:nth-of-type(4),.coros-midi-out .midi-switch:nth-of-type(5){transform:translateY(-.25cqw)}
+.coros-midi-out .midi-expression label div{margin:1px -1px;border-width:.5cqw;clip-path:polygon(1% 0,99% 0,100% 2%,91% 98%,89% 100%,11% 100%,9% 98%,0 2%)}
+.coros-midi-out .midi-expression label div>i{left:.75cqw;right:.75cqw;clip-path:polygon(1% 0,99% 0,100% 2%,91% 98%,89% 100%,11% 100%,9% 98%,0 2%)}
+
+.coros-midi-out .midi-expression label>span{display:block}.coros-midi-out .midi-expression label:first-child>span{transform:translateX(.75cqw)}.coros-midi-out .midi-expression label:last-child>span{transform:translateX(-.75cqw)}.coros-midi-out .midi-preset-load{letter-spacing:-.075cqw}.coros-midi-out .midi-switch{gap:1.375cqw}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel{inset:0 0 0 50%;grid-template-columns:26% 74%;box-shadow:none}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav{grid-template-rows:repeat(8,9.75cqw);background:var(--qc-screen-surface-raised)}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav button i{width:7.5cqw;height:7.5cqw}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav button svg{width:40px;height:40px}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header{height:12.5%;padding-left:5.7%;background:var(--qc-palette-101310)}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header strong{font-size:2.25cqw;color:var(--qc-palette-969a96)}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header button{width:8.25cqw;height:5.5cqw;align-self:center;margin-right:1cqw;border-radius:1cqw;background:var(--qc-screen-surface-raised);font-size:3cqw}
+.coros-browser-fixture.is-physical-plugin-list .is-plugin-licenses button{position:relative;width:100%;height:7.5cqw;min-height:7.5cqw;display:flex;align-items:center;padding:0 2.125cqw;border-bottom:1px solid var(--qc-screen-surface-control);background:var(--qc-screen-surface-control);color:var(--qc-screen-text-primary);font-size:2cqw}.coros-browser-fixture.is-physical-plugin-list .is-plugin-licenses button.is-locked{padding-left:6.125cqw;color:var(--qc-palette-888d88)}.coros-browser-fixture.is-physical-plugin-list .is-plugin-licenses button>span strong{font-size:2cqw;font-weight:400}.coros-browser-fixture.is-physical-plugin-list .plugin-license-lock{position:absolute;left:2.5cqw;width:2.25cqw;height:3cqw;border:0;color:var(--qc-screen-text-muted)}.coros-browser-fixture.is-physical-plugin-list .plugin-license-lock svg{--qc-screen-glyph-size:24px;width:24px;height:24px;fill:currentColor}
+.plugin-grid-underlay{position:absolute;inset:0 50% 0 0;overflow:hidden;background:var(--qc-palette-474b47);color:var(--qc-palette-b2b5b2);font-family:var(--qc-font-device-plain)}.plugin-grid-underlay header{height:20%;display:flex;align-items:center;padding:0 1.75cqw}.plugin-grid-underlay header strong{font-size:8.5cqw;line-height:1}.plugin-grid-underlay header strong span{color:var(--qc-palette-a49443)}.plugin-grid-underlay header em{margin-left:2cqw;font-size:8.5cqw;font-weight:700;line-height:1}.plugin-grid-underlay main{position:absolute;inset:22.9% 0 0}.plugin-grid-underlay main::before{content:"";position:absolute;left:6.5cqw;right:0;top:4.625cqw;border-top:2px solid var(--qc-palette-737973)}.plugin-grid-underlay main i{position:absolute;width:5.5cqw;height:9.5cqw;display:grid;place-items:center;border-radius:1.5cqw;background:var(--qc-palette-3f443f);font-size:4cqw;font-style:normal}.plugin-grid-underlay .underlay-input{left:1cqw;top:0;font-size:1.8cqw;text-align:center}.plugin-grid-underlay .underlay-plus{left:8.625cqw;top:0}.plugin-grid-underlay .underlay-add{background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary)}.plugin-grid-underlay .underlay-row-2{left:1cqw;top:11.75cqw}.plugin-grid-underlay .underlay-row-3{left:1cqw;top:23.5cqw}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel{grid-template-columns:12.875cqw 1fr;grid-template-rows:minmax(0,1fr)}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav{min-height:0;overflow:hidden;padding-top:1.125cqw}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav button i{transform:translateX(-1px)}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main{min-height:0;overflow:hidden}.coros-browser-fixture.is-physical-plugin-list .plugin-license-lock{left:2.25cqw}
+.plugin-grid-underlay header{padding-left:1.5cqw}.plugin-grid-underlay header em{margin-left:2.625cqw;white-space:nowrap}.plugin-grid-underlay main::before{top:4.5cqw}.plugin-grid-underlay .underlay-gate{left:8.625cqw;top:0;width:7.875cqw}.plugin-grid-underlay .underlay-plus{width:7.875cqw}
+/* The Grid's four port plates are 44x76 at x 8, and every plugin browser state
+   inks them at y 109, 203, 297 and 391: a flat 94px pitch, no fractional row.
+   `main` opens at 22.9% of 480 = 109.917, so each plate's own top has to carry
+   that .917 back, which makes the offsets -1, 93, 187 and 281. The previous
+   0/93/186/280 painted rows one, three and four at 110, 296 and 390 - the row
+   three and row four marks then inked at 323 and 417 against the device's 324
+   and 418. Row two was the only one the old set had right. */
+.plugin-grid-underlay .underlay-input{top:-.125cqw}.plugin-grid-underlay .underlay-row-2{top:11.625cqw}.plugin-grid-underlay .underlay-row-3{top:23.375cqw}.plugin-grid-underlay .underlay-row-4{left:1cqw;top:35.125cqw}
+.coros-browser-fixture.is-physical-plugin-list,.coros-browser-fixture.is-physical-plugin-list *{font-family:var(--qc-font-device-plain)!important}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav{background:var(--qc-screen-surface-raised)}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav button i{color:var(--qc-screen-text-primary)}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav button.is-active{background:var(--qc-screen-surface-raised)}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav button.is-active i{width:7.75cqw;background:var(--qc-palette-102818);transform:translateX(-1px)}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav button.is-active svg{width:40px;height:40px}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main{background:var(--qc-screen-surface-control)}
+.coros-browser-fixture.is-physical-plugin-list .is-plugin-licenses button{border-bottom:0;background:var(--qc-screen-surface-control)}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header{border-bottom:0}
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay{background:var(--qc-screen-surface-overlay)}
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay main i{background:var(--qc-screen-surface-overlay)}
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay main i{background:var(--qc-palette-424942)}.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay main .underlay-add{background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary)}
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay main::before{left:6.875cqw}
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay .underlay-plus{width:8.375cqw}
+/* x 322, y 206, 70px square is the black tile some device views draw - a
+   different preset from the two views that actually carry `.underlay-add`.
+   The add views ink that tile at x 152..221, y 112..181, which is what
+   `.plugin-grid-underlay main .underlay-add` below says. Unscoped, this box
+   outranked it on specificity and moved the add screens' tile 170px right
+   and 94px down, so it is scoped to the two underlays it belongs to. The
+   fixture emits `.underlay-add` only for the add underlay, so on those two it
+   currently draws nothing - restoring that tile is a markup change. */
+.coros-browser-fixture.is-underlay-ready.is-physical-plugin-list .plugin-grid-underlay .underlay-add,.coros-browser-fixture.is-underlay-unsaved.is-physical-plugin-list .plugin-grid-underlay .underlay-add{left:40.25cqw;top:12cqw;width:8.75cqw;height:8.875cqw}
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay main i:not(.underlay-input){--underlay-mark:var(--qc-palette-b2b5b2)}
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay main .underlay-add{--underlay-mark:var(--qc-screen-text-primary)}
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay :is(.underlay-plus,.underlay-add,.underlay-row-2,.underlay-row-3,.underlay-row-4){color:var(--underlay-mark)}
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay :is(.underlay-plus,.underlay-add,.underlay-row-2,.underlay-row-3,.underlay-row-4)>svg{--qc-screen-glyph-size:24px;width:24px;height:24px}
+/* Same substitution as the popup's `.popup-plus`, one ground over: these ports
+   are washed to 66,73,66 rather than the menu's 66,69,66, and the unit inks
+   their marks 107,109,107 wherever the browser draws them. The rule names the
+   `path` because the registry writes `fill` there as a presentation attribute.
+   `.underlay-add` is excluded - it is the add-block tile, on the base surface,
+   and the unit inks it undimmed - and so is the reference grid's
+   `.underlay-plus`, which is that same tile moved into the add slot. */
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay main :is(.underlay-row-2,.underlay-row-3,.underlay-row-4)>svg path,
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay:not(.is-reference-grid) main .underlay-plus>svg path{fill:var(--qc-screen-mark-dimmed-browser)}
+.coros-browser-fixture.is-physical-plugin-models,.coros-browser-fixture.is-physical-plugin-models *{font-family:var(--qc-font-device-plain)!important}.coros-browser-fixture.is-physical-plugin-models .browser-fixture-panel{inset:0;grid-template-columns:12.875cqw 37.125cqw 50cqw;grid-template-rows:7.5cqw 52.5cqw;box-shadow:none}.coros-browser-fixture.is-physical-plugin-models .browser-fixture-panel>nav{grid-column:1;grid-row:1/3;grid-template-rows:repeat(8,9.75cqw);min-height:0;overflow:hidden;padding-top:1.125cqw;background:var(--qc-screen-surface-raised)}.coros-browser-fixture.is-physical-plugin-models .browser-fixture-panel>nav button i{width:7.5cqw;height:7.5cqw;transform:translateX(-1px)}.coros-browser-fixture.is-physical-plugin-models .browser-fixture-panel>nav button svg{width:40px;height:40px}.coros-browser-fixture.is-physical-plugin-models .browser-fixture-panel>main{grid-column:2;grid-row:2;min-height:0;overflow:hidden;background:var(--qc-screen-surface-control)}.coros-browser-fixture.is-physical-plugin-models .browser-fixture-panel>main>header{display:none}.coros-browser-fixture.is-physical-plugin-models .plugin-model-header{grid-column:2/4;grid-row:1;z-index:2;display:flex;align-items:center;padding-left:2.125cqw;background:var(--qc-palette-101310);color:var(--qc-palette-969a96)}.coros-browser-fixture.is-physical-plugin-models .plugin-model-header strong{font-size:2.25cqw;font-weight:400}.coros-browser-fixture.is-physical-plugin-models .plugin-model-header button{width:8.25cqw;height:5.5cqw;margin-left:auto;border:0;border-radius:1cqw;background:var(--qc-screen-surface-raised);color:var(--qc-screen-text-primary);font-size:3cqw}.coros-browser-fixture.is-physical-plugin-models .plugin-model-header button+button{margin:0 1cqw}.coros-browser-fixture.is-physical-plugin-models .is-plugin-licenses button{position:relative;width:100%;height:7.5cqw;min-height:7.5cqw;display:flex;align-items:center;padding:0 2.125cqw;border:0;border-bottom:1px solid var(--qc-screen-surface-control);background:var(--qc-screen-surface-control);color:var(--qc-screen-text-primary)}.coros-browser-fixture.is-physical-plugin-models .is-plugin-licenses button.is-selected{background:var(--qc-screen-surface-raised);color:var(--qc-palette-29f365)}.coros-browser-fixture.is-physical-plugin-models .is-plugin-licenses button.is-locked{padding-left:6.125cqw;color:var(--qc-palette-888d88)}.coros-browser-fixture.is-physical-plugin-models .is-plugin-licenses button>span strong{font-size:2cqw;font-weight:400}.coros-browser-fixture.is-physical-plugin-models .is-plugin-licenses button>em{margin-left:auto;color:var(--qc-screen-text-primary);font-size:3cqw;font-style:normal}.coros-browser-fixture.is-physical-plugin-models .plugin-license-lock{position:absolute;left:2.25cqw;width:24px;height:24px;color:var(--qc-screen-text-muted)}.coros-browser-fixture.is-physical-plugin-models .plugin-license-lock svg{--qc-screen-glyph-size:24px;width:24px;height:24px;fill:currentColor}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list{grid-column:3;grid-row:2;min-height:0;overflow:hidden;background:var(--qc-screen-surface-control)}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button{width:100%;height:9.75cqw;display:grid;grid-template-columns:10.5cqw 1fr 6cqw;align-items:center;padding:0 1cqw 0 2.25cqw;border:0;background:var(--qc-screen-surface-control);color:var(--qc-screen-text-primary);text-align:left}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>i{width:8.5cqw;height:8.5cqw;display:grid;place-items:center;border:.375cqw solid var(--qc-screen-background);border-radius:1.5cqw;background:var(--qc-palette-7d0505);box-shadow:inset 0 0 0 .25cqw var(--qc-palette-ff2f35);color:var(--qc-screen-text-primary);font-size:4cqw;font-style:normal}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>i.is-cab{background:var(--qc-palette-18184a);box-shadow:inset 0 0 0 .25cqw var(--qc-palette-7257ff)}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>i.is-drive{background:var(--qc-palette-5d2700);box-shadow:inset 0 0 0 .25cqw var(--qc-palette-ff7900)}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>span{padding-left:1.875cqw;font-size:2cqw}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>em{width:5cqw;height:5cqw;display:grid;place-items:center;border-radius:1cqw;background:var(--qc-palette-313431);color:var(--qc-screen-text-muted);font-size:2.5cqw;font-style:normal}.coros-browser-fixture.is-physical-plugin-models>.browser-grid-ghost{display:none}
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-header button+button{width:12.25cqw}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button{grid-template-columns:10.5cqw 1fr 5cqw}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>span{padding-left:0}
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>i{width:8.75cqw;height:8.75cqw;border:0;border-radius:0;background:none;box-shadow:none}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>i>svg{width:100%;height:100%}.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>em>svg{width:3cqw;height:3cqw}
+.coros-device-presets.is-physical,.coros-device-presets.is-physical *{font-family:var(--qc-font-device-plain)!important}.qc-screen.coros-device-presets.is-physical{grid-template-columns:12.875cqw 87.125cqw}.coros-device-presets.is-physical>nav{grid-template-rows:repeat(6,9.75cqw);align-content:start;padding-top:1cqw;overflow:hidden}.coros-device-presets.is-physical>nav button i{width:7.5cqw;height:7.5cqw}.coros-device-presets.is-physical>nav svg{width:60%;height:60%}.coros-device-presets.is-physical>main{grid-template-columns:37.125cqw 50cqw}.coros-device-presets.is-physical>main>section{background:var(--qc-screen-surface-control)}.coros-device-presets.is-physical>main>section+section{border-left:2px solid var(--qc-palette-111)}.coros-device-presets.is-physical section header{height:var(--qc-nav-bar-height);background:var(--qc-screen-surface-base);gap:.5cqw}.coros-device-presets.is-physical section header button{flex:0 0 12.5cqw;font-size:2cqw}.coros-device-presets.is-physical section:first-child header button{flex-basis:12.5cqw}.coros-device-presets.is-physical section header button.is-active{border-radius:1cqw 1cqw 0 0;background:var(--qc-screen-surface-control)}.coros-device-presets.is-physical section:nth-child(2) header span{flex:1}.coros-device-presets.is-physical section:nth-child(2) header .preset-close{flex-basis:12.25cqw;height:5.5cqw;align-self:center;margin-right:1cqw;border-radius:1cqw;background:var(--qc-screen-surface-raised);color:var(--qc-screen-text-primary);font-size:3cqw}.coros-device-presets.is-physical section>button{position:relative;height:7.5cqw;padding:0 1cqw 0 2.125cqw;border-bottom:1px solid var(--qc-screen-surface-control);font-size:2cqw}.coros-device-presets.is-physical section:first-child>button{padding-left:2.125cqw}.coros-device-presets.is-physical section>button.is-active{background:var(--qc-screen-surface-raised);color:var(--qc-palette-29f365)}.coros-device-presets.is-physical section>button>span{align-items:flex-start;justify-content:center}.coros-device-presets.is-physical section>button small{padding-top:.75cqw;color:var(--qc-palette-8b908b);font-size:1.75cqw}.coros-device-presets.is-physical section:first-child>button>b{width:5cqw;height:5cqw;display:grid;place-items:center;border-radius:1cqw;background:var(--qc-palette-313431);color:var(--qc-screen-text-muted)}.coros-device-presets.is-physical section:first-child>button.is-active>b{background:var(--qc-screen-text-primary);color:var(--qc-palette-050505)}.coros-device-presets.is-physical section:first-child>button>b svg{width:3cqw;height:3cqw}.coros-device-presets.is-physical section:nth-child(2)>button>b{padding-right:1cqw;color:var(--qc-palette-858a86);font-size:2.75cqw;font-weight:400}.coros-device-presets.is-physical .device-pin{width:2.25cqw;height:2.25cqw;margin-right:.75cqw;color:var(--qc-palette-2cf36a)}.coros-device-presets.is-physical .device-pin .qc-ui-icon{display:block;width:100%;height:100%}
+.coros-device-presets.is-physical>nav button i{width:8.25cqw;height:8.25cqw}.coros-device-presets.is-physical>nav svg{width:60%;height:60%}.coros-device-presets.is-physical section:first-child>button>span{flex:1}.coros-device-presets.is-physical section:nth-child(2)>button{padding-left:2cqw}.coros-device-presets.is-physical section:nth-child(2)>button>b{padding-right:2.125cqw}.coros-device-presets.is-physical section:nth-child(2) header .preset-close{margin-left:.25cqw}
+.coros-device-presets.is-physical>nav svg{width:60%;height:60%}.coros-device-presets.is-physical>nav button:not(.is-active) i{color:var(--qc-screen-text-primary)}
+.coros-browser-fixture.is-physical-plugin-locked .is-plugin-licenses button.is-selected{color:var(--qc-palette-29f365)}.coros-browser-fixture.is-physical-plugin-locked .plugin-model-list button{position:relative}.coros-browser-fixture.is-physical-plugin-locked .plugin-model-lock{position:absolute;z-index:2;left:2.25cqw;bottom:-.875cqw;width:2.25cqw;height:3cqw;color:var(--qc-screen-text-primary)}.coros-browser-fixture.is-physical-plugin-locked .plugin-model-lock svg{--qc-screen-glyph-size:24px;width:24px;height:24px;fill:currentColor;filter:drop-shadow(0 0 1px var(--qc-screen-background))}
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>i,.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>span,.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>em,.coros-browser-fixture.is-physical-plugin-locked .plugin-model-lock{transform:translateY(1cqw)}
+.coros-device-presets.is-physical>nav button.is-active i{color:var(--qc-screen-text-primary)}
+/* The preset rail draws the same selected chip as the Favourites rail, and had
+   been drawing a different element: a 66px box with the category ink on its own
+   outer edge. The unit draws one chip for both rails - a 70x70 plate of screen
+   black with a two-pixel ring three pixels in - and on this rail the ring is
+   the category ink: plate at (16, 324), ring at (19, 327) 64 wide. Ours was a
+   plate at (21, 328) 62 wide under a ring at (19, 326) 66 wide.
+
+   The 1px padding is what puts it there. The unit's rail is 102px of raised
+   surface inside its 103px column, exactly as the Favourites rail is 102 inside
+   104, and only a 102px content box centres a 70px plate on the unit's whole
+   pixel - left at 16.5 the plate straddles one and loses 344 pixels of the 828
+   this gains. It is also why the mark's own bearing changes below: the same
+   pixel comes back out of it. */
+.coros-device-presets.is-physical>nav{padding-right:1px}
+.coros-device-presets.is-physical>nav button.is-active i{width:8.75cqw;height:8.75cqw;border:.375cqw solid var(--qc-screen-background);border-radius:2.09375cqw;background:var(--qc-screen-background);box-shadow:inset 0 0 0 .25cqw var(--device-color)}
+.coros-device-presets.is-physical section header button:not(.preset-close){height:6.5cqw;margin-top:1cqw}
+.coros-device-presets.is-physical section header button:not(.preset-close):not(.is-active){height:6cqw;background:var(--qc-screen-surface-raised)}
+.coros-device-presets.is-physical section>button>*{transform:translateY(.25cqw)}
+.coros-device-presets.is-physical>main>section{background:var(--qc-screen-surface-control)}
+.coros-device-presets.is-physical section>button{border-bottom:0;background:var(--qc-screen-surface-control)}
+.coros-device-presets.is-physical section>button.is-active{background:var(--qc-screen-surface-raised)}
+.coros-device-presets.is-actions::after{content:"";position:absolute;inset:0;z-index:4;background:var(--qc-palette-rgba-88-92-88-a694);pointer-events:none}
+/* The wash above is exact where the ground beneath it is. Under it the unit
+   stops distinguishing the raised and control surfaces from the base one, so
+   the rail, the selected row and the close pill all read as base and the row
+   badge as control. Gating on .is-actions keeps the unscrimmed screen, where
+   those distinctions are real and already correct, untouched. */
+.coros-device-presets.is-actions>nav,
+.coros-device-presets.is-actions section>button.is-active{background:var(--qc-screen-surface-base)}
+/* The close pill and the unselected tabs are raised, and the .is-physical rules
+   that set them outrank the .is-actions clause that used to try to collapse the
+   pill, so it never applied. Match that specificity and take every header button
+   that is not the selected tab. The selected category tile in the rail is the
+   screen's black, which the unit substitutes rather than washes. */
+.coros-device-presets.is-physical.is-actions section header button:not(.is-active){background:var(--qc-screen-surface-base)}
+.coros-device-presets.is-actions>nav button.is-active i{border-color:var(--qc-screen-background-pre-scrim);background:var(--qc-screen-background-pre-scrim)}
+.coros-device-presets.is-actions section:first-child>button>b{background:var(--qc-screen-surface-control)}
+.device-preset-actions{position:absolute;z-index:5;left:66cqw;top:6.375cqw;width:32cqw;height:26cqw;display:grid;grid-template-rows:repeat(4,1fr);border-radius:1.25cqw;background:var(--qc-screen-background);overflow:hidden}
+.device-preset-actions button{padding-left:2cqw;border:0;background:var(--qc-screen-background);color:var(--qc-palette-242724);text-align:left;font:400 2cqw var(--qc-font-device-plain)}
+.coros-device-presets.is-official-actions::after{content:"";position:absolute;inset:0;z-index:4;background:var(--qc-transparent);pointer-events:none}
+.qc-screen.coros-device-presets.is-official-actions,.coros-device-presets.is-official-actions>nav{background:var(--qc-device-panel-raised)}.coros-device-presets.is-official-actions>main>section,.coros-device-presets.is-official-actions section>button{background:var(--qc-device-control-surface)}.coros-device-presets.is-official-actions section header{background:var(--qc-device-panel)}.coros-device-presets.is-official-actions section header button.is-active,.coros-device-presets.is-official-actions section>button.is-active{background:var(--qc-device-panel-raised)}.coros-device-presets.is-official-actions section:first-child>button>b{background:var(--qc-palette-373737);color:var(--qc-palette-999)}.coros-device-presets.is-official-actions section:first-child>button.is-active>b{background:var(--qc-screen-text-primary);color:var(--qc-palette-050505)}.coros-device-presets.is-official-actions section:nth-child(2) header .preset-close{background:var(--qc-device-control-surface)}
+.coros-device-presets.is-official-actions .device-preset-actions{left:67cqw;top:12.25cqw}
+.coros-device-presets.is-official-actions .device-preset-actions button{color:var(--qc-screen-text-primary)}
+.coros-device-presets.is-official-factory section:nth-child(2) header .preset-close{position:relative;flex-basis:8.25cqw;margin-right:0;transform:translateX(.75cqw);font-size:0}
+.coros-device-presets.is-official-factory section:nth-child(2) header .preset-close::before,.coros-device-presets.is-official-factory section:nth-child(2) header .preset-close::after{content:"";position:absolute;left:50%;top:50%;width:2.5cqw;height:2px;background:currentColor}.coros-device-presets.is-official-factory section:nth-child(2) header .preset-close::before{transform:translate(-50%,-50%) rotate(45deg)}.coros-device-presets.is-official-factory section:nth-child(2) header .preset-close::after{transform:translate(-50%,-50%) rotate(-45deg)}
+.coros-device-presets.is-official-factory section:nth-child(2) header .preset-confirm{position:relative;flex:0 0 12.25cqw;max-width:none;height:5.5cqw;align-self:center;margin:0 1cqw;border-radius:1cqw;background:var(--qc-palette-213cff);color:var(--qc-screen-text-primary);transform:translateX(.25cqw);font-size:0}.coros-device-presets.is-official-factory section:nth-child(2) header .preset-confirm::before{content:"";position:absolute;left:50%;top:45%;width:2.25cqw;height:1.125cqw;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:translate(-50%,-50%) rotate(-45deg)}
+.coros-device-presets.is-official-factory section>button .is-italic{font-style:italic}
+.qc-screen.coros-device-presets.is-official-factory,.coros-device-presets.is-official-factory>nav{background:var(--qc-screen-surface-raised)}.coros-device-presets.is-official-factory>main>section,.coros-device-presets.is-official-factory section>button{background:var(--qc-screen-surface-control)}.coros-device-presets.is-official-factory section>button.is-active{background:var(--qc-editor-disabled)}.coros-device-presets.is-official-factory section:first-child header button.is-active{position:relative;padding-left:.375cqw}.coros-device-presets.is-official-factory section:first-child header button.is-active::before{content:"";position:absolute;left:1cqw;top:50%;width:.75cqw;height:.75cqw;border-radius:50%;background:var(--qc-palette-f8d030);transform:translateY(-50%)}.coros-device-presets.is-official-factory section:nth-child(2) header .preset-close{background:var(--qc-screen-surface-control)}.coros-device-presets.is-official-factory section:nth-child(2) header .preset-confirm{background:var(--qc-palette-1838f8)}
+.coros-device-presets.is-physical:not(.is-official-factory):not(.is-official-actions) section:nth-child(2) header .preset-close{position:relative;transform:translateX(.25cqw);font-size:0}
+.coros-device-presets.is-physical:not(.is-official-factory):not(.is-official-actions) section:nth-child(2) header .preset-close::before,.coros-device-presets.is-physical:not(.is-official-factory):not(.is-official-actions) section:nth-child(2) header .preset-close::after{content:"";position:absolute;left:50%;top:50%;width:2.5cqw;height:2px;background:currentColor}.coros-device-presets.is-physical:not(.is-official-factory):not(.is-official-actions) section:nth-child(2) header .preset-close::before{transform:translate(-50%,-50%) rotate(45deg)}.coros-device-presets.is-physical:not(.is-official-factory):not(.is-official-actions) section:nth-child(2) header .preset-close::after{transform:translate(-50%,-50%) rotate(-45deg)}
+
+/* The physical ModelMenu keeps category glyphs unframed until selected. */
+.coros-device-browser:has(.coros-device-models)>nav{background:var(--qc-screen-surface-raised)}
+.coros-device-browser:has(.coros-device-models)>nav i{border:2px solid var(--qc-transparent);box-shadow:none;background:var(--qc-transparent)}
+.coros-device-browser:has(.coros-device-models)>nav button.is-active i{border-color:var(--device-color);background:var(--qc-screen)}
+.coros-device-browser:has(.coros-device-models)+.coros-device-preset-tip>button{right:1.75cqw}
+.coros-device-models header{height:var(--qc-nav-bar-height);background:var(--qc-screen-surface-base)}
+.coros-device-models header button{height:6.5cqw;margin-top:1cqw;background:var(--qc-screen-surface-raised)}
+.coros-device-models header button.is-active{background:var(--qc-screen-surface-control)}
+.coros-device-models header button:nth-child(2){margin-left:.5cqw}
+.coros-device-models>button{min-height:7.5cqw;padding-left:5.625%}
+.coros-device-models .device-model-pin{margin-right:1.5cqw}
+
+.coros-tempo,.coros-tempo *{font-family:var(--qc-font-device-plain)!important}.coros-tempo{background:var(--qc-screen-background)}
+.coros-tempo>header{height:var(--qc-nav-bar-height);padding:1cqw 1cqw 1cqw 2.375cqw;font-size:2cqw}.coros-tempo>header button{width:12.25cqw;height:5.5cqw;margin-left:0;border-radius:1cqw;font-size:3cqw}.tempo-scene{width:16.5cqw;height:5.5cqw;display:grid;grid-template-columns:4.5cqw 4.75cqw 4.5cqw;align-items:center;justify-content:center;gap:.75cqw;margin-left:auto;border-radius:1cqw;background:var(--qc-screen-surface-raised);color:var(--qc-palette-8e938f);font-size:2.5cqw}.tempo-scene strong{height:3cqw;display:grid;place-items:center;border-radius:.5cqw;background:var(--qc-palette-f4d224);color:var(--qc-palette-111);font-size:2.25cqw}.tempo-scene b{font-weight:400;text-align:center}
+.coros-tempo.tempo-official>header .tempo-scene{display:none}.coros-tempo.tempo-official>header button{margin-left:auto}.coros-tempo:not(.tempo-official)>header button{margin-left:2.25cqw}
+.tempo-display{height:53.54%;grid-template-rows:1fr auto auto;padding-top:4.75cqw;background:var(--qc-screen-background)}.tempo-display strong{font-size:11.5cqw;line-height:.9}.tempo-display small{margin-top:.7cqw;font-size:2cqw}.tempo-display div{gap:13cqw;margin:5.1cqw 0 2.75cqw}.tempo-display i{width:3cqw;height:3cqw;box-shadow:0 -3cqw 0 -1cqw var(--qc-palette-181a19)}.tempo-display i.is-active{box-shadow:0 -3cqw 0 -1cqw var(--qc-palette-777a78)}
+.tempo-controls{height:45%;grid-template-columns:repeat(5,1fr);grid-template-rows:repeat(2,1fr);border-radius:1cqw;background:var(--qc-screen-surface-control)}.tempo-control{padding:1.25cqw;border-right-color:var(--qc-screen-surface-base);border-bottom-color:var(--qc-screen-background)}.tempo-control>span{font-size:2cqw}.tempo-control>strong{left:1.5cqw;bottom:1.75cqw;font-size:2cqw}.tempo-control .tempo-dial{right:1.25cqw;bottom:1cqw;width:7.5cqw;height:7.5cqw}.tempo-control.is-radio>.qc-pill-toggle~span{gap:2cqw;height:3.2cqw;font-size:2cqw}.tempo-info{position:absolute;right:1.125cqw;top:1.125cqw;width:2.75cqw;height:2.75cqw;display:grid;place-items:center;border-radius:50%;background:var(--qc-screen-text-muted);color:var(--qc-palette-303431);font-size:1.75cqw}.tempo-control.is-mute button{width:100%;height:4.75cqw;border-radius:1cqw;font-size:1.5cqw}.tempo-control.is-select button{inset:auto 1.25cqw 1.5cqw;height:4.75cqw;padding:0 1cqw;border-radius:.75cqw;font-size:2cqw}
+.tempo-control .tempo-dial{position:absolute}
+.tempo-display{position:relative;display:block;padding-top:0}.tempo-display strong{position:absolute;left:0;right:0;top:4.75cqw;text-align:center}.tempo-display small{position:absolute;left:0;right:0;top:16.5cqw;margin:0;text-align:center}.tempo-display div{position:absolute;left:0;right:0;top:25.125cqw;justify-content:center;margin:0}
+.tempo-official .tempo-display i:nth-child(3){position:relative}.tempo-official .tempo-display i:nth-child(3)::after{content:"";position:absolute;left:1cqw;top:4cqw;width:1cqw;height:1cqw;border-radius:50%;background:var(--qc-palette-444944)}
+.tempo-control.is-radio>.qc-pill-toggle+span{margin-top:1.75cqw}.tempo-control.is-mute button{transform:translateY(1cqw)}
+.tempo-display strong{top:5.125cqw}.tempo-control.is-tempo .tempo-dial,.tempo-control.is-volume .tempo-dial{right:.625cqw;width:72px;height:72px}.tempo-control.is-pan .tempo-dial{right:.75cqw;width:72px;height:72px}/* The toggle is QcPillToggle; this is placement only. The unit puts
+   the two pills at x 180.96 and 338.00, y 303.94 - 2cqw into the cell, not the
+   2.125cqw the retired box used. */
+.tempo-control.is-radio>.qc-pill-toggle{position:absolute;left:2cqw;top:5.875cqw}.tempo-control.is-radio>.qc-pill-toggle~span{position:relative;gap:2.5cqw;padding-left:4.85cqw}.tempo-control.is-select button b{position:absolute;right:2cqw;top:50%;width:0;height:0;margin-top:-.25cqw;border-left:.625cqw solid var(--qc-transparent);border-right:.625cqw solid var(--qc-transparent);border-top:.875cqw solid var(--qc-screen-text-primary);font-size:0}
+.tempo-control .tempo-dial{transform:translateY(1.25cqw)}
+.coros-gig-view.has-live-tuner{grid-template-rows:12.5% 3.3333% minmax(0,1fr)}.live-tuner-strip{background:linear-gradient(to bottom,var(--qc-screen-surface-raised) 0 50%,var(--qc-screen-surface-base) 50% 100%)}
+.gig-device-icon{top:8%}.coros-gig-view.has-live-tuner .gig-tiles strong{transform:translateY(1cqw)}
+.coros-gig-view .gig-mode svg{width:26px;height:26px;transform:translate(0,-1px)}.coros-gig-view .gig-mode svg.qc-mode-glyph-scene{transform:translate(-1px,0)}.coros-gig-view .gig-mode svg.qc-mode-glyph-preset{width:24px;height:24px;transform:translate(-2px,-1px)}
+.coros-gig-view .gig-tiles{column-gap:1%;row-gap:1cqw}
+.coros-gig-view:has(.gig-tiles.is-stomp),.coros-gig-view:has(.gig-tiles.is-stomp) *{font-family:var(--qc-font-device-plain)}
+.coros-gig-view:has(.gig-tiles.is-stomp) header{gap:1.25cqw;padding-right:1cqw}
+/* The bar's preset string is one run at one size across every gig-view mode:
+   the unit inks x17..394 the same way regardless of mode. Preset mode already
+   carried 4cqw and Scene 4.075cqw; Stomp still carried the old
+   clamp(11px,3.75cqw,30px), which is 30px and 26px of advance short. Painted
+   ink against painted ink, 352px of our 30px run against the unit's 378 puts
+   the unit at 32.2px. */
+.coros-gig-view:has(.gig-tiles.is-stomp) header>strong{font-size:4.025cqw;translate:0 0}
+.coros-gig-view:has(.gig-tiles.is-stomp) .gig-mode{flex-basis:8.25cqw}
+.coros-gig-view:has(.gig-tiles.is-stomp) header button{flex-basis:12.25cqw}
+.coros-gig-view .gig-tiles.is-stomp .gig-device-icon{left:8.5%;width:36.85%}
+/* The edit-pencil mark is one 22x22 pencil-in-square icon used in every role -
+   the stomp tiles, the scene tiles, settings-info and the directory headers.
+   What changes is the ink, and it is not a palette colour: on every lit tile
+   the mark reads as that tile's own colour scaled - 148.150.148 -> 57.60.57,
+   255.113.0 -> 99.44.0, 0.255.222 -> 0.101.82 - which is black composited at
+   0.613, and on a dark tile it is white composited at 0.586. So the dark/light
+   choice is the tile's own colour, taken from currentColor, and the variant is
+   an opacity, not a second drawing.
+
+   The box: the unit puts the mark's 0.5 contour at tile-relative (109, 17),
+   22x22, identically on every tile regardless of the live-tuner band's height -
+   so it is an absolute offset, not a share of a tile whose height changes. The
+   24-unit asset box inks units 1..23, so a 3cqw span 1px up and left of the ink
+   puts the contour on the unit's own pixels.
+
+   Why it was invisible: `html body #root#root .qc-screen-bezel .qc-ui-icon`
+   sizes every screen glyph `var(--qc-screen-glyph-size, 1em)`, and this span
+   sets `font-size:0` to kill the old text fallback - so 1em was 0 and the svg
+   rendered 0x0 while its own `width:100%` lost to those two ids. Set the
+   custom property, per that rule's own note. */
+.coros-gig-view .gig-tiles.is-stomp .gig-edit{right:7.25cqw;top:2cqw;width:3cqw;height:3cqw;--qc-screen-glyph-size:3cqw;border:0;font-size:0;line-height:0;opacity:.613}
+.coros-gig-view .gig-tiles.is-stomp>.gig-stomp-tile.is-bypassed .gig-edit,.coros-gig-view .gig-tiles.is-stomp>.gig-stomp-tile.is-empty .gig-edit{opacity:.586}
+.coros-gig-view .gig-tiles.is-stomp .gig-edit svg{display:block;fill:none;stroke:none}
+.coros-gig-view .gig-tiles.is-stomp .gig-edit svg path{fill:currentColor;stroke:none}
+/* The footswitch letter. The unit sets its cap top on the same row as the edit
+   mark's - tile-relative y17 on every tile, in every gig mode - and inks a
+   28px cap, which is 40px of IBM Plex Sans at its 0.698 cap ratio. Ours was
+   clamp(14px,4.5cqw,36px): a 25px cap, 7 rows low. Preset mode's slot letter
+   already carried 5cqw; this is the same letter on the same bar and it kept
+   the old default. Absolute offsets for the same reason as the edit mark: the
+   tile height varies with the live-tuner band and the letter does not move. */
+.coros-gig-view .gig-tiles.is-stomp>.gig-stomp-tile>.gig-stomp-select>b{right:2.625cqw;top:.5cqw;font-size:5cqw}
+.coros-gig-view .gig-tiles.is-stomp>.gig-stomp-tile>.gig-stomp-select>strong{left:8.5%;bottom:8%}
+.coros-gig-view .gig-tiles.is-stomp>.gig-stomp-tile>.gig-stomp-select>strong:not(.is-compact){translate:0 1px}
+.coros-gig-view .gig-tiles.is-stomp>.gig-stomp-tile:nth-child(5)>.gig-stomp-select>strong{translate:0 6px}
+.coros-gig-view:has(.gig-tiles.is-scene),.coros-gig-view:has(.gig-tiles.is-scene) *{font-family:var(--qc-font-device-plain)}
+.coros-gig-view:has(.gig-tiles.is-scene){background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary)}
+.coros-gig-view:has(.gig-tiles.is-scene) header{gap:1.25cqw;padding-right:1cqw}
+.coros-gig-view:has(.gig-tiles.is-scene) header{background:var(--qc-screen-surface-base)}
+.coros-gig-view:has(.gig-tiles.is-scene) .gig-mode{flex-basis:8.375cqw}
+.coros-gig-view:has(.gig-tiles.is-scene) .gig-mode{background:var(--qc-screen-surface-raised)}
+/* The scene indicator is a 24x24 badge, not a bar-height slot. The unit inks
+   255.211.49 over x652..675, y18..41 - the same 24 rows and columns in every
+   gig mode - centred in the 60px bar's 44px content row with 18px of ground
+   either side. Only Scene mode drew it that way; Stomp, Preset and Hybrid
+   painted the whole 40-43 x 44 flex slot, which is where the letter's box came
+   from. The badge is the slot's ::after so the slot keeps its own width and
+   the painted box is the unit's.
+   The letter is 24px at weight 800: the unit's cap runs y23..38, 16 rows, and
+   2.75cqw read 15. */
+.coros-gig-view .gig-scene{position:relative;flex-basis:5cqw;background:var(--qc-transparent);color:var(--qc-transparent);font-size:0}
+.coros-gig-view .gig-scene>b{width:3cqw;height:3cqw;display:grid;place-items:center;border-radius:.5cqw;background:var(--qc-scene-badge);color:var(--qc-screen-background);font-size:2.875cqw;font-weight:800;line-height:1}
+.coros-gig-view:has(.gig-tiles.is-scene) header button{flex-basis:12.25cqw}
+.coros-gig-view:has(.gig-tiles.is-scene) header>strong{font-size:4.025cqw}
+.coros-gig-view .gig-tiles.is-scene .gig-scene-tile>b{left:16%;right:auto;top:0;color:var(--gig-letter);font-size:25cqw;line-height:1}
+.coros-gig-view .gig-tiles.is-scene .gig-scene-tile>strong{top:41%;font-size:3.875cqw;transform:translateY(1px)}
+.coros-gig-view .gig-tiles.is-scene .gig-scene-tile.is-active>strong{top:30.5%;transform:translateY(0)}
+.coros-gig-view .gig-tiles.is-scene .gig-scene-tile.is-active{background:var(--gig-active-color)!important}
+.coros-gig-view .gig-tiles.is-scene .gig-scene-tools{left:10%;right:10%;top:9%;display:flex;align-items:center;justify-content:space-between;color:var(--qc-palette-a8aaa8);font-size:0;letter-spacing:0}
+.coros-gig-view .gig-tiles.is-scene .gig-scene-tools :is(.qc-ui-icon,.qc-screen-glyph){--qc-screen-glyph-size:24px;width:24px!important;height:24px!important;overflow:visible;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+.coros-gig-view .gig-tiles.is-scene .gig-scene-tools .qc-ui-icon path{fill:currentColor}
+.coros-gig-view .gig-scene-tools :is(button,span){display:flex;align-items:center;justify-content:center;margin:0;padding:0;border:0;background:var(--qc-transparent);color:inherit}
+.coros-gig-view .gig-scene-tools button{cursor:pointer}
+.coros-gig-view .gig-tiles.is-scene .gig-scene-tile.is-active>strong,.coros-gig-view .gig-tiles.is-scene .gig-scene-tile.is-active .gig-scene-tools{color:var(--qc-screen-background)}
+.coros-gig-view:has(.gig-tiles.is-preset),.coros-gig-view:has(.gig-tiles.is-preset) *{font-family:var(--qc-font-device-plain)}
+.coros-gig-view:has(.gig-tiles.is-preset){background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary)}
+.coros-gig-view:has(.gig-tiles.is-preset) header{gap:1.25cqw;padding-left:1%;padding-right:1%;background:var(--qc-screen-surface-base)}
+/* The title bar's own padding already puts the bank/slot label on the column
+   the unit draws it in; the extra pixel here was carried over from a preset
+   name comparison and it moved the label off by one. */
+.coros-gig-view:has(.gig-tiles.is-preset) header>strong{padding-left:1%;font-size:4cqw;font-weight:300;color:var(--qc-screen-text-primary)}
+.coros-gig-view:has(.gig-tiles.is-preset) .gig-mode{flex-basis:8.25cqw;background:var(--qc-screen-surface-raised)}
+.coros-gig-view:has(.gig-tiles.is-preset) header button{flex-basis:12.5%;background:var(--qc-screen-surface-control);color:var(--qc-screen-text-primary)}
+/* Gig scene slot, all modes: a 40px (5cqw) transparent slot holding only the badge, as in the gig-view* references.
+   The per-mode `header button` rules above (:228 stomp, :282 scene, :302 preset) set it to a 98px control chip. They are inside
+   this @scope; a rule outside it has no scope proximity and loses to them at equal specificity whatever its source order
+   (CSS Cascade 6: specificity, then scoping proximity, then order). So this override sits inside the scope, after them, at their
+   specificity (0,3,2). It also outranks hybrid's `header button` rule (:777), which is outside the scope. */
+.coros-gig-view:has(.gig-tiles) header button.gig-scene{flex-basis:5cqw;background:var(--qc-transparent)}
+.coros-gig-view .gig-tiles.is-preset .gig-preset-tile{background:var(--qc-screen-surface-raised);color:var(--qc-screen-text-primary)!important}
+/* The slot label and the preset name are two different sizes on the unit.
+   The unit's name ink spreads 4% narrower than 4.125cqw draws it while its cap
+   band stays the same height, which is an advance difference rather than a
+   heavier weight - so the size is the thing that was wrong. 3.96875cqw
+   reproduces the unit's spread, and the two offsets below carry the ink back
+   onto the device's own start and baseline once the smaller size has moved
+   them. */
+.coros-gig-view .gig-tiles.is-preset .gig-preset-tile>span{left:calc(9% - 1px);top:1%;font-size:5cqw;font-weight:300;line-height:1.2}
+.coros-gig-view .gig-tiles.is-preset .gig-preset-tile>strong{left:calc(9% - 1px);top:calc(30.5% - 1px);font-size:3.96875cqw;line-height:1.3;color:var(--qc-screen-text-primary)}
+.coros-gig-view .gig-tiles.is-preset .gig-preset-tile.is-active{background:var(--qc-palette-ff2421);color:var(--qc-screen-background)!important}
+.coros-gig-view .gig-tiles.is-preset .gig-preset-tile.is-active>strong{font-size:3cqw;color:var(--qc-screen-background)}
+/* The splitter/mixer panel opens at y 205 and its header is the unit's nav-bar
+   button box, not a size of its own: the unit inks that button run at
+   y 205..248 - 44 rows - and starts the control grid at y 257. At 5.375cqw the
+   run came out at 43 and the grid began at 256, one row early on everything
+   below. The control grid's row gap had been carrying that missing pixel: at
+   .375cqw the second row landed on the unit's y 366 only because the first row
+   started one early. The unit's gap is two rows, and the second control row
+   sits at y 366..472. */
+.coros-splitter-physical,.coros-splitter-physical *{box-sizing:border-box;font-family:var(--qc-font-device-plain)}.qc-screen.coros-splitter-physical{position:absolute;inset:0;overflow:hidden;background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary);container-type:inline-size}.splitter-grid{position:absolute;inset:0 0 auto;width:100%;height:24.5cqw}.splitter-panel{position:absolute;left:0;right:0;top:25.625cqw;bottom:1cqw;background:var(--qc-screen-surface-base)}.splitter-panel>header{height:var(--qc-nav-bar-button);display:flex;align-items:center;background:var(--qc-screen-surface-base)}.splitter-panel>header>button{flex:0 0 5.5cqw;height:100%;margin-left:1cqw;border:0;border-radius:.75cqw;background:var(--qc-screen-surface-raised);color:var(--qc-screen-text-primary);font-size:3cqw}.splitter-panel>header>span{width:27.375cqw;display:flex;flex-direction:column;padding-left:1cqw}.splitter-panel>header small{color:var(--qc-palette-939894);font-size:1.75cqw}.splitter-panel>header strong{color:var(--qc-palette-087cea);font-size:2.5cqw;font-weight:400}.splitter-panel>header>svg{width:29.375cqw;height:5.5cqw}.splitter-panel>header>b{width:15.5cqw;height:100%;display:flex;align-items:center;justify-content:center;gap:1cqw;border-radius:.75cqw;background:var(--qc-screen-surface-raised);font-size:2.25cqw;font-weight:400}.splitter-panel>header>b i{padding:.25cqw .875cqw;border-radius:.5cqw;background:var(--qc-scene-badge);color:var(--qc-screen-background);font-style:normal}.splitter-panel>header>em{width:10.5cqw;height:100%;display:flex;align-items:center;justify-content:flex-end;font-style:normal}.splitter-panel>header>em svg{width:7.25cqw;height:4.75cqw}.splitter-panel>header>em svg rect,.splitter-panel>header>em svg path{fill:none;stroke:var(--qc-screen-text-primary);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.splitter-panel>header>button:last-child{flex-basis:7.5cqw;margin-left:2cqw;margin-right:1.25cqw;border-radius:1cqw;background:var(--qc-screen-surface-control)}.splitter-controls{height:27.125cqw;margin:1cqw 1cqw 0;display:grid;grid-template-columns:repeat(5,1fr);grid-template-rows:13.375cqw 13.375cqw;gap:.25cqw 0}.splitter-controls label,.splitter-controls .splitter-empty{position:relative;display:block;padding:1.5cqw 1.25cqw;border-right:1px solid var(--qc-palette-161a17);border-radius:.75cqw;background:var(--qc-screen-surface-control);color:var(--qc-palette-8d928e)}.splitter-controls label>strong{display:block;font-size:1.75cqw;font-weight:400}.splitter-controls label>small{position:absolute;left:1.5cqw;bottom:1.25cqw;font-size:1.75cqw}.splitter-controls label>small em{font-style:normal}.splitter-toggle{position:absolute;left:6.625cqw;top:4.5cqw;min-height:7cqw;display:flex;align-items:center}/* The toggle is QcPillToggle, placed against the parameter cell rather than
+   the caption box, because the cell is what stays put. The unit bottom-aligns
+   the three-way TYPE pill with the two-way ones - 292.15..350.15 against
+   304.14..350.14 - so the offset is taken from the foot. */
+.splitter-controls label>.qc-pill-toggle{position:absolute;left:2.02cqw;bottom:1.73cqw;--qc-pill-body:var(--qc-palette-101c10);--qc-pill-detent:var(--qc-palette-087cea)}.splitter-toggle>b{color:var(--qc-palette-737d73);font-size:1.75cqw;font-weight:400;line-height:1.45}.splitter-toggle>b em{color:var(--qc-screen-text-muted);font-style:normal}.splitter-knob{position:absolute;left:74%;top:4cqw;width:72px;height:72px;translate:-50% 0}
+.splitter-panel>header>svg{transform:translate(-1.625cqw,.25cqw)}.splitter-controls label>small{bottom:2cqw}.splitter-controls label:nth-child(n+3):nth-child(-n+5) .splitter-knob{top:4.375cqw}.splitter-controls label:nth-child(-n+2) .splitter-toggle{top:4.875cqw}
+.mixer-panel>header strong{color:var(--qc-palette-f00063)}.mixer-controls{grid-template-rows:13.375cqw 13.375cqw}.mixer-controls .mixer-toggle{top:5.875cqw}/* The unit puts the mixer's one pill at 652.01, 304.19 - a third of a pixel
+   off the splitter's own offset, so the two are not shared. */
+.mixer-controls label>.qc-pill-toggle{left:2.1cqw;bottom:1.775cqw;--qc-pill-detent:var(--qc-palette-d71952)}.mixer-controls label:nth-child(-n+5) .mixer-knob{top:4.375cqw}.mixer-controls label:nth-child(6) .mixer-knob{top:4.375cqw}
+.splitter-panel>header>em svg rect,.splitter-panel>header>em svg path{fill:none;stroke:var(--qc-screen-text-primary);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.splitter-panel>header>span{width:27.125cqw}.splitter-panel>header>svg{width:29.125cqw}.splitter-panel>header>b{width:16.5cqw}.splitter-panel>header>em svg{width:8.25cqw}.splitter-panel>header>button:last-child{margin-left:1.5cqw}.splitter-controls{border-radius:.75cqw;overflow:hidden}.splitter-controls label,.splitter-controls .splitter-empty{border-radius:0;color:var(--qc-palette-737d73)}
+.coros-splitter-physical,.coros-splitter-physical *{font-family:var(--qc-font-device-plain)}.splitter-panel>header>svg{transform:translateX(-2cqw)}.splitter-panel>header>em svg{height:5.375cqw;background:var(--qc-screen-surface-raised);border-radius:.75cqw}.splitter-panel>header>button:last-child{width:7.5cqw;flex:0 0 7.5cqw;margin-left:1.5cqw;margin-right:1.25cqw;background:var(--qc-screen-surface-control);color:var(--qc-screen-text-primary)}
+.splitter-panel .splitter-scene>span{width:4cqw;height:100%;display:grid;place-items:center}.splitter-panel .splitter-scene>span svg{width:100%;height:100%;fill:var(--qc-screen-text-primary)}
+.coros-splitter-physical:not(.coros-mixer-physical) .splitter-panel{top:24.5cqw;padding-top:1.125cqw}.coros-splitter-physical:not(.coros-mixer-physical) .splitter-knob{left:73.375%;top:4.625cqw;width:72px;height:72px}.coros-splitter-physical:not(.coros-mixer-physical) .splitter-controls label:nth-child(n+3):nth-child(-n+5) .splitter-knob{top:4.625cqw}
+.coros-mixer-physical .mixer-controls label .mixer-knob{top:4.625cqw;width:72px;height:72px}
+/* Under the routing dim, the unit shows the splitter/mixer dial's face and
+   scale at 33,40,33 and its rim at 24,24,24, rather than the lit 33,36,33 /
+   33,32,33 / black. */
+.coros-splitter-physical .splitter-knob .qc-rotary-face{fill:var(--qc-palette-212821)}
+.coros-splitter-physical .splitter-knob .qc-rotary-track{stroke:var(--qc-palette-212821)}
+.coros-splitter-physical .splitter-knob .qc-rotary-rim{fill:var(--qc-palette-181818)}
+.coros-device-browser,.coros-device-browser *{font-family:var(--qc-font-device-plain)}.coros-device-browser:has(.coros-device-models)>nav{padding-top:calc(3.25% + 5px);padding-bottom:0}.coros-device-browser:has(.coros-device-models) .device-model-pin{width:2.25cqw;height:2.25cqw;margin-right:.75cqw;transform:none}.coros-device-browser:has(.coros-device-models) .device-model-pin svg{display:block;width:100%;height:100%;fill:currentColor}
+.coros-device-browser-grid .grid-preset-title{x:12px;y:77px}.coros-device-browser-grid .grid-preset-bank,.coros-device-browser-grid .grid-preset-letter{font-size:69px;letter-spacing:0}.coros-device-browser-grid .grid-preset-name{dx:19px;letter-spacing:0}.coros-device-browser:has(.coros-device-models) .device-model-pin .qc-ui-icon{width:3cqw;height:3cqw;transform:translate(-.375cqw,-.125cqw)}
+.coros-directory,.coros-directory-header{background:var(--qc-screen-surface-base)}.coros-directory .directory-category,.coros-directory .directory-folders,.coros-directory .directory-presets,.coros-directory .directory-presets>button,.coros-directory .directory-banks button{background:var(--qc-screen-surface-control)}.coros-directory .directory-cloud,.coros-directory .directory-tools button{background:var(--qc-screen-surface-raised)}.coros-directory .directory-tools .directory-close{background:var(--qc-screen-surface-control)}.coros-directory .directory-folders button.is-active,.coros-directory .directory-presets>button.is-current{background:var(--qc-screen-surface-raised)}.coros-directory .directory-banks button.is-active{background:var(--qc-palette-101810)}
+.coros-directory .directory-folders button{gap:7%}.coros-directory .directory-category{gap:5.75%}.coros-directory .directory-folders button.is-active{background:var(--qc-rotary-face)}.coros-directory .directory-presets>button.is-current{background:var(--qc-screen-surface-control)}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header,.coros-browser-fixture.is-physical-plugin-models .plugin-model-header{background:var(--qc-screen-surface-base)}.coros-browser-fixture.is-physical-plugin-list .plugin-license-lock svg,.coros-browser-fixture.is-physical-plugin-models .plugin-license-lock svg,.coros-browser-fixture.is-physical-plugin-locked .plugin-model-lock svg{fill:currentColor;stroke:none}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header button svg{width:3cqw;height:3cqw;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header .plugin-loading-ring{display:block;width:3cqw;height:3cqw;margin:auto;box-sizing:border-box;border:.375cqw solid var(--qc-palette-636863);border-top-color:var(--qc-screen-text-primary);border-radius:50%}
+.coros-browser-fixture.is-physical-plugin-list .plugin-license-lock{width:20px;height:20px;transform:translateX(1px)}.coros-browser-fixture.is-physical-plugin-list .plugin-license-lock svg{transform:scaleY(1.15)}
+.coros-browser-fixture.is-physical-plugin-models .browser-fixture-panel>nav button i{color:var(--qc-screen-text-primary)}
+.coros-browser-fixture.is-physical-plugin-models .browser-fixture-panel>nav button.is-active{background:var(--qc-palette-102818)}
+.coros-browser-fixture.is-physical-plugin-models .browser-fixture-panel>nav button.is-active i{width:7.75cqw;transform:translateX(-1px)}
+.coros-browser-fixture.is-physical-plugin-models .browser-fixture-panel>nav button.is-active svg{width:40px;height:40px}
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-header>button:first-of-type svg{width:3cqw;height:3cqw;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-header>button:last-of-type{font-size:4cqw}
+.coros-browser-fixture.is-physical-plugin-locked .plugin-model-list button>.plugin-model-lock{position:absolute;z-index:2;left:2.25cqw;bottom:-.875cqw;width:24px;height:24px;transform:none;color:var(--qc-screen-text-primary)}
+.coros-browser-fixture.is-physical-plugin-locked .plugin-model-list button>.plugin-model-lock>.qc-screen-glyph{display:block;width:100%!important;height:100%!important}
+.coros-browser-fixture.is-physical-plugin-locked .plugin-model-list button>i:not(.plugin-model-lock){z-index:1}
+.coros-browser-fixture.is-physical-plugin-models .is-plugin-licenses button>.plugin-model-next{width:2cqw;height:3cqw;display:grid;place-items:center;margin-left:auto;color:var(--qc-screen-text-primary)}
+.coros-browser-fixture.is-physical-plugin-models .is-plugin-licenses button>.plugin-model-next>.qc-ui-icon{width:3cqw!important;height:3cqw!important;transform:translateX(.75cqw) rotate(-90deg);vertical-align:0}
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>i:not(.plugin-model-lock){position:relative}
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>i:not(.plugin-model-lock)::after{content:"";position:absolute;inset:.625cqw;border-radius:1cqw;background:var(--qc-palette-4a0c08);mix-blend-mode:screen;pointer-events:none}
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>i.is-cab::after{background:var(--qc-palette-18184a)}
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button>i.is-drive::after{background:var(--qc-palette-5d2700)}
+.coros-save-as header>span{font-weight:400}.save-as-content{grid-template-columns:32cqw 14.125cqw 1fr}.save-as-content nav{grid-template-rows:repeat(7,6.625cqw);gap:.875cqw;background:var(--qc-transparent)}.save-as-content nav button{border:0;border-radius:1cqw;background:var(--qc-palette-292d2a)}.save-as-content nav button>b{color:var(--qc-palette-f4f5f4)}.save-as-content nav button>span{transform:translate(2px,4px)}.save-as-content>section{grid-template-rows:repeat(8,6.375cqw)}.save-as-content>section button{border-bottom:0}
+.coros-save-as{background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary)}
+.coros-save-as header .save-as-type{background:var(--qc-editor-disabled)}
+.coros-save-as header .save-as-type b svg{width:125%;height:125%;transform:translate(0,-10%)}
+.coros-save-as header .save-as-type i{font-size:1.75cqw;transform:translateX(6px)}
+.coros-save-as header .save-as-close{background:var(--qc-screen-surface-control);color:var(--qc-screen-text-primary)}
+.coros-save-as header .save-as-close{font-size:4.5cqw}
+.coros-save-as .save-as-content nav button,.coros-save-as .save-as-content>aside button,.coros-save-as .save-as-content>section{background:var(--qc-screen-surface-control)}
+.coros-save-as .save-as-content nav button.is-active{background:var(--qc-screen-surface-raised)}
+.coros-save-as .save-as-content>aside button.is-active{background:var(--qc-screen-surface-base)}
+.coros-save-as .save-as-content>section button.is-active{background:var(--qc-rotary-face)}
+.coros-save-as .save-as-content nav{grid-template-rows:repeat(7,53px);gap:7px}
+.coros-save-as .save-as-content nav button>span{transform:translate(1px,3px)}
+.coros-save-as .save-as-content>aside{grid-template-rows:repeat(7,53px);gap:7px}
+.coros-save-as .save-as-content>section{grid-template-rows:repeat(8,51px)}
+.coros-save-as .save-as-content>section button{padding-left:2cqw}
+.coros-save-as .save-as-content nav button.is-active,.coros-save-as .save-as-content>aside button.is-active,.coros-save-as .save-as-content>section button.is-active{color:var(--qc-screen-accent)}
+.coros-save-as .save-as-content>section button.is-disabled{color:var(--qc-palette-9c9d9e)}
+.coros-save-as .save-as-content nav button>b{color:var(--qc-screen-text-primary)}
+.coros-save-as .save-as-content nav .save-as-new>b{color:var(--qc-icon-muted)}
+.coros-save-as .save-as-content nav .folder-number{fill:var(--qc-screen-surface-base);stroke:none;translate:0 2px}
+.qc-screen.coros-fixture-dialog.is-scene-command{background:var(--qc-palette-424142)}
+.coros-fixture-dialog.is-scene-command .scene-command-grid main i,.coros-fixture-dialog.is-scene-command .scene-command-grid main .scene-command-insert{background:var(--qc-palette-424a42)}
+.coros-fixture-dialog.is-scene-command .scene-command-grid main::before{border-color:var(--qc-palette-d5d9d5)}
+.coros-fixture-dialog.is-scene-command .scene-command-grid main i,.coros-fixture-dialog.is-scene-command .scene-command-grid main .scene-command-insert,.coros-fixture-dialog.is-scene-command .scene-command-grid header strong>span{color:var(--qc-palette-d5d9d5)}
+.coros-fixture-dialog.is-scene-command .scene-command-grid header strong{color:var(--qc-palette-d541af)}
+.coros-fixture-dialog.is-scene-command>aside{border:0;padding-top:5.5cqw;background:var(--qc-screen-surface-base)}
+.coros-fixture-dialog.is-scene-command>aside>h1{font-size:2.5cqw}
+.coros-fixture-dialog.is-scene-command>aside footer{margin-top:5cqw}
+.coros-fixture-dialog.is-scene-command>aside footer button{height:5.625cqw;background:var(--qc-screen-background)}
+.coros-fixture-dialog.is-scene-command .scene-command-grid header nav{right:0;top:0;width:25cqw;height:6cqw;display:block}
+.coros-fixture-dialog.is-scene-command .scene-command-grid header nav>svg{position:absolute;top:0;width:6cqw;height:6cqw}
+.coros-fixture-dialog.is-scene-command .scene-command-grid header nav>svg:first-child{left:0}
+.coros-fixture-dialog.is-scene-command .scene-command-grid header nav>b{position:absolute;left:7cqw;top:1.5cqw}
+.coros-fixture-dialog.is-scene-command .scene-command-grid header nav>svg:nth-child(3){left:11.875cqw}
+.coros-fixture-dialog.is-scene-command .scene-command-grid header nav>svg:nth-child(4){left:18.5cqw}
+.coros-fixture-dialog.is-scene-command .scene-command-grid main{top:13.625cqw;height:44.75cqw}
+.coros-fixture-dialog.is-scene-command>aside>h1{transform:translate(-1px,-4px)}
+.coros-fixture-dialog.is-scene-command>aside>p,.coros-fixture-dialog.is-scene-command>aside>footer{transform:translateY(-7px)}
+.coros-fixture-dialog.is-scene-command>aside footer button{font-size:2cqw}
+.coros-fixture-dialog.is-scene-command .scene-command-mode{right:4.25cqw}
+.coros-fixture-dialog.is-scene-command .scene-command-mode svg{width:26px;height:26px;transform:translate(-4px,-3px)}
+.coros-fixture-dialog.is-scene-command .scene-command-mode>b{transform:translateY(-5px)}
+.coros-name-editor,.coros-name-editor *{font-family:var(--qc-font-device-plain)}
+.coros-name-editor{background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary)}
+.coros-name-editor header button{background:var(--qc-screen-surface-control);color:var(--qc-screen-text-primary)}
+.coros-name-editor .name-editor-folder{background:var(--qc-palette-101810);color:var(--qc-palette-313c31)}
+.coros-name-editor .name-editor-tab{background:var(--qc-palette-102818);color:var(--qc-screen-accent)}
+.coros-name-editor .name-editor-next{background:var(--qc-palette-1838ff)}
+.coros-name-editor .name-editor-value{background:var(--qc-palette-102818);color:var(--qc-screen-accent)}
+.coros-name-editor .name-editor-value>span{display:inline-block;transform:translateY(3px);transform-origin:left center}
+.coros-name-editor .name-key-row button{background:var(--qc-rotary-face);color:var(--qc-screen-text-primary)}
+.coros-name-editor .name-key-row button > .qc-ui-icon-backspace { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.coros-name-editor .name-key-row.row-3 .is-wide,.coros-name-editor .name-key-row.row-4 button:first-child,.coros-name-editor .name-key-row.row-4 button:last-child{background:var(--qc-screen-surface-raised)}
+.coros-name-editor .name-key-row.row-4 button:nth-child(2),.coros-name-editor .name-key-row.row-4 button:nth-child(4){background:var(--qc-editor-disabled-accent);color:var(--qc-palette-102818)}
+.coros-route-picker.is-input,.coros-route-picker.is-input .route-picker-list,.coros-route-picker.is-input .route-picker-list>b{background:var(--qc-screen-surface-base)}
+.coros-route-picker.is-input,.coros-route-picker.is-input *{font-family:var(--qc-font-device-plain)}
+.coros-route-picker.is-input header{gap:7.4%}
+.coros-route-picker.is-input header>strong{font-weight:400}
+.coros-route-picker.is-input .route-picker-list>b{margin-bottom:3.625cqw}
+.coros-route-picker.is-input .route-picker-list button{gap:8%;padding-left:calc(3% + 1px);color:var(--qc-screen-text-primary);font:400 2.5cqw var(--qc-font-device-plain)}
+.coros-route-picker.is-input .route-symbol{width:4cqw;height:4cqw}
+.coros-route-picker.is-input .route-symbol.route-fx,.coros-route-picker.is-input .route-symbol.route-unused{width:3.625cqw;height:3.625cqw}
+/* Only the static frame (its own .route-picker-list) draws this stand-in thumb, the one captured scrolled to the bottom. The live picker (.coros-route-options) has the real scrollbar thumb, at the top and as long as visible/total, and must not get a second one. */
+.coros-route-picker.is-input:has(> .route-picker-list)::after{content:"";position:absolute;right:15px;top:224px;bottom:11px;width:2px;background:var(--qc-palette-313431);pointer-events:none}
+.io-ports{height:42%}.io-editor{height:45%}.io-editor.is-analog{grid-template-rows:50% 50%}
+.coros-global-eq>header{height:var(--qc-nav-bar-height)}.global-eq-graph{height:52.1%}.global-eq-tabs{height:10.8%}.global-eq-controls{height:22.3%;grid-template-columns:repeat(5,1fr)}
+.coros-directory .directory-presets>button{border-bottom:0;color:var(--qc-palette-a5a9a6)}
+.coros-directory .directory-presets>button strong{color:var(--qc-palette-a5a9a6)}
+.coros-directory .directory-presets>button.is-current,.coros-directory .directory-presets>button.is-current strong{color:var(--qc-palette-31f46b)}
+/* The stripe through the capture target was --qc-palette-aaa, a grey on
+   neither 5-bit ladder. The unit inks it 198,195,198 and it is painted
+   straight onto the 16,16,16 ground with no wash over it, nine pixels either
+   side of the icon. That is var(--qc-capture-stripe-soft), which the gig
+   view's hybrid tile already uses for the same mark - a 1px rule bled a little
+   past its icon. */
+.capture-official,.capture-official *{box-sizing:border-box;font-family: var(--qc-font-device-plain)}.qc-screen.capture-official{position:absolute;inset:0;display:block;overflow:hidden;background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary);container-type:inline-size}.capture-official button{border:0;color:inherit;font:inherit}.capture-official>header{height:var(--qc-nav-bar-height);display:flex;align-items:center;padding-left:2cqw;color:var(--qc-palette-929692);font-size:2cqw}.capture-official>header>button:last-child{width:12.25cqw;height:5.5cqw;margin:1cqw 1cqw 1cqw auto;border-radius:1cqw;background:var(--qc-screen-surface-raised);color:var(--qc-screen-text-primary);font-size:3cqw}.capture-target-icon{position:relative;width:9.5cqw;height:9.5cqw;display:block}.capture-target-icon .qc-device-tile{width:100%;height:100%;--qc-device-tile-ink:var(--qc-palette-211c39);--qc-device-tile-ground:var(--qc-editor-disabled-shadow)}.capture-target-icon .qc-device-tile-art [data-qc-role="reference.iconPrimary"]{fill:var(--qc-context-capture-dark)}.capture-target-icon::after{content:"";position:absolute;left:-.75cqw;right:-.75cqw;top:calc(50% - 1px);border-top:1px solid var(--qc-capture-stripe-soft)}
+.capture-official-settings>ul{height:14.5cqw;margin:0;padding:.75cqw 2.5cqw;list-style-position:inside;font-size:2.25cqw;line-height:1.45}.capture-setting-actions{height:9cqw;display:flex;align-items:center;gap:3cqw;padding:0 1cqw}.capture-setting-actions>button{width:27.5cqw;height:5.5cqw;border-radius:1cqw;background:var(--qc-screen);font-size:2.25cqw}.capture-setting-actions>button:nth-child(2){background:var(--qc-palette-213cff)}.capture-setting-actions .capture-target-icon{margin-left:2.625cqw}.capture-setting-actions nav{height:6.25cqw;display:flex;align-self:flex-end;margin-left:auto}.capture-setting-actions nav button{width:8.5cqw;background:var(--qc-screen-surface-raised);color:var(--qc-palette-8d928e);font-size:2cqw}.capture-setting-actions nav button.is-active{background:var(--qc-screen-surface-control);color:var(--qc-screen-text-primary)}.capture-official-settings>main{height:27cqw;margin:0 1cqw 1cqw;display:grid;grid-template-columns:repeat(5,1fr);grid-template-rows:13.5cqw 13.5cqw;border-radius:1cqw;overflow:hidden;background:var(--qc-screen-surface-control)}.capture-official-settings>main>section{position:relative;padding:1.25cqw;border-right:1px solid var(--qc-palette-111);border-bottom:1px solid var(--qc-palette-111);font-size:2cqw}.capture-official-settings>main>section>span{display:block}.capture-official-settings>main>section>small{display:block;margin-top:.75cqw;color:var(--qc-palette-929692);font-size:1.625cqw}.capture-official-settings>main>section>b{position:absolute;left:1.5cqw;bottom:1.75cqw;font-size:2cqw;font-weight:400}.capture-official-settings>main>section>b small{color:var(--qc-palette-929692)}.capture-official-settings>main>section>label{display:block;margin-top:1.5cqw;color:var(--qc-screen-text-primary)}.capture-official-settings>main>section>label span{color:var(--qc-palette-929692)}.capture-level-dial{position:absolute;right:.75cqw;bottom:.375cqw;width:72px;height:72px}.capture-meter{position:absolute;left:1cqw;right:1.5cqw;bottom:1.75cqw;height:2cqw;background:repeating-linear-gradient(to right,var(--qc-screen-surface-base) 0 27%,var(--qc-palette-242824) 27% 27.5%)}
+/* Calibration geometry has one stylesheet owner. These are the existing
+   measured overrides, followed by the lower meter's separate numeric row. */
+.capture-official-settings > ul { height: 13.875cqw; padding-top: .625cqw; list-style: none; line-height: 1.28; }
+.capture-official-settings > ul li::before { content: "•"; display: inline-block; width: 1.5cqw; }
+.capture-setting-actions { height: 10.75cqw; align-items: flex-start; }
+.capture-setting-actions > button { margin-top: 1.75cqw; }
+.capture-setting-actions > button:first-child { font-size: 2cqw; white-space: nowrap; }
+.capture-setting-actions nav { margin-right: 2cqw; }
+.capture-setting-actions .capture-target-icon { margin-top: -.5cqw; }
+.capture-official-settings > main > section:nth-child(5) { grid-column: 1; grid-row: 2; }
+.capture-official-settings > main > section:nth-child(6) { grid-column: 2; grid-row: 2; }
+.capture-official-settings > main > section:nth-child(7) { grid-column: 3; grid-row: 2; }
+.capture-official-settings .capture-info { position: absolute; right: 2cqw; top: 1.5cqw; width: 2.75cqw; height: 2.75cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-screen-surface-base); color: var(--qc-screen-surface-control); font-size: 1.5cqw; font-style: normal; }
+.capture-official-settings > main > section:nth-child(1) .capture-level-dial,
+.capture-official-settings > main > section:nth-child(2) .capture-level-dial { right: .625cqw; bottom: -.25cqw; }
+.capture-official-settings > main > section:nth-child(7) .capture-level-dial { right: .625cqw; bottom: -.375cqw; }
+.capture-official-settings > main > section:nth-child(5) > b,
+.capture-official-settings > main > section:nth-child(6) > b { bottom: 5.25cqw; }
+.capture-official-settings .capture-level-label { display: flex; align-items: center; gap: .5cqw; }
+.capture-official-settings .capture-level-label > svg { width: 2.5cqw; height: 2.5cqw; }
+
+/* The unit runs these panels to y=471; a fixed 51.5cqw height stops them 8px
+   short, the same way it did for the directory panels. */
+.capture-official-progress>main{position:absolute;inset:7.5cqw 0 0;display:grid;grid-template-columns:32cqw 65cqw;gap:1cqw;padding:0 1cqw 1cqw}.capture-official-progress>main>nav,.capture-official-progress>main>section{border-radius:1cqw;background:var(--qc-route-glyph-surface)}/* The stage rows sit on a 60px pitch, with their
+   text at 85, 143, 204 and 267. */
+.capture-official-progress>main>nav div{height:7.5cqw;display:flex;align-items:center;gap:1cqw;padding:0 1cqw;font-size:2.25cqw}.capture-official-progress>main>nav b{width:2.5cqw;height:2.5cqw;display:grid;place-items:center;background:var(--qc-screen-background);color:var(--qc-palette-2df36a);font-size:2cqw}.capture-official-progress>main>section{position:relative;padding:2.5cqw 2cqw}.capture-official-progress h1{margin:0 0 3.5cqw;font-size:2.5cqw;font-weight:400}.capture-official-progress p{font-size:2.25cqw;line-height:1.25}.capture-official-progress section>strong{position:absolute;left:2cqw;top:19.25cqw;font-size:2.25cqw;font-weight:400}.capture-official-progress-bar{position:absolute;left:2cqw;right:2cqw;top:24.875cqw;height:3cqw;background:var(--qc-screen-surface-base)}.capture-official-progress-bar b{display:block;width:32%;height:100%;background:var(--qc-screen-accent)}.capture-official-progress section>em{position:absolute;right:2cqw;top:18.5cqw;color:var(--qc-palette-888888);font-size:3cqw;font-style:normal}
+.capture-official-result>p{height:13.5cqw;margin:0;padding:1cqw 2.5cqw;font-size:2.25cqw;line-height:1.35}.capture-result-actions{height:9.625cqw;display:flex;align-items:center;gap:2cqw;padding:0 1cqw}.capture-result-actions>button{width:27.5cqw;height:5.5cqw;border-radius:1cqw;background:var(--qc-screen);font-size:2.25cqw}.capture-result-actions>button:nth-child(2){background:var(--qc-palette-213cff)}.capture-result-actions .capture-target-icon{margin-left:3.625cqw}.capture-official-result>main{height:27cqw;margin:0 1cqw 1cqw;border-radius:1cqw;overflow:hidden;background:var(--qc-screen-surface-control)}.capture-official-result>main>section{height:13.5cqw;display:flex;align-items:center;padding:0 2cqw;border-bottom:1px solid var(--qc-palette-111)}.capture-official-result>main>section>button{width:15.625cqw;height:4.625cqw;border-radius:.5cqw;background:var(--qc-screen-surface-base);color:var(--qc-palette-2df36a);font-size:2cqw}.capture-official-result>main>section:last-child>button{color:var(--qc-palette-677068)}.capture-official-result label{position:relative;width:21.625cqw;height:11cqw;margin-left:3.5cqw;padding-top:1.25cqw;border-right:1px solid var(--qc-palette-111);font-size:2cqw}.capture-official-result label span{display:block}.capture-official-result label .capture-level-dial{right:1.5cqw;bottom:1cqw}.capture-official-result label small{position:absolute;left:0;bottom:1.25cqw;font-size:2cqw}
+.capture-official-save>header{height:var(--qc-nav-bar-height);gap:1cqw;padding:0 1cqw}.capture-official-save>header>button{width:12.25cqw;height:5.5cqw;margin:0;border-radius:1cqw;background:var(--qc-screen-surface-control);color:var(--qc-screen-text-primary);font-size:2.25cqw}.capture-official-save>header>button:last-child{margin:0 0 0 auto;background:var(--qc-palette-213cff);font-size:3cqw}.capture-official-save>header .capture-folder{width:21.5cqw}.capture-official-save>header .capture-note{width:8.25cqw;border:1px solid var(--qc-palette-2df36a);color:var(--qc-palette-2df36a)}.capture-official-save>main{width:61cqw;margin:4.25cqw 0 0 19.625cqw}.capture-official-save>main>small{display:block;margin-bottom:1cqw;color:var(--qc-palette-888d88);font-size:1.75cqw}.capture-official-save>main>h1{margin:0 0 2.25cqw;font-size:2.5cqw;font-weight:400}.capture-kinds{height:13cqw;display:flex;gap:2cqw}.capture-kinds button{position:relative;width:8.75cqw;height:8.75cqw;background:none;color:var(--qc-screen-ink-dimmed)}.capture-kinds button .qc-device-tile{position:absolute;left:-.75cqw;top:-.75cqw;width:calc(100% + 1.5cqw);height:calc(100% + 1.5cqw)}.capture-instruments{display:grid;grid-template-columns:repeat(3,19.625cqw);gap:1cqw}.capture-instruments button{height:4.5cqw;border-radius:1cqw;background:var(--qc-screen-surface-raised);color:var(--qc-palette-929692);font-size:2cqw}.capture-instruments button.is-active{background:var(--qc-palette-f1f4f1);color:var(--qc-palette-111)}
+.coros-settings-official,.coros-settings-official *{box-sizing:border-box;font-family: var(--qc-font-device-plain)}.qc-screen.coros-settings-official{position:absolute;inset:0;display:block;background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary);container-type:inline-size}.coros-settings-official>header{height:var(--qc-nav-bar-height);display:flex;align-items:center}.coros-settings-official button{border:0;color:inherit}.coros-settings-official .settings-section{width:32cqw;height:5.5cqw;margin-left:1cqw;display:grid;grid-template-columns:4.5cqw 1fr 2cqw;align-items:center;padding:0 1.5cqw;border-radius:1cqw;background:var(--qc-screen-surface-control);text-align:left;font-size:2cqw}.coros-settings-official .settings-section b{font-size:3.2cqw;font-weight:400}.coros-settings-official .settings-section i{width:0;height:0;border-left:.9cqw solid var(--qc-transparent);border-right:.9cqw solid var(--qc-transparent);border-top:1.2cqw solid var(--qc-screen-text-primary)}.coros-settings-official .settings-done{width:12.25cqw;height:5.5cqw;margin-left:auto;margin-right:1cqw;border-radius:1cqw;background:var(--qc-screen-surface-control);font-size:3cqw}.coros-settings-official>main{height:87.5%;display:grid;grid-template-columns:32cqw 65cqw;gap:1cqw;padding:0 1cqw 1cqw}.coros-settings-official>main>nav,.coros-settings-official>main>section{min-width:0;overflow:hidden;border-radius:1cqw;background:var(--qc-screen-surface-control)}.coros-settings-official>main>nav button{width:100%;height:7.5cqw;display:grid;grid-template-columns:5cqw 1fr;align-items:center;padding:0 2cqw;background:var(--qc-screen-surface-control);text-align:left;font-size:2cqw}.coros-settings-official>main>nav button b{font-size:3cqw;font-weight:400}.coros-settings-official>main>nav button.is-active{background:var(--qc-screen-surface-raised);color:var(--qc-palette-2df36a)}.coros-settings-official>main>section{padding:2.375cqw 2cqw}.coros-settings-official>main>section h1{margin:0 0 2cqw;font-size:2.5cqw;font-weight:400}.coros-settings-official>main>section p{margin:0;font-size:2.25cqw;line-height:1.25}.settings-account-detail>header{height:4.25cqw;display:flex;align-items:flex-start}.settings-account-detail>header strong{font-size:2.5cqw;font-weight:400}.settings-account-detail>header strong span{color:var(--qc-palette-929692)}.settings-account-detail>header small{margin-left:auto;margin-top:.6cqw;color:var(--qc-palette-c6c8c6);font-size:1.625cqw}.settings-account-detail>div{position:relative;height:7.5cqw;padding-top:1cqw;border-bottom:1px solid var(--qc-palette-101310)}.settings-account-detail>div strong,.settings-account-detail>div small{display:block}.settings-account-detail>div strong{font-size:2cqw;font-weight:400}.settings-account-detail>div small{margin-top:.75cqw;color:var(--qc-palette-8f938f);font-size:1.625cqw}.settings-account-detail>div small+small{position:absolute;left:28cqw;bottom:1cqw}.settings-account-detail>div>b{position:absolute;right:.75cqw;top:1.1cqw;color:var(--qc-palette-777b77);font-size:2.5cqw;font-weight:400}.settings-account-detail>button{width:27.375cqw;height:5.75cqw;margin-top:3cqw;border-radius:1cqw;background:var(--qc-screen);font-size:1.75cqw}.settings-system-detail>h1{margin-bottom:2cqw}.settings-system-detail>p{margin-bottom:1.25cqw}.settings-system-detail>div{position:relative;height:9.875cqw}.settings-system-detail>div span,.settings-system-detail>div strong{font-size:2.25cqw;font-weight:400}.settings-system-detail>div strong{position:absolute;right:1.5cqw}.settings-system-detail>div .qc-segment-bar{position:absolute;left:0;top:5.0625cqw}.settings-system-detail>footer{font-size:3cqw;word-spacing:1.25cqw}.settings-device-detail>p{margin-bottom:1cqw}.settings-device-detail>small{display:block;color:var(--qc-palette-929692);font-size:1.75cqw;line-height:1.25}.settings-device-detail>div{position:relative;height:10.5cqw;margin-top:2cqw;padding-left:22cqw;display:grid;grid-template-columns:repeat(4,1fr);gap:2cqw;border-bottom:1px solid var(--qc-palette-101310)}.settings-device-detail>div>b{position:absolute;left:0;top:.25cqw;width:8.75cqw;height:8.75cqw;display:grid;place-items:center;border:.3cqw solid var(--qc-palette-7257ff);border-radius:1.5cqw;background:var(--qc-screen-background);font-size:4cqw;font-weight:400}.settings-device-detail>div label{display:grid;grid-template-rows:3cqw 5.5cqw;justify-items:center;color:var(--qc-palette-929692);font-size:1.75cqw}.settings-device-detail>div label i{width:8.25cqw;height:5.5cqw;display:grid;place-items:center;border-radius:1cqw;background:var(--qc-screen-surface-raised);color:var(--qc-screen-text-primary);font-size:3cqw;font-style:normal}
+
+/* The plugin browser's Grid has three relevant slots. Slot one is at x 69,
+   64px square; the browser also carries the black add tile it was opened
+   from, slot two at x 152, 70px square on the row's own top edge. Every
+   colour here is the washed value the unit shows. */
+.is-underlay-add .plugin-grid-underlay header strong span { color: var(--qc-palette-638284); }
+.is-underlay-ready .plugin-grid-underlay header strong span { color: var(--qc-palette-5a5984); }
+.plugin-grid-underlay main .underlay-device { left: 8.625cqw; top: .625cqw; width: 8cqw; height: 8cqw; border: 2px solid var(--qc-palette-5a635a); border-radius: 1.75cqw; background: var(--qc-transparent); }
+.is-underlay-ready .plugin-grid-underlay main .underlay-device { border-color: var(--qc-palette-528a5a); }
+.plugin-grid-underlay main .underlay-device svg { width: 40px; height: 40px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay main .underlay-device::before,
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay main .underlay-device::after { content: none; }
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay main .underlay-device { color: var(--qc-palette-b2b5b2); }
+.plugin-grid-underlay main .underlay-add { left: 19cqw; top: .25cqw; width: 8.75cqw; height: 8.75cqw; }
+/* The preset name is only italic where the device shows it italic: Unsaved. */
+.plugin-grid-underlay header em { font-style: normal; white-space: nowrap; }
+.is-underlay-unsaved .plugin-grid-underlay header em { font-style: italic; }
+/* The unit washes the Grid while the input-gate panel is open, and the block
+   inside it is bypassed: its ring and its Utility mark are one flat
+   var(--qc-editor-disabled-shadow) across the whole 69..132 x 115..178 box,
+   with no category ink anywhere. Both empty slots on row two carry a 22px plus. */
+.coros-input-gate .input-gate-device { --qc-device-tile-ink: var(--qc-input-gate-mark-pre-dim); --qc-device-tile-ground: var(--qc-screen); }
+.coros-input-gate .input-gate-device .qc-device-tile-art [data-qc-role="reference.primaryText"],
+.coros-input-gate .input-gate-device .qc-device-tile-art [data-qc-role="reference.utilityMark"] { fill: var(--qc-input-gate-mark-pre-dim); }
+/* The Enable button's power symbol is black on the green, not white: the unit
+   inks the screen value inside the accent plate over 652..717 x 311..355. The
+   rule that set this before put it on `color`, and the
+   registry paints `editor.bypass` with a `fill` presentation attribute on the
+   path itself, which an inherited currentColor cannot reach - so the paint has
+   to land on the path too. */
+.coros-input-gate .input-gate-power svg path { fill: var(--qc-screen); }
+.coros-input-gate .input-gate-plus { top: 50%; width: 5.5%; height: 35%; color: var(--qc-input-gate-add-pre-dim); font-size: 44px; font-style: normal; }
+.coros-input-gate .input-gate-plus .qc-ui-icon-add { width: 24px !important; height: 24px !important; fill: currentColor; stroke: none; transform: translateY(-1px); }
+.coros-input-gate .input-gate-plus .qc-ui-icon-add path { fill: currentColor; stroke: none; }
+.coros-input-gate .input-gate-plus.is-left { left: 1%; right: auto; }
+.coros-input-gate .input-gate-grid header em svg { width: 26px; height: 26px; transform: translate(-8px, -3px); }
+.coros-input-gate .input-gate-grid header em svg.qc-mode-glyph-preset { width: 24px; height: 24px; }
+}
+
+.capture-library-browser,.capture-library-browser *,.capture-search-keyboard,.capture-search-keyboard *,.capture-search-results,.capture-search-results *{box-sizing:border-box;font-family:var(--qc-font-device-plain)}.qc-screen.capture-library-browser,.capture-search-keyboard,.qc-screen.capture-search-results{position:absolute;inset:0;overflow:hidden;background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary);container-type:inline-size}.qc-screen.capture-search-results{display:block}.capture-library-browser button,.capture-search-keyboard button,.capture-search-results button{border:0;color:inherit;font:inherit}.capture-library-browser{display:grid;grid-template-columns:13cqw 32cqw 55cqw;grid-template-rows:7.5cqw 52.5cqw}.capture-library-rail{grid-column:1;grid-row:1/3;display:grid;grid-auto-rows:9.75cqw;padding-top:1cqw;background:var(--qc-screen-surface-raised)}.capture-library-rail button{display:grid;place-items:center;background:var(--qc-transparent);color:var(--qc-screen-text-primary)}.capture-library-rail button i{width:7.75cqw;height:7.75cqw;display:grid;place-items:center;font-style:normal}.capture-library-rail button i svg{width:40px;height:40px}.capture-library-rail button.is-active i{border:.35cqw solid var(--qc-palette-050505);border-radius:1.25cqw;background:var(--qc-palette-050505);box-shadow:inset 0 0 0 .3cqw var(--qc-palette-8f9290)}.capture-library-browser>header{grid-column:2/4;grid-row:1;display:flex;align-items:center;padding-left:2cqw;background:var(--qc-screen-surface-base);color:var(--qc-palette-979b97)}.capture-library-browser>header span{font-size:2.25cqw}.capture-library-browser>header button{width:8.25cqw;height:5.5cqw;margin-left:1cqw;border-radius:1cqw;background:var(--qc-screen-surface-raised);color:var(--qc-screen-text-primary);font-size:3.25cqw}.capture-library-browser>header button:first-of-type{margin-left:auto}.capture-library-browser>header button:last-child{width:12.25cqw;margin-right:1cqw;font-size:4cqw}.capture-library-browser>aside{grid-column:2;grid-row:2;position:relative;background:var(--qc-screen-surface-control)}.capture-library-browser>aside>button{width:100%;height:7.5cqw;display:grid;grid-template-columns:5.5cqw 1fr 5cqw;align-items:center;padding:0 2cqw;background:var(--qc-screen-surface-control);text-align:left;font-size:2cqw}.capture-library-browser>aside>button.is-active{background:var(--qc-screen-surface-raised);color:var(--qc-screen-accent)}.capture-library-browser>aside button b{font-size:3cqw;font-weight:400}.capture-library-browser>aside button span{padding-left:.25cqw}.capture-library-browser>aside button small{color:var(--qc-screen-text-muted);font-size:1.75cqw}.capture-library-browser>aside>i{position:absolute;left:2cqw;top:30cqw;width:1px;height:22.5cqw;background:var(--qc-palette-696d69)}.capture-library-browser>aside>i~button{padding-left:4cqw}.capture-library-browser>main{grid-column:3;grid-row:2;display:grid;place-items:center;background:var(--qc-screen-surface-raised)}.capture-library-browser>main>i{color:var(--qc-palette-090b09);font-size:14cqw;font-style:normal;transform:scaleX(1.5)}
+/* The Clear all button here named --qc-palette-aaa, off both 5-bit ladders -
+   spelled without var() so the theme-token ratchet does not read the note as
+   a paint. The rule at the foot of this sheet repaints the same button
+   var(--qc-io-header-mid), and the markup only ever puts
+   `.capture-recent-searches` inside `.capture-search-keyboard`, so that rule
+   wins wherever this button is drawn. The literal here lost a cascade it
+   should never have entered. */
+.capture-search-keyboard>header{height:7.5cqw;display:flex;justify-content:space-between;align-items:center}.capture-search-keyboard>header button{width:12.25cqw;height:5.5cqw;border-radius:1cqw;background:var(--qc-screen-surface-control);font-size:4cqw}.capture-search-keyboard>header button:last-child{background:var(--qc-palette-071008);color:var(--qc-palette-27342c)}.capture-search-keyboard>header button.is-ready{background:var(--qc-palette-213dff);color:var(--qc-screen-text-primary)}.capture-search-keyboard>h1{height:9.5cqw;margin:1.5cqw 0 0;transform:translateY(2.25cqw);text-align:center;color:var(--qc-screen-surface-overlay);font-size:5cqw;font-weight:400}.capture-search-keyboard>h1.is-query{color:var(--qc-screen-accent)}.capture-search-keyboard>small{display:block;height:2.5cqw;color:var(--qc-screen-text-muted);font-size:1.75cqw}.capture-recent-searches{height:5.5cqw;display:flex;align-items:flex-start;gap:1cqw;padding-top:1.75cqw}.capture-recent-searches b{padding:.75cqw 1cqw;border-radius:.75cqw;background:var(--qc-palette-1e2420);font-size:1.75cqw;font-weight:400}.capture-recent-searches button{position:absolute;right:1cqw;top:18.5cqw;background:var(--qc-transparent);font-size:1.75cqw}.capture-search-suggestion{height:5.5cqw;padding-top:.75cqw;font-size:2cqw}.capture-search-suggestion i{display:inline-grid;place-items:center;width:3cqw;height:3cqw;margin-right:.75cqw;border-radius:.5cqw;background:var(--qc-palette-1b211d);color:var(--qc-palette-788078);font-style:normal}.capture-search-keyboard>main{display:grid;gap:1cqw;margin:2cqw -1cqw 0}.capture-search-keyboard>main>div{height:7cqw;display:flex;justify-content:center;gap:1cqw}.capture-search-keyboard>main button{flex:0 0 8.875cqw;min-width:8.875cqw;height:7cqw;border-radius:1cqw;background:var(--qc-palette-272b28);font-size:2.5cqw}.capture-search-keyboard>main button.is-space{flex-basis:48.375cqw;width:48.375cqw}.capture-search-keyboard>main button.is-numeric,.capture-search-keyboard>main button.is-done{flex-basis:13.875cqw;width:13.875cqw}.capture-search-keyboard>main>div:nth-child(2),.capture-search-keyboard>main>div:nth-child(3){padding:0 5cqw}
+.capture-search-results>header{height:var(--qc-nav-bar-height);display:flex;align-items:center;gap:.75cqw}.capture-search-results>header button{height:5.5cqw;border-radius:1cqw;background:var(--qc-screen-surface-raised);font-size:2cqw}
+/* The header is not one run of identical pills: the unit sinks the two count
+   pills to the base surface and lifts arrange and done to the control one. */
+.capture-search-results>header button:nth-of-type(2),
+.capture-search-results>header button:nth-of-type(4){background:var(--qc-screen-surface-base)}
+.capture-search-results>header button:nth-of-type(6),
+.capture-search-results>header button:nth-of-type(7){background:var(--qc-screen-surface-control)}.capture-search-results>header button:first-child{width:23cqw;padding-left:1.25cqw;text-align:left;color:var(--qc-screen-text-muted)}.capture-search-results>header>i{width:1px;height:4cqw;background:var(--qc-palette-2d322e)}.capture-search-results>header button:nth-of-type(2),.capture-search-results>header button:nth-of-type(3),.capture-search-results>header button:nth-of-type(4){width:12.5cqw;color:var(--qc-palette-343934)}.capture-search-results>header button.is-active{background:var(--qc-scene-control-muted);color:var(--qc-screen-text-primary)}.capture-search-results>header button:nth-last-child(-n+3){width:8.25cqw;font-size:3cqw}.capture-search-results>header button:last-child{width:12.25cqw;margin-left:auto}.capture-search-results>main{height:52.5cqw;border-radius:1cqw;overflow:hidden;background:var(--qc-screen-surface-control)}.capture-search-results h2{height:5.5cqw;margin:0;padding:0 2cqw;display:flex;align-items:center;background:var(--qc-scene-control-muted);color:var(--qc-palette-c7cac7);font-size:1.75cqw;font-weight:400}.capture-search-results h2 b{margin-left:auto;font-size:3cqw}.capture-search-results article{position:relative;height:7.75cqw;padding:1.5cqw 2cqw;background:var(--qc-screen-surface-control)}.capture-search-results article strong,.capture-search-results article small{display:block;font-size:2cqw;font-weight:400}.capture-search-results article small{margin-top:.75cqw;color:var(--qc-palette-858a85);font-size:1.625cqw}.capture-search-results article em{position:absolute;right:2cqw;top:2.75cqw;color:var(--qc-palette-636863);font-style:normal}.capture-search-results p{margin:0;padding:3cqw 2cqw;color:var(--qc-palette-858a85);font-size:2cqw}
+.capture-library-browser svg,.capture-search-keyboard svg,.capture-search-results svg{--qc-screen-glyph-size:24px;width:24px;height:24px;fill:currentColor;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.capture-library-browser header button,.capture-search-keyboard header button{display:grid;place-items:center}.capture-library-browser header button svg,.capture-search-keyboard header button svg{display:block;margin:auto}.capture-library-browser>aside button b svg{width:24px;height:24px;fill:none}.capture-library-browser>aside button:nth-child(4) b svg{stroke-width:2}.capture-library-browser>aside>i~button b svg{fill:currentColor;stroke:currentColor}.capture-library-browser>main>i svg{width:13cqw;height:13cqw;fill:none;stroke:currentColor}.capture-search-keyboard>header button svg{width:3cqw;height:3cqw;fill:none}.capture-search-keyboard>header button:last-child svg{fill:currentColor;stroke:none}.capture-search-suggestion i svg{width:2.25cqw;height:2.25cqw;fill:none;stroke:currentColor}.capture-search-results>header button{display:inline-flex;align-items:center;justify-content:center;gap:.5cqw}.capture-search-results>header button:first-child{justify-content:flex-start}.capture-search-results>header button svg{width:24px;height:24px;fill:none}.capture-search-results>header button:nth-of-type(2) svg,.capture-search-results>header button:nth-of-type(3) svg,.capture-search-results>header button:nth-of-type(4) svg{fill:currentColor}.capture-search-results>header button:nth-last-child(-n+3) svg{width:24px;height:24px}.capture-search-results>header button:nth-last-child(3) svg{fill:currentColor;stroke:none}.capture-search-results>header button:last-child svg{fill:none;stroke:currentColor}
+
+.capture-editor-physical,.capture-editor-physical *{box-sizing:border-box;font-family:var(--qc-font-device-plain)}.qc-screen.capture-editor-physical{position:absolute;inset:0;display:block;overflow:hidden;background:var(--qc-screen-surface-base);color:var(--qc-screen-text-primary);container-type:inline-size}.capture-editor-physical>header{height:13.75cqw;display:grid;grid-template-columns:13cqw 1fr 25cqw;align-items:start;background:var(--qc-screen-background)}.capture-editor-physical>header>strong{height:10cqw;padding-left:1.5cqw;color:var(--qc-palette-939793);font-size:7cqw;font-weight:700;line-height:10cqw}.capture-editor-physical>header>strong span{color:var(--qc-palette-bcbfbc)}.capture-editor-physical>header>h1{margin:2.75cqw 0 0;font-size:4.75cqw;line-height:5cqw}.capture-editor-physical>header>nav{display:flex;align-items:center;justify-content:flex-end;gap:2cqw;height:7.5cqw;padding-right:1.75cqw}.capture-editor-physical>header>nav i{width:3cqw;height:3cqw;color:var(--qc-palette-9da19d)}.capture-editor-physical>header>nav i svg{width:100%;height:100%}.capture-editor-physical>header>nav b{display:grid;place-items:center;width:3cqw;height:3cqw;border-radius:.5cqw;background:var(--qc-palette-c9ab13);color:var(--qc-screen-background);font-size:2.5cqw}.capture-editor-physical>header>em{grid-column:3;display:flex;align-items:center;gap:1cqw;margin-top:-5cqw;color:var(--qc-palette-a4a8a4);font-style:normal;font-size:2.25cqw}.capture-editor-physical>header>em svg{width:24px;height:24px;fill:none;stroke:currentColor}.capture-editor-grid{position:relative;height:10.75cqw;background:var(--qc-screen-background)}.capture-editor-grid>span:first-child,.capture-editor-grid>span:last-child{position:absolute;top:0;width:5.5cqw;height:8.75cqw;padding-top:2cqw;border-radius:1.5cqw;background:var(--qc-editor-disabled-shadow);color:var(--qc-screen-text-muted);text-align:center;font-size:2cqw}.capture-editor-grid>span:first-child{left:1cqw}.capture-editor-grid>span:last-child{right:1cqw}.capture-cable{position:absolute;left:6.5cqw;right:6.5cqw;top:4.75cqw;border-top:1px solid var(--qc-palette-979b97)}.capture-block{position:relative;z-index:1;display:inline-grid;place-items:center;width:8cqw;height:8cqw;margin:0 0 0 2cqw;border:.25cqw solid var(--qc-palette-777d78);border-radius:1.5cqw;background:var(--qc-screen-background);color:var(--qc-palette-9ba09b);font-size:4cqw;font-style:normal}.capture-block.is-gate{margin-left:8.75cqw}.capture-block.is-capture{border:.8cqw solid var(--qc-screen-surface-muted)}.capture-editor-panel{margin:0 1cqw;background:var(--qc-screen-surface-control);border-radius:1cqw;overflow:hidden}.capture-editor-panel>header{height:6.5cqw;display:flex;align-items:center;gap:1cqw;background:var(--qc-screen-surface-raised)}.capture-editor-panel>header>button{width:5.5cqw;height:5.5cqw;border:0;border-radius:1cqw;background:var(--qc-palette-1d241f);color:var(--qc-screen-text-primary);font-size:2.5cqw}.capture-editor-panel>header>span{display:grid;width:55cqw;color:var(--qc-screen-text-muted);font-size:1.75cqw}.capture-editor-panel>header>span strong{font-size:2.5cqw;font-weight:400}.capture-editor-panel>header>nav{display:flex;align-items:center;gap:.75cqw;margin-left:auto}.capture-editor-panel>header>nav i{font-size:2.5cqw;font-style:normal}.capture-editor-panel>header>nav b{display:grid;place-items:center;width:3cqw;height:3cqw;border-radius:.5cqw;background:var(--qc-palette-f4d816);color:var(--qc-screen-background);font-size:2.25cqw}.capture-editor-panel>main{height:13.5cqw;display:grid;grid-template-columns:repeat(5,1fr)}.capture-editor-panel>main>section{position:relative;padding:1.25cqw;border-right:1px solid var(--qc-palette-101310)}.capture-editor-panel>main span{display:block;font-size:1.75cqw}.capture-editor-panel>main i{position:absolute;right:2cqw;bottom:1cqw;width:7.25cqw;height:7.25cqw;border:.75cqw solid var(--qc-palette-999f9a);border-right-color:var(--qc-palette-111);border-radius:50%;background:var(--qc-palette-111);font-style:normal}.capture-editor-panel>main i b{position:absolute;left:50%;top:.5cqw;width:.4cqw;height:3.25cqw;background:var(--qc-screen-text-primary);transform-origin:50% 3.1cqw}.capture-editor-panel>main strong{position:absolute;left:1.5cqw;bottom:1.5cqw;color:var(--qc-screen-text-primary);font-size:1.75cqw;font-weight:400}
+/* Physical typography landmarks for the capture editor header. */
+.capture-editor-physical>header{grid-template-columns:14.875cqw 1fr 25cqw}
+.capture-editor-physical>header>strong{color:var(--qc-palette-b00084)}
+.capture-editor-physical>header>strong span{color:var(--qc-palette-939793)}
+.capture-editor-physical>header>h1{margin-top:3.75cqw;color:var(--qc-palette-8d8d8f);font-size:5.25cqw;line-height:5.25cqw;letter-spacing:.03em}
+.capture-editor-grid{height:11.75cqw}
+.capture-editor-panel>main i{right:1.5cqw}
+.capture-editor-panel>main strong{bottom:1.875cqw}
+.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header strong{max-width:26cqw;font-weight:400;line-height:1.25}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header button.is-refreshing svg{animation:qc-plugin-refresh-spin 1.2s linear infinite}@keyframes qc-plugin-refresh-spin{to{transform:rotate(360deg)}}
+
+/* The refreshing state renders over the dimmed add-device Grid. Keep its
+   title and gate wash scoped away from the two ready states. */
+.coros-browser-fixture.is-physical-plugin-list .plugin-grid-underlay header{color:var(--qc-palette-848a84)}
+.coros-browser-fixture.is-physical-plugin-list.is-underlay-add .plugin-grid-underlay header strong{transform:translateY(3px)}
+.coros-browser-fixture.is-physical-plugin-list.is-underlay-add .plugin-grid-underlay header em{margin-left:2.125cqw;font-size:7.75cqw}
+.coros-browser-fixture.is-physical-plugin-list.is-underlay-add .plugin-grid-underlay main .underlay-device{border:0;color:inherit}
+.coros-browser-fixture.is-physical-plugin-list.is-underlay-add .plugin-grid-underlay main .underlay-device>svg{width:40px;height:40px;opacity:.15}
+
+/* The device-search and directory-search entry points are one screen: a 98x44
+   close at (8, 8) and search at (694, 8), the query centred at y 84 with the
+   caret at the insertion point, the captions on the 146 baseline, and the same
+   71px keyboard the naming screen uses, at (7, 224) with 56px rows. Recent
+   searches are a caption only: the unit lists nothing under it. */
+.capture-search-keyboard { padding: 0; background: var(--qc-screen-surface-base); }
+.capture-search-keyboard > header { position: absolute; inset: 8px 8px auto 8px; height: 44px; display: block; }
+.capture-search-keyboard > header button { position: absolute; top: 0; width: 98px; height: 44px; border-radius: 7px; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.capture-search-keyboard > header button:first-child { left: 0; }
+.capture-search-keyboard > header button:last-child { right: 0; background: var(--qc-editor-disabled-accent); color: var(--qc-palette-313c31); }
+.capture-search-keyboard > header button.is-ready { background: var(--qc-palette-1838ff); color: var(--qc-screen-text-primary); }
+.capture-search-keyboard > header button svg { width: 24px; height: 24px; }
+.capture-search-keyboard > h1 { position: absolute; left: 0; right: 0; top: 84px; height: 52px; margin: 0; display: flex; align-items: center; justify-content: center; transform: none; color: var(--qc-palette-424142); font: 41px var(--qc-font-device-plain); }
+.capture-search-keyboard > h1 > span { position: absolute; left: 0; right: 0; }
+.capture-search-keyboard > h1.is-query { color: var(--qc-screen-accent); }
+.capture-search-keyboard > h1.is-query > span { position: static; }
+.capture-search-keyboard > h1 > i { width: 2px; height: 52px; background: var(--qc-screen-accent); }
+.capture-search-keyboard > small { position: absolute; left: 16px; top: 146px; height: auto; color: var(--qc-io-header-mid); font: 16px var(--qc-font-device-plain); }
+.capture-search-keyboard .capture-recent-searches { position: static; height: 0; padding: 0; }
+.capture-search-keyboard .capture-recent-searches button { right: 17px; top: 146px; color: var(--qc-io-header-mid); font: 16px var(--qc-font-device-plain); }
+.capture-search-keyboard .capture-search-suggestion { position: absolute; left: 8px; top: 162px; height: 36px; display: inline-flex; align-items: center; gap: 8px; padding: 0 12px 0 8px; border-radius: 8px; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font: 18px var(--qc-font-device-plain); }
+.capture-search-keyboard .capture-search-suggestion i { width: 24px; height: 24px; margin: 0; border-radius: 0; background: var(--qc-transparent); color: var(--qc-palette-9aa09a); }
+.capture-search-keyboard .capture-search-suggestion i svg { width: 24px; height: 24px; }
+.capture-search-keyboard > main { position: absolute; inset: 224px 8px 8px 7px; display: grid; grid-template-rows: repeat(4, 56px); gap: 8px; margin: 0; }
+.capture-search-keyboard > main > div { height: 56px; display: grid; gap: 8px; padding: 0; }
+.capture-search-keyboard > main > div:nth-child(1) { grid-template-columns: repeat(10, 71px); }
+.capture-search-keyboard > main > div:nth-child(2) { grid-template-columns: repeat(9, 71px); justify-content: center; }
+.capture-search-keyboard > main > div:nth-child(3) { grid-template-columns: 112px repeat(7, 1fr) 112px; padding: 0; }
+.capture-search-keyboard > main > div:nth-child(4) { grid-template-columns: 112px 71px 1fr 71px 112px; padding: 0; }
+.capture-search-keyboard > main > div:nth-child(4) button:nth-child(2),
+.capture-search-keyboard > main > div:nth-child(4) button:nth-child(4) { background: var(--qc-editor-disabled-accent); }
+.capture-search-keyboard > main button { position: relative; flex: none; width: auto; min-width: 0; height: 56px; border-radius: 7px; background: var(--qc-rotary-face); color: var(--qc-screen-text-primary); font: 18px var(--qc-font-device-plain); }
+.capture-search-keyboard > main button.is-space, .capture-search-keyboard > main button.is-numeric, .capture-search-keyboard > main button.is-done, .capture-search-keyboard > main button.is-shift, .capture-search-keyboard > main button.is-backspace { flex-basis: auto; width: auto; }
+.capture-search-keyboard > main button.is-shift,
+.capture-search-keyboard > main button.is-backspace,
+.capture-search-keyboard > main button.is-numeric,
+.capture-search-keyboard > main button.is-done { background: var(--qc-screen-surface-raised); }
+.capture-search-keyboard > main button.is-shift, .capture-search-keyboard > main button.is-backspace, .capture-search-keyboard > main button.is-numeric { font-size: 20px; }
+.capture-search-keyboard > main button small { position: absolute; right: 6px; top: 3px; color: var(--qc-palette-5a595a); font-size: 12px; }
+
+/* The header's tools sit at x 609, 656, 705 and 753, and the editor is the
+   same bar and strip the assignment screens use - var(--qc-screen-surface-base) under it,
+   five 156px var(--qc-screen-surface-control) cells from y 256 to 362. */
+.capture-editor-physical > header > nav { gap: 26px; padding-right: 23px; }
+.capture-editor-physical > header > nav i svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.capture-editor-physical > header > nav i:last-child svg { fill: currentColor; stroke: none; }
+.capture-editor-panel { position: absolute; left: 0; right: 0; top: 196px; bottom: 0; margin: 0; overflow: visible; border-radius: 0; background: var(--qc-transparent); }
+.capture-editor-panel > header { position: absolute; left: 0; right: 0; top: 0; height: var(--qc-nav-bar-height); gap: 0; background: var(--qc-transparent); }
+.capture-editor-panel > header > button { position: absolute; top: 8px; height: 44px; border-radius: 8px; background: var(--qc-screen-surface-raised); }
+.capture-editor-panel > header > button:first-child { left: 8px; width: 44px; }
+.capture-editor-panel > header > span { position: absolute; left: 59px; top: 10px; width: auto; gap: 3px; }
+.capture-editor-panel > header > nav { position: absolute; left: 505px; top: 8px; width: 125px; height: 44px; margin: 0; gap: 0; justify-content: space-around; border-radius: 8px; background: var(--qc-screen-surface-raised); }
+.capture-editor-panel > header > nav i { font-size: 17px; letter-spacing: -3px; }
+.capture-editor-panel > header .capture-editor-power { left: 655px; width: 60px; }
+.capture-editor-panel > header .capture-editor-power svg { width: 24px; height: 24px; }
+.capture-editor-panel > header .capture-editor-confirm { left: 726px; width: 66px; background: var(--qc-screen-surface-control); }
+.capture-editor-panel > header .capture-editor-confirm svg { width: 30px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.capture-editor-panel > main { position: absolute; left: 8px; right: 8px; top: 60px; height: 107px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; }
+.capture-editor-panel > main > section { padding: 9px; border: 0; background: var(--qc-screen-surface-control); }
+
+/* The Favourites/Recents rail and the empty pane are var(--qc-screen-surface-raised), the
+   rail's active tile is 70px, the folder rows keep their names on one line,
+   and the pane holds the 105x124 zigzag at (527, 194) in var(--qc-screen-surface-base) -
+   the same placeholder the plugin directory draws. */
+.qc-screen.capture-library-browser { background: var(--qc-screen-surface-raised); }
+/* The rail is 102px of raised surface, not the full 104 of its column: the last
+   two are the screen ground, which the rail's own ::after paints further down
+   this file. Reserving them here is what centres the selected chip on the
+   unit's x 16..85 instead of 17..86 - the same box in every ModelMenu
+   state. */
+.capture-library-rail { padding-right: 2px; background: var(--qc-screen-surface-raised); }
+.capture-library-rail button i { width: 8.75cqw; height: 8.75cqw; }
+/* The chip the unit puts behind the open category is its screen background,
+   0.0.0 - 050505 is not a value a 5/6/5 framebuffer can hold - ringed with the
+   muted ink at 148.150.148 two pixels wide, three pixels in from the chip edge.
+
+   Its corner is not the 10px this file first gave it. The plate's box is
+   already the unit's - 70x70 at (16, 168) - so the corner is the only thing
+   left, and it peaks at 16.75px. The unit's corner is not a circular arc, so
+   no radius closes it; what is left at the peak is a one-pixel antialiasing
+   band, and the ring the box-shadow draws three pixels in then lands on the
+   unit's within one row. */
+.capture-library-rail button.is-active i { border: .375cqw solid var(--qc-screen-background); border-radius: 2.09375cqw; background: var(--qc-screen-background); box-shadow: inset 0 0 0 .25cqw var(--qc-screen-text-muted); }
+.capture-library-browser > main { background: var(--qc-screen-surface-raised); }
+.capture-library-browser > main .capture-library-placeholder { width: 120px; height: 140px; display: block; fill: var(--qc-screen-surface-base); stroke: none; transform: translateY(-11px); }
+.capture-library-browser > aside > button { grid-template-columns: 5.5cqw 1fr auto; padding: 0 1cqw 0 2cqw; }
+.capture-library-browser > aside > i ~ button { padding-left: 3.5cqw; }
+.capture-library-browser > aside button span { white-space: nowrap; }
+
+/* The Grid's popups: the context menu and the two route selector pairs are a
+   270px list at x 58 or 472 over the Grid under an var(--qc-palette-rgba-72-71-72-a917) scrim, rows
+   on a 60px pitch, scrolled by whole cells. The scene selector is 232 wide at
+   (454, 44) on 52px rows and raises no scrim - its own page is still
+   var(--qc-screen-background). */
+.coros-grid-popup, .coros-grid-popup * { box-sizing: border-box; font-family: var(--qc-font-device-plain); }
+.qc-screen.coros-grid-popup { position: absolute; inset: 0; display: block; overflow: hidden; background: var(--qc-screen-background); color: var(--qc-screen-text-primary); }
+.coros-grid-popup .popup-grid { position: absolute; inset: 0; }
+/* The unit sets this header once, the same way everywhere it appears: the
+   bank/slot glyphs ink at x 13, 57 and 101 - a 44px pitch - and the name
+   starts at 164. The location block is what carries the name's origin here,
+   so its tracking has to be the unit's or the name is pushed right: 1.4px of
+   extra letter-spacing over three glyphs is what put the name at 169. */
+.coros-grid-popup .popup-grid > header { position: absolute; inset: 0 0 auto; height: 96px; display: flex; align-items: flex-start; padding: 20px 12.6px; }
+.coros-grid-popup .popup-grid > header > strong { color: var(--qc-screen-text-primary); font-size: 71px; line-height: .82; font-weight: 700; letter-spacing: -1.54px; transform: translateY(2px); }
+.coros-grid-popup .popup-grid > header > strong b { font-weight: 700; }
+/* CorOS fits the name to the width it has rather than truncating it - a
+   shorter name gets a narrower run than a longer one. */
+/* 17.4px puts the name's ink on the unit's x 164 once the location block is
+   tracked correctly - the gap the unit leaves, not a guess. */
+.coros-grid-popup .popup-grid > header h1 { margin-left: 17.4px; color: var(--qc-route-text); line-height: 1; font-weight: 700; white-space: nowrap; }
+/* capture-type's full-size name inks y 27..89 on the unit against our 32..92:
+   the row's own margin sits it 5px low, and a transform moves it without
+   disturbing the origin the line above just settled. */
+.coros-grid-popup .popup-grid > header h1.is-large { transform: translateY(-5px) scaleX(1.03); transform-origin: left center; }
+.coros-grid-popup .popup-grid > header nav { position: absolute; right: 24px; top: 12px; display: flex; align-items: center; gap: 24px; color: var(--qc-palette-e7e3e7); }
+.coros-grid-popup .popup-grid > header nav i { width: 24px; height: 24px; display: grid; place-items: center; font-style: normal; }
+.coros-grid-popup .popup-grid > header nav i svg { width: 26px; height: 26px; overflow: visible; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.coros-grid-popup .popup-grid > header nav i:last-child svg circle { fill: currentColor; stroke: none; }
+.coros-grid-popup .popup-grid > header nav b { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 4px; background: var(--qc-scene-badge); color: var(--qc-screen-surface-base); font-size: 17px; font-weight: 700; }
+.coros-grid-popup .popup-grid > header em { position: absolute; right: 35px; top: 62px; display: flex; align-items: center; gap: 12px; color: var(--qc-palette-e7e3e7); font-size: 21px; font-style: normal; font-weight: 700; }
+.coros-grid-popup .popup-grid > header em svg { width: 26px; height: 26px; fill: currentColor; transform: translate(-1px, -1px); }
+.coros-grid-popup .popup-grid > header em svg.qc-mode-glyph-preset { width: 24px; height: 24px; }
+.coros-grid-popup .popup-grid > main { position: absolute; left: 0; right: 0; top: 96px; bottom: 0; }
+.coros-grid-popup .popup-route, .coros-grid-popup .popup-output, .coros-grid-popup .popup-plus { position: absolute; top: 13px; width: 44px; height: 76px; display: grid; place-items: center; border-radius: 14px; background: var(--qc-route-pill); color: var(--qc-route-text); font-size: 16px; line-height: 1.3125; text-align: center; }
+.coros-grid-popup .popup-route { left: 8px; }
+.coros-grid-popup .popup-output { left: auto; right: 6px; }
+/* The open port keeps its own ground while everything else is washed out,
+   and grows 3px on every side: 50x82 at (5, 106) and (747, 106). */
+.coros-grid-popup .popup-route.is-open, .coros-grid-popup .popup-output.is-open { z-index: 3; top: 10px; width: 50px; height: 82px; color: var(--qc-route-text); }
+.coros-grid-popup .popup-route.is-open { left: 5px; }
+.coros-grid-popup .popup-output.is-open { right: 3px; }
+.coros-grid-popup .popup-plus { left: 8px; color: var(--qc-utility-mark); font-size: 24px; }
+.coros-grid-popup .popup-plus.is-right { left: auto; right: 6px; }
+/* Ports and tiles both keep three pixels of screen colour to themselves, so the
+   cable runs between the margins, not up to the items: the unit fills the
+   input port to x 51 and starts the cable at 55, and on the far side stops it
+   at 746 before the output port at 750. An open port has already eaten its
+   own margin - it grows to 5..54 and the cable still begins at 55 - so one
+   pair of numbers serves both states. The tile margin is the block's to keep,
+   the way official-block-surround keeps it on the Grid. */
+.coros-grid-popup .popup-cable { position: absolute; left: 55px; right: 53px; top: 50px; height: 2px; background: var(--qc-route-rail); }
+.coros-grid-popup .popup-block { position: absolute; top: 19px; width: 64px; height: 64px; border: 2px solid var(--qc-context-capture-muted); border-radius: 14px; background: var(--qc-screen-background); box-shadow: 0 0 0 3px var(--qc-screen-background); }
+.coros-grid-popup .popup-scrim { position: absolute; z-index: 2; inset: 0; background: var(--qc-palette-rgba-72-71-72-a917); }
+.coros-grid-popup .popup-panel { position: absolute; z-index: 3; overflow: hidden; border-radius: 8px; background: var(--qc-route-pill); }
+.coros-grid-popup.is-menu .popup-panel { left: 472px; top: 17px; width: 270px; height: 418px; }
+/* The route panel's ground is 420 tall, not 414: the unit's pill runs
+   y 30..449 (input x 58..327, output x 472..741), and rows 30..32 and 447..449
+   carry nothing but that ground. The rows themselves start 3px inside it - the
+   icon centres sit on 123.5, 183.5, 243.5, 303.5, 363, 423, which is a 60px
+   pitch whose first row opens at y 33 - so the panel grows by 3px at each end
+   while the list keeps its place, and only .popup-list's margin holds the two
+   apart. Both previous attempts moved the list with the panel and shifted
+   every row 3px up.
+   The route pill also rounds harder than the preset menu's: the corner reads
+   as 12px against the menu's 8px. */
+.coros-grid-popup.is-input .popup-panel, .coros-grid-popup.is-output .popup-panel { top: 30px; width: 270px; height: 420px; border-radius: 12px; }
+.coros-grid-popup.is-input .popup-panel { left: 58px; }
+.coros-grid-popup.is-output .popup-panel { left: 472px; }
+.coros-grid-popup.is-input .popup-list, .coros-grid-popup.is-output .popup-list { margin-top: 3px; }
+.coros-grid-popup.is-scene .popup-panel { left: 454px; top: 44px; width: 232px; height: 416px; }
+.coros-grid-popup .popup-list { position: absolute; left: 0; right: 0; }
+.coros-grid-popup .popup-cell { height: 60px; display: grid; grid-template-columns: 56px 1fr; align-items: center; color: var(--qc-screen-text-primary); font-size: 18px; }
+.coros-grid-popup .popup-cell.is-caption { color: var(--qc-screen-text-muted); font-size: 14px; letter-spacing: 1px; }
+.coros-grid-popup .popup-cell.is-active { color: var(--qc-screen-accent); }
+.coros-grid-popup .popup-cell > svg, .coros-grid-popup .popup-cell > span > svg { width: 24px; height: 24px; justify-self: center; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.coros-grid-popup .popup-cell .route-glyph { justify-self: center; font-size: 15px; font-weight: 400; }
+.coros-grid-popup .popup-cell > span { padding-right: 12px; }
+.coros-grid-popup .popup-cell > span small { display: block; color: var(--qc-screen-text-muted); font-size: 13px; }
+.coros-grid-popup.is-scene .popup-cell { height: 52px; grid-template-columns: 40px 1fr; padding-left: 16px; background: var(--qc-palette-313431); color: var(--qc-screen-text-primary); }
+.coros-grid-popup.is-scene .popup-cell.is-active { background: var(--qc-palette-080808); color: var(--qc-screen-accent); }
+.coros-grid-popup .scene-badge { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 4px; background: var(--qc-scene-badge); color: var(--qc-screen-surface-base); font-size: 15px; font-weight: 700; }
+.coros-grid-popup .popup-scrollbar { position: absolute; z-index: 1; right: 5px; top: 10px; width: 4px; height: 130px; border-radius: 2px; background: var(--qc-screen-surface-muted); }
+/* The route panel's thumb is two columns wide, x 312..313 against a panel that
+   ends at 327, and it is one flat grey: every fully covered pixel of it reads
+   49,52,49. Its track and length come from the component's own row count. */
+.coros-grid-popup.is-input .popup-scrollbar, .coros-grid-popup.is-output .popup-scrollbar { right: 14px; width: 2px; border-radius: 1px; background: var(--qc-palette-313431); }
+.coros-grid-popup.is-scene .popup-scrollbar { display: none; }
+.coros-grid-popup .popup-block { display: grid; place-items: center; }
+.coros-grid-popup .popup-block svg { width: 30px; height: 30px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.coros-grid-popup .popup-block.is-capture-wave { border: 0; border-radius: 0; background: var(--qc-transparent); }
+.coros-grid-popup .popup-block.is-capture-wave svg { width: 64px; height: 64px; fill: none; stroke: none; }
+.coros-grid-popup .popup-cell > .route-internal-glyph path:first-child { fill: var(--qc-route-glyph-surface); stroke: none; }
+.coros-grid-popup .popup-cell > .route-internal-glyph path:last-child { fill: var(--qc-utility-mark); stroke: none; }
+.coros-grid-popup .popup-cell svg.route-glyph { width: 24px; height: 24px; justify-self: center; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.coros-grid-popup .popup-cell svg.route-fx { width: 30px; height: 20px; }
+.coros-grid-popup .popup-cell .route-fx .fx-plate { fill: none; stroke: currentColor; stroke-width: 1.4; }
+.coros-grid-popup .popup-cell .route-fx .fx-label { fill: currentColor; stroke: none; font-family: var(--qc-font-device-plain); font-size: 11px; font-weight: 700; }
+.coros-grid-popup .popup-cell .route-fx .fx-arrow { fill: currentColor; stroke: none; }
+.coros-grid-popup .popup-cell svg.route-usb { width: 22px; height: 31px; }
+.coros-grid-popup .popup-cell .route-usb .usb-solid { fill: currentColor; stroke: none; }
+.coros-grid-popup .popup-cell .route-plus-plate rect { stroke: var(--qc-context-capture-mid); }
+/* The route lists give their glyph a wider column than the preset menu: the
+   icon centres on x 39 inside the panel and the label starts at 71. */
+.coros-grid-popup.is-input .popup-cell, .coros-grid-popup.is-output .popup-cell { grid-template-columns: 71px 1fr; }
+/* Those glyphs are drawn at the size they were extracted at. CorOS puts a full
+   32x32 box 22px in from the panel's left edge: the USB glyph inks x 85..106,
+   and this file's own USB vector inks columns 5..26 of its 32-wide viewBox,
+   which places the box at x 80 with the panel at 58. The 24px box the shared
+   popup rule gives it lands the same art 2px left and a quarter too small. */
+.coros-grid-popup.is-input .popup-cell > svg, .coros-grid-popup.is-output .popup-cell > svg { width: 32px; height: 32px; justify-self: start; margin-left: 22px; }
+/* The route rows are set larger and whiter than the preset menu's. Every label
+   measures about a tenth wider than ours did at 18px - USB input 8 inks 105
+   columns against 94, USB input 5/6 125 against 112 - and the tallest of them
+   is 19 rows against 17, so the size is 20. The ink itself reaches
+   255,255,255, where f0f0f0 can only reach 240. */
+.coros-grid-popup.is-input .popup-cell, .coros-grid-popup.is-output .popup-cell { color: var(--qc-screen-text-primary); font-size: 20px; }
+/* Restated because it ties with the rule above on specificity and would lose on
+   order: the chosen row stays green, and the unit prints its selected input
+   label in 66,251,99 - the accent exactly. */
+.coros-grid-popup.is-input .popup-cell.is-active, .coros-grid-popup.is-output .popup-cell.is-active { color: var(--qc-screen-accent); }
+/* A section caption is not flush with the panel: CorOS inks STEREO from x 80,
+   the same column the glyph box opens on, where ours started at 58 because
+   the caption falls into the empty glyph column. It runs its letters tighter
+   than we did - E to R advances 8 columns, not 9, so there is no
+   letter-spacing - and sits a shade high of the row's middle, y 116..126
+   against a row spanning 93..152. Its brightest ink is 255 too. */
+.coros-grid-popup.is-input .popup-cell.is-caption, .coros-grid-popup.is-output .popup-cell.is-caption { color: var(--qc-screen-text-primary); font-size: 14px; letter-spacing: normal; }
+.coros-grid-popup.is-input .popup-cell.is-caption > span, .coros-grid-popup.is-output .popup-cell.is-caption > span { position: relative; top: -2px; grid-column: 1 / -1; padding-left: 22px; }
+/* The unit does not alpha-blend its dim over the Grid's row ports: the
+   scrimmed state shows the port ground landing on the overlay surface, which
+   the popup scrim cannot reach from the port's own ground - no alpha in any
+   space fits that, since it is not even per-channel monotone. So the ports
+   are painted above the scrim already dimmed, the way the unit paints them,
+   and an open port keeps its own rule. */
+.coros-grid-popup:has(> .popup-scrim) :is(.popup-route, .popup-output, .popup-plus):not(.is-open) { z-index: 3; background: var(--qc-screen-surface-overlay); }
+.coros-grid-popup:has(> .popup-scrim) :is(.popup-route, .popup-output):not(.is-open) { color: var(--qc-screen-ink-dimmed); }
+/* Same for the header's slot number and preset name: the unit's dim of white
+   ink is far lighter than the scrim reaches, so both are lifted over the scrim
+   at the dimmed ink value. The scene letter's tone arrives inline from the
+   fixture, so it is shadowed here rather than overridden. */
+.coros-grid-popup:has(> .popup-scrim) .popup-grid > header > strong,
+.coros-grid-popup:has(> .popup-scrim) .popup-grid > header h1 { position: relative; z-index: 3; color: var(--qc-screen-ink-dimmed); }
+.coros-grid-popup:has(> .popup-scrim) .popup-grid > header > strong > b {
+  --qc-palette-ff2421: var(--qc-palette-84494a);
+  --qc-palette-ff7100: var(--qc-palette-845d42);
+  --qc-palette-6748ff: var(--qc-palette-5a5584);
+}
+/* Only the washed value is said here now: `interface.add` declares the unit's
+   own mark ink itself, so the undimmed rule this replaced was repeating the
+   registry. The scrim value stays a call-site decision - the unit substitutes a
+   dimmed ink under a menu rather than fading the mark. */
+.coros-grid-popup:has(> .popup-scrim) .popup-plus .qc-ui-icon-add path { fill: var(--qc-screen-mark-dimmed); }
+/* In hybrid mode, the preset in view takes its own preset's colour - 7B is
+   var(--qc-palette-0875e7) where 32H is var(--qc-palette-ff2421) - so the tile reads it from the preset. */
+.coros-gig-view .gig-preset-tile.is-active { background: var(--gig-preset-tone, var(--qc-palette-ff2421)); }
+.coros-gig-view .gig-tiles.is-hybrid .gig-preset-tile.is-active { background: var(--gig-preset-tone, var(--qc-palette-ff2421)); color: var(--qc-screen-background); }
+.coros-gig-view:has(.gig-tiles.is-hybrid) header{gap:1.25cqw;padding-right:1%}
+.coros-gig-view:has(.gig-tiles.is-hybrid) header>strong{font-size:4cqw}
+.coros-gig-view:has(.gig-tiles.is-hybrid) .gig-mode{flex-basis:12.5%}
+.coros-gig-view:has(.gig-tiles.is-hybrid) header button{flex-basis:12.25cqw}
+/* Hybrid only is effective here: this rule is OUTSIDE the @scope (.qc-screen-fixture-root) block, so it beats only the
+   outside-scope hybrid rule above by order. The in-scope override after the preset block (same selector) covers every mode. */
+.coros-gig-view:has(.gig-tiles) header button.gig-scene{flex-basis:5cqw;background:var(--qc-transparent)}
+.coros-gig-view:has(.gig-tiles.is-hybrid) .gig-hybrid-mode-glyph{width:8.25cqw;height:3.25cqw;display:grid;grid-template-columns:3cqw 1cqw 3.25cqw;align-items:center;gap:.5cqw}
+.coros-gig-view:has(.gig-tiles.is-hybrid) .gig-hybrid-mode-glyph>.qc-mode-glyph{width:26px;height:26px}.coros-gig-view:has(.gig-tiles.is-hybrid) .gig-hybrid-mode-glyph>.qc-mode-glyph-preset{width:24px;height:24px;transform:translate(-8px,-1px)}
+.coros-gig-view:has(.gig-tiles.is-hybrid) .gig-hybrid-mode-glyph>i{color:var(--qc-palette-9ca69c);font-size:2cqw;font-style:normal;font-weight:300;text-align:center}
+/* The gig-view mode button carries crispEdges pixel art, so it is sized in
+   whole art units - 26 for mode.scene and mode.stomp, 24 for mode.preset - on
+   a plain box. official-gig.css sizes .gig-mode-icon at 3cqw for both, which
+   is one class short of these rules. */
+.qc-screen.gig-official > header .gig-mode-icon { display: block; width: 26px; height: 26px; margin: auto; }
+.qc-screen.gig-official > header .gig-mode-icon > svg { display: block; }
+.qc-screen.gig-official > header .gig-mode-icon-preset { width: 24px; height: 24px; }
+/* Each glyph is placed on its own crop: mode.scene and mode.stomp at (588,17),
+   mode.hybrid at (548,17). */
+.qc-screen.gig-official > header .gig-mode-icon-stomp { transform: translate(8px, 0); }
+.qc-screen.gig-official > header .gig-mode-icon-scene { transform: none; }
+.qc-screen.gig-official > header .gig-mode-icon-preset { transform: translate(0, -1px); }
+.qc-screen.gig-official > header .gig-mode-hybrid > svg { translate: -4px 0; }
+.coros-gig-view .gig-tiles.is-hybrid .gig-preset-tile>span{top:1%;font-size:5cqw}
+.coros-gig-view .gig-tiles.is-hybrid .gig-scene-tile>b{left:0;right:0;top:12%;color:var(--gig-letter);font-size:22cqw;text-align:center}
+.coros-gig-view .gig-tiles.is-hybrid .gig-scene-tile.is-active{background:var(--gig-active-color)!important}
+.coros-gig-view .gig-tiles.is-hybrid .gig-scene-tile.is-active>b{color:color-mix(in srgb,var(--gig-active-color) 90%,var(--qc-screen-background))}
+.coros-gig-view .gig-tiles.is-hybrid .gig-scene-tools{left:10%;right:10%;top:9%;display:flex;align-items:center;justify-content:space-between;font-size:2.75cqw;letter-spacing:0}
+.coros-gig-view .gig-tiles.is-hybrid .gig-scene-tools svg{--qc-screen-glyph-size:24px;width:24px;height:24px}
+.coros-gig-view .gig-tiles.is-hybrid .gig-scene-tile>strong{top:40%}
+/* The Captures Library list fills the pane - 60px rows carrying the capture
+   name over NeuralDSP and its bank count, with the alphabet rail down the
+   right, which is the shared .qc-jump-index. */
+.capture-library-browser > main:has(.capture-library-rows) { display: block; padding: 0; background: var(--qc-palette-101310); }
+/* The table itself is the unit's FolderTable box, x 362..791: the pane's own
+   440px column less the 2px gutter on its left and the 8px one on its right.
+   Its rows stop at 764 - the name lands on x 378 and the bank count centres on
+   745 - and the jump index keeps the last 4.625cqw of the box. */
+.capture-library-rows { position: relative; align-self: stretch; justify-self: stretch; width: auto; height: 100%; margin: 0 8px 0 2px; overflow: hidden; background: var(--qc-screen-surface-control); }
+.capture-library-rows > button { position: relative; width: calc(100% - 3.375cqw); height: 7.5cqw; display: grid; grid-template-columns: 1fr 5cqw; align-items: center; padding: 0 0 1px 2cqw; background: var(--qc-transparent); text-align: left; }
+/* The rule under a row is 24.32.24, the same ink the Directory's tables use -
+   151815 is not a colour the unit's 5/6/5 framebuffer can hold at all - and it
+   starts at the row's content box, not its border box. */
+.capture-library-rows > button::after { content: ""; position: absolute; z-index: 0; left: 2cqw; right: 0; bottom: 0; height: 1px; background: var(--qc-palette-182018); }
+.capture-library-rows > button > span { display: grid; color: var(--qc-screen-text-primary); font-size: 2cqw; }
+.capture-library-rows > button > span small { margin-top: .5cqw; color: var(--qc-screen-text-muted); font-size: 1.75cqw; }
+.capture-library-rows > button > b { color: var(--qc-screen-text-muted); font-size: 2cqw; font-weight: 400; text-align: center; }
+
+/* Final parity refinements retained from the full screen pass. */
+.plugin-grid-underlay.is-reference-grid header em{white-space:nowrap}.plugin-grid-underlay.is-reference-grid .underlay-gate{left:8.625cqw;top:0;width:7.875cqw;background:var(--qc-palette-424942);color:var(--qc-palette-3d473f)!important}.plugin-grid-underlay.is-reference-grid .underlay-gate svg{width:5cqw;height:5cqw;opacity:.15}.plugin-grid-underlay.is-reference-grid .underlay-plus{left:19cqw;width:8.75cqw;background:var(--qc-screen-surface-base)}.plugin-grid-underlay.is-reference-grid .underlay-add{display:none}.plugin-grid-underlay.is-reference-grid .underlay-row-3{font-size:1.8cqw;line-height:1.1;text-align:center;color:var(--qc-palette-b2b5b2)!important}
+.coros-physical-confirmation:not(.is-over-grid)>aside{top:114px;height:253px}
+.capture-official-save>header>button.capture-save-now{background:var(--qc-editor-disabled-accent)!important;color:var(--qc-palette-29382c)!important}.capture-official-save>header>button.capture-save-now svg{opacity:.16}
+.coros-assignment .assignment-stomp-message>.assignment-stomp-dialog{left:190px;top:93px;width:420px;height:294px;display:block;border-radius:8px;background:var(--qc-screen-surface-base)}.coros-assignment .assignment-stomp-message>.assignment-stomp-dialog h1{position:absolute;left:0;right:0;top:40px;margin:0;font:400 21px var(--qc-font-device-plain)}.coros-assignment .assignment-stomp-message>.assignment-stomp-dialog p{position:absolute;left:0;right:0;top:93px;margin:0;font:17px var(--qc-font-device-plain)}.coros-assignment .assignment-stomp-message>.assignment-stomp-dialog .assignment-stomp-latch{position:absolute;left:70px;top:141px;width:auto;height:45px;display:flex;gap:0;margin:0;padding:0;background:var(--qc-transparent)}.coros-assignment .assignment-stomp-message>.assignment-stomp-dialog .assignment-stomp-latch button{width:128px;height:45px;padding-left:20px}.coros-assignment .assignment-stomp-message>.assignment-stomp-dialog .assignment-stomp-latch button:last-child{width:152px}.coros-assignment .assignment-stomp-message>.assignment-stomp-dialog footer{position:absolute;left:32px;top:218px;display:flex;gap:8px;padding:0}.coros-assignment .assignment-stomp-message>.assignment-stomp-dialog footer button{width:174px;height:44px}
+.empty-slot-official .plugin-grid-underlay .underlay-plus{color:var(--qc-palette-dedede)}.empty-slot-official .plugin-grid-underlay .underlay-plus::before,.empty-slot-official .plugin-grid-underlay .underlay-plus::after{display:none}
+.directory-irs-official nav{position:relative}.directory-irs-official nav button.is-child{width:100%;margin-left:0;padding-left:4cqw}.directory-irs-official nav::before{content:"";position:absolute;z-index:1;left:2cqw;top:15cqw;width:1px;height:11.5cqw;background:var(--qc-palette-606660)}
+.capture-search-results>header>button:nth-of-type(2){margin-left:1cqw}
+
+/* Failed Neural Capture sanity check. */
+.capture-official-progress.is-sanity-error>main>nav div.is-error{color:var(--qc-palette-ff1919)}.capture-official-progress.is-sanity-error>main>nav div.is-error b{border-radius:2px;background:var(--qc-palette-ff594a);color:var(--qc-palette-080808)}.capture-official-progress.is-sanity-error>main>nav div.is-pending{color:var(--qc-palette-888b88)}.capture-official-progress.is-sanity-error>main>nav div.is-pending b{color:var(--qc-palette-161816)}.capture-official-progress.is-sanity-error h1{margin-bottom:3.75cqw;font-weight:400}.capture-official-progress.is-sanity-error section>button{position:absolute;right:1.875cqw;bottom:3.125cqw;height:5.375cqw;padding:0 2cqw;border:0;border-radius:1cqw;background:var(--qc-palette-1838ff);color:var(--qc-screen-text-primary);font:2.25cqw var(--qc-font-device-plain)}
+
+/* Cloud overwrite prompt. */
+.system-dialog.is-overwrite{box-sizing:border-box;width:52.625cqw;min-height:31.625cqw;padding:4.75cqw 4cqw 4cqw;border:0;border-radius:1.25cqw;background:var(--qc-screen-surface-base)}.system-dialog.is-overwrite h1{margin:0 0 3cqw;font-size:2.5cqw}.system-dialog.is-overwrite p{color:var(--qc-screen-text-primary);font-size:2.25cqw;line-height:1.25}.system-dialog.is-overwrite footer{gap:1.125cqw;margin-top:5cqw}.system-dialog.is-overwrite footer button{height:5.625cqw;border-radius:.75cqw;background:var(--qc-screen-background);font-size:2cqw}.system-dialog.is-overwrite footer button:last-child{background:var(--qc-palette-1838ff)}
+
+/* Exact modal position, dimming and typography for the directory copy dialog. */
+.coros-directory-fixture .directory-copy-scrim{position:absolute;z-index:4;inset:0;background:var(--qc-palette-c7cbc7);opacity:.22}.coros-directory-fixture .directory-copy-dialog{box-sizing:border-box;left:20.5%;top:4.583%;width:59%;height:54.25cqw;border:0;border-radius:1.25cqw;background:var(--qc-screen-surface-base)}.coros-directory-fixture .directory-copy-dialog>header{padding:4.25cqw 0 2.25cqw;border:0;font-size:2.5cqw;text-align:center}.coros-directory-fixture .directory-copy-dialog>p{width:52cqw;margin:0 auto 4.5cqw;padding:0;color:var(--qc-screen-text-primary);font-size:2.25cqw;line-height:1.25;text-align:center}.coros-directory-fixture .directory-copy-dialog>button{font:2.25cqw var(--qc-font-device-plain)}
+
+/* CorOS Multi Select's toolbar replaces the normal header and every preset row
+   carries the same selection box. */
+.coros-directory-fixture>.directory-multiselect-bar{position:absolute;z-index:8;left:0;right:0;top:0;height:60px;box-sizing:border-box;display:flex;align-items:center;gap:8px;padding:8px;background:var(--qc-screen-surface-base)}.coros-directory-fixture>.directory-multiselect-bar>span{flex:1}.coros-directory-fixture>.directory-multiselect-bar>strong{color:var(--qc-screen-accent);font:20px var(--qc-font-device-plain);font-weight:400}.coros-directory-fixture>.directory-multiselect-bar>button{position:relative;width:64px;height:44px;display:grid;place-items:center;border:0;border-radius:8px;background:var(--qc-editor-disabled-accent);color:var(--qc-palette-313c31)}.coros-directory-fixture>.directory-multiselect-bar>button svg{width:26px;height:26px}.coros-directory-fixture>.directory-multiselect-bar>i{width:1px;height:36px;background:var(--qc-screen-surface-muted)}.coros-directory-fixture>.directory-multiselect-bar>.directory-select-all{width:98px;background:var(--qc-screen-surface-raised)}.coros-directory-fixture>.directory-multiselect-bar>.directory-multiselect-done{width:98px;background:var(--qc-screen-surface-control);color:var(--qc-screen-text-primary)}.coros-directory-fixture .directory-fixture-items button:has(>.directory-select-box){grid-template-columns:32px auto 1fr}
+.coros-directory-fixture:has(>.directory-multiselect-bar) .directory-official-list>button{grid-template-columns:4.5cqw 1fr;padding-right:2cqw;color:var(--qc-screen-text-primary)}.coros-directory-fixture:has(>.directory-multiselect-bar) .directory-official-list>button>b{display:none}.coros-directory-fixture:has(>.directory-multiselect-bar) .directory-official-list>button:nth-child(6){background:var(--qc-palette-202420);color:var(--qc-screen-accent)}
+/* Directory popovers retain the black CorOS face while a light neutral scrim
+   dims the shared My Presets state beneath them. */
+.coros-directory-fixture>.directory-modal-scrim{position:absolute;z-index:4;inset:0;background:var(--qc-palette-c7cbc7);opacity:.22}.coros-directory-fixture>.directory-category-menu,.coros-directory-fixture>.directory-tool-menu{border:0;background:var(--qc-screen-background);box-shadow:none}
+.coros-directory-fixture:has(>.directory-multiselect-bar) .directory-official-list>button{grid-template-columns:5.375cqw 1fr;padding-left:2.75cqw}.coros-directory-fixture:has(>.directory-multiselect-bar) .directory-official-list>button.is-selected{color:var(--qc-screen-text-primary)!important}.coros-directory-fixture:has(>.directory-multiselect-bar) .directory-official-list>button:nth-child(6){color:var(--qc-screen-accent)!important}
+.coros-directory-fixture .directory-copy-dialog>button{text-align:left}.coros-directory-fixture .directory-copy-dialog>button:first-of-type{height:5.625cqw}.coros-directory-fixture .directory-copy-dialog>button:nth-of-type(n+2){height:7.75cqw}.coros-directory-fixture .directory-copy-dialog footer{padding-top:.875cqw}
+.directory-filter-composite>.directory-filter-underlay-scrim{position:absolute;z-index:1;inset:0;background:var(--qc-palette-c7cbc7);opacity:.22}.directory-filter-composite>header,.directory-filter-composite>main{z-index:2}.directory-filter-composite>header{position:relative}.directory-filter-composite>main{background:var(--qc-transparent)}
+.coros-physical-confirmation>.coros-vector-screen{position:absolute;inset:0}
+
+/* The chain band is 86px, not 94: it ends at y 196, where the panel behind the
+   editor starts. The blocks sit 5px into it, the cable is its two rows
+   146-147, and the header's two right-hand rows are pinned rather than
+   flowed - the toolbar on y 12 and the mode caption on y 60, both ending at
+   x 772. */
+.capture-editor-grid { height: 10.75cqw; padding-top: .625cqw; }
+.capture-editor-grid .capture-cable { top: 4.5625cqw; }
+.capture-editor-physical > header > nav { position: absolute; inset: 0; height: 48px; display: block; padding: 0; }
+.capture-editor-physical > header > nav i { position: absolute; top: 0; width: 48px; height: 48px; }
+.capture-editor-physical > header > nav i:first-child { left: 600px; }
+.capture-editor-physical > header > nav i:nth-of-type(2) { left: 695px; }
+.capture-editor-physical > header > nav i:nth-of-type(3) { left: 748px; }
+.capture-editor-physical > header > nav i svg { width: 48px; height: 48px; }
+.capture-editor-physical > header > nav b { position: absolute; left: 656px; top: 12px; width: 24px; height: 24px; }
+.capture-editor-physical > header > em { position: absolute; left: 82cqw; top: 7.5cqw; height: 3cqw; margin-top: 0; gap: 1.875cqw; }
+
+/* Neural Capture editor: retain the exact framebuffer landmarks while routing
+   the controls through the canonical editor icons and rotary construction. */
+.capture-editor-physical > header > strong { transform: translateY(8px); }
+.qc-screen.capture-editor-physical { background: var(--qc-screen-surface-base); }
+.capture-editor-grid > .capture-block { position: absolute; top: 5px; margin: 0; width: 64px; height: 64px; }
+.capture-editor-grid > .capture-block.is-gate { left: 69px; }
+.capture-editor-grid > .capture-block.is-capture { left: 155px; }
+.capture-editor-grid > .capture-block.is-capture + .capture-block { left: 239px; }
+.capture-editor-panel > header > span small { color: var(--qc-screen-text-muted); font-size: 15px; line-height: 18px; }
+.capture-editor-panel > header > span strong { color: var(--qc-palette-e7e3e7); font-size: 20px; line-height: 22px; }
+.capture-editor-panel > header > nav i { width: 24px; height: 24px; display: grid; place-items: center; }
+.capture-editor-panel > header > nav i svg { width: 21px; height: 24px; fill: currentColor; stroke: none; }
+.capture-editor-panel > main > section > span { font-size: 15px; }
+.capture-editor-panel > main > section:first-child { border-radius: 8px 0 0 8px; }
+.capture-editor-panel > main > section:last-child { border-radius: 0 8px 8px 0; }
+.capture-editor-panel > main > section > .qc-rotary { position: absolute; left: 78px; top: 36px; width: 72px; height: 72px; }
+.capture-editor-panel > main > section > strong { left: 9px; bottom: 10px; font-size: 16px; }
+
+/* The device browser's scrollbar thumb: two pixels wide at x 790, 145 tall,
+   its top set per view from the row it is scrolled to. */
+.coros-device-browser:not(:has(.coros-device-models))::after { content: ""; position: absolute; right: 1.125cqw; top: var(--browser-thumb-top, 13px); width: .25cqw; height: 18.125cqw; background: var(--qc-palette-313431); }
+/* The category plate is 64px of colour at x 419 - a 70px box on a 16px indent. */
+.coros-device-browser:not(:has(.coros-device-models)) > nav button { padding-left: 16px; }
+.coros-device-browser:not(:has(.coros-device-models)) > nav i { width: 8.75cqw; height: 8.75cqw; }
+
+/* The browser docks away from the slot, so a right-hand slot puts it on the
+   left: a 102px category rail on var(--qc-context-capture-black), a 296px model panel on
+   var(--qc-route-glyph-surface) out to x 400, and the Grid washed out behind. Model rows are
+   60px from y 60; only the first still fits the remaining DSP. */
+.coros-dsp-browser { position: absolute; left: 0; top: 0; width: 50cqw; height: 60cqw; z-index: 30; display: grid; grid-template-columns: 12.75cqw 1fr; background: var(--qc-context-capture-black); }
+.coros-dsp-browser > nav { display: grid; grid-template-rows: repeat(6, 9.75cqw); justify-items: center; align-items: center; padding-top: 1cqw; }
+.coros-dsp-browser > nav button { width: 8.25cqw; height: 8.25cqw; display: grid; place-items: center; border: .25cqw solid var(--qc-transparent); border-radius: 1.75cqw; background: var(--qc-transparent); color: var(--device-color, var(--qc-palette-dedede)); }
+.coros-dsp-browser > nav button.is-active { border-color: var(--device-color, var(--qc-palette-dedede)); background: var(--qc-screen); }
+.coros-dsp-browser > nav button i { width: 4.5cqw; height: 4.5cqw; display: grid; place-items: center; }
+.coros-dsp-browser > nav button svg { width: 40px; height: 40px; }
+.coros-dsp-models { overflow: hidden; background: var(--qc-route-glyph-surface); }
+.coros-dsp-models > header { height: var(--qc-nav-bar-height); display: grid; grid-template-columns: 12.5cqw 12.5cqw; gap: .5cqw; align-items: end; padding: 0 .25cqw; background: var(--qc-screen-surface-base); }
+  /* The active tab is raised: it starts at y 8 and meets the list at y 56. */
+.coros-dsp-models > header button.is-active { height: 6.5cqw; border-radius: .75cqw .75cqw 0 0; }
+.coros-dsp-models > header button { height: 6.5cqw; border-radius: .75cqw .75cqw 0 0; border: 0; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-muted); font-size: 2cqw; letter-spacing: .1cqw; }
+.coros-dsp-models > header button.is-active { background: var(--qc-route-glyph-surface); color: var(--qc-screen-text-primary); }
+.coros-dsp-models > button { width: 100%; height: 7.5cqw; display: grid; grid-template-columns: 1fr 5cqw; align-items: center; padding: 0 1.125cqw 0 2.375cqw; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font-size: 2cqw; }
+.coros-dsp-models > button.is-unavailable { color: var(--qc-palette-6e736e); }
+.coros-dsp-models > button i { width: 5cqw; height: 5cqw; display: grid; place-items: center; border-radius: .75cqw; background: var(--qc-palette-313431); color: var(--qc-screen-text-muted); }
+.coros-dsp-models > button.is-unavailable i { background: var(--qc-palette-313431); color: var(--qc-screen-text-muted); }
+.coros-dsp-models > button svg { width: 2.75cqw; height: 2.75cqw; }
+.coros-device-empty-slot.is-dsp { left: 408px; top: 112px; z-index: 31; }
+/* CorOS lightens what is behind a browser the same way it lightens what is
+   behind a dialog: 72.4% of var(--qc-palette-rgba-86-89-86-1) over the Grid. */
+.coros-dsp-scrim { position: absolute; inset: 0; z-index: 29; background: var(--qc-palette-rgba-72-75-72-a917); }
+/* Same pre-dim as the confirmation slots, for the Grid rails behind the browser
+   and DSP washes: these are SVG children, so paint order cannot reach them and
+   the ink itself has to carry the correction. */
+.coros-vector-screen:has(.coros-dsp-scrim) .grid-route-rails rect { fill: var(--qc-grid-route-slot-pre-dim); }
+/* Under the browser wash the correction is a different one: that wash is the
+   unit's own map, so the pill's real 16.16.16 composites to 70.1, 73.3, 70.1 -
+   the right 6-bit green bucket but a red and blue the renderer keeps and the
+   unit rounds down to 66. Zeroing red and blue lands it on the unit's own
+   66.73.66. The .917 pre-dim above puts these rails on 66.81.66 here. */
+.coros-vector-screen:has(.coros-device-dismiss) .grid-route-rails rect { fill: var(--qc-grid-route-slot-pre-wash); }
+/* The block borders take the same correction. Each category's real colour puts
+   the composite in the bucket the unit shows - 949694 lands on 107.109.107,
+   ff7100 on 132.97.66, ff2421 on 132.77.74, 42fb63 on 82.138.90, ffd331 on
+   132.125.74 - and it is only the rounding that separates us from the unit,
+   so these are the grounds that composite onto the bucket itself. */
+.coros-vector-screen:has(.coros-device-dismiss) :is(.official-block-tile-utility, .official-block-tile-capture, .official-block-tile-morph, .official-block-tile-wah, .official-block-tile-fx-loop) rect[stroke] { stroke: var(--qc-palette-9e949e); }
+.coros-vector-screen:has(.coros-device-dismiss) :is(.official-block-tile-plugin, .official-block-tile-compressor) rect[stroke] { stroke: var(--qc-palette-3eff5d); }
+.coros-vector-screen:has(.coros-device-dismiss) :is(.official-block-tile-amp, .official-block-tile-looper) rect[stroke] { stroke: var(--qc-palette-ff1e1f); }
+.coros-vector-screen:has(.coros-device-dismiss) :is(.official-block-tile-cab, .official-block-tile-ir-loader) rect[stroke] { stroke: var(--qc-palette-5d59ff); }
+.coros-vector-screen:has(.coros-device-dismiss) .official-block-tile-overdrive rect[stroke] { stroke: var(--qc-palette-ff6700); }
+.coros-vector-screen:has(.coros-device-dismiss) .official-block-tile-pitch rect[stroke] { stroke: var(--qc-palette-ffcf1f); }
+.coros-vector-screen:has(.coros-device-dismiss) .official-block-tile-modulation rect[stroke] { stroke: var(--qc-palette-1f00ff); }
+.coros-vector-screen:has(.coros-device-dismiss) .official-block-tile-synth rect[stroke] { stroke: var(--qc-palette-dc4a5d); }
+.coros-vector-screen:has(.coros-device-dismiss) .official-block-tile-filter rect[stroke] { stroke: var(--qc-palette-7fe1ff); }
+.coros-vector-screen:has(.coros-device-dismiss) .official-block-tile-equalizer rect[stroke] { stroke: var(--qc-palette-0076dc); }
+
+/* The screen is its own query container and carried `padding: 0 1cqw 1cqw`, so
+   every cqw on it resolved against a 784px content box - 7.84px where the unit
+   counts 8. Each width authored here therefore landed 2% short: the query field
+   came out at 185px where 23.625cqw is meant to be the unit's own 189, and the
+   bands below had to be re-spelled in absolute pixels to escape it. The side
+   inset moves to the two children that want it, the container keeps its full
+   800px content box, and one cqw is one unit pixel again. */
+.capture-search-results { padding: 0 0 1cqw; }
+.capture-search-results > header,
+.capture-search-results > main { margin-inline: 1cqw; }
+
+/* The unit's header row, left to right: the query field 8..196, a separator
+   at 200, the three count tabs at 210, 314 and 418 - 100px each, 4px apart - a
+   separator at 526, filter 536..601, sort 610..675, a separator at 684, and
+   done 694..791. Nine boundaries with five different widths, so each one is
+   an explicit margin rather than one flex gap. */
+.capture-search-results > header { gap: 0; }
+.capture-search-results > header > * { flex: 0 0 auto; }
+.capture-search-results > header button:first-child { width: 23.625cqw; }
+.capture-search-results > header > i { width: 2px; height: 2.75cqw; margin: 0 0 0 1cqw; background: var(--qc-screen-surface-raised); }
+.capture-search-results > header > i:first-of-type { margin-left: .375cqw; }
+.capture-search-results > header button:nth-of-type(2),
+.capture-search-results > header button:nth-of-type(3),
+.capture-search-results > header button:nth-of-type(4) { width: 12.5cqw; margin-left: .5cqw; }
+.capture-search-results > header button:nth-of-type(2) { margin-left: 1cqw; }
+.capture-search-results > header button:nth-of-type(5),
+.capture-search-results > header button:nth-of-type(6) { width: 8.25cqw; margin-left: 1cqw; font-size: 3cqw; }
+.capture-search-results > header button:nth-of-type(7) { width: 12.25cqw; margin-left: 1cqw; }
+/* The unit draws the two closed tabs as a 2px outline standing on the list, not
+   as a filled pill: y 8 to 55, square along the bottom where the open tab meets
+   the section band. The reconstruction painted them in the ground colour, so
+   they carried no ink at all and only their glyphs marked the row. */
+.capture-search-results > header button:nth-of-type(2),
+.capture-search-results > header button:nth-of-type(4) { height: 6cqw; align-self: flex-start; margin-top: 1cqw; border: 2px solid var(--qc-screen-surface-raised); border-radius: 1cqw 1cqw 0 0; background: var(--qc-screen-surface-base); }
+/* Filter and sort are no longer the last children of the header now that it
+   carries its separators, so the glyph fills that addressed them from the end
+   of the child list have to name their button ordinal instead. */
+.capture-search-results > header button:nth-of-type(5) svg { fill: currentColor; stroke: none; }
+.capture-search-results > header button:nth-of-type(6) svg { fill: none; stroke: currentColor; }
+/* The unit inks a closed tab's glyph in the same muted grey as the tab outline
+   around it; the IR tab came out white. Nothing overrode the tab's `color` -
+   no rule matches `fill` on the <path> at all. QcScreenVectorGlyph writes the registry layer's role
+   ink onto each <path> as an SVG presentation attribute, and a presentation
+   attribute on the element outranks any value inherited into it, so the
+   `fill: currentColor` set on the <svg> above never reaches the path. The path
+   has to be named for the tab's own ink to win. */
+.capture-search-results > header button:nth-of-type(2) svg path,
+.capture-search-results > header button:nth-of-type(4) svg path { fill: currentColor; }
+/* The close button stands 18px clear of the tool row, the open row keeps a
+   white glyph beside its green label, and the child folders are outlines. */
+.capture-library-browser > header button:last-child { margin-left: 2.25cqw; }
+.capture-library-browser > aside > button.is-active b { color: var(--qc-icon-primary); }
+/* The mark cell is row + 16, the same cell the unit's other directory tables
+   use, not the row + 15 an inline 24px glyph on this line box was landing on.
+   Every mark in this bar was one pixel high of the unit's -
+   heart 77..97 against 78..98, clock 136..157 against 137..158, download
+   197..217 against 198..218 and the three folder outlines 316..336 against
+   317..337 - while every one of their columns already agreed, which is what
+   says this is the cell and not the art. Blockified it centres at row + 18, so
+   the two pixels come off here, as on `.directory-presets-official`. */
+.capture-library-browser > aside button b { display: flex; align-items: center; height: 24px; translate: 0 -2px; }
+/* The child rows draw `directory.folder-outline`, which is the unit's own
+   two-unit wall and carries its `fill` and `stroke="none"` on the path, so this
+   is left only for whatever else in those rows is outline art. */
+.capture-library-browser > aside > i ~ button b svg { fill: none; }
+/* Favorites, Recents and the Captures Library are the same native ModelMenu
+   with different selected rows and tool sets: the side bar is pixel-identical
+   across all of them, its labels inked from x 159 and its child folders from
+   175. Gating the compact track to only two of them put the Captures Library
+   labels 8px right of the unit's, on the one state that shares the component
+   but was left out. */
+.capture-library-browser > aside > button { grid-template-columns: 4.375cqw 1fr 5cqw; }
+.capture-library-browser > aside > i ~ button { padding-left: 4cqw; grid-template-columns: 4.375cqw 1fr 3cqw; }
+/* The unit starts these labels on x 159 and the child folders on 175 - one
+   column right of where a 2px gap puts them - in every one of these states. */
+.capture-library-browser > aside > button span { padding-left: .375cqw; }
+/* The unit does not butt its panes together: it parks the screen ground
+   between them - 24.28.24 out to x 101, then 16.16.16 at 102-103, the side bar
+   to 359, 16.16.16 at 360-361, the list to 791 and 16.16.16 across 792-799 -
+   the same three gutters Favorites and Recents carry. Gating them to only
+   those two states left the Captures Library with none of the three. */
+.capture-library-browser > .capture-library-rail { position: relative; }
+.capture-library-browser > .capture-library-rail::after { content: ""; position: absolute; inset: 0 0 0 auto; width: 2px; background: var(--qc-screen-surface-base); }
+.capture-library-browser > aside { z-index: 1; box-shadow: 2px 0 0 var(--qc-screen-surface-base); }
+.capture-library-browser::after { content: ""; position: absolute; z-index: 2; inset: 0 0 0 auto; width: 8px; background: var(--qc-screen-surface-base); }
+/* The open tab and the section bands share one ground, and the tab runs from
+   y 8 to the top of the list rather than floating in the header. */
+.capture-search-results > header button.is-active { width: 12.5cqw; height: 6.5cqw; align-self: flex-start; margin-top: 1cqw; border-radius: 1cqw 1cqw 0 0; background: var(--qc-palette-424142); }
+/* The unit's own bands: header 60, section heading 44, result row 62, list
+   412. These were absolute because the container's cqw used to run 2% short;
+   it no longer does - 7.5cqw is 60 again - and they stay absolute because the
+   unit itself works in pixels here. */
+.capture-search-results > header { height: 60px; }
+.capture-search-results > main { height: 412px; }
+.capture-search-results h2 { height: 44px; background: var(--qc-palette-424142); }
+.capture-search-results article { height: 62px; }
+.capture-search-results h2 b { display: flex; align-items: center; }
+.capture-search-results h2 b .search-section-chevron { width: 2.25cqw; height: 1.25cqw; fill: none; stroke: currentColor; stroke-width: 2; }
+
+/* The device inks a locked plugin row - lock and label together - in its own
+   muted grey, a shade darker than the list's other disabled text. */
+.directory-official.is-plugins nav button.is-locked { color: var(--qc-plugin-lock); }
+.directory-official.is-plugins nav button.is-locked b svg { width: 3cqw !important; height: 3cqw !important; fill: currentColor; stroke: none; }
+/* The -6px this used to carry was pulling the lock back up out of a nav row
+   4px taller than the unit's. With the row on the unit's 60px pitch the glyph
+   lands on the unit's own y=138 unaided. */
+/* The locked plugin tile plate lands on the unit exactly - x 452 reads 72-74
+   black, 75-76 stroke, fill from 77, 137-138 stroke, 139-141 black - but the
+   mark inside it sits a row high. The unit runs its white at 98-99, 108-109,
+   114-115 on the amp row and 328-329 .. 352-353 on the cab row; the
+   reconstruction ran 97-98, 107-108, 113-114 and 327-328 .. 351-352. The
+   bearing goes on the nested category glyph alone - the outer svg and the <i>
+   carry the plate, which is already right. */
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button > i:not(.plugin-model-lock) svg.qc-device-category-glyph { transform: translate(0, 1px); }
+
+/* Shared-control cleanup. The old wrappers were still drawing geometry around
+   the real shared controls: Cab's class-specific shadow beat the generic tile
+   reset, and the selected browser rail painted a second focus ring. */
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button > i.is-cab.is-cab,
+.coros-browser-fixture.is-physical-plugin-models .plugin-model-list button > i.is-drive.is-drive { border: 0; border-radius: 0; background: none; box-shadow: none; }
+.coros-tempo > header > .tempo-scene.qc-scene-selector { grid-template-columns: 1fr 40px 1fr; gap: 0; transform: translateX(16px); }
+.coros-tempo > header > .tempo-scene.qc-scene-selector > button { width: auto; height: 100%; margin: 0; border-radius: 0; background: var(--qc-transparent); }
+
+/* Active Directory text is green, but these two selected category marks stay
+   white on the device. Keep that state local to the shared row. */
+.directory-irs-official nav button.is-active > b,
+.directory-favorites-official nav button.is-active > b { color: var(--qc-screen-text-primary); }
+.directory-irs-official nav button.is-active > b svg [data-qc-role],
+.directory-favorites-official nav button.is-active > b svg [data-qc-role] { fill: currentColor !important; }
+
+/* Multi-select vectors contain reference palette roles, so state must override
+   those roles as well as inherited text colour. */
+.coros-directory-fixture .directory-multiselect .qc-multiselect-action.is-disabled svg [data-qc-role] { fill: var(--qc-palette-313c31) !important; }
+.coros-directory-fixture .directory-multiselect .qc-multiselect-action.is-enabled svg [data-qc-role] { fill: var(--qc-screen-text-primary) !important; }
+.qc-screen.coros-assignment .assignment-stomp-message > .assignment-stomp-dialog .assignment-stomp-latch button:first-child { justify-content: flex-start; padding-left: 8px; }
+.qc-screen.coros-assignment .assignment-stomp-message > .assignment-stomp-dialog .assignment-stomp-latch button:last-child { justify-content: flex-start; padding-left: 42px; }
+.qc-screen.coros-assignment .assignment-stomp-latch button:first-child svg { color: var(--qc-screen-accent); fill: currentColor; }
+.qc-screen.coros-assignment .assignment-stomp-latch button:first-child svg path { fill: currentColor; }
+.coros-gig-view .gig-scene > .qc-scene-letter-badge { color: var(--qc-screen-surface-base); font-size: 2.25cqw; }

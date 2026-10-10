@@ -1,0 +1,43 @@
+.qc-preset-midi-out {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  container-type: inline-size;
+  box-sizing: border-box;
+  background: var(--qc-screen-surface-base);
+  color: var(--qc-palette-eef0ef);
+  font-family: var(--qc-font-device-plain);
+}
+.qc-preset-midi-out *, .qc-preset-midi-out *::before, .qc-preset-midi-out *::after { box-sizing: border-box; }
+.qc-preset-midi-out button { border: 0; color: inherit; font: inherit; cursor: pointer; }
+.qc-preset-midi-out button:disabled { cursor: default; opacity: .5; }
+.qc-preset-midi-out > header { height: var(--qc-nav-bar-height); display: flex; align-items: center; gap: 2.25cqw; padding: 1% 1% 1% 2%; color: var(--qc-palette-999c9a); font-size: 2.25cqw; }
+.qc-preset-midi-out > header button { width: 12.25%; height: 100%; border-radius: 1cqw; background: var(--qc-screen-surface-control); color: var(--qc-palette-f3f4f3); font-size: 2.8cqw; }
+.qc-preset-midi-out > header .midi-trash { width: 8.25%; margin-left: auto; background: var(--qc-editor-disabled-accent); }
+.qc-preset-midi-out > header .midi-trash svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.qc-preset-midi-out > header button:last-child { margin-left: 0; }
+.qc-preset-midi-out > header button > .qc-ui-icon-check { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.qc-preset-midi-out .midi-assignment-surface { position: relative; height: 87.5%; }
+.qc-preset-midi-out .midi-footswitches { position: absolute; left: 3.125cqw; top: 6.125cqw; width: 57.25cqw; height: 36.125cqw; display: grid; grid-template-columns: repeat(4, 11.875cqw) 1fr; grid-template-rows: 18.75cqw 1fr 1fr; align-items: center; overflow: hidden; border-radius: 1.875cqw; background: radial-gradient(circle at 91.3% 24.6%,var(--qc-palette-343834) 0 1.5cqw,var(--qc-transparent) 1.6cqw),radial-gradient(circle at 91.3% 63%,var(--qc-screen-surface-raised) 0 1.5cqw,var(--qc-transparent) 1.6cqw),radial-gradient(circle at 91.3% 87.7%,var(--qc-screen-surface-raised) 0 1.5cqw,var(--qc-transparent) 1.6cqw),linear-gradient(var(--qc-screen-surface-control) 0 18.75cqw,var(--qc-rotary-face) 18.75cqw); }
+.qc-preset-midi-out .midi-footswitches::before { content: ""; position: absolute; left: 4.625cqw; top: 6.25cqw; width: 5.5cqw; height: 5.5cqw; border-radius: 50%; background: var(--qc-palette-343834); }
+.qc-preset-midi-out .midi-footswitches::after { content: ""; position: absolute; left: 0; right: 0; top: 18.75cqw; border-top: 1px solid var(--qc-palette-1b1e1c); }
+.qc-preset-midi-out .midi-preset-load { position: absolute; z-index: 1; left: 14.75cqw; top: 1.5cqw; width: 27.75cqw; height: 15.875cqw; border: .5cqw solid var(--qc-screen-background)!important; border-radius: .875cqw; background: var(--qc-screen-surface-base); color: var(--qc-palette-e4e6e5); font-size: 2.25cqw; line-height: 1.35; }
+.qc-preset-midi-out .midi-preset-load::after { content: ""; position: absolute; left: 35.75cqw; top: 4.875cqw; width: 3cqw; height: 3cqw; border-radius: 50%; background: var(--qc-palette-343834); }
+.qc-preset-midi-out .midi-switch { grid-row: auto; width: 100%; height: 100%; display: flex; align-items: center; justify-content: flex-start; gap: 1.375cqw; padding-left: 3.25cqw; background: var(--qc-transparent); color: var(--qc-palette-d3d5d4); font-size: 2.25cqw; }
+.qc-preset-midi-out .midi-switch i { width: 3cqw; height: 3cqw; flex: 0 0 3cqw; border-radius: 50%; background: var(--qc-screen-surface-raised); }
+.qc-preset-midi-out .midi-switch:nth-of-type(2) { grid-column: 1; grid-row: 2; }.qc-preset-midi-out .midi-switch:nth-of-type(3) { grid-column: 2; grid-row: 2; }.qc-preset-midi-out .midi-switch:nth-of-type(4) { grid-column: 3; grid-row: 2; }.qc-preset-midi-out .midi-switch:nth-of-type(5) { grid-column: 4; grid-row: 2; }
+.qc-preset-midi-out .midi-switch:nth-of-type(6) { grid-column: 1; grid-row: 3; }.qc-preset-midi-out .midi-switch:nth-of-type(7) { grid-column: 2; grid-row: 3; }.qc-preset-midi-out .midi-switch:nth-of-type(8) { grid-column: 3; grid-row: 3; }.qc-preset-midi-out .midi-switch:nth-of-type(9) { grid-column: 4; grid-row: 3; }
+.qc-preset-midi-out .midi-expression { position: absolute; left: 65.5cqw; top: 6.375cqw; width: 31.25cqw; height: 36.125cqw; display: grid; grid-template-columns: 13cqw 13cqw; gap: 5.25cqw; padding: 0; }
+.qc-preset-midi-out .midi-expression-source { display: grid; grid-template-rows: 3.25cqw 1fr; padding: 0; background: var(--qc-transparent); color: var(--qc-palette-d5d7d6); font-size: 2.25cqw; }
+.qc-preset-midi-out .midi-expression-source > span { text-align: center; }
+.qc-preset-midi-out .midi-expression-source > div { position: relative; border: .5cqw solid var(--qc-screen-surface-base); border-radius: 1.5cqw; background: var(--qc-screen-surface-control); box-shadow: inset 0 0 0 .35cqw var(--qc-palette-080808); }
+.qc-preset-midi-out .midi-detail-heading { display: flex; align-items: center; gap: 2cqw; padding: 1cqw 2cqw; }
+.qc-preset-midi-out .midi-detail-heading button, .qc-preset-midi-out .midi-detail-actions button { padding: 1.2cqw 2cqw; border-radius: .7cqw; background: var(--qc-screen-surface-control); }
+.qc-preset-midi-out .midi-detail-heading h2 { margin: 0; font-size: 2cqw; }
+.qc-preset-midi-out .midi-message-slots { height: 64%; margin: 0 1%; padding: 0; overflow: auto; list-style: none; border-radius: 0 0 1cqw 1cqw; background: var(--qc-palette-272b28); }
+.qc-preset-midi-out .midi-message-slots li { min-height: 5.5cqw; display: flex; align-items: center; gap: 1.2cqw; padding: .7cqw 2cqw; border-top: 1px solid var(--qc-screen-surface-base); }
+.qc-preset-midi-out .midi-message-slots label { display: flex; align-items: center; gap: .5cqw; color: var(--qc-palette-b9bcba); font-size: 1.5cqw; }
+.qc-preset-midi-out .midi-message-slots select, .qc-preset-midi-out .midi-message-slots input { width: 9cqw; height: 4cqw; padding: 0 .75cqw; border: 0; border-radius: .7cqw; background: var(--qc-palette-101211); color: inherit; font: inherit; font-size: 1.6cqw; }
+.qc-preset-midi-out .midi-message-slots label:first-child select { width: 19cqw; }
+.qc-preset-midi-out .midi-detail-actions { display: flex; justify-content: flex-end; gap: 1cqw; padding: 1.5cqw 2cqw; }
+.qc-preset-midi-out .midi-screen-status, .qc-preset-midi-out .midi-demo-status { margin: 1cqw 3cqw; color: var(--qc-screen-text-muted); }

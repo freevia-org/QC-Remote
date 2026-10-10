@@ -1,0 +1,19 @@
+/* Paint and the layout box only. The segment width rule, the gap and the two
+   heights live in qc-segment-bar.tsx beside the measurements that produced
+   them, so a pane can recolour or place a bar but cannot quietly respell its
+   segment count in a grid template as well as in its JSX - which is what the
+   three implementations this replaces each did. */
+.qc-segment-bar {
+  display: block;
+  width: 60.75cqw;
+  height: 3cqw;
+}
+
+/* 486 x 24 device pixels on an 800px screen. The power pane's bar is 22 tall,
+   passed at the call site, because no rule derives one height from the other. */
+.qc-segment-bar[data-height="22"] { height: 2.75cqw; }
+
+/* An SVG presentation attribute would beat every rule that only inherits, so
+   the component writes no fill of its own and these rules own the paint. */
+.qc-segment-track { fill: var(--qc-segment-track, var(--qc-screen-surface-base)); }
+.qc-segment-lit { fill: var(--qc-segment-lit, var(--qc-screen-accent)); }

@@ -1,0 +1,42 @@
+{
+  "name": "qc-remote",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Independent, unofficial controller for the Neural DSP Quad Cortex, with a local device broker and MCP server for AI assistants.",
+  "license": "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/freevia-org/QC-Remote.git"
+  },
+  "workspaces": [
+    "apps/android",
+    "apps/windows",
+    "packages/typescript/*",
+    "services/qc-remote-cloud"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "build:windows": "npm run build --workspace @qc-remote/windows",
+    "build:android:web": "npm run build --workspace @qc-remote/android",
+    "cloud:check": "npm run check --workspace @qc-remote/cloud",
+    "contracts:check": "node services/device-broker/scripts/generate-broker-tray-surface.mjs --check && node --experimental-strip-types --test scripts/verify-contract-snapshots.test.mjs",
+    "legal:notices": "node scripts/verify-third-party-notices.mjs --write",
+    "legal:notices:check": "node scripts/verify-third-party-notices.mjs",
+    "legal:carveout:check": "node scripts/verify-license-carveout.mjs",
+    "audit:public-history": "node --test scripts/verify-public-history.test.mjs && node scripts/verify-public-history.mjs"
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/client": "2.2.0",
+    "sharp": "0.35.5",
+    "miniflare": {
+      "undici": "7.29.1"
+    }
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}

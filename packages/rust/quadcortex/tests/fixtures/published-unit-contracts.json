@@ -1,0 +1,249 @@
+{
+  "schemaVersion": 1,
+  "contracts": {
+    "input-port": {
+      "controls": [
+        {
+          "modelKey": "level",
+          "physicalRange": [
+            -12,
+            60
+          ],
+          "physicalToWire": "(levelDb + 12) / 72",
+          "publicField": "levelDb",
+          "wireToPhysical": "-12 + 72 * value"
+        },
+        {
+          "modelKey": "inputZmode",
+          "physicalToWire": "enumIndex / 8",
+          "publicField": "impedance"
+        },
+        {
+          "modelKey": "inputType",
+          "physicalToWire": "enumIndex / 2",
+          "publicField": "inputType"
+        },
+        {
+          "modelKey": "groundLift",
+          "physicalToWire": "off=0, on=1",
+          "publicField": "groundLift"
+        }
+      ]
+    },
+    "output-port": {
+      "controls": {
+        "level": {
+          "physicalDomain": {
+            "min": -40,
+            "max": 12,
+            "unit": "dB"
+          },
+          "physicalToWire": "(levelDb + 40) / 52",
+          "wireToPhysical": "-40 + 52 * value"
+        },
+        "groundLift": {
+          "physicalDomain": [
+            0,
+            1
+          ],
+          "transform": "identity"
+        },
+        "mute": {
+          "physicalDomain": [
+            false,
+            true
+          ],
+          "transform": "identity"
+        }
+      }
+    },
+    "usb-port": {
+      "controls": [
+        {
+          "modelKey": "level",
+          "physicalRangeDb": [
+            -40,
+            0
+          ],
+          "physicalToWire": "(dB + 40) / 40",
+          "publicField": "level",
+          "wireToPhysical": "-40 + 40 * value"
+        },
+        {
+          "modelKey": "select",
+          "physicalToWire": "enumIndex / 3",
+          "publicField": "headphonesSource"
+        },
+        {
+          "modelKey": "dryWet",
+          "physicalToWire": "enumIndex",
+          "publicField": "dryWet"
+        }
+      ],
+      "wire": {
+        "fields": [
+          {
+            "modelKey": "level"
+          },
+          {
+            "modelKey": "select"
+          },
+          {
+            "modelKey": "dryWet"
+          }
+        ]
+      }
+    },
+    "global-eq-output": {
+      "uiWorkflow": {
+        "controls": [
+          {
+            "physicalRangeDb": [
+              -20,
+              20
+            ],
+            "physicalToNormalized": "(levelDb + 20) / 40",
+            "property": "output",
+            "publicField": "level"
+          },
+          {
+            "property": "out12assigned",
+            "publicField": "out12",
+            "toNormalized": "assigned ? 1 : 0"
+          },
+          {
+            "property": "out34assigned",
+            "publicField": "out34",
+            "toNormalized": "assigned ? 1 : 0"
+          }
+        ]
+      }
+    },
+    "general-integer": {
+      "settings": {
+        "dimmedLedBrightness": {
+          "transform": "round(step * 100 / 32)",
+          "wireToPublic": "min(31, round(wire * 32 / 100))"
+        },
+        "holdTiming": {
+          "transform": "wire ordinal n displays 500 + 100*n ms"
+        },
+        "ledBrightness": {
+          "transform": "round(step * 100 / 32)",
+          "wireToPublic": "round(wire * 32 / 100)"
+        },
+        "midiChannel": {
+          "transform": "identity"
+        },
+        "screenBrightness": {
+          "transform": "round(step * 100 / 32)",
+          "wireToPublic": "1 - trunc(((wire - 1) / -100) * 32)"
+        }
+      }
+    },
+    "general-settings-read": {
+      "publicProjection": [
+        {
+          "public": "screenBrightness",
+          "projection": "1 - trunc(((wire - 1) / -100) * 32)"
+        },
+        {
+          "public": "ledBrightness",
+          "projection": "round(wire * 32 / 100)"
+        },
+        {
+          "public": "lockScreenAndVolumeKnob",
+          "projection": "direct"
+        },
+        {
+          "public": "globalBypassCab",
+          "projection": "four optional row booleans"
+        },
+        {
+          "public": "globalBypassIr",
+          "projection": "four optional row booleans"
+        },
+        {
+          "public": "sceneBypassBehavior",
+          "projection": "enum 0..2"
+        },
+        {
+          "public": "midiOverUsb",
+          "projection": "direct"
+        },
+        {
+          "public": "midiChannel",
+          "projection": "direct"
+        },
+        {
+          "public": "ignoreDuplicatePc",
+          "projection": "direct"
+        },
+        {
+          "public": "availableDiskSpace",
+          "projection": "direct"
+        },
+        {
+          "public": "totalDiskSpace",
+          "projection": "direct"
+        },
+        {
+          "public": "internalMidiClockEnabled",
+          "projection": "direct"
+        },
+        {
+          "public": "masterVolumeAssignment",
+          "projection": "four optional output booleans"
+        },
+        {
+          "public": "stompModeAutoAssign",
+          "projection": "direct"
+        },
+        {
+          "public": "swapTempoTunerAccess",
+          "projection": "direct"
+        },
+        {
+          "public": "midiClockOut",
+          "projection": "enum 0..3"
+        },
+        {
+          "public": "disableInternetConnectionCheck",
+          "projection": "direct"
+        },
+        {
+          "public": "dynamicDelayCompensation",
+          "projection": "direct"
+        },
+        {
+          "public": "dimmedLedBrightness",
+          "projection": "min(31, round(wire * 32 / 100))"
+        },
+        {
+          "public": "presetDimmed",
+          "projection": "direct"
+        },
+        {
+          "public": "sceneDimmed",
+          "projection": "direct"
+        },
+        {
+          "public": "stompDimmed",
+          "projection": "direct"
+        },
+        {
+          "public": "midiClockIn",
+          "projection": "direct"
+        },
+        {
+          "public": "gigViewStompAccess",
+          "projection": "direct"
+        },
+        {
+          "public": "holdTimingIndex/holdTimingMs",
+          "projection": "index 0..5; 500 + 100 * index ms"
+        }
+      ]
+    }
+  }
+}

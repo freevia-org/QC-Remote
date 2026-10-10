@@ -1,0 +1,317 @@
+@scope (.qc-screen-fixture-root) {
+.qc-screen.coros-io-settings { background: var(--qc-screen-surface-base); }
+.coros-io-settings > header .io-global-eq { background: var(--qc-screen-surface-raised); }
+/* The heading chip sits at x 8..51 and the "I/O SETTINGS" label at x 61 on
+   every I/O screen, so the header's own padding is 1cqw. */
+.coros-io-settings > header { padding-left: 1cqw; background: var(--qc-screen-surface-base); font-size: 2.25cqw; }
+.coros-io-settings > header .io-heading { display: flex; align-items: center; gap: 1cqw; }
+/* The plate under the I/O header mark is the badge surface, not the control
+   one: it is 49,52,49 behind it on every I/O screen, one step above the
+   41,44,41 this used to paint. The mark's own four inks were already exact,
+   so that one colour was the only wrong pixel in the tile. The chip's own
+   placement is settled by the header padding above and the translateY below. */
+.coros-io-settings > header .io-heading > i { width: 5.5cqw; height: 5.5cqw; display: grid; place-items: center; border-radius: 1cqw; background: var(--qc-palette-313431); color: var(--qc-palette-9a9e9a); font-size: 1.4cqw; font-style: normal; }
+.coros-io-settings > header .io-heading > i > svg { width: 24px; height: 24px; display: block; }
+.coros-io-settings > header .io-heading > span { display: grid; line-height: 1.05; }
+/* The device's "I/O SETTINGS" label runs x 61..158 and inks 14 rows; at
+   1.75cqw ours set the same glyphs in 88px and 12 rows, so the label - and
+   only the label - is a size larger. The old fix stretched the whole heading
+   with scaleX(1.14), which pulled the 24x24 chip glyph out to 27.36x24 and
+   pushed the title 7px right of where the device puts it. */
+.coros-io-settings > header .io-heading small { color: var(--qc-palette-a8aaa8); font-size: 1.9375cqw; font-weight: 400; }
+.coros-io-settings > header .io-heading strong { color: var(--qc-palette-25ef59); font-size: 2.5cqw; font-weight: 400; }
+/* The header is 12% of 480, so its 41.6px content box centres the 44px chip on
+   6.8 where the device draws it at 8..51. */
+.coros-io-settings > header .io-heading > i { transform: translateY(1.2px); }
+/* The device stacks "I/O SETTINGS" over the title with their ink at y 12..25
+   and 34..52; line-height 1.05 alone leaves 4px of leading where the unit
+   leaves 8, which set every title 5px high. */
+.coros-io-settings > header .io-heading > span { row-gap: 5px; transform: translateY(1.5px); }
+.coros-io-settings > header .io-global-eq { font-size: 1.75cqw; }
+.coros-io-settings > header .io-global-eq { width: 13.625cqw; height: 5.5cqw; border-radius: 1cqw; }
+/* The I/O header's buttons are the nav bar's box wherever the unit draws it:
+   44 rows under an 8-row inset, exactly as the shared navigation bar
+   everywhere else. Centring them in this header's 12% band put GLOBAL EQ and
+   the tick a row or two out of position. Pinned to the top of the band
+   rather than to the band's height, because the band itself is what the
+   ports row below aligns to: this screen's port glyphs already land on the
+   unit's y 97, and raising the header to the 60px the bar really is would
+   carry all of them down with it. */
+.coros-io-settings > header .io-global-eq { align-self: flex-start; }
+.coros-io-settings > header button:last-child { height: var(--qc-nav-bar-button); align-self: flex-start; background: var(--qc-screen-surface-control); }
+/* The tick is crispEdges pixel art at its natural 24 units, so it has to be
+   24 CSS pixels; 3.75cqw/3cqw is 30x24 and cost it a column each side. The
+   custom property is what beats the doubled #root rule in
+   qc-device-typography.css, which otherwise drags the glyph to the font-size. */
+.coros-io-settings > header button:last-child > svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; display: block; margin: auto; }
+.coros-io-settings .io-ports { background: var(--qc-screen-surface-base); }
+.coros-io-settings { display: block; }
+.coros-io-settings .io-editor { background: var(--qc-screen-surface-control); }
+.io-ports { position: relative; grid-template-columns: repeat(12, 1fr); align-items: stretch; padding: 0 1cqw; }
+.io-ports button { position: relative; height: 100%; display: block; font-size: 1.75cqw; }
+.io-ports button > span { position: absolute; left: -1cqw; right: -1cqw; top: -.125cqw; font-size: 1.75cqw; text-align: center; white-space: nowrap; }
+.io-ports button > span.io-headphone-label { top: -2px; display: grid; place-items: center; }
+.io-ports button > span.io-headphone-label svg { width: 24px; height: 24px; display: block; }
+/* Sockets sit 2px lower than first drawn, to put every one of them on the
+   unit's own row. The unit still stacks a paired port's second tile 58px
+   below the first, so 32/90 keeps that same gap. */
+.io-ports button > i { position: absolute; left: 50%; top: 32px; width: 48px; height: 48px; margin-left: -24px; border: 0; border-radius: 0; background: var(--qc-transparent); box-shadow: none; }
+.io-ports button.is-paired > i + i { top: 90px; }
+.io-ports button.is-paired > .io-port-linked { position: absolute; left: calc(50% - 1.125cqw); top: 10.375cqw; width: 2.25cqw; height: 1.5cqw; }
+.io-ports button > small { position: absolute; left: -1.5cqw; right: -1.5cqw; bottom: .25cqw; font-size: 1.75cqw; text-align: center; white-space: nowrap; }
+/* The stem under the USB, MIDI OUT and MIDI IN sockets belongs to the ports
+   row, not to the USB page: every I/O view draws all three, flat with no
+   antialiased edge. Scoped to .is-usb it was missing from every other view
+   and a step too pale on that one. */
+.io-ports > button:nth-child(1)::after,
+.io-ports > button:nth-child(3)::after,
+.io-ports > button:nth-child(4)::after { content: ""; position: absolute; left: calc(50% - 1px); top: 10.8cqw; width: 2px; height: 4.5cqw; background: var(--qc-io-port-stem); }
+/* The USB column is the one the unit hangs off the socket rather than off the
+   button: its own tile is already a pixel right of the button's centre
+   (is-square keeps a 48px glyph on a -23px margin), and the stem follows it. */
+.io-ports > button:nth-child(1)::after { left: 50%; }
+.io-ports button:nth-child(1) > small { top: 16.625cqw; bottom: auto; }
+/* The unit sets both DIN captions on two lines - MIDI over OUT at x 147..176
+   and 149..175, MIDI over IN at 209..238 and 216..230 - where one nowrap line
+   ran 54px wide through ground the device leaves empty and dropped the second
+   row entirely. The box has to be narrower than the caption for the space to
+   break: 1.5cqw each side leaves 41px against MIDI's own 30. */
+.io-ports button:nth-child(3) > small,
+.io-ports button:nth-child(4) > small { left: 1.5cqw; right: 1.5cqw; top: 16.25cqw; bottom: auto; white-space: normal; }
+.io-ports button:nth-child(2) > small,
+.io-ports button:nth-child(8) > small,
+.io-ports button:nth-child(9) > small,
+.io-ports button:nth-child(10) > small { top: 18.75cqw; bottom: auto; }
+.io-ports button:nth-child(5) > small,
+.io-ports button:nth-child(6) > small { top: 13.75cqw; bottom: auto; }
+.io-ports button:nth-child(7) > small { left: 0; right: 0; top: 18.625cqw; bottom: auto; white-space: normal; }
+/* The unit does not centre a caption on its own port; these per-column
+   offsets are the unit's own layout, not a rounding artefact. SEND 2 is the
+   extreme: the unit draws it at x 591..636 where its
+   socket column centres on 609, four and a half pixels right of the SEND 1
+   directly below it. Only the columns whose offset is stable and at least a
+   pixel are corrected; the DIN pair and CAPTURE OUT each want opposite shifts
+   on their two lines out of one box, so both keep their centred box. */
+.io-ports button:nth-child(1) > small { transform: translateX(1px); }
+.io-ports button:nth-child(2) > span,
+.io-ports button:nth-child(2) > small { transform: translateX(-1px); }
+.io-ports button:nth-child(5) > small,
+.io-ports button:nth-child(6) > small { transform: translateX(2px); }
+.io-ports button:nth-child(8) > span,
+.io-ports button:nth-child(8) > small { transform: translateX(2px); }
+.io-ports button:nth-child(9) > small { transform: translateX(1px); }
+.io-ports button:nth-child(10) > span { transform: translateX(5px); }
+.io-ports button:nth-child(10) > small { transform: translateX(2px); }
+.io-ports button.is-input > span { transform: translateX(2px); }
+.io-ports button.is-square > i { width: 48px; height: 48px; margin-left: -23px; }
+.io-ports button.is-input > i { top: 50px; width: 68px; height: 68px; margin-left: -34px; }
+.io-ports button.is-input > span { top: 2.125cqw; font-size: 1.75cqw; }
+/* 33, not 28: the combo ring's artwork sat low in its own viewBox by seven
+   rows of a fifty-six pixel ring, and the socket was pulled up to hide it.
+   The ring's centroid now lands on the unit's own y 120.6. */
+.io-ports button.is-combo > i:first-of-type { top: 35px; width: 56px; height: 56px; margin-left: -28px; }
+.io-ports button.is-active > i { box-shadow: none; }
+/* The socket is QcIoJack, and its state is a parameter: the five rules that
+   used to live here recoloured whichever layer each screen happened to need,
+   and two of them inked the body where the unit inks the metal, so the selected
+   jack came out as an accent disc with a dark bore. There is nothing left to
+   restate per screen - see qc-io-jack.css.
+
+   The USB plate went with them. It was 38px at y 37 in one state and 48px at
+   y 32 in the others - an inconsistency, since one plate is drawn, in one
+   box, and the unit inks it white in five states and accent in the sixth.
+   The unit's own ink runs x 24..61, y 93..130 throughout. */
+/* A stacked housing whose other socket is lit keeps its own caption at the
+   panel's ordinary caption ink, which is what the unit draws for SEND 2 on
+   io-send-return and CAPTURE OUT on io-headphones - both read the same as an
+   idle caption two columns over, not the lighter muted grey this used to set on
+   io-send-return alone. */
+.coros-io-settings .io-ports button.is-active > .is-muted { color: var(--qc-palette-7f8380); }
+/* The DIN socket needed a translate while its geometry sat one column right
+   and two rows low inside its own viewBox. That geometry is fixed now, so
+   the artwork lands on the unit's own pixels unaided. */
+.io-ports .io-port-link { position: absolute; top: 82px; width: 28px; height: 16px; display: block; }
+.io-ports .io-port-link-output12 { left: 316px; }
+.io-ports .io-port-link-output34 { left: 478px; }
+.io-ports .io-input-selectors { position: absolute; right: 1.5cqw; bottom: .5cqw; width: 17cqw; height: 6cqw; display: grid; grid-template-columns: 1fr 1fr; gap: .75cqw; }
+.io-ports .io-input-selectors button { height: 6cqw; border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-muted); font-size: 2cqw; text-align: center; }
+.io-ports .io-input-selectors button.is-active { background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.io-ports button.is-midi > i { top: 34px; }
+.io-ports button > i > svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+/* The unit inks the 48px jack from y 93 to y 135 and the 68px input's dark
+   disc from 112 to 175, and the boxes here already put them there: a blanket
+   translateY(2px) carried every non-MIDI glyph two rows past it - the tile's
+   top is not the first row its artwork inks. Only the combo needs the two
+   pixels, and it keeps them in its own box below. */
+.io-ports .io-headphone-label svg [data-qc-role="reference.primaryText"] { fill: currentColor !important; stroke: none; }
+.io-ports .io-headphone-label svg.is-muted { color: var(--qc-screen-text-muted); }
+.io-ports .io-headphone-label svg.is-active { color: var(--qc-screen-text-primary); }
+/* The eight rules that stood here painted `port-core`, `port-hole` and a
+   bordered circle for INPUT 1's own selected artwork - a second socket drawing
+   that the device never shows. The unit lights INPUT 1 with the same io.input
+   every other state draws unlit, plus the rim QcIoJack draws. */
+.io-ports button:nth-child(2) > i, .io-ports button:nth-child(10) > i { margin-left: -25px; }
+.io-ports button:nth-child(11) > i { margin-left: -35px; }
+.io-ports button:nth-child(2) { transform: translateX(-.625cqw); }
+.io-ports button:nth-child(3) { transform: translateX(-1.25cqw); }
+.io-ports button:nth-child(4) { transform: translateX(-1.625cqw); }
+.io-ports button:nth-child(5) { transform: translateX(-1.25cqw); }
+.io-ports button:nth-child(6), .io-ports button:nth-child(7) { transform: translateX(-.375cqw); }
+.io-ports button:nth-child(8) { transform: translateX(-1.125cqw); }
+.io-ports button:nth-child(9) { transform: translateX(-1.75cqw); }
+.io-ports button:nth-child(10), .io-ports button:nth-child(11) { transform: translateX(-2.375cqw); }
+.io-ports button:nth-child(12) { transform: translateX(-1.875cqw); }
+.coros-io-settings .io-editor { transform: translateY(-.25cqw); }
+
+/* ONE COLUMN GRID FOR EVERY I/O PANE, because the unit draws one: five
+   columns of 155 starting at x 8, split by 2px rules at 163, 320, 477 and
+   634, the fifth column 156 wide with no rule after it.
+     8..162 | 163..164 | 165..319 | 320..321 | 322..476 | 477..478 | 479..633 | 634..635 | 636..791
+   Four panes used to declare four different grids - 20%/80% on the USB page,
+   five 1fr with a 2px gap on the output page, two 19.5cqw on the headphone
+   page, and a hand-tuned 19.5/19.875/19.375/19.5/19.75 on the analog one - and
+   none of them landed on it, which is why the shared meter came out a pixel
+   left or right of the unit's own track x.
+   19.625cqw is 157: the column's own 155 plus its rule, since the rule is a
+   border inside the box. The unit inks the rules one green step off
+   var(--qc-screen-surface-raised). That step is now a role of its own,
+   --qc-io-column-rule, rather than the raised surface standing in for it -
+   which is what three of the four panes painted before. The output page
+   painted the screen through a gap instead, four steps darker than either. */
+.coros-io-settings .io-editor.is-analog { grid-template-columns: repeat(4, 19.625cqw) 1fr; }
+.coros-io-settings .io-editor.is-usb { grid-template-columns: 19.625cqw 1fr; }
+.coros-io-settings .io-editor.is-headphones { grid-template-columns: 19.625cqw 19.625cqw 1fr; }
+.coros-io-settings .io-editor.is-output > section { grid-template-columns: repeat(4, 19.625cqw) 1fr; gap: 0; }
+.coros-io-settings .io-meter-grid { grid-template-columns: repeat(3, 19.625cqw) 1fr; }
+.coros-io-settings .io-editor.is-analog > section,
+.coros-io-settings .io-editor.is-usb > section,
+.coros-io-settings .io-editor.is-headphones > section,
+.coros-io-settings .io-headphone-meter,
+.coros-io-settings .io-meter-grid > span,
+.coros-io-settings .io-editor.is-output > section > span { border-right: 2px solid var(--qc-io-column-rule); }
+.coros-io-settings .io-editor.is-analog > section:nth-of-type(5),
+.coros-io-settings .io-meter-grid > span:nth-child(4n),
+.coros-io-settings .io-editor.is-output > section > span:nth-child(5) { border-right: 0; }
+.io-editor.is-headphones { position: absolute; left: 1cqw; right: 1cqw; margin: 0; top: 32.125cqw; height: 27cqw; display: grid; grid-template-rows: 107px 109px; transform: none; }
+.io-editor.is-headphones::after { content: ""; position: absolute; left: 0; right: 0; top: 107px; height: 2px; background: var(--qc-route-pill); }
+.io-editor.is-headphones > section { position: relative; }
+.io-editor.is-headphones > section > span,.io-headphone-meter > span { position: absolute; left: 1.375cqw; top: 1.125cqw; color: var(--qc-screen-text-primary); font-size: 2cqw; }
+.io-editor.is-headphones .io-dial-wrap { inset: 4.75cqw 1cqw auto; height: 8cqw; }
+.io-editor.is-headphones > section:nth-child(1) .io-dial { right: -.375cqw; }
+.io-editor.is-usb .io-dial { right: -.0625cqw; }
+.io-editor.is-headphones .io-dial-wrap > strong { bottom: 1.525cqw; font-size: 1.75cqw; }
+.io-editor.is-headphones > section:nth-child(2) .io-dial { right: -.5cqw; }
+.io-editor.is-headphones .io-dial { transform: translateY(-.125cqw); }
+.io-editor.is-headphones > section:nth-child(1) .io-dial-wrap > strong { left: .5cqw; }
+.io-editor.is-headphones > section:nth-child(2) .io-dial-wrap > strong { left: .875cqw; }
+.io-headphone-meter { position: relative; grid-row: 2; border-top: 3px solid var(--qc-route-pill); }
+.io-headphone-meter small { position: absolute; left: 1.5cqw; right: 1cqw; top: 5.125cqw; color: var(--qc-palette-c5c8c5); font-size: 1.75cqw; white-space: nowrap; }
+/* The meter is QcLevelMeter; this is placement only. io-headphones tops its two
+   tracks at y 428 and 449, which is 61 and 82 below this pane's own content
+   box. The pair this replaces drew 135 x 16 and 135 x 14 out of a gradient
+   whose two stops were the same colour. */
+.io-headphone-meter > .qc-level-meter { position: absolute; left: 1cqw; top: 7.625cqw; }
+.io-headphone-meter > .qc-level-meter + .qc-level-meter { top: 10.25cqw; }
+/* Five hand-tuned widths stood here; the one grid above is the device's own. */
+.io-editor section > span, .io-level-meter > span { font-size: 2cqw; }
+.io-editor .io-dial-wrap { inset: 4.875cqw 1cqw auto; height: 8cqw; }
+.io-editor.is-analog .io-dial-wrap { inset: 4.625cqw 1cqw auto; }
+.io-editor.is-analog > section:nth-child(1) .io-dial { right: -.5cqw; }
+.io-editor.is-usb .io-dial-wrap { inset: 4.75cqw 1cqw auto; }
+/* The continuous level dial is 73px and the compact source selector is 59px,
+   both using the canonical shared rotary construction. */
+.io-editor.is-usb > section:first-child .io-dial { right: -.25cqw; width: 72px; height: 72px; transform: translateY(-.1875cqw); }
+.io-editor.is-usb > section:nth-child(2) .io-dial { right: -.25cqw; width: 72px; height: 72px; }
+/* I/O controls now use QcRotaryDial's shared face, track, pointer, and detent;
+   this stylesheet owns only each screen's own placement and scale. */
+.coros-io-settings .io-editor .io-dial { width: 72px; height: 72px; }
+.coros-io-settings .io-editor .io-dial.is-stepped .qc-rotary-progress { display: none; }
+.io-editor .io-dial-wrap > strong { font-size: 1.75cqw; }
+.io-editor .io-dial-wrap > strong { bottom: 1.4cqw; }
+.io-editor.is-analog .io-dial-wrap > strong { bottom: 1.525cqw; }
+.io-editor.is-analog > section:nth-child(2) .io-dial { right: -.0625cqw; }
+.io-meter-grid > span { padding-left: 1.125cqw; }
+.io-meter-grid b { position: relative; top: .375cqw; font-size: 2cqw; }
+.io-meter-grid i { position: absolute; right: 2cqw; top: 1.5cqw; width: 2.75cqw; height: 2.75cqw; display: grid; place-items: center; margin: 0; border-radius: 50%; background: var(--qc-screen-surface-base); color: var(--qc-screen-surface-control); font-size: 1.5cqw; }
+.io-meter-grid small { position: relative; top: .25cqw; display: flex; justify-content: space-between; margin: 1cqw 1.5cqw 0 0; font-size: 1.75cqw; white-space: nowrap; }
+.io-meter-grid i > svg { width: 100%; height: 100%; }
+.io-meter-grid i > svg circle { fill: var(--qc-screen-surface-base); stroke: none; }
+/* The mark is the unit's own info glyph, appearing once per meter cell. All
+   eight are the same 22x22 disc of --qc-screen-surface-base, with the `i`
+   knocked out to the cell ground --qc-screen-surface-control, and several
+   further instances elsewhere carry the same disc ink. The `info` entry is
+   that same drawing, so it paints its own ink: the 1.5px stroke that stood
+   here outlined every pixel row of the trace in --qc-palette-555a56, which is
+   off the panel's blue ladder and so a colour the screen cannot display. The
+   knockout reads only when the box behind the path paints nothing, and the
+   disc is 22px only when the glyph is sized through --qc-screen-glyph-size;
+   both are set below. */
+.io-meter-grid i > svg path { fill: var(--qc-screen-surface-base); stroke: none; }
+/* The disc is the path itself, so the box behind it must not paint the same disc:
+   the knocked-out `i` then shows the cell ground, as on io-usb (#101010 disc,
+   #292c29 mark). Its size is set by the rule after this one. */
+.io-meter-grid i { background: var(--qc-transparent); }
+/* The width:100% above loses to the #root#root screen-glyph rule in
+   qc-device-typography.css, which sizes every screen glyph to
+   var(--qc-screen-glyph-size, 1em): here 1em = 1.5cqw, so the disc painted
+   11px. The trace inks units 1..23 of 24, and io-usb's disc is 22px, so the
+   glyph is 24px (3cqw), centred on the 22px box with overflow visible. */
+.io-meter-grid i { --qc-screen-glyph-size: 3cqw; }
+/* The meter is QcLevelMeter; this is placement only. io-usb stacks the two
+   tracks of a cell 21 rows apart and repeats the pair on both grid rows, and
+   the cells' own left edges already put every track on the unit's x. */
+.io-meter-grid .qc-level-meter { margin-top: 1cqw; margin-left: -.125cqw; }
+.io-meter-grid .qc-level-meter + .qc-level-meter { margin-top: .625cqw; }
+.io-meter-grid > span:nth-child(n+5) .qc-level-meter { position: relative; top: .125cqw; }
+.io-level-meter strong { font-size: 2cqw; }
+.io-editor.is-analog .io-level-meter > .qc-level-meter { margin-top: 2.25cqw; margin-left: -.125cqw; }
+.io-editor.is-analog .io-switch label { height: 3.125cqw; margin-left: 1.125cqw; padding-left: 4.625cqw; font-size: 2cqw; }
+.io-editor.is-analog .io-switch label:first-of-type { margin-top: 2.5cqw; }
+/* Every analog switch here sits at index 1, so the second label is the selected one:
+   measured on io-input, selected #ffffff and unselected #7b7d7b. A disabled switch
+   (PHANTOM 48V) keeps its own dimming. */
+.io-editor.is-analog .io-switch:not(.is-disabled) label { color: var(--qc-io-header-mid); }
+.io-editor.is-analog .io-switch:not(.is-disabled) label:last-child { color: var(--qc-screen-text-primary); }
+/* The analog page drew two bare bordered circles and no pill body at all: the
+   stadium rule was gated on .is-output, and io-input renders as .is-analog, so
+   three of the screen's shapes were simply missing. It is QcPillToggle now, and
+   this is placement only, confirmed one cell at a time rather than assumed
+   equal. */
+/* One offset, not three. The three pills each land 16 columns into their own
+   section, on the same column grid above - the same 16 on all three. The
+   three different values that stood here were each measured against the old
+   grid's own cell, which started a pixel or two off the unit's. */
+.io-editor.is-analog .io-switch > .qc-pill-toggle { position: absolute; top: 5.875cqw; left: 2cqw; }
+.io-editor.is-analog .io-level-meter::after { content: ""; position: absolute; left: 19.375cqw; top: 1.75cqw; width: 2px; height: 10cqw; background: var(--qc-io-column-rule); }
+.io-editor.is-analog .io-level-meter strong { position: relative; top: .5cqw; }
+
+  /* The output page is a pair, so it carries two strips of five
+     cells - x 8..792, 103px tall, tops at y 262 and 366. */
+  .coros-io-settings .io-editor.is-output { position: absolute; box-sizing: border-box; left: 1cqw; right: 1cqw; top: 32.375cqw; height: 27cqw; padding: 0; margin: 0; display: grid; grid-template-rows: 13.375cqw 13.375cqw; gap: .25cqw; background: var(--qc-transparent); }
+  .io-editor.is-output > section { display: grid; }
+  .coros-io-settings.is-send-return .io-editor.is-output > section { background: var(--qc-route-glyph-surface); }
+  .io-editor.is-output > section > span { position: relative; display: block; padding: 1.125cqw 1.25cqw; background: var(--qc-route-glyph-surface); font-size: 1.75cqw; }
+  .io-editor.is-output em { font-style: normal; letter-spacing: .02cqw; }
+  /* The level knob is 62px across with its right edge at x 155 and its foot
+     at y 354, and the reading sits at the cell's bottom left. */
+  .io-editor.is-output .io-dial-wrap { position: static; }
+  .io-editor.is-output .io-dial { position: absolute; right: .625cqw; bottom: -.25cqw; }
+  .io-editor.is-output .io-dial-wrap > strong { position: absolute; left: 1.25cqw; bottom: 1.25cqw; font-weight: 400; font-size: 1.75cqw; }
+  .io-editor.is-output .io-readout strong { position: absolute; left: 1.25cqw; top: 4.5cqw; font-weight: 400; font-size: 2cqw; }
+  /* The meter is QcLevelMeter; this is placement only. Each readout cell puts
+     its track 8 columns in and 16 rows up from the cell's own foot, which lands
+     the three used across io-output, io-overview and io-send-return on the
+     unit's x 173, 330 and 487 and its y 334 and 443. What this replaces was
+     136 x 12 in --qc-editor-disabled: one step off the unit's own ink, four
+     rows short, and with no zero tick, which is why io-send-return's two
+     meters read as one solid bar. */
+  .io-editor.is-output .io-readout > .qc-level-meter { position: absolute; left: 1cqw; bottom: 1.75cqw; }
+  /* The toggle is QcPillToggle; this is placement only. The pills sit at
+     x 180.96 and 651.98, y 303.94 and 412.94, and their body is the
+     screen's base surface, not the editor's disabled fill this used to paint. */
+  .io-editor.is-output .io-switch > .qc-pill-toggle { position: absolute; left: 2cqw; top: 5.875cqw; }
+  .io-editor.is-output .io-switch label { position: absolute; left: 6.875cqw; display: flex; align-items: center; margin: 0; color: var(--qc-palette-6e736e); font-size: 2cqw; }
+  .io-editor.is-output .io-switch label:first-of-type { top: 6.125cqw; }
+  .io-editor.is-output .io-switch label:last-child { top: 9.125cqw; }
+  .io-editor.is-output .io-switch label:last-child { color: var(--qc-screen-text-primary); }
+}

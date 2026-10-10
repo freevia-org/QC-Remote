@@ -1,0 +1,17 @@
+{
+  "appId": "org.freevia.qcremote",
+  "appName": "QC Remote",
+  "webDir": "dist",
+  "backgroundColor": "#08090b",
+  "loggingBehavior": "none",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#08090b"
+  },
+  "plugins": {
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#08090b"
+    }
+  }
+}

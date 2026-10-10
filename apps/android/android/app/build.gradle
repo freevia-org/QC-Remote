@@ -1,0 +1,115 @@
+apply plugin: 'com.android.application'
+
+def qcSigningValues = [
+    store: System.getenv('QC_ANDROID_KEYSTORE'),
+    storePassword: System.getenv('QC_ANDROID_STORE_PASSWORD'),
+    keyAlias: System.getenv('QC_ANDROID_KEY_ALIAS'),
+    keyPassword: System.getenv('QC_ANDROID_KEY_PASSWORD')
+]
+def qcSigningConfigured = qcSigningValues.values().every { value -> value != null && !value.trim().isEmpty() }
+if (qcSigningValues.values().any { value -> value != null && !value.trim().isEmpty() } && !qcSigningConfigured) {
+    throw new GradleException('QC Android signing requires QC_ANDROID_KEYSTORE, QC_ANDROID_STORE_PASSWORD, QC_ANDROID_KEY_ALIAS, and QC_ANDROID_KEY_PASSWORD together.')
+}
+
+android {
+    // Opt-in, platform-supplied legacy runner: no new Maven dependency.
+    // Tests require a disposable Android runtime with these shared libraries.
+    if (providers.gradleProperty('qcJniInstrumentation').orNull == 'true') {
+        useLibrary 'android.test.base'
+        useLibrary 'android.test.runner'
+        defaultConfig {
+            testInstrumentationRunner 'android.test.InstrumentationTestRunner'
+        }
+    }
+    namespace = "org.freevia.qcremote"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "org.freevia.qcremote"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 40
+        versionName "0.3.35"
+        ndk {
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
+        androidResources {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    buildFeatures {
+        buildConfig = true
+    }
+    signingConfigs {
+        qcDistribution {
+            if (qcSigningConfigured) {
+                storeFile file(qcSigningValues.store)
+                storePassword qcSigningValues.storePassword
+                keyAlias qcSigningValues.keyAlias
+                keyPassword qcSigningValues.keyPassword
+            }
+        }
+    }
+    buildTypes {
+        // Debug keeps Gradle's own throwaway debug keystore even when the
+        // distribution key is present. A debuggable APK under the registered
+        // identity installs over the real app and inherits its data, so
+        // run-as and a debugger would reach a paired phone's relay state.
+        // Only the release build type is ever signed as QC Remote.
+        release {
+            if (qcSigningConfigured) signingConfig signingConfigs.qcDistribution
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    testImplementation "junit:junit:$junitVersion"
+    testImplementation 'org.json:json:20240303'
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+def qcRepoRoot = rootProject.projectDir.parentFile.parentFile.parentFile
+def buildSharedQcRust = tasks.register('buildSharedQcRust', Exec) {
+    workingDir qcRepoRoot
+    inputs.file(new File(qcRepoRoot, 'scripts/build-android-rust.ps1'))
+    inputs.files(fileTree(new File(qcRepoRoot, 'packages/rust/quadcortex')) {
+        include 'Cargo.toml', 'Cargo.lock', 'build.rs', 'proto/**', 'src/**'
+        exclude 'target/**'
+    })
+    inputs.files(fileTree(new File(qcRepoRoot, 'packages/rust/quadcortex-android')) {
+        include 'Cargo.toml', 'Cargo.lock', 'src/**'
+        exclude 'target/**'
+    })
+    outputs.files(
+        new File(projectDir, 'src/main/jniLibs/arm64-v8a/libquadcortex_android.so'),
+        new File(projectDir, 'src/main/jniLibs/x86_64/libquadcortex_android.so')
+    )
+    // Windows keeps using the inbox Windows PowerShell exactly as before. Elsewhere
+    // (CI on ubuntu-latest, macOS/Linux developers) the same script runs under
+    // PowerShell 7 (`pwsh`), which GitHub's hosted runners ship preinstalled;
+    // ExecutionPolicy does not exist off Windows, so it is not passed there.
+    def buildScript = new File(qcRepoRoot, 'scripts/build-android-rust.ps1').absolutePath
+    if (System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows')) {
+        commandLine 'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+            buildScript, '-Profile', 'release'
+    } else {
+        commandLine 'pwsh', '-NoProfile', '-NonInteractive', '-File',
+            buildScript, '-Profile', 'release'
+    }
+}
+preBuild.dependsOn buildSharedQcRust

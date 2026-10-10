@@ -1,0 +1,94 @@
+/* Geometry and roles here are the device's own, not estimated. Two role
+   mistakes dominated the first reconstruction: the screen ground is the base
+   surface, not black, and the parameter panel is the control surface, not the
+   app-wide device control tone. Both are flat fills over nearly half the
+   screen, so they set the floor for everything else. */
+.coros-overlord-synth { width: 100%; height: 100%; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
+.coros-overlord-synth button { border: 0; padding: 0; background: var(--qc-transparent); color: inherit; }
+/* The four navigation controls sit at fixed x on the device (8, 470, 620, 694)
+   with widths 44/132/66/98 - a grid of proportional columns cannot land all
+   four, so they are placed. */
+.coros-overlord-synth > header { position: relative; height: 60px; background: var(--qc-screen-surface-base); }
+.coros-overlord-synth > header > * { box-sizing: border-box; }
+.coros-overlord-synth > header svg { width: 25px; height: 25px; }
+.synth-more, .synth-scene, .synth-bypass, .synth-done { position: absolute; top: 8px; height: 44px; display: grid; place-items: center; border-radius: 8px !important; }
+/* Raised, not base: the buttons read as a distinct tone against the header
+   ground. The save tick is the one control lifted to the control surface. */
+.synth-more, .synth-scene, .synth-bypass { background: var(--qc-screen-surface-raised) !important; }
+.synth-done { background: var(--qc-screen-surface-control) !important; }
+.synth-more { left: 8px; width: 44px; }
+.synth-bypass { left: 620px; width: 66px; }
+.synth-done { left: 694px; width: 98px; }
+.synth-title { position: absolute; left: 52px; top: 0; height: 60px; display: flex; flex-direction: column; justify-content: center; padding-left: 8px; }
+.synth-title small { color: var(--qc-screen-text-muted); font-size: 15px; letter-spacing: .5px; }
+.synth-title b { color: var(--synth-accent); font-size: 20px; font-weight: 400; }
+.synth-title > svg { position: absolute; left: 144px; top: 33px; width: 18px !important; height: 18px !important; color: var(--synth-accent); }
+.synth-scene { left: 470px; width: 132px; grid-template-columns: 1fr 40px 1fr; }
+.synth-scene svg { width: 26px; height: 26px; }
+/* The envelope frame is two 4px accent rules along the top and left of a
+   106px band; the interior is the screen ground, not a surface. */
+.synth-envelope { position: relative; box-sizing: border-box; height: 106px; margin: 6px 8px 0; border-top: 4px solid var(--synth-accent); border-left: 4px solid var(--synth-accent); }
+.synth-envelope > span { position: absolute; left: 209px; top: 18px; color: var(--qc-synth-wave-muted); font-size: 40px; font-weight: 700; }
+/* A full-height raised slab at x 385-416 carrying three 2px grip slots cut
+   back to the screen ground. */
+.synth-envelope-line { position: absolute; left: 373px; top: -3px; width: 32px; height: 106px; border-radius: 8px; background: var(--qc-screen-surface-raised); }
+.synth-envelope-line::after { content: ""; position: absolute; left: 10px; top: 43px; width: 12px; height: 20px; background: repeating-linear-gradient(to right, var(--qc-screen-surface-base) 0 2px, var(--qc-transparent) 2px 5px); }
+.synth-envelope-node { display: none; }
+.synth-wave-selector { height: 110px; display: grid; grid-template-columns: 1fr 1fr; }
+/* Eight 91px tiles on a 99px pitch, not four proportional cells: the device's
+   selected tiles measure 8-98 / 206-296 in bank one and 405-495 / 702-792 in
+   bank two, which a 1fr grid with symmetric margins cannot produce. */
+.synth-osc-bank { display: grid; grid-template-columns: repeat(4, 91px); column-gap: 8px; grid-template-rows: 51px 59px; }
+.synth-osc-bank.osc-one { padding-left: 8px; }
+.synth-osc-bank.osc-two { padding-left: 4px; border-left: 1px solid var(--qc-screen-surface-control); }
+.synth-osc-bank > div { position: relative; display: grid; place-items: center; color: var(--qc-synth-wave-muted); }
+.synth-osc-bank > div.selected { border-radius: 8px; background: var(--synth-accent); color: var(--qc-screen-text-primary); }
+.synth-osc-bank.osc-two > div.selected { background: var(--qc-palette-6b55ff); }
+.synth-osc-label { align-content: center; justify-items: start !important; padding-left: 12px; border-radius: 8px; background: var(--synth-accent); color: var(--qc-screen-text-primary) !important; }
+.osc-two .synth-osc-label { background: var(--qc-palette-6b55ff); }
+.synth-osc-label span, .synth-osc-label b { line-height: 22px; font-size: 15px; font-weight: 400; }
+/* The selector's state mark is a filled white capsule with the accent punched
+   out of its upper end, not an outlined ring. */
+.synth-osc-label i { position: absolute; right: 9px; top: 13px; width: 14px; height: 24px; border-radius: 7px; background: var(--qc-screen-text-primary); }
+.synth-osc-label i::after { content: ""; position: absolute; left: 2px; top: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--synth-accent); }
+.osc-two .synth-osc-label i::after { background: var(--qc-palette-6b55ff); }
+.synth-osc-bank svg { width: auto; max-width: 43px; height: 32px; }
+/* Five 156px cells with a 1px column gap and a 2px row gap; the gaps are the
+   screen ground showing through, which is what draws the rules the device
+   shows. The cells re-cover the column gap for the first 15 and last 13 rows,
+   so each rule stops short of the panel edge the way the device draws it. */
+.synth-controls { height: 214px; margin: 6px 8px 0; display: grid; grid-template-columns: repeat(5, 156px); grid-template-rows: 106px 106px; column-gap: 1px; row-gap: 2px; border-radius: 7px; overflow: hidden; background: var(--qc-screen-surface-base); }
+.page-oscillator .synth-controls { margin-top: 8px; }
+.synth-control { position: relative; background: var(--qc-screen-surface-control); }
+.synth-control::before, .synth-control::after { content: ""; position: absolute; right: -1px; width: 1px; background: var(--qc-screen-surface-control); }
+.synth-control::before { top: 0; height: 15px; }
+.synth-control::after { bottom: 0; height: 13px; }
+.synth-control:nth-child(5n)::before, .synth-control:nth-child(5n)::after { content: none; }
+.synth-control > span { position: absolute; left: 11px; top: 8px; color: var(--qc-screen-text-primary); font-size: 15px; }
+.synth-control > .qc-rotary { position: absolute; width: 72px; height: 72px; left: 77px; top: 34px; }
+.synth-control > strong { position: absolute; left: 12px; bottom: 13px; font-size: 15px; font-weight: 400; }
+/* The unit is a second role, not the same ink dimmed: the device draws it in
+   its own muted tone beside a full-white number. */
+.synth-control > strong i { font-style: normal; color: var(--qc-palette-737d73); }
+/* A 22px ground-filled disc carrying an "i" struck in the surrounding
+   control surface, so it reads as a cut-out. */
+.synth-info { position: absolute; right: 15px; top: 11px; width: 22px; height: 22px; border-radius: 50%; background: var(--qc-screen-surface-base); }
+.synth-info::before, .synth-info::after { content: ""; position: absolute; left: 10px; width: 2px; background: var(--qc-screen-surface-control); }
+.synth-info::before { top: 4px; height: 2px; }
+.synth-info::after { top: 9px; height: 9px; }
+.synth-select { position: absolute; left: 11px; right: 8px; top: 57px; height: 38px; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; border-radius: 7px; background: var(--qc-screen-surface-base); font-size: 14px; }
+.synth-select svg { width: 18px; height: 18px; }
+/* A two-position vertical switch: a 22x46 ground track with the knob drawn as
+   an 18px white ring at the selected end, and both option names stacked beside
+   it with only the selected one in primary ink. */
+.synth-toggle { position: absolute; left: 16px; top: 47px; width: 22px; height: 46px; }
+.synth-toggle-track { position: absolute; inset: 0; border-radius: 11px; background: var(--qc-screen-surface-base); }
+.synth-toggle-track b { position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border: 3px solid var(--qc-screen-text-primary); border-radius: 50%; }
+.synth-toggle small, .synth-toggle em { position: absolute; left: 37px; font-size: 15px; font-style: normal; }
+.synth-toggle small { top: 0; color: var(--qc-screen-text-primary); }
+.synth-toggle em { top: 24px; color: var(--qc-palette-737d73); }
+.synth-pages { box-sizing: border-box; height: 72px; margin-top: 8px; display: grid; grid-template-columns: repeat(4, 192px); gap: 6px; padding-left: 8px; background: var(--qc-screen-surface-base); }
+.synth-pages > div { position: relative; min-width: 0; overflow: hidden; border-radius: 7px; background: var(--qc-screen-surface-control); }
+.synth-pages > div.selected { background: var(--synth-accent); }
+.synth-pages span { position: absolute; left: 8px; top: 9px; font-size: 15px; }
+.synth-pages svg { position: absolute; left: 9px; bottom: 8px; width: 27px; max-width: 27px; height: 27px; color: var(--qc-screen-text-primary); }

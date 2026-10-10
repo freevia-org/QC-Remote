@@ -1,0 +1,38 @@
+{
+  "name": "@qc-remote/android",
+  "version": "0.3.35",
+  "license": "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "test": "node --experimental-strip-types --test src/native-sync.test.ts src/mobile-ui.test.ts",
+    "branding:generate": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/generate-android-branding.ps1",
+    "android:update": "cap update android",
+    "android:sync": "node ../../scripts/sync-theme-assets.mjs && npm run build && cap sync android",
+    "android:open": "cap open android",
+    "android:build:debug": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/build-android-debug.ps1"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/status-bar": "^8.0.0",
+    "@qc-remote/client": "0.1.0",
+    "@qc-remote/core": "0.1.0",
+    "@qc-remote/form-factors": "0.1.0",
+    "@qc-remote/theme": "0.1.0",
+    "@qc-remote/ui": "0.1.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.4.3",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}

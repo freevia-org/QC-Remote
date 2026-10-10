@@ -1,0 +1,107 @@
+@scope (.qc-screen-fixture-root) {
+/* The live Add device browser. Its rail and list are official-device-browser.css
+   as drawn for the official browser frames; the rules here only place that
+   markup over the live Grid and add the states a static frame never needed
+   (scrolling, search, loading, no results, an unavailable model).
+
+   Placement follows the unit's own frames, device-browser-root and -models: the
+   browser takes one half of the screen and the other half keeps the Grid under
+   a wash, with the target slot lit above it. */
+.device-browser-official.is-live-picker { position: absolute; z-index: 32; top: 0; bottom: 0; width: 50%; display: grid; grid-template-columns: 100%; grid-template-rows: 100%; overflow: hidden; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); container-type: normal; }
+.device-browser-official.is-live-picker.is-right { right: 0; }
+.device-browser-official.is-live-picker.is-left { left: 0; }
+.device-browser-official.is-live-picker > main { min-height: 0; }
+/* container-type: normal above leaves every cqw resolving against the screen
+   bezel, the device's own 800-unit width. The fixture's plate sizes are
+   pixels of that 800-wide screen, so they are restated here as the same
+   fraction of it: 8px, 16px, 70px, 3px, 14px and 40px. */
+.device-browser-official.is-live-picker nav { min-height: 0; overflow-y: auto; padding-top: 1cqw; scrollbar-width: none; }
+.device-browser-official.is-live-picker nav button { padding-left: 2cqw; cursor: pointer; }
+.device-browser-official.is-live-picker nav i { width: 8.75cqw; height: 8.75cqw; border-width: .375cqw; border-radius: 1.75cqw; }
+.device-browser-official.is-live-picker nav svg { width: 5cqw; height: 5cqw; }
+/* Each plate's ring is its own category's colour: red on the amp frame, the
+   accent green on the plugin frame. */
+.device-browser-official.is-live-picker nav button.is-active i { box-shadow: inset 0 0 0 2px var(--device-color); }
+.device-browser-official.is-live-picker .device-browser-list { min-height: 0; overflow-y: auto; }
+.device-browser-official.is-live-picker .device-browser-list header { position: sticky; z-index: 1; top: 0; }
+.device-browser-official.is-live-picker:not(.is-plugins) .device-browser-list header { background: var(--qc-screen-surface-control); }
+.device-browser-official.is-live-picker .device-browser-list header button { cursor: pointer; }
+.device-browser-official.is-live-picker .device-browser-list > button { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
+.device-browser-official.is-live-picker .device-browser-list > button:hover,
+.device-browser-official.is-live-picker .device-browser-list > button:focus-visible { outline: 0; background: var(--qc-palette-242625); }
+.device-browser-official.is-live-picker .device-browser-list > button.is-selected { background: var(--qc-screen-surface-raised); }
+/* device-browser-dsp-limited: a model the unit will not place is listed greyed
+   and does nothing when tapped. */
+.device-browser-official.is-live-picker .device-browser-list > button:disabled { color: var(--qc-screen-text-muted); cursor: default; }
+.device-browser-official.is-live-picker .device-browser-list > button:disabled:hover { background: var(--qc-transparent); }
+.device-browser-official.is-live-picker .device-browser-search { position: sticky; z-index: 1; top: var(--qc-nav-bar-height); height: 6cqw; display: flex; align-items: center; gap: 1cqw; margin: 0; padding: 0 1.5cqw; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-muted); }
+.device-browser-official.is-live-picker .device-browser-search > svg,
+.device-browser-official.is-live-picker .device-browser-search > .qc-directory-icon { --qc-screen-glyph-size: 2.5cqw; width: 2.5cqw; height: 2.5cqw; flex: 0 0 auto; }
+.device-browser-official.is-live-picker .device-browser-search input { min-width: 0; height: 4.5cqw; flex: 1 1 auto; padding: 0 1cqw; border: 0; border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font: 2cqw var(--qc-font-device-plain); outline: 0; }
+.device-browser-official.is-live-picker .device-browser-search input::-webkit-search-cancel-button { display: none; }
+.device-browser-official.is-live-picker .device-browser-search button { width: 4.5cqw; height: 4.5cqw; display: grid; place-items: center; flex: 0 0 auto; padding: 0; border: 0; border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); cursor: pointer; }
+.device-browser-official.is-live-picker .device-browser-search button .qc-ui-icon { --qc-screen-glyph-size: 2cqw; width: 2cqw; height: 2cqw; }
+.device-browser-official.is-live-picker .device-browser-status { margin: 0; padding: 2cqw; color: var(--qc-screen-text-muted); font: 2cqw var(--qc-font-device-plain); }
+.device-browser-official.is-live-picker .device-browser-capture-groups > section > h3 { position: sticky; z-index: 1; top: calc(var(--qc-nav-bar-height) + 6cqw); height: 5cqw; display: flex; align-items: center; gap: 1cqw; margin: 0; padding: 0 2cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-accent); font: 1.75cqw var(--qc-font-device-plain); }
+.device-browser-official.is-live-picker .device-browser-capture-groups > section > h3 .qc-directory-icon { --qc-screen-glyph-size: 2.5cqw; width: 2.5cqw; height: 2.5cqw; color: var(--qc-screen-text-primary); }
+.device-browser-official.is-live-picker .device-browser-capture-groups > section > button { width: 100%; height: 7.5cqw; display: block; overflow: hidden; padding: 0 2.125cqw; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; text-overflow: ellipsis; white-space: nowrap; font: 2cqw var(--qc-font-device-plain); cursor: pointer; }
+.device-browser-official.is-live-picker .device-browser-capture-groups > section > button:hover,
+.device-browser-official.is-live-picker .device-browser-capture-groups > section > button:focus-visible { outline: 0; background: var(--qc-palette-242625); }
+.device-browser-official.is-live-picker .device-browser-capture-groups > section > button:disabled { color: var(--qc-screen-text-muted); cursor: default; }
+.device-browser-official.is-live-picker .device-browser-list > header.has-capture-toolbar { height: var(--qc-nav-bar-height); justify-content: space-between; padding-right: 1cqw; }
+.device-browser-official.is-live-picker .device-browser-list > header.has-capture-toolbar > b { flex: 0 0 auto; white-space: nowrap; font-size: 1.85cqw; }
+.device-browser-official.is-live-picker .capture-picker-toolbar { display: flex; align-items: center; gap: .5cqw; margin-left: auto; }
+.device-browser-official.is-live-picker .capture-picker-toolbar > button { position: relative; top: 0; width: 5.25cqw; height: 5.5cqw; display: grid; grid-auto-flow: column; place-content: center; align-items: center; gap: .25cqw; padding: 0; border: 0; border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); cursor: pointer; }
+.device-browser-official.is-live-picker .capture-picker-toolbar > button[aria-pressed="true"] { color: var(--qc-screen-accent); }
+.device-browser-official.is-live-picker .capture-picker-toolbar .qc-directory-icon,
+.device-browser-official.is-live-picker .capture-picker-toolbar .qc-ui-icon { --qc-screen-glyph-size: 2.6cqw; width: 2.6cqw; height: 2.6cqw; }
+.device-browser-official.is-live-picker .capture-picker-toolbar > button > span { font: 2cqw var(--qc-font-device-plain); }
+.device-browser-official.is-live-picker .capture-picker-filters { position: sticky; z-index: 3; top: var(--qc-nav-bar-height); display: flex; flex-wrap: wrap; gap: .75cqw; padding: 1cqw 1.5cqw; background: var(--qc-screen-surface-control); }
+.device-browser-official.is-live-picker .capture-picker-filters button { padding: .75cqw 1.25cqw; border: 1px solid var(--qc-palette-707870); border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-muted); font: 1.6cqw var(--qc-font-device-plain); cursor: pointer; }
+.device-browser-official.is-live-picker .capture-picker-filters button.is-active { color: var(--qc-screen-text-primary); border-color: var(--qc-screen-accent); }
+.device-browser-official.is-live-picker .device-browser-search.is-capture-search { top: var(--qc-nav-bar-height); }
+.device-browser-official.is-live-picker .capture-picker-count { margin: 0; padding: 1.25cqw 2cqw; color: var(--qc-screen-text-muted); font: 1.6cqw var(--qc-font-device-plain); }
+.device-browser-official.is-live-picker .capture-picker-folder { width: 100%; height: 7.5cqw; display: flex; align-items: center; gap: 1.5cqw; padding: 0 2cqw; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font: 2cqw var(--qc-font-device-plain); cursor: pointer; }
+.device-browser-official.is-live-picker .capture-picker-folder:hover,
+.device-browser-official.is-live-picker .capture-picker-folder:focus-visible,
+.device-browser-official.is-live-picker .capture-picker-row:hover,
+.device-browser-official.is-live-picker .capture-picker-row:focus-visible { outline: 0; background: var(--qc-palette-242625); }
+.device-browser-official.is-live-picker .capture-picker-folder .qc-directory-icon { --qc-screen-glyph-size: 2.5cqw; width: 2.5cqw; height: 2.5cqw; flex: 0 0 auto; }
+.device-browser-official.is-live-picker .capture-picker-folder > span { overflow: hidden; flex: 1 1 auto; text-overflow: ellipsis; white-space: nowrap; }
+.device-browser-official.is-live-picker .capture-picker-folder > small { color: var(--qc-screen-text-muted); }
+.device-browser-official.is-live-picker .capture-picker-back { width: 100%; height: 5.5cqw; padding: 0 2cqw; border: 0; border-bottom: 1px solid var(--qc-palette-424742); background: var(--qc-screen-surface-raised); color: var(--qc-screen-accent); text-align: left; font: 1.75cqw var(--qc-font-device-plain); cursor: pointer; }
+.device-browser-official.is-live-picker .capture-picker-row { width: 100%; min-height: 7.5cqw; display: flex; align-items: center; gap: 1cqw; padding: .75cqw 2cqw; border: 0; border-bottom: 1px solid var(--qc-palette-424742); background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font: 2cqw var(--qc-font-device-plain); cursor: pointer; }
+.device-browser-official.is-live-picker .capture-picker-copy { min-width: 0; display: flex; flex: 1 1 auto; flex-direction: column; gap: .4cqw; }
+.device-browser-official.is-live-picker .capture-picker-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-browser-official.is-live-picker .capture-picker-copy > small,
+.device-browser-official.is-live-picker .capture-picker-version { color: var(--qc-screen-text-muted); font-size: 1.65cqw; }
+.device-browser-official.is-live-picker .capture-picker-version { flex: 0 0 auto; }
+.device-browser-official.is-live-picker .capture-picker-row:disabled { color: var(--qc-screen-text-muted); cursor: default; }
+
+/* The wash over the half the browser leaves, solved from the unit in
+   fixture-live-surface.css: multiply the covered Grid by 848a84, then lay
+   848a84 at half alpha over it. Two layers, because one alpha composite cannot
+   give red, green and blue the different slopes the unit's own wash needs. */
+.coros-add-device-wash,
+.coros-add-device-dismiss { position: absolute; top: 0; bottom: 0; width: 50%; }
+.coros-add-device-wash { z-index: 29; background: var(--qc-palette-848a84); mix-blend-mode: multiply; pointer-events: none; }
+.coros-add-device-dismiss { z-index: 30; padding: 0; border: 0; background: var(--qc-palette-rgba-132-138-132-a50); cursor: default; }
+.coros-add-device-wash.is-left,
+.coros-add-device-dismiss.is-left { left: 0; }
+.coros-add-device-wash.is-right,
+.coros-add-device-dismiss.is-right { right: 0; }
+/* The target slot, lit above the wash: a 70px plate on the screen ground with a
+   bright cross, x 322 y 206 on device-browser-root's row 2, column 4 slot. */
+.coros-add-device-target { position: absolute; z-index: 31; width: 8.75%; height: 14.5833%; display: grid; place-items: center; border-radius: 1.75cqw; background: var(--qc-screen); color: var(--qc-primary-text); pointer-events: none; }
+.coros-add-device-target .qc-ui-icon { --qc-screen-glyph-size: 3cqw; width: 3cqw; height: 3cqw; }
+.capture-library-browser.is-live-capture-picker { z-index: 32; }
+.capture-library-browser.is-live-capture-picker button { cursor: pointer; }
+.capture-library-browser.is-live-capture-picker button:disabled { cursor: default; opacity: .55; }
+.capture-library-browser.is-live-capture-picker > aside > button:disabled { opacity: 1; }
+.capture-library-browser.is-live-capture-picker > aside,
+.capture-library-browser.is-live-capture-picker > main { min-height: 0; overflow-y: auto; scrollbar-width: none; }
+.capture-library-browser.is-live-capture-picker > main { display: block; padding: 0; background: var(--qc-palette-101310); }
+.capture-library-browser.is-live-capture-picker > main .capture-picker-filters { position: sticky; z-index: 3; top: 0; }
+.capture-library-browser.is-live-capture-picker > main .device-browser-search { position: sticky; z-index: 3; top: 0; }
+.capture-library-browser.is-live-capture-picker > main .capture-library-rows { position: relative; }
+}

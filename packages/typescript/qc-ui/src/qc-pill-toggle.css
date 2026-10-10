@@ -1,0 +1,35 @@
+/* Paint and the two lengths only. Every radius, inset and stroke lives in
+   qc-pill-toggle.tsx, so a screen can recolour a toggle or place it, but
+   cannot quietly reshape it into an eleventh variant. */
+.qc-pill-toggle {
+  display: block;
+  width: 2.75cqw;
+  height: 5.75cqw;
+}
+
+/* 22 x 46 and 22 x 58 device pixels on an 800px screen. The detent pitches
+   differ between them, so neither follows from the other. */
+.qc-pill-toggle[data-positions="3"] { height: 7.25cqw; }
+
+/* Several screens used to draw their own pill on the element that now carries
+   the shared vector - a border-radius box, an ::after ring, a bare bordered
+   circle with no body at all. Those are gone from the stylesheets, and this
+   keeps any that come back from doubling up on it. */
+svg.qc-pill-toggle {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+svg.qc-pill-toggle::before,
+svg.qc-pill-toggle::after { content: none !important; }
+
+/* An SVG presentation attribute would beat every rule that only inherits, so
+   the component writes no fill or stroke of its own and these path-level rules
+   own the paint. A screen overrides by setting the two custom properties. */
+.qc-pill-body { fill: var(--qc-pill-body, var(--qc-screen-surface-base)); }
+.qc-pill-detent {
+  fill: none;
+  stroke: var(--qc-pill-detent, var(--qc-screen-accent));
+  stroke-width: 2.83;
+}

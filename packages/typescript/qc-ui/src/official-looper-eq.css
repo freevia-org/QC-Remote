@@ -1,0 +1,338 @@
+@scope (.qc-screen-fixture-root) {
+.qc-screen.coros-looper { grid-template-rows: 12.5% 43.3% 44.2%; background: var(--qc-screen-surface-base); }
+.coros-looper > header { background: var(--qc-screen-surface-base); }
+.coros-looper > header { padding: 0 1%; }
+.coros-looper > header > button { height: 73.3%; border-radius: 1cqw; font-size: 2cqw; }
+.coros-looper > header > button:first-child { min-width: 5.5cqw; font-size: 3cqw; }
+.coros-looper > header > .looper-params { width: 15.625cqw; min-width: 15.625cqw; transform: translateX(-1.25cqw); }
+.coros-looper > header > .looper-scene { width: 16.5cqw; min-width: 16.5cqw; height: 73.3%; transform: translateX(-1.25cqw); border-radius: 1cqw; background: var(--qc-screen-surface-control); }
+.coros-looper > header > button:last-child { width: 12.25cqw; min-width: 12.25cqw; }
+.coros-looper > header > button > svg { width: 3cqw; height: 3cqw; flex: none; color: var(--qc-icon-primary); fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* 24px of art at one pixel per unit. The unit inks the three dots on rows 20,
+   28 and 36; the button's own centring put them a whole row low without this
+   nudge. */
+.coros-looper > header > button:first-child > svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; transform: translateY(-1px); fill: currentColor; stroke: none; }
+.coros-looper > header .looper-params { display: flex; align-items: center; justify-content: center; gap: 1cqw; }
+/* 26x24 art at one pixel per unit -- the same size 3.25cqw/3cqw resolved to,
+   now in px because it is a crispEdges glyph. The ink is 15x15 at (429,23);
+   the old -5px/+2px shift landed it at (431,25). */
+.coros-looper > header .looper-params > svg { width: 26px; height: 24px; transform: translate(-7px, 0); }
+.coros-looper > header .looper-scene { display: flex; min-width: 16.5cqw; flex-direction: row; align-items: center; justify-content: space-around; }
+.coros-looper > header .looper-scene > button { width: 4cqw; height: 100%; display: grid; place-items: center; padding: 0; border: 0; background: var(--qc-transparent); color: inherit; }
+.coros-looper > header .looper-scene > button > svg { width: 30px; height: 24px; fill: currentColor; stroke: none; }
+.coros-looper > header .looper-scene > button:first-child > svg { transform: translateX(-4px); }
+.coros-looper > header .looper-scene > button:last-child > svg { transform: translateX(4px); }
+.coros-looper > header > button:last-child > svg { width: 30px; height: 24px; transform: translateY(2px); }
+.coros-looper > header span small { font-size: 1.75cqw; }
+.coros-looper > header span strong { font-size: 2.25cqw; line-height: 1; }
+.coros-looper > header span strong > svg { width: 2cqw !important; height: 2cqw !important; margin-left: .25cqw; vertical-align: -.25cqw; fill: currentColor; stroke: none; }
+.looper-timeline { gap: 1.5cqw; padding: .625cqw 2cqw; border: 0; background: linear-gradient(to bottom, var(--qc-screen-surface-control) 0 52%, var(--qc-screen-surface-raised) 52% 100%); font-size: 2cqw; }
+.looper-actions { background: var(--qc-screen-surface-base); }
+.looper-actions button { background: var(--qc-screen-surface-control); }
+.looper-timeline span:first-child b { display: inline-block; width: 2.25cqw; height: 2.25cqw; border-radius: 50%; background: var(--qc-palette-ff2421); color: var(--qc-transparent); vertical-align: -.35cqw; }
+.looper-timeline .looper-close-caret { display: inline-block; margin: 0 .75cqw; color: var(--qc-screen-text-primary); font-size: 3cqw; font-weight: 400; line-height: .5; }
+/* This caret is a hollow two-pixel chevron at (56,101), a dedicated icon
+   glyph rather than the category selector's filled triangle. It is
+   implemented as looper.close-caret and carries the icon's own ink, so the
+   path-level currentColor this used to need - to keep the triangle off the
+   utilityMark grey the up selector owns for directory-categories - is gone
+   with the triangle. */
+.looper-timeline em { top: .625cqw; right: 2cqw; font-size: 2cqw; }
+.looper-actions { gap: 1cqw; padding: .875cqw 1cqw 1cqw; }
+.looper-actions button { border-radius: 1cqw; }
+.looper-actions button small { top: .9cqw; left: 1.25cqw; font-size: 2cqw; }
+.looper-actions button strong { font-size: 10cqw; }
+.looper-actions button strong { position: relative; top: 0; }
+.looper-actions button b { top: 0; right: 1.75cqw; font-size: 5cqw; }
+.looper-actions button strong { width: 10cqw; height: 10cqw; color: var(--qc-palette-f2f5f2); }
+.looper-actions button strong > .qc-looper-action-glyph { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.looper-actions button strong > .qc-looper-action-glyph-half-speed { overflow: visible; }
+.looper-actions button:nth-child(1) strong,
+.looper-actions button:nth-child(4) strong,
+.looper-actions button:nth-child(5) strong { color: var(--qc-palette-ff2421); }
+.looper-actions button { background: var(--qc-editor-disabled-shadow); color: var(--qc-palette-182018); }
+/* Disabled looper labels are not all one ink: the unit greys the neutral ones
+   and leaves the two red-family actions a dark red. */
+.looper-actions button strong { color: var(--qc-palette-182018); }
+.looper-actions button:nth-child(1) strong,
+.looper-actions button:nth-child(4) strong { color: var(--qc-editor-disabled-red); }
+.looper-actions button:nth-child(3),
+.looper-actions button:nth-child(5) { background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.looper-actions button:nth-child(3) strong { color: var(--qc-screen-text-primary); }
+.looper-actions button:nth-child(5) strong { color: var(--qc-palette-ff2421); }
+.coros-global-eq > header span small { font-size: 1.75cqw; }
+.coros-global-eq > header span strong { font-size: 2.25cqw; }
+.coros-global-eq > header { grid-template-columns: 5.5cqw 1fr 10cqw 12.25cqw; }
+.coros-global-eq > header .global-eq-power { position: relative; display: grid; place-items: center; }
+.coros-global-eq > header .global-eq-power i { position: absolute; left: .375cqw; top: 1.5cqw; width: .75cqw; height: 2.5cqw; margin: 0; }
+.coros-global-eq > header .global-eq-power.is-off i { left: auto; right: .375cqw; }
+.coros-global-eq > header .global-eq-more > svg { color: var(--qc-palette-0874e0); }
+/* Measured: the stack is blue only with the EQ off (global-eq #0875e7) and muted grey
+   with it on (global-eq-enabled, global-eq-high-pass #949694). */
+.coros-global-eq:not(.is-off) > header .global-eq-more > svg { color: var(--qc-screen-text-muted); }
+.coros-global-eq > header button:last-child .qc-ui-icon { width: 3.75cqw; height: 3.75cqw; }
+.coros-global-eq > header button:last-child svg { width: 3.75cqw; height: 3cqw; }
+.coros-global-eq, .coros-global-eq * { font-family: var(--qc-font-device-plain); }
+.coros-global-eq .global-eq-graph { height: 52.5%; }
+.coros-global-eq .global-eq-tabs { height: 10.42%; }
+.global-eq-graph .eq-axis-labels text { fill: var(--qc-palette-303330); font-size: 12px; }
+.global-eq-graph circle { r: 20px; }
+.global-eq-graph circle.is-active { r: 26px; }
+/* With the EQ switched off, the screen's grounds are the unit's ordinary
+   ones - header, graph and control strip all match - so nothing dims the
+   screen; what CorOS dims is the band's own accent, and the marker's fill
+   reads (8,40,74) there against an on EQ's (8,117,231). */
+.coros-global-eq.is-off .global-eq-graph circle.is-active { fill: var(--qc-palette-08284a); }
+/* The +1px of y this used to carry was paying off the 255-tall viewBox's
+   1.47px lift. With the viewBox matched to the box, node 1 lands on the unit's
+   own centre (105,185) from cx/cy alone and only the x nudge is left. */
+.global-eq-graph svg > g:last-child > g:nth-child(1) { transform: translateX(1px); }
+.global-eq-graph svg > g:last-child > g:nth-child(2) { transform: translateX(1px); }
+.global-eq-graph svg > g:last-child > g:nth-child(4) { transform: translateY(2px); }
+.global-eq-tabs { width: 65.5cqw; gap: .5cqw; padding: 0 0 0 3cqw; }
+.global-eq-tabs button { font-size: 2cqw; }
+.global-eq-controls > section { padding: 1.25cqw; }
+.global-eq-controls { margin-top: .5cqw; }
+.global-eq-controls > section > span { font-size: 2cqw; }
+.global-eq-controls > section > span:first-child { position: relative; top: -.125cqw; }
+.global-eq-controls > section:first-child button { inset: 6.875cqw 1.25cqw auto; height: 4.75cqw; font-size: 1.75cqw; }
+.global-eq-controls > section:first-child button .qc-eq-icon-high-pass { position: absolute; left: 1cqw; top: .875cqw; width: 24px !important; height: 24px !important; }
+.global-eq-controls > section:first-child button .qc-eq-icon-lo-shelf { position: absolute; left: 1cqw; top: .875cqw; width: 24px !important; height: 24px !important; }
+/* This mark was authored pre-dim, for a brightness filter that has since been
+   removed from the band in favour of stating its grounds directly. With no
+   filter left to divide it, the pre-dim value paints far too light: the unit
+   draws this glyph at the context-capture mid ink, which is what the pre-dim
+   value used to resolve to through that filter.
+
+   Only when the EQ is off, though: the mark is white everywhere else it
+   appears, and only the washed, off state draws it at the mid ink. The rule
+   used to be unscoped because the off state was the only one that could
+   reach it. */
+.coros-global-eq.is-off .global-eq-controls > section:first-child button .qc-eq-icon-lo-shelf [data-qc-role="reference.iconPrimary"] { fill: var(--qc-context-capture-mid); }
+.global-eq-controls > section:first-child button .qc-ui-icon-down { position: absolute; right: 1cqw; width: 1.5cqw; height: 1.5cqw; }
+.global-eq-controls .io-dial-wrap { inset: 4.625cqw 1cqw auto; height: 8cqw; }
+.global-eq-controls .io-dial { right: -.4375cqw; width: 72px; height: 72px; }
+.global-eq-controls .io-dial-wrap > strong { left: .5cqw; bottom: 1.325cqw; font-size: 1.75cqw; }
+.global-eq-bypass button { width: 8.25cqw; height: 5.5cqw; margin: 2.375cqw 0 0 0; font-size: 3cqw; transform: translateX(-1px); }
+.global-eq-bypass button svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+/* The band's filter-type table, which only global-eq-filter-type opens.
+
+   The box is the device's own ink, not a guess: 160x300, not the 170x309 this
+   carried before. 300 is five 60px rows with no top padding at all - the old
+   7px pad inside a 309px box put the rows in the right place by accident,
+   which is why the rhythm looked right while the box was five pixels left
+   and seven pixels high. Both edges meet eight pixels in from the corner,
+   so the radius is 8px, not 4px.
+
+   Across the row: the labels all start at x 74 and their set widths (Peak 39,
+   Hi pass 58, Hi Shelf 62) measure 18px type, not 17px - 17px draws Peak too
+   narrow against the device's own width.
+
+   The mark column is placed off the marks' own ink, not off the cell: the
+   contours are already right and only the column was wrong, so the fix is
+   13px of padding (box 30..54) rather than anything at the art. Two of the
+   marks, high-pass and lo-shelf, also want a one-unit vertical nudge: their
+   registry contours sit one unit up and left of the unit's, which is an art
+   difference this column cannot absorb and is left alone, because both are
+   shared with editor-parametric-8. */
+.coros-global-eq .eq-filter-type-scrim { position: absolute; z-index: 8; inset: 0; background: var(--qc-palette-rgba-88-92-88-a694); }
+.coros-global-eq .eq-filter-type-selector { position: absolute; z-index: 9; left: 17px; top: 164px; box-sizing: border-box; width: 160px; height: 300px; padding: 0; border-radius: 8px; background: var(--qc-screen-surface-base); }
+.coros-global-eq .eq-filter-type-selector button { box-sizing: border-box; width: 100%; height: 60px; display: grid; grid-template-columns: 24px 1fr; column-gap: 19px; align-items: center; padding: 0 0 0 13px; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 400 18px var(--qc-font-device-plain); text-align: left; }
+.coros-global-eq .eq-filter-type-selector button > i { display: grid; place-items: center; }
+/* Centring the row puts the label's baseline one pixel under the unit's: every
+   label bottoms out on row centre + 5 on the device and + 6 here. */
+.coros-global-eq .eq-filter-type-selector button > span { position: relative; top: -1px; }
+/* The doubled #root#root screen-glyph rule beats a bare width/height here, so
+   the mark has to be sized through its own custom property as every other 24px
+   pixel-art call site in these sheets does. */
+.coros-global-eq .eq-filter-type-selector button > i svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+/* Only the label takes the accent. The chosen row's mark stays white on the
+   unit: at global-eq-filter-type the Lo Shelf cell inks 48 pixels of
+   (255,255,255) while its label next door is (66,251,99) throughout, so the
+   row's colour stops at the text and the glyph keeps iconPrimary. */
+.coros-global-eq .eq-filter-type-selector button.is-selected > span { color: var(--qc-screen-accent); }
+.capture-official-result .capture-result-actions { height: 11.125cqw; align-items: flex-start; padding-top: 1.5cqw; }
+.capture-official-result .capture-result-actions .capture-target-icon { transform: translateY(-2.25cqw); }
+.capture-official-result > header > button:last-child { position: relative; font-size: 0; }
+.capture-official-result > header > button:last-child::before,
+.capture-official-result > header > button:last-child::after { content: ""; position: absolute; left: 50%; top: 50%; width: 2.5cqw; height: 2px; background: currentColor; }
+.capture-official-result > header > button:last-child::before { transform: translate(-50%,-50%) rotate(45deg); }
+.capture-official-result > header > button:last-child::after { transform: translate(-50%,-50%) rotate(-45deg); }
+/* The headphones glyph is the io.headphones-symbol art at one CSS pixel per
+   art unit (24px). On the unit the glyph box sits at x=175 (ink 177..196) and
+   the LEVEL cap starts at x=204, so the row starts 2px left of the `small`
+   column below it and the gap between glyph box and text is 4px, not .75cqw
+   (6px). With .75cqw the 24px box pushed LEVEL to x=208, 4px right of the
+   device. */
+.capture-official-result .capture-level-label { display: flex; align-items: center; margin-left: -2px; gap: 4px; }
+/* The 24px box is 4px taller than the LEVEL line box, so without the negative
+   block margin it grows the centred flex row and pushes LEVEL 2px further down,
+   away from the unit's y=269. */
+.capture-official-result .capture-level-label svg { width: 24px; height: 24px; margin-block: -2px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.capture-official-result > main > section:last-child > button { transform: translateY(.5cqw); }
+/* The row is 13.5cqw tall with a 1px bottom border, so a 11cqw (88px) label
+   centres on a half pixel and lands every crispEdges glyph inside it on y.5.
+   11.125cqw (89px) in a 107px content box centres at a whole pixel. */
+.capture-official-result label { width: 18.125cqw; height: 11.125cqw; }
+.capture-official-result label .capture-level-dial { right: .8125cqw; bottom: -1.375cqw; width: 72px; height: 72px; }
+.capture-official-progress > main > nav { padding-top: .375cqw; }
+.capture-official-progress h1 { margin-bottom: 4cqw; }
+.capture-official-progress > header > span { transform: translateY(1px); }
+.capture-official-progress > header > button:last-child { position: relative; font-size: 0; }
+.capture-official-progress > header > button:last-child::before,
+.capture-official-progress > header > button:last-child::after { content: ""; position: absolute; left: 50%; top: 50%; width: 2.5cqw; height: 2px; background: currentColor; }
+.capture-official-progress > header > button:last-child::before { transform: translate(-50%,-50%) rotate(45deg); }
+.capture-official-progress > header > button:last-child::after { transform: translate(-50%,-50%) rotate(-45deg); }
+.capture-official-progress > main > nav div:last-child b { color: var(--qc-screen-text-primary); }
+.capture-official-progress .capture-official-progress-bar b { width: 29.9%; }
+.capture-official-progress section > em { right: 2cqw; top: 18.625cqw; width: 2.75cqw; height: 2.75cqw; border: .375cqw solid var(--qc-palette-505450); border-top-color: var(--qc-screen-text-primary); border-right-color: var(--qc-screen-text-primary); border-radius: 50%; color: var(--qc-transparent); font-size: 0; transform: rotate(-17deg); }
+.capture-official-save > main { margin-top: 3.75cqw; }
+.capture-official-save > header { gap: 2.25cqw; }
+.capture-official-save > header .capture-folder { width: 20.375cqw; }
+.capture-official-save > header > button:nth-child(3) { width: 9.5cqw; }
+.qc-screen.capture-official-save { background: var(--qc-screen-surface-base); }
+.capture-official-save > header > button { background: var(--qc-screen-surface-control); }
+.capture-official-save > header .capture-note { background: var(--qc-palette-102818); }
+.capture-official-save > header .capture-note .qc-ui-icon { width: 3cqw !important; height: 3cqw !important; }
+.capture-official-save > header .capture-save-now { background: var(--qc-palette-1838f8); }
+.capture-official-save > header button > svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.capture-official-save > header .capture-folder { display: flex; align-items: center; gap: 1.625cqw; padding: 0 1.25cqw; }
+.capture-official-save > header .capture-folder > svg { fill: currentColor; stroke: currentColor; }
+/* Every tile here is the shared asset; only its ring and its mark's rung
+   change. An unchosen tile's ring is its category ink at half the five-bit
+   index the browser lights - Combo Amp against Amp's own, the two cab types
+   against Cab's, Overdrive against its own - and the chosen tile keeps the
+   full ink with a 4-unit ring. */
+.capture-official-save .capture-kinds button { background: var(--qc-transparent); transform: translateY(.25cqw); --qc-device-tile-ground: var(--qc-palette-080808); --qc-device-tile-badge-ground: var(--qc-screen); }
+.capture-official-save .capture-kinds button:nth-child(1) { --qc-device-tile-ink: var(--qc-scene-control-muted); }
+.capture-official-save .capture-kinds button:nth-child(2) { --qc-device-tile-ink: var(--qc-palette-ff2421); }
+.capture-official-save .capture-kinds button:nth-child(3) { --qc-device-tile-ink: var(--qc-palette-841818); }
+.capture-official-save .capture-kinds button:nth-child(4),
+.capture-official-save .capture-kinds button:nth-child(5) { --qc-device-tile-ink: var(--qc-palette-393084); }
+.capture-official-save .capture-kinds button:nth-child(6) { --qc-device-tile-ink: var(--qc-palette-843c08); }
+/* The unchosen tiles' marks are the registry roles at half their rung; the
+   badge that rides on them is not dimmed, so the override stops at the art. */
+.capture-official-save .capture-kinds button:not(.is-active) .qc-device-tile-art [data-qc-role="reference.iconPrimary"] { fill: var(--qc-screen-ink-dimmed); }
+.capture-official-save .capture-kinds button:not(.is-active) .qc-device-tile-art [data-qc-role="reference.contextCaptureMuted"] { fill: var(--qc-palette-313031); }
+/* The chosen tile's ground is the screen's own black, not the near-black its
+   neighbours carry: capture-save inks the screen value at (270,180) inside the
+   Amp tile and the raised one inside every other tile. */
+.capture-official-save .capture-kinds button.is-active { color: var(--qc-screen-text-primary); --qc-device-tile-ground: var(--qc-screen); }
+.capture-official-save .capture-instruments button { background: var(--qc-screen-surface-raised); }
+.capture-official-save .capture-instruments button.is-active { background: var(--qc-screen-text-primary); }
+.capture-official-save .capture-kinds { height: 15.5cqw; gap: 1.625cqw; }
+.capture-official-save > main > small:nth-of-type(2) { margin-bottom: 2.5cqw; }
+.capture-official-save > main > small:first-child,
+.capture-official-save > main > h1 { position: relative; top: .375cqw; }
+.capture-official-save > main > small:nth-of-type(2) { position: relative; top: .125cqw; }
+.coros-global-eq .global-eq-graph { background: var(--qc-screen-surface-base); }
+/* The band strip and the tab rail are one state, and it is the EQ's own:
+
+                    global-eq (off)   global-eq-enabled / -high-pass (on)
+     control strip  editor-disabled   screen-surface-control
+     active tab     editor-disabled   screen-surface-control
+     other tabs     screen-surface-base (no tile)   screen-surface-raised
+
+   Every one of those was previously stated unconditionally, and each was
+   stated at the value the other state wants: the strip was pinned to
+   editor-disabled, which is right only with the EQ off, and the tabs to
+   raised/control, which is right only with it on. That single inversion
+   swapped (41,44,41) for (16,20,16) across most of the strip and tab rail
+   with the EQ on, and left the whole tab rail wrong with it off. The file's
+   own comment below already said the off state keeps one tile and leaves the
+   rest bare text; nothing implemented it. These live inside @scope because the
+   appended rules after the block cannot beat a scoped one however specific
+   they are. */
+.coros-global-eq .global-eq-controls { background: var(--qc-screen-surface-control); }
+.coros-global-eq.is-off .global-eq-controls { background: var(--qc-editor-disabled); }
+/* Measured on global-eq (EQ off): every control label and value reads #525552. */
+.coros-global-eq.is-off .global-eq-controls > section > span,
+.coros-global-eq.is-off .global-eq-controls .io-dial-wrap > strong { color: var(--qc-global-eq-bypass-off); }
+/* Measured on global-eq-high-pass: the GAIN and Q label and value read #7b7d7b. */
+.coros-global-eq .global-eq-controls > section.is-disabled > span,
+.coros-global-eq .global-eq-controls > section.is-disabled .io-dial-wrap > strong { color: var(--qc-io-header-mid); }
+.coros-global-eq .global-eq-tabs button { background: var(--qc-screen-surface-raised); }
+.coros-global-eq .global-eq-tabs button.is-active { background: var(--qc-screen-surface-control); }
+.coros-global-eq.is-off .global-eq-tabs button { background: var(--qc-screen-surface-base); }
+.coros-global-eq.is-off .global-eq-tabs button.is-active { background: var(--qc-editor-disabled); }
+/* The band markers follow the same switch. On the unit the four unselected
+   nodes are screen-surface-control with the EQ on and editor-disabled with it
+   off - the same pair the strip and the rail take - and the selected one is the
+   equalizer accent --qc-palette-0875e7, not the --qc-palette-0776df the shared fixture sheet carries;
+   --qc-palette-0776df is off the 5/6/5 ladder, which --qc-palette-0875e7 sits
+   on exactly. The off state's dimmed marker is stated further up and is
+   already right. */
+.coros-global-eq .global-eq-graph circle { fill: var(--qc-screen-surface-control); }
+.coros-global-eq.is-off .global-eq-graph circle { fill: var(--qc-editor-disabled); }
+.coros-global-eq .global-eq-graph circle.is-active { fill: var(--qc-palette-0875e7); }
+/* The TYPE trigger's ground is the screen's own black with the EQ on and the
+   disabled shadow with it off; the shared sheet states the off value for both. */
+.coros-global-eq .global-eq-controls > section:first-child button { background: var(--qc-screen); }
+.coros-global-eq.is-off .global-eq-controls > section:first-child button { background: var(--qc-editor-disabled-shadow); }
+/* Both header buttons were pinned to the rotary face by the appended rules
+   below. The unit paints the overflow button --qc-palette-313431 in both states, and the
+   unlit power button screen-surface-control - the same ground its lit form
+   carries - which is what the scoped rule below it already said before the
+   appended one overrode it. */
+.coros-global-eq > header .global-eq-more { background: var(--qc-palette-313431); }
+.coros-global-eq > header .global-eq-power.is-off { background: var(--qc-screen-surface-control); }
+.coros-global-eq > header button:last-child { background: var(--qc-screen-surface-control); }
+
+/* Reference Neural Capture progress and save geometry. */
+.capture-official-progress > main { height: 52.5cqw; }
+.capture-official-progress > main > nav,
+.capture-official-progress > main > section { background: var(--qc-screen-surface-control); }
+.capture-official-progress > main > nav { padding-top: 0; }
+.capture-official-progress > main > nav div { gap: .5cqw; padding: 0 .5cqw; }
+.capture-official-progress > main > nav div { height: 7.5cqw; }
+.capture-official-progress > main > nav b { width: 3cqw; height: 3cqw; }
+.capture-official-progress > main > nav b > .qc-screen-glyph { width: 2.25cqw; height: 2.25cqw; }
+/* Stage badges: the tick is pixel art on a 24x24 viewBox, so it has to
+   land on one CSS pixel per art unit rather than follow the inherited 16px. */
+.capture-official-progress > main > nav b > .qc-ui-icon-check { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.capture-official-progress > main > section { padding-top: 2cqw; }
+.capture-official-progress h1 { margin-bottom: 4cqw; font-weight: 400; }
+.capture-official-progress .capture-official-progress-bar { top: 24.875cqw; height: 3cqw; }
+.capture-official-progress .capture-official-progress-bar b { width: 89%; }
+.capture-official-progress.is-sanity-error .capture-official-progress-bar b { width: 29.9%; }
+.capture-official-progress section > em { top: 19.125cqw; }
+.capture-official-save > main { margin-top: 3.375cqw; }
+.qc-screen.capture-official-save > main { margin-top: 3.375cqw; }
+.capture-official-save .capture-kinds { height: 14.875cqw; gap: 2.375cqw; padding-left: .375cqw; }
+.capture-official-save .capture-kinds button { width: 8cqw; height: 8cqw; }
+.capture-official-save > header > button:first-child { position: relative; font-size: 0; }
+.capture-official-save > header > button:first-child svg { display: none; }
+.capture-official-save > header > button:first-child::before,
+.capture-official-save > header > button:first-child::after { content: ""; position: absolute; left: 50%; top: 50%; width: 2.5cqw; height: 2px; background: currentColor; }
+.capture-official-save > header > button:first-child::before { transform: translate(-50%,-50%) rotate(45deg); }
+.capture-official-save > header > button:first-child::after { transform: translate(-50%,-50%) rotate(-45deg); }
+
+/* The Sanity Check failure reuses the progress layout, with the failed
+   stage in red, no spinner, and a recovery button back to calibration. */
+.capture-official-error>main>nav div.is-error{color:var(--qc-palette-f4463c)}.capture-official-error>main>nav div.is-error b{background:var(--qc-palette-f4463c);color:var(--qc-screen-surface-base)}.capture-official-error>main>nav div.is-pending b{background:var(--qc-screen-surface-base);color:var(--qc-palette-606460)}.capture-official-error>main>nav div:last-child b{color:var(--qc-palette-606460)}.capture-official-error h1{margin-bottom:4cqw}/* Its box is 220x44 at x 557, y 404 in the frame. */
+.capture-official-error section>button{position:absolute;right:2cqw;bottom:3cqw;padding:0 1cqw;height:5.5cqw;border:0;border-radius:.75cqw;background:var(--qc-palette-1668ff);color:var(--qc-screen-text-primary);font-size:2.25cqw;letter-spacing:.05cqw}
+
+}
+
+
+/* With the EQ off and flat, only the band in view keeps a tile, the rest of
+   the tabs are bare text, and the power button is unlit. The tab rail's two
+   grounds used to be stated here, unconditionally and at the on state's
+   values; they are state-gated inside @scope now, where they can actually
+   win. */
+.coros-global-eq .global-eq-power.is-off { background: var(--qc-screen-surface-control); color: var(--qc-palette-adaaad); }
+.coros-global-eq .global-eq-power.is-off > i { background: var(--qc-screen-surface-base); }
+.coros-global-eq .global-eq-more{background:var(--qc-rotary-face)}.coros-global-eq .global-eq-more svg{width:3cqw;height:3cqw}.coros-global-eq .global-eq-power.is-off{background:var(--qc-rotary-face)}.coros-global-eq:has(.global-eq-power.is-off) .global-eq-graph>svg>path{stroke:var(--qc-context-capture-muted)}
+
+/* A switched-off EQ dims its bypass mark by swapping the mark's role, the way
+   the graph path two rules up swaps its stroke - not by washing the mark. The
+   unit paints the same 68 pixels of ink either way at global-eq[662,422]: white
+   on the ordinary ground with the EQ on, and this on the disabled ground with
+   it off, both states landing wholly on the RGB565 ladders. An opacity would
+   land between rungs by construction, and would leave the ground alone. */
+.coros-global-eq:has(.global-eq-power.is-off) .global-eq-bypass button { color: var(--qc-global-eq-bypass-off); }
+
+/* With the EQ switched off, colours are stated here as the unit paints them
+   rather than derived by dimming the lit ones: a brightness filter over this
+   band put every child off the device value, and the theme already carries
+   the off-state inks by name. */

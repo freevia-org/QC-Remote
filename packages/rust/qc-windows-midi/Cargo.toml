@@ -1,0 +1,13 @@
+[package]
+name = "qc-windows-midi"
+version = "0.1.0"
+publish = false
+edition = "2021"
+description = "Shared Quad Cortex Windows MIDI output transport"
+license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
+
+[dependencies]
+quadcortex = { path = "../quadcortex" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Media_Audio", "Win32_Media_Multimedia", "Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties"] }
