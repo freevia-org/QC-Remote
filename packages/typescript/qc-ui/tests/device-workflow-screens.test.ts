@@ -46,6 +46,11 @@ test("the CPU Monitor is an overlay on the live Grid, never a second Grid", () =
     assert.ok(!source.includes(`${view} === "cpu-monitor" ? <`), `${name} must not swap the Grid for a CPU screen`);
     assert.ok(source.includes(`cpuMonitorOpen ? undefined : ${view}`), `${name} keeps the surface on the Grid while the monitor is open`);
     assert.ok(source.includes("cpuMonitor={cpuMonitor}"), `${name} passes the monitor to the surface`);
+    // Both hosts track per-block load the same way and hand the tracked state (never an empty literal) to the monitor.
+    assert.ok(source.includes("const [cpuColumns, setCpuColumns] = useState<CpuColumnLoad[]>([]);"), `${name} tracks cpuColumns`);
+    assert.ok(source.includes("if (state.cpuColumns) setCpuColumns(state.cpuColumns);"), `${name} stores observed cpuColumns`);
+    const monitorProp = source.slice(source.indexOf("const cpuMonitor = "), source.indexOf("const cpuMonitor = ") + 200);
+    assert.ok(/\{ cpuLoad, cpuColumns, returnFocusTarget/.test(monitorProp), `${name} passes tracked cpuColumns, not an empty list`);
   }
 });
 

@@ -2,7 +2,7 @@ import { RemoteAccountDeletionLink } from "@qc-remote/ui";
 import { openRemoteAccountDeletionPage } from "./native-services";
 import { Capacitor } from "@capacitor/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { QC_SCENE_COUNT } from "@qc-remote/client";
+import { QC_SCENE_COUNT, type CpuColumnLoad } from "@qc-remote/client";
 import { demoSnapshot, footswitchLeds, sceneLetter, type ControlAccessMode, type PublicRelayUsage } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_LEGAL, QC_LEGAL_DOCUMENTS, QC_VISUAL_ASSETS } from "@qc-remote/theme";
@@ -106,6 +106,7 @@ export function App() {
     });
   }, []);
   const [cpuLoad, setCpuLoad] = useState(0);
+  const [cpuColumns, setCpuColumns] = useState<CpuColumnLoad[]>([]);
   const [deviceUndoAvailable, setDeviceUndoAvailable] = useState(false);
   const modeChord = useRef<{ active: boolean; held: boolean; timer?: number }>({ active: false, held: false });
   const controlContacts = useRef({ bankDown: false, tempo: false });
@@ -348,8 +349,9 @@ export function App() {
             onError: (error) => setNotice(error instanceof Error ? error.message : "The Grid layout is incomplete; current preset could not be refreshed."),
             onFinished: () => setGridRefreshPending(false)
           });
-        } else if (state.kind === "cpuLoad" && state.cpuTotalLoad !== undefined) {
-          setCpuLoad(state.cpuTotalLoad);
+        } else if (state.kind === "cpuLoad") {
+          if (state.cpuTotalLoad !== undefined) setCpuLoad(state.cpuTotalLoad);
+          if (state.cpuColumns) setCpuColumns(state.cpuColumns);
         } else if (state.kind === "history" && state.undoAvailable !== undefined) {
           setDeviceUndoAvailable(state.undoAvailable);
         } else if (state.kind === "suspend" && state.suspended !== undefined) {
@@ -935,7 +937,7 @@ export function App() {
   };
   // The CPU Monitor is laid over the normal Grid, as on the unit, rather than replacing it.
   const cpuMonitorOpen = mobileScreenView === "cpu-monitor";
-  const cpuMonitor = cpuMonitorOpen ? { cpuLoad, cpuColumns: [], returnFocusTarget: mobileScreenViewState.returnFocusTarget, onClose: () => setMobileScreenView(null) } : undefined;
+  const cpuMonitor = cpuMonitorOpen ? { cpuLoad, cpuColumns, returnFocusTarget: mobileScreenViewState.returnFocusTarget, onClose: () => setMobileScreenView(null) } : undefined;
   const mobileScreenContent = productionAuditScreen ? <CorOsProductionScreenAudit view={productionAuditScreen} snapshot={snapshot} />
     : deviceSettingsWorkflow.open ? <CorOsDeviceSettings workflow={deviceSettingsWorkflow} onClose={deviceSettingsWorkflow.close} />
     : tempoWorkflow.open ? <CorOsTempoScreen workflow={tempoWorkflow} snapshot={snapshot} queueTempo={continuousControls.queueTempo} onSelectScene={(index) => void performanceWorkflow.selectScene(index)} onClose={tempoWorkflow.close} />
