@@ -22,9 +22,31 @@ test("production screens retain the device-owned CorOS layout and shared glyphs"
 test("the live Grid keeps view state separate from its grouped action contract", () => {
   const surface = readFileSync(new URL("../src/quad-cortex-surface.tsx", import.meta.url), "utf8");
   assert.match(surface, /type GridActions = Pick<QuadCortexSurfaceProps,[\s\S]*?"onAction"[\s\S]*?"onContextAction"/);
-  assert.match(surface, /function CorOsGrid\(\{ snapshot, presetSlotAccent, selectedBlockId, gridActions \}/);
+  assert.match(surface, /function CorOsGrid\(\{ snapshot, presetSlotAccent, selectedBlockId, gridActions, cpuColumns \}/);
   assert.match(surface, /gridActions=\{\{ onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, routingPicker, addDevicePicker, savePreset, onContextAction, disabledContextActions \}\}/);
   assert.doesNotMatch(surface, /<CorOsGrid[^>]+\bonAction=\{onAction\}/);
+});
+
+test("the CPU Monitor is an overlay on the live Grid, never a second Grid", () => {
+  const read = (url: URL) => readFileSync(url, "utf8").replaceAll("\r\n", "\n");
+  const surface = read(new URL("../src/quad-cortex-surface.tsx", import.meta.url));
+  const monitor = read(new URL("../src/coros-cpu-monitor.tsx", import.meta.url));
+  const windows = read(new URL("../../../../apps/windows/src/App.tsx", import.meta.url));
+  const android = read(new URL("../../../../apps/android/src/App.tsx", import.meta.url));
+  // The surface draws the one live Grid, hands it the per-block load, and puts the panel after it.
+  assert.match(surface, /<CorOsGrid[\s\S]*?cpuColumns=\{cpuMonitor\?\.cpuColumns\}[\s\S]*?\/>\{cpuMonitor && <CorOsCpuMonitorPanel /);
+  assert.match(surface, /cpuLoad=\{cpuColumns\?\.\[block\.row \* QC_GRID_COLUMNS \+ block\.column\]\?\.load\}/);
+  // The panel itself draws no Grid; only the fixture wrapper composes it with the simplified one.
+  const panel = monitor.slice(monitor.indexOf("export function CorOsCpuMonitorPanel"), monitor.indexOf("export function CorOsCpuMonitor("));
+  assert.ok(panel.includes('aria-label="CPU Monitor"') && panel.includes("Close CPU Monitor"));
+  assert.ok(!panel.includes("CorOsOfficialGrid"), "the overlay must not bring its own Grid");
+  // Hosts must not replace the Grid with a CPU screen: no screen-content branch, and the surface keeps the grid view.
+  for (const [name, source, view] of [["windows", windows, "deviceScreenView"], ["android", android, "mobileScreenView"]] as const) {
+    assert.ok(!source.includes("<CorOsCpuMonitor"), `${name} must not render the fixture Grid wrapper`);
+    assert.ok(!source.includes(`${view} === "cpu-monitor" ? <`), `${name} must not swap the Grid for a CPU screen`);
+    assert.ok(source.includes(`cpuMonitorOpen ? undefined : ${view}`), `${name} keeps the surface on the Grid while the monitor is open`);
+    assert.ok(source.includes("cpuMonitor={cpuMonitor}"), `${name} passes the monitor to the surface`);
+  }
 });
 
 test("the Global EQ picker reads the host's session fold and distinguishes unavailable from empty", () => {
