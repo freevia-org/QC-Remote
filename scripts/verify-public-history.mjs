@@ -18,8 +18,8 @@
 // range mode they can be downgraded to warnings with --identity advisory. That
 // is for pull requests from forks: the Developer Certificate of Origin that
 // CONTRIBUTING.md asks for carries a real-name sign-off, and an outside
-// contributor's commits are squash-merged by a maintainer, so they never become
-// published history themselves. The squashed commit that does land on master is
+// a maintainer must publish a privacy-preserving, signed-off commit instead of
+// publishing those identities as they stand. The commit that lands on master is
 // checked in whole-history mode by the push run, which is the point where the
 // identity rules are enforced for good.
 //
@@ -67,6 +67,23 @@ export const forbiddenPaths = [
 // that merely contains or extends it ("info@freevia.org.evil.com") is rejected.
 // Add an entry here only for an address that is already public.
 export const allowedPublisherEmails = ['info@freevia.org'];
+
+// GitHub's first squash merge after public-history enforcement was enabled
+// appended a duplicate, privacy-preserving Co-authored-by trailer even though
+// the reviewed source commit did not contain one. That commit was published
+// before squash merges were disabled at the repository level. Keep the strict
+// rule for every other commit and document this single immutable exception so
+// the whole-history audit can continue to protect all later history.
+export const publishedIdentityExceptions = new Map([
+  [
+    '2badc68ea4d30f53fc98ae9e000c70df109d0970',
+    new Set(['commit message contains a Co-authored-by trailer']),
+  ],
+]);
+
+export function isPublishedIdentityException(commit, finding) {
+  return publishedIdentityExceptions.get(commit)?.has(finding) ?? false;
+}
 
 export function isPrivacyPreservingIdentity(email) {
   const normalized = email.trim().toLowerCase();
@@ -178,10 +195,11 @@ export function auditHistory({ cwd = defaultRepositoryRoot, base, head = 'HEAD',
     const metadata = git(cwd, ['show', '-s', '--format=%ae%n%cn%n%ce%n%B', commit]);
     const [authorEmail, committerName, committerEmail, ...messageLines] = metadata.split(/\r?\n/);
     for (const error of identityErrors({ authorEmail, committerName, committerEmail })) {
-      identityFindings.push(`${commit}: ${error}`);
+      if (!isPublishedIdentityException(commit, error)) identityFindings.push(`${commit}: ${error}`);
     }
     if (messageLines.some((line) => /^co-authored-by:/i.test(line.trim()))) {
-      identityFindings.push(`${commit}: commit message contains a Co-authored-by trailer`);
+      const finding = 'commit message contains a Co-authored-by trailer';
+      if (!isPublishedIdentityException(commit, finding)) identityFindings.push(`${commit}: ${finding}`);
     }
 
     const paths = git(cwd, ['ls-tree', '-r', '--name-only', commit]).split(/\r?\n/).filter(Boolean);

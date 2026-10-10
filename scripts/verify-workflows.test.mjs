@@ -706,3 +706,28 @@ test('CI bounds jobs, caches npm, and verifies the quadcortex crate on Linux', (
   assert.match(ci, /name: TypeScript packages and apps[\s\S]*?cache: npm[\s\S]*?npm run typecheck[\s\S]*?npm test/);
   assert.doesNotMatch(ci, /- run: npm run build\s*$/m, 'the workspace build duplicates the following typecheck gate');
 });
+
+test('CI validates program bytes on pull requests and audits only policy after merge', () => {
+  const ci = readFileSync(path.join(workflowsDir, 'ci.yml'), 'utf8');
+  const bodyOf = (name) => {
+    const marker = `\n  ${name}:\n`;
+    const start = ci.indexOf(marker);
+    assert.notEqual(start, -1, `${name} job is missing`);
+    const bodyStart = start + marker.length;
+    const next = ci.slice(bodyStart).search(/^  [a-z][a-z0-9-]*:\s*$/m);
+    return next === -1 ? ci.slice(bodyStart) : ci.slice(bodyStart, bodyStart + next);
+  };
+  for (const name of [
+    'rust',
+    'rust-msrv',
+    'rust-windows-app',
+    'quadcortex-linux',
+    'third-party-notices',
+    'typescript',
+    'cloud-relay',
+    'android',
+  ]) {
+    assert.match(bodyOf(name), /^    if: github\.event_name == 'pull_request'$/m, `${name} must not rebuild protected master`);
+  }
+  assert.doesNotMatch(bodyOf('public-history'), /^    if: github\.event_name == 'pull_request'$/m);
+});
