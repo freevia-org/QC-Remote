@@ -6,6 +6,7 @@ import { startRelayReportingFailure } from "./relay-start.ts";
 test("the mobile control deck follows the QC layout in portrait and four-across landscape", () => {
   const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
   const performanceWorkflow = readFileSync(new URL("../../../packages/typescript/qc-ui/src/use-performance-workflow.ts", import.meta.url), "utf8");
+  const screenContent = readFileSync(new URL("../../../packages/typescript/qc-ui/src/qc-device-screen-content.tsx", import.meta.url), "utf8");
   const deviceSettingsScreen = readFileSync(new URL("../../../packages/typescript/qc-ui/src/device-settings-screen.tsx", import.meta.url), "utf8");
   const deviceBrowser = readFileSync(new URL("../../../packages/typescript/qc-ui/src/add-device-picker.tsx", import.meta.url), "utf8");
   const gridWorkflow = readFileSync(new URL("../../../packages/typescript/qc-ui/src/use-grid-workflow.ts", import.meta.url), "utf8");
@@ -62,10 +63,12 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   assert.match(gridWorkflow, /gateway\.setModelPinned\(modelId, !expectedPinned, expectedPinned\)/);
   assert.match(gridWorkflow, /confirmed\.models\.includes\(modelId\) === expectedPinned/, "model pinning is confirmed by readback");
   assert.match(appSource, /deviceSettingsWorkflow\.openSettings\(\)/, "Grid Settings opens device settings, not the Remote panel");
-  assert.match(appSource, /<CorOsDeviceSettings workflow=\{deviceSettingsWorkflow\}/);
+  assert.match(appSource, /qcDeviceScreenContent\(\{[\s\S]*?deviceSettings: deviceSettingsWorkflow/);
+  assert.match(screenContent, /<CorOsDeviceSettings workflow=\{workflows\.deviceSettings\}/);
   assert.match(deviceSettingsScreen, /Support[\s\S]*Device Information/);
   assert.match(deviceSettingsScreen, /DeviceInformationDetail/);
-  assert.match(appSource, /<CorOsTempoScreen workflow=\{tempoWorkflow\}/);
+  assert.match(appSource, /qcDeviceScreenContent\(\{[\s\S]*?tempo: tempoWorkflow/);
+  assert.match(screenContent, /<CorOsTempoScreen workflow=\{workflows\.tempo\}/);
   assert.match(appSource, /QcHardwareSwitch role="bank:up" label=\{<QcUiIcon kind="up" \/>\}/);
   assert.match(appSource, /QcHardwareSwitch role="bank:down" label=\{<span className="mobile-down-glyph"><QcUiIcon kind="up" \/><\/span>\}/);
   assert.doesNotMatch(appSource, />SCENE</);

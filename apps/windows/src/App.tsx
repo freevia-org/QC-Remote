@@ -4,7 +4,7 @@ import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, 
 import { demoBlockDetails, demoSnapshot, sceneLetter, SupersededPresetOperation, saveWorkspaceDocument, type ControlAccessMode, type PublicRelayConnector } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND } from "@qc-remote/theme";
-import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, CorOsDeviceSettings, QC_DISABLED_CONTEXT_ACTIONS, qcContextActionHandler, CorOsGlobalEqScreen, CorOsIoSettingsScreen, CorOsSceneCommand, CorOsTempoScreen, CorOsTunerScreen, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, LooperXScreen, ModesConfigurationScreen, PresetMidiOutEditor, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, writeQcScreenFollowSetting, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist, type QcScreenObservation } from "@qc-remote/ui";
+import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, QC_DISABLED_CONTEXT_ACTIONS, closeQcLooperScreen, qcDeviceScreenContent, qcContextActionHandler, CorOsSceneCommand, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, writeQcScreenFollowSetting, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist, type QcScreenObservation } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { appWindows, brokerDevice, DEVICE_INFO_EVENTS, diagnosticsFiles, externalLinks, helpWindows, localAccess, localClientPackages, physicalDevices, type PhysicalQcDevice, onDevicePhase, publicRelay, publishWindowState, serveAppWindowRequests, serveDiagnosticsRequests, SETTINGS_EVENTS, tauriTransport, virtualDeviceStorage, WORKSPACE_EVENTS, workspaceFiles, type AntigravityLocalIntegrationStatus, type ChatGptLocalIntegrationStatus, type ClaudeDesktopExtensionStatus, type JanLocalIntegrationStatus, type LmStudioLocalIntegrationStatus, type LocalAccessStatus, type OtherMcpStdioSetup } from "./tauri-transport";
 import { createWindowsQcTransport } from "./qc-transport";
@@ -1002,7 +1002,7 @@ export function App() {
       setDeviceScreenView(null);
       return;
     }
-    if (deviceScreenView === "looper-editor") { await looperWorkflow.run("close"); setDeviceScreenView(null); return; }
+    if (deviceScreenView === "looper-editor") { await closeQcLooperScreen({ looper: looperWorkflow, setView: setDeviceScreenView }); return; }
     const view = deviceScreenView?.startsWith("gig") ? "gig" : deviceScreenView?.startsWith("tuner") ? "tuner" : undefined;
     if (!view) { setDeviceScreenView(null); return; }
     if (await performanceWorkflow.showDeviceView(view, false)) setDeviceScreenView(null);
@@ -2750,28 +2750,10 @@ export function App() {
   const cpuMonitorOpen = deviceScreenView === "cpu-monitor";
   const cpuMonitor = cpuTelemetry.monitor(cpuMonitorOpen, screenDestination.returnFocusTarget, () => setDeviceScreenView(null));
   const screenContent = productionAuditScreen ? <CorOsProductionScreenAudit view={productionAuditScreen} snapshot={snapshot} />
-    : deviceSettingsWorkflow.open ? <CorOsDeviceSettings workflow={deviceSettingsWorkflow} onClose={deviceSettingsWorkflow.close} />
-    : tempoWorkflow.open ? <CorOsTempoScreen workflow={tempoWorkflow} snapshot={snapshot} queueTempo={queueTempo} onSelectScene={(index) => void chooseScene(index)} onClose={tempoWorkflow.close} />
-    : deviceScreenView === "tuner" ? <CorOsTunerScreen workflow={tunerWorkflow} onClose={() => void closeDeviceScreen()} />
-    : deviceScreenView === "looper-editor" ? <LooperXScreen workflow={looperWorkflow} activeScene={snapshot.activeScene} onSelectScene={(scene) => void chooseScene(scene)} onParameters={async () => {
-      const looper = snapshot.blocks.find((block) => block.modelId === 27_000 || block.name === "Looper X");
-      if (!looper) { setNotice("Add a Looper X block to this preset before opening its parameters."); return; }
-      await looperWorkflow.run("performMode", 1);
-      setDeviceScreenView(null);
-      await gridWorkflow.openBlock(looper);
-    }} onMenu={async () => {
-      const looper = snapshot.blocks.find((block) => block.modelId === 27_000 || block.name === "Looper X");
-      if (!looper) { setNotice("Add a Looper X block to this preset before opening its menu."); return; }
-      await looperWorkflow.run("performMode", 1);
-      setParameterMenuInitiallyOpen(true);
-      setDeviceScreenView(null);
-      await gridWorkflow.openBlock(looper);
-    }} onClose={() => void closeDeviceScreen()} />
-    : deviceScreenView === "modes" ? <ModesConfigurationScreen returnFocusTarget={screenDestination.returnFocusTarget} workflow={modesWorkflow} onClose={() => setDeviceScreenView(null)} />
-    : deviceScreenView === "midi-out" ? <PresetMidiOutEditor returnFocusTarget={screenDestination.returnFocusTarget} workflow={midiOutWorkflow} onClose={() => setDeviceScreenView(null)} />
-    : deviceScreenView === "global-eq" ? <CorOsGlobalEqScreen workflow={ioEqWorkflow} onBack={() => setDeviceScreenView("io-overview")} />
-    : deviceScreenView?.startsWith("io-") ? <CorOsIoSettingsScreen workflow={ioEqWorkflow} onGlobalEq={() => setDeviceScreenView("global-eq")} onClose={() => void closeDeviceScreen()} />
-    : undefined;
+    : qcDeviceScreenContent({
+      snapshot, destination: screenDestination, selectScene: chooseScene, queueTempo, setParameterMenuInitiallyOpen, closeScreen: closeDeviceScreen, notice: setNotice,
+      workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow }
+    });
 
   return <div className="app-shell">
     <MenuBar

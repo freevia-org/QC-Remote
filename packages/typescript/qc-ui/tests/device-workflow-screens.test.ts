@@ -122,3 +122,13 @@ test("both hosts take the screen destination and the Grid context-action routing
     assert.ok(!source.includes("corOsUnavailableContextActionMessage"), `${name} leaves the unavailable-action wording to the router`);
   }
 });
+
+test("both hosts take the device screen content from the shared mapping and draw no CorOS screen themselves", () => {
+  const read = (url: URL) => readFileSync(url, "utf8").replaceAll("\r\n", "\n");
+  for (const [name, source] of [["windows", read(new URL("../../../../apps/windows/src/App.tsx", import.meta.url))], ["android", read(new URL("../../../../apps/android/src/App.tsx", import.meta.url))]] as const) {
+    assert.ok(/: qcDeviceScreenContent\(\{/.test(source), `${name} maps the screen through qcDeviceScreenContent`);
+    assert.doesNotMatch(source, /<(?:LooperXScreen|ModesConfigurationScreen|PresetMidiOutEditor|CorOs(?:Tuner|Tempo|DeviceSettings|GlobalEq|IoSettings)\w*)\b/, `${name} must not assemble a device screen itself`);
+    assert.ok(!source.includes('block.name === "Looper X"'), `${name} leaves the Looper X block lookup to the shared screen actions`);
+    assert.ok(!source.includes('looperWorkflow.run("close")'), `${name} closes Looper X only through closeQcLooperScreen`);
+  }
+});
