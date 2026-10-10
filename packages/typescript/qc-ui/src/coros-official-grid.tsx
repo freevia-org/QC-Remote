@@ -87,7 +87,7 @@ export function CorOsOfficialGrid({ snapshot, children, browserChrome = false, n
   };
   return (
     <div className={`qc-screen coros-vector-screen${screenClassName ? ` ${screenClassName}` : ""}`} aria-label="CorOS Grid">
-      <svg className="coros-vector-canvas" viewBox="0 0 800 480" preserveAspectRatio="none" role="img" aria-label={`${snapshot.presetLocation} ${snapshot.presetName}, ${snapshot.mode} mode`}>
+      <svg className="coros-vector-canvas" viewBox="0 0 800 480" role="img" aria-label={`${snapshot.presetLocation} ${snapshot.presetName}, ${snapshot.mode} mode`}>
         {/* The Grid this underlay draws is only ever seen through the browser
             and DSP washes, so this fill is a composite input rather than a
             surface role. The unit's washed ground is 66.69.66 on every browser

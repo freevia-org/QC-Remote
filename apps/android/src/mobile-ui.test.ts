@@ -104,7 +104,8 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   assert.equal(surfaceSource.match(/pixelsPerStep: hardwareRotaryPixelsPerStep/g)?.length, 2, "both chassis encoders and the master volume share it");
   assert.match(styles, /\.mobile-volume-control \{ grid-column: 1; grid-row: 1;/);
   assert.match(styles, /@media \(orientation: landscape\)[\s\S]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
-  assert.match(styles, /@media \(orientation: landscape\)[\s\S]*\.mobile-screen > \.qc-chassis \{ width: min\(100cqw, 166\.667cqh\); \}/);
+  assert.match(styles, /@media \(orientation: landscape\)[\s\S]*\.mobile-screen \{[^}]*container-type: size; --qc-display-max-height: 100cqh; \}/, "landscape only changes the box the display may fill; the display frame keeps its own 5:3 shape");
+  assert.match(appSource, /<QuadCortexSurface presentation="display" /, "the phone shows the shared display frame without the hardware panel");
 });
 
 test("tapping a live Grid block opens the shared parameter editor and commits over USB", () => {
@@ -129,7 +130,7 @@ test("tapping a live Grid block opens the shared parameter editor and commits ov
   assert.match(appSource, /consumeQcNativeStateFrame\(frame/);
   assert.match(liveStateSource, /reconcileFrame\(states, observedAt\)/);
   assert.match(coreSource, /dirty: state\.dirty \?\? snapshot\.dirty/);
-  assert.match(styles, /\.preset-title\.is-dirty \{ font-style: italic; font-weight: 500; \}/);
+  assert.doesNotMatch(styles, /preset-title/, "the live Grid's preset title is drawn by the shared display and never restyled per host");
 });
 
 test("Android exposes shared About, privacy, legal, and third-party notices", () => {

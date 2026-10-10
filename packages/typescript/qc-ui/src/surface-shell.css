@@ -2,8 +2,7 @@
 .qc-chassis::before { content: ""; position: absolute; inset: 0; opacity: .17; pointer-events: none; background-image: repeating-linear-gradient(105deg, var(--qc-palette-fff0) 0 2px, var(--qc-primary-text) .5px 3px, var(--qc-palette-0000) 4px 7px); }
 .chassis-mark { position: absolute; top: 3%; left: 2.4%; display: grid; gap: 2px; font-weight: 700; font-size: clamp(9px, .8vw, 13px); letter-spacing: .13em; }
 .chassis-mark small { font: clamp(5px, .38vw, 7px) var(--qc-font-mono); color: var(--qc-palette-878b91); letter-spacing: .08em; }
-/* padding stays 0 on every .qc-screen-bezel rule - see the production rule below. */
-.qc-screen-bezel { position: absolute; left: 15%; right: 15%; top: 17%; bottom: 17%; padding: 0; border: 1px solid var(--qc-palette-45484e); border-radius: 13px; background: var(--qc-palette-090a0c); box-shadow: inset 0 0 14px var(--qc-screen), 0 2px 2px var(--qc-palette-ffffff12); }
+/* The display box (.qc-screen-bezel) is sized by display-frame.css alone. */
 .qc-screen-bezel.is-grid-edge-gesture-surface { touch-action: none; }
 .qc-screen { width: 100%; height: 100%; display: grid; grid-template-rows: 12% 12% 1fr 9%; overflow: hidden; border-radius: 6px; background: radial-gradient(circle at 50% 0, var(--qc-palette-262d36), var(--qc-palette-11151a) 46%, var(--qc-palette-090b0e)); box-shadow: 0 0 30px var(--qc-palette-65b7d515); }
 .screen-header { display: grid; grid-template-columns: 12% 1fr 15%; align-items: center; border-bottom: 1px solid var(--qc-palette-343943); background: var(--qc-palette-1a1e24); }
@@ -44,7 +43,6 @@
 .hardware-switch.is-active .switch-ring { border-color: var(--switch-accent); box-shadow: 0 0 9px var(--switch-accent), inset 0 0 8px var(--qc-screen); }
 .switch-hint { color: var(--qc-palette-5d6269); font: clamp(4px, .35vw, 6px) var(--qc-font-mono); letter-spacing: .08em; }
 .skin-high-contrast { background: var(--qc-palette-050505); border-color: var(--qc-primary-text); }
-.skin-high-contrast .qc-screen-bezel { border-color: var(--qc-primary-text); }
 .skin-high-contrast .switch-label, .skin-high-contrast .chassis-mark { color: var(--qc-primary-text); }
 
 /* Quad Cortex large form factor — proportions derived from the official 29 × 19.5 cm top-panel diagram. */
@@ -79,7 +77,6 @@
 .device-plate small { display: none; }
 .pulse-mark { width: 1.05em; height: 1.05em; fill: currentColor; }
 
-.qc-screen-bezel { left: 20.5%; right: 21.5%; top: 7.5%; bottom: 42%; padding: 0; border: 1px solid var(--qc-palette-77797d); border-radius: 8px; background: var(--qc-palette-171719); box-shadow: inset 0 0 0 2px var(--qc-palette-050506), inset 0 0 16px var(--qc-screen), 0 3px 4px var(--qc-palette-111a); }
 .qc-screen { display: grid; grid-template-rows: 24% 1fr; border-radius: 2px; background: var(--qc-screen); color: var(--qc-app-text); font-family: var(--qc-font-app); box-shadow: none; overflow: hidden; }
 .coros-header { position: relative; z-index: 5; display: flex; align-items: flex-start; justify-content: space-between; padding: 4.5% 3.4% 0; background: var(--qc-screen); }
 .coros-title { display: flex; align-items: baseline; min-width: 0; font-weight: 700; letter-spacing: -.035em; white-space: nowrap; }
@@ -144,7 +141,7 @@
 .tuner-hint { position: absolute; right: 1.5%; bottom: -1%; color: var(--qc-palette-d4d4d5); font: clamp(4px, .38vw, 7px) var(--qc-font-mono); }
 
 .skin-high-contrast { background: var(--qc-palette-111); border-color: var(--qc-primary-text); }
-.skin-high-contrast .chassis-edge, .skin-high-contrast .qc-screen-bezel { border-color: var(--qc-primary-text); }
+.skin-high-contrast .chassis-edge { border-color: var(--qc-primary-text); }
 .skin-high-contrast .switch-label, .skin-high-contrast .device-plate, .skin-high-contrast .master-volume strong { color: var(--qc-primary-text); }
 
 /* Photo comparison refinements: physical depth, smooth anodizing, and the full four-row Grid. */
@@ -248,27 +245,8 @@
 .device-plate { right: 5.1%; top: 5.6%; width: 12.2%; padding: .55% .5%; display: flex; align-items: center; justify-content: center; text-align: center; font-size: clamp(9px, .9vw, 14px); border-color: var(--qc-palette-aaa9a5); letter-spacing: .12em; }
 .pulse-mark { margin-right: .18em; }
 
-.qc-screen-bezel {
-  /* SVG landmarks: x 252.8–844.2, y 78.1–411.9 within the panel outline. */
-  left: 23.02%;
-  right: 23.02%;
-  top: 8.86%;
-  bottom: 44.65%;
-  /* The bezel is the size container screens measure their cqw/cqh from,
-     so it may not pad itself: a container's cq units are 1% of its CONTENT box,
-     and self-padding is subtracted from the very box the screen is measured
-     against. The screen root is `position: absolute; inset: 0`, which resolves
-     against the padding box, so any nonzero padding here would inset nothing
-     and only shrink cqw, making every width a percent or two short of the
-     800px box the screen is designed against.
-     Keep it at zero: `100cqw` must equal the width of .qc-screen-fixture-root. */
-  padding: 0;
-  border-color: var(--qc-palette-68696c);
-  border-radius: 7px;
-  background: var(--qc-palette-111214);
-  box-shadow: inset 0 0 0 2px var(--qc-palette-020203), 0 2px 3px var(--qc-palette-111b);
-  container-type: size;
-}
+/* The display box (.qc-screen-bezel): position, 5:3 shape, size container and
+   the scale of the 800x480 canvas inside it are owned by display-frame.css. */
 /* Every screen paints its own ground over this one, so what is left visible is
    only what a scrim or a faded canvas lets through - which makes this a
    composite input rather than a surface role. See the note on
@@ -448,22 +426,6 @@
 .skin-neutral-svg .master-volume strong,
 .skin-neutral-svg .mode-bracket,
 .skin-neutral-svg .tuner-hint { display: none; }
-.skin-neutral-svg .qc-screen-bezel {
-  z-index: 3;
-  border-color: var(--qc-transparent);
-  background: var(--qc-transparent);
-  box-shadow: none;
-}
-.skin-neutral-svg .qc-screen-bezel::after {
-  content: "";
-  position: absolute;
-  z-index: 8;
-  inset: 1%;
-  border-radius: 2px;
-  background: linear-gradient(155deg, var(--qc-palette-ffffff0b), var(--qc-transparent) 25% 76%, var(--qc-palette-6f8ca008));
-  box-shadow: inset 0 0 12px var(--qc-palette-000b);
-  pointer-events: none;
-}
 .skin-neutral-svg .power-button {
   width: var(--qc-power-control-diameter);
   padding: 0;

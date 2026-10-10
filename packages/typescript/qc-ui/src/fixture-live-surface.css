@@ -1,27 +1,6 @@
-.qc-screen-fixture-root { position: absolute; inset: 0; }
-/*
- * Many device-accurate fixture screens carry literal 800x480 measurements:
- * their socket artwork, the Gig-mode marks and several selector tracks are
- * intentionally one device pixel per CSS pixel. Rendering those pages straight
- * into a narrower Android bezel made only their fixed-pixel pieces stay large
- * while cqw-based neighbours shrank. Keep one canonical canvas, then scale the
- * entire fixture as a unit. `cqw` on this container is 800px for descendants;
- * in its own transform it resolves to the outer bezel. The actual bezel is
- * 16:9 while these fixtures are 800:480, so scale each axis to the bezel
- * independently: scaling only the width lets every panel spill below it.
- *
- * The live Grid deliberately does not use this class: it is an SVG viewBox and
- * already scales natively, while its HTML editor overlays use their own query
- * units.
- */
-.qc-screen-fixture-root.is-canonical-canvas {
-  inset: 0 auto auto 0;
-  width: 800px;
-  height: 480px;
-  container-type: inline-size;
-  transform: scale(calc(100cqw / 800px), calc(100cqh / 480px));
-  transform-origin: top left;
-}
+/* The canvas (.qc-screen-fixture-root) is sized and scaled by display-frame.css,
+   for every screen alike: the live Grid and its overlays, the fixture screens
+   and the scene editor share one 800x480 canvas scaled by one transform. */
 @scope (.qc-screen-fixture-root) {
 @keyframes qc-tempo-led-pulse {
   0%, 12% { opacity: 1; filter: brightness(1.25); }
@@ -326,7 +305,12 @@
 .browser-result-list button > i { width: 3.8cqw; height: 3.8cqw; display: grid; place-items: center; border: 2px solid var(--result-color); border-radius: .85cqw; color: var(--result-color); font-size: 1.8cqw; font-style: normal; }
 .browser-result-list button > span { display: flex; flex-direction: column; gap: .3cqw; }
 .browser-result-list button > span strong { font-size: 1.35cqw; font-weight: 400; }
-.browser-result-list button > span small { color: var(--qc-palette-7e837f); font-size: .9cqw; }
+/* The category caption is 7.2px on the unit (.9cqw). A WebView's minimum font size
+   (8px by default) would enlarge a 7.2px run by 11% and move the row around it.
+   Drawn as 72px at one tenth zoom it is the same 7.2px on screen, and the
+   minimum is applied to the 72px before the zoom, so it never touches it.
+   display-layout.test.ts holds every display text to 8px or more, or to this. */
+.browser-result-list button > span small { color: var(--qc-palette-7e837f); font-size: 9cqw; zoom: .1; }
 .browser-result-list button > b { color: var(--qc-palette-f0cf34); font-size: 1.5cqw; text-align: center; }
 .plugin-folder-list button { grid-template-columns: 15% 1fr 12%; min-height: 6.75cqw; }
 .plugin-folder-list button i { color: var(--qc-screen-text-primary); font-size: 2.2cqw; font-style: normal; }
