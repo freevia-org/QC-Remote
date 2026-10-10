@@ -3565,6 +3565,85 @@ fn opening_a_transport_still_advances_the_status_epoch() {
     assert_ne!(state.lock_recover().session_epoch, before);
 }
 
+/// A running worker whose retry finds nothing to open: the selected id matches
+/// no unit HID can enumerate, so no hardware attached to the machine can make
+/// these tests open a device. The status is seeded with a finished connection's
+/// counters before the first retry is armed, so nothing races the seed.
+fn controller_searching_for_an_absent_qc(
+    tag: &str,
+) -> (DeviceController, std::path::PathBuf, String) {
+    let dir = std::env::temp_dir().join(format!("qc-absent-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("device-owner.json");
+    let controller = DeviceController::start_for_device_with_lease(
+        Some("no-such-device".into()),
+        false,
+        path.clone(),
+    )
+    .expect("controller starts");
+    {
+        let mut status = controller.hold_status_lock_for_test();
+        status.handshake_ms = Some(456);
+        status.messages_received = 98;
+        status.messages_sent = 76;
+        status.session_epoch = 3;
+    }
+    assert!(matches!(
+        controller.reconnect(),
+        Ok(ReconnectOutcome::Restarted)
+    ));
+    let expected = crate::device_lease::busy_detail(&path);
+    wait_for_status(&controller, "the no-device search", |status| {
+        status.detail == expected
+    });
+    (controller, dir, expected)
+}
+
+#[test]
+fn a_retry_that_finds_no_qc_stays_searching_and_opens_no_connection_epoch() {
+    let (controller, dir, expected) = controller_searching_for_an_absent_qc("phase");
+    // Several retry cadences (RECONNECT_INTERVAL_MS is 750 ms) pass; the worker
+    // enumerates on each and finds nothing, so it never publishes `connecting`
+    // and never starts a connection epoch.
+    thread::sleep(Duration::from_millis(2_000));
+    let status = controller.status();
+    assert_eq!(status.phase, "searching");
+    assert_eq!(status.detail, expected);
+    assert!(!status.connected);
+    assert!(!status.synchronized);
+    assert_eq!(
+        status.session_epoch, 3,
+        "only begin_connection_epoch bumps the epoch, and it now runs after a QC is found"
+    );
+    assert_eq!(
+        controller.device_id().as_deref(),
+        Some("no-such-device"),
+        "a selected unit that is missing is never replaced by another one"
+    );
+    drop(controller);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Characterization of what 2badc68 changed as a side effect: with no QC
+/// enumerated the retry no longer reaches `begin_connection_epoch`, the one
+/// place that zeroes the transport counters, so the previous connection's
+/// totals stay in the status while the phase reads `searching`. If the
+/// maintainers decide those totals must clear on an unplug, this is the
+/// assertion to turn around.
+#[test]
+fn a_retry_that_finds_no_qc_leaves_the_previous_connections_counters_in_place() {
+    let (controller, dir, _) = controller_searching_for_an_absent_qc("counters");
+    thread::sleep(Duration::from_millis(2_000));
+    let status = controller.status();
+    assert_eq!(status.phase, "searching");
+    assert_eq!(status.handshake_ms, Some(456));
+    assert_eq!(status.messages_received, 98);
+    assert_eq!(status.messages_sent, 76);
+    drop(controller);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn installed_navigation_coordinates_cross_real_rpc_as_one_drag_frame() {
     use quadcortex::device::delivery::ReportOutcome;

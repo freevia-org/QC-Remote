@@ -15,6 +15,40 @@ fn reconnect_waits_only_when_the_requested_qc_is_present() {
 }
 
 #[test]
+fn a_reconnect_for_an_absent_qc_returns_searching_without_waiting_for_a_handshake() {
+    // The early return needs a successful enumeration; after an error
+    // `await_ready_status` deliberately falls back to the ready wait.
+    if quadcortex_windows::usb::connected_devices().is_err() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("qc-absent-ready-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    // An id that matches nothing HID can enumerate, so this test can never
+    // open a real Quad Cortex, and a lease of its own so it never contends
+    // with a running broker.
+    let controller = DeviceController::start_for_device_with_lease(
+        Some("no-such-device".into()),
+        true,
+        dir.join("device-owner.json"),
+    )
+    .expect("controller starts");
+    assert_eq!(controller.status().phase, "searching");
+    let started = Instant::now();
+    let status = await_ready_status(&controller);
+    let waited = started.elapsed();
+    assert!(
+        waited < Duration::from_millis(profile::READY_WAIT_TIMEOUT_MS / 2),
+        "an absent QC must not cost the ready wait; took {waited:?}"
+    );
+    assert_eq!(status.phase, "searching");
+    assert!(!status.connected);
+    assert!(!status.synchronized);
+    drop(controller);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn cached_snapshot_preserves_incomplete_grid_without_requesting_a_refresh() {
     let snapshot = quadcortex::device::GatewaySnapshot {
         setlist_key: "test-setlist".into(),
