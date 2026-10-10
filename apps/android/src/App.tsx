@@ -6,7 +6,7 @@ import { QC_SCENE_COUNT } from "@qc-remote/client";
 import { demoSnapshot, footswitchLeds, sceneLetter, type ControlAccessMode, type PublicRelayUsage } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_LEGAL, QC_LEGAL_DOCUMENTS, QC_VISUAL_ASSETS } from "@qc-remote/theme";
-import { ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, CorOsDeviceSettings, QC_DISABLED_CONTEXT_ACTIONS, qcContextActionHandler, CorOsGlobalEqScreen, CorOsIoSettingsScreen, CorOsSceneCommand, CorOsTempoScreen, CorOsTunerScreen, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, LooperXScreen, ModesConfigurationScreen, parameterEditorAccent, parameterEditorControlSlots, parameterEditorPageSize, parseDemoLibraryText, PresetMidiOutEditor, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, QcUiIcon, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, refreshGridSnapshot, serializeDemoLibrary, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting, type QcScreenObservation } from "@qc-remote/ui";
+import { ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, QC_DISABLED_CONTEXT_ACTIONS, closeQcLooperScreen, qcDeviceScreenContent, qcContextActionHandler, CorOsSceneCommand, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, parameterEditorAccent, parameterEditorControlSlots, parameterEditorPageSize, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, QcUiIcon, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, refreshGridSnapshot, serializeDemoLibrary, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting, type QcScreenObservation } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { androidGatewayTransport, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage } from "./native-services";
 import { useAndroidPrompts } from "./use-android-prompts";
@@ -793,6 +793,7 @@ export function App() {
   const tunerViewOpen = Boolean(mobileScreenView?.startsWith("tuner"));
   const closeMobileScreen = async () => {
     try {
+      if (mobileScreenView === "looper-editor") { await closeQcLooperScreen({ looper: looperWorkflow, setView: setMobileScreenView }); return; }
       if (native && hardwareConnected && !demoActive) {
         if (gigViewOpen) await androidGatewayTransport.showGigView(false);
         else if (tunerViewOpen) await performanceWorkflow.showDeviceView("tuner", false);
@@ -909,28 +910,10 @@ export function App() {
   const cpuMonitorOpen = mobileScreenView === "cpu-monitor";
   const cpuMonitor = cpuTelemetry.monitor(cpuMonitorOpen, screenDestination.returnFocusTarget, () => setMobileScreenView(null));
   const mobileScreenContent = productionAuditScreen ? <CorOsProductionScreenAudit view={productionAuditScreen} snapshot={snapshot} />
-    : deviceSettingsWorkflow.open ? <CorOsDeviceSettings workflow={deviceSettingsWorkflow} onClose={deviceSettingsWorkflow.close} />
-    : tempoWorkflow.open ? <CorOsTempoScreen workflow={tempoWorkflow} snapshot={snapshot} queueTempo={continuousControls.queueTempo} onSelectScene={(index) => void performanceWorkflow.selectScene(index)} onClose={tempoWorkflow.close} />
-    : mobileScreenView === "tuner" ? <CorOsTunerScreen workflow={tunerWorkflow} onClose={() => void closeMobileScreen()} />
-    : mobileScreenView === "looper-editor" ? <LooperXScreen workflow={looperWorkflow} activeScene={snapshot.activeScene} onSelectScene={(scene) => void performanceWorkflow.selectScene(scene)} onParameters={async () => {
-      const looper = snapshot.blocks.find((block) => block.modelId === 27_000 || block.name === "Looper X");
-      if (!looper) { setNotice("Add a Looper X block to this preset before opening its parameters."); return; }
-      await looperWorkflow.run("performMode", 1);
-      setMobileScreenView(null);
-      await gridWorkflow.openBlock(looper);
-    }} onMenu={async () => {
-      const looper = snapshot.blocks.find((block) => block.modelId === 27_000 || block.name === "Looper X");
-      if (!looper) { setNotice("Add a Looper X block to this preset before opening its menu."); return; }
-      await looperWorkflow.run("performMode", 1);
-      setParameterMenuInitiallyOpen(true);
-      setMobileScreenView(null);
-      await gridWorkflow.openBlock(looper);
-    }} onClose={() => { void looperWorkflow.run("close"); setMobileScreenView(null); }} />
-    : mobileScreenView === "modes" ? <ModesConfigurationScreen returnFocusTarget={screenDestination.returnFocusTarget} workflow={modesWorkflow} onClose={() => setMobileScreenView(null)} />
-    : mobileScreenView === "midi-out" ? <PresetMidiOutEditor returnFocusTarget={screenDestination.returnFocusTarget} workflow={midiOutWorkflow} onClose={() => setMobileScreenView(null)} />
-    : mobileScreenView === "global-eq" ? <CorOsGlobalEqScreen workflow={ioEqWorkflow} onBack={() => setMobileScreenView("io-overview")} />
-    : mobileScreenView?.startsWith("io-") ? <CorOsIoSettingsScreen workflow={ioEqWorkflow} onGlobalEq={() => setMobileScreenView("global-eq")} onClose={() => void closeMobileScreen()} />
-    : undefined;
+    : qcDeviceScreenContent({
+      snapshot, destination: screenDestination, selectScene: performanceWorkflow.selectScene, queueTempo: continuousControls.queueTempo, setParameterMenuInitiallyOpen, closeScreen: closeMobileScreen, notice: setNotice,
+      workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow }
+    });
 
 
   const configureRelay = async () => {
