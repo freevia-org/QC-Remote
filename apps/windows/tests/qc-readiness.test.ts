@@ -60,16 +60,12 @@ test("the detection predicate and the phase mapping accept exactly the same phas
   }
 });
 
-// Current behaviour, pinned so that changing the private contract is a
-// visible event. The raw phase listener (App.tsx onDevicePhase) reads
-// `connecting` as "a Quad Cortex was found, now opening it", but the result
-// of device.reconnect / device.resetSession goes through
-// normalizeBrokerConnection (tauri-transport.ts reconnect() / resetSession()),
-// and the generated contract still aliases broker `connecting` to
-// `searching`. When the private contract source stops aliasing it
-// (QC_BROKER_CONNECTION_PHASE_ALIASES), update the second half of this test and
-// packages/typescript/qc-client/tests/client-behavior.test.ts together.
-test("today `connecting` is `opening` on the live phase path but `searching` on the reconnect-result path", () => {
+// The broker publishes `connecting` only after enumeration found a matching QC
+// and it is being opened. Both paths read it as `opening`: the raw phase
+// listener (App.tsx onDevicePhase) through qcConnectionDuringBrokerPhase, and
+// the result of device.reconnect / device.resetSession through
+// normalizeBrokerConnection (QC_BROKER_CONNECTION_PHASE_ALIASES).
+test("`connecting` is `opening` on the live phase path and on the reconnect-result path", () => {
   const live = qcConnectionDuringBrokerPhase("connecting", "");
   assert.equal(live?.phase, "opening");
   assert.equal(live?.demo, true);
@@ -80,7 +76,7 @@ test("today `connecting` is `opening` on the live phase path but `searching` on 
     demo: false,
     source: "device"
   } as Parameters<typeof normalizeBrokerConnection>[0]);
-  assert.equal(result.phase, "searching");
+  assert.equal(result.phase, "opening");
   assert.equal(result.demo, true);
   assert.equal(result.detail, "Quad Cortex found; opening its USB session");
 });
