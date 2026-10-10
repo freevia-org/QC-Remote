@@ -69,10 +69,15 @@ fn publish_phase_changes<W: Write>(
     output: &Mutex<W>,
     stop: &AtomicBool,
 ) {
-    let mut published: Option<(String, bool, bool)> = None;
+    let mut published: Option<(String, String, bool, bool)> = None;
     while !stop.load(Ordering::Acquire) {
         let status = controller.status();
-        let observed = (status.phase.clone(), status.connected, status.synchronized);
+        let observed = (
+            status.phase.clone(),
+            status.detail.clone(),
+            status.connected,
+            status.synchronized,
+        );
         if published.as_ref() != Some(&observed) {
             let Ok(mut output) = output.lock() else {
                 return;
@@ -681,7 +686,31 @@ fn suspension_refusal(
     })
 }
 
+fn requested_device_is_present(
+    selected_device_id: Option<&str>,
+    devices: &[quadcortex_windows::usb::QcUsbDevice],
+) -> bool {
+    devices
+        .iter()
+        .any(|device| selected_device_id.is_none_or(|selected| selected == device.id))
+}
+
 fn await_ready_status(controller: &DeviceController) -> BrokerStatus {
+    // A reconnect request arms the worker's background search. When HID
+    // enumeration already proves that the selected QC (or any QC, when no
+    // selection exists) is absent, there is no handshake to wait for. Return
+    // the searching state immediately; the worker remains armed and its phase
+    // stream will announce a device plugged in later.
+    let selected_device_id = controller.device_id();
+    if controller.status().phase == "searching" {
+        if let Ok(devices) = quadcortex_windows::usb::connected_devices() {
+            let selected_is_present =
+                requested_device_is_present(selected_device_id.as_deref(), &devices);
+            if !selected_is_present {
+                return controller.status();
+            }
+        }
+    }
     let status = controller.wait_for_ready(Duration::from_millis(profile::READY_WAIT_TIMEOUT_MS));
     if status.phase == "ready" {
         // USB synchronization and state decoding run on separate workers.
