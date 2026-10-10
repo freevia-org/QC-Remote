@@ -84,7 +84,11 @@ test("USB attachment connects automatically and reports synchronization separate
   assert.match(servicesSource, /connected: boolean; synchronized: boolean/);
   assert.match(javaSource, /isReady\(\) && stateDecoder\.sessionSynchronized\(\) && currentSetlist != null/);
   assert.match(appSource, /if \(state === "available"\)[\s\S]{0,120}attemptUsbConnection\(\)/);
-  assert.match(appSource, /if \(!devices\.length\)[\s\S]{0,220}transitionConnection\("absent"\)[\s\S]{0,120}startDemoDeviceRef\.current\(\)/);
+  assert.match(
+    appSource,
+    /if \(!devices\.length\) \{\s*setHardwareConnected\(false\);\s*if \(activeSourceRef\.current !== "virtual"\) \{\s*transitionConnection\("absent"\);\s*void startDemoDeviceRef\.current\("No Quad Cortex was found\."\);/,
+    "an empty scan falls back to Demo only when hardware was the active source",
+  );
   assert.match(appSource, /state\.kind === "preset"[\s\S]*usbSessionReady\.current[\s\S]*transitionConnection\("connected"\)/);
   assert.match(appSource, /const \[hardwareConnected, setHardwareConnected\] = useState\(false\)/, "native USB readiness remains independent while the demo is active");
   assert.match(appSource, /qcConnectionIndicatorPhase\(connection, hardwareConnected && !demoActive, null, \{ actionRequired: usbWritesQuarantined \}\)/, "the device pill uses the global indicator contract, including write quarantine state");
@@ -443,7 +447,8 @@ test("a stale USB completion releases its own latch after Demo fallback and cann
   assert.notEqual(laterAttach, undefined);
   assert.equal(latch.release(failedUsbAttempt!), false, "a delayed old finally cannot clear the new attempt");
   assert.equal(latch.isHeld, true);
-  assert.match(appSource, /finally\s*\{\s*connectAttemptLatch\.current\.release\(latchOwner\);/);
+  assert.match(appSource, /finally\s*\{\s*const released = connectAttemptLatch\.current\.release\(latchOwner\);/);
+  assert.match(appSource, /if \(released && usbRetryRequested\.current && !usbSessionReady\.current/);
   assert.match(appSource, /connectionAttempts\.invalidate\(\);\s*connectAttemptLatch\.current\.clear\(\);/);
 });
 
