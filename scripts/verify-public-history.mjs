@@ -18,10 +18,18 @@
 // range mode they can be downgraded to warnings with --identity advisory. That
 // is for pull requests from forks: the Developer Certificate of Origin that
 // CONTRIBUTING.md asks for carries a real-name sign-off, and an outside
-// a maintainer must publish a privacy-preserving, signed-off commit instead of
-// publishing those identities as they stand. The commit that lands on master is
-// checked in whole-history mode by the push run, which is the point where the
-// identity rules are enforced for good.
+// contributor's commit must not become published history with that identity as
+// it stands. A maintainer must publish a privacy-preserving, signed-off commit
+// instead. The commit that lands on master is checked in whole-history mode by
+// the push run, which is the point where the identity rules are enforced for
+// good.
+//
+// One already-published commit is exempt from one identity finding:
+// 2badc68ea4d30f53fc98ae9e000c70df109d0970 may carry a Co-authored-by trailer
+// (see publishedIdentityExceptions below). The exemption is that full commit
+// SHA and that exact finding text, in whole-history and range mode alike. Every
+// other finding on that commit, and the same finding on any other commit, still
+// fails as usual.
 //
 // Usage:
 //   node scripts/verify-public-history.mjs

@@ -423,10 +423,11 @@ const boundedRouteRefreshReason = (error?: string | null): string => {
  * - `current`, `not-paired` - nothing happened.
  * - `paired-with-newer-build` - already has a row of its own, which reports
  *   the version relationship rather than the pass.
- * - `customised` - not an error. That route belongs to whoever edited it and
- *   the pass left it exactly as it was, which is the right thing to have
- *   done. If it is also out of date the row reads `Update available` on its
- *   own merits, and that one honest signal is enough; a second sentence
+ * - `customised` - not an error. The entry has no valid managed identity or
+ *   launches a different executable, so the pass could not establish that it
+ *   is this app's and left it exactly as it was, which is the right thing to
+ *   have done. If it is also out of date the row reads `Update available` on
+ *   its own merits, and that one honest signal is enough; a second sentence
  *   saying the same thing would make a deliberate choice look like a fault.
  * - `unreadable` - a judgement rather than a reflex, and it goes three ways.
  *   The read that produces it is the same read the status document is built
@@ -440,8 +441,9 @@ const boundedRouteRefreshReason = (error?: string | null): string => {
  *   amber nor the word Update would be earned.
  *
  * `failed` is the one that shows, because it is the one where this app tried
- * and could not: the route is its own, one release behind, and the rewrite
- * was refused. The staleness is real, nothing else will clear it, and what
+ * and could not: the route is its own, needed repair (an older build, or a
+ * difference from what this build writes), and the rewrite was refused. The
+ * staleness is real, nothing else will clear it, and what
  * remains is the user pressing the control that performs the same write. So
  * it is a route that is out of date plus a decision that has landed back with
  * the user - `action-required` by the rule at the top of this file, and not

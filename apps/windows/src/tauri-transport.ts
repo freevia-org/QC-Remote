@@ -636,13 +636,17 @@ export interface ClaudeDesktopInstallResult {
  * QC Remote freshens its own rather than leaving a row saying "Update
  * available" until somebody presses it, and reports here what it did:
  *
- * - `rewritten` - it was this app's own route, one version behind, and is now
- *   current; the host picks the new entry up on its own schedule.
+ * - `rewritten` - it was this app's own route (its managed identity and this
+ *   app's executable name), either an older build or different from what this
+ *   build writes, for instance another executable path. The whole entry was
+ *   replaced, so added arguments or environment keys are gone and a disabled
+ *   route is enabled again; a backup was taken and other servers were kept.
+ *   The host picks the new entry up on its own schedule.
  * - `current` - nothing to do.
  * - `not-paired` - this host carries no QC Remote route.
- * - `customised` - a route with another command, an added argument, a changed
- *   setting or one switched off. It belongs to whoever edited it and was left
- *   exactly as it was.
+ * - `customised` - the entry has no valid managed identity or launches a
+ *   different executable, so ownership could not be established and it was
+ *   left exactly as it was.
  * - `paired-with-newer-build` - the route names a newer app than the one
  *   running, so only the explicit Update control may relabel it.
  * - `unreadable` - the pass could not parse the host's configuration, so it

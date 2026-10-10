@@ -1,4 +1,5 @@
-//! A tour of the typed command layer: validation, message cost and pacing.
+//! A tour of the typed command layer: validation, message cost and the pacing
+//! query.
 //!
 //! Every [`DeviceCommand`] and [`DeviceOperation`] has a `try_encode` that
 //! validates its arguments before it produces any bytes. This example encodes a
@@ -52,9 +53,13 @@ fn main() {
         }
     }
 
-    // An operation may expand to several ordered messages. A screen drag is
-    // three, and the device protocol needs a gap between them that the host
-    // must honour; the library reports it but never sleeps.
+    // An operation may expand to several ordered messages, and for some of
+    // them the host must leave a gap between the messages; the library reports
+    // that gap but never sleeps. Neither operation below needs one: this
+    // global bypass sets only the cab rows, which is one message, and a screen
+    // drag is a single DRAG frame, so both report a gap of 0 and no "host must
+    // wait" line is printed. A screen hold (a press, then a release 1200 ms
+    // later) is an operation that does report one.
     let operations = [
         (
             "bypass global cab on row 0",

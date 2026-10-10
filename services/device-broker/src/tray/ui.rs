@@ -386,6 +386,10 @@ unsafe fn append_row(menu: HMENU, row: &MenuRow, commands: &mut Vec<MenuAction>)
     }
 }
 
+// SAFETY: the system calls this as the window procedure registered in `start`, always on the
+// thread that created the window, so that thread is the only one that locks STATE. The
+// arguments are the system's own: they are forwarded to DefWindowProcW and PostMessageW
+// or compared as integers, never dereferenced. STATE is set before the window exists.
 unsafe extern "system" fn window_proc(
     window: HWND,
     message: u32,

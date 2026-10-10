@@ -115,19 +115,29 @@ fn write_staged_verified_by(
 ) -> Result<(), String> {
     let user = CurrentUser::look_up()?;
     let mut dacl = OwnerOnlyDacl::grant_full_access(user.sid())?;
+    // SAFETY: SECURITY_DESCRIPTOR holds only integers and raw pointers, for which all-zero
+    // bytes are a valid value (null pointers). It is initialised properly just below.
     let mut descriptor: SECURITY_DESCRIPTOR = unsafe { mem::zeroed() };
     let descriptor_pointer: PSECURITY_DESCRIPTOR = (&raw mut descriptor).cast();
+    // SAFETY: `descriptor_pointer` points at the live, writable `descriptor` local, which is a
+    // full-size SECURITY_DESCRIPTOR; the revision is the only one the API accepts.
     if unsafe { InitializeSecurityDescriptor(descriptor_pointer, SECURITY_DESCRIPTOR_REVISION) }
         == 0
     {
         return Err(last_error("initialize a security descriptor"));
     }
+    // SAFETY: `descriptor` was initialised above. `dacl` owns a DWORD-aligned buffer that holds a
+    // fully initialised ACL. The descriptor keeps this pointer without copying it, so `dacl`
+    // must outlive every use of `descriptor`: both are locals, `descriptor` is declared after
+    // `dacl`, and its last use is the CreateFileW call below.
     if unsafe { SetSecurityDescriptorDacl(descriptor_pointer, 1, dacl.as_mut_ptr(), 0) } == 0 {
         return Err(last_error("attach the owner-only DACL"));
     }
     // Without this the system merges the parent directory's inheritable ACEs
     // into the DACL supplied here, which is exactly the Administrators and
     // SYSTEM access this call exists to drop.
+    // SAFETY: same initialised `descriptor`; SE_DACL_PROTECTED is a valid control bit to set
+    // on an absolute security descriptor.
     if unsafe {
         SetSecurityDescriptorControl(descriptor_pointer, SE_DACL_PROTECTED, SE_DACL_PROTECTED)
     } == 0
@@ -148,6 +158,11 @@ fn write_staged_verified_by(
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 path that outlives the call. `attributes` is a
+    // live SECURITY_ATTRIBUTES whose descriptor points into `descriptor` and, through it, at
+    // `dacl`; all of them stay alive until after the call, and CreateFileW applies the
+    // descriptor while creating the file without retaining any of these pointers. The
+    // template-file argument is null.
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
@@ -223,6 +238,11 @@ pub fn is_owner_only(path: &Path) -> Result<bool, String> {
 fn names_only(handle: HANDLE, expected: PSID) -> Result<bool, String> {
     let mut dacl: *mut ACL = ptr::null_mut();
     let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    // SAFETY: `handle` is an open file handle that the caller keeps alive for the whole call
+    // (write_staged_verified_by holds `file`, is_owner_only holds its `File`). `dacl` and
+    // `descriptor` are writable locals; the other out-parameters are null, which is allowed
+    // because only DACL_SECURITY_INFORMATION is requested. On success `descriptor` owns the
+    // LocalAlloc'd block that `dacl` points into.
     let status = unsafe {
         GetSecurityInfo(
             handle,
@@ -242,6 +262,9 @@ fn names_only(handle: HANDLE, expected: PSID) -> Result<bool, String> {
     let verdict = inspect_dacl(descriptor, dacl, expected);
     // `GetSecurityInfo` allocates the security descriptor - and the `dacl`
     // pointer into it - with `LocalAlloc`.
+    // SAFETY: reached only after GetSecurityInfo succeeded, so `descriptor` is the LocalAlloc'd
+    // block it returned, and nothing else frees it. `dacl` points into that block and is not
+    // used again, and `verdict` holds no pointer into it.
     unsafe { LocalFree(descriptor) };
     verdict
 }
@@ -255,6 +278,9 @@ fn inspect_dacl(
 ) -> Result<bool, String> {
     let mut control: u16 = 0;
     let mut revision: u32 = 0;
+    // SAFETY: `descriptor` is the live security descriptor GetSecurityInfo returned (the caller
+    // frees it only after this function returns); `control` and `revision` are writable locals
+    // of the types the API fills.
     if unsafe { GetSecurityDescriptorControl(descriptor, &raw mut control, &raw mut revision) } == 0
     {
         return Err(last_error("read the security descriptor control bits"));
@@ -270,6 +296,9 @@ fn inspect_dacl(
         return Ok(false);
     }
     let mut size = ACL_SIZE_INFORMATION::default();
+    // SAFETY: `dacl` is non-null (checked above) and points into the live descriptor. `size` is a
+    // writable ACL_SIZE_INFORMATION, its size_of is passed, and that is the structure the
+    // `AclSizeInformation` class fills.
     if unsafe {
         GetAclInformation(
             dacl,
@@ -285,18 +314,30 @@ fn inspect_dacl(
         return Ok(false);
     }
     let mut ace: *mut core::ffi::c_void = ptr::null_mut();
+    // SAFETY: `dacl` is valid as above and index 0 is in range, because AceCount was checked to
+    // be exactly 1. `ace` is a writable pointer slot.
     if unsafe { GetAce(dacl, 0, &raw mut ace) } == 0 {
         return Err(last_error("read the single ACE"));
     }
     let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
+    // SAFETY: `ace` came from GetAce for index 0, so it points at an ACE inside the live ACL.
+    // Every ACE starts with an ACE_HEADER, so reading the header through the
+    // ACCESS_ALLOWED_ACE view is valid whatever the ACE type is.
     let header = unsafe { (*ace).Header };
     if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE {
         return Ok(false);
     }
+    // SAFETY: the type check above established an ACCESS_ALLOWED_ACE, so `Mask` lies inside the
+    // ACE; ACEs are DWORD aligned within an ACL, as is the struct.
     if unsafe { (*ace).Mask } != FILE_ALL_ACCESS {
         return Ok(false);
     }
+    // SAFETY: only the address of `SidStart` is taken, nothing is read here. The SID starts at
+    // that field and extends past the struct as part of the ACE, which is why the pointer is
+    // derived from the ACE pointer rather than from a reference to the field.
     let ace_sid: PSID = unsafe { (&raw const (*ace).SidStart).cast_mut().cast() };
+    // SAFETY: `ace_sid` points at the SID embedded in the checked ACE, and `expected` at the SID
+    // in the CurrentUser buffer that the caller keeps alive. EqualSid only reads both.
     Ok(unsafe { EqualSid(ace_sid, expected) } != 0)
 }
 
@@ -310,21 +351,31 @@ struct CurrentUser {
 impl CurrentUser {
     fn look_up() -> Result<Self, String> {
         let mut token: HANDLE = ptr::null_mut();
+        // SAFETY: GetCurrentProcess returns a pseudo-handle that needs no closing. `token` is a
+        // writable local that receives an owned token handle on success, and every path below
+        // closes it.
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) } == 0 {
             return Err(last_error("open this process's access token"));
         }
         let mut needed: u32 = 0;
         // The first call always fails; it is how the buffer is sized.
+        // SAFETY: the documented sizing call: a null buffer with length 0 is allowed, the call
+        // fails with ERROR_INSUFFICIENT_BUFFER and writes the required size to `needed`.
+        // `token` is the open handle from above.
         unsafe {
             GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &raw mut needed);
         }
         if needed == 0 {
             let error = last_error("size this user's SID");
+            // SAFETY: `token` was opened above and is closed here on a path that returns, so once.
             unsafe { CloseHandle(token) };
             return Err(error);
         }
         let words = (needed as usize).div_ceil(mem::size_of::<u64>());
         let mut buffer = vec![0_u64; words];
+        // SAFETY: `buffer` holds at least `needed` bytes (rounded up to whole u64 words), is 8-byte
+        // aligned and exclusively borrowed here, so the API may write up to `needed` bytes into
+        // it. `token` is open and the length out-parameter is a writable local.
         let filled = unsafe {
             GetTokenInformation(
                 token,
@@ -334,6 +385,8 @@ impl CurrentUser {
                 &raw mut needed,
             )
         };
+        // SAFETY: `token` is still open here; the error path above returned after closing it, so no
+        // path closes it twice.
         unsafe { CloseHandle(token) };
         if filled == 0 {
             return Err(last_error("read this user's SID"));
@@ -342,6 +395,9 @@ impl CurrentUser {
     }
 
     fn sid(&self) -> PSID {
+        // SAFETY: a CurrentUser exists only after GetTokenInformation(TokenUser) filled `buffer`,
+        // which is 8-byte aligned (Vec<u64>) and at least TOKEN_USER sized. The pointer is only
+        // read, and the SID it names lives in the same buffer, so it is valid while `self` is.
         unsafe { (*self.buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid }
     }
 }
@@ -356,6 +412,8 @@ struct OwnerOnlyDacl {
 
 impl OwnerOnlyDacl {
     fn grant_full_access(sid: PSID) -> Result<Self, String> {
+        // SAFETY: `sid` must be a valid SID. The only caller passes CurrentUser::sid, whose buffer
+        // outlives this call.
         let sid_length = unsafe { GetLengthSid(sid) } as usize;
         if sid_length == 0 {
             return Err(last_error("measure this user's SID"));
@@ -368,9 +426,14 @@ impl OwnerOnlyDacl {
         let mut dacl = Self {
             buffer: vec![0_u32; bytes.div_ceil(mem::size_of::<u32>())],
         };
+        // SAFETY: `dacl.buffer` holds at least `bytes` bytes (rounded up to whole u32 words) and is
+        // zeroed, writable and DWORD aligned, which is what InitializeAcl needs for an ACL of
+        // `bytes` bytes.
         if unsafe { InitializeAcl(dacl.as_mut_ptr(), bytes as u32, ACL_REVISION) } == 0 {
             return Err(last_error("initialize an ACL"));
         }
+        // SAFETY: the ACL was just initialised with room for one ACE of this SID (see the `bytes`
+        // computation above), and `sid` is valid for the call as in the length query.
         if unsafe { AddAccessAllowedAce(dacl.as_mut_ptr(), ACL_REVISION, FILE_ALL_ACCESS, sid) }
             == 0
         {

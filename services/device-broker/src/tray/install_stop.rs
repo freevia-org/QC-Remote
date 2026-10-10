@@ -200,6 +200,8 @@ mod tests {
         );
         let name: Vec<u16> = event_name(&broker).encode_utf16().chain(Some(0)).collect();
         // Auto-reset, exactly as `watch` creates it.
+        // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call; no security
+        // attributes are passed. A null result is caught by the assertion below.
         let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) } as isize;
         assert_ne!(event, 0);
         let waiter = std::thread::spawn(move || {
@@ -207,10 +209,13 @@ mod tests {
             let mut seen = 0;
             while seen < 2 {
                 assert!(Instant::now() < deadline, "the request was not repeated");
+                // SAFETY: `event` is the non-zero handle created above. Only this closure
+                // uses it, and it is not closed until after the loop.
                 if unsafe { WaitForSingleObject(event as _, 10) } == WAIT_OBJECT_0 {
                     seen += 1; // the first is refused (host still closing)
                 }
             }
+            // SAFETY: closes the event created above, once; `event` is not used again.
             unsafe { CloseHandle(event as _) };
         });
         assert_eq!(
