@@ -212,6 +212,14 @@ export function App() {
   const demoDeviceSession = useMemo(() => createDemoDeviceSession(tauriTransport), []);
   const activeGateway = demoDeviceSession.gateway;
   const [demoPending, setDemoPending] = useState(false);
+  // A demo opened because USB was absent is a fallback and yields as soon as
+  // the broker finds the QC. A demo selected by the user is intentional and
+  // remains active until they choose USB again.
+  const demoCanYieldToDevice = useRef(true);
+  // A phase can arrive while device.reconnect still owns the gateway. Keep
+  // that edge rather than dropping it; if this attempt falls back to Demo,
+  // the freshly opened fallback immediately follows the detected device.
+  const reconnectAfterCurrentAttempt = useRef(false);
   // The demo open that owns demoPending. A connect() can supersede an open
   // (connectionAttempts), and the superseded open must still clear the flag it
   // set, or the Demo device tab stays "Opening…" and disabled for good.
@@ -1131,6 +1139,7 @@ export function App() {
   const suspendDemoDevice = (): boolean => {
     if (demoDeviceSession.source !== "virtual") return false;
     demoDeviceSession.useDevice();
+    demoCanYieldToDevice.current = false;
     // Undo entries replay against the transport that recorded them; none may
     // cross from the demo device to the hardware or back.
     clearUndo();
@@ -1209,6 +1218,7 @@ export function App() {
       if (!attempt.current()) return;
       awaitingDetection.current = false;
       if (next.phase === "ready") {
+        reconnectAfterCurrentAttempt.current = false;
         setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "gateway-connected", result: "success", detail: next.detail }]);
         beginSyncProgress();
         const syncing = { ...next, phase: "syncing" as const, detail: "Quad Cortex connected; reading the active preset…", lastSync: undefined };
@@ -1332,7 +1342,7 @@ export function App() {
    * below, and resumeDeviceSession for the way back that does not repeat the
    * handshake.
    */
-  const startDemoDevice = async (returningFrom?: string) => {
+  const startDemoDevice = async (returningFrom?: string, automaticFallback = returningFrom !== undefined) => {
     // A connect() attempt still awaiting its answer owns the next step
     // itself - awaitingDetection.current stays true for the whole discovering
     // /handshaking/syncing window, not just its first phase - exactly like
@@ -1343,6 +1353,7 @@ export function App() {
     // right before it calls this function) is not a real handshake and must
     // not block it.
     if (commandPending || demoPending || awaitingDetection.current) return;
+    if (!automaticFallback) reconnectAfterCurrentAttempt.current = false;
     const attempt = connectionAttempts.begin();
     const demoOpen = ++demoOpenToken.current;
     // A ready, verified Quad Cortex is left attached in the background rather
@@ -1371,6 +1382,7 @@ export function App() {
       // The demo state first, then its content: the demo's preset is never on
       // screen under a device-sourced state, even between two updates.
       connectionRef.current = state;
+      demoCanYieldToDevice.current = automaticFallback;
       setConnection(state);
       setSnapshot(current);
       setSelectedBlockId("");
@@ -1402,6 +1414,12 @@ export function App() {
       setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-failed", result: "failure", detail }]);
     } finally {
       if (demoOpenToken.current === demoOpen) setDemoPending(false);
+      if (reconnectAfterCurrentAttempt.current
+          && demoDeviceSession.source === "virtual"
+          && demoCanYieldToDevice.current) {
+        reconnectAfterCurrentAttempt.current = false;
+        window.setTimeout(() => void connect("reconnect"), 0);
+      }
     }
   };
 
@@ -1691,7 +1709,7 @@ export function App() {
     // rather than a second, bespoke launch sequence. If the demo itself
     // cannot be opened, connect() still runs against real hardware exactly as
     // before.
-    void startDemoDevice().finally(() => connect());
+    void startDemoDevice(undefined, true).finally(() => connect());
     return () => { autoConnectStarted.current = false; };
   }, []);
 
@@ -1702,9 +1720,12 @@ export function App() {
   const connectOnDetection = useRef(connect);
   connectOnDetection.current = connect;
   useEffect(() => onDevicePhase(({ phase, detail, deviceId }) => {
-    if (selectedPhysicalRef.current && deviceId !== selectedPhysicalRef.current) return;
+    // Legacy/shared-pool phase notifications can omit deviceId. They still
+    // describe the selected controller; only reject an explicit different id.
+    if (selectedPhysicalRef.current && deviceId && deviceId !== selectedPhysicalRef.current) return;
     if (!brokerPhaseDetectsDevice(phase)) return;
     if (awaitingDetection.current) {
+      reconnectAfterCurrentAttempt.current = true;
       beginSyncProgress();
       const detected = qcConnectionDuringBrokerPhase(phase, detail);
       if (detected && (connectionRef.current.phase !== detected.phase || connectionRef.current.detail !== detected.detail)) {
@@ -1724,7 +1745,7 @@ export function App() {
     }
     // Plugged in after a connect had already given up: the broker keeps
     // looking on its own, so follow it rather than waiting for a click.
-    if (qcShouldConnectOnDetection(connectionRef.current)) void connectOnDetection.current();
+    if (qcShouldConnectOnDetection(connectionRef.current, demoCanYieldToDevice.current)) void connectOnDetection.current();
   }), []);
 
   useEffect(() => {
