@@ -450,7 +450,11 @@ Antigravity, Bionic and Jan are configured automatically. For any other MCP
 client, press **Copy STDIO setup** on the **Other MCP app** row and paste the
 copied block into that application's own MCP configuration. Each automatic
 route is backed up before it is replaced, and other MCP servers in that
-application are left alone. Details of what is written where are in
+application are left alone. Each time QC Remote starts, it also repairs its own
+entry in those applications if the entry has drifted, for example after the
+app was moved. Changes you made inside that entry are overwritten, and an entry
+you switched off in the application is switched back on; use **Unpair** to stop
+QC Remote from keeping a route there. Details of what is written where are in
 [`apps/windows/README.md`](../apps/windows/README.md).
 
 **Unpair** removes only QC Remote's own entry. For Claude Desktop, QC Remote
