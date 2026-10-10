@@ -1,0 +1,4759 @@
+use crate::owner_only_file;
+use async_trait::async_trait;
+use axum::{
+    body::Body,
+    extract::{Request, State},
+    http::{
+        header::{AUTHORIZATION, HOST},
+        HeaderMap, StatusCode,
+    },
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Json, Router,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use qc_relay_client::{AccessMode, DeviceAdapter};
+use qc_remote_mcp::{BackendError, PrincipalRoute, QcBackend, QcMcp};
+use rand::Rng as _;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs,
+    net::TcpListener as StdTcpListener,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc, Arc, Mutex, MutexGuard, OnceLock, PoisonError,
+    },
+    time::Duration,
+};
+use subtle::ConstantTimeEq as _;
+use tauri::{AppHandle, Manager};
+use tokio::sync::watch;
+
+const LOCAL_PRINCIPAL: &str = "qc-remote-local-user";
+const LOCAL_DEVICE: &str = "qc-remote-windows";
+const STATE_FILE_NAME: &str = "local-mcp.json";
+/// Remembers whether the user turned the loopback MCP surface off. Kept beside
+/// the descriptor in the app's own local data directory so a machine-wide
+/// policy is never confused with this user's choice.
+const ENABLED_FILE_NAME: &str = "local-mcp-enabled.json";
+/// How often a running app re-stamps `publishedAtUnixMs` on every descriptor
+/// copy it published.
+///
+/// That timestamp is the only liveness signal a descriptor carries. Readers
+/// (`local-clients/bridge.cjs`, `local_stdio.rs`) treat a copy older than
+/// [`DESCRIPTOR_STALE_AFTER`] as belonging to a process that is gone and refuse
+/// to dial its port, which by then may belong to something else entirely.
+/// Re-stamping five times inside that window means five consecutive writes have
+/// to fail - a locked file, a suspended laptop, a stalled disk - before a live
+/// app is mistaken for a dead one, while a genuinely dead app is still retired
+/// within two and a half minutes. Everything except the timestamp stays
+/// identical across a refresh, so a reader can tell a refresh from a restart.
+const DESCRIPTOR_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+/// How long a connection may take to send a complete request head.
+///
+/// `axum::serve` sets no limit at all, so any local process could open
+/// connections and trickle header bytes forever, each one holding a task and
+/// its buffers on the listener's single thread. Every legitimate client here
+/// is on this machine and sends its whole head at once.
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Serve `router` on `listener` like `axum::serve`, but with a request-head
+/// deadline and the same graceful shutdown: once `shutdown` completes no new
+/// connection is accepted and the open ones are asked to finish.
+async fn serve_loopback(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    header_read_timeout: Duration,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> std::io::Result<()> {
+    use hyper_util::rt::{TokioIo, TokioTimer};
+    let mut http = hyper::server::conn::http1::Builder::new();
+    http.timer(TokioTimer::new())
+        .header_read_timeout(header_read_timeout);
+    let graceful = hyper_util::server::graceful::GracefulShutdown::new();
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            () = &mut shutdown => break,
+            accepted = listener.accept() => {
+                let stream = match accepted {
+                    Ok((stream, _)) => stream,
+                    // A failed accept (a reset before it was taken, a
+                    // momentary handle shortage) is not fatal to the listener.
+                    Err(_) => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                };
+                let service = hyper_util::service::TowerToHyperService::new(router.clone());
+                let connection = graceful.watch(http.serve_connection(TokioIo::new(stream), service));
+                tokio::spawn(async move {
+                    let _ = connection.await;
+                });
+            }
+        }
+    }
+    drop(listener);
+    graceful.shutdown().await;
+    Ok(())
+}
+/// The reader-side half of that contract, declared here because this is the
+/// only place that can change the 5x ratio it depends on. Readers apply it from
+/// `descriptorRevision` 4 onwards; revision 3 and earlier stamped once at
+/// startup and are exempt.
+const DESCRIPTOR_STALE_AFTER: Duration = Duration::from_secs(150);
+/// How long a stop waits for in-flight connections to finish before the
+/// listener is dropped underneath them. An MCP streamable-HTTP session can be
+/// held open indefinitely by its client, so a graceful shutdown alone would
+/// keep the port - and the session's device access - alive after the user asked
+/// for it to stop.
+const LISTENER_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
+/// Upper bound on how long a stop blocks its caller, including application
+/// exit. A wedged listener must not keep the app on screen.
+const LISTENER_STOP_TIMEOUT: Duration = Duration::from_millis(1_500);
+/// How long the publication guard waits for the owner of an existing
+/// descriptor to answer `/health`.
+///
+/// A dead port refuses immediately, so this budget is spent only when
+/// something really is listening - a live sibling instance, or an unrelated
+/// process that inherited the recycled port. Erring long is the safe
+/// direction: a probe that gave up early would report the descriptor free and
+/// publish over a copy that is still serving, which is the whole failure this
+/// guard exists to prevent.
+const DESCRIPTOR_OWNER_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const DESCRIPTOR_OWNER_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+/// The budget for one `Test connection`. Long enough for a status call that
+/// has to wait behind the app's own poll, short enough that a wedged app still
+/// answers the user while they are looking at the panel.
+const LOCAL_TEST_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCAL_TEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+/// Recorded in [`LocalAccessStatus::last_error`] when this process refused to
+/// publish because another copy of QC Remote is still serving. It is the one
+/// start-up failure whose remedy is not "restart QC Remote".
+const ANOTHER_COPY_IS_SERVING: &str =
+    "Another copy of QC Remote is already serving AI apps on this PC. Close the other copy, then reopen this one to serve them from here.";
+const NATIVE_BRIDGE_ACTIVITY_WINDOW: Duration = Duration::from_secs(12);
+const ANTIGRAVITY_BRIDGE_CLIENT: &str = concat!("antigravity:", env!("CARGO_PKG_VERSION"));
+static LOCAL_CLIENT_LAST_SEEN: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+/// When this process began accepting heartbeats, or 0 before it did.
+///
+/// [`LOCAL_CLIENT_LAST_SEEN`] is per-process by design - a heartbeat is a
+/// claim about now, and a remembered one would outlive the bridge that made
+/// it - but that leaves a window at start-up in which a perfectly healthy
+/// bridge has simply not ticked yet. Without this instant the app could not
+/// tell that window from a host that is not there, so it answered every
+/// question about every host with "not connected", and the ChatGPT row went
+/// further and demanded a restart of a host whose bridge was running the whole
+/// time. Knowing when the listener opened turns the first
+/// [`NATIVE_BRIDGE_ACTIVITY_WINDOW`] into [`LocalClientLiveness::Settling`]:
+/// still not connected, but not yet evidence of absence either.
+static LOCAL_CLIENT_OBSERVATION_SINCE: AtomicU64 = AtomicU64::new(0);
+/// Where the durable record of which hosts' bridges have run against this app
+/// lives - beside the descriptor and the on/off preference, in the app's own
+/// local data directory.
+const CLIENT_HISTORY_FILE_NAME: &str = "local-mcp-clients.json";
+/// The schema this build writes, and the only one it reads. A file carrying
+/// any other version belongs to a build that knows something this one does
+/// not, so it is read as an empty history rather than guessed at.
+const CLIENT_HISTORY_SCHEMA_VERSION: u32 = 1;
+/// A backstop on how many client ids the durable record keeps.
+///
+/// [`retain_current_clients`] is what actually bounds this record: it holds one
+/// id per provider, so the live set is as large as the provider table and no
+/// larger. This cap only catches a file that reached the disk some other way -
+/// hand-edited, or written by a build whose provider list nothing here knows.
+/// It is deliberately far above the provider count so that adding providers
+/// cannot silently start evicting live rows; a record anywhere near it is
+/// damaged, not busy.
+const CLIENT_HISTORY_CAPACITY: usize = 32;
+/// The floor between two durable writes for a client id already on record.
+///
+/// A bridge announces every five seconds, so writing on every announcement
+/// would be seventeen thousand writes a day to re-record a fact that stops
+/// changing after the first one. The *first* attach for a client id is written
+/// immediately, because that is the one that changes what the panel says;
+/// every announcement after it only refreshes a timestamp whose single job is
+/// to order the eviction queue, and those can wait.
+const CLIENT_HISTORY_WRITE_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// Which client ids have had a bridge announce itself against this app, and
+/// when one last did.
+///
+/// This is *history*, and it is the only part of a host's bridge record that
+/// is allowed to outlive the process. Liveness deliberately is not:
+/// [`LOCAL_CLIENT_OBSERVATION_SINCE`] above says why a remembered heartbeat
+/// would be a lie, and that reasoning is untouched by this record. Keeping the
+/// two apart is the whole point - a timestamp read from here must never reach
+/// [`native_bridge_is_recent`], or a host whose bridge last ran yesterday
+/// would come back green today, which is a worse failure than the one this
+/// record exists to fix. [`local_client_evidence_at`] takes the two as
+/// separate arguments so the split is visible at every call site.
+///
+/// What it buys: [`LOCAL_CLIENT_LAST_SEEN`] is emptied by every app restart.
+/// Closing QC Remote also ends every host's STDIO bridge. `ever_attached` was
+/// therefore false for every host on every launch, and the panel told hosts
+/// that had been serving for hours that they had never connected and the user
+/// should restart them. A host whose bridge has run before is idle, not
+/// broken, and the row can say so now.
+static LOCAL_CLIENT_ATTACH_HISTORY: OnceLock<Mutex<ClientAttachHistory>> = OnceLock::new();
+const QC_ACTIONS_CONTRACT: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../contracts/public/qc-actions.v1.json"
+));
+
+/// `pub(crate)` so a headless `--local-mcp-bridge` process that has become the
+/// MCP-HTTP publisher itself (see `local_stdio::attempt_headless_mcp_hosting`)
+/// can build one more of these to answer its own stdio session directly, in
+/// process, with the exact same forbidden-route and access-mode gating the
+/// HTTP router applies - rather than that bridge looping a second request back
+/// through its own HTTP listener, or reimplementing this gating a second time.
+#[derive(Clone)]
+pub(crate) struct LocalBackend {
+    pub(crate) adapter: Arc<dyn DeviceAdapter>,
+    pub(crate) access: watch::Receiver<AccessMode>,
+}
+
+#[async_trait]
+impl QcBackend for LocalBackend {
+    async fn request(
+        &self,
+        route: &PrincipalRoute,
+        rpc: &'static str,
+        params: Map<String, Value>,
+    ) -> Result<Value, BackendError> {
+        if route.principal_id.as_ref() != LOCAL_PRINCIPAL
+            || route.device_id.as_ref() != LOCAL_DEVICE
+        {
+            return Err(backend_error(
+                "forbidden",
+                "The local route does not belong to this QC Remote instance",
+                false,
+            ));
+        }
+        if !local_access_permits(*self.access.borrow(), rpc) {
+            return Err(backend_error(
+                "forbidden",
+                "The selected assistant access level does not permit this action",
+                false,
+            ));
+        }
+        self.adapter
+            .invoke(rpc, Value::Object(params))
+            .await
+            .map_err(|error| {
+                let mut mapped = backend_error(
+                    if error.retryable {
+                        "device_unavailable"
+                    } else {
+                        "device_error"
+                    },
+                    error.message,
+                    error.retryable,
+                );
+                mapped.details = error
+                    .details
+                    .as_deref()
+                    .and_then(|details| safe_device_error_details(&error.code, details))
+                    .map(Box::new);
+                mapped.detail_code = mapped
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.get("code"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| match error.code.as_str() {
+                        "WRITE_QUARANTINED" | "WRITE_OUTCOME_AMBIGUOUS" => Some(error.code.clone()),
+                        _ => None,
+                    });
+                mapped
+            })
+    }
+}
+
+fn local_access_permits(access: AccessMode, rpc: &str) -> bool {
+    // MCP resources use internal read projections rather than public action
+    // RPCs. They are intentionally absent from the generated action policy,
+    // but must still be available at every access tier just like the public
+    // read actions they mirror.
+    matches!(rpc, "system.status" | "device.snapshot") || access.permits(rpc)
+}
+
+fn backend_error(code: &'static str, message: impl Into<String>, retryable: bool) -> BackendError {
+    BackendError {
+        code,
+        message: message.into(),
+        retryable,
+        detail_code: None,
+        details: None,
+    }
+}
+
+/// Device error codes are sent by the paired host. Keep only the compact token
+/// form used by the public device protocol before exposing one to local MCP
+/// clients; the transport class remains in `BackendError::code`.
+fn safe_device_error_code(code: &str) -> Option<&str> {
+    (!code.is_empty()
+        && code.len() <= 64
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'))
+    .then_some(code)
+}
+
+fn safe_device_error_details(wire_code: &str, details: &Value) -> Option<Value> {
+    let source = details.as_object()?;
+    let mut filtered = Map::new();
+    if let Some(code) = source
+        .get("code")
+        .and_then(Value::as_str)
+        .and_then(safe_device_error_code)
+    {
+        filtered.insert("code".into(), Value::String(code.to_owned()));
+    }
+    for field in ["retryable", "requestSent"] {
+        if let Some(value) = source.get(field).and_then(Value::as_bool) {
+            filtered.insert(field.into(), Value::Bool(value));
+        }
+    }
+    let dispatch_code = if wire_code == "WRITE_QUARANTINED" {
+        Some(wire_code)
+    } else {
+        source
+            .get("code")
+            .and_then(Value::as_str)
+            .or(Some(wire_code))
+    };
+    qc_relay_client::project_dispatch_error_details(dispatch_code, source, &mut filtered);
+    (!filtered.is_empty()).then_some(Value::Object(filtered))
+}
+
+#[derive(Clone)]
+struct LocalAuth {
+    token: Arc<str>,
+    allowed_hosts: Arc<[String]>,
+}
+
+#[derive(Clone)]
+struct LocalHealth {
+    adapter: Arc<dyn DeviceAdapter>,
+    instance_id: Arc<str>,
+    tool_contract_sha256: Arc<str>,
+    process_id: u32,
+}
+
+#[derive(Clone)]
+struct LocalRpc {
+    backend: Arc<dyn QcBackend>,
+    endpoint: String,
+    instance_id: Arc<str>,
+}
+
+/// The header a native stdio bridge puts on a `/rpc` request that serves an
+/// MCP resource read it relays, with [`RESOURCE_READ_ORIGIN`] as its value.
+/// The body cannot say it: `qc://models` and the `list_models` tool send the
+/// same `{rpc, params}`. It is honoured only behind the bearer check, only for
+/// a method a resource uses ([`qc_remote_mcp::resource_rpcs`]), and it can
+/// only narrow what the request may do: the host then uses the broker
+/// connection it holds or answers offline, as for its own resource reads. A
+/// request without it is handled as before.
+pub(crate) const REQUEST_ORIGIN_HEADER: &str = "x-qc-remote-request-origin";
+pub(crate) const RESOURCE_READ_ORIGIN: &str = "resource-read";
+
+/// Whether this `/rpc` request serves a relayed MCP resource read.
+fn relays_resource_read(headers: &HeaderMap, rpc: &str) -> bool {
+    headers
+        .get(REQUEST_ORIGIN_HEADER)
+        .is_some_and(|origin| origin.as_bytes() == RESOURCE_READ_ORIGIN.as_bytes())
+        && qc_remote_mcp::resource_rpcs()
+            .iter()
+            .any(|(_, resource_rpc)| *resource_rpc == rpc)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalRpcRequest {
+    rpc: String,
+    #[serde(default)]
+    params: Map<String, Value>,
+}
+
+fn local_router(
+    backend: Arc<dyn QcBackend>,
+    health: LocalHealth,
+    token: Arc<str>,
+    allowed_hosts: Vec<String>,
+) -> Router {
+    let auth = LocalAuth {
+        token,
+        allowed_hosts: allowed_hosts.clone().into(),
+    };
+    let rpc_backend = backend.clone();
+    let endpoint = format!("http://{}/mcp", allowed_hosts[0]);
+    let instance_id = health.instance_id.clone();
+    let identity = LocalIdentity {
+        token: auth.token.clone(),
+        instance_id: health.instance_id.clone(),
+        allowed_hosts: auth.allowed_hosts.clone(),
+    };
+    qc_remote_mcp::mcp_router_with_allowed_hosts(
+        move || {
+            Ok(QcMcp::new(backend.clone())
+                .with_client_presence(crate::host_presence::http_session()))
+        },
+        allowed_hosts,
+    )
+    .route("/health", get(local_health).with_state(health))
+    .route(
+        "/rpc",
+        post(local_rpc).with_state(LocalRpc {
+            backend: rpc_backend,
+            endpoint,
+            instance_id,
+        }),
+    )
+    .route_layer(middleware::from_fn_with_state(auth, authenticate_local))
+    // Outside the bearer check on purpose: a client asks this before it will
+    // send the token at all. It reveals nothing but a proof for the caller's
+    // own nonce.
+    .route(
+        crate::local_identity::IDENTITY_PATH,
+        post(local_identity).with_state(identity),
+    )
+}
+
+#[derive(Clone)]
+struct LocalIdentity {
+    token: Arc<str>,
+    instance_id: Arc<str>,
+    allowed_hosts: Arc<[String]>,
+}
+
+async fn local_identity(State(state): State<LocalIdentity>, request: Request<Body>) -> Response {
+    if request.headers().contains_key("origin") {
+        return local_error(
+            StatusCode::FORBIDDEN,
+            "LOCAL_FORBIDDEN_ORIGIN",
+            "browser_origin_forbidden",
+        );
+    }
+    let presented_host = request
+        .headers()
+        .get(HOST)
+        .and_then(|value| value.to_str().ok());
+    if !presented_host.is_some_and(|host| state.allowed_hosts.iter().any(|allowed| allowed == host))
+    {
+        return local_error(
+            StatusCode::BAD_REQUEST,
+            "LOCAL_INVALID_HOST",
+            "invalid_host",
+        );
+    }
+    let Ok(body) = axum::body::to_bytes(request.into_body(), 1024).await else {
+        return local_error(
+            StatusCode::BAD_REQUEST,
+            "LOCAL_INVALID_REQUEST",
+            "invalid_request",
+        );
+    };
+    let proof = serde_json::from_slice::<crate::local_identity::IdentityChallenge>(&body)
+        .ok()
+        .and_then(|challenge| {
+            crate::local_identity::prove(&state.token, &state.instance_id, &challenge.nonce)
+        });
+    match proof {
+        Some(proof) => Json(crate::local_identity::IdentityProof {
+            instance_id: state.instance_id.to_string(),
+            proof,
+        })
+        .into_response(),
+        None => local_error(
+            StatusCode::BAD_REQUEST,
+            "LOCAL_INVALID_REQUEST",
+            "invalid_request",
+        ),
+    }
+}
+
+/// Every failure on every local route answers with the same JSON object, so a
+/// client never has to guess which of three shapes it is holding.
+///
+/// `browser_origin_forbidden`, `invalid_host` and `unauthorized` used to be
+/// returned as bare `text/plain` strings. Both bridges parse a failure body as
+/// JSON, fail, and fall back to the health endpoint for a reason - so a wrong
+/// bearer token, a DNS-rebinding attempt and a browser-issued request were all
+/// reported to the user as "the Quad Cortex is not connected", which is the one
+/// thing they do not mean.
+///
+/// The complete set of `code`/`reason` pairs a local client can receive:
+///
+/// | status | `code`                   | `reason`                   | meaning                                               |
+/// |--------|--------------------------|----------------------------|-------------------------------------------------------|
+/// | 403    | `LOCAL_FORBIDDEN_ORIGIN` | `browser_origin_forbidden` | the request carried an `Origin`; a page tried to dial |
+/// | 400    | `LOCAL_INVALID_HOST`     | `invalid_host`             | `Host` is not the exact loopback host published       |
+/// | 401    | `LOCAL_UNAUTHORIZED`     | `unauthorized`             | missing or wrong bearer token; re-read the descriptor |
+/// | 503    | `LOCAL_UNAVAILABLE`      | `device_not_ready`         | `/health`: the app is up, the Quad Cortex is not      |
+/// | 400    | `LOCAL_UNKNOWN_ACTION`   | `unknown_action`           | `/rpc`: no such action in the tool contract           |
+/// | 403    | `LOCAL_FORBIDDEN`        | `forbidden`                | `/rpc`: the selected access mode forbids this action  |
+/// | 503    | `LOCAL_UNAVAILABLE`      | `device_unavailable`       | `/rpc`: the device dropped out mid-call; retryable    |
+/// | 422    | `LOCAL_DEVICE_ERROR`     | `device_error`             | `/rpc`: the device refused the action                 |
+///
+/// `/rpc` keeps its `{ok, error: {code, message, retryable}}` envelope intact
+/// for the native stdio bridge. `deviceCode` is additive and preserves the
+/// adapter's domain code without changing the transport classification.
+fn local_error(status: StatusCode, code: &'static str, reason: &'static str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({ "code": code, "reason": reason })),
+    )
+        .into_response()
+}
+
+/// The status and typed code for a backend failure, keeping `error.code` as the
+/// `reason` so the two halves of the body never disagree.
+fn local_rpc_failure(code: &str) -> (StatusCode, &'static str) {
+    match code {
+        "forbidden" => (StatusCode::FORBIDDEN, "LOCAL_FORBIDDEN"),
+        "device_unavailable" => (StatusCode::SERVICE_UNAVAILABLE, "LOCAL_UNAVAILABLE"),
+        _ => (StatusCode::UNPROCESSABLE_ENTITY, "LOCAL_DEVICE_ERROR"),
+    }
+}
+
+async fn local_health(State(state): State<LocalHealth>) -> Response {
+    let device_ready = state.adapter.ready().await;
+    let status = if device_ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    let mut document = serde_json::json!({
+        "schemaVersion": 1,
+        "instanceId": state.instance_id.as_ref(),
+        "appReady": true,
+        "deviceReady": device_ready,
+        "toolContractSha256": state.tool_contract_sha256.as_ref(),
+        "processId": state.process_id,
+    });
+    if !device_ready {
+        document["code"] = Value::String("LOCAL_UNAVAILABLE".into());
+        document["reason"] = Value::String("device_not_ready".into());
+    }
+    // Reported here because this is the surface that still answers when the
+    // runtime health record cannot be written: that record can only carry its
+    // own failure once writing resumes, and a failure that never clears would
+    // otherwise leave a frozen file and no way to tell it from a current one.
+    if let Some(failure) = crate::last_runtime_health_failure() {
+        document["runtimeHealthWriteFailure"] = Value::String(failure);
+    }
+    (status, Json(document)).into_response()
+}
+
+/// Stateless authenticated hop used only by QC Remote's own stdio launcher.
+/// Keeping MCP framing in the launcher lets ChatGPT/Codex run without Node,
+/// while this endpoint still enforces the app's selected access mode and keeps
+/// the desktop process as the sole owner of the device session.
+async fn local_rpc(
+    State(state): State<LocalRpc>,
+    headers: HeaderMap,
+    Json(request): Json<LocalRpcRequest>,
+) -> Response {
+    let observed_at = unix_time_ms();
+    if request.rpc == "host.status" {
+        let result = host_status_document(
+            Some(state.endpoint.clone()),
+            Some(state.instance_id.as_ref()),
+        );
+        return Json(serde_json::json!({"ok":true,"result":result})).into_response();
+    }
+    if request.rpc == "local.bridgeClosed" {
+        if let Some(id) = request.params.get("sessionId").and_then(Value::as_str) {
+            crate::host_presence::bridge_closed(id);
+        }
+        return Json(serde_json::json!({"ok":true,"result":{}})).into_response();
+    }
+    if request.rpc == "local.bridgeHeartbeat" {
+        if let (Some(id), Some(name)) = (
+            request.params.get("sessionId").and_then(Value::as_str),
+            request.params.get("clientName").and_then(Value::as_str),
+        ) {
+            // Optional: a bridge older than the field sends none.
+            let version = request.params.get("clientVersion").and_then(Value::as_str);
+            crate::host_presence::bridge_heartbeat(id, name, version, observed_at);
+        }
+        if let Some(client) = request.params.get("client").and_then(Value::as_str) {
+            if !client.is_empty() && client.len() <= 128 {
+                let clients = LOCAL_CLIENT_LAST_SEEN.get_or_init(|| Mutex::new(HashMap::new()));
+                if let Ok(mut clients) = clients.lock() {
+                    clients.retain(|_, last_seen| {
+                        observed_at.saturating_sub(*last_seen)
+                            <= Duration::from_secs(24 * 60 * 60).as_millis() as u64
+                    });
+                    if clients.len() >= 64 && !clients.contains_key(client) {
+                        if let Some(oldest) = clients
+                            .iter()
+                            .min_by_key(|(_, last_seen)| **last_seen)
+                            .map(|(client, _)| client.clone())
+                        {
+                            clients.remove(&oldest);
+                        }
+                    }
+                    clients.insert(client.to_string(), observed_at);
+                }
+                // The same announcement, recorded in the record that outlives
+                // this process. Throttled and written off-thread, so an
+                // announcement is never held up by a disk.
+                record_local_client_attach(client, observed_at);
+            }
+        }
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "result": { "connected": true },
+            })),
+        )
+            .into_response();
+    }
+    let rpc = match request.rpc.as_str() {
+        // These are the MCP resources served alongside the generated tools.
+        "system.status" => Some("system.status"),
+        "device.snapshot" => Some("device.snapshot"),
+        rpc => qc_remote_mcp::ACTIONS
+            .iter()
+            .find(|action| action.rpc == rpc)
+            .map(|action| action.rpc),
+    };
+    let Some(rpc) = rpc else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "code": "LOCAL_UNKNOWN_ACTION",
+                "reason": "unknown_action",
+                "error": {
+                    "code": "unknown_action",
+                    "message": "QC Remote does not recognize this local action.",
+                    "retryable": false,
+                }
+            })),
+        )
+            .into_response();
+    };
+    // A tool call from a native bridge names its session. When the tray had
+    // unlinked that session, this new request links it again; otherwise it
+    // changes nothing. It never delays or refuses the call, and it relinks
+    // whatever the call's outcome. MCP resource reads do not relink: the
+    // bridge sends no session on them, and a method only resources use is
+    // ignored here too.
+    if relinks_session(rpc) {
+        if let Some(session) = headers
+            .get(crate::host_presence::BRIDGE_SESSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+        {
+            crate::host_presence::bridge_request(session, observed_at);
+        }
+    }
+    let route = PrincipalRoute::new(LOCAL_PRINCIPAL, LOCAL_DEVICE);
+    let answered = state.backend.request(&route, rpc, request.params);
+    // A relayed resource read is served as this host serves its own: inside
+    // the same task-local scope `QcMcp::read_resource` enters, so its gateway
+    // never attaches, spawns or recovers a broker for it.
+    let answered = if relays_resource_read(&headers, rpc) {
+        qc_remote_mcp::as_resource_read(answered).await
+    } else {
+        answered.await
+    };
+    match answered {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "result": result,
+            })),
+        )
+            .into_response(),
+        Err(error) => {
+            let (status, code) = local_rpc_failure(error.code);
+            (
+                status,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "code": code,
+                    "reason": error.code,
+                    "error": {
+                        "code": error.code,
+                        "deviceCode": error.detail_code,
+                        "details": error.details,
+                        "message": error.message,
+                        "retryable": error.retryable,
+                    }
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Whether a request for `rpc` that names a bridge session may relink it: only
+/// a tool's method can. A method no tool serves (`system.status`, the internal
+/// `device.snapshot` projection) never relinks. A method that is both a
+/// resource and a tool (`device.currentPreset`, `device.listModels`; see
+/// [`qc_remote_mcp::resource_rpcs`]) is told apart by origin in the bridge,
+/// which omits the session while serving a resource read.
+fn relinks_session(rpc: &str) -> bool {
+    qc_remote_mcp::ACTIONS
+        .iter()
+        .any(|action| action.rpc == rpc)
+}
+
+pub(crate) fn host_status_document(endpoint: Option<String>, instance_id: Option<&str>) -> Value {
+    let mut presence = crate::host_presence::snapshot(endpoint);
+    // The linked remote apps and each live session's place among them.
+    crate::remote_grants::annotate(&mut presence);
+    let mut result = serde_json::to_value(presence).unwrap_or_default();
+    result["instanceId"] = serde_json::json!(instance_id);
+    result["remoteState"] = serde_json::json!(crate::host_presence::remote_state());
+    result["bridgeClients"] = serde_json::json!(LOCAL_CLIENT_LAST_SEEN
+        .get()
+        .and_then(|map| map.lock().ok().map(|map| map.clone()))
+        .unwrap_or_default());
+    result["observedSince"] =
+        serde_json::json!(LOCAL_CLIENT_OBSERVATION_SINCE.load(Ordering::Acquire));
+    result
+}
+
+async fn authenticate_local(
+    State(state): State<LocalAuth>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
+    if request.headers().contains_key("origin") {
+        return local_error(
+            StatusCode::FORBIDDEN,
+            "LOCAL_FORBIDDEN_ORIGIN",
+            "browser_origin_forbidden",
+        );
+    }
+    let presented_host = request
+        .headers()
+        .get(HOST)
+        .and_then(|value| value.to_str().ok());
+    if !presented_host.is_some_and(|host| state.allowed_hosts.iter().any(|allowed| allowed == host))
+    {
+        return local_error(
+            StatusCode::BAD_REQUEST,
+            "LOCAL_INVALID_HOST",
+            "invalid_host",
+        );
+    }
+    let presented = request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let authorized =
+        presented.is_some_and(|value| bool::from(value.as_bytes().ct_eq(state.token.as_bytes())));
+    if !authorized {
+        return local_error(
+            StatusCode::UNAUTHORIZED,
+            "LOCAL_UNAUTHORIZED",
+            "unauthorized",
+        );
+    }
+    request
+        .extensions_mut()
+        .insert(PrincipalRoute::new(LOCAL_PRINCIPAL, LOCAL_DEVICE));
+    next.run(request).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalEndpointDocument<'a> {
+    schema_version: u8,
+    descriptor_revision: u8,
+    transport: &'static str,
+    url: &'a str,
+    health_url: &'a str,
+    rpc_url: &'a str,
+    bearer_token: &'a str,
+    process_id: u32,
+    instance_id: &'a str,
+    published_at_unix_ms: u64,
+    tool_contract_sha256: &'a str,
+    /// Where a client checks this listener holds `bearer_token` before it
+    /// sends it (see `local_identity`). Older readers ignore the field.
+    identity_url: &'a str,
+}
+
+/// Everything a descriptor copy carries except its timestamp, held together so
+/// a refresh is a re-stamp of the same values and never a new publication. A
+/// reader that saw the token, port or instance id move would be right to treat
+/// it as a restart and drop whatever session it had.
+#[derive(Clone)]
+struct LocalDescriptor {
+    url: String,
+    health_url: String,
+    rpc_url: String,
+    bearer_token: String,
+    instance_id: String,
+    tool_contract_sha256: String,
+}
+
+impl LocalDescriptor {
+    /// The identity endpoint beside `rpc_url`.
+    fn identity_url(&self) -> String {
+        let base = self.rpc_url.strip_suffix("/rpc").unwrap_or(&self.rpc_url);
+        format!("{base}{}", crate::local_identity::IDENTITY_PATH)
+    }
+
+    fn publish(&self, path: &Path) -> Result<(), String> {
+        self.publish_at(path, unix_time_ms())
+    }
+
+    fn publish_at(&self, path: &Path, published_at_unix_ms: u64) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .ok_or("The local MCP state path has no parent directory")?;
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not create the local MCP state directory: {error}"))?;
+        let identity_url = self.identity_url();
+        let document = LocalEndpointDocument {
+            schema_version: 1,
+            // Revision 4 is the first that re-stamps `publishedAtUnixMs` while
+            // the app runs. Readers apply the staleness rule from 4 onwards and
+            // exempt earlier revisions, which stamped once at startup.
+            descriptor_revision: 4,
+            transport: "streamable-http",
+            url: &self.url,
+            health_url: &self.health_url,
+            rpc_url: &self.rpc_url,
+            bearer_token: &self.bearer_token,
+            process_id: std::process::id(),
+            instance_id: &self.instance_id,
+            published_at_unix_ms,
+            tool_contract_sha256: &self.tool_contract_sha256,
+            identity_url: &identity_url,
+        };
+        let encoded = serde_json::to_vec(&document)
+            .map_err(|error| format!("Could not encode the local MCP endpoint: {error}"))?;
+        publish_atomically(path, parent, "the local MCP endpoint", &encoded)
+    }
+}
+
+/// Publication is all-or-nothing.
+///
+/// Publishing path by path and returning on the first failure left a
+/// valid-looking descriptor advertising a port whose listener was dropped on
+/// the very next line, while `start` had already reported success. The
+/// mirror-image branch was no better: it removed every copy, including one a
+/// *live* instance had published to the shared Claude mirror. So only the
+/// copies this call actually wrote are removed on failure, and the error is
+/// returned rather than logged.
+fn publish_all_or_nothing(descriptor: &LocalDescriptor, paths: &[PathBuf]) -> Result<(), String> {
+    let mut published: Vec<&PathBuf> = Vec::with_capacity(paths.len());
+    for path in paths {
+        if let Err(error) = descriptor.publish(path) {
+            for published in published {
+                let _ = fs::remove_file(published);
+            }
+            return Err(error);
+        }
+        published.push(path);
+    }
+    Ok(())
+}
+
+/// Why the loopback listener did not start, and whether the reason was that
+/// another live copy of QC Remote already owns the published descriptor.
+///
+/// Typed rather than sniffed back out of the message, because the LOCAL panel
+/// has to say something different for it: every other start-up failure ends in
+/// "restart QC Remote", and restarting is precisely the wrong advice when a
+/// second copy is the problem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalAccessFailure {
+    pub message: String,
+    pub served_by_another_instance: bool,
+}
+
+impl LocalAccessFailure {
+    fn other(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            served_by_another_instance: false,
+        }
+    }
+}
+
+impl From<String> for LocalAccessFailure {
+    fn from(message: String) -> Self {
+        Self::other(message)
+    }
+}
+
+/// The live QC Remote that already owns the descriptor on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DescriptorOwner {
+    process_id: u32,
+    instance_id: String,
+}
+
+/// Only the loopback health address this app itself publishes, checked before
+/// it is dialled so a doctored descriptor cannot turn the guard into a fetcher.
+fn validated_health_url(raw: &str) -> Option<reqwest::Url> {
+    let url = reqwest::Url::parse(raw).ok()?;
+    if url.scheme() != "http"
+        || url.host_str() != Some("127.0.0.1")
+        || url.port().is_none()
+        || url.path() != "/health"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    Some(url)
+}
+
+/// Whether a QC Remote that is still alive owns the descriptor already on disk.
+///
+/// A second copy of the app used to bind its own port, mint its own token and
+/// overwrite all three descriptor copies unconditionally. The first copy kept
+/// serving on a port no file named any more, every paired client silently
+/// migrated to the second, and two gateways raced for a USB broker that is a
+/// per-machine singleton.
+///
+/// The proof of ownership is deliberately not a process-id comparison. Windows
+/// reuses process ids, so a fresh descriptor naming a live pid is no evidence
+/// that the live process is QC Remote - and the mirror image, a crashed
+/// instance whose descriptor is still inside the 150s refresh window, would
+/// otherwise lock its own replacement out for two and a half minutes. Instead
+/// the descriptor's own `/health` address is dialled with the credential it
+/// publishes, and ownership is granted only when the answer carries the same
+/// `instanceId` the descriptor does. That identifier is 128 random bits minted
+/// per listener, so a matching answer can only come from the process that
+/// wrote the file; a recycled port, a restarted instance and an unrelated
+/// listener all fail to match, and the descriptor is overwritten as before.
+/// `processId` is reported alongside it for the console line, never as the
+/// test.
+///
+/// Everything else stays overwritable: an absent, malformed or no-longer
+/// refreshed descriptor never reaches the probe, so a stale file can never
+/// lock a fresh start out permanently.
+async fn live_descriptor_owner(paths: &[PathBuf], now_ms: u64) -> Option<DescriptorOwner> {
+    // The bridges' reader, not a fifth one: same path handling, same
+    // newest-wins choice, same staleness rule. An absent, unreadable, invalid
+    // or expired descriptor is an error here, which is exactly "free".
+    let existing = crate::local_stdio::descriptor_from_paths_at(paths, now_ms).ok()?;
+    if existing.descriptor_revision < crate::local_stdio::DESCRIPTOR_REFRESH_REVISION {
+        // Releases through 0.1.140 stamped `publishedAtUnixMs` once at startup,
+        // so their descriptors carry no liveness signal to read. Holding back
+        // for one would be indefinite; it is overwritten, as it is today.
+        return None;
+    }
+    if existing.instance_id.is_empty() {
+        return None;
+    }
+    let health_url = validated_health_url(&existing.health_url)?;
+    let client = crate::loopback_http::loopback_client_builder()
+        .timeout(DESCRIPTOR_OWNER_PROBE_TIMEOUT)
+        .connect_timeout(DESCRIPTOR_OWNER_CONNECT_TIMEOUT)
+        .build()
+        .ok()?;
+    // A squatter on a dead copy's port is not a live owner, and gets no token.
+    existing.prove_identity(&client).await.ok()?;
+    let response = client
+        .get(health_url)
+        .bearer_auth(&existing.bearer_token)
+        .send()
+        .await
+        .ok()?;
+    // `/health` answers 503 with the same identity document when the Quad
+    // Cortex is unplugged. A copy serving without a device is still serving.
+    let document = response.json::<Value>().await.ok()?;
+    if document.get("instanceId").and_then(Value::as_str) != Some(existing.instance_id.as_str()) {
+        return None;
+    }
+    Some(DescriptorOwner {
+        process_id: document
+            .get("processId")
+            .and_then(Value::as_u64)
+            .and_then(|id| u32::try_from(id).ok())
+            .unwrap_or(existing.process_id),
+        instance_id: existing.instance_id,
+    })
+}
+
+fn remove_published_descriptors(paths: &[PathBuf], instance_id: &str) {
+    for path in paths {
+        let owned = fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|document| document["instanceId"] == instance_id);
+        if owned {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        if shutdown.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Runs `refresh` every `interval` until shutdown is signalled, and never
+/// again afterwards: a tick that fired during shutdown would republish a
+/// descriptor the stop path has already removed.
+async fn refresh_until_shutdown(
+    interval: Duration,
+    shutdown: &mut watch::Receiver<bool>,
+    mut refresh: impl FnMut(),
+) {
+    loop {
+        tokio::select! {
+            biased;
+            () = wait_for_shutdown(shutdown) => return,
+            () = tokio::time::sleep(interval) => refresh(),
+        }
+    }
+}
+
+/// The descriptor paths this process publishes to.
+///
+/// The first is the app's own local data directory. The second is the shared
+/// Claude mirror, which exists for a reason of its own: restricted extension
+/// hosts can launch a client without `LOCALAPPDATA` while still running as the
+/// ordinary interactive user, so a copy is placed where they can reach it.
+fn state_file_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    let app_local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("Could not resolve the local access directory: {error}"))?;
+    Ok(descriptor_paths(
+        &app_local_data_dir,
+        std::env::var_os("APPDATA").map(PathBuf::from),
+    ))
+}
+
+/// The publication set, resolved from the two directories that decide it, so a
+/// test can assert what this app writes a bearer token into without standing
+/// up a Tauri application handle.
+pub(crate) fn descriptor_paths(
+    app_local_data_dir: &Path,
+    roaming: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut state_files = vec![app_local_data_dir.join(STATE_FILE_NAME)];
+    if let Some(claude_state_file) = roaming.map(|directory| {
+        directory
+            .join("Claude")
+            .join("qc-remote")
+            .join(STATE_FILE_NAME)
+    }) {
+        if !state_files.contains(&claude_state_file) {
+            state_files.push(claude_state_file);
+        }
+    }
+    state_files
+}
+
+/// A listener that is bound, published and serving. Dropping the owning
+/// [`LocalAccess`] is no longer the only way to stop one: `stop` is what both
+/// the off switch and application exit call.
+pub(crate) struct RunningLocalAccess {
+    state_files: Vec<PathBuf>,
+    shutdown: watch::Sender<bool>,
+    /// Signalled by the listener thread once it has stopped serving and removed
+    /// its own descriptors, so a stop can be ordered rather than hopeful.
+    stopped: Mutex<mpsc::Receiver<()>>,
+    stop_acknowledged: AtomicBool,
+    port: u16,
+    instance_id: String,
+    /// The loopback MCP listener deliberately has its own small Tokio runtime.
+    /// Starting it on Tauri's shared runtime made publication race the rest of
+    /// application startup on some Windows machines: the descriptor appeared
+    /// first, while the port was not accepting connections yet.  A dedicated
+    /// thread lets us publish only after the listener belongs to a running IO
+    /// runtime and keeps local integrations independent of USB/broker startup.
+    _task: std::thread::JoinHandle<()>,
+}
+
+impl RunningLocalAccess {
+    pub(crate) fn endpoint(&self) -> String {
+        format!("http://127.0.0.1:{}/mcp", self.port)
+    }
+    /// Stops serving, cancels whatever is still connected, and removes the
+    /// descriptors this process published - in that order, so a refresh tick
+    /// cannot resurrect a file after it is gone.
+    ///
+    /// Bounded, because this also runs on the application exit path.
+    pub(crate) fn stop(&self) -> bool {
+        let _ = self.shutdown.send(true);
+        let acknowledged = if self.stop_acknowledged.load(Ordering::Acquire) {
+            true
+        } else {
+            self.stopped
+                .lock()
+                .map(|stopped| stopped.recv_timeout(LISTENER_STOP_TIMEOUT).is_ok())
+                .unwrap_or(false)
+        };
+        if acknowledged {
+            self.stop_acknowledged.store(true, Ordering::Release);
+        }
+        // The thread removes them itself; repeating it covers a wedged
+        // listener that never reached its own cleanup.
+        remove_published_descriptors(&self.state_files, &self.instance_id);
+        acknowledged
+    }
+
+    /// The instance id this process just published, so a caller that started
+    /// this listener itself (rather than reading it back off disk) can prove
+    /// it is the one now discoverable at these paths.
+    ///
+    /// Only `local_stdio`'s headless-hosting tests read this back today; a
+    /// production caller has no reason to compare its own instance id against
+    /// itself.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+}
+
+pub(crate) fn start_listener(
+    state_files: Vec<PathBuf>,
+    adapter: Arc<dyn DeviceAdapter>,
+    access: watch::Receiver<AccessMode>,
+) -> Result<RunningLocalAccess, LocalAccessFailure> {
+    let listener = StdTcpListener::bind("127.0.0.1:0")
+        .map_err(|error| format!("Could not bind the local MCP listener: {error}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("Could not configure the local MCP listener: {error}"))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| format!("Could not inspect the local MCP listener: {error}"))?;
+
+    let mut token_bytes = [0_u8; 32];
+    rand::rng().fill(&mut token_bytes);
+    let token = URL_SAFE_NO_PAD.encode(token_bytes);
+    let mut instance_bytes = [0_u8; 16];
+    rand::rng().fill(&mut instance_bytes);
+    let instance_id = URL_SAFE_NO_PAD.encode(instance_bytes);
+    let contract_sha256 = tool_contract_sha256();
+    let port = address.port();
+    let descriptor = LocalDescriptor {
+        url: format!("http://127.0.0.1:{port}/mcp"),
+        health_url: format!("http://127.0.0.1:{port}/health"),
+        rpc_url: format!("http://127.0.0.1:{port}/rpc"),
+        bearer_token: token.clone(),
+        instance_id: instance_id.clone(),
+        tool_contract_sha256: contract_sha256.clone(),
+    };
+    let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+        adapter: adapter.clone(),
+        access,
+    });
+    let router = local_router(
+        backend,
+        LocalHealth {
+            adapter,
+            instance_id: Arc::from(instance_id.clone()),
+            tool_contract_sha256: Arc::from(contract_sha256),
+            process_id: std::process::id(),
+        },
+        Arc::from(token),
+        allowed_hosts(port),
+    );
+    let task_state_files = state_files.clone();
+    let (shutdown, shutdown_rx) = watch::channel(false);
+    // Publication happens on the listener thread, after the listener belongs to
+    // a running IO runtime, but its outcome belongs to the caller: `start`
+    // reported `Ok` while a half-published descriptor pointed at a port that
+    // was about to be dropped.
+    let (published_tx, published_rx) = mpsc::sync_channel::<Result<(), LocalAccessFailure>>(1);
+    let (stopped_tx, stopped) = mpsc::sync_channel::<()>(1);
+    let task = std::thread::Builder::new()
+        .name("qc-local-mcp".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let _ = published_tx.send(Err(LocalAccessFailure::other(format!(
+                        "Could not start the local MCP runtime: {error}"
+                    ))));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let listener = match tokio::net::TcpListener::from_std(listener) {
+                    Ok(listener) => listener,
+                    Err(error) => {
+                        // Nothing was published, so nothing is removed: the
+                        // mirror paths may hold a live instance's descriptor.
+                        let _ = published_tx.send(Err(LocalAccessFailure::other(format!(
+                            "Could not adopt the local MCP listener: {error}"
+                        ))));
+                        return;
+                    }
+                };
+                // Nothing has been written yet, and no path below this
+                // point removes a descriptor: refusing here leaves the live
+                // copy's files exactly as they are, still naming its port.
+                if let Some(owner) = live_descriptor_owner(&task_state_files, unix_time_ms()).await
+                {
+                    eprintln!(
+                        "QC Remote local MCP: instance {} (process {}) is already serving the published descriptor; this copy will not publish over it.",
+                        owner.instance_id, owner.process_id
+                    );
+                    let _ = published_tx.send(Err(LocalAccessFailure {
+                        message: ANOTHER_COPY_IS_SERVING.into(),
+                        served_by_another_instance: true,
+                    }));
+                    return;
+                }
+                if let Err(error) = publish_all_or_nothing(&descriptor, &task_state_files) {
+                    let _ = published_tx.send(Err(LocalAccessFailure::other(error)));
+                    return;
+                }
+                let _ = published_tx.send(Ok(()));
+
+                let mut graceful_rx = shutdown_rx.clone();
+                let mut forced_rx = shutdown_rx.clone();
+                let mut refresh_rx = shutdown_rx;
+                let refresh_paths = task_state_files.clone();
+                let refresh_descriptor = descriptor.clone();
+                let serve = serve_loopback(listener, router, HEADER_READ_TIMEOUT, async move {
+                    wait_for_shutdown(&mut graceful_rx).await
+                });
+                tokio::select! {
+                    outcome = serve => {
+                        if let Err(error) = outcome {
+                            eprintln!("QC Remote local MCP listener failed: {error}");
+                        }
+                    }
+                    () = async move {
+                        wait_for_shutdown(&mut forced_rx).await;
+                        tokio::time::sleep(LISTENER_SHUTDOWN_GRACE).await;
+                    } => {}
+                    () = refresh_until_shutdown(
+                        DESCRIPTOR_REFRESH_INTERVAL,
+                        &mut refresh_rx,
+                        || {
+                            for path in &refresh_paths {
+                                if let Err(error) = refresh_descriptor.publish(path) {
+                                    eprintln!(
+                                        "QC Remote local MCP descriptor refresh failed: {error}. \
+                                         Clients treat it as dead {}s after the last successful \
+                                         refresh.",
+                                        DESCRIPTOR_STALE_AFTER.as_secs()
+                                    );
+                                }
+                            }
+                        },
+                    ) => {}
+                }
+                remove_published_descriptors(&task_state_files,&descriptor.instance_id);
+                let _ = stopped_tx.send(());
+            });
+        })
+        .map_err(|error| format!("Could not start the local MCP listener thread: {error}"))?;
+    match published_rx.recv() {
+        Ok(Ok(())) => {
+            begin_observing_local_clients();
+            Ok(RunningLocalAccess {
+                state_files,
+                shutdown,
+                stopped: Mutex::new(stopped),
+                stop_acknowledged: AtomicBool::new(false),
+                port,
+                instance_id,
+                _task: task,
+            })
+        }
+        Ok(Err(failure)) => Err(failure),
+        Err(_) => Err(LocalAccessFailure::other(
+            "The local MCP listener stopped before it published a descriptor",
+        )),
+    }
+}
+
+/// What the app tells the UI about the loopback MCP surface. The bearer token
+/// is deliberately absent: the descriptor on disk is the only place it lives.
+#[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalAccessStatus {
+    pub enabled: bool,
+    pub running: bool,
+    pub port: Option<u16>,
+    pub instance_id: Option<String>,
+    pub descriptor_paths: Vec<String>,
+    pub last_error: Option<String>,
+    /// True when this copy stood down because another live copy of QC Remote
+    /// already owns the published descriptor. `last_error` then carries the
+    /// sentence; this is what the panel branches on, so it never has to match
+    /// against the wording.
+    pub served_by_another_instance: bool,
+}
+
+/// What one `Test connection` found.
+///
+/// The states are separated by remedy rather than by cause, because the remedy
+/// is the only thing the person pressing the button can act on: turning local
+/// access back on, restarting QC Remote, closing a second copy of it, and
+/// plugging the Quad Cortex in are four different acts, and until now the only
+/// verification offered anywhere was prose telling the user to type `/mcp` in
+/// their AI app and see what happened.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalMcpTestState {
+    /// This user turned the loopback surface off; nothing was dialled.
+    Disabled,
+    /// No descriptor a client could use: absent, unreadable, or no longer
+    /// refreshed, which all mean the same thing to a client.
+    NotPublished,
+    /// The published address did not answer, or answered with something no
+    /// QC Remote would send.
+    NotAnswering,
+    /// The published credential was refused, so the descriptor and the
+    /// listener disagree.
+    Unauthorized,
+    /// It answered, but it is a different copy of QC Remote from this one.
+    ServedByAnotherCopy,
+    /// The app answered; no Quad Cortex is on the other end of it.
+    DeviceNotConnected,
+    /// A full round trip, device included.
+    Ready,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalMcpTestResult {
+    pub state: LocalMcpTestState,
+    pub app_version: String,
+    /// The preset the Quad Cortex reports as loaded, when one is loaded.
+    ///
+    /// `system.status` is the only call on this route that answers from
+    /// already-synchronized session state without a device round trip, and it
+    /// carries no device name - the device's own name lives behind
+    /// `device.identity`, which this route deliberately does not serve. The
+    /// loaded preset is what it does carry, and it is what makes a success
+    /// visibly specific instead of a bare tick.
+    pub preset_name: Option<String>,
+    /// The raw diagnosis, for the panel's existing "Copy details" affordance.
+    /// It is never the sentence the user is shown.
+    pub detail: Option<String>,
+}
+
+fn local_test_result(
+    state: LocalMcpTestState,
+    preset_name: Option<String>,
+    detail: Option<String>,
+) -> LocalMcpTestResult {
+    LocalMcpTestResult {
+        state,
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        preset_name,
+        detail,
+    }
+}
+
+/// Dial the published loopback endpoint exactly as a paired AI app would, and
+/// report what happened.
+///
+/// The descriptor is resolved from disk rather than from this process's own
+/// listener handle on purpose: a test that used the in-process port and token
+/// would pass in precisely the situation the user is complaining about, where
+/// the file every client actually reads names something else.
+///
+/// The request is `system.status`: read-only, side-effect free, served from
+/// cached session state, and already reachable at every access tier. It opens
+/// no preset, touches no setting and writes nothing.
+pub(crate) async fn probe_local_mcp(
+    paths: &[PathBuf],
+    status: &LocalAccessStatus,
+    now_ms: u64,
+) -> LocalMcpTestResult {
+    if !status.enabled {
+        return local_test_result(LocalMcpTestState::Disabled, None, None);
+    }
+    let Ok(endpoint) = crate::local_stdio::descriptor_from_paths_at(paths, now_ms) else {
+        return local_test_result(LocalMcpTestState::NotPublished, None, None);
+    };
+    // Whose endpoint answered. An instance id this app is not serving under
+    // means the pairing works, but through a copy the user is not looking at -
+    // which is a different thing to tell them than "it works".
+    let another_copy = status.instance_id.as_deref() != Some(endpoint.instance_id.as_str());
+    let address = endpoint.rpc_url.to_string();
+    let client = match crate::loopback_http::loopback_client_builder()
+        .timeout(LOCAL_TEST_TIMEOUT)
+        .connect_timeout(LOCAL_TEST_CONNECT_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return local_test_result(
+                LocalMcpTestState::NotAnswering,
+                None,
+                Some(error.to_string()),
+            )
+        }
+    };
+    if let Err(failure) = endpoint.prove_identity(&client).await {
+        // A listener that answers as this instance but cannot prove the
+        // published credential is the same disagreement a 401 reports.
+        return local_test_result(
+            if failure.credential_mismatch {
+                LocalMcpTestState::Unauthorized
+            } else {
+                LocalMcpTestState::NotAnswering
+            },
+            None,
+            Some(format!("{address}: {failure}")),
+        );
+    }
+    let response = match client
+        .post(endpoint.rpc_url.clone())
+        .bearer_auth(&endpoint.bearer_token)
+        .json(&serde_json::json!({ "rpc": "system.status", "params": {} }))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return local_test_result(
+                LocalMcpTestState::NotAnswering,
+                None,
+                Some(format!("{address}: {error}")),
+            )
+        }
+    };
+    let code = response.status().as_u16();
+    if code == StatusCode::UNAUTHORIZED.as_u16() {
+        return local_test_result(
+            LocalMcpTestState::Unauthorized,
+            None,
+            Some(format!("{address} answered {code}")),
+        );
+    }
+    let body = match response.json::<Value>().await {
+        Ok(body) => body,
+        Err(error) => {
+            return local_test_result(
+                LocalMcpTestState::NotAnswering,
+                None,
+                Some(format!("{address} answered {code}: {error}")),
+            )
+        }
+    };
+    if body["ok"] == Value::Bool(true) {
+        let diagnostics = &body["result"]["usbDiagnostics"];
+        let connected = diagnostics["connected"].as_bool().unwrap_or(false);
+        let preset = diagnostics["activePresetName"]
+            .as_str()
+            .map(str::to_owned)
+            .filter(|_| connected);
+        let state = if another_copy {
+            LocalMcpTestState::ServedByAnotherCopy
+        } else if connected {
+            LocalMcpTestState::Ready
+        } else {
+            LocalMcpTestState::DeviceNotConnected
+        };
+        return local_test_result(
+            state,
+            preset,
+            Some(format!(
+                "{address} answered {code}; deviceConnected={connected}"
+            )),
+        );
+    }
+    // The typed reason every local route now carries. `device_unavailable` and
+    // `device_error` are the app telling us about the Quad Cortex; anything
+    // else is the app itself answering wrongly, which has the same remedy as
+    // not answering at all.
+    let reason = body["reason"]
+        .as_str()
+        .or_else(|| body["error"]["code"].as_str())
+        .unwrap_or("unrecognized")
+        .to_owned();
+    let state = if another_copy {
+        LocalMcpTestState::ServedByAnotherCopy
+    } else if matches!(reason.as_str(), "device_unavailable" | "device_error") {
+        LocalMcpTestState::DeviceNotConnected
+    } else {
+        LocalMcpTestState::NotAnswering
+    };
+    local_test_result(
+        state,
+        None,
+        Some(format!("{address} answered {code}: {reason}")),
+    )
+}
+
+/// Ask the app's own published endpoint whether a pairing is working now.
+///
+/// The LOCAL panel could say whether a client had ever announced itself, but
+/// there was no way to ask "is this working right now" - the only verification
+/// offered anywhere was prose telling the user to type `/mcp` in their AI app.
+#[tauri::command]
+pub async fn test_local_mcp(app: AppHandle) -> Result<LocalMcpTestResult, String> {
+    let (paths, status) = {
+        let access = app.state::<LocalAccess>();
+        (state_file_paths(&app)?, access.status())
+    };
+    Ok(probe_local_mcp(&paths, &status, unix_time_ms()).await)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalAccessPreference {
+    enabled: bool,
+}
+
+/// Local MCP ships on, and stays on until this user turns it off: an absent,
+/// unreadable or malformed preference is "on", never a silent opt-out.
+fn load_enabled(path: &Path) -> bool {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<LocalAccessPreference>(&bytes).ok())
+        .map(|preference| preference.enabled)
+        .unwrap_or(true)
+}
+
+/// Whether this user left local MCP on, read from the app's local data
+/// directory - the same preference a window's supervisor reads at startup.
+/// For a headless `--local-mcp-bridge` process, which has no `AppHandle` to
+/// resolve the directory with and must honour the same switch before serving.
+pub(crate) fn local_mcp_enabled_in(app_local_data_dir: &Path) -> bool {
+    load_enabled(&app_local_data_dir.join(ENABLED_FILE_NAME))
+}
+
+/// Records the preference the way [`LocalAccess::enable`]/[`LocalAccess::disable`]
+/// do, for tests standing in for a window's settings.
+#[cfg(test)]
+pub(crate) fn store_local_mcp_enabled_in(
+    app_local_data_dir: &Path,
+    enabled: bool,
+) -> Result<(), String> {
+    store_enabled(&app_local_data_dir.join(ENABLED_FILE_NAME), enabled)
+}
+
+fn store_enabled(path: &Path, enabled: bool) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or("The local MCP preference path has no parent directory")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create the local MCP state directory: {error}"))?;
+    let encoded = serde_json::to_vec(&LocalAccessPreference { enabled })
+        .map_err(|error| format!("Could not encode the local MCP preference: {error}"))?;
+    fs::write(path, encoded)
+        .map_err(|error| format!("Could not store the local MCP preference: {error}"))
+}
+
+fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("Could not resolve the local access directory: {error}"))?
+        .join(ENABLED_FILE_NAME))
+}
+
+/// Owns only the loopback listener and discovery document. The existing
+/// Windows broker remains the sole owner of the Quad Cortex USB session.
+///
+/// This is a supervisor, not the listener itself: the surface can be stopped
+/// and started again for the lifetime of the process, because there was
+/// previously no way at all to turn it off. Nothing revoked a descriptor,
+/// nothing cancelled a live session, and the bearer token was written before
+/// the user had clicked anything.
+pub struct LocalAccess {
+    app: AppHandle,
+    adapter: Arc<dyn DeviceAdapter>,
+    access: watch::Receiver<AccessMode>,
+    running: Mutex<Option<RunningLocalAccess>>,
+    enabled: AtomicBool,
+    last_error: Mutex<Option<String>>,
+    served_by_another_instance: AtomicBool,
+}
+
+impl LocalAccess {
+    pub(crate) fn reconcile_ownership(&self) {
+        let Ok(directory) = self.app.path().app_local_data_dir() else {
+            return;
+        };
+        let enabled = local_mcp_enabled_in(&directory);
+        self.enabled.store(enabled, Ordering::Release);
+        if !enabled || crate::external_host::delegated(&directory) {
+            self.stop_now();
+        } else if let Err(error) = self.start_now() {
+            *lock_recover(&self.last_error) = Some(error);
+        }
+    }
+    /// Builds the supervisor and reads the persisted on/off choice. Starting is
+    /// a separate, fallible step so its failure can reach the UI.
+    pub fn new(
+        app: AppHandle,
+        adapter: Arc<dyn DeviceAdapter>,
+        access: watch::Receiver<AccessMode>,
+    ) -> Self {
+        // Before anything can accept an announcement, so the first status read
+        // of this launch already knows which hosts have worked here before.
+        // Only the durable fact is restored; no instant is.
+        if let Ok(path) = attach_history_path(&app) {
+            restore_attach_history(&path);
+        }
+        let enabled = preference_path(&app)
+            .map(|path| load_enabled(&path))
+            .unwrap_or(true);
+        Self {
+            app,
+            adapter,
+            access,
+            running: Mutex::new(None),
+            enabled: AtomicBool::new(enabled),
+            last_error: Mutex::new(None),
+            served_by_another_instance: AtomicBool::new(false),
+        }
+    }
+
+    /// Starts the loopback listener unless this user turned local MCP off.
+    pub fn start_if_enabled(&self) -> Result<(), String> {
+        if !self.enabled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.start_now()
+    }
+
+    fn start_now(&self) -> Result<(), String> {
+        if crate::external_host::stopping() {
+            return Ok(());
+        }
+        if self
+            .app
+            .path()
+            .app_local_data_dir()
+            .is_ok_and(|directory| crate::external_host::delegated(&directory))
+        {
+            return Ok(());
+        }
+        let mut running = lock_recover(&self.running);
+        if running.is_some() {
+            return Ok(());
+        }
+        let started = state_file_paths(&self.app)
+            .map_err(LocalAccessFailure::other)
+            .and_then(|state_files| {
+                start_listener(state_files, self.adapter.clone(), self.access.clone())
+            });
+        match started {
+            Ok(listener) => {
+                *running = Some(listener);
+                *lock_recover(&self.last_error) = None;
+                self.served_by_another_instance
+                    .store(false, Ordering::Release);
+                // From here a bridge that is already running can announce
+                // itself. Anything asked before the first announcement is
+                // answered "still checking", never "not connected".
+                begin_observing_local_clients();
+                Ok(())
+            }
+            Err(failure) => {
+                *lock_recover(&self.last_error) = Some(failure.message.clone());
+                self.served_by_another_instance
+                    .store(failure.served_by_another_instance, Ordering::Release);
+                Err(failure.message)
+            }
+        }
+    }
+
+    fn stop_now(&self) {
+        let mut running = lock_recover(&self.running);
+        if let Some(listener) = running.take() {
+            listener.stop();
+        }
+    }
+
+    /// Turns the loopback MCP surface back on and remembers the choice.
+    pub fn enable(&self) -> Result<LocalAccessStatus, String> {
+        self.enabled.store(true, Ordering::Release);
+        let stored = preference_path(&self.app).and_then(|path| store_enabled(&path, true));
+        let started = self.start_now();
+        match stored.and(started) {
+            Ok(()) => Ok(self.status()),
+            Err(error) => {
+                *lock_recover(&self.last_error) = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    /// Stops the listener, cancels live sessions and removes every descriptor
+    /// this process published, then remembers that the user asked for it.
+    pub fn disable(&self) -> Result<LocalAccessStatus, String> {
+        self.enabled.store(false, Ordering::Release);
+        self.stop_now();
+        // Off by request is not "displaced by another copy", and the panel
+        // must not keep saying so once the user has turned the surface off.
+        self.served_by_another_instance
+            .store(false, Ordering::Release);
+        match preference_path(&self.app).and_then(|path| store_enabled(&path, false)) {
+            Ok(()) => Ok(self.status()),
+            Err(error) => {
+                *lock_recover(&self.last_error) = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    /// The exit path. Stops without touching the persisted choice, so the
+    /// surface comes back on the next launch.
+    pub fn shutdown_for_exit(&self) {
+        self.stop_now();
+        // The throttle defers most announcements, so the newest timestamps are
+        // usually only in memory when the process ends. This is the one place
+        // a blocking write is what the caller wants.
+        flush_attach_history();
+    }
+
+    pub fn status(&self) -> LocalAccessStatus {
+        let running = lock_recover(&self.running);
+        if running.is_none() && self.enabled.load(Ordering::Acquire) {
+            if let Some(external) = crate::external_host::status() {
+                if let Some(endpoint) = external["endpoint"]
+                    .as_str()
+                    .and_then(|raw| reqwest::Url::parse(raw).ok())
+                {
+                    return LocalAccessStatus {
+                        enabled: true,
+                        running: true,
+                        port: endpoint.port(),
+                        instance_id: external["instanceId"].as_str().map(str::to_owned),
+                        descriptor_paths: state_file_paths(&self.app)
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect(),
+                        last_error: None,
+                        served_by_another_instance: false,
+                    };
+                }
+            }
+        }
+        LocalAccessStatus {
+            enabled: self.enabled.load(Ordering::Acquire),
+            running: running.is_some(),
+            port: running.as_ref().map(|listener| listener.port),
+            instance_id: running
+                .as_ref()
+                .map(|listener| listener.instance_id.clone()),
+            descriptor_paths: running
+                .as_ref()
+                .map(|listener| {
+                    listener
+                        .state_files
+                        .iter()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            last_error: lock_recover(&self.last_error).clone(),
+            served_by_another_instance: self.served_by_another_instance.load(Ordering::Acquire),
+        }
+    }
+}
+
+/// A poisoned lock here means a previous caller panicked while holding it. The
+/// state behind it is a listener handle and a preference flag, neither of which
+/// a panic can leave half-written - and refusing to clean up on the exit path
+/// because of one is strictly worse than proceeding.
+fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Drop for LocalAccess {
+    fn drop(&mut self) {
+        // `tauri::App::run` ends in `std::process::exit`, so this does not run
+        // on the ordinary exit path; `RunEvent::Exit` in `lib.rs` is what does.
+        // Kept for `run_return`, for tests, and for any future caller that owns
+        // a `LocalAccess` by value.
+        self.stop_now();
+    }
+}
+
+static PUBLICATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+pub use crate::broker_paths::unix_time_ms;
+
+fn native_bridge_is_recent(last_seen: u64, now: u64) -> bool {
+    last_seen != 0
+        && now.saturating_sub(last_seen) <= NATIVE_BRIDGE_ACTIVITY_WINDOW.as_millis() as u64
+}
+
+/// Records that heartbeats can arrive from this instant, so the start-up
+/// window can be distinguished from a host that is absent.
+///
+/// Called on every successful listener start, including a restart after the
+/// user switched the surface off and on: while it was off no heartbeat could
+/// be accepted, so the clock has to run again from when it could.
+fn begin_observing_local_clients() {
+    LOCAL_CLIENT_OBSERVATION_SINCE.store(unix_time_ms(), Ordering::Release);
+}
+
+/// What this app can honestly say about one host's bridge.
+///
+/// Three values, not two booleans, because "no heartbeat" meant two different
+/// things and the panel said the more damaging one for both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalClientLiveness {
+    /// A heartbeat carrying this client id arrived inside the activity window.
+    /// The only state that licenses the word "Connected".
+    Connected,
+    /// No heartbeat yet, and a healthy bridge has not had time to send one
+    /// since this app started accepting them. Nothing is known; nothing is
+    /// claimed either way.
+    Settling,
+    /// No heartbeat, and long enough has passed that a running bridge would
+    /// have announced itself.
+    Absent,
+}
+
+/// Everything known about one host's bridge, read in one pass so a status
+/// document cannot mix two instants, and so no provider can invent its own
+/// rule out of the parts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalClientEvidence {
+    pub liveness: LocalClientLiveness,
+    /// A bridge with this client id has announced itself at least once - in
+    /// this run, or in an earlier one this app still has on record. It is
+    /// history, never liveness: it says the host's bridge has worked against
+    /// this app, and says nothing at all about whether it is running now.
+    pub ever_attached: bool,
+}
+
+impl LocalClientEvidence {
+    pub fn connected(self) -> bool {
+        self.liveness == LocalClientLiveness::Connected
+    }
+
+    /// True while a healthy bridge may simply not have ticked yet. A row in
+    /// this state says it is still checking; it never says Connected.
+    pub fn settling(self) -> bool {
+        self.liveness == LocalClientLiveness::Settling
+    }
+
+    pub fn attached(self) -> bool {
+        self.ever_attached
+    }
+
+    /// Whether a host has demonstrably read the configuration this app wrote.
+    ///
+    /// The client id a bridge announces carries this build's own version, so a
+    /// bridge that announces it was started from a route naming this version -
+    /// which is what a process-start timestamp was standing in for, and got
+    /// wrong whenever the host loaded its MCP servers without restarting.
+    /// Once seen it is not un-seen: an MCP host may start and stop a bridge
+    /// per chat, and the configuration it read does not become unread when the
+    /// bridge exits.
+    pub fn picked_up_current_config(self) -> bool {
+        self.connected() || self.ever_attached
+    }
+}
+
+/// Per-host bridge liveness keeps first-class desktop integrations honest. A
+/// global native heartbeat is sufficient for ChatGPT/Codex's shared config,
+/// but must not make LM Studio, Jan, or an arbitrary MCP host appear
+/// connected.
+pub fn local_client_evidence(client: &str) -> LocalClientEvidence {
+    if let Some(external) = crate::external_host::status() {
+        let seen = external["bridgeClients"][client]
+            .as_u64()
+            .unwrap_or_default();
+        return local_client_evidence_at(
+            seen,
+            seen > 0 || local_client_attached_before(client),
+            external["observedSince"].as_u64().unwrap_or_default(),
+            unix_time_ms(),
+        );
+    }
+    let last_seen = LOCAL_CLIENT_LAST_SEEN
+        .get()
+        .and_then(|clients| clients.lock().ok())
+        .and_then(|clients| clients.get(client).copied())
+        .unwrap_or_default();
+    local_client_evidence_at(
+        last_seen,
+        local_client_attached_before(client),
+        LOCAL_CLIENT_OBSERVATION_SINCE.load(Ordering::Acquire),
+        unix_time_ms(),
+    )
+}
+
+/// The rule itself, separated from the statics that feed it so the start-up
+/// window can be asserted without a listener or a clock.
+///
+/// `last_seen` is this process's own observation and is the *only* input to
+/// liveness. `attached_before` is the durable record and is the only input
+/// that survives a restart; it can make a row calm, and it can never make one
+/// green. The two are separate arguments rather than one timestamp precisely
+/// so that the second cannot be fed to [`native_bridge_is_recent`] by
+/// accident - `last_seen` used to do both jobs, and remembering it across a
+/// restart would have turned every host that once worked into a permanent
+/// false "Connected".
+pub(crate) fn local_client_evidence_at(
+    last_seen: u64,
+    attached_before: bool,
+    observing_since: u64,
+    now: u64,
+) -> LocalClientEvidence {
+    let ever_attached = attached_before || last_seen != 0;
+    let liveness = if native_bridge_is_recent(last_seen, now) {
+        LocalClientLiveness::Connected
+    } else if observing_since != 0
+        && now.saturating_sub(observing_since) <= NATIVE_BRIDGE_ACTIVITY_WINDOW.as_millis() as u64
+    {
+        // The same tolerance the app already grants a bridge that has
+        // announced itself. A bridge announces every 5s, so one that has said
+        // nothing for the whole window is genuinely not there - and using the
+        // one constant keeps the two halves of the rule from drifting.
+        LocalClientLiveness::Settling
+    } else {
+        LocalClientLiveness::Absent
+    };
+    LocalClientEvidence {
+        liveness,
+        ever_attached,
+    }
+}
+
+pub fn local_client_connected(client: &str) -> bool {
+    local_client_evidence(client).connected()
+}
+
+/// The durable half of a host's bridge record, and the throttle deciding when
+/// it reaches disk.
+#[derive(Default)]
+struct ClientAttachHistory {
+    /// Where the durable copy lives, once the app has resolved its own local
+    /// data directory. `None` before start-up, and in any test that does not
+    /// ask for a file: the record is then in-memory only and nothing is
+    /// written, which is exactly the behaviour it replaces.
+    path: Option<PathBuf>,
+    /// Client id -> the unix millisecond at which a bridge carrying it last
+    /// announced itself. The value orders eviction and nothing else; only the
+    /// *presence* of a key is ever allowed to influence what a row says.
+    clients: BTreeMap<String, u64>,
+    /// When this process last attempted a durable write, or 0 if it has not.
+    last_written: u64,
+    /// An announcement moved a timestamp the throttle declined to write, or a
+    /// write failed. A clean shutdown flushes on this.
+    unwritten: bool,
+    /// The last write failure written to stderr, so a disk that has been full
+    /// all morning costs one line rather than one every five minutes.
+    reported_failure: Option<String>,
+}
+
+/// The on-disk form. Small and versioned: a build that learns something new
+/// about a client bumps [`CLIENT_HISTORY_SCHEMA_VERSION`], and a build that
+/// does not recognise the version it finds starts from nothing rather than
+/// reading fields it cannot interpret.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientAttachHistoryFile {
+    schema_version: u32,
+    #[serde(default)]
+    clients: BTreeMap<String, u64>,
+}
+
+fn attach_history() -> &'static Mutex<ClientAttachHistory> {
+    LOCAL_CLIENT_ATTACH_HISTORY.get_or_init(|| Mutex::new(ClientAttachHistory::default()))
+}
+
+/// Reads the durable record.
+///
+/// Absent, unreadable, truncated, not JSON at all, or written under a schema
+/// this build does not know are one case with one answer: an empty history,
+/// which is what every release before this one had permanently. Nothing here
+/// can panic and nothing here can fail a launch.
+fn load_attach_history(path: &Path) -> BTreeMap<String, u64> {
+    let Some(document) = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ClientAttachHistoryFile>(&bytes).ok())
+    else {
+        return BTreeMap::new();
+    };
+    if document.schema_version != CLIENT_HISTORY_SCHEMA_VERSION {
+        return BTreeMap::new();
+    }
+    let mut clients = document.clients;
+    // Every release before this one wrote its own ids and left its
+    // predecessors' behind, so the file on an upgraded machine opens holding
+    // mostly rows nothing can read. They go here, which is the whole migration:
+    // the shape on disk is unchanged, so a build either side of this one reads
+    // the file it expects.
+    retain_current_clients(&mut clients);
+    // A file that grew past the cap under some older rule, or that was edited
+    // by hand, is trimmed on the way in rather than trusted.
+    evict_oldest_clients(&mut clients);
+    clients
+}
+
+fn store_attach_history(path: &Path, clients: &BTreeMap<String, u64>) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or("The local MCP client history path has no parent directory")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create the local MCP state directory: {error}"))?;
+    let encoded = serde_json::to_vec(&ClientAttachHistoryFile {
+        schema_version: CLIENT_HISTORY_SCHEMA_VERSION,
+        clients: clients.clone(),
+    })
+    .map_err(|error| format!("Could not encode the local MCP client history: {error}"))?;
+    publish_atomically(path, parent, "the local MCP client history", &encoded)
+}
+
+/// Whether this build could ever ask about this client id.
+///
+/// Every id is minted as `<provider>:<CARGO_PKG_VERSION>` and every read is
+/// `local_client_evidence` against one of this build's own constants, so an id
+/// carrying any other version cannot be looked up by anything - not by a row,
+/// not by a heartbeat, not by a test. Keeping those rows cost the record its
+/// whole capacity within five releases and told the reader nothing, because
+/// the question they answer is one nothing asks.
+///
+/// This is *not* a claim that the host is running. Liveness stays where it was,
+/// per-process and unremembered; this only decides whether an id is reachable.
+fn client_id_is_current(client: &str) -> bool {
+    client
+        .rsplit_once(':')
+        .is_some_and(|(_, version)| version == env!("CARGO_PKG_VERSION"))
+}
+
+/// Drops every id this build cannot ask about.
+///
+/// An id that survives an upgrade is not evidence a host is stale: the route
+/// refresh rewrites each paired host's configuration to this build's id, and
+/// the bridge that announces afterwards carries it. An old bridge still running
+/// from before the refresh announces under its own id, which this drops - the
+/// row it would feed reads the new id and would not have seen it either way.
+fn retain_current_clients(clients: &mut BTreeMap<String, u64>) {
+    clients.retain(|client, _| client_id_is_current(client));
+}
+
+/// Holds the record to [`CLIENT_HISTORY_CAPACITY`], dropping least-recently
+/// attached first.
+///
+/// A tie is broken by client id so the same input always produces the same
+/// file: two ids that last attached in the same millisecond must not make the
+/// record depend on hash order.
+fn evict_oldest_clients(clients: &mut BTreeMap<String, u64>) {
+    if clients.len() <= CLIENT_HISTORY_CAPACITY {
+        return;
+    }
+    let mut ordered: Vec<(String, u64)> = std::mem::take(clients).into_iter().collect();
+    ordered.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    ordered.truncate(CLIENT_HISTORY_CAPACITY);
+    *clients = ordered.into_iter().collect();
+}
+
+/// Applies one announcement to the record and answers whether it is owed a
+/// durable write now.
+///
+/// Pure, and taking its clock and its last-write instant as arguments, so the
+/// throttle can be asserted without a disk, a listener or a sleep. The first
+/// attach for a client id writes immediately because that is the announcement
+/// that changes what the panel says about that host; a repeat only refreshes
+/// an eviction key, and waits for [`CLIENT_HISTORY_WRITE_INTERVAL`].
+fn note_attach(
+    clients: &mut BTreeMap<String, u64>,
+    client: &str,
+    now: u64,
+    last_written: u64,
+) -> bool {
+    // An announcement from a bridge this build did not write a route for.
+    // Recording it would put a row on disk that nothing can read and that the
+    // next launch deletes; declining costs the write instead of paying it.
+    if !client_id_is_current(client) {
+        return false;
+    }
+    let first_attach = !clients.contains_key(client);
+    clients.insert(client.to_string(), now);
+    if first_attach {
+        evict_oldest_clients(clients);
+        return true;
+    }
+    last_written == 0
+        || now.saturating_sub(last_written) >= CLIENT_HISTORY_WRITE_INTERVAL.as_millis() as u64
+}
+
+/// Whether a write failure is worth a line on stderr.
+///
+/// Uses the bridge announcement policy at the smaller scale these paths need:
+/// one line when it breaks, one when the reason changes, and nothing while the
+/// same reason keeps repeating. A
+/// failure that is never reported is the defect that policy exists to close,
+/// so silence is not an option either.
+///
+/// Shared with the start-up route refresh in `client_packages.rs` rather than
+/// reimplemented there. The policy has one subtlety and it is fatal when it is
+/// got wrong: `failure` is the limiter's KEY, so anything in it that varies per
+/// attempt (a timestamp, an age, a staged file name carrying a process id)
+/// makes every failure a new key and restores the line-per-attempt flood the
+/// limiter exists to prevent.
+pub(crate) fn should_report_failure(reported: Option<&str>, failure: &str) -> bool {
+    reported != Some(failure)
+}
+
+/// Loads the durable record and points it at the file it came from.
+///
+/// Called once, at start-up, before the listener can accept an announcement.
+/// It seeds *only* the durable map: [`LOCAL_CLIENT_LAST_SEEN`] stays empty, so
+/// no remembered instant can reach [`native_bridge_is_recent`] and no row can
+/// go green on a bridge that is not running now.
+fn restore_attach_history(path: &Path) {
+    let clients = load_attach_history(path);
+    if let Ok(mut history) = attach_history().lock() {
+        history.clients = clients;
+        history.path = Some(path.to_path_buf());
+        history.last_written = 0;
+        history.unwritten = false;
+    }
+}
+
+/// Records that a bridge carrying `client` has announced itself, and writes
+/// the record when the throttle says one is owed.
+///
+/// The write never happens on this thread. An announcement arrives every five
+/// seconds on the listener's own runtime, and a stalled disk must not hold one
+/// up - the announcement is what keeps the row honest, and the durable record
+/// is only what keeps it honest across a restart.
+fn record_local_client_attach(client: &str, now: u64) {
+    let Ok(mut history) = attach_history().lock() else {
+        return;
+    };
+    let last_written = history.last_written;
+    let owed = note_attach(&mut history.clients, client, now, last_written);
+    if !owed {
+        history.unwritten = true;
+        return;
+    }
+    let Some(path) = history.path.clone() else {
+        // No file resolved: the record is in-memory only, which is a complete
+        // and correct answer for this process's own lifetime.
+        history.unwritten = false;
+        return;
+    };
+    history.last_written = now;
+    history.unwritten = false;
+    let snapshot = history.clients.clone();
+    drop(history);
+    if std::thread::Builder::new()
+        .name("qc-local-client-history".into())
+        .spawn(move || {
+            if let Err(error) = store_attach_history(&path, &snapshot) {
+                report_history_failure(&error);
+            }
+        })
+        .is_err()
+    {
+        // A thread this process cannot start is not worth blocking an
+        // announcement over. The fact stays in memory and the clean-shutdown
+        // flush is still owed it.
+        if let Ok(mut history) = attach_history().lock() {
+            history.unwritten = true;
+        }
+    }
+}
+
+fn report_history_failure(failure: &str) {
+    if let Ok(mut history) = attach_history().lock() {
+        history.unwritten = true;
+        if !should_report_failure(history.reported_failure.as_deref(), failure) {
+            return;
+        }
+        history.reported_failure = Some(failure.to_string());
+    }
+    eprintln!("QC Remote could not record which AI apps have connected: {failure}");
+}
+
+/// Writes anything the throttle deferred. Called on the way out, where a
+/// blocking write is what the caller is asking for.
+fn flush_attach_history() {
+    let Ok(mut history) = attach_history().lock() else {
+        return;
+    };
+    if !history.unwritten {
+        return;
+    }
+    let Some(path) = history.path.clone() else {
+        return;
+    };
+    let snapshot = history.clients.clone();
+    history.unwritten = false;
+    drop(history);
+    if let Err(error) = store_attach_history(&path, &snapshot) {
+        report_history_failure(&error);
+    }
+}
+
+/// Whether a bridge carrying this client id has ever announced itself to this
+/// app - in this run or in any earlier one.
+///
+/// Deliberately a `bool` and not an instant. Returning the remembered
+/// timestamp would put an old value within reach of the recency rule, and one
+/// careless call site would then paint a green row for a host that last ran
+/// weeks ago.
+fn local_client_attached_before(client: &str) -> bool {
+    attach_history()
+        .lock()
+        .map(|history| history.clients.contains_key(client))
+        .unwrap_or(false)
+}
+
+fn attach_history_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("Could not resolve the local access directory: {error}"))?
+        .join(CLIENT_HISTORY_FILE_NAME))
+}
+
+/// Antigravity's own bridge is an ordinary local client that names itself like
+/// every other one. It had a second `AtomicU64` of its own next to the shared
+/// map, written from the same heartbeat, which is exactly the per-provider
+/// fork of liveness that let one provider miss a correction made to the other
+/// five. It reads the shared record now.
+pub fn antigravity_bridge_connected() -> bool {
+    local_client_connected(ANTIGRAVITY_BRIDGE_CLIENT)
+}
+
+pub fn antigravity_bridge_evidence() -> LocalClientEvidence {
+    local_client_evidence(ANTIGRAVITY_BRIDGE_CLIENT)
+}
+const REPLACE_ATTEMPTS: u32 = 10;
+
+/// The bridge re-reads this descriptor on every request, so an in-place
+/// truncate-then-write hands concurrent readers a partial document. Writing a
+/// sibling temporary file and renaming over the target keeps every read whole.
+///
+/// The staged file is created with an explicit DACL naming this user and
+/// nobody else - see [`owner_only_file`] for what that does and does not
+/// defend against - and the rename carries that DACL onto the published copy,
+/// because a rename inside one directory moves the file's own security
+/// descriptor with it and a protected DACL has nothing left to re-inherit.
+///
+/// `what` names the document in both failure sentences, because the same
+/// mechanism now carries the descriptor and the durable client history and an
+/// operator reading a stalled write has to be told which one stalled.
+fn publish_atomically(
+    path: &Path,
+    parent: &Path,
+    what: &str,
+    contents: &[u8],
+) -> Result<(), String> {
+    remove_orphaned_stage_files(path, parent);
+    let sequence = PUBLICATION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(
+        ".{}.{}.{sequence}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(STATE_FILE_NAME),
+        std::process::id(),
+    ));
+    // These two sentences are rate-limiter KEYS, not just messages:
+    // `report_history_failure` reports one line per distinct reason and stays
+    // silent while the reason repeats. Only the static `what` and the OS error
+    // may appear in them. Do not add `temporary` - it carries this process's
+    // id and a per-call sequence number, so every failure would be a new key
+    // and the limiter would write a line per attempt for ever. That is exactly
+    // how an earlier version of this limiter went wrong: an age was folded
+    // into a detail first, and the limiter was built on top of it afterwards.
+    owner_only_file::write_staged(&temporary, contents)
+        .map_err(|error| format!("Could not stage {what}: {error}"))?;
+    for attempt in 1..=REPLACE_ATTEMPTS {
+        match fs::rename(&temporary, path) {
+            Ok(()) => return Ok(()),
+            // Windows can briefly refuse the replace while a reader holds the
+            // target open, so give the short read a chance to finish.
+            Err(error) if attempt == REPLACE_ATTEMPTS => {
+                let _ = fs::remove_file(&temporary);
+                return Err(format!("Could not publish {what}: {error}"));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(2)),
+        }
+    }
+    unreachable!("the final replace attempt returns")
+}
+
+/// A staged descriptor carries the same credential as the published one, so a
+/// termination between staging and replacing would leave it behind. Publishing
+/// is the app's first act, which makes it the right moment to clear the last run.
+fn remove_orphaned_stage_files(path: &Path, parent: &Path) {
+    let prefix = format!(
+        ".{}.",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(STATE_FILE_NAME)
+    );
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with(&prefix) && name.ends_with(".tmp") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+// Only the exact loopback host the descriptor publishes. Accepting `localhost`
+// as well was unreachable for the bridge and widened DNS-rebinding exposure.
+fn allowed_hosts(port: u16) -> Vec<String> {
+    vec![format!("127.0.0.1:{port}")]
+}
+
+pub(crate) fn tool_contract_sha256() -> String {
+    let normalized = String::from_utf8_lossy(QC_ACTIONS_CONTRACT).replace("\r\n", "\n");
+    Sha256::digest(normalized.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::to_bytes, http::Request};
+    use qc_relay_client::DeviceError;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tower::ServiceExt;
+
+    struct FakeAdapter {
+        ready: AtomicBool,
+    }
+
+    #[async_trait]
+    impl DeviceAdapter for FakeAdapter {
+        async fn ready(&self) -> bool {
+            self.ready.load(Ordering::Relaxed)
+        }
+
+        async fn invoke(&self, _method: &str, _params: Value) -> Result<Value, DeviceError> {
+            Ok(serde_json::json!({ "ok": true }))
+        }
+    }
+
+    struct ErrorAdapter {
+        error: DeviceError,
+    }
+
+    #[async_trait]
+    impl DeviceAdapter for ErrorAdapter {
+        async fn ready(&self) -> bool {
+            true
+        }
+
+        async fn invoke(&self, _method: &str, _params: Value) -> Result<Value, DeviceError> {
+            Err(self.error.clone())
+        }
+    }
+
+    /// Records what the round trip actually asked the device for, so
+    /// "read-only, one request" is proved rather than asserted in a comment.
+    struct RecordingAdapter {
+        device_connected: AtomicBool,
+        invoked: Mutex<Vec<String>>,
+    }
+
+    impl RecordingAdapter {
+        fn new(device_connected: bool) -> Self {
+            Self {
+                device_connected: AtomicBool::new(device_connected),
+                invoked: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.invoked.lock().expect("recorded calls").clone()
+        }
+    }
+
+    #[async_trait]
+    impl DeviceAdapter for RecordingAdapter {
+        async fn ready(&self) -> bool {
+            self.device_connected.load(Ordering::Relaxed)
+        }
+
+        async fn invoke(&self, method: &str, _params: Value) -> Result<Value, DeviceError> {
+            self.invoked
+                .lock()
+                .expect("recorded calls")
+                .push(method.to_owned());
+            if !self.device_connected.load(Ordering::Relaxed) {
+                return Err(DeviceError::new(
+                    "device_unavailable",
+                    "No Quad Cortex is connected",
+                    true,
+                ));
+            }
+            Ok(serde_json::json!({
+                "platform": "Rust device gateway",
+                "gatewayAvailable": true,
+                "usbDiagnostics": {
+                    "phase": "ready",
+                    "detail": "synchronized",
+                    "connected": true,
+                    "synchronized": true,
+                    "activePresetName": "Rehearsal Clean"
+                }
+            }))
+        }
+    }
+
+    /// The access mode never changes in these tests, and a dropped sender
+    /// leaves `borrow` returning the last value, which is all the backend reads.
+    fn full_access() -> watch::Receiver<AccessMode> {
+        watch::channel(AccessMode::Full).1
+    }
+
+    fn running_status(instance_id: &str) -> LocalAccessStatus {
+        LocalAccessStatus {
+            enabled: true,
+            running: true,
+            port: None,
+            instance_id: Some(instance_id.to_owned()),
+            descriptor_paths: Vec::new(),
+            last_error: None,
+            served_by_another_instance: false,
+        }
+    }
+
+    /// A descriptor naming a port this process is not serving, used to stand in
+    /// for the copy of QC Remote a test cannot start a second time.
+    fn descriptor_for_port(port: u16, instance_id: &str) -> LocalDescriptor {
+        LocalDescriptor {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            health_url: format!("http://127.0.0.1:{port}/health"),
+            rpc_url: format!("http://127.0.0.1:{port}/rpc"),
+            bearer_token: "T".repeat(43),
+            instance_id: instance_id.into(),
+            tool_contract_sha256: tool_contract_sha256(),
+        }
+    }
+
+    fn published_instance(path: &Path) -> String {
+        let document: Value =
+            serde_json::from_slice(&fs::read(path).expect("descriptor bytes")).expect("descriptor");
+        document["instanceId"]
+            .as_str()
+            .expect("instanceId")
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_never_finishes_its_request_head_is_closed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = Router::new().route("/health", get(|| async { "ok" }));
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let server = tokio::spawn(serve_loopback(
+            listener,
+            router,
+            Duration::from_millis(300),
+            async move { wait_for_shutdown(&mut stop_rx).await },
+        ));
+
+        // A trickling client is cut off once the head deadline passes.
+        let mut slow = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        slow.write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        let mut buffer = Vec::new();
+        let _closed = tokio::time::timeout(Duration::from_secs(5), slow.read_to_end(&mut buffer))
+            .await
+            .expect("the server kept an unfinished request head open");
+        assert!(started.elapsed() >= Duration::from_millis(250));
+        assert!(
+            !String::from_utf8_lossy(&buffer).contains("200 OK"),
+            "an unfinished request was answered"
+        );
+
+        // A complete request is still served.
+        let mut prompt = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        prompt
+            .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), prompt.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        let answer = String::from_utf8_lossy(&answer);
+        assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+        assert!(answer.ends_with("ok"), "{answer}");
+
+        stop_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("shutdown was not honoured")
+            .unwrap()
+            .unwrap();
+        assert!(
+            tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err(),
+            "the listener outlived shutdown"
+        );
+    }
+
+    fn test_router(ready: bool) -> Router {
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(ready),
+        });
+        let (_access_tx, access_rx) = watch::channel(AccessMode::Full);
+        let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+            adapter: adapter.clone(),
+            access: access_rx,
+        });
+        local_router(
+            backend,
+            LocalHealth {
+                adapter,
+                instance_id: Arc::from("test-instance"),
+                tool_contract_sha256: Arc::from(tool_contract_sha256()),
+                process_id: 42,
+            },
+            Arc::from("test-token"),
+            allowed_hosts(41000),
+        )
+    }
+
+    #[test]
+    fn internal_mcp_resource_reads_are_allowed_at_every_access_tier() {
+        for access in [
+            AccessMode::ReadOnly,
+            AccessMode::Performance,
+            AccessMode::Modify,
+            AccessMode::Full,
+        ] {
+            assert!(local_access_permits(access, "system.status"));
+            assert!(local_access_permits(access, "device.snapshot"));
+        }
+        assert!(!local_access_permits(
+            AccessMode::ReadOnly,
+            "device.setTempo"
+        ));
+    }
+
+    fn test_descriptor(token: &str) -> LocalDescriptor {
+        LocalDescriptor {
+            url: "http://127.0.0.1:41000/mcp".into(),
+            health_url: "http://127.0.0.1:41000/health".into(),
+            rpc_url: "http://127.0.0.1:41000/rpc".into(),
+            bearer_token: token.into(),
+            instance_id: "instance".into(),
+            tool_contract_sha256: tool_contract_sha256(),
+        }
+    }
+
+    /// A directory of this test's own, so a failing run cannot take another
+    /// test's descriptors with it.
+    fn scratch_directory(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "qc-remote-local-access-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).expect("scratch directory");
+        directory
+    }
+
+    async fn error_body(response: Response) -> Value {
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.starts_with("application/json")),
+            Some(true),
+            "both bridges parse a failure body as JSON before anything else"
+        );
+        serde_json::from_slice(
+            &to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .expect("error body"),
+        )
+        .expect("error JSON")
+    }
+
+    fn health_request(token: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .uri("/health")
+            .header(HOST, "127.0.0.1:41000");
+        if let Some(token) = token {
+            builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        builder.body(Body::empty()).expect("health request")
+    }
+
+    fn rpc_request(rpc: &str, token: Option<&str>) -> Request<Body> {
+        rpc_request_with_params(rpc, token, serde_json::json!({}))
+    }
+
+    fn rpc_request_with_params(rpc: &str, token: Option<&str>, params: Value) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/rpc")
+            .header(HOST, "127.0.0.1:41000")
+            .header("content-type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        builder
+            .body(Body::from(
+                serde_json::json!({ "rpc": rpc, "params": params }).to_string(),
+            ))
+            .expect("RPC request")
+    }
+
+    #[tokio::test]
+    async fn host_status_requires_auth_and_counts_distinct_live_mcp_sessions() {
+        let router = test_router(false);
+        let denied = router
+            .clone()
+            .oneshot(rpc_request("host.status", None))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+        let name = format!("presence-test-{:032x}", rand::random::<u128>());
+        let ids = [format!("{name}-1"), format!("{name}-2")];
+        assert!(!ids.is_empty(), "the presence exercise needs live sessions");
+        // Two independent sessions share one client name.
+        assert_eq!(ids.len(), 2);
+        for id in &ids {
+            let response = router
+                .clone()
+                .oneshot(rpc_request_with_params(
+                    "local.bridgeHeartbeat",
+                    Some("test-token"),
+                    serde_json::json!({"sessionId":id,"clientName":name}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let response = router
+            .clone()
+            .oneshot(rpc_request("host.status", Some("test-token")))
+            .await
+            .unwrap();
+        let document = error_body(response).await;
+        assert_eq!(document["ok"], true);
+        assert_eq!(document["result"]["endpoint"], "http://127.0.0.1:41000/mcp");
+        assert_eq!(
+            document["result"]["clients"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|row| row["name"] == name)
+                .count(),
+            2
+        );
+        assert!(!document.to_string().contains("test-token"));
+        for id in &ids {
+            let response = router
+                .clone()
+                .oneshot(rpc_request_with_params(
+                    "local.bridgeClosed",
+                    Some("test-token"),
+                    serde_json::json!({"sessionId":id}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let response = router
+            .oneshot(rpc_request("host.status", Some("test-token")))
+            .await
+            .unwrap();
+        assert!(error_body(response).await["result"]["clients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["name"] != name));
+    }
+
+    #[tokio::test]
+    async fn direct_http_initialize_reports_real_client_and_delete_removes_it() {
+        let router = test_router(false);
+        let name = format!("http-init-{:032x}", rand::random::<u128>());
+        let request = |body: Value, session: Option<&str>| {
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(HOST, "127.0.0.1:41000")
+                .header(AUTHORIZATION, "Bearer test-token")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream");
+            if let Some(session) = session {
+                builder = builder.header("mcp-session-id", session);
+            }
+            builder.body(Body::from(body.to_string())).unwrap()
+        };
+        let response=router.clone().oneshot(request(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":name,"version":"1"}}}),None)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let session = response
+            .headers()
+            .get("mcp-session-id")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        drop(response);
+        let response = router
+            .clone()
+            .oneshot(request(
+                serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+                Some(&session),
+            ))
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !crate::host_presence::snapshot(None)
+                .clients
+                .iter()
+                .any(|row| row.name == name)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("initialize is observed");
+        let delete = Request::builder()
+            .method("DELETE")
+            .uri("/mcp")
+            .header(HOST, "127.0.0.1:41000")
+            .header(AUTHORIZATION, "Bearer test-token")
+            .header("mcp-session-id", session)
+            .body(Body::empty())
+            .unwrap();
+        assert!(router.oneshot(delete).await.unwrap().status().is_success());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while crate::host_presence::snapshot(None)
+                .clients
+                .iter()
+                .any(|row| row.name == name)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session deletion removes presence");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_published_listener_proves_it_holds_the_token_without_receiving_it() {
+        let directory = scratch_directory("identity-proof");
+        let paths = vec![directory.join(STATE_FILE_NAME)];
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(true),
+        });
+        let listener = start_listener(paths.clone(), adapter, full_access()).expect("listener");
+        let endpoint = crate::local_stdio::descriptor_from_paths(&paths).expect("descriptor");
+        let identity_url = endpoint
+            .identity_url
+            .clone()
+            .expect("a current descriptor names its identity check");
+        assert!(crate::local_identity::identity_url_matches(
+            &endpoint.rpc_url,
+            &identity_url
+        ));
+        let client = crate::loopback_http::loopback_client_builder()
+            .build()
+            .unwrap();
+        endpoint
+            .prove_identity(&client)
+            .await
+            .expect("the publishing listener proves itself");
+        // A client holding another token, or expecting another instance,
+        // is told this is not the listener it is looking for - and which of
+        // the two it was, because the LOCAL panel words them differently.
+        let wrong_token = crate::local_identity::verify(
+            &client,
+            &identity_url,
+            &endpoint.instance_id,
+            &"x".repeat(43),
+        )
+        .await
+        .expect_err("another token cannot verify");
+        assert!(wrong_token.credential_mismatch);
+        let wrong_instance = crate::local_identity::verify(
+            &client,
+            &identity_url,
+            "another-instance",
+            &endpoint.bearer_token,
+        )
+        .await
+        .expect_err("another instance cannot verify");
+        assert!(!wrong_instance.credential_mismatch);
+        // The check itself is unauthenticated, but a browser cannot use it.
+        let browser = client
+            .post(&identity_url)
+            .header("origin", "https://example.test")
+            .json(&serde_json::json!({"nonce": "n"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(browser.status(), StatusCode::FORBIDDEN);
+        listener.stop();
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn publisher_handoff_survives_delayed_cleanup_from_the_previous_owner() {
+        let directory = scratch_directory("publisher-handoff");
+        let paths = vec![directory.join(STATE_FILE_NAME)];
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(false),
+        });
+        let first = start_listener(paths.clone(), adapter.clone(), full_access()).unwrap();
+        assert!(
+            start_listener(paths.clone(), adapter.clone(), full_access()).is_err(),
+            "live GUI publisher is not displaced"
+        );
+        first.stop();
+        let second = start_listener(paths.clone(), adapter, full_access()).unwrap();
+        first.stop();
+        let descriptor = crate::local_stdio::descriptor_from_paths(&paths).unwrap();
+        assert_eq!(descriptor.instance_id, second.instance_id());
+        second.stop();
+        assert!(!paths[0].exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_reports_ready_identity() {
+        let response = test_router(true)
+            .oneshot(health_request(Some("test-token")))
+            .await
+            .expect("health response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .expect("health body"),
+        )
+        .expect("health JSON");
+        assert_eq!(body["schemaVersion"], 1);
+        assert_eq!(body["instanceId"], "test-instance");
+        assert_eq!(body["appReady"], true);
+        assert_eq!(body["deviceReady"], true);
+        assert_eq!(body["processId"], 42);
+        assert_eq!(body["toolContractSha256"], tool_contract_sha256());
+    }
+
+    #[tokio::test]
+    async fn unavailable_health_is_typed_and_authentication_fails_closed() {
+        let response = test_router(false)
+            .oneshot(health_request(Some("test-token")))
+            .await
+            .expect("health response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .expect("health body"),
+        )
+        .expect("health JSON");
+        assert_eq!(body["code"], "LOCAL_UNAVAILABLE");
+        assert_eq!(body["reason"], "device_not_ready");
+
+        let unauthorized = test_router(true)
+            .oneshot(health_request(None))
+            .await
+            .expect("unauthorized response");
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let origin = test_router(true)
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header(HOST, "127.0.0.1:41000")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .header("origin", "https://example.com")
+                    .body(Body::empty())
+                    .expect("origin request"),
+            )
+            .await
+            .expect("origin response");
+        assert_eq!(origin.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn every_authentication_failure_is_typed_json_rather_than_a_bare_string() {
+        // Regression: these three were returned as `text/plain`. Both clients
+        // parse a failure body as JSON, fail to find a typed code, and fall
+        // back to the health endpoint for a reason - so a wrong bearer token, a
+        // rebinding attempt and a browser-issued request were each reported to
+        // the user as "the Quad Cortex is not connected".
+        let unauthorized = test_router(true)
+            .oneshot(health_request(None))
+            .await
+            .expect("unauthorized response");
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        let body = error_body(unauthorized).await;
+        assert_eq!(body["code"], "LOCAL_UNAUTHORIZED");
+        assert_eq!(body["reason"], "unauthorized");
+
+        let invalid_host = test_router(true)
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header(HOST, "localhost:41000")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("invalid host request"),
+            )
+            .await
+            .expect("invalid host response");
+        assert_eq!(invalid_host.status(), StatusCode::BAD_REQUEST);
+        let body = error_body(invalid_host).await;
+        assert_eq!(body["code"], "LOCAL_INVALID_HOST");
+        assert_eq!(body["reason"], "invalid_host");
+
+        let origin = test_router(true)
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header(HOST, "127.0.0.1:41000")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .header("origin", "https://example.com")
+                    .body(Body::empty())
+                    .expect("origin request"),
+            )
+            .await
+            .expect("origin response");
+        assert_eq!(origin.status(), StatusCode::FORBIDDEN);
+        let body = error_body(origin).await;
+        assert_eq!(body["code"], "LOCAL_FORBIDDEN_ORIGIN");
+        assert_eq!(body["reason"], "browser_origin_forbidden");
+    }
+
+    #[tokio::test]
+    async fn an_rpc_failure_carries_the_typed_code_without_breaking_the_native_envelope() {
+        let unknown = test_router(true)
+            .oneshot(rpc_request("not.a.real.action", Some("test-token")))
+            .await
+            .expect("unknown RPC response");
+        assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+        let body = error_body(unknown).await;
+        assert_eq!(body["code"], "LOCAL_UNKNOWN_ACTION");
+        assert_eq!(body["reason"], "unknown_action");
+        // `local_stdio.rs` deserializes this envelope; the typed fields are
+        // additive and must not disturb it.
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["error"]["code"], "unknown_action");
+        assert_eq!(body["error"]["retryable"], false);
+        assert!(body["error"]["message"].is_string());
+
+        // The access mode is the other rejection a client sees routinely.
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(true),
+        });
+        let (_access_tx, access_rx) = watch::channel(AccessMode::ReadOnly);
+        let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+            adapter: adapter.clone(),
+            access: access_rx,
+        });
+        let router = local_router(
+            backend,
+            LocalHealth {
+                adapter,
+                instance_id: Arc::from("test-instance"),
+                tool_contract_sha256: Arc::from(tool_contract_sha256()),
+                process_id: 42,
+            },
+            Arc::from("test-token"),
+            allowed_hosts(41000),
+        );
+        let forbidden = router
+            .oneshot(rpc_request_with_params(
+                "device.setTempo",
+                Some("test-token"),
+                serde_json::json!({ "bpm": 120 }),
+            ))
+            .await
+            .expect("forbidden RPC response");
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        let body = error_body(forbidden).await;
+        assert_eq!(body["code"], "LOCAL_FORBIDDEN");
+        assert_eq!(body["reason"], "forbidden");
+        assert_eq!(body["error"]["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn an_rpc_device_failure_preserves_domain_code_separately_from_retry_class() {
+        let mut device_error =
+            DeviceError::new("-32013", "DEVICE_SUSPENDED: A backup is in progress", false);
+        device_error.details = Some(Box::new(serde_json::json!({
+            "code": "DEVICE_SUSPENDED",
+            "retryable": false,
+            "requestSent": false,
+            "privatePayload": "must not be forwarded"
+        })));
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(ErrorAdapter {
+            error: device_error,
+        });
+        let (_access_tx, access_rx) = watch::channel(AccessMode::Full);
+        let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+            adapter: adapter.clone(),
+            access: access_rx,
+        });
+        let response = local_router(
+            backend,
+            LocalHealth {
+                adapter,
+                instance_id: Arc::from("test-instance"),
+                tool_contract_sha256: Arc::from(tool_contract_sha256()),
+                process_id: 42,
+            },
+            Arc::from("test-token"),
+            allowed_hosts(41000),
+        )
+        .oneshot(rpc_request("system.status", Some("test-token")))
+        .await
+        .expect("typed device error response");
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = error_body(response).await;
+        assert_eq!(body["code"], "LOCAL_DEVICE_ERROR");
+        assert_eq!(body["reason"], "device_error");
+        assert_eq!(body["error"]["code"], "device_error");
+        assert_eq!(body["error"]["deviceCode"], "DEVICE_SUSPENDED");
+        assert_eq!(body["error"]["retryable"], false);
+        assert_eq!(
+            body["error"]["message"],
+            "DEVICE_SUSPENDED: A backup is in progress"
+        );
+        assert_eq!(body["error"]["details"]["requestSent"], false);
+        assert!(body["error"]["details"]["privatePayload"].is_null());
+    }
+
+    #[tokio::test]
+    async fn actual_adapter_to_mcp_preserves_only_bounded_quarantine_facts() {
+        for code in ["WRITE_QUARANTINED", "WRITE_OUTCOME_AMBIGUOUS"] {
+            for nested_code in [None, Some(code)] {
+                let mut error = DeviceError::new(code, "fixture", false);
+                let mut details = serde_json::json!({
+                    "retryable":false,"writesQuarantined":true,
+                    "quarantine":{"scope":"device","sinceUnixMs":5,"sessionEpoch":2,
+                        "reason":"SECRET_FIXTURE","clearsBy":"SECRET_FIXTURE","method":"SECRET_FIXTURE"},
+                    "credential":"SECRET_FIXTURE","userActionRequired":true
+                });
+                if let Some(code) = nested_code {
+                    details["code"] = serde_json::json!(code);
+                }
+                if code == "WRITE_QUARANTINED" {
+                    details["requestSent"] = serde_json::json!(false);
+                }
+                error.details = Some(Box::new(details));
+                let adapter: Arc<dyn DeviceAdapter> = Arc::new(ErrorAdapter { error });
+                let (_access_tx, access_rx) = watch::channel(AccessMode::Full);
+                let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+                    adapter,
+                    access: access_rx,
+                });
+                let server = QcMcp::new(backend);
+                let text = server
+                    .execute(
+                        &PrincipalRoute::new(LOCAL_PRINCIPAL, LOCAL_DEVICE),
+                        "list_models",
+                        Some(Map::from_iter([("query".into(), Value::Null)])),
+                    )
+                    .await
+                    .unwrap_err();
+                let wire: Value = serde_json::from_str(&text).expect("actual MCP text error JSON");
+                assert_eq!(wire["code"], "device_error");
+                assert_eq!(wire["deviceCode"], code);
+                assert_eq!(wire["retryable"], false);
+                assert!(wire.get("userActionRequired").is_none());
+                assert_eq!(wire["deviceDetails"]["writesQuarantined"], true);
+                assert_eq!(
+                    wire["deviceDetails"]["quarantine"],
+                    serde_json::json!({"scope":"device","sinceUnixMs":5,"sessionEpoch":2})
+                );
+                if code == "WRITE_QUARANTINED" {
+                    assert_eq!(wire["deviceDetails"]["requestSent"], false);
+                } else {
+                    assert!(wire["deviceDetails"].get("requestSent").is_none());
+                }
+                assert!(!text.contains("SECRET_FIXTURE"));
+            }
+        }
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(ErrorAdapter {
+            error: DeviceError::new("DEVICE_TRANSPORT", "legacy fixture", true),
+        });
+        let (_access_tx, access_rx) = watch::channel(AccessMode::Full);
+        let server = QcMcp::new(Arc::new(LocalBackend {
+            adapter,
+            access: access_rx,
+        }));
+        let text = server
+            .execute(
+                &PrincipalRoute::new(LOCAL_PRINCIPAL, LOCAL_DEVICE),
+                "list_models",
+                Some(Map::from_iter([("query".into(), Value::Null)])),
+            )
+            .await
+            .unwrap_err();
+        let wire: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(wire["code"], "device_unavailable");
+        assert_eq!(wire["retryable"], true);
+        assert!(wire.get("deviceDetails").is_none());
+        assert!(wire.get("userActionRequired").is_none());
+    }
+
+    #[tokio::test]
+    async fn actual_adapter_mcp_drops_only_quarantine_contradictions() {
+        for code in [
+            "WRITE_QUARANTINED",
+            "WRITE_OUTCOME_AMBIGUOUS",
+            "DEVICE_OUTCOME_UNKNOWN",
+            "OTHER",
+        ] {
+            for nested_code in [None, Some(code)] {
+                let mut error = DeviceError::new(code, "fixture", false);
+                let mut details = serde_json::json!({"requestSent":true,"writesQuarantined":false});
+                if let Some(code) = nested_code {
+                    details["code"] = serde_json::json!(code);
+                }
+                error.details = Some(Box::new(details));
+                let adapter: Arc<dyn DeviceAdapter> = Arc::new(ErrorAdapter { error });
+                let (_access_tx, access_rx) = watch::channel(AccessMode::Full);
+                let server = QcMcp::new(Arc::new(LocalBackend {
+                    adapter,
+                    access: access_rx,
+                }));
+                let text = server
+                    .execute(
+                        &PrincipalRoute::new(LOCAL_PRINCIPAL, LOCAL_DEVICE),
+                        "list_models",
+                        Some(Map::from_iter([("query".into(), Value::Null)])),
+                    )
+                    .await
+                    .unwrap_err();
+                let wire: Value = serde_json::from_str(&text).unwrap();
+                if code == "WRITE_QUARANTINED" {
+                    assert!(wire["deviceDetails"].get("requestSent").is_none());
+                    assert!(wire["deviceDetails"].get("writesQuarantined").is_none());
+                } else {
+                    assert_eq!(wire["deviceDetails"]["requestSent"], true);
+                    assert_eq!(wire["deviceDetails"]["writesQuarantined"], false);
+                }
+                assert!(wire.get("userActionRequired").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_device_error_codes_are_not_exposed_as_domain_codes() {
+        assert_eq!(
+            safe_device_error_code("DEVICE_SUSPENDED"),
+            Some("DEVICE_SUSPENDED")
+        );
+        assert_eq!(safe_device_error_code("DEVICE/SECRET"), None);
+        assert_eq!(safe_device_error_code(&"A".repeat(65)), None);
+    }
+
+    #[tokio::test]
+    async fn native_stdio_hop_is_authenticated_and_action_allowlisted() {
+        let response = test_router(true)
+            .oneshot(rpc_request("system.status", Some("test-token")))
+            .await
+            .expect("RPC response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .expect("RPC body"),
+        )
+        .expect("RPC JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({ "ok": true, "result": { "ok": true } })
+        );
+
+        let unknown = test_router(true)
+            .oneshot(rpc_request("not.a.real.action", Some("test-token")))
+            .await
+            .expect("unknown RPC response");
+        assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+
+        let unauthorized = test_router(true)
+            .oneshot(rpc_request("system.status", None))
+            .await
+            .expect("unauthorized RPC response");
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn authenticated_native_heartbeat_records_live_bridge_activity_without_device_io() {
+        let router = test_router(false);
+        let response = router
+            .oneshot(rpc_request_with_params(
+                "local.bridgeHeartbeat",
+                Some("test-token"),
+                serde_json::json!({ "client": ANTIGRAVITY_BRIDGE_CLIENT }),
+            ))
+            .await
+            .expect("heartbeat response");
+        assert_eq!(response.status(), StatusCode::OK);
+        // Antigravity is read out of the one shared record every other host is
+        // read from, so a correction to the rule cannot reach five providers
+        // and miss the sixth.
+        let evidence = antigravity_bridge_evidence();
+        assert!(evidence.connected());
+        assert!(evidence.attached());
+        assert!(antigravity_bridge_connected());
+        assert_eq!(evidence, local_client_evidence(ANTIGRAVITY_BRIDGE_CLIENT));
+        // The same announcement also reaches the record that outlives this
+        // process, so the next launch can tell this host apart from one that
+        // has never run here.
+        assert!(local_client_attached_before(ANTIGRAVITY_BRIDGE_CLIENT));
+    }
+
+    #[tokio::test]
+    async fn an_unlinked_native_bridge_stays_off_the_list_until_its_next_tool_call() {
+        let router = test_router(true);
+        let name = format!("unlink-test-{:032x}", rand::random::<u128>());
+        let session = format!("stdio-{:032x}", rand::random::<u128>());
+        let heartbeat = |router: Router| {
+            let request = rpc_request_with_params(
+                "local.bridgeHeartbeat",
+                Some("test-token"),
+                serde_json::json!({"sessionId":session,"clientName":name}),
+            );
+            async move { router.oneshot(request).await.unwrap() }
+        };
+        let listed = |router: Router| {
+            let name = name.clone();
+            async move {
+                let response = router
+                    .oneshot(rpc_request("host.status", Some("test-token")))
+                    .await
+                    .unwrap();
+                error_body(response).await["result"]["clients"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|row| row["name"] == name.as_str())
+                    .count()
+            }
+        };
+        let tool_call = |session: Option<&str>| {
+            let mut request = rpc_request_with_params(
+                "device.setTempo",
+                Some("test-token"),
+                serde_json::json!({ "bpm": 120 }),
+            );
+            if let Some(session) = session {
+                request.headers_mut().insert(
+                    crate::host_presence::BRIDGE_SESSION_HEADER,
+                    session.parse().unwrap(),
+                );
+            }
+            request
+        };
+        assert_eq!(heartbeat(router.clone()).await.status(), StatusCode::OK);
+        assert_eq!(listed(router.clone()).await, 1);
+        assert!(crate::host_presence::end_local_session(&session));
+        // Acknowledged exactly as before, and not recorded.
+        let answered = heartbeat(router.clone()).await;
+        assert_eq!(answered.status(), StatusCode::OK);
+        assert_eq!(
+            error_body(answered).await,
+            serde_json::json!({"ok":true,"result":{"connected":true}})
+        );
+        assert_eq!(listed(router.clone()).await, 0);
+        // A tool call without the header (an older bridge), or naming another
+        // session, works and relinks nothing.
+        for other in [None, Some("stdio-someone-else")] {
+            let response = router.clone().oneshot(tool_call(other)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(listed(router.clone()).await, 0);
+        }
+        // A resource read is not a tool call.
+        let mut read = rpc_request("system.status", Some("test-token"));
+        read.headers_mut().insert(
+            crate::host_presence::BRIDGE_SESSION_HEADER,
+            session.parse().unwrap(),
+        );
+        assert_eq!(
+            router.clone().oneshot(read).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(listed(router.clone()).await, 0);
+        // The chat's next tool call is answered normally and relinks it.
+        let response = router
+            .clone()
+            .oneshot(tool_call(Some(&session)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(listed(router.clone()).await, 1);
+        assert_eq!(heartbeat(router.clone()).await.status(), StatusCode::OK);
+        assert_eq!(listed(router.clone()).await, 1);
+        crate::host_presence::bridge_closed(&session);
+        assert_eq!(listed(router).await, 0);
+    }
+
+    #[test]
+    fn resource_only_methods_never_relink_and_every_tool_method_may() {
+        let resources = qc_remote_mcp::resource_rpcs();
+        assert_eq!(resources.len(), 3);
+        let actions = qc_remote_mcp::ACTIONS;
+        assert!(!actions.is_empty());
+        let mut resource_only = 0;
+        for (uri, rpc) in resources {
+            let tool = qc_remote_mcp::ACTIONS
+                .iter()
+                .any(|action| action.rpc == rpc);
+            // A shared method is a tool call unless the bridge marked it as a
+            // resource read by omitting its session (see local_stdio).
+            assert_eq!(relinks_session(rpc), tool, "{uri} -> {rpc}");
+            resource_only += usize::from(!tool);
+        }
+        assert_eq!(resource_only, 1, "system.status");
+        assert!(!relinks_session("device.snapshot"), "internal projection");
+        assert!(relinks_session("device.listModels"), "the list_models tool");
+        for action in actions {
+            assert!(relinks_session(action.rpc), "{}", action.rpc);
+        }
+    }
+
+    /// The relink happens before the backend is asked, so a call the access
+    /// level refuses (or that fails) still lists the chat again: the chat
+    /// made a new request, whatever its answer.
+    #[tokio::test]
+    async fn a_refused_tool_call_still_relinks_its_session() {
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(true),
+        });
+        let (_access_tx, access_rx) = watch::channel(AccessMode::ReadOnly);
+        let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+            adapter: adapter.clone(),
+            access: access_rx,
+        });
+        let router = local_router(
+            backend,
+            LocalHealth {
+                adapter,
+                instance_id: Arc::from("test-instance"),
+                tool_contract_sha256: Arc::from(tool_contract_sha256()),
+                process_id: 42,
+            },
+            Arc::from("test-token"),
+            allowed_hosts(41000),
+        );
+        let name = format!("refused-relink-{:032x}", rand::random::<u128>());
+        let session = format!("stdio-{:032x}", rand::random::<u128>());
+        let response = router
+            .clone()
+            .oneshot(rpc_request_with_params(
+                "local.bridgeHeartbeat",
+                Some("test-token"),
+                serde_json::json!({"sessionId":session,"clientName":name}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(crate::host_presence::end_local_session(&session));
+        let listed = || async {
+            let response = router
+                .clone()
+                .oneshot(rpc_request("host.status", Some("test-token")))
+                .await
+                .unwrap();
+            error_body(response).await["result"]["clients"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|row| row["name"] == name.as_str())
+                .count()
+        };
+        assert_eq!(listed().await, 0);
+        let mut write = rpc_request_with_params(
+            "device.setTempo",
+            Some("test-token"),
+            serde_json::json!({ "bpm": 120 }),
+        );
+        write.headers_mut().insert(
+            crate::host_presence::BRIDGE_SESSION_HEADER,
+            session.parse().unwrap(),
+        );
+        let refused = router.clone().oneshot(write).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(listed().await, 1);
+        crate::host_presence::bridge_closed(&session);
+        assert_eq!(listed().await, 0);
+    }
+
+    #[test]
+    fn a_bridge_that_has_not_ticked_yet_is_not_reported_as_absent() {
+        let window = NATIVE_BRIDGE_ACTIVITY_WINDOW.as_millis() as u64;
+        // The app restarted at 1_000_000 and nothing has announced itself.
+        let settling = local_client_evidence_at(0, false, 1_000_000, 1_000_000 + window);
+        assert_eq!(settling.liveness, LocalClientLiveness::Settling);
+        assert!(settling.settling());
+        assert!(
+            !settling.connected(),
+            "a row must never go green on the absence of a heartbeat"
+        );
+        assert!(!settling.picked_up_current_config());
+
+        // One tick later the window has closed and silence means what it says.
+        let absent = local_client_evidence_at(0, false, 1_000_000, 1_000_000 + window + 1);
+        assert_eq!(absent.liveness, LocalClientLiveness::Absent);
+        assert!(!absent.settling());
+    }
+
+    #[test]
+    fn a_bridge_that_heartbeats_after_an_app_restart_reads_as_connected() {
+        let window = NATIVE_BRIDGE_ACTIVITY_WINDOW.as_millis() as u64;
+        // The listener opened at 1_000_000 with an empty record; a bridge that
+        // was already running announces itself one heartbeat later.
+        let observing_since = 1_000_000;
+        let announced_at = observing_since + 5_000;
+        let evidence = local_client_evidence_at(announced_at, false, observing_since, announced_at);
+        assert!(
+            evidence.connected(),
+            "a live announcement is all the evidence a connected row needs"
+        );
+        assert!(evidence.picked_up_current_config());
+        // And it stays connected for the whole activity window without the
+        // user doing anything.
+        assert!(local_client_evidence_at(
+            announced_at,
+            false,
+            observing_since,
+            announced_at + window
+        )
+        .connected());
+    }
+
+    #[test]
+    fn liveness_is_unknown_until_the_listener_opens() {
+        // No listener has ever started, so there is no start-up window to be
+        // inside and nothing to be lenient about.
+        assert_eq!(
+            local_client_evidence_at(0, false, 0, 9_999_999).liveness,
+            LocalClientLiveness::Absent
+        );
+    }
+
+    /// A client id of the shape this build mints, for a made-up provider.
+    ///
+    /// The record keeps only ids carrying this build's version, so a test that
+    /// wrote a literal one would start failing at the next release bump - and
+    /// would be asserting about a row the app could never read anyway.
+    fn current_client_id(provider: &str) -> String {
+        format!("{provider}:{}", env!("CARGO_PKG_VERSION"))
+    }
+
+    #[test]
+    fn a_host_that_worked_before_reads_as_idle_after_a_restart_not_as_never_connected() {
+        let directory = scratch_directory("client-history");
+        let path = directory.join(CLIENT_HISTORY_FILE_NAME);
+        let client = &current_client_id("codex");
+        let attached_at = 1_700_000_000_000_u64;
+
+        // The run in which this host's bridge announced itself.
+        let mut live = BTreeMap::new();
+        let owed = note_attach(&mut live, client, attached_at, 0);
+        store_attach_history(&path, &live).expect("store history");
+
+        // The app is closed and opened again. Nothing in memory survives, so
+        // `last_seen` is 0, and the listener begins accepting
+        // announcements a day later.
+        let remembered = load_attach_history(&path);
+        let attached_before = remembered.contains_key(client);
+        let observing_since = attached_at + 24 * 60 * 60 * 1_000;
+        let now = observing_since + NATIVE_BRIDGE_ACTIVITY_WINDOW.as_millis() as u64 + 1;
+        let evidence = local_client_evidence_at(0, attached_before, observing_since, now);
+        let _ = fs::remove_dir_all(&directory);
+
+        assert!(owed, "the first attach for a client id is written at once");
+        assert!(attached_before, "the record did not survive the restart");
+        assert!(
+            evidence.attached(),
+            "a host whose bridge has run here before must never be told it has never connected"
+        );
+        assert!(
+            evidence.picked_up_current_config(),
+            "nor asked to restart to re-read a configuration it has demonstrably read"
+        );
+        assert!(
+            !evidence.connected(),
+            "history is not a heartbeat: no row may go green on a remembered attach"
+        );
+        assert!(
+            !evidence.settling(),
+            "nor may a remembered attach hold a row in the start-up window"
+        );
+        assert_eq!(evidence.liveness, LocalClientLiveness::Absent);
+    }
+
+    #[test]
+    fn a_remembered_attach_can_never_become_a_connection() {
+        let remembered_at = 1_700_000_000_000_u64;
+        // The hazard the two-argument split exists to prevent, stated as an
+        // assertion: had the durable record been restored by seeding
+        // `last_seen`, the recency rule would have read it as a live bridge
+        // and painted a green row for a process that is not running.
+        assert!(native_bridge_is_recent(
+            remembered_at,
+            remembered_at + 1_000
+        ));
+
+        // It travels as a fact instead, so liveness is decided entirely by
+        // this process's own silence.
+        let observing_since = remembered_at + 1_000;
+        let window = NATIVE_BRIDGE_ACTIVITY_WINDOW.as_millis() as u64;
+        let inside = local_client_evidence_at(0, true, observing_since, observing_since + window);
+        let outside =
+            local_client_evidence_at(0, true, observing_since, observing_since + window + 1);
+
+        assert_eq!(inside.liveness, LocalClientLiveness::Settling);
+        assert!(!inside.connected());
+        assert_eq!(outside.liveness, LocalClientLiveness::Absent);
+        assert!(!outside.connected());
+        assert!(outside.attached());
+        assert_eq!(
+            outside.liveness,
+            local_client_evidence_at(0, false, observing_since, observing_since + window + 1)
+                .liveness,
+            "the durable record must not move liveness in either direction"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_client_history_degrades_to_no_history() {
+        let directory = scratch_directory("client-history-damage");
+        let absent = load_attach_history(&directory.join("never-written.json"));
+
+        let garbage = directory.join("garbage.json");
+        fs::write(&garbage, b"{ this is not json").expect("write garbage");
+        let unparsable = load_attach_history(&garbage);
+
+        let truncated = directory.join("truncated.json");
+        fs::write(&truncated, br#"{"schemaVersion":1,"clients":{"codex:0.1"#)
+            .expect("write truncated");
+        let cut_short = load_attach_history(&truncated);
+
+        let future = directory.join("future.json");
+        fs::write(
+            &future,
+            br#"{"schemaVersion":99,"clients":{"codex:0.1.144":1700000000000}}"#,
+        )
+        .expect("write future schema");
+        let unknown_schema = load_attach_history(&future);
+        let _ = fs::remove_dir_all(&directory);
+
+        assert!(absent.is_empty(), "a first launch has no history");
+        assert!(unparsable.is_empty());
+        assert!(
+            cut_short.is_empty(),
+            "a torn write must not panic or half-load"
+        );
+        assert!(
+            unknown_schema.is_empty(),
+            "a file from a build that knows more than this one is not guessed at"
+        );
+        // Degrading to empty is degrading to the behaviour every release
+        // before this record had - amber rows - and never to a false green.
+        let degraded = local_client_evidence_at(0, false, 1_000, 1_000_000);
+        assert!(!degraded.attached());
+        assert!(!degraded.connected());
+    }
+
+    #[test]
+    fn the_client_history_evicts_the_least_recently_attached_id() {
+        let mut clients = BTreeMap::new();
+        let overflow = CLIENT_HISTORY_CAPACITY + 4;
+        // Ids attached a second apart, oldest first.
+        for index in 0..overflow {
+            note_attach(
+                &mut clients,
+                &current_client_id(&format!("host-{index:03}")),
+                1_000 + index as u64 * 1_000,
+                0,
+            );
+        }
+        let first_kept = overflow - CLIENT_HISTORY_CAPACITY;
+
+        assert_eq!(clients.len(), CLIENT_HISTORY_CAPACITY);
+        assert!(
+            !clients.contains_key(&current_client_id("host-000")),
+            "the least recently attached id is the one that goes"
+        );
+        assert!(!clients.contains_key(&current_client_id(&format!("host-{:03}", first_kept - 1))));
+        assert!(
+            clients.contains_key(&current_client_id(&format!("host-{first_kept:03}"))),
+            "and eviction stops the moment the record is back inside its bound"
+        );
+        assert!(
+            clients.contains_key(&current_client_id(&format!("host-{:03}", overflow - 1))),
+            "the most recent id is always kept"
+        );
+    }
+
+    #[test]
+    fn a_record_written_by_earlier_releases_keeps_only_the_ids_this_build_reads() {
+        let directory = scratch_directory("client-history-upgrade");
+        let path = directory.join(CLIENT_HISTORY_FILE_NAME);
+        let live = current_client_id("claude");
+        // A legacy record can contain several versions of each supported host.
+        let mut carried = BTreeMap::new();
+        for (index, version) in ["0.1.144", "0.1.151", "0.1.155", "0.1.158"]
+            .into_iter()
+            .enumerate()
+        {
+            for provider in ["claude", "codex", "antigravity", "jan", "lm-studio"] {
+                carried.insert(format!("{provider}:{version}"), 1_000 + index as u64);
+            }
+        }
+        carried.insert(live.clone(), 9_000);
+        store_attach_history(&path, &carried).expect("store history");
+
+        let restored = load_attach_history(&path);
+        let _ = fs::remove_dir_all(&directory);
+
+        assert_eq!(
+            restored.keys().collect::<Vec<_>>(),
+            vec![&live],
+            "an upgraded machine opens holding one row per live host, not one per release"
+        );
+        assert_eq!(
+            restored.get(&live).copied(),
+            Some(9_000),
+            "and the row that survives keeps the instant it was attached at"
+        );
+    }
+
+    #[test]
+    fn an_announcement_from_a_bridge_this_build_did_not_route_is_not_recorded() {
+        let mut clients = BTreeMap::new();
+        // A host still running the bridge from before an upgrade. Its id is
+        // one `local_client_evidence` is never called with, so a row for it
+        // could not reach a panel row even if it were kept.
+        let stale = note_attach(&mut clients, "claude:0.1.144", 10_000, 0);
+        let unparsable = note_attach(&mut clients, "no-version-at-all", 10_000, 0);
+        let current = note_attach(&mut clients, &current_client_id("claude"), 10_000, 0);
+
+        assert!(!stale, "a row nothing can read must not cost a file write");
+        assert!(!unparsable);
+        assert!(
+            current,
+            "the id this build routes is still recorded at once"
+        );
+        assert_eq!(
+            clients.keys().collect::<Vec<_>>(),
+            vec![&current_client_id("claude")]
+        );
+    }
+
+    #[test]
+    fn only_the_first_attach_for_a_host_is_written_at_once() {
+        let mut clients = BTreeMap::new();
+        let client = &current_client_id("antigravity");
+        let interval = CLIENT_HISTORY_WRITE_INTERVAL.as_millis() as u64;
+
+        let first = note_attach(&mut clients, client, 10_000, 0);
+        // The announcement five seconds later carries no new fact.
+        let repeat = note_attach(&mut clients, client, 15_000, 10_000);
+        let just_inside = note_attach(&mut clients, client, 10_000 + interval - 1, 10_000);
+        let due = note_attach(&mut clients, client, 10_000 + interval, 10_000);
+        // A second host is a new fact even while the first host's throttle is
+        // closed, because it is what decides that host's own row.
+        let other_host = note_attach(&mut clients, &current_client_id("jan"), 15_000, 10_000);
+
+        assert!(first, "the fact that changes a row is written immediately");
+        assert!(
+            !repeat,
+            "a five-second announcement must not cost a file write"
+        );
+        assert!(!just_inside);
+        assert!(
+            due,
+            "the eviction key is refreshed once the floor has passed"
+        );
+        assert!(other_host);
+        assert_eq!(clients.len(), 2);
+        assert_eq!(clients.get(client).copied(), Some(10_000 + interval));
+    }
+
+    #[test]
+    fn a_repeated_write_failure_is_reported_once_per_reason() {
+        assert!(should_report_failure(None, "the disk is full"));
+        assert!(
+            !should_report_failure(Some("the disk is full"), "the disk is full"),
+            "a failure that has not changed does not earn a second line"
+        );
+        assert!(
+            should_report_failure(Some("the disk is full"), "access is denied"),
+            "a different reason is a different diagnosis and is always reported"
+        );
+    }
+
+    #[test]
+    fn native_bridge_activity_expires_when_the_stdio_process_disappears() {
+        assert!(!native_bridge_is_recent(0, 10_000));
+        assert!(native_bridge_is_recent(10_000, 21_999));
+        assert!(native_bridge_is_recent(10_000, 22_000));
+        assert!(!native_bridge_is_recent(10_000, 22_001));
+    }
+
+    #[test]
+    fn the_published_contract_hash_is_the_normalized_contract_on_disk() {
+        let on_disk = fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../contracts/public/qc-actions.v1.json"),
+        )
+        .expect("qc-actions.v1.json");
+        let normalized = String::from_utf8_lossy(&on_disk).replace("\r\n", "\n");
+        let expected: String = Sha256::digest(normalized.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(tool_contract_sha256(), expected);
+    }
+
+    #[tokio::test]
+    async fn only_the_exact_loopback_host_is_accepted() {
+        let response = test_router(true)
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .header(HOST, "localhost:41000")
+                    .header(AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .expect("localhost request"),
+            )
+            .await
+            .expect("localhost response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn publishing_clears_an_orphaned_staged_descriptor() {
+        let directory = scratch_directory("stale");
+        let orphan = directory.join(format!(".{STATE_FILE_NAME}.999999.0.tmp"));
+        fs::write(&orphan, b"{\"bearerToken\":\"live-looking\"}").expect("orphan");
+        let path = directory.join(STATE_FILE_NAME);
+        test_descriptor("token")
+            .publish(&path)
+            .expect("endpoint document");
+        let remaining = orphan.exists();
+        let _ = fs::remove_dir_all(&directory);
+        assert!(
+            !remaining,
+            "an abandoned staged descriptor still holds a live-looking credential"
+        );
+    }
+
+    #[test]
+    fn a_published_descriptor_is_readable_by_this_user_and_nobody_else() {
+        // The descriptor carries a bearer token that grants full control of the
+        // attached device. Under the inherited ACL it was also readable by
+        // `BUILTIN\Administrators` and `NT AUTHORITY\SYSTEM`, and by whatever
+        // the parent directory happened to grant - `%APPDATA%` redirected onto
+        // a file server, say. What this cannot do is stop a process running as
+        // *this* user; see the module comment on `owner_only_file`.
+        let directory = scratch_directory("owner-only");
+        let path = directory.join(STATE_FILE_NAME);
+        test_descriptor("token")
+            .publish(&path)
+            .expect("endpoint document");
+
+        let published = owner_only_file::is_owner_only(&path).expect("inspect the published DACL");
+        // The neighbour proves the check can say no: without it a predicate
+        // that always returned true would pass the assertion above.
+        let neighbour = directory.join("ordinary.json");
+        fs::write(&neighbour, b"{}").expect("ordinary file");
+        let inherited = owner_only_file::is_owner_only(&neighbour).expect("inspect a plain file");
+        // A refresh re-publishes over the existing copy every 30 seconds. The
+        // replaced file must not come back with the parent's ACEs.
+        test_descriptor("token").publish(&path).expect("refresh");
+        let refreshed = owner_only_file::is_owner_only(&path).expect("inspect the refreshed DACL");
+
+        let _ = fs::remove_dir_all(&directory);
+        assert!(
+            published,
+            "the published descriptor still inherits Administrators and SYSTEM access"
+        );
+        assert!(
+            !inherited,
+            "an ordinary file in the same directory was also reported owner-only, so this proves nothing"
+        );
+        assert!(
+            refreshed,
+            "a descriptor refresh republished the credential under the inherited ACL"
+        );
+    }
+
+    #[test]
+    fn descriptor_publication_never_exposes_a_partial_document() {
+        let directory = scratch_directory("atomic");
+        let path = directory.join("local-mcp.json");
+        let publish = |token: &str| {
+            test_descriptor(token)
+                .publish(&path)
+                .expect("endpoint document")
+        };
+        publish("seed-token-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader_path = path.clone();
+        let reader_stop = stop.clone();
+        let reader = std::thread::spawn(move || {
+            let mut observed = 0_u32;
+            let mut torn = 0_u32;
+            let mut refused = 0_u32;
+            while !reader_stop.load(Ordering::Relaxed) {
+                match fs::read(&reader_path) {
+                    Ok(bytes) => {
+                        observed += 1;
+                        if serde_json::from_slice::<Value>(&bytes).is_err() {
+                            torn += 1;
+                        }
+                    }
+                    // Replacing a file by rename is atomic for a reader that
+                    // already holds a handle, but a reader *opening* during the
+                    // swap can be refused. That is a retryable miss, not a
+                    // partial document, and counting it as one made this test
+                    // fail under load while claiming a tear that never happened.
+                    Err(_) => refused += 1,
+                }
+            }
+            (observed, torn, refused)
+        });
+
+        for index in 0..600 {
+            publish(&format!("rotated-token-{index:0>30}"));
+        }
+        stop.store(true, Ordering::Relaxed);
+        let (observed, torn, refused) = reader.join().expect("reader thread");
+
+        let _ = fs::remove_dir_all(&directory);
+        assert!(observed > 0, "the reader never saw the descriptor");
+        // The invariant that matters: a reader that gets bytes never gets a
+        // half-written document. The app publishes three copies and renames
+        // them one at a time, so a refusal on one still leaves the others.
+        assert_eq!(
+            torn, 0,
+            "the bridge re-reads this file on every request; {torn} of {observed} reads saw a partial document ({refused} opens were refused mid-rename, which is expected)"
+        );
+        // No assertion on `refused`. A refusal is expected and handled, its rate
+        // depends on how much CPU this thread gets against the rest of the
+        // suite, and a threshold I cannot justify is exactly how this test came
+        // to fail while reporting a tear that never happened. It is reported
+        // above so a future failure is diagnosable.
+    }
+
+    #[test]
+    fn descriptor_is_additive_revision_four() {
+        let directory = scratch_directory("revision");
+        let path = directory.join("local-mcp.json");
+        test_descriptor("token")
+            .publish(&path)
+            .expect("endpoint document");
+        let document: Value = serde_json::from_slice(&fs::read(&path).expect("endpoint bytes"))
+            .expect("endpoint JSON");
+        assert_eq!(document["schemaVersion"], 1);
+        assert_eq!(document["descriptorRevision"], 4);
+        assert_eq!(document["transport"], "streamable-http");
+        assert_eq!(document["healthUrl"], "http://127.0.0.1:41000/health");
+        assert_eq!(document["rpcUrl"], "http://127.0.0.1:41000/rpc");
+        assert_eq!(document["instanceId"], "instance");
+        assert!(document["publishedAtUnixMs"].as_u64().is_some());
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_refresh_restamps_the_timestamp_and_moves_nothing_else() {
+        // The whole liveness contract rests on this: a refresh that changed the
+        // token, the port or the instance id would read as a restart, and a
+        // reader would be right to throw away the session it had.
+        let directory = scratch_directory("refresh");
+        let path = directory.join(STATE_FILE_NAME);
+        let descriptor = test_descriptor("stable-token");
+        descriptor
+            .publish_at(&path, 1_700_000_000_000)
+            .expect("first publication");
+        let first: Value =
+            serde_json::from_slice(&fs::read(&path).expect("first bytes")).expect("first document");
+        descriptor
+            .publish_at(&path, 1_700_000_030_000)
+            .expect("refresh");
+        let second: Value = serde_json::from_slice(&fs::read(&path).expect("refreshed bytes"))
+            .expect("refreshed document");
+        let _ = fs::remove_dir_all(&directory);
+
+        assert_eq!(first["publishedAtUnixMs"], 1_700_000_000_000_u64);
+        assert_eq!(second["publishedAtUnixMs"], 1_700_000_030_000_u64);
+        for field in [
+            "schemaVersion",
+            "descriptorRevision",
+            "transport",
+            "url",
+            "healthUrl",
+            "rpcUrl",
+            "bearerToken",
+            "processId",
+            "instanceId",
+            "toolContractSha256",
+        ] {
+            assert_eq!(
+                first[field], second[field],
+                "{field} moved across a refresh, which a reader reads as a restart"
+            );
+        }
+        let moved: Vec<&String> = second
+            .as_object()
+            .expect("refreshed object")
+            .keys()
+            .filter(|key| first[key.as_str()] != second[key.as_str()])
+            .collect();
+        assert_eq!(moved, vec!["publishedAtUnixMs"]);
+    }
+
+    /// The shipped cadence and the reader's window, run at 1:100 so the ratio
+    /// under test is the one that ships. `tokio`'s paused clock would be exact,
+    /// but it needs the `test-util` feature this crate does not carry.
+    const TEST_TIME_SCALE: u32 = 100;
+
+    #[tokio::test]
+    async fn refreshes_fill_the_readers_stale_window_and_stop_on_shutdown() {
+        // Readers retire a descriptor 150 s after its last refresh. Several
+        // refreshes inside that window is the whole margin: consecutive writes
+        // have to fail, not one, before a live app is taken for a dead one.
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
+        let ticks = Arc::new(AtomicU64::new(0));
+        let counted = ticks.clone();
+        let refreshing = tokio::spawn(async move {
+            refresh_until_shutdown(
+                DESCRIPTOR_REFRESH_INTERVAL / TEST_TIME_SCALE,
+                &mut shutdown_rx,
+                move || {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                },
+            )
+            .await;
+        });
+        tokio::time::sleep(DESCRIPTOR_STALE_AFTER / TEST_TIME_SCALE).await;
+        let inside_the_window = ticks.load(Ordering::Relaxed);
+        assert!(
+            (4..=6).contains(&inside_the_window),
+            "the 5x ratio puts four to six refreshes inside the reader's window, saw {inside_the_window}"
+        );
+        shutdown.send(true).expect("shutdown");
+        refreshing.await.expect("refresh task");
+        let at_shutdown = ticks.load(Ordering::Relaxed);
+        // A tick that fired after the stop would republish a descriptor the
+        // stop path has already removed: the stale-file bug over again.
+        tokio::time::sleep(DESCRIPTOR_REFRESH_INTERVAL / TEST_TIME_SCALE * 3).await;
+        let after_shutdown = ticks.load(Ordering::Relaxed);
+
+        assert_eq!(
+            after_shutdown, at_shutdown,
+            "a refresh fired after shutdown was signalled"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_never_fires_when_shutdown_is_already_signalled() {
+        let (shutdown, mut shutdown_rx) = watch::channel(false);
+        let ticks = Arc::new(AtomicU64::new(0));
+        let counted = ticks.clone();
+        shutdown.send(true).expect("shutdown before the first tick");
+        refresh_until_shutdown(
+            DESCRIPTOR_REFRESH_INTERVAL / TEST_TIME_SCALE,
+            &mut shutdown_rx,
+            move || {
+                counted.fetch_add(1, Ordering::Relaxed);
+            },
+        )
+        .await;
+        assert_eq!(ticks.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_failed_publication_removes_only_the_copies_this_process_wrote() {
+        // Regression, both directions. Returning on the first failed path left
+        // a valid-looking descriptor advertising a port that was dropped on the
+        // next line; the other branch removed all three copies, including ones
+        // a live instance had published to the shared mirror paths.
+        let directory = scratch_directory("partial");
+        let mine = directory.join(STATE_FILE_NAME);
+        // `create_dir_all` cannot make a directory where a file already is.
+        let blocker = directory.join("blocked");
+        fs::write(&blocker, b"not a directory").expect("blocker");
+        let unwritable = blocker.join(STATE_FILE_NAME);
+        let another_instance = directory.join("other").join(STATE_FILE_NAME);
+        fs::create_dir_all(another_instance.parent().expect("other parent")).expect("other dir");
+        fs::write(&another_instance, b"{\"bearerToken\":\"live-elsewhere\"}").expect("other");
+
+        let error = publish_all_or_nothing(
+            &test_descriptor("token"),
+            &[mine.clone(), unwritable, another_instance.clone()],
+        )
+        .expect_err("a path that cannot be created must fail the publication");
+
+        let mine_remains = mine.exists();
+        let other_remains = fs::read(&another_instance).expect("other bytes");
+        let _ = fs::remove_dir_all(&directory);
+        assert!(error.contains("local MCP state directory"), "{error}");
+        assert!(
+            !mine_remains,
+            "a half-published descriptor advertises a port nothing will listen on"
+        );
+        assert_eq!(
+            other_remains, b"{\"bearerToken\":\"live-elsewhere\"}",
+            "a failed publication deleted a descriptor this process never wrote"
+        );
+    }
+
+    #[test]
+    fn a_complete_publication_writes_every_copy() {
+        let directory = scratch_directory("complete");
+        let paths = vec![
+            directory.join(STATE_FILE_NAME),
+            directory.join("second").join(STATE_FILE_NAME),
+            directory.join("claude").join(STATE_FILE_NAME),
+        ];
+        publish_all_or_nothing(&test_descriptor("token"), &paths).expect("publication");
+        let published: Vec<bool> = paths.iter().map(|path| path.exists()).collect();
+        remove_published_descriptors(&paths, "instance");
+        let removed: Vec<bool> = paths.iter().map(|path| path.exists()).collect();
+        let _ = fs::remove_dir_all(&directory);
+        assert_eq!(published, vec![true, true, true]);
+        assert_eq!(removed, vec![false, false, false]);
+    }
+
+    #[test]
+    fn a_stop_closes_the_port_and_removes_every_descriptor_it_published() {
+        // The descriptor outliving the process is what makes clients dial dead
+        // ports: two were found on disk from separate app runs, because
+        // `Drop` never ran and no `RunEvent::Exit` handler existed.
+        let directory = scratch_directory("lifecycle");
+        let paths = vec![
+            directory.join(STATE_FILE_NAME),
+            directory.join("mirror").join(STATE_FILE_NAME),
+        ];
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(true),
+        });
+        let (_access_tx, access_rx) = watch::channel(AccessMode::Full);
+        let listener = start_listener(paths.clone(), adapter, access_rx).expect("listener");
+
+        let published: Vec<bool> = paths.iter().map(|path| path.exists()).collect();
+        let address = format!("127.0.0.1:{}", listener.port);
+        let served = std::net::TcpStream::connect(&address).is_ok();
+        listener.stop();
+        let remaining: Vec<bool> = paths.iter().map(|path| path.exists()).collect();
+        let refused = std::net::TcpStream::connect(&address).is_err();
+        let _ = fs::remove_dir_all(&directory);
+
+        assert_eq!(published, vec![true, true]);
+        assert!(
+            served,
+            "the descriptor was published before the port answered"
+        );
+        assert_eq!(
+            remaining,
+            vec![false, false],
+            "a stopped app left a descriptor pointing at a port it no longer owns"
+        );
+        assert!(refused, "the listener is still accepting after a stop");
+    }
+
+    #[test]
+    fn a_second_instance_does_not_take_over_a_live_instances_descriptor() {
+        // The GUI now has an application-level single-instance guard, but the
+        // listener must still arbitrate races with the headless bridge and
+        // direct hosts. A second publisher must not bind its own ephemeral
+        // port, mint its own token, or overwrite the live descriptor.
+        let directory = scratch_directory("second-instance");
+        let paths = vec![
+            directory.join(STATE_FILE_NAME),
+            directory.join("mirror").join(STATE_FILE_NAME),
+        ];
+        let first_adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(true),
+        });
+        let (_first_access_tx, first_access_rx) = watch::channel(AccessMode::Full);
+        let first = start_listener(paths.clone(), first_adapter, first_access_rx)
+            .expect("the first instance publishes");
+        let published = fs::read(&paths[0]).expect("the first instance's descriptor");
+        // Each copy carries its own publication timestamp, so the mirror is
+        // compared against its own bytes rather than against the primary's.
+        let published_mirror = fs::read(&paths[1]).expect("the first instance's mirrored copy");
+
+        let second_adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(true),
+        });
+        let (_second_access_tx, second_access_rx) = watch::channel(AccessMode::Full);
+        let second = start_listener(paths.clone(), second_adapter, second_access_rx);
+        let failure = second.err();
+
+        let after = fs::read(&paths[0]).expect("the descriptor after a second start");
+        let mirror = fs::read(&paths[1]).expect("the mirrored descriptor after a second start");
+        let first_still_answers =
+            std::net::TcpStream::connect(format!("127.0.0.1:{}", first.port)).is_ok();
+        first.stop();
+        let _ = fs::remove_dir_all(&directory);
+
+        assert_eq!(
+            after, published,
+            "a second instance overwrote the descriptor a live instance is serving, so every paired client migrates to it"
+        );
+        assert_eq!(
+            mirror, published_mirror,
+            "a second instance overwrote a mirrored copy the live instance published"
+        );
+        let failure = failure.expect(
+            "a second instance started serving as the published endpoint while another one already was",
+        );
+        assert!(
+            failure.served_by_another_instance,
+            "the refusal is not distinguishable from an ordinary start-up failure: {}",
+            failure.message
+        );
+        assert!(
+            failure.message.contains("Another copy of QC Remote"),
+            "lastError does not say what happened: {}",
+            failure.message
+        );
+        assert!(
+            first_still_answers,
+            "the first instance stopped answering, so this test proves nothing about the descriptor"
+        );
+    }
+
+    #[test]
+    fn a_descriptor_whose_owner_is_gone_never_locks_a_fresh_start_out() {
+        // The trap in guarding publication: a crashed instance leaves a
+        // descriptor that is still inside the reader's 150s window and still
+        // names a plausible pid. Refusing on either of those would keep the
+        // app from ever starting again for two and a half minutes.
+        let directory = scratch_directory("owner-gone");
+        let path = directory.join(STATE_FILE_NAME);
+        let dead_port = {
+            let bound = StdTcpListener::bind("127.0.0.1:0").expect("a port to abandon");
+            bound.local_addr().expect("abandoned address").port()
+        };
+        descriptor_for_port(dead_port, "an-instance-that-crashed")
+            .publish(&path)
+            .expect("the crashed instance's descriptor");
+
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(true),
+        });
+        let listener = start_listener(vec![path.clone()], adapter, full_access());
+        let outcome = listener
+            .as_ref()
+            .err()
+            .map(|failure| failure.message.clone());
+        let republished = listener
+            .as_ref()
+            .ok()
+            .map(|listener| (listener.instance_id.clone(), published_instance(&path)));
+        if let Ok(listener) = listener {
+            listener.stop();
+        }
+        let _ = fs::remove_dir_all(&directory);
+
+        assert_eq!(outcome, None, "a dead owner blocked a fresh start");
+        let (started, on_disk) = republished.expect("the fresh instance published");
+        assert_eq!(
+            on_disk, started,
+            "the fresh instance did not take the descriptor over from the dead one"
+        );
+    }
+
+    #[test]
+    fn an_expired_or_unreadable_descriptor_is_republished() {
+        let directory = scratch_directory("expired-or-unreadable");
+        let expired = directory.join(STATE_FILE_NAME);
+        let unreadable = directory.join("unreadable").join(STATE_FILE_NAME);
+        fs::create_dir_all(unreadable.parent().expect("parent")).expect("unreadable directory");
+        // Published 200s ago against the readers' 150s allowance: a client
+        // would already be ignoring it.
+        descriptor_for_port(41000, "an-instance-that-stopped-refreshing")
+            .publish_at(&expired, unix_time_ms().saturating_sub(200_000))
+            .expect("expired descriptor");
+        fs::write(&unreadable, b"{ this is not a descriptor").expect("unreadable descriptor");
+
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(true),
+        });
+        let listener = start_listener(
+            vec![expired.clone(), unreadable.clone()],
+            adapter,
+            full_access(),
+        );
+        let refused = listener
+            .as_ref()
+            .err()
+            .map(|failure| failure.message.clone());
+        let republished = listener.as_ref().ok().map(|listener| {
+            (
+                listener.instance_id.clone(),
+                published_instance(&expired),
+                published_instance(&unreadable),
+            )
+        });
+        if let Ok(listener) = listener {
+            listener.stop();
+        }
+        let _ = fs::remove_dir_all(&directory);
+
+        assert_eq!(refused, None, "a stale file locked a fresh start out");
+        let (started, expired_now, unreadable_now) = republished.expect("the fresh instance");
+        assert_eq!(expired_now, started);
+        assert_eq!(unreadable_now, started);
+    }
+
+    #[test]
+    fn a_stranger_on_the_recycled_port_does_not_hold_the_descriptor() {
+        // Windows hands the ephemeral port out again, so "something is
+        // listening there" is not evidence that QC Remote is. Only an answer
+        // carrying the descriptor's own instance id is.
+        let directory = scratch_directory("recycled-port");
+        let path = directory.join(STATE_FILE_NAME);
+        let stranger = StdTcpListener::bind("127.0.0.1:0").expect("a stranger's port");
+        let port = stranger.local_addr().expect("stranger address").port();
+        let accepting = std::thread::spawn(move || {
+            // Accept and drop: a connection succeeds, no QC Remote answers.
+            let _ = stranger.accept();
+        });
+        descriptor_for_port(port, "an-instance-that-is-gone")
+            .publish(&path)
+            .expect("descriptor naming the recycled port");
+
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+            ready: AtomicBool::new(true),
+        });
+        let listener = start_listener(vec![path.clone()], adapter, full_access());
+        let refused = listener
+            .as_ref()
+            .err()
+            .map(|failure| failure.message.clone());
+        let republished = listener
+            .as_ref()
+            .ok()
+            .map(|listener| (listener.instance_id.clone(), published_instance(&path)));
+        if let Ok(listener) = listener {
+            listener.stop();
+        }
+        let _ = accepting.join();
+        let _ = fs::remove_dir_all(&directory);
+
+        assert_eq!(
+            refused, None,
+            "an unrelated listener on the recycled port blocked a fresh start"
+        );
+        let (started, on_disk) = republished.expect("the fresh instance published");
+        assert_eq!(on_disk, started);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_connection_test_makes_one_read_only_call_and_names_what_it_found() {
+        let directory = scratch_directory("connection-test");
+        let paths = vec![directory.join(STATE_FILE_NAME)];
+        let adapter = Arc::new(RecordingAdapter::new(true));
+        let listener =
+            start_listener(paths.clone(), adapter.clone(), full_access()).expect("listener");
+        let status = running_status(&listener.instance_id);
+
+        let outcome = probe_local_mcp(&paths, &status, unix_time_ms()).await;
+        let calls = adapter.calls();
+        listener.stop();
+        let _ = fs::remove_dir_all(&directory);
+
+        assert_eq!(outcome.state, LocalMcpTestState::Ready);
+        assert_eq!(
+            outcome.preset_name.as_deref(),
+            Some("Rehearsal Clean"),
+            "success has to be specific enough to be believed"
+        );
+        assert_eq!(
+            calls,
+            vec!["system.status".to_owned()],
+            "a connection test must be one read-only call, and nothing that touches the device"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_connection_test_separates_the_faults_that_have_different_remedies() {
+        let directory = scratch_directory("connection-test-faults");
+        let paths = vec![directory.join(STATE_FILE_NAME)];
+
+        let off = probe_local_mcp(
+            &paths,
+            &LocalAccessStatus {
+                enabled: false,
+                ..running_status("this-instance")
+            },
+            unix_time_ms(),
+        )
+        .await;
+        let nothing_published =
+            probe_local_mcp(&paths, &running_status("this-instance"), unix_time_ms()).await;
+
+        let adapter = Arc::new(RecordingAdapter::new(false));
+        let listener =
+            start_listener(paths.clone(), adapter.clone(), full_access()).expect("listener");
+        let status = running_status(&listener.instance_id);
+        let no_device = probe_local_mcp(&paths, &status, unix_time_ms()).await;
+        let another_copy = probe_local_mcp(
+            &paths,
+            &running_status("a-different-copy-of-the-app"),
+            unix_time_ms(),
+        )
+        .await;
+
+        // A descriptor whose credential no longer matches the listener: the
+        // shape a rotated token leaves behind.
+        let published: Value =
+            serde_json::from_slice(&fs::read(&paths[0]).expect("descriptor")).expect("descriptor");
+        let mut rotated = published.clone();
+        rotated["bearerToken"] = Value::String("R".repeat(43));
+        fs::write(&paths[0], serde_json::to_vec(&rotated).expect("rotated")).expect("rotate");
+        let rejected = probe_local_mcp(&paths, &status, unix_time_ms()).await;
+
+        // The app is gone but its descriptor is still fresh: what a crash
+        // leaves for the next 150 seconds.
+        listener.stop();
+        fs::write(
+            &paths[0],
+            serde_json::to_vec(&published).expect("republished"),
+        )
+        .expect("republish");
+        let gone = probe_local_mcp(&paths, &status, unix_time_ms()).await;
+        let calls = adapter.calls();
+        let _ = fs::remove_dir_all(&directory);
+
+        assert_eq!(off.state, LocalMcpTestState::Disabled);
+        assert_eq!(nothing_published.state, LocalMcpTestState::NotPublished);
+        assert_eq!(no_device.state, LocalMcpTestState::DeviceNotConnected);
+        assert_eq!(another_copy.state, LocalMcpTestState::ServedByAnotherCopy);
+        assert_eq!(rejected.state, LocalMcpTestState::Unauthorized);
+        assert_eq!(gone.state, LocalMcpTestState::NotAnswering);
+        assert!(
+            no_device.preset_name.is_none(),
+            "a preset name without a device would be a stale reading"
+        );
+        assert_eq!(
+            calls.len(),
+            2,
+            "only the two tests that reached a running app should have called the device: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn the_connection_test_keeps_the_names_the_panel_switches_on() {
+        // The panel maps each of these to a different sentence with a
+        // different next action. A renamed variant would fall through to its
+        // default branch and report "not answering" for a state that is
+        // nothing of the kind, which is how this feature got its reputation.
+        let wire: Vec<String> = [
+            LocalMcpTestState::Disabled,
+            LocalMcpTestState::NotPublished,
+            LocalMcpTestState::NotAnswering,
+            LocalMcpTestState::Unauthorized,
+            LocalMcpTestState::ServedByAnotherCopy,
+            LocalMcpTestState::DeviceNotConnected,
+            LocalMcpTestState::Ready,
+        ]
+        .iter()
+        .map(|state| {
+            serde_json::to_value(state)
+                .expect("state")
+                .as_str()
+                .expect("a string variant")
+                .to_owned()
+        })
+        .collect();
+        assert_eq!(
+            wire,
+            vec![
+                "disabled",
+                "notPublished",
+                "notAnswering",
+                "unauthorized",
+                "servedByAnotherCopy",
+                "deviceNotConnected",
+                "ready"
+            ]
+        );
+
+        let result = serde_json::to_value(local_test_result(
+            LocalMcpTestState::Ready,
+            Some("Rehearsal Clean".into()),
+            Some("a diagnosis".into()),
+        ))
+        .expect("result");
+        assert_eq!(result["state"], "ready");
+        assert_eq!(result["presetName"], "Rehearsal Clean");
+        assert_eq!(result["detail"], "a diagnosis");
+        assert!(
+            result["appVersion"]
+                .as_str()
+                .is_some_and(|version| version.contains('.')),
+            "the panel interpolates appVersion into the sentence it shows on success"
+        );
+
+        let displaced = serde_json::to_value(LocalAccessStatus {
+            served_by_another_instance: true,
+            ..LocalAccessStatus::default()
+        })
+        .expect("status");
+        assert_eq!(displaced["servedByAnotherInstance"], true);
+    }
+
+    #[test]
+    fn local_mcp_is_on_until_this_user_turns_it_off() {
+        let directory = scratch_directory("preference");
+        let path = directory.join(ENABLED_FILE_NAME);
+        let fresh_install = load_enabled(&path);
+        store_enabled(&path, false).expect("store off");
+        let after_off = load_enabled(&path);
+        store_enabled(&path, true).expect("store on");
+        let after_on = load_enabled(&path);
+        fs::write(&path, b"{ this is not json").expect("corrupt preference");
+        let after_corruption = load_enabled(&path);
+        let _ = fs::remove_dir_all(&directory);
+
+        assert!(fresh_install, "local MCP must ship on");
+        assert!(!after_off, "the off switch did not survive a reload");
+        assert!(after_on);
+        assert!(
+            after_corruption,
+            "an unreadable preference must not silently opt a user out"
+        );
+    }
+
+    /// The background host inside `qc-device-broker.exe`, with no MCP client
+    /// attached: its gateway is detached, and its broker is a probe answering
+    /// what the in-process broker's cached session would.
+    fn detached_host(
+        answer: impl Fn() -> crate::local_stdio::BrokerDeviceReadiness + Send + Sync + 'static,
+    ) -> crate::local_stdio::HeadlessDeviceAdapter {
+        let adapter = crate::local_stdio::HeadlessDeviceAdapter::new(
+            std::env::temp_dir().join(format!(
+                "qc-health-readiness-unused-{}.json",
+                rand::random::<u64>()
+            )),
+            false,
+        )
+        .with_broker_readiness(Arc::new(answer));
+        // What the background host does on every tick with no client.
+        adapter.release_when_unused();
+        assert!(!adapter.gateway_attached());
+        adapter
+    }
+
+    async fn health_of(adapter: &crate::local_stdio::HeadlessDeviceAdapter) -> (StatusCode, Value) {
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(adapter.clone());
+        let (_access_tx, access_rx) = watch::channel(AccessMode::Full);
+        let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+            adapter: adapter.clone(),
+            access: access_rx,
+        });
+        let router = local_router(
+            backend,
+            LocalHealth {
+                adapter,
+                instance_id: Arc::from("test-instance"),
+                tool_contract_sha256: Arc::from(tool_contract_sha256()),
+                process_id: 42,
+            },
+            Arc::from("test-token"),
+            allowed_hosts(41000),
+        );
+        let response = router
+            .oneshot(health_request(Some("test-token")))
+            .await
+            .expect("health response");
+        let status = response.status();
+        let body = serde_json::from_slice(
+            &to_bytes(response.into_body(), 16 * 1024)
+                .await
+                .expect("health body"),
+        )
+        .expect("health JSON");
+        (status, body)
+    }
+
+    /// The defect: with no MCP client attached the background host's gateway
+    /// is detached, and `/health` answered from its cleared `connected` flag -
+    /// 503 `device_not_ready` while the broker held a ready Quad Cortex. It
+    /// answers from the broker now, and reading it attaches nothing.
+    #[tokio::test]
+    async fn a_detached_host_reports_the_brokers_ready_device_as_ready() {
+        use crate::local_stdio::{BrokerDeviceReadiness, HostReadiness};
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = reads.clone();
+        let adapter = detached_host(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            BrokerDeviceReadiness::Ready
+        });
+        assert!(adapter.ready().await);
+        assert_eq!(adapter.readiness().await, HostReadiness::Ready);
+        let (status, body) = health_of(&adapter).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["deviceReady"], true);
+        assert_eq!(body["appReady"], true);
+        assert!(body.get("reason").is_none(), "{body}");
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            3,
+            "each probe asked the broker"
+        );
+        assert!(
+            !adapter.gateway_attached(),
+            "a readiness read attached the gateway to the broker"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_detached_host_reports_the_brokers_closed_session_as_not_ready() {
+        use crate::local_stdio::{BrokerDeviceReadiness, HostReadiness};
+        let adapter = detached_host(|| BrokerDeviceReadiness::NotReady {
+            phase: "disconnected".into(),
+        });
+        assert!(!adapter.ready().await);
+        let HostReadiness::NotReady(reason) = adapter.readiness().await else {
+            panic!("ready");
+        };
+        assert!(reason.contains("disconnected"), "{reason}");
+        let (status, body) = health_of(&adapter).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["deviceReady"], false);
+        assert_eq!(body["code"], "LOCAL_UNAVAILABLE");
+        assert_eq!(body["reason"], "device_not_ready");
+        assert!(!adapter.gateway_attached());
+    }
+
+    /// An unreachable broker, a broker that cannot read its device phase, a
+    /// wedged read and a failed read each answer not ready with a reason,
+    /// promptly, and none of them attaches or opens anything.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreadable_broker_answers_not_ready_promptly_and_opens_nothing() {
+        use crate::local_stdio::{BrokerDeviceReadiness, HostReadiness};
+        let unavailable = detached_host(|| BrokerDeviceReadiness::Unavailable {
+            reason: "the device broker is shutting down".into(),
+        });
+        assert_eq!(
+            unavailable.readiness().await,
+            HostReadiness::NotReady("the device broker is shutting down".into())
+        );
+        let (status, body) = health_of(&unavailable).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["reason"], "device_not_ready");
+
+        let failing = detached_host(|| panic!("the broker's status could not be read"));
+        let HostReadiness::NotReady(reason) = failing.readiness().await else {
+            panic!("ready");
+        };
+        assert!(reason.contains("failed"), "{reason}");
+        let (status, _) = health_of(&failing).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+        // The first read wedges until released; later reads answer at once.
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(Some(release_rx));
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = probes.clone();
+        let wedged = detached_host(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            if let Some(release) = release_rx.lock().unwrap().take() {
+                let _ = release.recv_timeout(Duration::from_secs(30));
+            }
+            BrokerDeviceReadiness::Ready
+        });
+        let started = std::time::Instant::now();
+        let HostReadiness::NotReady(reason) = wedged.readiness().await else {
+            panic!("a wedged broker read answered ready");
+        };
+        assert!(reason.contains("did not answer"), "{reason}");
+        assert!(started.elapsed() < Duration::from_secs(5), "the read hung");
+        // Later reads join the wedged one, whose budget is already spent, so
+        // they answer at once and never start a second blocking read.
+        let started = std::time::Instant::now();
+        let HostReadiness::NotReady(reason) = wedged.readiness().await else {
+            panic!("ready while a read is wedged");
+        };
+        assert!(reason.contains("did not answer"), "{reason}");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a read joined past the deadline waited"
+        );
+        let (status, _) = health_of(&wedged).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(probes.load(Ordering::SeqCst), 1, "a wedged read piled up");
+        release_tx.send(()).expect("release");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while wedged.readiness().await != HostReadiness::Ready {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the read never cleared"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        for adapter in [&unavailable, &failing, &wedged] {
+            assert!(!adapter.gateway_attached(), "a readiness read attached");
+        }
+    }
+
+    /// The relay's `DeviceFrame::Ready { usb_connected }` is
+    /// `timeout(.., adapter.ready())` through the `DeviceAdapter` trait on
+    /// every one-second tick (qc-relay-client, pinned there by
+    /// `the_ready_frame_follows_readiness_changes_with_no_other_event`). Read
+    /// the same way here, a detached host follows the broker both ways with
+    /// no client and no event in between.
+    #[tokio::test]
+    async fn the_relay_readiness_of_a_detached_host_follows_the_broker() {
+        use crate::local_stdio::BrokerDeviceReadiness;
+        let open = Arc::new(AtomicBool::new(true));
+        let session = open.clone();
+        let host: Arc<dyn DeviceAdapter> = Arc::new(detached_host(move || {
+            if session.load(Ordering::SeqCst) {
+                BrokerDeviceReadiness::Ready
+            } else {
+                BrokerDeviceReadiness::NotReady {
+                    phase: "disconnected".into(),
+                }
+            }
+        }));
+        for expected in [true, false, true] {
+            open.store(expected, Ordering::SeqCst);
+            let usb_connected = tokio::time::timeout(Duration::from_secs(10), host.ready())
+                .await
+                .unwrap_or(false);
+            assert_eq!(usb_connected, expected);
+        }
+    }
+
+    /// Records, for every device call it receives, whether that call was
+    /// served as an MCP resource read.
+    struct OriginRecordingAdapter {
+        origins: Mutex<Vec<(String, bool)>>,
+    }
+
+    #[async_trait]
+    impl DeviceAdapter for OriginRecordingAdapter {
+        async fn ready(&self) -> bool {
+            true
+        }
+
+        async fn invoke(&self, method: &str, _params: Value) -> Result<Value, DeviceError> {
+            self.origins
+                .lock()
+                .unwrap()
+                .push((method.to_owned(), qc_remote_mcp::serving_resource_read()));
+            Ok(serde_json::json!({}))
+        }
+    }
+
+    /// `/rpc` serves a relayed resource read inside the same
+    /// scope the host's own resource reads run in, so its gateway uses only
+    /// the broker connection it holds. Only behind the bearer check, only
+    /// for a method a resource uses, and only with the exact value; anything
+    /// else is handled as before, and the marker can only narrow a request.
+    #[tokio::test]
+    async fn the_resource_read_origin_is_honoured_only_behind_auth_for_resource_methods() {
+        let adapter = Arc::new(OriginRecordingAdapter {
+            origins: Mutex::new(Vec::new()),
+        });
+        let (_access_tx, access_rx) = watch::channel(AccessMode::Full);
+        let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+            adapter: adapter.clone(),
+            access: access_rx,
+        });
+        let router = local_router(
+            backend,
+            LocalHealth {
+                adapter: adapter.clone(),
+                instance_id: Arc::from("test-instance"),
+                tool_contract_sha256: Arc::from(tool_contract_sha256()),
+                process_id: 42,
+            },
+            Arc::from("test-token"),
+            allowed_hosts(41000),
+        );
+        let marked = |rpc: &str, token: Option<&str>, value: &str| {
+            let mut request = rpc_request(rpc, token);
+            request
+                .headers_mut()
+                .insert(REQUEST_ORIGIN_HEADER, value.parse().unwrap());
+            request
+        };
+        let resource_rpc = qc_remote_mcp::resource_rpcs()
+            .into_iter()
+            .map(|(_, rpc)| rpc)
+            .find(|rpc| *rpc != "system.status")
+            .expect("a resource rpc that is also a tool's");
+
+        for request in [
+            marked(resource_rpc, Some("test-token"), RESOURCE_READ_ORIGIN),
+            rpc_request(resource_rpc, Some("test-token")),
+            marked("device.setTempo", Some("test-token"), RESOURCE_READ_ORIGIN),
+            marked(resource_rpc, Some("test-token"), "tool-call"),
+        ] {
+            assert_eq!(
+                router.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::OK
+            );
+        }
+        let refused = router
+            .clone()
+            .oneshot(marked(resource_rpc, None, RESOURCE_READ_ORIGIN))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+
+        assert_eq!(
+            *adapter.origins.lock().unwrap(),
+            vec![
+                (resource_rpc.to_owned(), true),
+                (resource_rpc.to_owned(), false),
+                ("device.setTempo".to_owned(), false),
+                (resource_rpc.to_owned(), false),
+            ]
+        );
+    }
+}

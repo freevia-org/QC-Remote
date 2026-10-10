@@ -1,0 +1,59 @@
+QC Remote reference-material terms
+SPDX identifier: LicenseRef-QC-Remote-Reference
+
+These terms define the SPDX identifier LicenseRef-QC-Remote-Reference used
+in QC Remote's package metadata, in the expression
+"(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference". That expression
+means: the package's original code is licensed under MIT OR Apache-2.0, and
+the package also contains or embeds files covered by these terms instead.
+
+1. Files covered
+
+These terms cover the files listed, by path or by a glob matching whole
+files, in Schedule A and Schedule B of the LICENSE file at the root of the
+QC Remote source repository, and any copy of those files that a build
+produces or embeds. No file is covered only in part. Every file that is not
+listed is QC Remote's original work, licensed under MIT OR Apache-2.0 as the
+LICENSE file describes.
+
+2. Schedule A: device-derived and third-party-sourced files
+
+Schedule A files describe, measure, or transcribe the Neural DSP Quad
+Cortex, its CorOS software, and Neural DSP's published documentation: names,
+text, values, catalogues, and geometry that originate with Neural DSP
+Technologies Oy or other third parties, not with Freevia EOOD.
+
+They are included for interoperability and reference only. Freevia EOOD
+grants no license to them and claims no ownership of them; whatever
+rights subsist in them remain with their respective owners. Their inclusion
+is not a statement that any owner has authorized it. Whether a particular
+use is permitted, for example under interoperability, quotation, or fair-use
+provisions of applicable law, is for the person making the use to determine.
+
+3. Schedule B: screen reconstructions and device depictions
+
+Schedule B files reconstruct the layout, colours, and iconography of CorOS
+screens, or depict Quad Cortex hardware, so that QC Remote's control surface
+corresponds to the device it controls. They are licensed under
+MIT OR Apache-2.0 only to the extent of Freevia EOOD's own
+expression. No license is granted in Neural DSP's screen designs, user
+interface, iconography, product design, or trade dress, which these files
+describe but which Freevia EOOD does not own.
+
+4. No warranty and no liability
+
+The covered files are provided "AS IS", without warranty of any kind,
+express or implied, including the warranties of merchantability, fitness for
+a particular purpose, title, and non-infringement. In no event shall
+Freevia EOOD or the QC Remote contributors be liable for any claim,
+damages, or other liability arising from, out of, or in connection with the
+covered files or their use, on the same terms as Sections 7 and 8 of the
+Apache License, Version 2.0 and the warranty disclaimer of the MIT License.
+
+5. Trademarks
+
+These terms grant no right to use any trademark. Neural DSP, Quad Cortex®,
+CorOS, Cortex Control, and the other names listed in TRADEMARKS.md belong to
+their owners and are used only to identify compatibility. QC Remote is an
+independent, unofficial project, not affiliated with, authorized, sponsored,
+endorsed, or supported by Neural DSP Technologies Oy.

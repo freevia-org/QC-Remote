@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "protocolVersion": "qc-relay.v1",
+  "devicePairPath": "/v1/device/pair",
+  "deviceConnectPath": "/v1/device/connect",
+  "deviceRevokePath": "/v1/device/revoke",
+  "deviceRosterPath": "/v1/device/roster",
+  "deviceConnectorsPath": "/v1/device/connectors",
+  "credentialTtlDays": 90,
+  "maximumInvokeDeadlineMs": 1800000,
+  "hostApprovalTimeoutMs": 120000,
+  "removedIdentifierFields": [
+    "devicename",
+    "serial",
+    "serialnumber",
+    "deviceserial"
+  ],
+  "pairingCodeMinimumLength": 6,
+  "pairingCodeMaximumLength": 128,
+  "minimumCredentialLength": 24,
+  "maxRequestFrameBytes": 65536,
+  "maxResultFrameBytes": 16777216,
+  "completedRequestCacheSize": 512,
+  "readinessIntervalMs": 1000,
+  "readinessGraceMs": 1500,
+  "androidPingIntervalMs": 25000,
+  "maximumFailureCount": 10,
+  "maximumBackoffExponent": 6,
+  "maximumBackoffSeconds": 60,
+  "backoffJitterMs": 1000,
+  "errorTexts": {
+    "INVALID_REQUEST_TEXT": "Invalid relay request.",
+    "INVALID_REQUEST_ID_TEXT": "The request identifier is invalid.",
+    "REPLAYED_REQUEST_TEXT": "This request identifier was already processed.",
+    "METHOD_NOT_ALLOWED_TEXT": "The requested method is not in the generated remote action contract.",
+    "ACCESS_MODE_RESTRICTED_TEXT": "The requested operation is outside this host's remote access mode.",
+    "MESSAGE_TOO_LARGE_TEXT": "message too large",
+    "BINARY_UNSUPPORTED_TEXT": "binary messages are not supported"
+  },
+  "pairingOwnerPolicy": {
+    "rejectedCredentialBypass": true,
+    "rejectionHttpStatuses": [
+      401,
+      403
+    ],
+    "rejectionCloseCodes": [
+      4001,
+      4003
+    ],
+    "rules": [
+      {
+        "when": "different-known-owner",
+        "code": "PAIRING_OWNER_CHANGED"
+      },
+      {
+        "when": "missing-incoming-owner",
+        "code": "PAIRING_OWNER_UNVERIFIED"
+      },
+      {
+        "when": "missing-held-owner",
+        "code": "PAIRING_OWNER_UNKNOWN"
+      }
+    ]
+  },
+  "deviceReplacementPath": "/v1/device/pair/replace-v1",
+  "replacementAckQueryParameter": "replacementAck",
+  "replacementAckFrameType": "replacement_ack",
+  "accountDeletionWebPath": "/account/delete",
+  "accountDeletionInformationUrl": "https://freevia.org/qcremote/account/delete/"
+}

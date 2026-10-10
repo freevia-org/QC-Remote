@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    // Relative imports carry their .ts extension so the worker's own modules
+    // can be imported by the node:test suites that exercise them, instead of
+    // being asserted about as source text.
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["worker-configuration.d.ts", "src/**/*.ts"]
+}

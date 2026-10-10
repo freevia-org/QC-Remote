@@ -1,0 +1,6 @@
+@scope (.qc-screen-fixture-root) {
+  .coros-looper > header button:disabled { opacity: 1; cursor: default; }
+  .coros-looper .looper-status-refresh { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); border: 0; }
+  .coros-looper .looper-status-refresh:focus-visible { position: fixed; z-index: 20; left: 8px; top: 8px; width: auto; height: auto; padding: 8px 12px; clip: auto; clip-path: none; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+  .coros-looper .looper-refresh-a11y { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); }
+}

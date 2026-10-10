@@ -1,0 +1,140 @@
+@scope (.qc-screen-fixture-root) {
+.device-browser-official, .device-browser-official * { box-sizing: border-box; font-family: var(--qc-font-device-plain); }
+.device-browser-official:not(.is-plugins),
+.device-browser-official:not(.is-plugins) * { font-family: var(--qc-font-device-plain); }
+.qc-screen.device-browser-official { position: absolute; inset: 0; display: grid; grid-template-columns: 50% 50%; grid-template-rows: 100%; overflow: hidden; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); container-type: inline-size; }
+.device-browser-official > main { grid-column: 1; grid-row: 1; display: grid; grid-template-columns: 12.875cqw 37.125cqw; grid-template-rows: 100%; overflow: hidden; background: var(--qc-screen-surface-raised); }
+/* Both browser screens put the first category plate at y 15 and every
+   plate's left edge at x 19: a 64px plate centred in the 78px row, so the
+   list inset is 8px. 1.125cqw was 9 and 8.25cqw made the plate 66. */
+.device-browser-official nav { padding-top: 8px; }
+.device-browser-official nav button { width: 100%; height: 9.75cqw; display: grid; align-items: center; justify-items: start; padding-left: 16px; border: 0; background: var(--qc-transparent); color: var(--qc-icon-primary); }
+/* The selected plate in both browsers is a 70px rounded black square at x 16,
+   its accent drawn as a 2px ring 3px inside it - x 19-82, y 93-156 on the amp
+   browser's second row. 8.25cqw made the box 66 and painted the accent as the
+   box's own border, so the 3px black surround was missing entirely. */
+.device-browser-official nav i { width: 70px; height: 70px; display: grid; place-items: center; border: 3px solid var(--qc-transparent); border-radius: 14px; }
+.device-browser-official nav button.is-active i { border-color: var(--qc-screen-background); background: var(--qc-palette-102818); box-shadow: inset 0 0 0 2px var(--qc-palette-ff3037); }
+.device-browser-official:not(.is-plugins) nav button { color: var(--qc-icon-primary); }
+.device-browser-official:not(.is-plugins) nav button.is-active i { background: var(--qc-screen-surface-base); box-shadow: inset 0 0 0 2px var(--qc-palette-ff2421); }
+.device-browser-official.is-plugins nav button.is-active i { box-shadow: inset 0 0 0 2px var(--qc-screen-accent); }
+.device-browser-official.is-plugins nav button { color: var(--qc-icon-primary); }
+/* The device draws these at 40px; a percentage-based size put every glyph on
+   a half pixel instead. */
+.device-browser-official nav svg { width: 40px; height: 40px; transform: translate(0, 1px); }
+/* Both browsers draw the same six glyphs at the same ink box - the amp and
+   the plugin browser - so the per-category scales that used to sit here -
+   all of them tuned to the 60% box - are gone rather than re-derived. */
+.device-browser-list { overflow: hidden; background: var(--qc-screen-surface-control); }
+/* The shared navigation bar's own box, declared once in qc-screen-elements.css.
+   The 7.5cqw on `.device-browser-list > button` below is the list's row
+   pitch, a separate measurement that lands on the same 60. */
+.device-browser-list header { height: var(--qc-nav-bar-height); display: flex; align-items: center; color: var(--qc-screen-text-muted); font-size: 2.25cqw; }
+.device-browser-list header button { width: 12.5cqw; height: 6.5cqw; border: 0; border-radius: 1cqw 1cqw 0 0; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-muted); font: 2cqw var(--qc-font-device-plain); }
+.device-browser-official:not(.is-plugins) .device-browser-list header button { font-family: var(--qc-font-device-plain); }
+.device-browser-official:not(.is-plugins) .device-browser-list header button { position: relative; top: .5cqw; }
+.device-browser-official:not(.is-plugins) .device-browser-list header button:nth-child(2) { margin-left: .625cqw; }
+.device-browser-list header button.is-active { background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+.device-browser-list header b { padding-left: 2cqw; font-weight: 400; }
+.device-browser-list header i { width: 8.25cqw; height: var(--qc-nav-bar-button); margin-left: auto; margin-right: 1cqw; display: grid; place-items: center; border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font-size: 3cqw; font-style: normal; }
+.device-browser-list header i svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.device-browser-list header i .qc-ui-icon-refresh { fill: currentColor; stroke: none; transform: translate(1px, -2px); }
+.device-browser-list > button { width: 100%; height: 7.5cqw; padding: 0 2cqw; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font: 2cqw var(--qc-font-device-plain); }
+.device-browser-official:not(.is-plugins) .device-browser-list > button { padding-left: 2.125cqw; font-family: var(--qc-font-device-plain); font-size: 2cqw; }
+.device-browser-list > button b { color: var(--qc-palette-f4d224); }
+.device-browser-official:not(.is-plugins) .device-browser-list > button { position: relative; top: 1px; }
+.device-browser-official.is-plugins .device-browser-list > button { padding-left: .875cqw; position: relative; top: 1px; }
+.device-browser-official.is-plugins .device-browser-list > button b { position: relative; left: -.375cqw; margin-right: 0; }
+.device-browser-official.is-plugins .device-browser-list > button b.is-placeholder { visibility: hidden; }
+.device-browser-official.is-plugins .device-browser-list header b,
+.device-browser-official.is-plugins .device-browser-list header i { position: relative; top: 1px; }
+.device-browser-official.is-plugins .device-browser-list header { background: var(--qc-screen-surface-base); color: var(--qc-palette-b0b4b0); }
+.device-browser-official.is-plugins .device-browser-list header i { background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); }
+.device-browser-official.is-plugins .device-browser-list > button { color: var(--qc-screen-text-primary); }
+.device-browser-grid { position: relative; grid-column: 2; grid-row: 1; overflow: hidden; background: var(--qc-palette-404440); color: var(--qc-palette-808880); }
+.device-browser-grid header { height: 12.5%; display: flex; justify-content: flex-end; align-items: center; gap: 3cqw; padding: 0 2cqw; font-size: 3cqw; }
+.device-browser-grid header em { margin-right: auto; margin-left: -2.25cqw; color: var(--qc-palette-a2a5a2); font-size: 9cqw; font-style: normal; transform: translateY(2.875cqw) scaleX(.55); transform-origin: left center; }
+.device-browser-grid header b { color: var(--qc-palette-b09d48); }
+.device-browser-grid header .amp-undo { position: absolute; left: 26.25cqw; }
+.device-browser-grid header > b { position: absolute; left: 32cqw; }
+.device-browser-grid header .amp-save { position: absolute; left: 38cqw; }
+.device-browser-grid header .amp-more { position: absolute; left: 45cqw; }
+.device-browser-grid header .amp-status { position: absolute; right: 1cqw; top: 0; width: 1.25cqw; height: 1.25cqw; border-radius: 50%; background: var(--qc-palette-58a364); }
+.device-browser-grid header span > svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.device-browser-grid header .plugin-undo { position: absolute; left: 26.25cqw; top: 1.25cqw; }
+.device-browser-grid header .plugin-undo svg { transform: translateX(-.7cqw) scale(1.47, 1.26); transform-origin: center; }
+.device-browser-grid header > b { position: absolute; left: 32cqw; top: 1.625cqw; width: 3cqw; height: 3cqw; display: grid; place-items: center; border-radius: .25cqw; background: var(--qc-palette-8a8244); color: var(--qc-palette-404440); font-size: 2.5cqw; }
+.device-browser-grid header .plugin-save { position: absolute; left: 38cqw; top: 1.25cqw; }
+.device-browser-grid header .plugin-more { position: absolute; left: 44.125cqw; top: 1.125cqw; }
+/* The --qc-palette-aaaeaa this named is off the device's own palette ladders
+   entirely. It is spelled without var() here on purpose: a token-usage scan
+   would otherwise count a token this scope names that way as painted.
+   The mode mark and its caption beside it are one ink, and it is a
+   bit-truncated variant of the unit's own var(--qc-palette-848a84). */
+.device-browser-grid header .plugin-mode { position: absolute; left: 32cqw; top: 7.25cqw; color: var(--qc-palette-848a84); font-size: 3cqw; }
+.device-browser-grid header .plugin-mode { display: flex; align-items: center; gap: 1.5cqw; }
+.device-browser-grid header .plugin-mode-matrix { width: 3cqw; height: 3cqw; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 1px; }
+.device-browser-grid header .plugin-mode-matrix i { width: auto; height: auto; display: grid; place-items: center; border-radius: 0; background: var(--qc-palette-848a84); color: var(--qc-palette-404440); font: 700 1.1cqw/1 var(--qc-font-device-plain); }
+.device-browser-grid header .plugin-mode svg,.device-browser-grid .amp-mode svg { width: 3cqw; height: 3cqw; fill: currentColor; stroke: none; vertical-align: middle; }
+.device-browser-grid .amp-mode { position: absolute; z-index: 2; left: 32cqw; top: 6.5cqw; width: 17cqw; height: 4.25cqw; color: var(--qc-transparent); font-size: 0; }
+.device-browser-grid main { position: absolute; inset: 12.5% 0 0; background: var(--qc-transparent) !important; }
+.device-browser-grid main::before { content: ""; position: absolute; left: 0; right: 5.5cqw; top: 10.75cqw; border-top: 2px solid var(--qc-palette-707870); }
+.device-browser-grid.is-plugins main::after,
+.device-browser-official.is-plugins .device-browser-grid main::after { content: ""; position: absolute; left: 0; right: 5.5cqw; top: 34.25cqw; border-top: 2px solid var(--qc-palette-707870); }
+/* .75cqw, not 1cqw: the unit fills the output pill x 750..793 on every row,
+   the same 44 columns the Grid fills, and 1cqw put the whole column at
+   748..791 - which is why everything centred in it, mark and route text
+   alike, landed two pixels left of the unit. */
+.device-browser-grid main i { position: absolute; right: .75cqw; width: 5.5cqw; height: 9.5cqw; display: grid; place-items: center; border-radius: 1.5cqw; background: var(--qc-palette-424742); font-size: 4cqw; font-style: normal; }
+.device-browser-official:not(.is-plugins) .device-browser-grid main i:not(:first-of-type) { background: var(--qc-palette-404840); }
+.device-browser-grid main i:first-of-type { left: 22.5cqw; right: auto; top: 6.5cqw; width: 8.75cqw; height: 8.875cqw; background: var(--qc-palette-111); }
+/* Both browsers, not only the amp one: the add tile's 8.875cqw box is a pixel
+   taller than the ink it centres, and the plugin browser shows the same cross
+   a pixel low without this. */
+.device-browser-official .device-browser-grid main i:first-of-type { transform: translateY(-.125cqw); }
+.device-browser-official:not(.is-plugins) .device-browser-grid main i:first-of-type { background: var(--qc-screen-surface-base); }
+.device-browser-official.is-plugins .device-browser-grid main i:first-of-type { top: 18.25cqw; }
+/* One row pitch for both browsers. The unit opens every port pill at the same
+   y on the amp and plugin browsers alike; the amp-only overrides that used to
+   restate these four values three pixels higher are gone, and the plugin
+   browser stops sitting three pixels low as a result. */
+.device-browser-grid main i:nth-of-type(2) { top: 6.125cqw; font-size: 1.8cqw; text-align: center; }
+.device-browser-grid main i:nth-of-type(3) { top: 17.875cqw; }
+.device-browser-grid main i:nth-of-type(4) { top: 29.625cqw; }
+.device-browser-official.is-plugins .device-browser-grid main i:nth-of-type(4) { font-size: 1.8cqw; text-align: center; }
+.device-browser-official.is-plugins .device-browser-grid main i { background: var(--qc-palette-404840); color: var(--qc-palette-808880); }
+/* The registry's box, in both browsers. `interface.add` is a 22x22 cross inside
+   a 24-unit asset box, so 24px renders it 1:1 - the amp browser used to hide the
+   icon behind `font-size: 0` (the shared `.qc-ui-icon` sizes at 1em) and redraw
+   the cross as two pseudo-element bars 3cqw long, which is 24 rather than 22. */
+.device-browser-official .device-browser-grid main i > .qc-ui-icon-add { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+/* The row ports here are the same washed ground the browser carries,
+   expressed as a bit-truncated palette value: it is `--qc-screen-mark-dimmed-browser`
+   said in the palette this file already speaks, beside
+   `--qc-palette-404840` and `--qc-palette-808880`. The add tile is excluded:
+   its ground is the base surface and stays bright. */
+.device-browser-official .device-browser-grid main i:not(:first-of-type) > .qc-ui-icon-add path { fill: var(--qc-palette-686c68); }
+.device-browser-official.is-plugins .device-browser-grid main i:first-of-type { background: var(--qc-screen-surface-base); color: var(--qc-looper-ring); }
+.device-browser-grid main i:nth-of-type(5) { top: 41.375cqw; }
+.device-browser-grid .grid-block { position: absolute; z-index: 1; top: 6.875cqw; width: 8cqw; height: 8cqw; display: grid; place-items: center; border: .25cqw solid var(--qc-palette-777); border-radius: 1.5cqw; background: var(--qc-palette-404440); color: var(--qc-palette-8b8f8b); font-size: 3.5cqw; }
+.device-browser-grid .grid-block svg { width: 70%; height: 70%; }
+.device-browser-grid .grid-block.b1 { left: 1.375cqw; border-color: var(--qc-palette-537b63); }
+.device-browser-grid .grid-block.b2 { left: 12.125cqw; border-color: var(--qc-palette-b35656); }
+.device-browser-grid .grid-block.b3 { left: 22.875cqw; }
+.device-browser-grid .grid-block.b4 { left: 33.625cqw; border-color: var(--qc-palette-70669b); }
+.device-browser-grid .grid-block.b5 { left: 1.375cqw; top: 30.5cqw; border-color: var(--qc-palette-537b63); }
+.device-browser-grid .grid-block.b6 { left: 12.125cqw; top: 30.5cqw; border-color: var(--qc-palette-4e9a89); }
+.device-browser-grid .grid-block.b7 { left: 33.625cqw; top: 30.5cqw; border-color: var(--qc-palette-a35b5b); }
+.device-browser-official.is-plugins .device-browser-grid .grid-block { background: var(--qc-palette-404440); color: var(--qc-palette-808880); }
+.device-browser-official.is-plugins .device-browser-grid .grid-block.b1 { border-color: var(--qc-palette-484840); }
+.device-browser-official.is-plugins .device-browser-grid .grid-block.b2 { border-color: var(--qc-palette-804c48); }
+.device-browser-official.is-plugins .device-browser-grid .grid-block.b3 { border-color: var(--qc-palette-686c68); }
+.device-browser-official.is-plugins .device-browser-grid .grid-block.b4 { border-color: var(--qc-palette-585880); }
+.device-browser-official.is-plugins .device-browser-grid .grid-block.b5 { border-color: var(--qc-palette-405048); }
+.device-browser-official.is-plugins .device-browser-grid .grid-block.b6 { border-color: var(--qc-palette-408878); }
+.device-browser-official.is-plugins .device-browser-grid .grid-block.b7 { border-color: var(--qc-palette-804c48); }
+
+.device-browser-grid .amp-mode > svg { position: absolute; left: 0; top: .875cqw; width: 2.875cqw; height: 2.875cqw; color: var(--qc-palette-848a84); }
+.device-browser-grid .amp-mode > span { position: absolute; left: 4.5cqw; top: .75cqw; color: var(--qc-palette-808880); font: 700 3cqw/1 var(--qc-font-device-plain); }
+
+}

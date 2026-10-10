@@ -1,0 +1,248 @@
+:root {
+  color-scheme: dark;
+  font-family: var(--qc-font-app);
+  background: var(--qc-app-canvas);
+  color: var(--qc-app-text);
+  -webkit-tap-highlight-color: var(--qc-transparent);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; min-width: 0; height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
+button, input, select { font: inherit; }
+button { touch-action: manipulation; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--qc-app-info); outline-offset: 2px; }
+
+.android-app {
+  position: relative;
+  width: 100%;
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(32px, auto);
+  padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  gap: 9px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% -20%, var(--qc-palette-222933) 0, var(--qc-transparent) 42%),
+    linear-gradient(180deg, var(--qc-palette-0b0d10), var(--qc-app-canvas-deep) 65%);
+}
+
+.mobile-header { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.connection-pills { display: flex; align-items: center; gap: 6px; }
+.mobile-brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.app-mark { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; padding: 0; border: 1px solid var(--qc-palette-3f464f); border-radius: 10px; background: linear-gradient(145deg, var(--qc-palette-242930), var(--qc-app-panel)); box-shadow: inset 0 1px var(--qc-palette-ffffff1c); cursor: pointer; }
+.app-mark img { width: 100%; height: 100%; border-radius: 9px; }
+.app-mark:focus-visible { outline: 2px solid var(--qc-palette-58df82); outline-offset: 2px; }
+.mobile-brand > span:last-child { min-width: 0; display: grid; gap: 1px; }
+.mobile-brand strong { font-size: 15px; letter-spacing: -.01em; }
+.mobile-brand small { overflow: hidden; color: var(--qc-app-text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.connection-pill { min-height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--qc-palette-33413a); border-radius: 16px; background: var(--qc-palette-121814); color: var(--qc-palette-aab5ae); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.connection-pill i { width: 6px; aspect-ratio: 1; border-radius: 50%; background: var(--qc-palette-89919a); box-shadow: none; }
+.connection-pill.phase-idle i { background: var(--qc-app-status-inactive); box-shadow: none; }
+.connection-pill.phase-available i, .connection-pill.phase-syncing i { background: var(--qc-app-status-syncing); box-shadow: 0 0 7px var(--qc-app-status-syncing); }
+.connection-pill.phase-syncing i { animation: pulse 1s infinite alternate; }
+.connection-pill.phase-ready i { background: var(--qc-app-status-ready); box-shadow: 0 0 7px var(--qc-app-status-ready); }
+.connection-pill.phase-demo { border-color: var(--qc-palette-bf85ff); color: var(--qc-palette-bf85ff); }
+.connection-pill.phase-demo i { background: var(--qc-palette-bf85ff); box-shadow: 0 0 7px var(--qc-palette-bf85ff); }
+.connection-pill.phase-action-required i { background: var(--qc-app-status-action-required); box-shadow: 0 0 7px var(--qc-app-status-action-required); }
+.connection-pill.phase-error i { background: var(--qc-app-status-error); box-shadow: 0 0 7px var(--qc-app-status-error); }
+/* The scene-editing entry point (see App.tsx's header comment): same visual
+   recipe as .connection-pill, minus the status LED, since it is not a
+   connection indicator. */
+
+.mobile-screen { position: relative; min-width: 0; overflow: visible; border-radius: 10px; box-shadow: 0 13px 30px var(--qc-palette-000b); }
+.mobile-screen > .qc-chassis {
+  width: 100%;
+  min-height: 0;
+  max-height: none;
+  aspect-ratio: 800 / 480;
+  overflow: visible;
+  border: 1px solid var(--qc-palette-35383d);
+  border-radius: 10px;
+  background: var(--qc-palette-080809);
+  box-shadow: inset 0 0 0 1px var(--qc-palette-7773), 0 4px 13px var(--qc-palette-000b);
+}
+.mobile-screen > .qc-chassis::before,
+.mobile-screen > .qc-chassis::after,
+.mobile-screen .chassis-vector-viewport,
+.mobile-screen .chassis-edge,
+.mobile-screen .master-volume,
+.mobile-screen .device-plate,
+.mobile-screen .screen-nav-control,
+.mobile-screen .footswitch-deck { display: none !important; }
+.mobile-screen .qc-screen-bezel {
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  /* Zero, like every other .qc-screen-bezel rule: the bezel is the inline-size
+     container the screens measure cqw from, and padding on a query container
+     comes out of the content box its own cq units are 1% of. The screen root is
+     absolutely positioned at inset 0, so this 2px never inset anything - it only
+     made every cqw on the phone 0.5% short. */
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: var(--qc-palette-050506);
+  box-shadow: none;
+}
+.mobile-screen .qc-screen { border-radius: 7px; }
+.mobile-screen .directory-favorites-official .directory-official-list .qc-library-icon-binoculars { translate: 0 0; }
+.mobile-screen .preset-title.is-dirty { font-style: italic; font-weight: 500; }
+.mobile-screen .preset-title-hit { right: 100px; width: auto; }
+.mobile-screen .undo-hit { left: auto; right: 75px; width: 25px; }
+.mobile-screen .scene-hit { left: auto; right: 50px; width: 25px; }
+.mobile-screen .save-hit { left: auto; right: 25px; width: 25px; }
+.mobile-screen .more-hit { left: auto; right: 0; width: 25px; }
+
+.quick-controls { min-height: 210px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(66px, 1fr)); gap: 4px 4px; padding: 7px 4px; border: 1px solid var(--qc-palette-292d32); border-radius: 13px; background: linear-gradient(155deg, var(--qc-palette-34363a), var(--qc-palette-202226)); box-shadow: inset 0 1px var(--qc-palette-ffffff24), 0 4px 12px var(--qc-palette-0007); overscroll-behavior: contain; touch-action: none; }
+.quick-controls .hardware-switch { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 60px; grid-template-rows: 14px 50px; gap: 0; color: var(--qc-palette-e9ebed); }
+.quick-controls .switch-led { position: relative; width: 10px; align-self: end; margin-bottom: 3px; overflow: hidden; border-color: var(--qc-palette-aaabae); background: var(--qc-palette-626367); box-shadow: none; }
+.quick-controls .switch-led::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--switch-accent); box-shadow: 0 0 7px var(--switch-accent); opacity: 0; }
+.quick-controls .switch-ring { width: 50px; margin: 0; border-radius: 50%; background: linear-gradient(145deg, var(--qc-palette-85878a) 0%, var(--qc-palette-5d5f63) 55%, var(--qc-palette-3e4044) 100%); box-shadow: inset 1px 1px 1px var(--qc-palette-ffffff55), inset -1px -1px 2px var(--qc-palette-20212599), 0 0 0 1px var(--qc-palette-303236); filter: drop-shadow(3px 5px 3px var(--qc-palette-17181a99)); }
+.quick-controls .switch-ring::before { content: ""; position: absolute; inset: 2.5%; border-radius: 0; clip-path: polygon(25% 4%, 75% 4%, 100% 50%, 75% 96%, 25% 96%, 0 50%); background: linear-gradient(145deg, var(--qc-palette-a5a7aa) 0%, var(--qc-palette-8d8f92) 34%, var(--qc-palette-727478) 68%, var(--qc-palette-626468) 100%); box-shadow: inset 1px 1px 1px var(--qc-palette-ffffff72), inset -1px -1px 2px var(--qc-palette-24252988), 0 0 0 1px var(--qc-palette-484a4e); }
+.quick-controls .switch-cap { position: relative; z-index: 2; width: 66%; border: 1px solid var(--qc-palette-55575b); border-radius: 50%; background: var(--qc-palette-77797d); box-shadow: inset 0 1px var(--qc-palette-ffffff30), 1px 2px 2px var(--qc-palette-1118); }
+.quick-controls .switch-ring { grid-column: 1; grid-row: 2; }
+.quick-controls .switch-label { position: relative; z-index: 5; grid-column: 1; grid-row: 2; place-self: center; left: auto; top: auto; transform: none; color: var(--qc-palette-f0f0f0); font-size: 12px; font-weight: 700; line-height: 1; letter-spacing: .03em; pointer-events: none; }
+.quick-controls .mobile-encoder-control .switch-label { font-size: 14px; font-weight: 600; }
+.quick-controls .switch-label svg { width: 13px; height: 13px; }
+.quick-controls .mobile-up-control .switch-label,
+.quick-controls .mobile-down-control .switch-label { line-height: 0; }
+.quick-controls .mobile-up-control .switch-label svg,
+.quick-controls .mobile-down-control .switch-label svg { display: block; width: 17px; height: 17px; }
+/* Both bank arrows are the phone's own chrome, not screen ink. QcUiIcon "up"
+   resolves the selector triangle's up orientation, which writes
+   reference.utilityMark onto each path as an SVG presentation
+   attribute - and a colour that only inherits loses to a declaration on the
+   element itself, so the switch label's ink never reaches them. Without this
+   pin the two arrows leave the label's var(--qc-palette-f0f0f0) for the screen
+   mark's grey. The IR step arrow and the chassis nav arrow pin the same way in
+   live-surface.css and surface-shell.css. */
+.quick-controls .mobile-up-control .switch-label svg path,
+.quick-controls .mobile-down-control .switch-label svg path { fill: currentColor; }
+.quick-controls .hardware-switch.is-active .switch-led, .quick-controls .hardware-switch.is-pressed .switch-led { border-color: var(--qc-palette-aaabae); background: var(--qc-palette-626367); box-shadow: none; }
+.quick-controls .hardware-switch.is-active .switch-led::before, .quick-controls .hardware-switch.is-pressed .switch-led::before { opacity: 1; }
+.quick-controls .hardware-switch.is-tempo-pulse.is-active .switch-led::before { animation: qc-tempo-led-pulse var(--tempo-period, 1s) linear infinite; }
+.quick-controls .mobile-down-glyph { display: inline-grid; transform: rotate(180deg); }
+.mobile-encoder-control, .mobile-up-control, .mobile-down-control, .mobile-tempo-control { min-width: 0; min-height: 0; }
+.mobile-up-control { grid-column: 5; grid-row: 1; }
+.mobile-down-control { grid-column: 5; grid-row: 2; }
+.mobile-tempo-control { grid-column: 5; grid-row: 3; }
+.mobile-encoder-0 { grid-column: 1; grid-row: 2; }
+.mobile-encoder-1 { grid-column: 2; grid-row: 2; }
+.mobile-encoder-2 { grid-column: 3; grid-row: 2; }
+.mobile-encoder-3 { grid-column: 4; grid-row: 2; }
+.mobile-encoder-4 { grid-column: 1; grid-row: 3; }
+.mobile-encoder-5 { grid-column: 2; grid-row: 3; }
+.mobile-encoder-6 { grid-column: 3; grid-row: 3; }
+.mobile-encoder-7 { grid-column: 4; grid-row: 3; }
+.mobile-volume-control { grid-column: 1; grid-row: 1; min-width: 0; display: grid; place-items: center; }
+.mobile-volume-control .volume-knob { position: relative; left: auto; top: auto; width: 58px; align-self: center; transform: none; }
+.mobile-volume-control .rotation-readout, .mobile-tempo-control .rotation-readout { min-width: 0; padding: 0; border: 0; border-radius: 0; background: var(--qc-transparent); color: var(--qc-palette-f1f3f4); font-size: 13px; font-weight: 800; }
+.quick-controls .rotation-readout { min-width: 0; padding: 0; font-size: 13px; }
+.mobile-device-view-control { align-self: center; min-width: 0; min-height: 48px; margin: 0 3px; border: 1px solid var(--qc-palette-626367); border-radius: 9px; background: linear-gradient(145deg, var(--qc-palette-626367), var(--qc-palette-34363a)); box-shadow: inset 0 1px var(--qc-palette-ffffff55), 2px 3px 4px var(--qc-palette-1118); color: var(--qc-palette-f0f0f0); font: 800 12px/1 var(--qc-font-mono); letter-spacing: .08em; touch-action: manipulation; }
+.mobile-device-view-control:active, .mobile-device-view-control[aria-pressed="true"] { border-color: var(--qc-palette-aaabae); background: linear-gradient(145deg, var(--qc-palette-303236), var(--qc-palette-202226)); box-shadow: inset 1px 2px 3px var(--qc-palette-0008); color: var(--qc-palette-71ee98); }
+.mobile-io-control { grid-column: 2; grid-row: 1; }
+.mobile-gig-control { grid-column: 3; grid-row: 1; }
+
+.mobile-workflow-backdrop { position: fixed; z-index: 200; inset: 0; display: grid; align-items: end; padding: max(12px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom)); background: var(--qc-palette-000a); backdrop-filter: blur(5px); }
+.mobile-workflow-panel { position: relative; max-height: 86dvh; overflow: auto; padding: 20px 16px 18px; border: 1px solid var(--qc-app-border); border-radius: 18px 18px 10px 10px; background: var(--qc-app-panel); box-shadow: 0 -18px 50px var(--qc-palette-000b); }
+.mobile-workflow-close { position: absolute; z-index: 1; top: 10px; right: 10px; width: 32px; height: 32px; border: 1px solid var(--qc-palette-394049); border-radius: 10px; background: var(--qc-palette-1a1f25); color: var(--qc-palette-dce1e5); font-size: 23px; line-height: 1; }
+.mobile-workflow-panel h2 { margin: 4px 42px 16px 0; font-size: 21px; }
+.mobile-workflow-panel p { color: var(--qc-palette-8e969f); font-size: 12px; line-height: 1.45; }
+.mobile-workflow-panel .dialog-kicker { color: var(--qc-palette-58df82); font-size: 9px; font-weight: 900; letter-spacing: .12em; }
+.mobile-workflow-panel h2 small { color: var(--qc-palette-7f8993); font-size: 12px; font-weight: 600; }
+.mobile-legal-note { padding: 10px; border-left: 3px solid var(--qc-palette-58df82); border-radius: 0 8px 8px 0; background: var(--qc-palette-0c0f12); color: var(--qc-palette-d6d9dd) !important; }
+.mobile-legal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.mobile-legal-actions button { min-height: 36px; padding: 0 13px; border: 1px solid var(--qc-palette-394049); border-radius: 9px; background: var(--qc-palette-1a1f25); color: var(--qc-palette-dce1e5); font: inherit; }
+.mobile-status-detail { overflow-wrap: anywhere; padding: 9px 10px; border: 1px solid var(--qc-palette-29323a); border-radius: 9px; background: var(--qc-palette-0c1014); color: var(--qc-palette-aeb7bf) !important; font-family: var(--qc-font-mono); font-size: 10px !important; line-height: 1.45; }
+.mobile-connection-panel { display: grid; gap: 12px; }
+.mobile-connection-panel h2 { margin-bottom: 2px; }
+.mobile-device-tabs { display: flex; align-items: stretch; gap: 4px; overflow-x: auto; border-bottom: 1px solid var(--qc-palette-3d424b); }
+.mobile-device-tabs button { display: inline-flex; align-items: center; gap: 7px; min-height: 42px; padding: 8px 10px; border: 1px solid var(--qc-transparent); border-bottom: 2px solid var(--qc-transparent); border-radius: 7px 7px 0 0; background: var(--qc-transparent); color: var(--qc-palette-aab2bc); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.mobile-device-tabs button[aria-pressed="true"] { border-color: var(--qc-palette-3d424b); border-bottom-color: var(--qc-palette-61e6a3); background: var(--qc-palette-24282e); color: var(--qc-palette-eceef1); }
+.mobile-device-tabs button.demo-device-tab { color: var(--qc-palette-bf85ff); }
+.mobile-device-tabs button.demo-device-tab[aria-pressed="true"] { border-bottom-color: var(--qc-palette-bf85ff); background: var(--qc-palette-211c39); }
+.mobile-device-tabs small { color: var(--qc-palette-8f98a3); font: 9px var(--qc-font-mono); }
+.panel-status-dot { display: inline-block; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--qc-palette-89919a); }
+.panel-status-dot.phase-available, .panel-status-dot.phase-syncing { background: var(--qc-app-status-syncing); box-shadow: 0 0 7px var(--qc-app-status-syncing); }
+.panel-status-dot.phase-ready { background: var(--qc-app-status-ready); box-shadow: 0 0 7px var(--qc-app-status-ready); }
+.panel-status-dot.phase-demo { background: var(--qc-palette-bf85ff); box-shadow: 0 0 7px var(--qc-palette-bf85ff); }
+.panel-status-dot.phase-action-required { background: var(--qc-app-status-action-required); box-shadow: 0 0 7px var(--qc-app-status-action-required); }
+.panel-status-dot.phase-error { background: var(--qc-app-status-error); box-shadow: 0 0 7px var(--qc-app-status-error); }
+.mobile-connection-summary { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.mobile-connection-summary > span { min-width: 0; display: inline-flex; align-items: center; gap: 8px; color: var(--qc-palette-e0e4e7); font-size: 12px; font-weight: 700; }
+.mobile-connection-summary > button { flex: 0 0 auto; }
+.mobile-connection-summary select { width: auto; max-width: 52%; }
+.mobile-connection-details { display: grid; margin: 0; overflow: hidden; border: 1px solid var(--qc-palette-394049); border-radius: 10px; background: var(--qc-palette-15191e); }
+.mobile-connection-details > div { min-width: 0; display: grid; grid-template-columns: minmax(88px, .45fr) minmax(0, 1fr); gap: 10px; padding: 9px 11px; border-bottom: 1px solid var(--qc-palette-29323a); }
+.mobile-connection-details > div:last-child { border-bottom: 0; }
+.mobile-connection-details dt { color: var(--qc-palette-7f8993); font-size: 11px; }
+.mobile-connection-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--qc-palette-d8dce0); font-size: 11px; line-height: 1.4; }
+.mobile-panel-description, .mobile-panel-footnote { margin: 0; }
+.mobile-panel-footnote { color: var(--qc-palette-717981) !important; font-size: 10px !important; }
+.mobile-panel-actions { display: flex; align-items: stretch; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.mobile-panel-actions .mobile-primary-action { flex: 1 1 150px; }
+.mobile-connection-panel.is-demo .mobile-connection-summary > span,
+.mobile-connection-panel.is-demo .mobile-connection-details dt { color: var(--qc-palette-bf85ff); }
+.mobile-setting-toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px; border: 1px solid var(--qc-palette-2c343c); border-radius: 10px; background: var(--qc-palette-12161a); color: var(--qc-palette-e0e4e7); font-size: 13px; }
+.mobile-setting-toggle input { width: 18px; height: 18px; accent-color: var(--qc-palette-55e282); }
+.mobile-workflow-panel .routing-editor, .mobile-workflow-panel .block-management, .mobile-workflow-panel .add-block-form, .mobile-workflow-panel .scene-editor { display: grid; gap: 10px; }
+.mobile-workflow-panel .routing-editor section { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--qc-palette-292f35); border-radius: 12px; background: var(--qc-palette-0c0f12); }
+.mobile-workflow-panel label { display: grid; grid-template-columns: minmax(74px, .6fr) minmax(0, 1fr) auto; align-items: center; gap: 7px; color: var(--qc-palette-abb3ba); font-size: 11px; }
+.mobile-workflow-panel label > span { display: grid; }
+.mobile-workflow-panel label small { color: var(--qc-palette-717981); font-size: 9px; }
+.mobile-workflow-panel select, .mobile-workflow-panel input { min-width: 0; min-height: 34px; padding: 5px 8px; border: 1px solid var(--qc-app-border); border-radius: 8px; background: var(--qc-app-panel-raised); color: var(--qc-palette-e1e4e7); }
+.mobile-workflow-panel button { min-height: 34px; padding: 5px 10px; border: 1px solid var(--qc-palette-3a424b); border-radius: 8px; background: var(--qc-app-control); color: var(--qc-palette-d8dce0); }
+.mobile-workflow-panel button.primary { border-color: var(--qc-palette-4aa76a); background: var(--qc-palette-183923); color: var(--qc-palette-71ee98); }
+.mobile-workflow-panel button.danger { border-color: var(--qc-palette-74383d); color: var(--qc-palette-ff8b91); }
+.mobile-workflow-panel button:disabled { opacity: .4; }
+.mobile-workflow-panel .dialog-actions, .mobile-workflow-panel .block-management-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+
+
+
+@keyframes pulse { to { opacity: .38; } }
+@keyframes tempo-flash { 0%, 18% { opacity: 1; } 19%, 100% { opacity: .3; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+@media (orientation: landscape) and (max-height: 800px) {
+  .android-app { grid-template-columns: minmax(0, 1fr) minmax(220px, 40%); grid-template-rows: auto minmax(0, 1fr) minmax(28px, auto); gap: 6px 8px; }
+  .mobile-header { grid-column: 1 / -1; grid-row: 1; }
+  .mobile-screen { grid-column: 1; grid-row: 2; min-height: 0; width: 100%; display: grid; place-items: center; container-type: size; }
+  .mobile-screen > .qc-chassis { width: min(100cqw, 166.667cqh); }
+  .quick-controls { min-width: 0; min-height: 0; height: 100%; grid-column: 2; grid-row: 2; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 3px; }
+  .quick-controls .hardware-switch { min-height: 0; grid-template-rows: 10px minmax(0, 1fr); }
+  .quick-controls .switch-led { width: 8px; margin-bottom: 1px; }
+  .quick-controls .switch-ring { width: clamp(32px, 11vh, 50px); }
+  .mobile-volume-control .volume-knob { width: clamp(36px, 13vh, 58px); }
+  .mobile-volume-control { grid-column: 1; grid-row: 1; }
+  .mobile-io-control { grid-column: 2; grid-row: 1; }
+  .mobile-gig-control { grid-column: 3; grid-row: 1; }
+  .mobile-device-view-control { min-height: clamp(34px, 11vh, 48px); margin: 0 2px; }
+  .mobile-up-control { grid-column: 4; grid-row: 1; }
+  .mobile-encoder-0 { grid-column: 1; grid-row: 2; }
+  .mobile-encoder-1 { grid-column: 2; grid-row: 2; }
+  .mobile-encoder-2 { grid-column: 3; grid-row: 2; }
+  .mobile-encoder-3 { grid-column: 4; grid-row: 2; }
+  .mobile-encoder-4 { grid-column: 1; grid-row: 3; }
+  .mobile-encoder-5 { grid-column: 2; grid-row: 3; }
+  .mobile-encoder-6 { grid-column: 3; grid-row: 3; }
+  .mobile-encoder-7 { grid-column: 4; grid-row: 3; }
+  .mobile-tempo-control { grid-column: 3; grid-row: 4; }
+  .mobile-down-control { grid-column: 4; grid-row: 4; }
+  .mobile-status-notice { grid-column: 1 / -1; grid-row: 3; min-height: 28px; padding: 5px 8px; }
+}
+.android-app::after { content: ""; position: fixed; z-index: 1000; inset: 0; background: var(--qc-transparent); pointer-events: none; transition: background 320ms ease; }
+.android-app.screen-dimmed::after { background: var(--qc-palette-0008); }
+
+@media (max-height: 650px) and (orientation: portrait) {
+  .android-app { gap: 6px; }
+  .mobile-header { min-height: 36px; }
+  .app-mark { width: 30px; height: 30px; }
+  .quick-controls { min-height: 94px; grid-template-rows: repeat(2, minmax(44px, 1fr)); gap: 5px; }
+  .quick-controls button { min-height: 44px; }
+  .mobile-screen > .qc-chassis { max-height: 36vh; }
+}
+.mobile-status-notice { min-height: 32px; padding: 7px 10px; overflow: hidden; border: 1px solid var(--qc-palette-23272c); border-radius: 10px; background: var(--qc-palette-0d0f12cc); color: var(--qc-palette-aab5ae); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; }

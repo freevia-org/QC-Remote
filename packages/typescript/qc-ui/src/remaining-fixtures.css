@@ -1,0 +1,693 @@
+@scope (.qc-screen-fixture-root) {
+  .qc-screen.coros-boot {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0;
+    background: var(--qc-palette-060806);
+    color: var(--qc-palette-edf0ed);
+    font-family: var(--qc-font-device-plain);
+  }
+  .coros-boot > b {
+    display: block;
+    width: 8cqw;
+    height: 8cqw;
+    color: var(--qc-screen-accent);
+  }
+  .coros-boot > b svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .coros-boot h1 {
+    margin: 1cqw 0 3cqw;
+    font-size: 2cqw;
+    font-weight: 400;
+    letter-spacing: 0.8cqw;
+  }
+  .coros-boot > i {
+    width: 36%;
+    height: 0.8cqw;
+    border-radius: 1cqw;
+    background: var(--qc-rotary-face);
+  }
+  .coros-boot > i span {
+    display: block;
+    width: 68%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--qc-screen-accent);
+  }
+  .coros-boot small {
+    margin-top: 1cqw;
+    color: var(--qc-palette-747a75);
+    font-size: 0.8cqw;
+    letter-spacing: 0.3cqw;
+  }
+  .qc-screen.coros-fixture-dialog {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 0;
+    background: var(--qc-screen-background);
+    color: var(--qc-screen-text-primary);
+    font-family: var(--qc-font-device-plain);
+  }
+  .fixture-grid-ghost {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    gap: 3cqw;
+    padding: 0 8%;
+    opacity: 0.17;
+  }
+  .fixture-grid-ghost i {
+    width: 9cqw;
+    height: 9cqw;
+    border: 0.4cqw solid var(--qc-palette-778078);
+    border-radius: 1cqw;
+  }
+  .coros-fixture-dialog aside {
+    z-index: 1;
+    width: 44%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2.5cqw;
+    border: 1px solid var(--qc-palette-424943);
+    border-radius: 1cqw;
+    background: var(--qc-rotary-face);
+    box-shadow: 0 1cqw 4cqw var(--qc-screen-background);
+    text-align: center;
+  }
+  .coros-fixture-dialog aside > b {
+    width: 4cqw;
+    height: 4cqw;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--qc-palette-17361e);
+    color: var(--qc-screen-accent);
+    font-size: 2cqw;
+  }
+  .coros-fixture-dialog aside.is-warning > b {
+    background: var(--qc-palette-462a12);
+    color: var(--qc-palette-ffac3d);
+  }
+  .coros-fixture-dialog h1 {
+    margin: 1cqw 0 0.7cqw;
+    font-size: 2cqw;
+    font-weight: 400;
+  }
+  .coros-fixture-dialog p {
+    margin: 0;
+    color: var(--qc-palette-9da29e);
+    font-size: 1cqw;
+  }
+  .coros-fixture-dialog footer {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1cqw;
+    margin-top: 2cqw;
+  }
+  .coros-fixture-dialog button {
+    height: 4.4cqw;
+    border: 0;
+    border-radius: 0.5cqw;
+    background: var(--qc-palette-303631);
+    color: var(--qc-screen-text-primary);
+    font-size: 1cqw;
+  }
+  .coros-fixture-dialog footer button:last-child {
+    background: var(--qc-palette-193dff);
+  }
+  .qc-screen.coros-scene-destination,
+  .qc-screen.coros-detail-editor {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    border-radius: 0;
+    background: var(--qc-palette-0d100d);
+    color: var(--qc-screen-text-primary);
+    font-family: var(--qc-font-device-plain);
+  }
+  .coros-scene-destination header,
+  .coros-detail-editor header {
+    height: var(--qc-nav-bar-height);
+    display: grid;
+    grid-template-columns: 10% 1fr 10%;
+    align-items: center;
+    border-bottom: 1px solid var(--qc-palette-363b37);
+  }
+  .coros-scene-destination header button {
+    height: 100%;
+    border: 0;
+    background: var(--qc-transparent);
+    color: var(--qc-screen-text-primary);
+    font-size: 2.5cqw;
+  }
+  .coros-scene-destination header strong {
+    font-size: 1.7cqw;
+    font-weight: 400;
+    text-align: center;
+  }
+  .coros-scene-destination main {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(2, 1fr);
+    gap: 1cqw;
+    height: 54%;
+    padding: 4% 7% 2%;
+  }
+  .coros-scene-destination main button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--qc-palette-3a413b);
+    border-radius: 0.8cqw;
+    background: var(--qc-palette-1e241f);
+    color: var(--qc-screen-text-primary);
+  }
+  .coros-scene-destination main button.is-active {
+    border-color: var(--qc-screen-accent);
+  }
+  .coros-scene-destination main button:disabled {
+    opacity: 0.3;
+  }
+  .coros-scene-destination main b {
+    font-size: 2.4cqw;
+  }
+  .coros-scene-destination main span {
+    color: var(--qc-palette-8f958f);
+    font-size: 0.85cqw;
+  }
+  .coros-scene-destination > p {
+    color: var(--qc-palette-7d837e);
+    font-size: 0.95cqw;
+    text-align: center;
+  }
+  .qc-screen.coros-input-gate {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    border-radius: 0;
+    /* The screen is two grounds, not one: the Grid half stays black and the
+       editor half below it is the base surface, which is what shows through
+       the gutter around the parameter panel. */
+    background: linear-gradient(var(--qc-screen-background) 0 63.125%, var(--qc-screen-surface-base) 63.125%);
+    color: var(--qc-screen-text-primary);
+    font-family: var(--qc-font-device-plain);
+  }
+.input-gate-grid {
+  position: absolute;
+  inset: 0 0 35.4%;
+  opacity: 0.62;
+  }
+  .input-gate-grid > header {
+    position: relative;
+    height: 31%;
+    display: flex;
+    align-items: flex-start;
+    padding: 2.5% 1.7%;
+    box-sizing: border-box;
+  }
+  .input-gate-grid > header > strong {
+    font-size: 8.875cqw;
+    line-height: 0.82;
+    font-weight: 700;
+    letter-spacing: 0.175cqw;
+    color: var(--qc-palette-69b5d4);
+    transform: translateY(5px);
+  }
+  .input-gate-grid > header > strong span {
+    color: var(--qc-palette-c8cac9);
+  }
+  .input-gate-grid h1 {
+    margin: .75cqw 0 0 1.575cqw;
+    color: var(--qc-palette-d5d8d5);
+    font-size: 7.25cqw;
+    line-height: 1;
+    font-weight: 700;
+  }
+  .input-gate-grid header nav {
+    position: absolute;
+    right: 3cqw;
+    top: 1.6cqw;
+    display: flex;
+    align-items: center;
+    gap: 3.1cqw;
+    color: var(--qc-palette-afb2b0);
+    font-style: normal;
+  }
+  .input-gate-grid header nav i {
+    width: 3cqw;
+    height: 3cqw;
+    display: grid;
+    place-items: center;
+    font-style: normal;
+  }
+  .input-gate-grid header nav i svg {
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .input-gate-grid header nav i:last-child svg circle {
+    fill: currentColor;
+    stroke: none;
+  }
+  .input-gate-grid header nav b {
+    width: 3cqw;
+    height: 3cqw;
+    display: grid;
+    place-items: center;
+    border-radius: 0.45cqw;
+    background: var(--qc-palette-b59c13);
+    color: var(--qc-palette-111);
+    font-size: 2.1cqw;
+  }
+  .input-gate-grid header em {
+    position: absolute;
+    right: 4.9cqw;
+    top: 7.7cqw;
+    color: var(--qc-palette-bfc1bf);
+    font-size: 2.4cqw;
+    font-style: normal;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 1cqw;
+  }
+  .input-gate-grid header em svg {
+    width: 3.5cqw;
+    height: 3.5cqw;
+    fill: currentColor;
+  }
+  .input-gate-grid > main {
+    position: absolute;
+    inset: 31% 0 0;
+  }
+  .input-gate-route,
+  .input-gate-output,
+  .input-gate-plus {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    /* This pane is drawn at .62 opacity and its colours are authored pre-dim,
+       the way --qc-input-gate-add-pre-dim already is: the base surface would
+       dim past the value the unit shows, so the tile carries its own. */
+    background: var(--qc-input-gate-tile-pre-dim);
+    color: var(--qc-palette-d7d9d8);
+    text-align: center;
+  }
+  .input-gate-route {
+    left: 1%;
+    top: 6%;
+    width: 5.5%;
+    height: 34.5%;
+    border-radius: 1.8cqw;
+    font-size: 1.8cqw;
+    line-height: 1.35;
+  }
+  .input-gate-output {
+    right: 1%;
+    top: 6%;
+    width: 5.5%;
+    height: 34.5%;
+    border-radius: 1.8cqw;
+    font-size: 1.65cqw;
+    line-height: 1.25;
+  }
+  /* The chain cable runs over the tile, not behind it: input-gate-control inks
+     its two rows right across 69..132 without a break where the block sits. */
+  .input-gate-cable {
+    position: absolute;
+    z-index: 1;
+    left: 6.6%;
+    right: 6.5%;
+    top: 23.5%;
+    height: 2px;
+    background: var(--qc-input-gate-cable-pre-dim);
+  }
+  /* The 8% box is the tile itself - 64 units at 69..132, which is what
+     `input-gate-control` inks - and the shared asset draws six further units of
+     bleed around it for the ground ring and the badge overhang. */
+  .input-gate-device {
+    position: absolute;
+    left: 8.6%;
+    top: 8.97%;
+    width: 8%;
+    aspect-ratio: 1;
+    display: block;
+  }
+  .input-gate-device .qc-device-tile {
+    position: absolute;
+    left: -0.75cqw;
+    top: -0.75cqw;
+    width: calc(100% + 1.5cqw);
+    height: calc(100% + 1.5cqw);
+  }
+  .input-gate-plus {
+    right: 1%;
+    width: 5.5%;
+    height: 35%;
+    border-radius: 1.8cqw;
+    color: var(--qc-palette-bbbbbb);
+  }
+  .input-gate-plus svg {
+    width: 3.8cqw;
+    height: 3.8cqw;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+  }
+  .input-gate-panel {
+  position: absolute;
+  inset: 63.125% 1% 1.67%;
+  background: var(--qc-screen-surface-control);
+}
+.input-gate-panel > header {
+  height: 35.5%;
+    display: grid;
+    grid-template-columns: 5.5% 1fr 16.5% 1px 8.2% 8.2%;
+    align-items: center;
+    gap: 1.1%;
+    background: var(--qc-screen-surface-base);
+  }
+  .input-gate-panel button {
+    height: 80%;
+    border: 0;
+    border-radius: 0.75cqw;
+    background: var(--qc-screen-surface-control);
+    color: var(--qc-screen-text-primary);
+    font-size: 2.7cqw;
+  }
+  .input-gate-panel button svg {
+    --qc-screen-glyph-size: 24px;
+    width: 24px;
+    height: 24px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .input-gate-panel > header > button:first-child svg circle {
+    fill: currentColor;
+    stroke: none;
+  }
+  .input-gate-panel > header > span {
+    display: flex;
+    flex-direction: column;
+    padding-left: 1px;
+  }
+  .input-gate-panel > header small {
+    color: var(--qc-palette-a8aaa9);
+    font-size: 1.825cqw;
+    transform: translate(-1px, 1px);
+  }
+  .input-gate-panel > header strong {
+    font-size: 2.5cqw;
+    font-weight: 400;
+    transform: translateY(6px);
+  }
+  .input-gate-panel > header nav {
+    height: 80%;
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    border-radius: 0.75cqw;
+    background: var(--qc-screen-surface-raised);
+    font-style: normal;
+    transform: translateX(-0.625cqw);
+  }
+  .input-gate-panel > header nav i {
+    color: var(--qc-screen-text-primary);
+    font-style: normal;
+  }
+  .input-gate-panel > header nav i svg {
+    width: 2.75cqw;
+    height: 2.75cqw;
+    fill: currentColor;
+    stroke: none;
+  }
+  .input-gate-panel > header nav b {
+    width: 3cqw;
+    height: 3cqw;
+    display: grid;
+    place-items: center;
+    border-radius: 0.45cqw;
+    background: var(--qc-palette-ffd331);
+    color: var(--qc-palette-111);
+    font-size: 2.1cqw;
+  }
+  .input-gate-panel > header > em {
+    height: 55%;
+    border-left: 1px solid var(--qc-palette-343736);
+  }
+  .input-gate-panel .input-gate-power {
+    background: var(--qc-screen-accent);
+    color: var(--qc-palette-071208);
+    transform: translateX(-0.375cqw);
+  }
+.input-gate-panel > main {
+  height: 64.5%;
+    display: grid;
+    grid-template-columns: 19.8% 20.3% 1fr;
+  }
+  .input-gate-panel > main > section {
+    position: relative;
+    border-right: 1px solid var(--qc-screen-surface-raised);
+    padding: 1.2cqw;
+    box-sizing: border-box;
+  }
+  .input-gate-panel > main span {
+    display: block;
+    font-size: 1.8cqw;
+  }
+  .input-gate-panel > main > section:nth-child(-n + 2) {
+    color: var(--qc-palette-747b76);
+  }
+  .input-gate-panel > main strong {
+    position: absolute;
+    left: 1.625cqw;
+    bottom: 1.95cqw;
+    color: inherit;
+    font-size: 2cqw;
+    font-weight: 400;
+  }
+  .input-gate-panel > main > section:nth-child(2) > strong {
+    top: 5.375cqw;
+    bottom: auto;
+  }
+  .input-gate-panel > main small {
+    color: var(--qc-palette-9da09e);
+    font-size: 1.4cqw;
+  }
+  /* Both gate knobs are QcRotaryDial now - the unit draws the same control here
+     as on every other screen, just unlit on the left pane. This rule places
+     them; the sizing is 72px because that is the scale at which the shared
+     dial's knob body comes out at the unit's own 49px. */
+  .input-gate-knob {
+    position: absolute;
+    right: 0.475cqw;
+    top: 4.45cqw;
+    width: 72px;
+    height: 72px;
+  }
+  .input-gate-knob.gain {
+    right: auto;
+    left: 9.65cqw;
+    top: 4.575cqw;
+  }
+  .input-gate-meter {
+    position: absolute;
+    left: 1.2cqw;
+    right: 1.2cqw;
+    bottom: 1.3cqw;
+    height: 2.2cqw;
+    background: var(--qc-palette-272a28);
+  }
+  .input-gate-meter:after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: -0.6cqw;
+    bottom: -0.6cqw;
+    border-left: 1px solid var(--qc-palette-1b1d1c);
+  }
+  .input-gate-meter b {
+    display: block;
+    width: 0;
+    height: 100%;
+    background: var(--qc-palette-40f174);
+  }
+  .qc-screen.coros-detail-editor {
+    display: grid;
+    grid-template-rows: 12.5% 1fr 10%;
+  }
+  .coros-detail-editor header {
+    grid-template-columns: 9% 1fr 9% 10%;
+  }
+  .coros-detail-editor header button {
+    height: 100%;
+    border: 0;
+    background: var(--qc-transparent);
+    color: var(--qc-screen-text-primary);
+    font-size: 2.4cqw;
+  }
+  .coros-detail-editor header span {
+    display: flex;
+    flex-direction: column;
+  }
+  .coros-detail-editor header small {
+    color: var(--qc-palette-8e948f);
+    font-size: 0.8cqw;
+  }
+  .coros-detail-editor header strong {
+    font-size: 1.45cqw;
+    font-weight: 400;
+  }
+  .coros-detail-editor header > i {
+    color: var(--qc-screen-accent);
+    font-style: normal;
+  }
+  .coros-detail-editor main {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    align-items: stretch;
+  }
+  .coros-detail-editor main section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1.3cqw;
+    border-right: 1px solid var(--qc-palette-353a36);
+    background: var(--qc-palette-232824);
+  }
+  .coros-detail-editor main section > span {
+    color: var(--qc-palette-a5aaa6);
+    font-size: 0.9cqw;
+  }
+  .coros-detail-editor main section > i {
+    width: 5.7cqw;
+    height: 5.7cqw;
+    border: 0.8cqw solid var(--qc-palette-0d0f0d);
+    border-radius: 50%;
+    background: conic-gradient(from 220deg, var(--qc-screen-accent) 0 55%, var(--qc-palette-090b09) 55%);
+  }
+  .coros-detail-editor main section > i b {
+    display: block;
+    width: 0.25cqw;
+    height: 2.2cqw;
+    margin: 0.5cqw auto;
+    background: var(--qc-screen-text-primary);
+    transform-origin: 50% 100%;
+  }
+  .coros-detail-editor main section > strong {
+    font-size: 1.05cqw;
+    font-weight: 400;
+  }
+  .coros-detail-editor footer {
+    display: grid;
+    grid-template-columns: 7% 7% 1fr 14%;
+    align-items: center;
+    gap: 0.5cqw;
+    padding: 0 1%;
+    background: var(--qc-screen-surface-raised);
+  }
+  .coros-detail-editor footer button {
+    height: 65%;
+    border: 0;
+    border-radius: 0.5cqw;
+    background: var(--qc-palette-292f2a);
+    color: var(--qc-palette-8d938e);
+  }
+  .coros-detail-editor footer button.is-active {
+    color: var(--qc-screen-accent);
+  }
+  .cab-stage {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 12.5%;
+    height: 29%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5cqw;
+    background: var(--qc-palette-151915);
+  }
+  .cab-stage span {
+    padding: 1cqw;
+    border: 1px solid var(--qc-screen-accent);
+    border-radius: 50%;
+    color: var(--qc-screen-accent);
+  }
+  .cab-stage b {
+    font-size: 4cqw;
+  }
+  .fixture-editor-cab main {
+    padding-top: 17%;
+  }
+  .fixture-editor-eq svg {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 12.5%;
+    width: 100%;
+    height: 28%;
+    background: var(--qc-editor-disabled);
+  }
+  .fixture-editor-eq svg path {
+    fill: none;
+    stroke: var(--qc-palette-48f079);
+    stroke-width: 2;
+  }
+  .fixture-editor-eq main {
+    padding-top: 16%;
+  }
+
+  /* The selected option row is a white pill and the unit draws its tick dark
+     (core var(--qc-palette-rgba-24-28-24-1), ink 14x10 at x=551 y=198). The
+     interface.check art carries a light `reference.iconPrimary` fill as a
+     presentation attribute, which an inherited `fill` on the <svg> cannot
+     override, so the tick rendered white-on-white and was invisible. */
+  .coros-directory-fixture .directory-copy-dialog > button.is-active > i > .qc-ui-icon-check path { fill: currentColor; }
+  /* The row is a full flex line, so the tick is pinned to the button's content
+     edge and only the padding can move it. The unit's pill runs x 217..581 with
+     the tick ink at 551..564, i.e. a 24x24 box ending 12px inside the pill; ours
+     ended 17px inside it because the padding shorthand is symmetric. */
+  .coros-directory-fixture .directory-copy-dialog > button { padding-right: 1.75cqw; }
+
+  /* interface.close is 24x24 art whose ink is 14x15 (cols 5..18, rows 5..19),
+     the same core wherever the unit draws the close X. The unit draws it
+     anti-aliased, so it reads a couple of pixels larger than its core - that
+     AA spill, not a bigger glyph, is what a 28-unit close would be mistaking
+     it for. These boxes inherited 28/32/36px from the button font-size, which
+     is both the wrong size and a fractional multiple of a 24-unit crispEdges
+     art. */
+  .coros-save-as > header > .save-as-close > .qc-ui-icon-close,
+  .coros-name-editor > header > .name-editor-close > .qc-ui-icon-close,
+  .browser-fixture-panel > .plugin-model-header > button > .qc-ui-icon-close,
+  .coros-device-preset-tip > button > .qc-ui-icon-close { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+  /* An inline <svg> sits on the text baseline, so pinning the box to 24px drops
+     it by however much the button font-size exceeded 24px. Each translate below
+     restores it to where the unit draws the 24x24 box. */
+  .coros-save-as > header > .save-as-close > .qc-ui-icon-close { transform: translateY(-8.5px); }
+  .coros-name-editor > header > .name-editor-close > .qc-ui-icon-close,
+  .browser-fixture-panel > .plugin-model-header > button > .qc-ui-icon-close { transform: translateY(-4px); }
+  .coros-device-preset-tip > button > .qc-ui-icon-close { transform: translate(4px, 4px); }
+}

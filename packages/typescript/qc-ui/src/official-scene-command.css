@@ -1,0 +1,236 @@
+/* Geometry for the live "Copy Scene X"/"Swap Scene X" destination overlay
+ * (CorOsSceneCommand in scene-editor.tsx), ported from
+ * coros-screen-fixtures.tsx's "fixture-copy-scene"/"fixture-swap-scene"
+ * branch.
+ *
+ * That fixture's own CSS (.coros-fixture-dialog.is-scene-command > aside,
+ * in remaining-fixtures.css/remaining-fixtures-fixes.css) is scoped
+ * `@scope (.qc-screen-fixture-root)` and only coros-screen-fixtures.tsx (dev-
+ * gated, never in the production bundle) ever renders that scope root. This
+ * overlay renders as a sibling of QuadCortexSurface in App.tsx instead of
+ * being composed inside it (out of this change's scope - see App.tsx), so it
+ * is never inside that scope either: reusing the fixture's class names here
+ * would look right in the dev harness and render completely unstyled in the
+ * live app. This file duplicates that same box - proportions, padding,
+ * colors, typography - under this component's own class names, the same
+ * fix official-expression.css/official-routing.css already established.
+ *
+ * remaining-fixtures-fixes.css layers three successive passes over the same
+ * selectors (a base pass, then two refinement passes further down the same
+ * file). The px figures below are the *final*, cascade-resolved values
+ * those passes actually render today (last-writer-wins at equal
+ * specificity), not any single pass read in isolation.
+ *
+ * cqw in that source is always 1% of the *screen's* own 800px-wide box
+ * (.qc-screen-fixture-root is the cqw container) - a box this overlay has
+ * no access to, since it is not composed inside QuadCortexSurface. The
+ * numbers below resolve those cqw values against that canonical 800x480
+ * screen instead, then fall back to plain px/vw sizing - the same technique
+ * apps/windows/src/styles.css's own .app-dialog and surface-shell.css's own
+ * .scene-dropdown already use for panels outside the screen's container.
+ * Only the fixture's own <aside> panel is ported (not its
+ * `.scene-command-grid` ghost): that ghost is the same live Grid redrawn at
+ * reduced opacity as part of one fixture screen, and the real Grid
+ * QuadCortexSurface already renders behind this overlay supplies that role
+ * for free. The scrim below reuses that same screen-background tint
+ * (var(--qc-palette-424142)) at partial opacity as an adaptation of that
+ * dimming, since the ghost itself is not redrawn.
+ */
+
+.scene-command-overlay { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.scene-command-scrim { position: absolute; inset: 0; background: var(--qc-palette-424142); opacity: .55; }
+
+.scene-command-panel {
+  position: relative;
+  box-sizing: border-box;
+  /* 52.5% of the canonical 800px screen width, 47.9% of its 480px height -
+     height is a cap rather than a fixed box because the destination list
+     below is this app's own addition (see its own comment) and can run
+     longer than the panel's original fixed height ever needed to. */
+  width: min(420px, 90vw);
+  max-height: min(320px, 70vh);
+  display: flex;
+  flex-direction: column;
+  /* 5.5cqw 4cqw 3.8cqw 4cqw -> 44px 32px 30px 32px, border:0, both from the
+     cascade-resolved fixes-file rules. */
+  padding: 44px 32px 30px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--qc-screen-surface-base);
+  color: var(--qc-screen-text-primary);
+  font-family: var(--qc-font-device-plain);
+  pointer-events: auto;
+}
+.scene-command-panel h1 {
+  /* margin 0 0 3.2cqw -> 0 0 25.6px; font-size 2.5cqw -> 20px; font-weight 400. */
+  margin: 0 0 26px;
+  font-size: 20px;
+  font-weight: 400;
+}
+.scene-command-panel p {
+  /* font-size 2.25cqw (the fixes file's own final pass) -> 18px. */
+  margin: 0 0 16px;
+  color: var(--qc-screen-text-primary);
+  font-size: 18px;
+  font-weight: 400;
+}
+.scene-command-destinations {
+  /* A physical footswitch press selects the destination scene on the real
+     unit - there is no desktop equivalent, so this list (and its own
+     scrolling) is this app's own affordance, not a device measurement. Its
+     button styling is adapted from surface-shell.css's own production
+     .scene-dropdown (reused, not duplicated, by design) without inheriting
+     that class's absolute positioning, which does not fit this layout. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.scene-command-destinations button {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: .65em;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--qc-screen-surface-control);
+  color: var(--qc-screen-text-primary);
+  text-align: left;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.scene-command-destinations button:hover:not(:disabled) { background: var(--qc-screen-surface-raised); }
+.scene-command-destinations button:disabled { opacity: .5; cursor: default; }
+.scene-command-destinations button > span { display: grid; place-items: center; width: 1.65em; aspect-ratio: 1; border-radius: 3px; background: var(--qc-scene-badge); color: var(--qc-palette-151515); font-weight: 800; }
+.scene-command-panel footer {
+  /* margin-top 5cqw -> 40px, the fixes file's own final pass. */
+  margin-top: 16px;
+}
+.scene-command-panel footer button {
+  /* height 5.625cqw -> 45px, background var(--qc-screen-background),
+     font-size 2cqw -> 16px - all the fixes file's own final pass. */
+  width: 100%;
+  height: 45px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--qc-screen-background);
+  color: var(--qc-screen-text-primary);
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+.scene-command-panel footer button:disabled { opacity: .5; cursor: default; }
+
+/* CorOsSceneLabelDialog / SceneQuickEditPopover (scene-editor.tsx) - the
+ * device's own scene name/color screen, at its native 800x480, since -
+ * unlike CorOsSceneCommand above - no prior fixture source exists to port
+ * cascade math from. Every cqw figure below is the device's own px divided
+ * by 8 (1cqw = 1% of the canonical 800px screen, same resolution technique
+ * as the header comment above documents), and the panel below establishes
+ * that ratio for
+ * real with `container-type: inline-size`; the app mounts the editor inside
+ * the 800x480 QC display, where it fills the screen, unlike the smaller
+ * centered destination panel. See SceneQuickEditPopover's own module
+ * comment in scene-editor.tsx for the two judgment calls (the reserved red
+ * "confirm color" slot, and the keyboard's scope cuts) this geometry backs. */
+.scene-label-dialog-overlay { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; }
+.scene-label-dialog-overlay.is-device-screen { position: absolute; z-index: 2; }
+.scene-label-dialog-scrim { position: absolute; inset: 0; background: var(--qc-palette-424142); opacity: .55; }
+.scene-label-dialog-panel {
+  position: relative;
+  container-type: inline-size;
+  box-sizing: border-box;
+  width: min(800px, 96vw);
+  aspect-ratio: 800 / 480;
+  max-height: 94vh;
+  overflow: hidden;
+  border: 0;
+  border-radius: 10px;
+  background: var(--qc-screen-surface-base);
+  color: var(--qc-screen-text-primary);
+  font-family: var(--qc-font-device-plain);
+}
+.scene-label-dialog-overlay.is-device-screen .scene-label-dialog-panel { width: 100%; height: 100%; max-height: none; border-radius: 0; }
+
+/* Header: X (8-73px), a fixed red "apply color" button (92-157px), 7
+ * selectable swatches (166-675px, 74px pitch), then Save (694-791px) - all
+ * 44px tall. */
+.scene-label-dialog-toolbar { display: flex; align-items: center; gap: 2.375cqw; padding: 1cqw 1cqw 0; }
+.sld-swatches { display: flex; flex: 1; justify-content: center; gap: 1.125cqw; }
+.sld-btn { box-sizing: border-box; width: 8.25cqw; height: 5.5cqw; padding: 0; border: 0; border-radius: 1.25cqw; display: grid; place-items: center; cursor: pointer; }
+.sld-btn svg { width: 50%; height: 50%; }
+.sld-btn:disabled { opacity: .5; cursor: default; }
+.sld-clear { background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
+/* The same RGB565-ladder value already named var(--qc-category-amp); reused
+   here for its value, not its category. */
+.sld-confirm { background: var(--qc-category-amp); color: var(--qc-screen-text-primary); }
+.sld-swatch { border: 2px solid var(--qc-transparent); }
+.sld-swatch[aria-selected="true"] { border-color: var(--qc-screen-text-primary); }
+/* var(--qc-palette-1838ff) already names this value. */
+.sld-save { width: 12.25cqw; background: var(--qc-palette-1838ff); color: var(--qc-screen-text-primary); }
+
+/* Scene name: large editable text in the scene's own (live-previewed) color,
+ * 73-150px, cap-height 41px on "M" (~58px font-size). */
+.scene-label-dialog-name { margin-top: 2.75cqw; text-align: center; }
+.scene-label-dialog-name input {
+  box-sizing: border-box;
+  width: 88%;
+  margin: 0 auto;
+  display: block;
+  padding: 0;
+  border: 0;
+  background: var(--qc-transparent);
+  text-align: center;
+  font: inherit;
+  font-size: 7.25cqw;
+  font-weight: 400;
+  line-height: 9.75cqw;
+  outline: none;
+}
+.scene-label-dialog-name input:disabled { opacity: .6; }
+
+/* Scene selector pill: 131x44px centered, badge 24x24px at
+ * var(--qc-scene-badge). */
+.scene-label-dialog-selector { margin: 2.25cqw auto 0; width: 16.375cqw; height: 5.375cqw; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; padding: 0 1cqw; border-radius: 1.25cqw; background: var(--qc-screen-surface-raised); }
+.sld-nav { border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 2.5cqw; line-height: 1; padding: .3cqw .6cqw; cursor: pointer; }
+.sld-nav:disabled { opacity: .35; cursor: default; }
+.sld-badge { display: grid; place-items: center; width: 3cqw; height: 3cqw; border-radius: .6cqw; background: var(--qc-scene-badge); color: var(--qc-palette-151515); font-weight: 800; font-size: 1.75cqw; }
+
+/* Keyboard: 4 rows, 56px tall with 9px gaps, starting 224px from the top;
+ * QWERTY (224px, flush left) / ASDFGHJKL (288px, indented 41px, half a key)
+ * / shift+ZXCVBNM+backspace (352px) / 123,.Space.Save (416px). Key pitch
+ * 79px (71px key + 8px gap); shift/backspace/123/Save are double-width
+ * (112px) and share the header buttons' surface-raised background, where
+ * every plain letter/punctuation/space key uses var(--qc-rotary-face)
+ * instead - a different, unnamed-for-this-purpose but exactly-matching
+ * token, reused rather than duplicated. */
+.scene-label-dialog-keyboard { margin-top: 2.5cqw; padding: 0 .875cqw; display: flex; flex-direction: column; gap: 1.125cqw; }
+.sld-kb-row { display: flex; gap: 1.125cqw; }
+.sld-kb-row-2 { margin-left: 5.125cqw; }
+.sld-key {
+  position: relative;
+  box-sizing: border-box;
+  flex: 0 0 8.75cqw;
+  height: 7cqw;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: .75cqw;
+  background: var(--qc-rotary-face);
+  color: var(--qc-screen-text-primary);
+  font: inherit;
+  font-size: 2cqw;
+  cursor: pointer;
+}
+.sld-key:disabled { opacity: .5; cursor: default; }
+/* Sampled (57,60,57) on the key's own (33,36,33) ground - var(--qc-palette-393c39)
+   already names that exact value. */
+.sld-key sup { position: absolute; top: .5cqw; right: .85cqw; font-size: 1.1cqw; font-weight: 400; color: var(--qc-palette-393c39); }
+.sld-key-wide { flex-basis: 14cqw; background: var(--qc-screen-surface-raised); font-size: 1.75cqw; }
+.sld-key-space { flex: 1 1 auto; }
+.sld-key[aria-pressed="true"] { background: var(--qc-screen-surface-control); }

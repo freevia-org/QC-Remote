@@ -1,0 +1,42 @@
+@scope (.qc-screen-fixture-root) {
+.settings-midi-detail.settings-midi-detail { padding: 1.75cqw 0 0; }
+.settings-midi-detail.settings-midi-detail h1 { height: 4cqw; margin: 0 0 1.75cqw; padding: 0 2.25cqw; }
+/* Rows are ruled at x 288..783 inside a 272..791 panel: 16px in from the
+   left, 8px short on the right. A border-bottom spans the whole border box,
+   so the rule is its own inset line here as in the Directory. */
+.settings-midi-detail > div { position: relative; height: 7.5cqw; display: grid; grid-template-columns: 4.5cqw 1fr 17.125cqw; align-items: center; padding: 0 1cqw 1px 2.25cqw; font-size: 2.25cqw; }
+.settings-midi-detail > div::after { content: ""; position: absolute; z-index: 0; left: 2cqw; right: 1cqw; bottom: 0; height: 1px; background: var(--qc-palette-182018); }
+.settings-midi-detail > div > b { width: 2.75cqw; height: 2.75cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-screen-surface-base); color: var(--qc-screen-surface-control); font-size: 1.5cqw; }
+.settings-midi-detail > div > button { height: 4.625cqw; display: flex; align-items: center; padding: 0 1cqw; border-radius: .75cqw; background: var(--qc-screen-background); text-align: left; font-size: 2.25cqw; }
+.settings-midi-detail > div > button i { margin-left: auto; font-size: 1.5cqw; font-style: normal; }
+/* The chevron centres on (766.5, 144.5); left where the line box put it
+   the 24px art lands 3px left and on a quarter pixel. */
+.settings-midi-detail > div > button i > .qc-ui-icon-down { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; transform: translate(3px, -.75px); }
+.settings-midi-detail > div > label { position: relative; width: 8.25cqw; height: 7.5cqw; justify-self: end; display: block; padding-left: 5cqw; color: var(--qc-screen-text-muted); font-size: 1.75cqw; }
+.settings-midi-detail > div > label > .qc-pill-toggle-labels { height: 100%; grid-template-rows: 1fr 1fr; align-items: center; }
+/* The toggles are QcPillToggle; this is placement only. The four pills sit
+   at x 718 and y 180.95, 240.96, 300.94 and 420.98 - one offset from the
+   label box serves all four, because the rows are evenly spaced. */
+.settings-midi-detail > div > label > .qc-pill-toggle { position: absolute; left: 0; top: .875cqw; }
+.settings-midi-detail > div:first-of-type { height: 6.75cqw; }
+.coros-settings-official.settings-midi .settings-section b > svg,
+.coros-settings-official.settings-midi > main > nav button b > svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.coros-settings-official.settings-account,
+.coros-settings-official.settings-account * { font-family: var(--qc-font-device-plain); }
+.coros-settings-official.settings-account b > svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.coros-settings-official.settings-account > main > nav button b { color: var(--qc-screen-text-primary); }
+/* The header glyph crops at (24, 18), 24x24. Left inline it hangs off the
+   25.6px line box's baseline; a 24px grid cell blockifies it and, centred
+   in the 44px pill, lands it on 18. The extra 4px is the gap the device
+   leaves past the pill's padding. */
+.coros-settings-official.settings-account .settings-section b,
+.coros-settings-official.settings-midi .settings-section b { width: 24px; height: 24px; display: grid; place-items: center; margin-left: 4px; }
+.coros-settings-official.settings-account .settings-section,
+.coros-settings-official.settings-midi .settings-section { grid-template-columns: 5.25cqw 1fr 2cqw; }
+.coros-settings-official.settings-account .settings-account-detail > * { transform: translateY(-.5cqw); }
+.coros-settings-official.settings-account .settings-account-detail > header { height: 4.875cqw; }
+.coros-midi-out > header > span { transform: translateY(-1px); }
+.coros-midi-out > header .midi-trash { width: 8.25cqw; transform: translateX(-.375cqw); background: var(--qc-editor-disabled-accent); }
+.coros-midi-out > header button > .qc-ui-icon-check { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+
+}

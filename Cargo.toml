@@ -1,0 +1,71 @@
+# One workspace for the library and service crates that make up the public QC
+# Remote source release: every crate under packages/rust plus the two services,
+# listed explicitly so the member list is the directory list
+# (scripts/verify-manifest-pins.test.mjs checks the two match).
+#
+# apps/windows/src-tauri is deliberately excluded: it builds under a different toolchain with
+# TAURI_CONFIG overrides and carries Tauri build scripts, and folding it in
+# here would mean its release build and this workspace contend over one
+# lockfile for no shared artifacts.
+[workspace]
+resolver = "2"
+members = [
+    "packages/rust/quadcortex",
+    "packages/rust/qc-broker-framing",
+    "packages/rust/qc-relay-protocol",
+    "packages/rust/qc-relay-client",
+    "packages/rust/qc-windows-midi",
+    "packages/rust/qc-owner-only-file",
+    "packages/rust/qc-windows-process",
+    "packages/rust/quadcortex-android",
+    "packages/rust/quadcortex-windows",
+    "services/device-broker",
+    "services/rust-mcp",
+]
+exclude = ["apps/windows/src-tauri"]
+
+# Third-party crates used by more than one member, declared once so their
+# versions cannot drift apart. A member names one as `x.workspace = true`,
+# adding any features of its own; scripts/verify-manifest-pins.test.mjs fails a
+# member that restates one of these with a literal version instead. Features
+# set here apply to every member that inherits the crate, so only the ones all
+# of them need belong here.
+#
+# apps/windows/src-tauri is its own workspace and cannot inherit these. Its
+# copies of serde, serde_json, base64, rand, tokio and async-trait name the
+# same versions, and the same test checks that they do. The path dependencies
+# it shares with this workspace resolve their own `workspace = true` entries
+# against this table, wherever cargo is started from.
+[workspace.dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+prost = "0.14"
+prost-build = "0.14"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = "1"
+uuid = { version = "1", features = ["v4"] }
+windows-sys = "0.61"
+
+# This root is a virtual manifest, so it has no [package] table to carry the
+# project license. Cargo's own place for a workspace-wide license is here.
+# Each member still declares the expression literally on its own [package]
+# table, since a workspace-inherited license is not assumed by every consumer
+# of these manifests. The workspace contains files LICENSE lists in its
+# Schedules A and B, so its expression adds LicenseRef-QC-Remote-Reference
+# (LICENSES/LicenseRef-QC-Remote-Reference.txt); a member declares that only
+# when it contains or embeds such a file (scripts/verify-license-carveout.mjs).
+# Cargo accepts a LicenseRef in `license` as-is (checked with cargo metadata
+# and cargo package --list on cargo 1.97), so no license-file is needed.
+[workspace.package]
+license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
+
+# No debuginfo for dependencies in debug builds. Dependency debuginfo is what
+# makes target/ directories enormous, and almost none of that is our code.
+# `package."*"` matches non-workspace packages only, so every crate in this
+# repository keeps full debuginfo and our own backtraces, breakpoints and
+# panics are unchanged.
+[profile.dev.package."*"]
+debug = false

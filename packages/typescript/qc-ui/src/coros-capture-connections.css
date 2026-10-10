@@ -1,0 +1,407 @@
+/* Neural Capture connection steps.
+   Jack positions come from the device framebuffer in its own 800x480 pixels and
+   are divided by 8 in the component, so 1cqw is one device pixel times 8 and
+   the panel scales with the screen instead of being pinned to one host size. */
+
+/* `.qc-screen` is a grid in the shared stylesheet, which stretches a flow
+   layout into rows and pushes content past the bezel. Every element here is
+   placed absolutely at its device coordinate instead, so the reconstruction
+   does not depend on what the surrounding sheet does with its children. */
+.coros-capture-connections {
+  position: relative;
+  display: block;
+  container-type: inline-size;
+  height: 60cqw;
+  overflow: hidden;
+  background: var(--qc-screen-surface-base);
+  color: var(--qc-screen-text-primary);
+  font-size: 2cqw;
+}
+
+.coros-capture-connections > header { display: contents; }
+.coros-capture-connections > header > span { display: none; }
+
+.coros-capture-connections > header button {
+  position: absolute;
+  top: 1cqw;
+  height: 5.5cqw;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: .75cqw;
+  background: var(--qc-screen-surface-raised);
+  color: var(--qc-screen-text-primary);
+  font-size: 2.75cqw;
+  line-height: 1;
+}
+
+.capture-connections-close { left: 1cqw; width: 12.25cqw; }
+.capture-connections-skip { left: 15.5cqw; width: 8.25cqw; }
+.capture-connections-back { left: 77.5cqw; width: 8.25cqw; }
+.capture-connections-next { left: 87.5cqw; width: 11cqw; background: var(--qc-screen-surface-control); }
+.capture-connections-next.is-wide { left: 86.75cqw; width: 12.25cqw; }
+
+.capture-connections-caption {
+  position: absolute;
+  left: 4cqw;
+  right: 4cqw;
+  /* A three-line caption on a 21px pitch. */
+  top: 8.625cqw;
+  margin: 0;
+  text-align: center;
+  line-height: 1.3125;
+  color: var(--qc-screen-text-primary);
+}
+
+.capture-connections-caption b { font-weight: 400; color: var(--qc-screen-accent); }
+
+/* Spans the whole screen, so a jack's `top` is its device y exactly. */
+.capture-connections-panel {
+  position: absolute;
+  inset: 0;
+}
+
+.capture-jack {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: block;
+  width: 4.25cqw;
+  height: 4.25cqw;
+  color: var(--qc-context-capture-muted);
+}
+
+/* The four combo jacks are 52px across, the USB jack 28. */
+.capture-jack-xlr, .capture-jack-input { width: 6.5cqw; height: 6.5cqw; }
+.capture-jack-usb { width: 3.5cqw; height: 3.5cqw; }
+
+/* The jack art is sized independently of the label anchor: the anchor keeps
+   its own box so `small` stays put, and each `<svg>` is centred on it at the
+   size the device actually draws that port. */
+.capture-jack svg {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 43px;
+  height: 43px;
+  transform: translate(-50%, -50%);
+  overflow: visible;
+  /* Rear-panel art is the one place CorOS scales its own icons: the jacks
+     carry mid-tone greys between the var(--qc-route-pill) panel and the
+     var(--qc-context-capture-muted) ink, so these are blended, not snapped
+     to the grid. */
+  shape-rendering: auto;
+}
+
+/* io.usb's ink sits two art units above the middle of its 48-unit box, so the
+   box has to hang 2px low for the ink to land in the right place. */
+.capture-jack-usb svg { width: 43px; height: 43px; transform: translate(-50%, calc(-50% + 2px)); }
+
+/* The rear panel draws its TRS nuts point-up; io.jack is the same nut
+   point-sideways, rotated a quarter turn rather than redrawn. */
+.capture-jack-trs svg { transform: translate(-50%, -50%) rotate(90deg); }
+
+/* io.midi centred in a 42px box, which is where its ink lands on the port. */
+.capture-jack-din svg { width: 42px; height: 42px; transform: translate(-50%, -50%); }
+
+/* io.combo centred in a 52px box, which is exactly the port's ink. A previous
+   version of this rule lifted the box seven pixels and added a second, mirrored
+   copy of the glyph to patch in a bottom cap it believed was missing - the cap
+   is not missing (io.combo's ring closes on its own), so that mirror drew a
+   detached crescent under both combo jacks that the unit does not draw. */
+.capture-jack-xlr svg { width: 52px; height: 52px; transform: translate(-50%, -50%); }
+
+/* io.input carries only the inner barrel; the rim is drawn separately below
+   (`.capture-jack-input::before`) as a plain circle, concentric with the
+   barrel, in the jack's own colour.
+
+   57px, not 60: at 60px the barrel renders too wide for the port. The 68-unit
+   art is the same drawing the panel scales, fitted to the panel barrel's own
+   extent - this is the box, not the silhouette. */
+.capture-jack-input svg { width: 57px; height: 57px; transform: translate(-50%, calc(-50% - 2px)); }
+
+.capture-jack-input::before {
+  content: "";
+  position: absolute;
+  /* The art's own `reference.screen` disc is painted in the panel colour and is
+     wider than the rim, so without a layer of its own the rim is covered. */
+  z-index: 1;
+  left: 50%;
+  top: 50%;
+  width: 48px;
+  height: 48px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  /* 48px plus two 2px edges is the port's own 52px ink, so the rim is
+     concentric with the port centre exactly. */
+  transform: translate(-50%, -50%);
+}
+
+/* The extracted I/O vectors keep their canonical two-layer artwork, and the two
+   layers are not interchangeable: `reference.screen` is var(--qc-screen), the black *behind*
+   the jack, and the second layer (routeGlyphSurface, or primaryText on the USB
+   port) is the bright metal. Filling `reference.screen` with currentColor
+   inverts every jack: the combo jacks come out as filled discs with dark pins
+   instead of rings, and the route token leaks out as the ring. The ink layer
+   takes currentColor so the muted, green and white states all follow `color`. */
+.coros-capture-connections .capture-jack svg [data-qc-role="reference.screen"] { fill: var(--qc-screen-surface-base); }
+.coros-capture-connections .capture-jack svg [data-qc-role="reference.routeGlyphSurface"],
+.coros-capture-connections .capture-jack svg [data-qc-role="reference.primaryText"] { fill: currentColor; }
+
+/* The device draws these header glyphs 1:1 at their natural 24x24. 3cqw is
+   that same 24px, but it lost to the doubled #root rule in
+   qc-device-typography.css and the glyph followed the button's 2.75cqw
+   font-size to 22px instead. The custom property wins from here. */
+.coros-capture-connections > header button > svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+
+/* A port's ink is its state. The panel uses exactly four values and nothing
+   between them: var(--qc-context-capture-muted) idle, var(--qc-palette-313031)
+   for a port step 1 asks you to unplug, var(--qc-screen-accent) for the port
+   the step is about and var(--qc-palette-ffffff) for one already connected -
+   pure white, not the f4f6f4 the screen uses for text. All four sit on the
+   RGB565 ladders, which is the proof the unit substitutes a colour rather
+   than fading one.
+
+   These rules carry one class on top of `.capture-jack`, so a per-screen rule
+   naming the screen *and* the jack outscores them. Keep per-screen colour out
+   of this file; the state carries it.
+
+   Three of the four resolve through qc-io-jack.css, which owns this control's
+   state model for both of its drawings. Only idle is stated here, on the
+   `.capture-jack` rule above, because it is the one ink the two families
+   read differently. */
+.capture-jack.is-disabled { color: var(--qc-io-jack-disabled); }
+.capture-jack.is-active { color: var(--qc-io-jack-active); }
+.capture-jack.is-plugged { color: var(--qc-io-jack-plugged); }
+
+/* Step 1 asks for Send and Return to be disconnected, and strikes those four
+   jacks through rather than merely dimming them. */
+.capture-jack.is-crossed::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 5.25cqw;
+  height: 1.5px;
+  background: var(--qc-context-capture-muted);
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.capture-jack small {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 1.375cqw);
+  transform: translateX(-50%);
+  white-space: pre;
+  text-align: center;
+  /* 14px on an 18px pitch. */
+  font-size: 1.75cqw;
+  line-height: 2.25cqw;
+  /* Every port name on the panel is var(--qc-editor-muted), highlighted or
+     not - it never turns white to match a "plugged" jack. */
+  color: var(--qc-editor-muted);
+}
+
+/* The 52px ports sit on the upper of the panel's two name rows - OUT 2, OUT 1,
+   INPUT 2 and INPUT 1 all ink from y 267 - while the 34px ports' names ink from
+   301. Both are absolute silkscreen rows, so each box gets its own drop. */
+.capture-jack-xlr small, .capture-jack-input small { top: calc(100% + 1.625cqw); }
+
+.capture-jack small.is-above {
+  top: auto;
+  bottom: calc(100% + 1.375cqw);
+}
+
+/* USB, MIDI OUT and MIDI IN have no port under them, so the panel does not hang
+   their names off the port at all: it drops each to the lower name row - the one
+   EXP 1 sits on - and runs a rule down to it, 2x44 at var(--qc-palette-313031),
+   centred on the port. */
+.capture-jack.has-leader::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 3.375cqw);
+  width: 2px;
+  height: 5.5cqw;
+  background: var(--qc-palette-313031);
+  transform: translateX(-50%);
+}
+
+.capture-jack.has-leader small { top: calc(50% + 9.125cqw); }
+
+/* io.headphones-symbol at its natural 24. The mark is the panel's silkscreen,
+   var(--qc-editor-muted), and only turns white when the headphones port next
+   to it is the live one. The fill/stroke here are the layer's own
+   presentation attributes, so only a rule on the path itself can recolour it. */
+.capture-phones-glyph {
+  position: absolute;
+  left: 52.125cqw;
+  top: 21cqw;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  overflow: visible;
+}
+
+.capture-phones-glyph [data-qc-role="reference.primaryText"] { fill: var(--qc-editor-muted); }
+.is-capture-monitoring .capture-phones-glyph [data-qc-role="reference.primaryText"] { fill: var(--qc-palette-ffffff); }
+
+.capture-annotation {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: pre;
+  text-align: center;
+  /* Same 14px as the port names, on the callout's own two-line 17px pitch. */
+  font-size: 1.75cqw;
+  line-height: 2.125cqw;
+  /* The callouts are a step brighter than the port names. */
+  color: var(--qc-palette-adaaad);
+}
+
+/* The arrow runs from the caption toward its jack, so it points down when the
+   label sits above the panel and up when it sits below. */
+.capture-annotation::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  width: 1px;
+  height: 3.25cqw;
+  background: var(--qc-context-capture-muted);
+}
+
+.capture-annotation.is-up::before { bottom: calc(100% + .5cqw); }
+.capture-annotation.is-down::before { top: calc(100% + .5cqw); }
+
+.capture-annotation::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  width: .9cqw;
+  height: .9cqw;
+  border-left: 1px solid var(--qc-context-capture-muted);
+  border-top: 1px solid var(--qc-context-capture-muted);
+}
+
+.capture-annotation.is-up::after {
+  bottom: calc(100% + 3.35cqw);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.capture-annotation.is-down::after {
+  top: calc(100% + 3.35cqw);
+  transform: translateX(-50%) rotate(-135deg);
+}
+
+/* Capture Out flows away from the jack toward the label below it. Keep
+   the shaft above the text, with the downward head at the shaft's lower end. */
+.capture-annotation.is-down-above::before { bottom: calc(100% + .5cqw); }
+.capture-annotation.is-down-above::after {
+  bottom: calc(100% + .5cqw);
+  transform: translateX(-50%) rotate(-135deg);
+}
+
+.capture-tube-warning {
+  position: absolute;
+  left: 38.5cqw;
+  right: 1.75cqw;
+  top: 37.625cqw;
+  height: 13.75cqw;
+  box-sizing: border-box;
+  padding: 0;
+  border-radius: .5cqw;
+  background: var(--qc-palette-ffba6b);
+  /* Everything the unit inks on this plate - heading, body, rule and tube - is
+     flat var(--qc-palette-000000), not a separate darker text colour. */
+  color: var(--qc-palette-000000);
+}
+
+/* The rule inside the plate, 2px at x 324, runs the box's whole height. */
+.capture-tube-warning::before {
+  content: "";
+  position: absolute;
+  left: 2cqw;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--qc-palette-000000);
+}
+
+.capture-tube-warning::after {
+  content: "";
+  position: absolute;
+  left: 44.875cqw;
+  top: -1cqw;
+  width: 0;
+  height: 0;
+  border-left: 1cqw solid var(--qc-transparent);
+  border-right: 1cqw solid var(--qc-transparent);
+  border-bottom: 1cqw solid var(--qc-palette-ffba6b);
+}
+
+.capture-tube-warning strong {
+  position: absolute;
+  /* 34px from the plate's left edge, not 35. */
+  left: 4.25cqw;
+  top: 1cqw;
+  font-size: 1.75cqw;
+  line-height: 2.25cqw;
+  letter-spacing: 0;
+  /* Medium weight, not the bold a bare <strong> takes. */
+  font-weight: 500;
+}
+
+.capture-tube-warning p {
+  position: absolute;
+  /* 34px from the plate's left edge, not 35. */
+  left: 4.25cqw;
+  top: 3.75cqw;
+  width: 47.75cqw;
+  margin: 0;
+  font-size: 1.75cqw;
+  line-height: 2.25cqw;
+}
+
+.capture-tube-warning svg {
+  position: absolute;
+  /* The box is the device crop in device pixels, so the outline draws at one
+     art unit per device pixel and nothing is rescaled. 14px, not 13: at 13 the
+     whole tube renders one pixel off from the unit's own drawing. */
+  right: 1.75cqw;
+  top: 1.5cqw;
+  width: 4.75cqw;
+  height: 10.75cqw;
+  fill: var(--qc-palette-000000);
+  stroke: none;
+}
+
+/* The footer is 16px on a 17px pitch, and the port names inside it are
+   brighter than the sentence, not green. */
+.capture-connections-footer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 46.375cqw;
+  margin: 0;
+  text-align: center;
+  font-size: 2cqw;
+  line-height: 1.0625;
+  color: var(--qc-palette-9aa09a);
+}
+
+.capture-connections-footer b { font-weight: 400; color: var(--qc-screen-text-primary); }
+
+.capture-connections-dots {
+  position: absolute;
+  left: 50%;
+  top: 55.875cqw;
+  display: flex;
+  gap: 1cqw;
+  transform: translateX(-50%);
+}
+
+.capture-connections-dots i {
+  width: 4cqw;
+  height: 2px;
+  background: var(--qc-palette-3a3d3a);
+}
+
+.capture-connections-dots i.is-active { background: var(--qc-screen-text-primary); }

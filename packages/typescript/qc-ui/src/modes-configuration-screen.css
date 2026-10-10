@@ -1,0 +1,7 @@
+@scope (.qc-screen-fixture-root) {
+  .coros-modes-configuration .modes-information-glyph { width: 8.25cqw; height: 100%; display: grid; place-items: center; border-radius: 1cqw; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-muted); }
+  .coros-modes-configuration .modes-information-glyph svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; fill: var(--qc-palette-aeb1af); stroke: var(--qc-screen-surface-control); stroke-width: 2; stroke-linecap: round; }
+  .coros-modes-configuration .modes-workflow-a11y,
+  .coros-modes-configuration .modes-refresh-a11y { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); }
+  .coros-modes-configuration .modes-refresh-a11y:focus-visible { position: fixed; z-index: 20; left: 8px; top: 8px; width: auto; height: auto; padding: 8px 12px; clip: auto; clip-path: none; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
+}

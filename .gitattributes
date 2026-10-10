@@ -1,0 +1,97 @@
+### QC-Remote line-ending policy #############################################
+#
+# Root cause this file exists to close: files were showing as "modified" with
+# a pure line-ending diff, depending on which OS/tool last wrote them, because
+# nothing in the repo pinned normalization -- only each contributor's local
+# core.autocrlf setting did, and those disagree. Git normalizes line endings
+# for checkout on either side, but without .gitattributes it also uses the
+# checked-out line endings when computing status/diff, so a CRLF checkout on
+# Windows and an LF checkout on Linux/macOS never agree on whether a file is
+# "clean". Setting eol= explicitly here makes Git normalize to a single
+# encoding for both the stored blob AND every status/diff comparison, on any
+# OS, regardless of the local core.autocrlf value.
+#
+################################################################################
+
+# Baseline: let Git auto-detect text vs binary for anything not listed below,
+# and normalize any text file to LF.
+* text=auto eol=lf
+
+### Explicit text types (eol=lf) ##############################################
+# Redundant with the auto-detected baseline for most of these, but pinned
+# explicitly so intent isn't left to heuristics as new files are added.
+
+# Rust
+*.rs                text eol=lf
+Cargo.toml          text eol=lf
+Cargo.lock          text eol=lf
+
+# TypeScript / JavaScript
+*.ts                text eol=lf
+*.tsx               text eol=lf
+*.mts               text eol=lf
+*.js                text eol=lf
+*.mjs               text eol=lf
+*.cjs               text eol=lf
+package-lock.json   text eol=lf
+
+# JSON / config / data
+*.json              text eol=lf
+*.jsonc             text eol=lf
+*.toml              text eol=lf
+*.yml               text eol=lf
+*.yaml              text eol=lf
+*.properties        text eol=lf
+*.proto             text eol=lf
+*.example           text eol=lf
+*.lockfile          text eol=lf
+
+# Docs / text
+*.md                text eol=lf
+*.txt               text eol=lf
+LICENSE             text eol=lf
+LICENSE-*           text eol=lf
+
+# Web
+*.html              text eol=lf
+*.css               text eol=lf
+*.svg               text eol=lf
+
+# Android / Java / Gradle
+*.java              text eol=lf
+*.gradle            text eol=lf
+*.pro               text eol=lf
+*.xml               text eol=lf
+
+# Windows installer script (NSIS) - makensis handles LF fine.
+*.nsh               text eol=lf
+
+# Git metadata
+.gitignore          text eol=lf
+.gitattributes      text eol=lf
+
+# PowerShell 7+ handles LF fine; keep it consistent with everything else
+# rather than carving out a CRLF exception.
+*.ps1               text eol=lf
+
+# POSIX shell script with no extension (Gradle wrapper launcher). Must stay
+# LF: a CRLF shebang line breaks exec() on Linux/macOS ("bad interpreter").
+/apps/android/android/gradlew text eol=lf
+
+# Legacy Windows batch file (Gradle wrapper's cmd.exe entry point). Old
+# cmd.exe batch parsing can misbehave with LF-only files, so this one keeps
+# CRLF rather than following the LF-everywhere default.
+*.bat               text eol=crlf
+
+# Upstream licence texts kept byte for byte (each record's SHA-256 pins its
+# source); some carry trailing blanks, so `git diff --check` must not flag them.
+legal/THIRD_PARTY-LICENSE-TEXTS.txt text eol=lf whitespace=-blank-at-eol
+skills/qc-device-knowledge/legal/THIRD_PARTY-LICENSE-TEXTS.txt text eol=lf whitespace=-blank-at-eol
+
+### Binary files ###############################################################
+# Never touched by line-ending normalization, diffed, or merged as text.
+
+*.png               binary
+*.ico               binary
+*.jar               binary
+*.ttf               binary

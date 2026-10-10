@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "description": "Host-local broker descriptor, generation-scoped release marker, cooperative connection roles, and tray readings. Roles do not grant permission. The broker draws its own tray icon and reads the tray settings beside its descriptor; only the app writes trayEnabled.",
+  "descriptor": {
+    "writerName": "BrokerDescriptor",
+    "readerName": "DeviceBrokerDescriptor",
+    "fields": [
+      { "rust": "port", "wire": "port", "writerType": "u16", "readerType": "u16" },
+      { "rust": "bearer_token", "wire": "bearerToken", "writerType": "String", "readerType": "String" },
+      { "rust": "instance_id", "wire": "instanceId", "writerType": "String", "readerType": "String" },
+      { "rust": "process_id", "wire": "processId", "writerType": "u32", "readerType": "u32" },
+      { "rust": "process_created_at", "wire": "processCreatedAt", "writerType": "Option<u64>", "readerType": "Option<u64>", "readerDefault": true,
+        "description": "Raw Windows FILETIME process creation stamp; compare for equality to reject recycled process IDs. Missing/null means unknown." },
+      { "rust": "published_at_unix_ms", "wire": "publishedAtUnixMs", "writerType": "u64", "readerType": "u64" },
+      { "rust": "gateway_api_version", "wire": "gatewayApiVersion", "writerType": "u64", "readerType": "Option<u64>", "readerDefault": true,
+        "description": "Current writers always publish a gateway version; readers accept its absence from an older broker." }
+    ]
+  },
+  "releaseMarker": {
+    "name": "BrokerReleaseMarker",
+    "pathScheme": {
+      "base": "descriptor-with-extension",
+      "prefix": "released-",
+      "instanceEncoding": "utf8-hex-lower",
+      "suffix": ".json"
+    },
+    "fields": [
+      { "rust": "instance_id", "wire": "instanceId", "type": "String" },
+      { "rust": "forced", "wire": "forced", "type": "bool" }
+    ]
+  },
+  "roles": [
+    { "rust": "Participant", "wire": "participant", "default": true },
+    { "rust": "Observer", "wire": "observer", "idlePolicy": true }
+  ],
+  "coarseReadings": [
+    { "rust": "BrokerNotRunning", "label": "Broker not running" },
+    { "rust": "BrokerRunning", "label": "Broker running — status unavailable" }
+  ],
+  "syncingPhases": ["handshaking", "syncing"],
+  "observerKeepConnected": {"wire": "keepConnected", "type": "boolean", "default": false, "renewalSeconds": 30, "staleMinutes": 60, "description": "Only legal for observers with null idlePolicyMinutes. Healthy Never trays renew this hold; old null observers retain their original fallback deadline."},
+  "attachedReadings": [
+    { "rust": "Disconnected", "label": "Disconnected", "when": { "phase": "disconnected" } },
+    { "rust": "Ready", "label": "Ready", "when": { "connected": true, "synchronized": true } },
+    { "rust": "Syncing", "label": "Syncing", "when": { "connected": true } },
+    { "rust": "NoDevicePresent", "label": "No device present", "when": {} }
+  ]
+}

@@ -1,0 +1,50 @@
+/* Paint and the two rotations only. Every radius and width lives in
+   qc-rotary-dial.tsx beside the measurement that produced it, so a screen can
+   recolour a dial or place it, but cannot quietly reshape it into a
+   thirteenth variant. */
+.qc-rotary {
+  display: block;
+  overflow: visible;
+}
+
+/* Several screens used to draw their own ring on the element that now carries
+   the shared dial - a border, a conic-gradient face, an offset box-shadow
+   crescent. Those are gone from the stylesheets, and this keeps any that come
+   back from doubling up on the vector. */
+svg.qc-rotary {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: none !important;
+  box-shadow: none !important;
+}
+svg.qc-rotary::before,
+svg.qc-rotary::after { content: none !important; }
+
+.qc-rotary-rim { fill: var(--qc-rotary-rim); }
+.qc-rotary-face { fill: var(--qc-rotary-face); }
+
+/* The scale and the fill are two rings, not one: on the unit the fill is 3.9
+   wide about r 32.55 and the scale 3.0 about r 30.5, so the fill covers only
+   the scale's outer half and stands 2.5px proud of it. Both start at 135deg
+   and run 270deg clockwise, which is 75% of a whole turn at pathLength 100. */
+.qc-rotary-track,
+.qc-rotary-progress {
+  fill: none;
+  stroke-linecap: butt;
+  transform: rotate(135deg);
+  transform-origin: 36px 36px;
+}
+.qc-rotary-track { stroke: var(--qc-rotary-track); stroke-width: 3; stroke-dasharray: 75 100; }
+/* The dash offset lets the fill start somewhere other than the sweep's own
+   minimum, which is what the tuner's centre-referenced reading needs. */
+.qc-rotary-progress { stroke: var(--qc-rotary-accent); stroke-width: 3.9; stroke-dasharray: var(--qc-rotary-progress) 100; stroke-dashoffset: var(--qc-rotary-fill-start, 0); }
+
+.qc-rotary-step { fill: var(--qc-rotary-step); }
+.qc-rotary-step.is-current { fill: var(--qc-rotary-accent); }
+.qc-rotary-pointer {
+  stroke: var(--qc-rotary-pointer);
+  stroke-width: 3;
+  stroke-linecap: butt;
+  transform: rotate(var(--qc-rotary-angle));
+  transform-origin: 36px 36px;
+}

@@ -1,0 +1,64 @@
+@scope (.qc-screen-fixture-root) {
+/* Splitter/Mixer parameter editor body - the routingNode case in
+   parameter-editor.tsx's CorOsParameterEditor. Geometry and colour below are
+   the same values remaining-fixtures-fixes.css already carries for
+   CorOsRoutingScreen's own "splitter-editor"/"mixer-editor" fixture views
+   (coros-screen-fixtures.tsx). That file is the dev-only fixture harness's
+   own copy and never loads outside it, so this is a duplicate, not a move -
+   the same category of gap official-expression.css closed for the
+   expression screen.
+
+   Two differences from the fixture, both deliberate:
+   1. The knob is a real <button class="splitter-knob"> here (for pointer/
+      wheel/keyboard interaction), not a bare, aria-hidden QcRotaryDial - so
+      the position/size rule targets the button and an inner-svg rule fills
+      it, where the fixture put both on one element.
+   2. This body sits inside the ordinary CorOsParameterEditor overlay panel
+      (live-surface.css's ".coros-parameter-editor", roughly the screen's
+      lower 64%), not the fixture's own fullscreen ".coros-splitter-physical"
+      chrome with its own header and PhysicalRoutingGrid above it - the panel
+      this feature reuses is the one every other block already opens with.
+      The row heights below are therefore 1fr/1fr rather than the fixture's
+      fixed 13.375cqw pair, which assumed the taller fullscreen panel; the
+      horizontal geometry (cqw is relative to container inline-size, shared by
+      both layouts) is unchanged. */
+.splitter-controls { height: 100%; margin: 1cqw 1cqw 0; display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: 1fr 1fr; gap: .25cqw 0; border-radius: .75cqw; overflow: hidden; }
+.splitter-controls label,
+.splitter-controls .routing-toggle,
+.splitter-controls .splitter-empty { position: relative; display: block; padding: 1.5cqw 1.25cqw; border-right: 1px solid var(--qc-palette-161a17); background: var(--qc-screen-surface-control); color: var(--qc-palette-737d73); }
+.splitter-controls .routing-toggle { border-top: 0; border-bottom: 0; border-left: 0; text-align: left; font: inherit; }
+.splitter-controls label > strong, .splitter-controls .routing-toggle > strong { display: block; font-size: 1.75cqw; font-weight: 400; }
+.splitter-controls label > small { position: absolute; left: 1.5cqw; bottom: 2cqw; font-size: 1.75cqw; }
+.splitter-controls label > small em { font-style: normal; }
+.splitter-toggle { position: absolute; left: 6.625cqw; top: 4.875cqw; min-height: 7cqw; display: flex; align-items: center; }
+.splitter-toggle > b { color: var(--qc-palette-737d73); font-size: 1.75cqw; font-weight: 400; line-height: 1.45; }
+.splitter-toggle > b em { color: var(--qc-screen-text-muted); font-style: normal; }
+/* QcPillToggle itself is unchanged from the fixture - a bare, aria-hidden svg
+   and a direct child of <label> - so this position rule needed no adaptation
+   at all; only the <label> gained a click/keyboard handler. */
+.splitter-controls label > .qc-pill-toggle, .splitter-controls .routing-toggle > .qc-pill-toggle { position: absolute; left: 2.02cqw; bottom: 1.73cqw; --qc-pill-body: var(--qc-palette-101c10); --qc-pill-detent: var(--qc-palette-087cea); }
+.mixer-controls label > .qc-pill-toggle, .mixer-controls .routing-toggle > .qc-pill-toggle { left: 2.1cqw; bottom: 1.775cqw; --qc-pill-detent: var(--qc-palette-d71952); }
+.mixer-controls .mixer-toggle { top: 5.875cqw; }
+/* The knob wrapper: position/size come from the fixture's own .splitter-knob
+   rule; the button reset and the inner-svg fill rule are this file's own
+   adaptation for interactivity, not a re-measurement. */
+.splitter-knob { position: absolute; left: 73.375%; top: 4.625cqw; width: 72px; height: 72px; translate: -50% 0; padding: 0; border: 0; background: none; }
+.splitter-knob > svg { width: 100%; height: 100%; display: block; }
+.mixer-controls .mixer-knob { top: 4.625cqw; width: 72px; height: 72px; }
+.splitter-knob .qc-rotary-face { fill: var(--qc-palette-212821); }
+.splitter-knob .qc-rotary-track { stroke: var(--qc-palette-212821); }
+.splitter-knob .qc-rotary-rim { fill: var(--qc-palette-181818); }
+}
+.coros-device-workflow { position:absolute; inset:0; z-index:30; box-sizing:border-box; background:var(--qc-palette-171a18); color:var(--qc-screen-text-primary); font-family:var(--qc-font-device-plain); }
+.coros-device-workflow header { height:14%; display:grid; grid-template-columns:10% 1fr 14%; align-items:center; gap:2%; padding:0 2%; background:var(--qc-palette-0f120f); }
+.coros-device-workflow header button { height:70%; border:0; border-radius:.6cqw; background:var(--qc-screen-surface-control); color:var(--qc-screen-text-primary); font-size:1.8cqw; }
+.coros-device-workflow header .is-primary { background:var(--qc-palette-2045ff); font-size:1.35cqw; }
+.coros-device-workflow header strong { text-align:center; font-size:1.9cqw; font-weight:400; }
+.coros-device-workflow > label { display:flex; flex-direction:column; gap:1.2cqw; margin:8% 15%; color:var(--qc-palette-9da19d); font-size:1.15cqw; }
+.coros-device-workflow input { padding:1.4cqw; border:1px solid var(--qc-palette-3fec75); border-radius:.5cqw; background:var(--qc-palette-0f120f); color:var(--qc-screen-text-primary); font-size:1.8cqw; }
+.coros-device-workflow > p { margin:2.2% 5%; color:var(--qc-screen-text-muted); font-size:1.15cqw; }
+.coros-device-workflow > p.is-error { color:var(--qc-app-danger); }
+.coros-looper-assignment-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:.8cqw; padding:0 5%; }
+.coros-looper-assignment-grid button { min-height:8.2cqw; border:1px solid var(--qc-screen-surface-overlay); border-radius:.55cqw; background:var(--qc-screen-surface-control); color:var(--qc-screen-text-primary); display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:.65cqw; padding:1cqw; }
+.coros-looper-assignment-grid button b { color:var(--qc-screen-accent); font-size:1.8cqw; }
+.coros-looper-assignment-grid button span { font-size:1.1cqw; }

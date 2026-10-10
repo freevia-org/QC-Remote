@@ -1,0 +1,12 @@
+{
+  "create": {
+    "method": "device.createSetlist", "name": "Created", "activeFolder": "Existing",
+    "before": ["Existing"], "after": ["Existing", "Created", "Concurrent"],
+    "targetKey": "/media/p4/Presets/Created", "deleted": []
+  },
+  "delete": {
+    "method": "device.deleteSetlist", "name": "Delete", "activeFolder": "Existing",
+    "before": ["Existing", "Delete", "Other"], "after": ["Existing", "Other", "Concurrent"],
+    "targetKey": "/media/p4/Presets/Delete", "deleted": ["Delete"]
+  }
+}

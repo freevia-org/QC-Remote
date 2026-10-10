@@ -1,0 +1,304 @@
+/*
+ * Input Gate's panel geometry duplicated here from remaining-fixtures.css's
+ * `.input-gate-panel` (coros-screen-fixtures.tsx) - that file is
+ * import.meta.env.DEV-gated (coros-screen-fixtures.tsx, never in the
+ * production bundle), so the live panel (lane-control-panel.tsx) needs its
+ * own copy of the same rules to actually render styled, exactly the gap
+ * already closed for the expression and routing screens.
+ * Class names are `.lane-control-*` here, not `.input-gate-*`, because this
+ * panel is not nested inside that fixture's own Grid-preview wrapper - the
+ * real live Grid (CorOsGrid) already renders behind it, the same way
+ * CorOsParameterEditor floats over CorOsGrid rather than drawing its own copy
+ * of it.
+ *
+ * `.is-lane-output`'s header chrome and panel position are confirmed - see
+ * lane-control-panel.tsx's module comment. Its `> main` grid is the device's
+ * five equal-width field columns (VOLUME/PAN/MUTE/SOLO/OUT LEVEL); OUT LEVEL
+ * has no data and is drawn at silence (LaneOutputLevelMeter).
+ */
+/* Full-bleed, invisible - sits behind the panel (z-index 8) and in front of
+   the grid, exactly like surface-shell.css's coros-route-picker-dismiss for
+   the routing picker. The manual's own gesture for leaving Input Gate/Lane
+   Output Control is a tap anywhere outside the panel; this is that tap
+   target. */
+/* The unit dims the page header and the block row behind an open lane panel
+   (a white mark reads 132,134,132 there), so the tap target that closes it is
+   also the dim: the same 0x78 black band the block editors throw over them. */
+.coros-lane-control-dismiss { position: absolute; z-index: 7; inset: 0; padding: 0; border: 0; background: var(--qc-palette-00000078); cursor: default; }
+.lane-control-panel {
+  position: absolute;
+  inset: 63.125% 1% 1.67%;
+  z-index: 8;
+  background: var(--qc-screen-surface-control);
+  color: var(--qc-screen-text-primary);
+  font-family: var(--qc-font-device);
+  container-type: inline-size;
+}
+.lane-control-panel > header {
+  height: 35.5%;
+  display: grid;
+  grid-template-columns: 5.5% 1fr 16.5% 1px 8.2% 8.2%;
+  align-items: center;
+  gap: 1.1%;
+  background: var(--qc-screen-surface-base);
+}
+.lane-control-panel button {
+  height: 80%;
+  border: 0;
+  border-radius: 0.75cqw;
+  background: var(--qc-screen-surface-control);
+  color: var(--qc-screen-text-primary);
+  font-size: 2.7cqw;
+}
+/* Both Input Gate and Lane Output put this button on a darker chip than the
+   power/close buttons share: --qc-screen-surface-raised, the same token this
+   file already uses for the column dividers below - not
+   --qc-screen-surface-control, the lighter token the generic rule above
+   gives it. */
+.lane-control-panel .lane-control-more { background: var(--qc-screen-surface-raised); }
+/* A plain width/height here can never win: every icon in this header is a
+   QcUiIcon, which carries `.qc-ui-icon`, and app-shell.css's own
+   `html body #root#root .qc-screen-bezel :is(.qc-ui-icon, ...)` rule -
+   two ids deep - beats any class selector regardless of what comes later in
+   the cascade (a project-wide gotcha, not one this file can fix locally).
+   That rule reads size from --qc-screen-glyph-size (falling back to 1em),
+   so this sets that variable instead of fighting it on the property it
+   already wins - the close checkmark's 15x10 ink box sits within this
+   button's own size, 3cqw (24px at the canonical 800px screen width), the same box every icon in this header already
+   renders at, checkmark and power symbol and more-menu dots alike (none of
+   the other three carry `.qc-ui-icon`, so 3cqw reaches them directly and
+   this variable is what brings the fourth in line with it, not a fifth
+   invented number). */
+.lane-control-panel button {
+  --qc-screen-glyph-size: 3cqw;
+}
+/* The power mark is the editor's 24px bypass art: in this panel's query units so it shrinks with the screen. */
+.lane-control-panel .lane-control-power svg {
+  width: 3.0612cqw;
+  height: 3.0612cqw;
+}
+.lane-control-panel button svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.lane-control-panel > header > span {
+  display: flex;
+  flex-direction: column;
+  padding-left: .125cqw;
+}
+.lane-control-panel > header small {
+  color: var(--qc-palette-a8aaa9);
+  font-size: 1.825cqw;
+  transform: translate(-.125cqw, .125cqw);
+}
+.lane-control-panel > header strong {
+  font-size: 2.5cqw;
+  font-weight: 400;
+  /* This header is part of the CorOS canvas: do not leave a six-pixel desktop
+     offset inside it. At the measured 784px panel width, .765cqw is 6px;
+     at a phone-sized canvas it contracts with every other screen datum. */
+  transform: translateY(.765cqw);
+}
+/* This shuttle uses one pill behind the whole control with its prev/next
+   arrows ghosted directly on it, not a second background chip behind each
+   arrow - QcSceneSelector (the same shared component parameter-editor.tsx
+   and tempo-screen.tsx already use for this exact control) already draws it
+   that way; this used to hand-roll its own
+   <nav>/<b> instead, which is why `.lane-control-panel button` above (aimed
+   at the header's real standalone buttons - more/power/close) was also
+   painting a second background onto the arrows. */
+.lane-control-panel > header .lane-control-scene {
+  /* QcSceneSelector's root is a <span>, so `.lane-control-panel > header >
+     span` above (aimed at the title span) also matches it - re-assert the
+     shared component's own display:grid over that flex/column rule. The
+     shared selector's 40px centre track and 24px badge are correct at the
+     physical 784px-wide panel, but must be expressed in this panel's query
+     units here: leaving them in pixels made the badge and arrows stop
+     shrinking on Android while the rest of the CorOS screen did. */
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 5.102cqw minmax(0, 1fr);
+  height: 80%;
+  border-radius: 0.75cqw;
+  background: var(--qc-screen-surface-raised);
+  transform: translateX(-0.625cqw);
+}
+.lane-control-panel > header .lane-control-scene > button {
+  background: var(--qc-transparent);
+}
+/* The shuttle arrows are traced 30x24 art whose width/height attributes are
+   fixed CSS pixels, so they stayed 30px wide while the rest of the screen
+   shrank (27.6px at a 736px screen, 36px of a 660px one, measured). Expressed
+   in this panel's query units they are 30px at the canonical 784px panel and
+   scale with it. */
+.lane-control-panel > header .lane-control-scene > button svg {
+  width: 3.827cqw;
+  height: 3.061cqw;
+}
+/* The shared badge slot's own border-inline is tuned against tempo-scene's
+   background, close enough to it there to read as no divider at all;
+   against this panel's own surface-raised chip the same line would be
+   plainly visible at 526,556 (badge left edge), so it is removed here.
+   Scoped to this caller only, not the shared rule other screens still rely
+   on. */
+.lane-control-panel > header .lane-control-scene .qc-scene-selector-badge-slot {
+  height: 3.571cqw;
+  border-inline: none;
+}
+.lane-control-panel > header .lane-control-scene .qc-scene-letter-badge {
+  width: 3.061cqw;
+  height: 3.061cqw;
+  flex-basis: 3.061cqw;
+  border-radius: 0.51cqw;
+  font-size: 2.806cqw;
+}
+.lane-control-panel > header > em {
+  height: 55%;
+  border-left: 1px solid var(--qc-palette-343736);
+}
+.lane-control-panel .lane-control-power {
+  background: var(--qc-screen-accent);
+  color: var(--qc-palette-071208);
+  transform: translateX(-0.375cqw);
+}
+/* The button keeps its full accent in every state: the unit draws it bright
+   green with the gate bypassed (the one state captured), carrying the bypass
+   on the dimmed NOISE REDUCTION / GAIN REDUCTION fields instead. The old
+   `.is-bypassed { opacity: .55 }` rule dimmed it to a muddy green the unit
+   never shows. */
+.lane-control-panel > main {
+  height: 64.5%;
+  display: grid;
+}
+.lane-control-panel.is-input-gate > main { grid-template-columns: 19.8% 20.3% 1fr; }
+/* The panel draws five equal-width field columns - VOLUME/PAN/MUTE/SOLO/OUT
+   LEVEL, each ~156.8px of the panel's 784px content width, divided by
+   identical 1px `--qc-screen-surface-raised` rules, which is exactly what
+   `.lane-control-panel > main > section`'s `border-right` below already
+   paints for every section. OUT LEVEL is drawn at silence, not from data
+   (see LaneOutputLevelMeter in lane-control-panel.tsx), but it still owns
+   its column: leaving it out stretched MUTE and SOLO across the space. */
+.lane-control-panel.is-lane-output > main { grid-template-columns: repeat(5, 1fr); }
+.lane-control-panel > main > section {
+  position: relative;
+  border-right: 1px solid var(--qc-screen-surface-raised);
+  padding: 1.2cqw;
+  box-sizing: border-box;
+}
+.lane-control-panel > main span:first-child {
+  display: block;
+  font-size: 1.8cqw;
+  color: inherit;
+}
+.lane-control-panel > main strong {
+  position: absolute;
+  left: 1.625cqw;
+  bottom: 1.95cqw;
+  color: inherit;
+  font-size: 2cqw;
+  font-weight: 400;
+}
+/* A field this panel knows is disabled (laneControlDisabled: unwritable,
+   explicitly disabled, or missing) dims its label, value and knob together,
+   not the label alone - NOISE REDUCTION's label, value and knob arc all sit
+   at the same --qc-palette-636563, and INPUT GAIN's at the same full white;
+   the enabled fields (VOLUME/PAN) are full white too, not the fixed grey
+   `span:first-child` used to give every field regardless of state. The knob
+   keeps using its own `.is-unlit` opacity below - the label/value pairing is
+   the other half. */
+.lane-control-panel > main > section.is-disabled { color: var(--qc-palette-636563); }
+/* GAIN REDUCTION's value sits well above its meter track, not at the same
+   1.95cqw every knob column's value shares - on an 800px-wide panel (1cqw =
+   8px), the "0.0 dB" glyphs sit at rows 409-421, a bottom offset of
+   (469 - 421) / 8 = 6.0cqw, clear of the meter track at rows 441-457
+   (3.5-3.625cqw, matching .lane-control-meter's own bottom+height below).
+   The shared 1.95cqw rule was never wrong for a knob column - nothing else
+   sits below its value there - but applied to this section it put the text
+   inside the meter's own box. */
+.lane-control-panel > main > section:has(.lane-control-meter) strong { bottom: 6cqw; }
+.lane-control-knob {
+  position: absolute;
+  right: 0.475cqw;
+  top: 4.45cqw;
+  width: 9cqw;
+  height: 9cqw;
+}
+.lane-control-knob.gain { right: auto; left: 9.65cqw; top: 4.575cqw; }
+.lane-control-knob.is-unlit { opacity: .5; }
+/* QcLevelMeter, the one 137 x 16 track every I/O meter shares, in this panel's own query units
+   (137/784 and 16/784 of the 784px content width). Its fill is its own lit rect. */
+.lane-control-meter {
+  position: absolute;
+  left: 1.2cqw;
+  bottom: 1.3cqw;
+  width: 17.474cqw;
+  height: 2.041cqw;
+}
+.lane-control-expression {
+  position: absolute;
+  top: 1.2cqw;
+  right: 1.2cqw;
+  display: flex;
+  align-items: center;
+  gap: .3cqw;
+  font-size: 1.3cqw;
+  color: var(--qc-screen-accent);
+}
+.lane-control-expression svg { width: 1.6cqw; height: 1.6cqw; fill: currentColor; }
+
+/* MUTE/SOLO - see LaneControlToggle's own comment in lane-control-panel.tsx
+   for each value below. Position/size use the same cqw system as
+   `.lane-control-knob` above (query container is `.lane-control-panel`
+   itself), anchored at the same row height (`top`) the knob uses, since both
+   controls sit in the same visual row on the device. */
+.lane-control-panel .lane-control-toggle {
+  position: absolute;
+  left: 1.2cqw;
+  right: 1.2cqw;
+  top: 4.45cqw;
+  height: 4.6cqw;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0.3cqw;
+  background: var(--qc-screen-surface-base);
+  font-family: var(--qc-font-device);
+  font-size: 1.9cqw;
+  font-weight: 500;
+}
+.lane-control-panel .lane-control-toggle:disabled { opacity: 1; }
+.lane-control-toggle.mute { color: var(--qc-palette-ff2421); }
+.lane-control-toggle.solo { color: var(--qc-palette-0875e7); }
+.lane-control-toggle.is-unlit { opacity: .5; }
+/* Neither MUTE nor SOLO's engaged appearance is defined yet - see the
+   component comment. This class is wired from the real parameter value and
+   intentionally left without its own rule until that appearance is
+   defined. */
+
+/* OUT LEVEL (see LaneOutputLevelMeter): label and two readings above two
+   empty tracks, each cut by one rule at 3/4 of its width as the unit draws
+   them. Measured on the 800px frame (1cqw = 8px): readings 4.9cqw below the
+   field top, tracks 7.75cqw and 10.4cqw down, 2cqw tall, inset 1.2cqw. */
+.lane-control-panel > main > section.lane-control-outlevel { border-right: 0; }
+.lane-control-level-readings {
+  position: absolute;
+  left: 1.2cqw;
+  right: 1.2cqw;
+  top: 4.4cqw;
+  display: flex;
+  justify-content: space-between;
+  font-size: 2cqw;
+}
+.lane-control-level-readings b { font-weight: 400; }
+.lane-control-level-readings small { color: var(--qc-palette-636563); font-size: 1.6cqw; }
+.lane-control-level-track {
+  position: absolute;
+  left: 1.2cqw;
+  width: 17.474cqw;
+  height: 2.041cqw;
+}
+.lane-control-level-track:nth-of-type(1) { top: 7.75cqw; }
+.lane-control-level-track:nth-of-type(2) { top: 10.4cqw; }

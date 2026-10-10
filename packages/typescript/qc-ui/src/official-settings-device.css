@@ -1,0 +1,223 @@
+@scope (.qc-screen-fixture-root) {
+.coros-settings-official.settings-device,.coros-settings-official.settings-device * { font-family: var(--qc-font-device-plain); }
+.coros-settings-official.settings-system,.coros-settings-official.settings-system * { font-family: var(--qc-font-device-plain); }
+.qc-screen.coros-settings-official.settings-system { background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); }
+.coros-settings-official.settings-system button { font: inherit; }
+.coros-settings-official.settings-system .settings-section,
+.coros-settings-official.settings-system .settings-done,
+.coros-settings-official.settings-system > main > nav,
+.coros-settings-official.settings-system > main > section,
+.coros-settings-official.settings-system > main > nav button { background: var(--qc-screen-surface-control); }
+.coros-settings-official.settings-system > main > nav button.is-active { background: var(--qc-screen-surface-raised); color: var(--qc-screen-accent); }
+.coros-settings-official.settings-system .settings-section { grid-template-columns: 4.875cqw 1fr 2cqw; padding-left: 2cqw; }
+.coros-settings-official.settings-system > main > nav button { grid-template-columns: 4.625cqw 1fr; }
+.coros-settings-official.settings-system .settings-section b,
+.coros-settings-official.settings-system > main > nav button b { width: 3cqw; height: 3cqw; }
+.coros-settings-official.settings-system .settings-section b > svg,
+.coros-settings-official.settings-system > main > nav button b > svg { width: 24px !important; height: 24px !important; display: block !important; vertical-align: 0; }
+/* The done button's ground is 694..792 x 8..52. The tick sits at (736,26),
+   where centring a 24px box in that 98x44 button puts it at (737,25). */
+.coros-settings-official.settings-system .settings-done > svg { width: 24px !important; height: 24px !important; margin: auto; display: block; transform: translate(-1px, 1px); }
+/* The PRESET glyph occupies 296..319 x 437..460, SCENE's ink 336..359 x 437..460
+   (its art carries a 1px left margin inside a 26px box, so the box starts at
+   335) and STOMP's ink 377..399. A 16px gap and the row's own fractional top
+   put every one of them on a half pixel, where crispEdges snaps the art. */
+.coros-settings-official.settings-system .settings-system-detail > footer { display: flex; align-items: flex-start; gap: 15px; height: 3cqw; margin-left: 1cqw; transform: translateY(.875cqw); }
+.coros-settings-official.settings-system .settings-system-detail > footer > button > svg { width: 26px; height: 26px; display: block; }
+.coros-settings-official.settings-system .settings-system-detail > footer > button > svg.qc-mode-glyph-preset { width: 24px; height: 24px; }
+.coros-settings-official.settings-system .settings-system-detail > footer > button.is-faint { opacity: .18; }
+.coros-settings-official.settings-system .settings-system-detail > div i,
+.coros-settings-official.settings-system .settings-system-detail > div i b { background: var(--qc-screen-surface-base); }
+.coros-settings-official.settings-system .settings-system-detail > div i b.is-on { background: var(--qc-screen-accent); }
+.qc-screen.coros-settings-official.settings-device { background: var(--qc-screen-surface-base); }
+.coros-settings-official.settings-device .settings-section,
+.coros-settings-official.settings-device .settings-done,
+.coros-settings-official.settings-device > main > nav,
+.coros-settings-official.settings-device > main > section,
+.coros-settings-official.settings-device > main > nav button { background: var(--qc-screen-surface-control); }
+.coros-settings-official.settings-device > main > nav button.is-active,
+.coros-settings-official.settings-device .settings-device-detail > div label i { background: var(--qc-screen-surface-raised); }
+/* There is one rule between the two category blocks, two pixels on rows 349
+   and 350 in the screen's raised surface, one ladder step above the base
+   this used to paint, and twice the height. The shared `> div` rule gives
+   every block a bottom border, so the IR block was also painting an
+   unwanted second rule at y 457.
+   The 11cqw is what the two-pixel rule needs: the block's content runs from
+   y 263 to the rule, which is 86 plus the border. */
+.coros-settings-official.settings-device .settings-device-detail > div { height: 11cqw; border-bottom: 2px solid var(--qc-screen-surface-raised); transform: translateY(-.625cqw); }
+.coros-settings-official.settings-device .settings-device-detail > div:last-of-type { border-bottom: 0; }
+/* The header pill's ground sits at y 8..51 and its label ink starts at
+   x 63; the pill needed no nudge once the glyph stopped hanging off the
+   line box, so the old .25cqw drop is gone. */
+.coros-settings-official.settings-device .settings-section { grid-template-columns: 5.25cqw 1fr 2cqw; }
+/* Every settings menu row inks its label from x 63, the same pen the header
+   pill uses. The 4.625cqw column put the pen at 61 - the row's own 24px glyph
+   cell starts at x 24 and 4.625cqw is 37, two short of the 39 the device
+   leaves between them. */
+.coros-settings-official.settings-device > main > nav button { grid-template-columns: 4.875cqw 1fr; }
+.coros-settings-official.settings-device .settings-section b > svg,
+.coros-settings-official.settings-device > main > nav button b > svg,
+.coros-settings-official.settings-device .settings-device-detail svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.coros-settings-official.settings-device .settings-section b { width: 3cqw; height: 3cqw; display: grid; place-items: center; margin-left: 4px; }
+.coros-settings-official.settings-device > main > nav button b { width: 3cqw; height: 3cqw; display: grid; place-items: center; }
+.coros-settings-official.settings-device .settings-done > svg { width: 3cqw; height: 3cqw; margin: auto; }
+.coros-settings-official.settings-device .settings-scene-cells { fill: currentColor; stroke: none; }
+.settings-device-detail > p { margin-bottom: 2cqw; font-size: 2.21875cqw; }
+.coros-settings-official.settings-device .settings-device-detail > * { transform: translateY(-.375cqw); }
+/* The copy's own nudges have to carry the pane's three-class prefix or the
+   `> *` rule above outranks them and every child takes the same -3px. The
+   footnote's +7 was being swallowed exactly that way, which is why it sat six
+   rows above y 198, and 15px drew its first line 37px short of 482 - 16px
+   solves it to 475 and "bypassed." to 71. The paragraph's line one sits at
+   y 121. */
+.coros-settings-official.settings-device .settings-device-detail > p { transform: translateY(-.625cqw); }
+.settings-device-detail > small { font-size: 2cqw; line-height: 1.4; }
+.coros-settings-official.settings-device .settings-device-detail > small { transform: translateY(.3125cqw); }
+.settings-device-detail > div { margin-top: 3cqw; }
+/* 33px, which puts the first block's button row on y 290 now that
+   the footnote above it is set at its own 16px rather than 15. */
+.settings-device-detail > div:first-of-type { margin-top: 4.125cqw; }
+/* 18px of gap, not 21: the two blocks start their button rows at
+   y 290 and y 396, and the first block now ends on the rule at y 350. */
+.settings-device-detail > div + div { margin-top: 2.25cqw; }
+/* Each category tile is a 64 x 64 rounded frame with its left edge on
+   x 291 and its top on y 267. */
+.coros-settings-official.settings-device .settings-device-detail > div > b { left: .375cqw; top: .5cqw; width: 8cqw; height: 8cqw; }
+.coros-settings-official.settings-device .settings-device-detail > div label { grid-template-rows: 3.375cqw 5.5cqw; font-size: 2cqw; }
+/* The ROW captions ink y 264..276 in the first block and 370..382 in the
+   second, three rows above where the label row's own line box puts them. */
+.coros-settings-official.settings-device .settings-device-detail > div label > span { justify-self: start; transform: translateY(-3px); }
+.coros-settings-official.settings-device .settings-device-detail > div label i > svg { width: 3cqw; height: 3cqw; }
+.coros-settings-official.settings-device .settings-device-detail > div > b > svg { width: 40px; height: 40px; }
+/* The bypass mark set into the sentence inks 391..410 x 166..185, and the
+   word after it starts at x 420. The 20px box was right; where it sat was
+   not - two columns left, two rows high, and with four pixels of air after
+   it instead of the ten it should leave. */
+.coros-settings-official.settings-device .inline-settings-power { display: inline-block; width: 2.5cqw; height: 2.5cqw; margin: 0 .75cqw 0 .25cqw; vertical-align: -.8cqw; }
+.settings-system-detail > div span { position: relative; top: 1.375cqw; }
+/* The values 16, 32 and 2 all begin at x=743, so the device left-aligns
+   them at a fixed offset - a right-aligned rule agrees only while every
+   value has the same digit count. */
+.settings-system-detail > div strong { position: absolute; left: 56.75cqw; right: auto; top: 1.375cqw; }
+.coros-settings-official.settings-system .settings-system-detail > * { transform: translateY(-.375cqw); }
+.coros-settings-official.settings-system .settings-system-detail > footer { transform: translateY(7.5px); }
+.settings-system-detail > div i { top: 5.35cqw; }
+
+}
+
+@scope (.qc-screen-fixture-root) {
+.coros-settings-reference,.coros-settings-reference * { box-sizing: border-box; font-family: var(--qc-font-device-plain); font-weight: 400; }
+.qc-screen.coros-settings-reference { background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); }
+.coros-settings-reference button { font: inherit; }
+.coros-settings-reference .settings-section,
+.coros-settings-reference .settings-done,
+.coros-settings-reference .settings-edit,
+.coros-settings-reference > main > nav,
+.coros-settings-reference > main > section,
+.coros-settings-reference > main > nav button { background: var(--qc-screen-surface-control); }
+/* Every settings header label starts at x 63 and every disclosure triangle
+   ends at x 254 on the device, whatever the screen; the shared 4.5cqw icon
+   column and the triangle's own column both fall 5-6px short of that. */
+.coros-settings-reference .settings-section { grid-template-columns: 5.25cqw 1fr 2cqw; }
+.coros-settings-official .settings-section i { margin-left: 5px; }
+.coros-settings-reference .settings-section b,
+.coros-settings-reference > main > nav button b { width: 3cqw; height: 3cqw; }
+/* Every settings screen puts the header glyph at (24, 18) and each nav glyph
+   18px down its 60px row. The glyph is inline-block from
+   qc-device-typography.css and so sits on the 25.6px line box's baseline,
+   4-5px below its own 24px cell. Making the cell a grid container blockifies
+   the glyph without raising specificity, and the header's extra 4px is the
+   gap the device leaves past the pill's padding. */
+.coros-settings-reference .settings-section svg,
+.coros-settings-reference > main > nav button svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.coros-settings-reference .settings-section b,
+.coros-settings-reference > main > nav button b { display: grid; place-items: center; }
+.coros-settings-reference .settings-section b { margin-left: 4px; }
+/* Same 39px gap as the official pane above: menu labels ink from x 63
+   too. */
+.coros-settings-reference > main > nav button { grid-template-columns: 4.875cqw 1fr; }
+.coros-settings-reference > main > nav button.is-active { background: var(--qc-screen-surface-raised); color: var(--qc-screen-accent); }
+.coros-settings-reference > main > nav button.is-active b { color: var(--qc-screen-text-primary); }
+.coros-settings-reference > main > section.reference-settings-detail { position: relative; padding: 2.125cqw 2cqw; }
+.coros-settings-reference .settings-done > svg { width: 3cqw; height: 3cqw; margin: auto; }
+.coros-settings-reference .settings-edit { width: 12.25cqw; height: 5.5cqw; margin-left: auto; border-radius: 1cqw; font-size: 3cqw; }
+.coros-settings-reference .settings-edit > svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.coros-settings-reference .settings-edit + .settings-done { margin-left: 2.25cqw; }
+.coros-settings-reference .reference-settings-detail > h1 { margin: 0 0 1.5cqw; font-size: 2.5cqw; font-weight: 400; line-height: 1; }
+.settings-support .reference-settings-detail > h1 { margin-bottom: 2.125cqw; }
+.coros-settings-reference .reference-settings-detail > hr { height: 1px; margin: 2.5cqw 0 2.875cqw; border: 0; background: var(--qc-screen-surface-base); }
+.support-company { height: 15.5cqw; display: flex; align-items: center; justify-content: space-between; padding: 2cqw 2.5cqw; border-radius: 2cqw; background: var(--qc-screen-surface-base); font-size: 2.25cqw; line-height: 1.28; }
+.support-company strong { font-weight: 700; }
+/* The unit's card ends in a mark 104 x 31 of ink, right-aligned to x 755 and
+   centred on the card's own middle; the wordmark that stands in for it drew
+   121 wide from x 635, so it put ink across seventeen columns that should
+   stay black. Sizing it to that width lands its left edge on the mark's,
+   and the card's own centring then puts its ink centroid on the mark's -
+   the mark is taller than any single line of type, but it is centred on
+   the same row. */
+.support-company > b { display: flex; align-items: center; font-size: 2.575cqw; }
+.support-contact { position: relative; display: flex; justify-content: space-between; font-size: 2.25cqw; line-height: 1.28; }
+.settings-support .reference-settings-detail > h1 { transform: translate(1px, 3px); }
+.settings-support .support-contact > span { transform: translate(1px, -4px); }
+/* The two halves are ruled off with two rows of the raised surface at
+   y 258-259, not one row of the background: the shared rule above draws a
+   single darker line. The bottom margin gives back the pixel the second
+   row takes so the contact block below keeps its flow position. */
+.settings-support .reference-settings-detail > hr { height: .25cqw; margin-bottom: calc(2.875cqw - 1px); background: var(--qc-palette-181c18); }
+.support-news-qr { position: absolute; right: 0; top: -.375cqw; width: 12.5cqw; height: 12.5cqw; filter: blur(.5px); }
+.reference-list { margin: -2.125cqw -2cqw; }
+.reference-list button { width: 100%; height: 7.5cqw; display: flex; align-items: center; justify-content: space-between; padding: 0 2cqw; border: 0; background: var(--qc-transparent); color: inherit; font-size: 2cqw; text-align: left; }
+.reference-list button span { font-size: 2.75cqw; }
+/* The unit's disclosure arrow on these rows is the same 10 x 15 px mark the
+   storage list draws; at the span's 2.75cqw it came out 22 px, double the frame. */
+.reference-list button span .qc-ui-icon-disclosure-right { width: 1.25cqw !important; height: 1.875cqw !important; }
+.storage-captured > div { height: 11cqw; }
+.settings-storage .reference-settings-detail { padding-right: 1.5cqw !important; padding-left: 2.5cqw !important; }
+.storage-captured > div > span { width: 100%; height: 7.625cqw; display: grid; grid-template-columns: 4cqw auto 2cqw 1fr; align-items: center; font-size: 2.25cqw; }
+/* Each 24px library glyph sits on y 218 and 306; the 61px row centres it
+   on a half pixel, where crispEdges eats two of its rows. */
+.storage-captured > div > span svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.storage-captured > div > span > svg:not(.qc-ui-icon-disclosure-right) { position: relative; top: 2.5px; }
+.storage-captured > div > span strong { font-weight: 400; }
+.storage-captured > div > span i { margin-left: 1.75cqw; font-style: normal; }
+/* The device draws the disclosure mark 9 x 14 of ink inside the registry's
+   24-unit box, windowed to 10 x 15 of it, so the element has to reserve those
+   ten by fifteen device pixels or the triangle is scaled down inside a box
+   that was cut for the old 8 x 12 art. The nudge is what the row's grid
+   tracks leave over: at this window's one-to-one scale the track put the
+   element one pixel right and one pixel up of where the device draws it. */
+.storage-captured > div > span .qc-ui-icon-disclosure-right { position: relative; left: -1px; top: 1px; width: 1.25cqw !important; height: 1.875cqw !important; }
+.storage-captured > div > span em { justify-self: end; font-style: normal; }
+.storage-captured > div > b { height: 2.625cqw; display: block; background: var(--qc-screen-surface-base); }
+.storage-captured > div > b i { height: 100%; display: block; background: var(--qc-palette-84dbff); }
+.storage-captured > div:nth-child(2) > b i { background: var(--qc-palette-0875e7); }
+.information-table { font-size: 1.625cqw; }
+.information-table > span { min-height: 4.5cqw; display: grid; grid-template-columns: 24.5cqw 1fr; line-height: 1.35; }
+.information-table b { font-weight: 400; }
+.information-table i { font-style: normal; }
+.settings-info .reference-settings-detail { overflow: hidden !important; padding-top: 2.5cqw !important; }
+.settings-info .reference-settings-detail > h1:first-child { margin-bottom: 2.5cqw; }
+.settings-info .reference-settings-detail > hr { margin: .25cqw 0 3.875cqw; }
+.settings-info .reference-settings-detail > h1:nth-of-type(2) { margin-bottom: 2.5cqw; }
+.settings-info .information-table:last-child > span:nth-child(2),
+.settings-info .information-table:last-child > span:nth-child(3) { min-height: 6.125cqw; }
+.wifi-header { height: 5.125cqw; display: grid; grid-template-columns: 1fr auto auto; align-items: start; gap: 2.25cqw; }
+.wifi-header h1 { margin: 0; font-size: 2.5cqw; font-weight: 400; }
+.wifi-header button { padding: .5cqw 0 .25cqw; border: 0; border-bottom: 1px solid var(--qc-palette-858985); background: var(--qc-transparent); color: var(--qc-palette-999d99); font-size: 1.75cqw; }
+.wifi-network { position: relative; height: 12cqw; border-radius: 1cqw; background: var(--qc-screen-surface-raised); }
+.wifi-network > span,.wifi-secondary > span { position: absolute; left: 1.25cqw; top: 2cqw; color: var(--qc-palette-5d625e); }
+/* No stand-in for the withheld network name: reproducing a fill there would
+   mean drawing a bar shaped to a real SSID, so the region is left empty. */
+.wifi-network > b { display: none; }
+.wifi-network > em { position: absolute; left: 1cqw; right: 19cqw; bottom: 0; height: 4.625cqw; padding-top: 1cqw; border-top: 1px solid var(--qc-rotary-shadow); color: var(--qc-palette-f4ae31); font-size: 1.625cqw; font-style: normal; }
+.wifi-network > i { position: absolute; right: 6.625cqw; top: 4.5cqw; width: 3cqw; height: 3cqw; font-style: normal; }
+.wifi-network > i > svg { display: block; width: 100%; height: 100%; }
+.wifi-network > strong,.wifi-secondary > strong { position: absolute; right: .875cqw; top: 4.875cqw; width: 2.75cqw; height: 2.25cqw; }
+.wifi-network .qc-wifi-signal-glyph,.wifi-secondary .qc-wifi-signal-glyph { display: block; width: 100%; height: 100%; }
+.wifi-network .qc-wifi-signal-glyph rect,.wifi-secondary .qc-wifi-signal-glyph rect { fill: var(--qc-screen-surface-base); }
+.wifi-network .qc-wifi-signal-glyph rect.is-lit,.wifi-secondary .qc-wifi-signal-glyph rect.is-lit { fill: var(--qc-screen-text-primary); }
+.wifi-secondary { position: relative; height: 7.5cqw; border-bottom: 1px solid var(--qc-screen-surface-base); }
+.wifi-secondary > span { top: 1.75cqw; }
+.wifi-secondary > strong { top: 2.625cqw; }
+.wifi-reset { position: absolute; left: 2cqw; bottom: 1.875cqw; width: 27.375cqw; height: 5.75cqw; border: 0; border-radius: 1cqw; background: var(--qc-screen-background); color: inherit; font-size: 1.75cqw; }
+}

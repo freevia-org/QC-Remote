@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qc-remote.local/contracts/public/native-broker.v1.schema.json",
+  "title": "QC native broker JSON-RPC v1",
+  "description": "Local host IPC for the canonical gateway plus three host-internal methods (device.status, device.state.events, device.state.blockDetails). Frames are four-byte big-endian length followed by UTF-8 JSON. The host-internal methods must never be exposed through MCP or a remote relay. The legacy device.raw.* and device.command.* methods were removed and answer Method not found. This document validates broker requests (see $defs/request); host-specific response extensions are outside this core contract.",
+  "$defs": {
+    "internalCompatibilityRequest": {
+      "description": "Host-process compatibility API. This is not a public, relayable, or MCP tool surface.",
+      "x-visibility": "host-internal",
+      "type": "object",
+      "required": ["jsonrpc", "id", "method"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "type": "integer", "minimum": 1 },
+        "method": {
+          "enum": [
+            "device.status",
+            "device.state.events", "device.state.blockDetails"
+          ]
+        },
+        "params": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "description": "The native broker's request envelope. Compatibility requests are fully modeled by internalCompatibilityRequest above; the broker also forwards the gateway's JSON-RPC request envelope (jsonrpc/id/method/params); host-specific response extensions are outside this core contract.",
+      "$ref": "#/$defs/internalCompatibilityRequest"
+    }
+  },
+  "$ref": "#/$defs/request"
+}

@@ -1,0 +1,327 @@
+@scope (.qc-screen-fixture-root) {
+.directory-official, .directory-official * { box-sizing: border-box; font-family: var(--qc-font-device-plain); }
+.qc-screen.directory-official { position: absolute; inset: 0; display: block; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-icon-primary); container-type: inline-size; }
+.directory-official button { border: 0; color: inherit; font: inherit; }
+.directory-official svg { width: 3cqw; height: 3cqw; fill: currentColor; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* The device draws the category plate's grid at the button's own content
+   edge, with no extra pixel of nudge. */
+.directory-official .qc-directory-icon-grid { stroke: none; }
+.directory-official .folder-number { fill: var(--qc-palette-202421); stroke: none; }
+/* The device's tick is centred half a pixel off the button it sits in, so it
+   alone still needs a pixel after the centring above. */
+.directory-official > header .qc-directory-icon-done { translate: -1px 0; }
+.directory-official > header .qc-directory-icon-cloud-upload .cloud-upload-arrow { stroke: var(--qc-screen-surface-raised); }
+/* Same baseline story as the header: blockified, the glyph centres in the row
+   at the device's own y and keeps the row's own left edge for x. */
+.directory-official nav button > b { display: flex; align-items: center; }
+/* Two pixels above centre on the two views whose table is the unit's
+   FolderDirTable: its 60px rows start at y=60 and its 24px cell is row + 16,
+   not the row + 18 a centred cell gives. Three of the favourites marks ink all
+   24 rows of their cell, and only an asset that fills its cell can pin one.
+   Each mark's own top margin supplies the rest, which is why the folder no
+   longer needs a pixel of its own: the art now carries the margin the unit
+   draws.
+   The captures, IRs and plugin navs are different tables on a different
+   pitch - their marks sit where they are and must not follow this. */
+.directory-presets-official nav button > b,
+.directory-favorites-official nav button > b { translate: 0 -2px; }
+/* The `directory.cloud` and `directory.folder` art each moved one unit down
+   inside its 24-unit box. The two
+   views above took the matching cell move; every other view here sits on a
+   table whose own pitch differs - captures and IRs start their rows on a
+   different offset - so those take the unit straight back and render exactly
+   where they did. The folder pays two because the rule this replaced already
+   gave it one. Retire each against that view's own cell.
+   `directory.folder-outline` occupies the same units of the same 24-unit box
+   as the silhouette - both ink the same rows - and `directory.new-folder` sits
+   in the same box two rows further down, which its own trace now carries, so
+   all three take the same pixel. That is what retired the `translate: 0 2px`
+   this rule used to pay it. */
+.directory-official:not(.directory-presets-official):not(.directory-favorites-official) .qc-directory-icon-folder,
+.directory-official:not(.directory-presets-official):not(.directory-favorites-official) .qc-directory-icon-folder-outline,
+.directory-official:not(.directory-presets-official):not(.directory-favorites-official) .qc-directory-icon-new-folder { translate: 0 -2px; }
+.directory-official:not(.directory-presets-official):not(.directory-favorites-official) .qc-directory-icon-cloud { translate: 0 -1px; }
+.directory-official .qc-directory-icon-trash { translate: 1px -1px; }
+/* The bar and its button box are the shared navigation bar's, declared once
+   in qc-screen-elements.css. Do not re-spell them here: 60 and 44 arrived on
+   this screen as 7.5cqw and 5.5cqw and on the next one as 12.5% and 44px, and
+   the copies drifted apart. */
+.directory-official > header { height: var(--qc-nav-bar-height); display: flex; align-items: center; gap: 1cqw; padding: 0 1cqw; }
+/* The tool glyphs are 24px in a cell whose font-size is 24px, so as inline
+   content they sat on the line box's baseline, well below where the device
+   draws them, which every one of them then paid back with its own translate.
+   Centred in the button they land on the device's own position with no
+   nudge. The nine translates this retires are gone from the rules above; the
+   centring is what replaces them, so the two travel together. */
+.directory-official > header button { width: 8.25cqw; height: var(--qc-nav-bar-button); display: grid; place-items: center; border-radius: 1cqw; background: var(--qc-screen-surface-raised); font-size: 3cqw; }
+/* The unit keeps the control surface for the category plate, the trailing
+   confirm, the two back buttons and the search screen's arrange button; every
+   other tool button in a directory header sits on the raised surface. */
+.directory-official > header .directory-official-category,
+.directory-official > header button:last-child,
+.directory-nested-official > header .directory-nested-back,
+.directory-official.is-filter > header .directory-filter-back,
+.directory-favorites-official > header .favorite-tab:nth-of-type(2),
+.directory-search-official > header button:nth-last-child(2) { background: var(--qc-screen-surface-control); }
+/* The selector's caret is one device asset, identically placed everywhere a
+   ComboBoxWithSelector uses it. This panel drew it two pixels right and one
+   row high of that: the drawing was already exact and only its placement was
+   wrong.
+
+   Two causes, the same pair `.coros-directory-fixture.is-physical-context`
+   already carries for the same asset:
+
+   - The trailing pad is 4px, not the 16 that `0 2cqw` resolves to. The panel
+     runs 8..264 and the unit closes the mark's 24px box on 260, which is what
+     puts the ink's right edge on 254.
+   - The mark's wrapper holds an inline svg, so its line box carries the font's
+     descender and `align-items: center` then centres that taller box, leaving
+     the glyph a pixel high. Giving the wrapper a flex box of its own drops the
+     descender and the glyph centres on the row.
+
+   The translate this retires was compensating for the first of them and
+   could not have addressed the second. */
+.directory-official > header .directory-official-category { width: 32cqw; display: flex; align-items: center; gap: 1.5cqw; padding: 0 .5cqw 0 2cqw; text-align: left; font-size: 2cqw; font-weight: 400; }
+.directory-official > header .directory-official-category b { display: flex; margin-left: auto; font-size: 1.75cqw; }
+.directory-official > header .directory-official-category b .qc-ui-icon-down { --qc-screen-glyph-size: 24px; width: 24px !important; height: 24px !important; }
+.directory-official > header span { flex: 1; }
+.directory-official > header button:last-child { width: 12.25cqw; }
+.directory-official > main { position: absolute; inset: var(--qc-nav-bar-height) 0 0; display: grid; grid-template-columns: 32cqw 65cqw; gap: 1cqw; padding: 0 1cqw 1cqw; }
+.directory-official nav, .directory-official-list { overflow: hidden; border-radius: 1cqw; background: var(--qc-screen-surface-control); }
+/* The unit's directory nav row is 60px on an 800px screen: the highlighted
+   row sits at exactly 60 tall and the two rows above it at 120, so the pitch
+   is 7.5cqw, not 8. At 8cqw each row pushed the next one 4px further down and
+   the folder glyphs drifted out of place. */
+.directory-official nav button { width: 100%; height: 7.5cqw; display: grid; grid-template-columns: 5cqw 1fr 4cqw; align-items: center; padding: 0 2cqw; background: var(--qc-transparent); text-align: left; font-size: 2cqw; }
+.directory-official nav button.is-active { background: var(--qc-screen-surface-raised); color: var(--qc-screen-accent); }
+.directory-captures-official nav button.is-active .qc-library-icon-capture-library { color: var(--qc-icon-primary); }
+.directory-captures-official nav button { grid-template-columns: 4.625cqw 1fr 4cqw; }
+.directory-official nav button.is-child { position: relative; padding-left: 4cqw; }
+.directory-official nav button.is-muted { color: var(--qc-icon-muted); }
+.directory-official nav button b { font-size: 3cqw; font-weight: 400; }
+.directory-official nav button small { color: var(--qc-screen-text-muted); font-size: 1.75cqw; }
+.directory-official nav button.is-child span { white-space: nowrap; }
+.directory-presets-official nav button,
+.directory-upload-official nav button { grid-template-columns: 4.625cqw 1fr 4cqw; }
+.directory-presets-official nav button small,
+.directory-upload-official nav button small { justify-self: end; }
+/* The unit's row rule is not a border: it starts at the row's content box and
+   stops short of the trailing control. On most lists it sits at x 288..754
+   inside a list panel that runs 272..791 - 16px in from the left, 37px (the
+   jump index) short on the right - and on favorites at 288..776. A
+   border-bottom cannot be inset, so the rule is a line of its own and the
+   insets are the parameters. */
+.directory-official-list > button { position: relative; width: 100%; height: 7.5cqw; display: grid; grid-template-columns: 1fr 8cqw; align-items: center; padding: 0 2cqw 1px; background: var(--qc-transparent); text-align: left; font-size: 2cqw; }
+.directory-official-list > button::after { content: ""; position: absolute; z-index: 0; left: var(--qc-list-rule-lead, 2cqw); right: var(--qc-list-rule-trail, 0px); bottom: 0; height: 1px; background: var(--qc-list-rule-ink, var(--qc-palette-182018)); }
+.directory-official-list > button span small { display: block; margin-top: .75cqw; color: var(--qc-screen-text-muted); font-size: 1.75cqw; }
+.directory-official-list > button > b { color: var(--qc-screen-text-muted); font-weight: 400; text-align: center; }
+.directory-official-list > button > i { display: flex; gap: .75cqw; font-style: normal; }
+.directory-official-list > button > i b { width: 8.25cqw; height: 5.5cqw; display: grid; place-items: center; border-radius: 1cqw; background: var(--qc-screen-surface-raised); font-size: 3cqw; }
+.directory-favorites-official > header .favorite-tab { width: 10.5cqw; font-size: 3cqw; }
+.directory-favorites-official > header .favorite-tab + .favorite-tab { margin-left: -.5cqw; }
+.directory-favorites-official > header .favorite-sort { margin-left: 1.25cqw; }
+.directory-favorites-official > header button:last-child { margin-left: 1.25cqw; }
+.directory-favorites-official .directory-official-list { position: relative; }
+/* On the unit's own favourites screen the two row pills end eight pixels
+   inside the list panel's right edge - the 45px reserved here was for an
+   alphabet index the screen does not draw, and it pushed the binoculars
+   and broken-heart glyphs well left of where the unit puts them. */
+.directory-favorites-official .directory-official-list > button { grid-template-columns: 1fr 17.25cqw; padding-right: 1cqw; --qc-list-rule-trail: 1.875cqw; }
+/* 3.5cqw put a 24-unit crisp-edged glyph in a 28px box: at a 7/6 scale the
+   renderer snaps whole rows and columns instead of blending them, so the
+   binoculars came out ragged. At its natural 24 the art lands on the screen
+   1:1. */
+.directory-favorites-official .directory-official-list > button > i b svg { width: 3cqw; height: 3cqw; fill: none; }
+.directory-favorites-official .directory-official-list > button > i b:last-child svg { fill: var(--qc-icon-primary); }
+/* At its natural size the binoculars needs no nudge: the pill centres it on the
+   unit's own (667, 82). */
+.directory-irs-official .directory-official-list > button { grid-template-columns: 1fr 17.25cqw; padding-right: 1cqw; }
+.directory-irs-official > header .directory-official-category > .qc-library-icon { flex: 0 0 3cqw; }
+.directory-irs-official nav button.is-child { width: 100%; margin-left: 0; }
+.directory-irs-official nav .qc-library-icon-impulse-response { width: 3cqw; height: 3cqw; }
+.directory-irs-official .directory-official-list > button > i > b:first-child > span { width: 3cqw; height: 3cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-screen-accent); color: var(--qc-palette-071008); font-size: 2cqw; }
+.directory-irs-official .directory-official-list > button > i > b svg { width: 3cqw; height: 3cqw; fill: none; color: var(--qc-icon-primary); }
+.directory-irs-official .directory-official-list .qc-directory-icon-trash { translate: 1px -2px; }
+/* The downloaded mark on each IR row: the disc spans x 289-302 against a label
+   that starts at 306, and the label is underlined for its full width. */
+.directory-irs-official .directory-official-list > button > span small { display: flex; align-items: center; gap: 1cqw; margin-top: .25cqw; }
+.directory-irs-official .directory-official-list > button > span small > b { flex: 0 0 1.75cqw; width: 1.75cqw; height: 1.75cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-icon-toolbar-muted); color: var(--qc-screen-surface-control); translate: 1px 0; }
+.directory-irs-official .directory-official-list > button > span small > b svg { width: 1.375cqw; height: 1.375cqw; fill: none; color: var(--qc-screen-surface-control); }
+.directory-irs-official .directory-official-list > button > span small > span { text-decoration: underline; text-underline-offset: .125cqw; }
+.directory-captures-official .directory-official-list { position: relative; }
+.directory-captures-official > header .directory-primary-action,
+.directory-irs-official > header .directory-primary-action { width: 12.25cqw; }
+.directory-captures-official > header > span { flex: 0 0 0; }
+.directory-captures-official .directory-official-list > button { padding-right: 6.625cqw; --qc-list-rule-trail: 4.625cqw; }
+.directory-captures-official nav button.is-child { grid-template-columns: 4.75cqw 1fr 0; }
+/* Captures is the only list that sits its jump index on the control surface;
+   the rail itself is .qc-jump-index in qc-screen-elements.css. */
+.directory-captures-official .directory-capture-index { --qc-jump-index-surface: var(--qc-screen-surface-control); }
+.directory-filter-official > header .directory-filter-back { width: 12.25cqw; }
+.directory-filter-official > header .directory-filter-back svg { width: 3cqw; height: 3cqw; fill: none; }
+.directory-filter-official > header .directory-official-category { width: 18.75cqw; }
+.directory-filter-official > header > span { flex: 1; }
+.directory-filter-official > header .is-filter-active { position: relative; z-index: 5; background: var(--qc-screen-background); }
+.directory-filter-official > header button:nth-last-child(2) { margin-right: 1.25cqw; }
+.directory-filter-official > main { z-index: 3; inset: 0; display: block; padding: 0; background: var(--qc-palette-rgba-91-94-91-a72); }
+.directory-filter-official .directory-filter-list { position: absolute; left: 37.5cqw; top: 7.25cqw; width: 28.875cqw; height: 52cqw; overflow: hidden; border-radius: .875cqw; background: var(--qc-screen-background); }
+.directory-filter-official .directory-filter-list button { position: relative; width: 100%; height: 6.5cqw; display: grid; grid-template-columns: 4cqw 1fr; align-items: center; padding: 0 2cqw; background: var(--qc-screen-background); color: var(--qc-icon-primary); font-size: 2cqw; }
+.directory-filter-official .directory-filter-list button b { width: 3cqw; height: 3cqw; display: block; color: var(--qc-screen-text-primary); }
+.directory-filter-official .directory-filter-list button b svg { width: 3cqw; height: 3cqw; display: block; fill: currentColor; stroke: none; translate: none; }
+.directory-filter-official .directory-filter-list .qc-capture-filter-icon path { fill: currentColor; stroke: none; }
+.directory-filter-official nav button.is-filter-root { height: 7.5cqw; grid-template-columns: 4.75cqw 1fr; color: var(--qc-icon-primary); }
+.directory-filter-official nav button.is-filter-root span { line-height: 1.25; }
+.directory-filter-official nav button.is-filter-root span small { display: block; color: var(--qc-screen-accent); }
+.directory-filter-official nav button.is-filter-child { position: relative; width: calc(100% - 2cqw); margin-left: 2cqw; grid-template-columns: 4.75cqw 1fr; }
+.directory-filter-official nav button.is-filter-child::before { content: ""; position: absolute; left: 0; top: 0; width: 1.75cqw; height: 3.75cqw; border-left: 2px solid var(--qc-palette-59605a); border-bottom: 2px solid var(--qc-palette-59605a); border-radius: 0 0 0 1cqw; }
+.directory-filter-official nav button.is-filter-child:not(:last-child)::after { content: ""; position: absolute; left: 0; top: 3.75cqw; bottom: -3.75cqw; border-left: 2px solid var(--qc-palette-59605a); }
+.directory-filter-official .directory-official-list > button { height: 7.5cqw; }
+.directory-nested-official > header .directory-nested-back { width: 12.25cqw; }
+.directory-nested-official > header .directory-nested-back svg { fill: none; }
+.directory-nested-official > header .directory-official-category { width: 18.75cqw; }
+.directory-nested-official > header button:last-child { margin-left: 1.25cqw; }
+.directory-nested-official > main nav { position: relative; }
+.directory-nested-official > main nav::after { content: ""; position: absolute; left: 2.125cqw; top: 7.5cqw; width: 1.25cqw; height: 33.75cqw; border-left: 2px solid var(--qc-palette-59605a); border-bottom: 2px solid var(--qc-palette-59605a); border-radius: 0 0 0 1cqw; pointer-events: none; }
+.directory-nested-official nav .directory-nested-root { background: var(--qc-screen-surface-raised); color: var(--qc-screen-accent); }
+.directory-nested-official nav .directory-nested-root span { line-height: 1.35; }
+.directory-nested-official nav .directory-nested-root small { display: block; color: var(--qc-screen-text-muted); }
+.directory-nested-official nav button b { color: var(--qc-screen-text-primary); }
+/* Everything else in this nav that is drawn as an outline. The folder is not:
+   it is `directory.folder-outline`, whose own trace is the unit's two-unit
+   wall, and which carries its `fill` and `stroke="none"` on the path. */
+.directory-nested-official nav button b svg { fill: none; }
+.directory-nested-official nav button.is-child { width: calc(100% - 2cqw); margin-left: 2cqw; padding-left: 2cqw; grid-template-columns: 4.625cqw 1fr; }
+.directory-nested-official nav button.is-child { position: relative; }
+.directory-nested-official nav button.is-child::before { content: ""; position: absolute; left: 0; top: 0; width: 1.75cqw; height: 3.75cqw; border-bottom: 2px solid var(--qc-palette-59605a); border-radius: 0 0 0 1cqw; }
+.directory-nested-official > main nav::after { border-bottom: 0; border-radius: 0; }
+.directory-nested-official .directory-official-list { position: relative; }
+.directory-nested-official .directory-official-list > button { grid-template-columns: 1fr 8cqw; padding-right: 6.625cqw; --qc-list-rule-trail: 4.625cqw; }
+.directory-official.is-plugins .directory-official-list { display: grid; place-items: center; background: var(--qc-screen-surface-raised); color: var(--qc-palette-090b09); font-size: 12cqw; }
+.directory-official.is-plugins > main { bottom: 1cqw; padding-bottom: 0; }
+.directory-official.is-plugins > header .plugin-refresh { width: 12.25cqw; background: var(--qc-screen-surface-raised); }
+.directory-official.is-plugins > header button:nth-last-child(2) { transform: translateX(-1.25cqw); }
+.directory-official.is-plugins > header .plugin-refresh svg,
+.directory-official.is-plugins > header button:nth-last-child(2) svg,
+.directory-official.is-plugins > header button:last-child svg { fill: none; }
+.directory-official.is-plugins > header .directory-official-category span,
+.directory-official.is-plugins nav button span { transform: translateX(1px); }
+.directory-official.is-plugins > header .directory-official-category > .qc-ui-icon-plugin-presets { flex: 0 0 3cqw; width: 3cqw !important; height: 3cqw !important; }
+.directory-official.is-plugins nav button { grid-template-columns: 4.625cqw 1fr; }
+/* The plugin lock and the rest of the outline art in these rows. The folder is
+   `directory.folder-outline` and needs nothing here. */
+.directory-official.is-plugins nav button b svg,
+.directory-official:not(.directory-nested-official) nav button.is-child b svg { fill: none; }
+.directory-official.is-plugins .plugin-directory-logo,
+.directory-irs-official .ir-directory-logo { width: 13.125cqw; height: 15.5cqw; fill: none; stroke: var(--qc-route-pill); stroke-width: 14; stroke-linecap: butt; stroke-linejoin: miter; transform: translate(-.375cqw, -1.25cqw); }
+.directory-search-official > header { gap: .5cqw; }
+.directory-search-official > header .directory-search-field { width: 23cqw; margin: 0 1.75cqw 0 0; display: flex; align-items: center; justify-content: flex-start; gap: 1.125cqw; padding: 0 1.25cqw; font-size: 2.25cqw; }
+.directory-search-official > header .directory-search-field svg { width: 2.5cqw; height: 2.5cqw; }
+.directory-search-official > header .directory-search-field > span { flex: 0 0 auto; }
+.directory-search-official > header .directory-search-tab { width: 12.625cqw; font-size: 2cqw; }
+.directory-search-official > header .directory-search-tab.is-active { width: 12.375cqw; }
+/* Device frame (corpus and manual alike): every tab hangs from y 8, the idle
+   ones 48 deep on the raised ground with muted labels, the open one 52 deep
+   in the list header's #424142 so it runs into the header at y 60, label
+   white. Both labels sit on y 28-41. */
+.directory-search-official > header .directory-search-tab { align-self: flex-start; height: 6cqw; margin-top: 1cqw; color: var(--qc-screen-text-muted); }
+.directory-search-official > header .directory-search-tab.is-active { height: 6.5cqw; border-radius: 1cqw 1cqw 0 0; background: var(--qc-palette-424142); color: var(--qc-screen-text-primary); }
+.directory-search-official > header .directory-search-tab { position: relative; display: block; }
+.directory-search-official > header .directory-search-tab svg { position: absolute; left: 2.5cqw; top: 1.25cqw; width: 3cqw; height: 3cqw; }
+.directory-search-official > header .directory-search-tab > span { position: absolute; left: 6.5cqw; top: .5cqw; bottom: 0; display: flex; align-items: center; }
+.directory-search-official > header .directory-search-tab.is-active > span { top: 0; }
+.directory-search-official > header .directory-search-tab:nth-of-type(4) svg { left: 3cqw; }
+.directory-search-official > header .directory-search-tab:nth-of-type(4) > span { left: 7.125cqw; }
+.directory-search-official > header .directory-search-tab:nth-of-type(3) svg,
+.directory-search-official > header .directory-search-tab:nth-of-type(4) svg { color: var(--qc-screen-text-muted); }
+.directory-search-official > header button:last-child { margin-left: 1.75cqw; }
+.directory-search-official > main { display: block; padding: 0 1cqw 1cqw; }
+.directory-search-official .directory-official-list { height: 100%; border-radius: 1cqw; }
+.directory-search-official .directory-official-list > header { height: 5.5cqw; display: flex; align-items: center; padding: 0 2cqw; background: var(--qc-palette-424142); font-size: 1.75cqw; }
+/* The section chevron is the hollow 18 x 10 drawing the capture search uses,
+   on x 762-779, y 77-86: four pixels past the header's 2cqw inset. */
+.directory-search-official .directory-official-list > header b { display: flex; margin-left: auto; margin-right: -4px; }
+.directory-search-official .directory-official-list > header b .search-section-chevron { width: 2.25cqw; height: 1.25cqw; fill: none; stroke: currentColor; stroke-width: 2; }
+/* Badge and kebab share one line, the badge on x 731-739 and the kebab on
+   763-765: the 8cqw cell the nested list uses, inset 1cqw from the edge. */
+.directory-search-official .directory-official-list > button { grid-template-columns: 1fr 8cqw; padding-right: 1cqw; }
+/* The same label the physical upload directory draws:
+   IBMPlexSans Regular at 16.40px with the run beginning on x 62, which the
+   shared 2cqw and 1.5cqw gap put at 16.00px and x 60 - two pixels short at the
+   origin and two more lost across the seven letters. The combo's two inks are a
+   rung apart and one `color` cannot carry both: the label is 57,65,57, and both
+   marks - the category mark at x 22..49 and the selector triangle at x 238..257
+   - are 57,60,57, which is why the two keep their own below. */
+.directory-upload-official > header .directory-official-category { gap: 1.75cqw; background: var(--qc-editor-disabled); color: var(--qc-palette-394139); font-size: 16.4px; }
+.directory-upload-official > header .directory-official-category > svg,
+.directory-upload-official > header .directory-official-category > b { color: var(--qc-palette-393c39); }
+.directory-upload-official > header .is-cloud { border: 1px solid var(--qc-screen-accent); background: var(--qc-palette-102818); color: var(--qc-screen-accent); }
+/* The row holding the loaded preset sits on the recessed face. */
+.directory-upload-official .directory-official-list > button:nth-child(2) { background: var(--qc-rotary-face); }
+.directory-upload-official > header .is-cloud svg { color: var(--qc-icon-primary); }
+.directory-upload-official > main { grid-template-columns: 32cqw 14.125cqw 49.875cqw; }
+.directory-upload-official .directory-upload-banks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 6.625cqw; gap: .875cqw; background: var(--qc-transparent); }
+.directory-upload-official .directory-upload-banks button { border-radius: 1cqw; background: var(--qc-screen-surface-control); font-size: 2cqw; }
+.directory-upload-official .directory-upload-banks button:nth-child(4) { color: var(--qc-screen-accent); }
+.directory-upload-official .directory-official-list > button { grid-template-columns: 1fr 8.25cqw; }
+.directory-upload-official .directory-official-list > button b { width: 8.25cqw; height: 4.75cqw; display: grid; place-items: center; border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-icon-primary); font-size: 3cqw; }
+.directory-upload-official .directory-official-list > button b svg { width: 24px; height: 24px; }
+.directory-upload-official nav button.is-active b { color: var(--qc-icon-primary); }
+.directory-upload-official nav button.is-active .folder-number { fill: var(--qc-palette-202421); }
+.directory-upload-official .directory-official-list .cloud-upload-arrow { stroke: var(--qc-screen-surface-raised); }
+.directory-upload-official .directory-official-list .qc-directory-icon-cloud-upload { translate: 0 -1px; }
+.directory-presets-official > main { grid-template-columns: 32cqw 14cqw 50cqw; }
+.directory-presets-official .directory-preset-banks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 6.625cqw; gap: .875cqw; background: var(--qc-transparent); }
+.directory-presets-official .directory-preset-banks button { border-radius: 1cqw; background: var(--qc-screen-surface-control); font-size: 2cqw; }
+.directory-presets-official .directory-preset-banks button:first-child { color: var(--qc-screen-accent); }
+.directory-presets-official > header > button:not(.directory-official-category):not(:last-child) { transform: translateX(-1.25cqw); }
+.directory-presets-official nav button.is-active b { color: var(--qc-icon-primary); }
+.directory-presets-official nav button.is-active .folder-number { fill: var(--qc-palette-202421) !important; stroke: none; }
+.directory-upload-official nav button.is-active .folder-number { fill: var(--qc-palette-202421) !important; stroke: none; }
+.directory-official-list > button > span,
+.directory-official-list > button > b,
+.directory-official-list > button > i { position: relative; top: 1px; }
+.directory-upload-official .directory-official-list > button > span,
+.directory-upload-official .directory-official-list > button > b,
+.directory-upload-official .directory-official-list > button > i { top: 0; }
+.directory-presets-official .directory-official-list > button { grid-template-columns: 1fr 3cqw; }
+.directory-presets-official .directory-official-list > button { padding-bottom: 0; }
+.directory-presets-official .directory-official-list > button::after { display: none; }
+.directory-presets-official .directory-official-list > button:first-child { background: var(--qc-palette-202420); }
+.directory-upload-official > header .is-cloud { width: 12.25cqw; }
+.directory-upload-official > header button:nth-last-child(2) { transform: translateX(-1.25cqw); }
+.directory-upload-official .directory-upload-banks button, .directory-presets-official .directory-preset-banks button { width: auto; height: auto; margin: 0; padding: 0; grid-template-columns: 1fr; place-items: center; text-align: center; }
+.directory-upload-official .directory-official-list > button, .directory-presets-official .directory-official-list > button { height: 6.375cqw; }
+.directory-upload-official .directory-official-list > button { height: 6.375cqw; padding-right: 1cqw; }
+.directory-upload-official .directory-official-list > button { padding-bottom: 0; }
+.directory-upload-official .directory-official-list > button::after { display: none; }
+.directory-upload-official .directory-official-list > button.is-selected { color: var(--qc-screen-accent); }
+.directory-upload-official .directory-official-list > button.is-muted { color: var(--qc-palette-8b8f8b); }
+
+}
+
+/* With My IRs open and empty, the pane holds only the placeholder waveform on
+   var(--qc-context-capture-black), and the library row carries its count.
+   The manual-reference variant shows the same screen with seven IRs already
+   in it, so the centring is the empty state's only, not the screen's. */
+.directory-irs-official:not(.is-manual-reference) .directory-official-list { display: grid; place-items: center; background: var(--qc-context-capture-black); }
+.directory-official nav button > em { color: var(--qc-palette-c8ccc8); font-size: 2cqw; font-style: normal; text-align: right; }
+
+/* Both library trees are taller than the pane once they are expanded, so CorOS
+   scrolls them: captures needs 420px of rows in a 412px pane, and IRs keeps
+   the same 8px offset. Every row lands on a 60px pitch from y 52, with the
+   first one clipped by the pane's top edge. */
+.directory-official.is-tree-scrolled nav > button:first-child { margin-top: -1cqw; }
+
+/* The elbow that ties each child to its library row: down from the row above's
+   centre - or from the library row's bottom edge for the first child - then a
+   rounded corner out to the folder glyph at x 34. */
+.directory-official:not(.directory-nested-official) nav button.is-child::before { content: ""; position: absolute; left: 3.125cqw; top: 0; width: 1.125cqw; height: 3.75cqw; border-left: .25cqw solid var(--qc-palette-5c625c); border-bottom: .25cqw solid var(--qc-palette-5c625c); border-bottom-left-radius: 1cqw; }
+.directory-official:not(.directory-nested-official) nav button.is-child + button.is-child::before { top: -3.75cqw; height: 7.5cqw; }
+
+.directory-official nav button .directory-nav-badge { position: absolute; left: 6cqw; top: 50%; width: 2cqw; height: 2cqw; margin-top: -.875cqw; }
+.directory-official nav button .directory-nav-badge svg { width: 100%; height: 100%; stroke: none; }
+.directory-official nav button .directory-nav-badge .badge-plate { fill: var(--qc-editor-disabled-shadow); }
+.directory-official nav button .directory-nav-badge .badge-disc { fill: var(--qc-screen-text-primary); }
+.directory-official nav button .directory-nav-badge .badge-arrow { fill: var(--qc-editor-disabled-shadow); stroke: none; }
+/* The row menu sits at x 242..244, clear of the label. */
+.directory-official nav button.is-owned small { position: absolute; right: 2.5cqw; top: 50%; translate: 0 -50%; color: var(--qc-palette-6f746f); font-size: 2.25cqw; }

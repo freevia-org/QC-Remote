@@ -1,0 +1,93 @@
+@scope (.qc-screen-fixture-root) {
+.empty-slot-official, .empty-slot-official * { box-sizing: border-box; font-family: var(--qc-font-device-plain); }
+.qc-screen.empty-slot-official { position: absolute; inset: 0; display: grid; grid-template-columns: 50% 50%; grid-template-rows: 100%; overflow: hidden; background: var(--qc-palette-111511); color: var(--qc-screen-text-primary); container-type: inline-size; }
+/* The device puts the Grid on the left and the category list on the
+   right; the markup declares them the other way round. */
+.empty-slot-official > .empty-slot-grid { grid-column: 1; }
+.empty-slot-official > .empty-slot-categories { grid-column: 2; }
+.empty-slot-categories { position: relative; z-index: 2; grid-column: 1; grid-row: 1; overflow: hidden; padding-top: 1cqw; border-right: 1cqw solid var(--qc-palette-111); background: var(--qc-screen-surface-raised); }
+/* The list scrollbar sits at x 790, from y 13 to y 158. */
+.empty-slot-categories::after { content: ""; position: absolute; right: 1.25cqw; top: 1.625cqw; width: .25cqw; height: 18.125cqw; background: var(--qc-palette-313431); }
+.empty-slot-categories button { position: relative; width: 100%; height: 9.75cqw; display: grid; grid-template-columns: 10.5cqw 1fr; align-items: center; padding: 0 2.25cqw 0 1cqw; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font: 2cqw var(--qc-font-device-plain); }
+/* Every category tile is 64x64 with its left edge on x 419, on
+   the same 78px row pitch the buttons already use. 8.25x8.5cqw made it 66x68
+   and the button's own 1cqw padding started it at 416. */
+/* The tile also sits on its own black plate, three pixels proud of the ring on
+   every side: at y 437 the device runs nav var(--qc-context-capture-black) to x 415, black 416..418,
+   the ring at 419..420, and mirrors that at 481..485. */
+.empty-slot-categories button i { width: 64px; height: 64px; margin-left: 3px; display: grid; place-items: center; border: 2px solid var(--device-color); border-radius: 14px; background: var(--qc-screen-background); box-shadow: 0 0 0 3px var(--qc-screen-background); color: var(--qc-screen-text-primary); }
+.empty-slot-categories button:first-child i { background: var(--qc-palette-102818); }
+/* Each glyph draws at one CSS pixel per art unit in a 40px box whose top-left
+   is x 431, y 28 + 78n. Four independent glyphs pin that with no slack:
+   Plugins' 24x29 ink lands on x 439..462 y 34..62, Neural Capture's 16x32 white
+   layer on x 451 y 187, Cab's 26x26 primary on x 438 y 268 with its 30x30
+   corner marks on x 436 y 266, Overdrive's 28x26 on x 437 y 346 and Delay's
+   25x26 white pass on x 436 y 424 - each exactly the art's own ink box offset
+   from (431, 28 + 78n). The five nth-child scale() nudges that used to sit here
+   were compensating for a 37.9x39.2 box; with the box right they are wrong. */
+.empty-slot-categories button i svg { width: 40px; height: 40px; transform: translateY(1px); }
+.empty-slot-categories button span { position: relative; top: 1px; }
+.empty-slot-categories button b { position: absolute; right: 2cqw; top: 3.125cqw; padding: .75cqw 1.625cqw; border-radius: 2cqw; background: var(--qc-palette-f4d224); color: var(--qc-palette-111); font-size: 1.75cqw; font-weight: 400; }
+.empty-slot-grid { position: relative; z-index: 2; grid-column: 2; grid-row: 1; background: var(--qc-palette-404440); color: var(--qc-palette-a3a6a3); }
+.empty-slot-grid header b { color: var(--qc-palette-b09e4b); }
+.empty-slot-grid header strong { font-size: 3cqw; }
+.empty-slot-grid header .empty-undo { position: absolute; left: 26.25cqw; top: 1.25cqw; }
+.empty-slot-grid header .empty-undo svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.empty-slot-grid header .empty-undo svg { transform: translateX(-.7cqw) scale(1.47, 1.26); transform-origin: center; }
+.empty-slot-grid header > b { position: absolute; left: 32cqw; top: 1.625cqw; width: 3cqw; height: 3cqw; display: grid; place-items: center; border-radius: .25cqw; background: var(--qc-palette-8a8244); color: var(--qc-palette-404440); font-size: 2.5cqw; }
+.empty-slot-grid header .empty-save { position: absolute; left: 38cqw; top: 1.25cqw; }
+.empty-slot-grid header .empty-save svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.empty-slot-grid header .empty-save { width: 3cqw; height: 3cqw; display: grid; place-items: center; border-radius: .25cqw; background: var(--qc-palette-747974); color: var(--qc-palette-404440); }
+.empty-slot-grid header .empty-more { position: absolute; left: 44.125cqw; top: 1.125cqw; }
+.empty-slot-grid header .empty-more svg { width: 3cqw; height: 3cqw; fill: currentColor; stroke: none; }
+/* The --qc-palette-aaaeaa this named is off both 5-bit ladders and matches
+   nothing the unit actually paints - spelled without var() so a token-usage
+   scan does not read the note as a paint. Nothing reaches for
+   the token now. The rule at the foot of this sheet already repaints this mark
+   var(--qc-palette-848a84), which is the unit's own value for it, so the
+   literal here only ever lost a cascade it should never have entered. */
+.empty-slot-grid .empty-mode { position: absolute; z-index: 2; left: 32cqw; top: 7.5cqw; display: flex; align-items: center; gap: 1.5cqw; color: var(--qc-palette-848a84); font-size: 3cqw; font-weight: 700; }
+.empty-slot-grid .empty-mode svg { width: 3cqw; height: 3cqw; fill: currentColor; stroke: none; }
+.empty-slot-grid .empty-mode svg { transform: matrix(1.28, 0, 0, 1.4, 0, -3); transform-origin: center; }
+.empty-slot-grid .empty-mode strong { font: inherit; }
+
+
+/* The dimmed Grid runs the full 800 with the list over x 400. Its route tiles
+   are 44x76 at x 8 on a 94px row pitch from y 109, the open slot is a 70px
+   var(--qc-screen-surface-base) tile at (152, 112), the cable is
+   var(--qc-palette-737973) at y 147, and the title is the Grid's own 71/58px header. */
+.qc-screen.empty-slot-official { display: block; }
+.empty-slot-official > .empty-slot-grid { position: absolute; z-index: 1; inset: 0; background: var(--qc-screen-surface-overlay); color: var(--qc-palette-848a84); }
+.empty-slot-official > .empty-slot-categories { position: absolute; z-index: 2; left: 400px; top: 0; bottom: 0; width: 400px; border-right: 0; border-left: 8px solid var(--qc-screen-surface-raised); }
+.empty-slot-grid > header { position: absolute; inset: 0 0 auto; height: 96px; display: flex; align-items: flex-start; justify-content: flex-start; gap: 0; padding: 20px 13.6px; }
+.empty-slot-grid > header > strong { color: var(--qc-palette-638284); font-size: 71px; line-height: .82; font-weight: 700; letter-spacing: 1.4px; transform: translateY(5px); }
+.empty-slot-grid > header > strong > span { color: var(--qc-palette-848a84); }
+.empty-slot-grid > header > h1 { margin: 6px 0 0 12.6px; color: var(--qc-palette-848a84); font-size: 58px; line-height: 1; font-weight: 700; }
+.empty-slot-grid > main { position: absolute; inset: 96px 0 0; }
+.empty-slot-grid > main .empty-route, .empty-slot-grid > main .empty-row, .empty-slot-grid > main .empty-out { position: absolute; left: 8px; width: 44px; height: 76px; display: grid; place-items: center; border-radius: 14px; background: var(--qc-palette-424942); color: var(--qc-palette-737973); font-size: 14px; font-style: normal; line-height: 1.35; text-align: center; }
+.empty-slot-grid > main .empty-route { top: 13px; }
+.empty-slot-grid > main .empty-route.is-row-3 { top: 201px; }
+.empty-slot-grid > main .empty-row.is-row-2 { top: 107px; font-size: 26px; }
+.empty-slot-grid > main .empty-row.is-row-4 { top: 295px; font-size: 26px; }
+.empty-slot-grid > main .empty-row > .qc-ui-icon-add { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+/* These two marks ink 66,73,66 -> 107,109,107, not the 148,150,148
+   the registry declares: the row ports carry the browser wash and the unit
+   substitutes its dimmed mark there rather than fading the undimmed one. Both
+   marks are exactly two colours - 84 mark pixels and 492 ground. It has to
+   name the `path`: `QcScreenVectorGlyph` writes `fill`
+   onto the path as a presentation attribute, which beats anything the parent
+   `<svg>` can only pass down. `.empty-add` keeps the undimmed mark, because its
+   own ground is the base surface, which is 148,150,148. */
+.empty-slot-grid > main .empty-row > .qc-ui-icon-add path { fill: var(--qc-screen-mark-dimmed-browser); }
+.empty-slot-grid > main .empty-out { left: auto; right: 6px; font-size: 15px; }
+.empty-slot-grid > main .empty-cable { position: absolute; left: 52px; right: 52px; top: 50px; height: 2px; background: var(--qc-palette-737973); }
+.empty-slot-grid > main .empty-cable.is-row-3 { top: 238px; }
+.empty-slot-grid > main .empty-add { position: absolute; left: 152px; top: 16px; width: 70px; height: 70px; display: grid; place-items: center; border-radius: 14px; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-muted); font-size: 34px; font-style: normal; }
+.empty-slot-grid > main .empty-add > .qc-ui-icon-add { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
+.empty-slot-grid > .empty-mode { left: 610px; top: 56px; color: var(--qc-palette-848a84); }
+.empty-slot-grid > header .empty-undo { left: 610px; top: 10px; }
+.empty-slot-grid > header > b { left: 668px; top: 13px; }
+.empty-slot-grid > header .empty-save { left: 716px; top: 10px; }
+.empty-slot-grid > header .empty-more { left: 765px; top: 9px; }
+
+}

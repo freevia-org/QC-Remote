@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated from qc-usb-profile.v1.json. Do not edit by hand. -->
+<resources>
+    <usb-device vendor-id="5418" product-id="34826" />
+    <usb-device vendor-id="5418" product-id="35119" />
+</resources>

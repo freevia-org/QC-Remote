@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/freevia-org/QC-Remote/blob/HEAD/SECURITY.md
+    about: Report privately as SECURITY.md describes. Do not open a public issue for security problems.
+  - name: Privacy questions
+    url: https://freevia.org/qcremote/privacy
+    about: What the optional relay receives and stores, and how to contact Freevia EOOD about privacy.
+  - name: Neural DSP product support
+    url: https://support.neuraldsp.com/help/
+    about: QC Remote is unofficial. Questions about the Quad Cortex itself belong with Neural DSP.

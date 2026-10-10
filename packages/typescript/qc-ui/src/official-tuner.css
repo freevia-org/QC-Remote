@@ -1,0 +1,82 @@
+@scope (.qc-screen-fixture-root) {
+.qc-screen.coros-tuner.tuner-official { background: var(--qc-screen-surface-base); }
+.tuner-official > header button { background: var(--qc-screen-surface-control); }
+.tuner-official .tuner-scale > b { background: var(--qc-screen-surface-base); }
+.tuner-official .tuner-scale > b::after { content: ""; position: absolute; left: -2px; top: 8px; width: 62px; height: 62px; border-radius: 50%; background: var(--qc-palette-00f800); }
+.tuner-official .tuner-reading { position: absolute; left: 50%; top: 2%; transform: translateX(-50%); color: var(--qc-screen-text-primary); font-size: 4.75cqw; font-weight: 400; }
+.tuner-official .tuner-left-arrow,
+.tuner-official .tuner-right-arrow { position: absolute; top: 0; color: var(--qc-screen-accent); font-size: 6cqw; font-weight: 400; line-height: 1; }
+.tuner-official .tuner-left-arrow { left: 25%; }
+.tuner-official .tuner-right-arrow { right: 25%; }
+.tuner-official .tuner-flat,
+.tuner-official .tuner-note,
+.tuner-official .tuner-sharp { position: absolute; top: 70%; color: var(--qc-palette-8c908c); font-style: normal; font-weight: 400; }
+.tuner-official .tuner-flat { left: 3%; font-size: 4cqw; }
+.tuner-official .tuner-note { left: 50%; transform: translateX(-50%); color: var(--qc-screen-text-primary); font-size: 8cqw; line-height: .9; }
+.tuner-official .tuner-sharp { right: 3%; font-size: 4cqw; }
+.tuner-official > footer { background: var(--qc-screen-surface-control); }
+.tuner-official .tuner-frequency > .qc-rotary { left: 8.4375cqw; top: -.7625cqw; }
+
+/* The production Tuner keeps the captured CorOS drawing but gives every
+   visible control a semantic HTML target. The native select and range remain
+   over their drawn controls rather than introducing a second visual language. */
+.coros-tuner > footer > section > label[for="qc-tuner-reference"] {
+  display: block;
+  margin-bottom: 1.2cqw;
+  font-size: 2cqw;
+}
+.tuner-frequency > input[type="range"] {
+  position: absolute;
+  inset: -.5cqw 0 0 7.8cqw;
+  z-index: 2;
+  width: 8.5cqw;
+  height: 7cqw;
+  opacity: 0;
+  cursor: ns-resize;
+}
+.coros-tuner .tuner-input-button {
+  width: 100%;
+  height: 4.7cqw;
+  padding: 0 1cqw;
+  border: 0;
+  border-radius: .8cqw;
+  background: var(--qc-screen-background);
+  color: var(--qc-screen-text-primary);
+  font: inherit;
+  font-size: 2cqw;
+}
+.coros-tuner .tuner-input-button > b { float: right; }
+.coros-tuner .tuner-input-button > b svg { width: 2cqw; height: 2cqw; }
+.coros-tuner .tuner-input-menu { position: absolute; z-index: 8; left: 0; bottom: 100%; width: 100%; max-height: 25cqw; overflow: auto; padding: .6cqw; border-radius: .8cqw; background: var(--qc-screen-surface-control); box-shadow: 0 .5cqw 2cqw var(--qc-palette-rgb-0-0-0-55); }
+.coros-tuner .tuner-input-menu button { width: 100%; padding: 1cqw; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font: inherit; }
+.coros-tuner .tuner-input-menu button[aria-checked="true"] { background: var(--qc-screen-surface-raised); color: var(--qc-screen-accent); }
+.coros-tuner .tuner-meter-toggle {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  background: var(--qc-transparent);
+}
+.coros-tuner .tuner-meter-toggle > .qc-pill-toggle {
+  position: absolute;
+  left: 2.075cqw;
+  top: 6cqw;
+}
+.coros-tuner .tuner-meter-toggle > span {
+  display: flex;
+  align-items: center;
+  height: 2.7cqw;
+  padding-left: 4.7cqw;
+  color: var(--qc-palette-838585);
+  font-size: 1.75cqw;
+}
+.tuner-official > footer > section:nth-child(2) button,
+.tuner-official > footer > section:nth-child(3) button { transform: translateY(.25cqw); }
+/* The pill this sheet used to draw for itself - a 24 x 48 box with a fixed ring
+   that could not move - is QcPillToggle now, placed once in the base sheet.
+   The detent centre sits on x 506, at y 424 in one state and y 448 in the
+   other, which is one pill at x 495, y 413 with the detent at either end. */
+.tuner-official > footer > section:last-child .tuner-meter-toggle > span { padding-left: 10.2cqw; transform: translateY(1.25cqw); }
+
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@qc-remote/core",
+  "version": "0.1.0",
+  "license": "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./footswitch": "./src/footswitch.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/core.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@qc-remote/client": "0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

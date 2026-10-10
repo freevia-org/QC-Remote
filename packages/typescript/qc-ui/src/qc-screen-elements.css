@@ -1,0 +1,246 @@
+/*
+ * Shared screen elements.
+ *
+ * CorOS draws one alphabet rail and one scrollbar and reuses them from screen to
+ * screen. The reconstruction had been redrawing each of them per screen, so a
+ * measurement that corrected one copy left the others behind: three jump-index
+ * bodies had drifted into byte-identical duplicates of each other, and one 3px
+ * scrollbar had acquired six thumb colours. What the unit repeats lives here
+ * once, parameterised on the one axis that genuinely varies.
+ *
+ * ---------------------------------------------------------------------------
+ * Where a shared layer can live, and how it beats @scope
+ * ---------------------------------------------------------------------------
+ * Most screen files wrap their rules in @scope (.qc-screen-fixture-root), so a
+ * shared layer has to be placed against that, not merely imported somewhere.
+ * The cascade settles these in this order, and only this order:
+ *
+ *   specificity  >  scope proximity  >  order of appearance
+ *
+ * A rule outside any @scope counts as infinitely far from the root. Three
+ * consequences, all of which this file depends on:
+ *
+ *  1. An unscoped rule of EQUAL specificity loses to a scoped one however late
+ *     it is imported. This is the trap: appending a stylesheet does nothing.
+ *  2. An unscoped rule of HIGHER specificity wins anyway - proximity is only
+ *     consulted once specificity ties. That is why the
+ *     `html body #root#root .qc-screen-bezel` prefix in qc-device-typography.css
+ *     works from four sheets earlier than every screen file.
+ *  3. Joining the same scoping root makes proximity tie, which hands the
+ *     decision back to specificity then order - the model a screen file already
+ *     assumes. That is what this file does, and why it is imported first: last
+ *     word to whichever screen sets its own value.
+ *
+ * So: a BASE layer joins the scope and is imported first. A layer that must have
+ * the LAST word - typography, a hard reset - stays outside the scope and raises
+ * specificity instead. Do not reach for #root#root here; a base layer nobody can
+ * override is not a base layer.
+ *
+ * Two things that will bite the next consolidation:
+ *
+ *  - A file's @scope block does not necessarily reach its last line. In
+ *    fixture-live-surface.css it closes at line 656 of 1143, in
+ *    remaining-fixtures-fixes.css at line 351 of 740. Several hundred rules in
+ *    those files are therefore unscoped and quietly lose to scoped rules of the
+ *    same specificity that were written earlier - the device browser's
+ *    `scrollbar-width: none` had been losing to the `thin` it was written to
+ *    cancel. Check which side of the closing brace a rule is on before assuming
+ *    order decides anything.
+ *  - Inside @scope (X) an implicit `:scope ` is prepended, so `X` itself does not
+ *    match `.X { }` written in the block - only its descendants do. Use `:scope`
+ *    when the root is the target.
+ *
+ * The library must also be imported by BOTH composition roots. The Grid path in
+ * quad-cortex-surface.tsx never loads the lazily imported screen fixtures, so a
+ * file imported only by coros-screen-fixtures.tsx reaches none of the Grid,
+ * editor or route-picker frames.
+ */
+@scope (.qc-screen-fixture-root) {
+
+/* Every in-screen control gets the same desktop affordance. The live Grid
+ * already did this for its invisible hit targets; device pages built from
+ * ordinary buttons did not, so the cursor and hover outline disappeared as
+ * soon as the user left the Grid. Full-screen washes are intentionally
+ * excluded: they dismiss a popover but are not visible controls. */
+.qc-screen :is(button, select, [role="button"]):not(:disabled):not(:where([role="menuitem"][aria-disabled="true"])):not(.coros-picker-dismiss):not(.coros-device-dismiss):not(.directory-context-scrim):not(.scene-menu-backdrop):not(.coros-screen-dimmer):not(.settings-menu-wash):not(.coros-lane-control-dismiss) {
+  cursor: pointer;
+}
+.qc-screen :is(button, select, [role="button"]):not(:disabled):not(:where([role="menuitem"][aria-disabled="true"])):not(.coros-picker-dismiss):not(.coros-device-dismiss):not(.directory-context-scrim):not(.scene-menu-backdrop):not(.coros-screen-dimmer):not(.settings-menu-wash):not(.coros-lane-control-dismiss):is(:hover, :focus-visible) {
+  outline: 1px solid var(--qc-palette-ffffff55);
+  outline-offset: -1px;
+}
+/* An unavailable MENU ITEM is aria-disabled rather than :disabled so that it
+ * stays focusable (APG menu pattern). Only role="menuitem" is excluded from the
+ * two rules above: it keeps the treatment it had as a :disabled button - no
+ * pointer, no hover outline - but, being focusable, it shows the same outline
+ * as every other control when keyboard focus is on it. Every other
+ * aria-disabled control (for example qc-multiselect-action) keeps the shared
+ * pointer and hover/focus outline unchanged. No new colour: the outline reuses
+ * the token above. The exclusion is wrapped in :where() so it adds no
+ * specificity: both shared rules keep exactly the specificity they had before. */
+.qc-screen [role="menuitem"][aria-disabled="true"]:focus-visible {
+  outline: 1px solid var(--qc-palette-ffffff55);
+  outline-offset: -1px;
+}
+
+/* The shared navigation bar, taken from the unit's own geometry rather than inferred.
+ *
+ * The bar's ground runs y 0..59 and the panel below it starts at y 60 -
+ * sixty rows, exactly. The header's button surface is one row run, y 8..51,
+ * and spans x 8..791: a 44px box inset 8px on all four sides, 8 + 44 + 8 = 60.
+ * Where the editor opens over the Grid, away from the screen edge, the same
+ * proportions hold: header ground 60 tall, button 44 tall, eight rows of
+ * ground above and below it.
+ *
+ * At the device's own 800px width, 1cqw is 8px on the nose, so 7.5cqw is the
+ * bar and 5.5cqw is the button. Percentages are not interchangeable with
+ * these: 12.5% is 60 only where the header's containing block is the full
+ * 480, and other percentages had all been written for the same bar on
+ * different screens. Three pixels of header moves every row under it, which
+ * threw off other screens' layout for reasons that had nothing to do with
+ * their own content.
+ *
+ * The Grid's own bar is NOT this one and must not be folded into it: it is a
+ * 96px bar with main starting at y 96, which .coros-grid-popup
+ * .popup-grid > header already carries. Neither is a 60px list row:
+ * .directory-official nav button is 60 because the unit puts directory rows
+ * on a 60px pitch, not because it is a nav bar.
+ */
+:scope {
+  --qc-nav-bar-height: 7.5cqw;
+  --qc-nav-bar-inset: 1cqw;
+  --qc-nav-bar-button: 5.5cqw;
+}
+
+/* One 24px scene tile and one parameterised shuttle. Screens place the
+   shuttle; they do not redraw or resize its letter plate. */
+.qc-scene-letter-badge {
+  box-sizing: border-box;
+  width: 3cqw;
+  height: 3cqw;
+  display: grid;
+  flex: 0 0 3cqw;
+  place-items: center;
+  border-radius: .5cqw;
+  background: var(--qc-scene-badge);
+  color: var(--qc-screen-surface-base);
+  font-size: 2.75cqw;
+  font-weight: 800;
+  line-height: 1;
+}
+.qc-scene-letter-badge.is-inactive { background: var(--qc-screen-text-muted); color: var(--qc-screen-surface-base); }
+.qc-scene-selector { display: grid; grid-template-columns: 1fr 5cqw 1fr; align-items: center; }
+.qc-scene-selector > button { min-width: 0; height: 100%; display: grid; place-items: center; padding: 0; border: 0; background: var(--qc-transparent); color: inherit; }
+.qc-scene-selector-badge-slot { box-sizing: border-box; height: 3.5cqw; display: grid; place-items: center; border-inline: 1px solid var(--qc-screen-surface-muted); }
+
+.qc-expression-assignment-link { width: 3cqw !important; height: 3cqw !important; display: block; transform: translateX(.25cqw); }
+.qc-expression-assignment-link [data-qc-role="brackets"] { fill: var(--qc-scene-control-muted) !important; stroke: none !important; }
+.qc-expression-assignment-link [data-qc-role="link"] { fill: var(--qc-screen-accent) !important; stroke: none !important; }
+.qc-expression-assignment-link.is-assigned [data-qc-role="brackets"] { fill: var(--qc-screen-accent) !important; }
+.qc-multiselect-action.is-disabled { color: var(--qc-palette-313c31); }
+.qc-multiselect-action.is-enabled { color: var(--qc-screen-text-primary); }
+.qc-multiselect-action svg [data-qc-role] { fill: currentColor !important; }
+.qc-multiselect-action .qc-stateful-action-icon path { fill: currentColor !important; }
+
+/* State text follows the same index as the shared pill's detent. */
+.qc-pill-toggle-labels { display: grid; }
+.qc-pill-toggle-labels > b { color: var(--qc-screen-text-muted); font-weight: 400; }
+.qc-pill-toggle-labels > b.is-active { color: var(--qc-screen-text-primary); }
+
+/* A Cab target is visual-only: pointer capture stays on its speaker parent,
+   which makes this same target draggable in the live editor and fixed in a
+   static fixture. */
+.qc-cab-microphone-target {
+  position: absolute;
+  z-index: 2;
+  left: var(--qc-cab-mic-x);
+  top: var(--qc-cab-mic-y);
+  width: 17%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--qc-screen-text-primary);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.qc-cab-microphone-target > i { position: absolute; top: 42%; width: 22%; aspect-ratio: 1; border-radius: 50%; }
+.qc-cab-microphone-target.is-right > i:nth-child(1) { left: 86%; background: var(--qc-palette-999); }
+.qc-cab-microphone-target.is-right > i:nth-child(2) { left: 108%; background: var(--qc-palette-747975); }
+.qc-cab-microphone-target.is-right > i:nth-child(3) { left: 130%; background: var(--qc-palette-575c58); }
+.qc-cab-microphone-target.is-left > i:nth-child(1) { right: 86%; background: var(--qc-palette-999); }
+.qc-cab-microphone-target.is-left > i:nth-child(2) { right: 108%; background: var(--qc-palette-747975); }
+.qc-cab-microphone-target.is-left > i:nth-child(3) { right: 130%; background: var(--qc-palette-575c58); }
+
+/* The alphabet rail the unit parks against the right edge of a long list:
+   4.625cqw of muted letters down the pane. Only the Captures list sits it on
+   the control surface, so the surface is the parameter and the geometry is not.
+   No hairline: the column left of the letters reads 41.44.41 - the pane's own
+   ground - on all four frames that draw the rail
+   (device-browser-neural-capture, directory-captures, -filter, -nested), so the
+   1px 24.28.24 border here was ours alone. The letters stand on a 5.5cqw pitch
+   and the run of nine is centred in the pane, not spread across it: the unit
+   puts them 44px apart in both a 420px pane and a 411px one. */
+.qc-jump-index {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4.625cqw;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--qc-jump-index-surface, var(--qc-transparent));
+  color: var(--qc-screen-text-muted);
+  font-size: 1.375cqw;
+}
+/* The unit inks the letters one column left of the rail's own centre: an A
+   spans x 769..775 where our centred one spans 770..776. */
+.qc-jump-index > * {
+  height: 5.5cqw;
+  display: flex;
+  align-items: center;
+  transform: translateX(-1px);
+}
+/* Between the letters the unit sets no bullet: it draws a small bright disc,
+   5x5, a shade brighter than the letters. A typographic bullet at this size
+   is three pixels across. */
+.qc-jump-index > *:nth-child(even) {
+  font-size: 0;
+}
+.qc-jump-index > *:nth-child(even)::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--qc-palette-a5a6a5);
+}
+
+/* One rail, one thumb: 3px wide with a 2px radius over an empty track, which is
+   the only scrollbar CorOS draws. Six panes had each picked a thumb colour off
+   whatever surface they happened to sit on, so the colour is the parameter and
+   nothing else is. The -webkit- half is what the shipped WebView paints; the
+   capture renderer uses overlay scrollbars, which take no width and paint
+   nothing, and that is precisely why six colours could drift apart without a
+   single frame moving to show it.
+   Chromium (WebView2 included) drops every ::-webkit-scrollbar rule on an
+   element that also sets scrollbar-width or scrollbar-color, and paints its own
+   10px classic bar with arrow buttons instead - the visible scrollbar the unit
+   never draws. So the standard properties are only a fallback for engines with
+   no -webkit- scrollbar pseudo-elements. */
+@supports not selector(::-webkit-scrollbar) {
+  .qc-scroll-rail {
+    scrollbar-width: thin;
+    scrollbar-color: var(--qc-scroll-thumb) var(--qc-transparent);
+  }
+}
+.qc-scroll-rail::-webkit-scrollbar { width: 3px; }
+.qc-scroll-rail::-webkit-scrollbar-track { background: var(--qc-transparent); }
+.qc-scroll-rail::-webkit-scrollbar-thumb { border-radius: 2px; background: var(--qc-scroll-thumb); }
+.qc-scroll-rail::-webkit-scrollbar-button { display: none; }
+
+}
+
+/* The tick beside the chosen row of any dropdown is the unit's accent green, not
+   the white the registry's check art carries as a presentation attribute (the
+   Directory category menu and the Settings section list both draw it). */
+.qc-selection-tick .qc-ui-icon-check path, .settings-section-check .qc-ui-icon-check path { fill: var(--qc-screen-accent); }

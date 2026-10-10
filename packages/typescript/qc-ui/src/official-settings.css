@@ -1,0 +1,449 @@
+/* Settings screen master/detail shell (Account/System/Device, Device's own
+ * MIDI row) - CorOsDeviceSettings in device-settings-screen.tsx, ported from
+ * coros-screen-fixtures.tsx's CorOsOfficialSettings/CorOsReferenceSettings.
+ *
+ * Three files already carried this pane's geometry as production-
+ * style stylesheets - official-settings-device.css, official-settings-
+ * midi.css, settings-system-panes.css - but all three, and the base scaffold
+ * below (`.coros-settings-official`'s own header/nav/section grid, and the
+ * three detail panels' shared base rules), were only ever written inside
+ * `@scope (.qc-screen-fixture-root)`. That scope root is quad-cortex-
+ * surface.tsx's own live-grid wrapper div (`qc-screen-fixture-root
+ * is-live-grid`) - real for content rendered *inside* QuadCortexSurface, such
+ * as CorOsParameterEditor/CorOsExpressionAssignment, which is why official-
+ * routing.css and official-expression.css could keep it. This settings
+ * overlay, like CorOsSceneCommand before it, has to render as a sibling of
+ * QuadCortexSurface in App.tsx instead (quad-cortex-surface.tsx is out of
+ * this change's scope), so it is never a descendant of that root - the same
+ * CSS-scope gap already fixed three times.
+ *
+ * This file duplicates those rules - unchanged, same class names,
+ * same values - with the `@scope` boundary lifted, so they apply wherever
+ * this component renders. The base scaffold immediately below is the one
+ * part with no earlier production copy at all: it lived only in
+ * remaining-fixtures-fixes.css's own single `@scope (.qc-screen-fixture-
+ * root)` block (that file's dev-only fixture harness copy), reformatted here
+ * from its minified single line for readability, values unchanged. */
+
+.coros-settings-official, .coros-settings-official * { box-sizing: border-box; font-family: var(--qc-font-device-plain); }
+/* --qc-nav-bar-height is qc-screen-elements.css's own navigation bar constant
+ * (7.5cqw), but that file defines it only inside
+ * `@scope (.qc-screen-fixture-root) { :scope { ... } }` - invisible outside
+ * that root, which this component (a sibling of QuadCortexSurface, not a
+ * descendant of it) never is. Redeclared locally rather than assumed
+ * inherited, same value. */
+.qc-screen.coros-settings-official { position: absolute; inset: 0; display: block; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); container-type: inline-size; --qc-nav-bar-height: 7.5cqw; }
+.coros-settings-official > header { height: var(--qc-nav-bar-height); display: flex; align-items: center; }
+.coros-settings-official button { border: 0; color: inherit; }
+.coros-settings-official button:disabled { opacity: .38; cursor: default; }
+.coros-settings-official .settings-section { width: 32cqw; height: 5.5cqw; margin-left: 1cqw; display: grid; grid-template-columns: 4.5cqw 1fr 2cqw; align-items: center; padding: 0 1.5cqw; border-radius: 1cqw; background: var(--qc-screen-surface-control); text-align: left; font-size: 2cqw; }
+.coros-settings-official .settings-section b { font-size: 3.2cqw; font-weight: 400; }
+.coros-settings-official .settings-section i { width: 0; height: 0; border-left: .9cqw solid var(--qc-transparent); border-right: .9cqw solid var(--qc-transparent); border-top: 1.2cqw solid var(--qc-screen-text-primary); }
+.coros-settings-official .settings-done { width: 12.25cqw; height: 5.5cqw; margin-left: auto; margin-right: 1cqw; border-radius: 1cqw; background: var(--qc-screen-surface-control); font-size: 3cqw; }
+.coros-settings-official > main { height: 87.5%; display: grid; grid-template-columns: 32cqw 65cqw; gap: 1cqw; padding: 0 1cqw 1cqw; }
+.coros-settings-official > main > nav, .coros-settings-official > main > section { min-width: 0; overflow: hidden; border-radius: 1cqw; background: var(--qc-screen-surface-control); }
+.coros-settings-official > main > nav { overflow-y: auto; scrollbar-width: none; }
+.coros-settings-official > main > nav::-webkit-scrollbar { display: none; }
+.coros-settings-official > main > nav button { width: 100%; height: 7.5cqw; display: grid; grid-template-columns: 5cqw 1fr; align-items: center; padding: 0 2cqw; background: var(--qc-screen-surface-control); text-align: left; font-size: 2cqw; }
+.coros-settings-official > main > nav button b { font-size: 3cqw; font-weight: 400; }
+.coros-settings-official > main > nav button.is-active { background: var(--qc-screen-surface-raised); color: var(--qc-palette-2df36a); }
+.coros-settings-official > main > section { padding: 2.375cqw 2cqw; }
+.coros-settings-official > main > section h1 { margin: 0 0 2cqw; font-size: 2.5cqw; font-weight: 400; }
+.coros-settings-official > main > section p { margin: 0; font-size: 2.25cqw; line-height: 1.25; }
+.settings-account-detail > header { height: 4.25cqw; display: flex; align-items: flex-start; }
+.settings-account-detail > header strong { font-size: 2.5cqw; font-weight: 400; }
+.settings-account-detail > header strong span { color: var(--qc-palette-929692); }
+.settings-account-detail > header small { margin-left: auto; margin-top: .6cqw; color: var(--qc-palette-c6c8c6); font-size: 1.625cqw; }
+.settings-account-detail > div { position: relative; height: 7.5cqw; padding-top: 1cqw; border-bottom: 1px solid var(--qc-palette-101310); }
+.settings-account-detail > div strong, .settings-account-detail > div small { display: block; }
+.settings-account-detail > div strong { font-size: 2cqw; font-weight: 400; }
+.settings-account-detail > div small { margin-top: .75cqw; color: var(--qc-palette-8f938f); font-size: 1.625cqw; }
+.settings-account-detail > div small + small { position: absolute; left: 28cqw; bottom: 1cqw; }
+.settings-account-detail > div > b { position: absolute; right: .75cqw; top: 1.1cqw; color: var(--qc-palette-777b77); font-size: 2.5cqw; font-weight: 400; }
+.settings-account-detail > button { width: 27.375cqw; height: 5.75cqw; margin-top: 3cqw; border-radius: 1cqw; background: var(--qc-screen); font-size: 1.75cqw; }
+.settings-system-detail > h1 { margin-bottom: 2cqw; }
+.settings-system-detail > p { margin-bottom: 1.25cqw; }
+.settings-system-detail > div { position: relative; height: 9.875cqw; }
+.settings-system-detail > div span, .settings-system-detail > div strong { font-size: 2.25cqw; font-weight: 400; }
+.settings-system-detail > div strong { position: absolute; right: 1.5cqw; }
+.settings-system-detail > div .qc-segment-bar { position: absolute; left: 0; top: 5.0625cqw; }
+.settings-system-detail > footer { font-size: 3cqw; word-spacing: 1.25cqw; }
+/* qc-brightness-panel.tsx: the up/down marks set into the instruction line, the
+   invisible hit area over each bar (same box as the bar), and the mode marks. */
+.settings-system-detail .qc-footswitch-triangle { display: inline-block; width: .78em; height: .66em; margin: 0 .04em; vertical-align: -.02em; background: currentColor; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.settings-system-detail .qc-footswitch-triangle.is-down { clip-path: polygon(0 0, 100% 0, 50% 100%); }
+.settings-system-detail > div .qc-segment-bar-hit { position: absolute; left: 0; top: 5.0625cqw; width: 60.75cqw; height: 3cqw; padding: 0; border: 0; background: none; opacity: 0; cursor: pointer; }
+.settings-system-detail > div .qc-segment-bar-hit:focus-visible { opacity: 1; outline: .25cqw solid var(--qc-screen-accent); outline-offset: .25cqw; background: none; }
+.settings-system-detail > footer > button { display: block; padding: 0; border: 0; background: none; color: inherit; line-height: 0; cursor: pointer; }
+.settings-system-detail > footer > button:disabled { cursor: default; }
+.settings-device-detail > p { margin-bottom: 1cqw; }
+.settings-device-detail > small { display: block; color: var(--qc-palette-929692); font-size: 1.75cqw; line-height: 1.25; }
+.settings-device-detail > div { position: relative; height: 10.5cqw; margin-top: 2cqw; padding-left: 22cqw; display: grid; grid-template-columns: repeat(4, 1fr); gap: 2cqw; border-bottom: 1px solid var(--qc-palette-101310); }
+.settings-device-detail > div > b { position: absolute; left: 0; top: .25cqw; width: 8.75cqw; height: 8.75cqw; display: grid; place-items: center; border: .3cqw solid var(--qc-palette-7257ff); border-radius: 1.5cqw; background: var(--qc-screen-background); font-size: 4cqw; font-weight: 400; }
+.settings-device-detail > div > button { display: grid; grid-template-rows: 3cqw 5.5cqw; justify-items: center; padding: 0; border: 0; background: var(--qc-transparent); color: var(--qc-palette-929692); font-size: 1.75cqw; }
+.settings-device-detail > div > button i { width: 8.25cqw; height: 5.5cqw; display: grid; place-items: center; border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font-size: 3cqw; font-style: normal; }
+
+/* -- official-settings-device.css, unscoped (content unchanged) ---------- */
+.reference-settings-detail { position: relative; padding: 2.125cqw 2cqw; }
+
+/* -- official-settings-device.css's Device/System chrome overrides, unscoped (content unchanged) -- */
+.coros-settings-official.settings-device,.coros-settings-official.settings-device * { font-family: var(--qc-font-device-plain); }
+.coros-settings-official.settings-system,.coros-settings-official.settings-system * { font-family: var(--qc-font-device-plain); }
+.qc-screen.coros-settings-official.settings-system { background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); }
+.coros-settings-official.settings-system button { font: inherit; }
+.coros-settings-official.settings-system .settings-section,
+.coros-settings-official.settings-system .settings-done,
+.coros-settings-official.settings-system > main > nav,
+.coros-settings-official.settings-system > main > section,
+.coros-settings-official.settings-system > main > nav button { background: var(--qc-screen-surface-control); }
+.coros-settings-official.settings-system > main > nav button.is-active { background: var(--qc-screen-surface-raised); color: var(--qc-screen-accent); }
+.coros-settings-official.settings-system .settings-section { grid-template-columns: 4.875cqw 1fr 2cqw; padding-left: 2cqw; }
+.coros-settings-official.settings-system > main > nav button { grid-template-columns: 4.625cqw 1fr; }
+.coros-settings-official.settings-system .settings-section b,
+.coros-settings-official.settings-system > main > nav button b { width: 3cqw; height: 3cqw; }
+.coros-settings-official.settings-system .settings-section b > svg,
+.coros-settings-official.settings-system > main > nav button b > svg { width: 24px !important; height: 24px !important; display: block !important; vertical-align: 0; }
+/* The done button's ground is 694..792 x 8..52. The tick sits at (736,26),
+   where centring a 24px box in that 98x44 button puts it at (737,25). */
+.coros-settings-official.settings-system .settings-done > svg { width: 24px !important; height: 24px !important; margin: auto; display: block; transform: translate(-1px, 1px); }
+/* The PRESET glyph occupies 296..319 x 437..460, SCENE's ink 336..359 x 437..460
+   (its art carries a 1px left margin inside a 26px box, so the box starts at
+   335) and STOMP's ink 377..399. A 16px gap and the row's own fractional top
+   put every one of them on a half pixel, where crispEdges snaps the art. */
+.coros-settings-official.settings-system .settings-system-detail > footer { display: flex; align-items: flex-start; gap: 15px; height: 3cqw; margin-left: 1cqw; transform: translateY(.875cqw); }
+.coros-settings-official.settings-system .settings-system-detail > footer > button > svg { width: 26px; height: 26px; display: block; }
+.coros-settings-official.settings-system .settings-system-detail > footer > button > svg.qc-mode-glyph-preset { width: 24px; height: 24px; }
+.coros-settings-official.settings-system .settings-system-detail > footer > button.is-faint { opacity: .18; }
+.coros-settings-official.settings-system .settings-system-detail > div i,
+.coros-settings-official.settings-system .settings-system-detail > div i b { background: var(--qc-screen-surface-base); }
+.coros-settings-official.settings-system .settings-system-detail > div i b.is-on { background: var(--qc-screen-accent); }
+.qc-screen.coros-settings-official.settings-device { background: var(--qc-screen-surface-base); }
+.coros-settings-official.settings-device .settings-section,
+.coros-settings-official.settings-device .settings-done,
+.coros-settings-official.settings-device > main > nav,
+.coros-settings-official.settings-device > main > section,
+.coros-settings-official.settings-device > main > nav button { background: var(--qc-screen-surface-control); }
+.coros-settings-official.settings-device > main > nav button.is-active,
+.coros-settings-official.settings-device .settings-device-detail > div > button i { background: var(--qc-screen-surface-raised); }
+/* There is one rule between the two category blocks, two pixels on rows 349
+   and 350 in the screen's raised surface, one ladder step above the base
+   this used to paint, and twice the height. The shared `> div` rule gives
+   every block a bottom border, so the IR block was also painting an
+   unwanted second rule at y 457.
+   The 11cqw is what the two-pixel rule needs: the block's content runs from
+   y 263 to the rule, which is 86 plus the border. */
+.coros-settings-official.settings-device .settings-device-detail > div { height: 11cqw; border-bottom: 2px solid var(--qc-screen-surface-raised); transform: translateY(-.625cqw); }
+.coros-settings-official.settings-device .settings-device-detail > div:last-of-type { border-bottom: 0; }
+/* The header pill's ground sits at y 8..51 and its label ink starts at
+   x 63; the pill needed no nudge once the glyph stopped hanging off the
+   line box, so the old .25cqw drop is gone. */
+.coros-settings-official.settings-device .settings-section { grid-template-columns: 5.25cqw 1fr 2cqw; }
+/* Every settings menu row inks its label from x 63, the same pen the header
+   pill uses. The 4.625cqw column put the pen at 61 - the row's own 24px glyph
+   cell starts at x 24 and 4.625cqw is 37, two short of the 39 the device
+   leaves between them. */
+.coros-settings-official.settings-device > main > nav button { grid-template-columns: 4.875cqw 1fr; }
+.coros-settings-official.settings-device .settings-section b > svg,
+.coros-settings-official.settings-device > main > nav button b > svg,
+.coros-settings-official.settings-device .settings-device-detail svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.coros-settings-official.settings-device .settings-section b { width: 3cqw; height: 3cqw; display: grid; place-items: center; margin-left: 4px; }
+.coros-settings-official.settings-device > main > nav button b { width: 3cqw; height: 3cqw; display: grid; place-items: center; }
+.coros-settings-official.settings-device .settings-done > svg { width: 3cqw; height: 3cqw; margin: auto; }
+.coros-settings-official.settings-device .settings-scene-cells { fill: currentColor; stroke: none; }
+.settings-device-detail > p { margin-bottom: 2cqw; font-size: 2.21875cqw; }
+.coros-settings-official.settings-device .settings-device-detail > * { transform: translateY(-.375cqw); }
+/* The copy's own nudges have to carry the pane's three-class prefix or the
+   `> *` rule above outranks them and every child takes the same -3px. The
+   footnote's +7 was being swallowed exactly that way, which is why it sat six
+   rows above y 198, and 15px drew its first line 37px short of 482 - 16px
+   solves it to 475 and "bypassed." to 71. The paragraph's line one sits at
+   y 121. */
+.coros-settings-official.settings-device .settings-device-detail > p { transform: translateY(-.625cqw); }
+.settings-device-detail > small { font-size: 2cqw; line-height: 1.4; }
+.coros-settings-official.settings-device .settings-device-detail > small { transform: translateY(.3125cqw); }
+.settings-device-detail > div { margin-top: 3cqw; }
+/* 33px, which puts the first block's button row on y 290 now that
+   the footnote above it is set at its own 16px rather than 15. */
+.settings-device-detail > div:first-of-type { margin-top: 4.125cqw; }
+/* 18px of gap, not 21: the two blocks start their button rows at
+   y 290 and y 396, and the first block now ends on the rule at y 350. */
+.settings-device-detail > div + div { margin-top: 2.25cqw; }
+/* Each category tile is a 64 x 64 rounded frame with its left edge on
+   x 291 and its top on y 267. */
+.coros-settings-official.settings-device .settings-device-detail > div > b { left: .375cqw; top: .5cqw; width: 8cqw; height: 8cqw; }
+.coros-settings-official.settings-device .settings-device-detail > div > button { grid-template-rows: 3.375cqw 5.5cqw; font-size: 2cqw; }
+/* The ROW captions ink y 264..276 in the first block and 370..382 in the
+   second, three rows above where the label row's own line box puts them. */
+.coros-settings-official.settings-device .settings-device-detail > div > button > span { justify-self: start; transform: translateY(-3px); }
+.coros-settings-official.settings-device .settings-device-detail > div > button i > svg { width: 3cqw; height: 3cqw; }
+.coros-settings-official.settings-device .settings-device-detail > div > b > svg { width: 40px; height: 40px; }
+/* The bypass mark set into the sentence inks 391..410 x 166..185, and the
+   word after it starts at x 420. The 20px box was right; where it sat was
+   not - two columns left, two rows high, and with four pixels of air after
+   it instead of the ten it should leave. */
+.coros-settings-official.settings-device .inline-settings-power { display: inline-block; width: 2.5cqw; height: 2.5cqw; margin: 0 .75cqw 0 .25cqw; vertical-align: -.8cqw; }
+.settings-system-detail > div span { position: relative; top: 1.375cqw; }
+/* The values 16, 32 and 2 all begin at x=743, so the device left-aligns
+   them at a fixed offset - a right-aligned rule agrees only while every
+   value has the same digit count. */
+.settings-system-detail > div strong { position: absolute; left: 56.75cqw; right: auto; top: 1.375cqw; }
+.coros-settings-official.settings-system .settings-system-detail > * { transform: translateY(-.375cqw); }
+.coros-settings-official.settings-system .settings-system-detail > footer { transform: translateY(7.5px); }
+.settings-system-detail > div i { top: 5.35cqw; }
+
+/* -- official-settings-midi.css, unscoped (content unchanged, coros-midi-out rules excluded - unrelated screen) -- */
+.settings-midi-detail.settings-midi-detail { padding: 1.75cqw 0 0; }
+.settings-midi-detail.settings-midi-detail h1 { height: 4cqw; margin: 0 0 1.75cqw; padding: 0 2.25cqw; }
+/* Rows are ruled at x 288..783 inside a 272..791 panel: 16px in from the
+   left, 8px short on the right. A border-bottom spans the whole border box,
+   so the rule is its own inset line here as in the Directory. */
+.settings-midi-detail > div { position: relative; height: 7.5cqw; display: grid; grid-template-columns: 4.5cqw 1fr 17.125cqw; align-items: center; padding: 0 1cqw 1px 2.25cqw; font-size: 2.25cqw; }
+.settings-midi-detail > div::after { content: ""; position: absolute; z-index: 0; left: 2cqw; right: 1cqw; bottom: 0; height: 1px; background: var(--qc-palette-182018); }
+.settings-midi-detail > div > b { width: 2.75cqw; height: 2.75cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-screen-surface-base); color: var(--qc-screen-surface-control); font-size: 1.5cqw; }
+.settings-midi-detail > div > button { height: 4.625cqw; display: flex; align-items: center; padding: 0 1cqw; border-radius: .75cqw; background: var(--qc-screen-background); text-align: left; font-size: 2.25cqw; }
+.settings-midi-detail > div > button i { margin-left: auto; font-size: 1.5cqw; font-style: normal; }
+/* The chevron centres on (766.5, 144.5); left where the line box put it
+   the 24px art lands 3px left and on a quarter pixel. */
+.settings-midi-detail > div > button i > .qc-ui-icon-down { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; transform: translate(3px, -.75px); }
+.settings-midi-detail > div > .settings-midi-toggle { position: relative; width: 8.25cqw; height: 7.5cqw; justify-self: end; display: block; padding: 0 0 0 5cqw; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-muted); font-size: 1.75cqw; text-align: left; }
+.settings-midi-detail > div > .settings-midi-toggle > .qc-pill-toggle-labels { height: 100%; grid-template-rows: 1fr 1fr; align-items: center; }
+/* The toggles are QcPillToggle; this is placement only. The four pills sit
+   at x 718 and y 180.95, 240.96, 300.94 and 420.98 - one offset from the
+   label box serves all four, because the rows are evenly spaced. */
+.settings-midi-detail > div > .settings-midi-toggle > .qc-pill-toggle { position: absolute; left: 0; top: .875cqw; }
+.settings-midi-detail > div:first-of-type { height: 6.75cqw; }
+.coros-settings-official.settings-midi .settings-section b > svg,
+.coros-settings-official.settings-midi > main > nav button b > svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.coros-settings-official.settings-account,
+.coros-settings-official.settings-account * { font-family: var(--qc-font-device-plain); }
+.coros-settings-official.settings-account b > svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.coros-settings-official.settings-account > main > nav button b { color: var(--qc-screen-text-primary); }
+/* The header glyph crops at (24, 18), 24x24. Left inline it hangs off the
+   25.6px line box's baseline; a 24px grid cell blockifies it and, centred
+   in the 44px pill, lands it on 18. The extra 4px is the gap the device
+   leaves past the pill's padding. */
+.coros-settings-official.settings-account .settings-section b,
+.coros-settings-official.settings-midi .settings-section b { width: 24px; height: 24px; display: grid; place-items: center; margin-left: 4px; }
+.coros-settings-official.settings-account .settings-section,
+.coros-settings-official.settings-midi .settings-section { grid-template-columns: 5.25cqw 1fr 2cqw; }
+.coros-settings-official.settings-account .settings-account-detail > * { transform: translateY(-.5cqw); }
+.coros-settings-official.settings-account .settings-account-detail > header { height: 4.875cqw; }
+
+/* -- settings-system-panes.css: Power/Volume/Updates preamble + Master Volume Assignment rows, unscoped (content unchanged) -- */
+/* Settings > System, three panes: Power Functions, Master Volume Knob and
+   Device Updates. Every position here is the device's own. The detail
+   panel's border box is x 272..791, y 60..470, so a child's `left`/`top` is
+   the screen coordinate less (272, 60), in cqw at 8px each.
+
+   This dialog renders without its category selector, so the header carries
+   only the done button. The menu below does not move when the selector
+   goes. */
+
+  .settings-system-power .reference-settings-detail > h1,
+  .settings-system-volume .reference-settings-detail > h1,
+  .settings-update-idle .reference-settings-detail > h1 { margin: 0; font-size: 2.5cqw; line-height: 1.15; }
+
+  .settings-system-power .reference-settings-detail > h1 { transform: translate(.125cqw, -.375cqw); }
+  .settings-system-power .reference-settings-detail > h2 { position: absolute; left: 2cqw; top: 7.25cqw; margin: 0; font-size: 2.25cqw; font-weight: 400; }
+  .settings-system-power .reference-settings-detail > h2 { transform: translateY(-.25cqw); }
+  .settings-system-power .reference-settings-detail > p { position: absolute; left: 2cqw; right: 2cqw; top: 12.25cqw; margin: 0; font-size: 2.25cqw; line-height: 1.28; }
+  .power-scale { position: absolute; left: 2cqw; top: 23.625cqw; width: 60.75cqw; display: grid; grid-template-columns: repeat(4, 1fr); font-size: 2.25cqw; text-align: center; color: var(--qc-palette-757a75); }
+  .power-scale .is-active { color: var(--qc-screen-text-primary); }
+  /* The bar is QcSegmentBar; this places it. It used to spell its own segment
+     count in a grid template as well as in its JSX, and had no unlit segment at
+     all - every one of its four was painted accent, which is right only because
+     the power pane happens to show the bar full. The 22 is the device's own
+     height for this one pane; every other pane draws it at 24. */
+  .power-bar { position: absolute; left: 2cqw; top: 29cqw; width: 60.75cqw; }
+  .settings-system-power .reference-settings-detail > hr { position: absolute; left: 2cqw; right: 1.875cqw; top: 34.25cqw; height: .25cqw; margin: 0; border: 0; background: var(--qc-palette-181c18); }
+  .power-restart { position: absolute; left: 2cqw; top: 37.375cqw; width: 27.375cqw; height: 5.625cqw; border: 0; border-radius: .75cqw; background: var(--qc-screen-background); color: var(--qc-screen-text-primary); font-size: 2cqw; letter-spacing: .05cqw; }
+  .settings-system-power > main > nav button.is-active b,
+  .settings-system-volume > main > nav button.is-active b { color: var(--qc-screen-text-primary); }
+
+  .volume-lead { position: absolute; left: 2cqw; top: 7.25cqw; margin: 0; font-size: 2.25cqw; }
+  .settings-system-volume .reference-settings-detail > hr { position: absolute; left: 2cqw; right: 2cqw; top: 12.875cqw; height: 1px; margin: 0; border: 0; background: var(--qc-screen-surface-base); }
+  .volume-assignments { position: absolute; left: 2.125cqw; top: 15.875cqw; display: grid; grid-template-columns: repeat(4, 11.25cqw); }
+  .volume-assignments > span { display: block; font-size: 2cqw; color: var(--qc-palette-d5dad5); }
+  .volume-assignments em { height: 2.75cqw; display: flex; align-items: center; font-style: normal; white-space: nowrap; }
+  .volume-assignments em.is-headphones { width: 8.25cqw; justify-content: center; }
+  .volume-assignments em.is-headphones svg { width: 3cqw; height: 3cqw; color: var(--qc-screen-text-primary); fill: currentColor; stroke: none; }
+  .volume-assignments > span > button { width: 8.25cqw; height: 5.5cqw; margin-top: 1.125cqw; display: grid; place-items: center; padding: 0; border: 0; border-radius: .75cqw; background: var(--qc-screen-accent); color: var(--qc-screen-accent); }
+  .volume-assignments > span > button svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; border-radius: .5cqw; background: var(--qc-editor-disabled); fill: currentColor; stroke: none; }
+  .volume-assignments > span > button svg path { fill: currentColor; }
+
+/* -- settings-system-panes.css: Settings > Device per-row detail panes (Scene Bypass/Stomp Bypass/Hold Timing/Swap Tempo/Gig View/Latency), unscoped (content unchanged) -- */
+  /* Settings > Device. Same detail panel, so the same origin: a child's left
+     and top are the screen coordinate less (272, 60). The two-state panes are
+     one control - the shared 22 x 46 QcPillToggle with its detent 11 from the
+     selected end - and its two captions. The pill sits at a slightly
+     different x on different panes, confirmed on each rather than assumed
+     from one. */
+  .settings-device-scene-bypass .reference-settings-detail > h1,
+  .settings-device-stomp-bypass .reference-settings-detail > h1,
+  .settings-device-hold-timing .reference-settings-detail > h1,
+  .settings-device-swap-tempo-tuner .reference-settings-detail > h1,
+  .settings-device-gig-view .reference-settings-detail > h1,
+  .settings-device-latency .reference-settings-detail > h1 { margin: 0; font-size: 2.5cqw; line-height: 1.15; }
+
+  /* 23px of leading stated outright. 1.28 of 18px is 23.04, and the fraction
+     accumulates: the third line lands a pixel high on every pane that has
+     one, where successive lines sit exactly 23 apart (124/147/170 on
+     stomp-bypass, 121/144/167 on swap-tempo-tuner, 122/145/168 on
+     scene-bypass). */
+  .settings-body { position: absolute; left: 2cqw; right: 1.75cqw; margin: 0; font-size: 2.25cqw; line-height: 2.875cqw; }
+  .settings-body.is-0 { top: 7.125cqw; }
+  /* Stomp Mode Bypass is the one pane of the seven that starts its copy
+     lower: line one sits at y 124 where gig-view, latency, hold-timing,
+     swap-tempo-tuner and scene-bypass all fall in 120..122. */
+  .settings-device-stomp-bypass .settings-body.is-0 { top: 7.5cqw; }
+  .settings-body.is-1 { top: 15.625cqw; }
+  /* AUTO-ASSIGN inks 100px and SWAP TEMPO AND TUNER inks 186px, against the
+     94 and 173 the 14px size drew. Both solve to 15px at the same .4px
+     tracking - 100.0 and 184.8 - and the caps measure 11 rows where 14px
+     draws 10. */
+  .settings-field-label { position: absolute; left: 2cqw; font-size: 1.875cqw; letter-spacing: .05cqw; color: var(--qc-palette-d5dad5); }
+
+  /* The two captions are a size smaller than the body copy, not the same
+     size: "Disabled (Factory Default)" inks 185px and "No (Factory Default)"
+     142px, where 18px drew 207 and 159 - both 0.89 of ours, which is 16/18.
+     Their pen starts 16px past the pill on both panes (335 after a pill
+     ending at 317, 329 after one ending at 311), not the 24 this column gap
+     used to leave. */
+  .settings-toggle { position: absolute; left: 2.25cqw; display: grid; grid-template-columns: 2.75cqw 1fr; grid-template-rows: 2.875cqw 2.875cqw; align-items: center; column-gap: 2cqw; padding: 0; border: 0; background: var(--qc-transparent); text-align: left; font-size: 2cqw; color: var(--qc-palette-6e736e); }
+  /* The toggle is QcPillToggle in the grid's first column, where the bare
+     rounded box used to be. The pill body is the screen's base surface on all
+     four device frames, not the editor's disabled shadow this used to paint. */
+  .settings-toggle > .qc-pill-toggle { grid-row: 1 / 3; }
+  .settings-toggle > span.is-active { color: var(--qc-screen-text-primary); }
+
+  .settings-device-stomp-bypass .settings-field-label { top: 21.75cqw; }
+  .settings-device-stomp-bypass .settings-toggle { top: 26.75cqw; }
+  .settings-device-swap-tempo-tuner .settings-field-label { top: 17.75cqw; }
+  .settings-device-swap-tempo-tuner .settings-toggle { top: 22.875cqw; }
+  /* Two of the four panes indent their toggle: gig-view and stomp-bypass
+     put the pill at x 296, the other two at x 290. */
+  .settings-device-gig-view .settings-toggle,
+  .settings-device-stomp-bypass .settings-toggle { left: 3cqw; }
+  .settings-device-gig-view .settings-toggle { top: 23.75cqw; }
+  .settings-device-latency .settings-toggle { top: 14.875cqw; }
+
+  .hold-scale { position: absolute; left: 2cqw; top: 16.75cqw; width: 60.375cqw; display: grid; grid-template-columns: repeat(6, 1fr); font-size: 2cqw; text-align: center; color: var(--qc-palette-757a75); }
+  .hold-scale button { padding: 0; border: 0; background: var(--qc-transparent); color: inherit; font: inherit; text-align: center; }
+  .hold-scale .is-active { color: var(--qc-screen-text-primary); }
+  /* The bar is QcSegmentBar; this places it. The 60.375cqw it used to carry was
+     three pixels short of the 486 box every SettingBar lays out in - the six
+     79px segments and their five 2px gaps come out of that box, not out of the
+     484 they happen to paint. */
+  .hold-bar { position: absolute; left: 2cqw; top: 20.875cqw; width: 60.75cqw; }
+
+  .settings-device-scene-bypass .reference-settings-detail > h1,
+  .settings-support-report .reference-settings-detail > h1,
+  .settings-support-licenses .reference-settings-detail > h1,
+  .settings-account-backups .reference-settings-detail > h1 { margin: 0; font-size: 2.5cqw; line-height: 1.15; }
+
+  /* Scene Bypass Behavior: three choices, each a paragraph with a 66 x 44
+     radio at x 710, their tops at y 203, 303 and 405. */
+  /* The rows are not a uniform pitch. The two dividers sit at y 263.5 and
+     387.5 and the three plates are centred at 225, 325 and 426, which makes
+     the rows 76, 123 and 79 tall about a 1px rule - the middle one carries
+     four lines of copy and the outer two carry one and two. These are
+     border-box heights, so the rule comes out of the row it starts. The
+     12.5cqw pitch that used to be here put the second row's plate a pixel
+     low and both rules a dozen pixels out of place. */
+  .scene-bypass-options { position: absolute; left: 2cqw; right: 2cqw; top: 15.875cqw; }
+  .scene-bypass-options > button { width: 100%; display: grid; grid-template-columns: 1fr 8.25cqw; align-items: center; column-gap: 2cqw; height: 9.5cqw; padding: 0; border: 0; border-top: 1px solid var(--qc-screen-surface-base); background: var(--qc-transparent); color: inherit; text-align: left; }
+  .scene-bypass-options > button:first-child { border-top: 0; }
+  .scene-bypass-options > button:nth-child(2) { height: 15.375cqw; }
+  .scene-bypass-options > button:last-child { height: 9.875cqw; }
+  .scene-bypass-options p { margin: 0; font-size: 2.25cqw; line-height: 1.28; }
+  /* The marks are QcRadioButton; this is placement only. The ring, its stroke,
+     the selected dot and the plate's corner are declared in
+     qc-radio-button.tsx. What used to be here drew an 18px ring where the unit
+     draws 22, filled it solid when selected instead of leaving the 2px accent
+     gap the unit leaves, and painted the plate --qc-editor-disabled where it
+     should be the screen's raised surface, two ladder steps brighter. */
+  .scene-bypass-options > button > .qc-radio-button { justify-self: end; }
+
+
+/* -- This component's own additions: not a device fact,
+   the same class of host-only addition official-routing.css's own comment
+   describes for its invented interactivity affordances. -- */
+
+/* CorOsDeviceSettings renders as a sibling of QuadCortexSurface (App.tsx),
+   the same technique CorOsSceneCommand uses and for the same reason
+   (quad-cortex-surface.tsx is out of this change's scope) - but unlike that
+   small destination-picker dialog, Settings really does replace the whole
+   device screen on the real unit, the same full-screen role
+   CorOsParameterEditor/CorOsExpressionAssignment play *inside*
+   QuadCortexSurface. This wrapper reproduces that "whole screen" placement
+   from outside it instead: a fixed, scrimmed overlay sized to the device's
+   own 800x480 aspect ratio, centred over the live Grid still visible behind
+   it. `.coros-settings-official`'s own `container-type: inline-size` (this
+   file's base scaffold, above) then makes every cqw rule inside it resolve
+   against *this* box's width, unlike official-scene-command.css's own
+   fallback-to-px technique - that overlay's rules were ported from a
+   fixture whose cqw meant the *live Grid's* width, a box it has no access to
+   from outside QuadCortexSurface; this component's cqw rules were always
+   relative to its own root already. */
+
+/* A settings row with no backend call at all (Connection, Updates, Power
+   Functions, Factory Reset, My Account, Backups - see device-settings-
+   screen.tsx's own `unavailable` flag on each CorOsDeviceSettings nav row).
+   Shown, never removed, per this session's established convention for an
+   unsupported Grid-menu action (coros-ui.ts's
+   corOsUnavailableContextActionMessage) - dimmed and still focusable/
+   clickable so the notice below still fires on interaction. */
+.coros-settings-official > main > nav button.is-unavailable { opacity: .5; }
+.coros-settings-official > main > nav button.is-unavailable:hover { cursor: not-allowed; }
+
+/* The plain "not exposed by the current USB gateway" body for an unavailable
+   row's detail pane - text only, no reference layout exists for any of these
+   rows to port. */
+.settings-unavailable-detail { display: flex; flex-direction: column; gap: 1.25cqw; height: 100%; justify-content: center; align-items: center; text-align: center; color: var(--qc-palette-929692); }
+.settings-unavailable-detail > p { max-width: 42cqw; margin: 0; font-size: 2.25cqw; line-height: 1.4; }
+
+/* Device Storage (System) is real but aggregate-only - availableDiskSpace/
+   totalDiskSpace, not the per-library breakdown the reference settings' own
+   storage-captured rows draw (My Presets/My Captures/My Impulse Responses
+   split, which this app has no field for). A simple bar stands in rather
+   than drawing three fabricated per-category rows. */
+.settings-storage-readout { display: flex; flex-direction: column; gap: 1.5cqw; margin-top: 1cqw; }
+.settings-storage-readout > span { display: flex; justify-content: space-between; font-size: 2.25cqw; }
+.settings-storage-readout > b { position: relative; height: 2.625cqw; display: block; border-radius: .5cqw; overflow: hidden; background: var(--qc-screen-surface-base); }
+.settings-storage-readout > b > i { position: absolute; inset: 0; display: block; width: 0; background: var(--qc-palette-84dbff); }
+
+/* A pending write dims the control it targets and refuses further clicks,
+   the same convention parameter-editor.tsx and scene-editor.tsx already use
+   for their own disabled affordances. */
+.coros-settings-official .is-pending,
+.coros-settings-official button:disabled,
+.coros-settings-official select:disabled { opacity: .6; cursor: default; pointer-events: none; }
+
+/* Global Bypass's per-row power mark - the device does not distinguish
+   bypassed rows visually (see DeviceDetail's own "bypass" branch comment),
+   so this is an own addition to show which rows are actually bypassed. */
+.settings-device-detail > div > button i.is-bypassed { color: var(--qc-screen-accent); }
+
+/* The section selector opens the unit's own list over a washed screen: the
+   selector itself turns black with its triangle up, and four 60 px rows (the
+   section mark, its name, and a green tick on the selected one) sit under it
+   on black. The wash is the Directory's scrim token, not the Grid menu's: with
+   the list open the unit takes the pane's 0x29 to 0x4a, the dark track's 0x10
+   to 0x42 and white text to 0x84 (per channel, measured on the settings
+   frames), which that scrim reproduces and the Grid wash cannot - it left
+   white text at 0xdb, so the pane behind the list did not read as dimmed. */
+.settings-menu-wash { position: absolute; z-index: 20; inset: 0; padding: 0; background: var(--qc-palette-rgba-88-92-88-a694); }
+.coros-settings-official.is-menu-open > header .settings-section { position: relative; z-index: 22; background: var(--qc-screen-background); }
+.coros-settings-official.is-menu-open > header .settings-section i { border-top: 0; border-bottom: 1.2cqw solid var(--qc-utility-mark); }
+.settings-section-menu { position: absolute; z-index: 21; left: 1cqw; top: var(--qc-nav-bar-height); width: 32cqw; overflow: hidden; border-radius: 1cqw; background: var(--qc-screen-background); }
+.settings-section-menu > button { width: 100%; height: 7.5cqw; display: grid; grid-template-columns: 4.5cqw 1fr 3cqw; align-items: center; padding: 0 2cqw 0 3cqw; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 2.25cqw; text-align: left; }
+.settings-section-menu > button > b { display: grid; width: 3cqw; height: 3cqw; place-items: center; font-weight: 400; }
+/* Every Settings glyph is a 24 px mark; qc-device-typography.css sizes bezel
+   icons at 1em from behind a doubled #root#root selector, hence !important, as
+   for the section and row marks above. */
+.settings-section-menu > button > b > svg, .settings-section-menu .settings-section-check svg { width: 24px !important; height: 24px !important; display: block !important; }
+.settings-section-menu > button.is-active { color: var(--qc-screen-accent); }
+.settings-section-menu > button.is-active .settings-section-check { display: grid; width: 3cqw; height: 3cqw; place-items: center; color: var(--qc-screen-accent); }
+/* The tick art carries a light fill as a presentation attribute, which the colour above
+   cannot reach; the unit draws the selected section's tick in the accent (walked). */
+.settings-section-menu > button.is-active .settings-section-check .qc-ui-icon-check path { fill: currentColor; }

@@ -1,0 +1,34 @@
+{
+  "name": "@qc-remote/windows",
+  "version": "0.1.181",
+  "license": "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@qc-remote/client": "0.1.0",
+    "@qc-remote/core": "0.1.0",
+    "@qc-remote/form-factors": "0.1.0",
+    "@qc-remote/theme": "0.1.0",
+    "@qc-remote/ui": "0.1.0",
+    "@tauri-apps/api": "^2.11.1",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2"
+  }
+}

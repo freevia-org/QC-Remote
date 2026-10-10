@@ -1,0 +1,28 @@
+{
+  "name": "@qc-remote/ui",
+  "version": "0.1.0",
+  "license": "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./dev": "./src/dev.ts"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/device-workflow-screens.test.ts tests/grid-snapshot-refresh.test.ts tests/native-state-recovery-hook.test.ts tests/virtual-gateway-address-observed.test.ts tests/use-font-face-ready.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@qc-remote/client": "0.1.0",
+    "@qc-remote/core": "0.1.0",
+    "@qc-remote/form-factors": "0.1.0",
+    "@qc-remote/theme": "0.1.0"
+  },
+  "peerDependencies": {
+    "react": ">=19",
+    "react-dom": ">=19"
+  },
+  "devDependencies": {
+    "react-test-renderer": "19.3.0"
+  }
+}

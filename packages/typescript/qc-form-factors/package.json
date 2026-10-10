@@ -1,0 +1,14 @@
+{
+  "name": "@qc-remote/form-factors",
+  "version": "0.1.0",
+  "license": "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@qc-remote/theme": "0.1.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

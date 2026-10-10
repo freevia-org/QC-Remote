@@ -1,0 +1,27 @@
+/* Semantic hit targets sit over the device's original CorOS rotary artwork;
+   the visual control remains QcRotaryDial and the established io/global-eq
+   geometry remains owned by official-io.css and official-looper-eq.css. */
+.qc-screen.coros-global-eq { display: block; }
+.io-dial-wrap { position: relative; }
+.ioeq-dial-input { position: absolute; z-index: 2; right: -.5cqw; top: 0; width: 72px; height: 72px; margin: 0; opacity: 0; cursor: pointer; }
+.ioeq-dial-input:focus-visible { opacity: .18; outline: 2px solid var(--qc-palette-25ef59); outline-offset: 2px; }
+.ioeq-dial-input:disabled { cursor: default; }
+.coros-io-settings .io-switch > button { position: relative; display: inline-flex; align-items: center; justify-content: center; height: 3.125cqw; margin-left: 1.125cqw; padding: 0 1cqw 0 4.625cqw; border: 0; color: var(--qc-screen-text-muted); background: var(--qc-transparent); font: inherit; font-size: 2cqw; }
+.coros-io-settings .io-switch > button[aria-pressed="true"] { color: var(--qc-screen-text-primary); }
+.coros-io-settings .io-switch > button:disabled { opacity: .45; }
+.io-ports > button.io-port-link { z-index: 2; width: 28px; min-width: 28px; height: 16px; padding: 0; border: 0; border-radius: 0; background: var(--qc-transparent); }
+.io-ports > button.io-port-link > svg { width: 100%; height: 100%; }
+.io-ports > button.io-port-link:disabled { opacity: .55; }
+.coros-io-settings .io-switch > .qc-pill-toggle { position: absolute; top: 5.875cqw; left: 2cqw; }
+.io-editor.is-output .io-switch { position: relative; }
+.io-editor.is-output .io-switch > .io-switch { position: static; }
+.coros-global-eq .global-eq-controls > section > .io-switch { margin-top: 1cqw; }
+.coros-global-eq .global-eq-controls > section > .io-dial-wrap { position: absolute; }
+.coros-global-eq .global-eq-controls > section .ioeq-dial-input { right: -.4375cqw; top: 0; }
+.coros-global-eq .eq-filter-type-selector { z-index: 5; }
+.coros-global-eq .global-eq-preset-selector { position:absolute; z-index:10; left:8px; top:52px; width:310px; max-height:390px; overflow:auto; padding:10px; border-radius:8px; background:var(--qc-screen-surface-base); box-shadow:0 8px 24px var(--qc-palette-000a); }
+.coros-global-eq .global-eq-preset-selector > strong { display:block; padding:6px 10px 10px; color:var(--qc-screen-text-muted); font:600 14px var(--qc-font-device-plain); }
+.coros-global-eq .global-eq-preset-selector > button { display:flex; width:100%; min-height:42px; align-items:center; justify-content:space-between; padding:8px 10px; border:0; border-radius:5px; background:var(--qc-transparent); color:var(--qc-screen-text-primary); text-align:left; }
+.coros-global-eq .global-eq-preset-selector > button:hover { background:var(--qc-screen-surface-control); }
+.coros-global-eq .global-eq-preset-selector small { color:var(--qc-screen-text-muted); }
+.coros-global-eq .global-eq-preset-selector p { margin:8px 10px; color:var(--qc-screen-text-muted); }

@@ -1,0 +1,260 @@
+# QC Remote
+
+QC Remote is an independent, unofficial controller for the Neural DSP Quad
+Cortex. It is not affiliated with, authorized, sponsored, endorsed, or
+supported by Neural DSP Technologies Oy. See [`TRADEMARKS.md`](TRADEMARKS.md).
+Its device screens are independent reconstructions made for interoperability,
+not Neural DSP assets.
+
+QC Remote is developed by Freevia EOOD. It runs on **Windows 10 or 11
+(64-bit)** and on **Android 7.0 or newer** (API level 24, `minSdk 24`, with USB
+host/OTG support). It was developed and tested with Quad Cortex firmware (CorOS)
+4.1.0. It does not contain, replace, or modify Quad Cortex firmware, and it does
+not replace Neural DSP's own Cortex Control.
+
+## Availability
+
+QC Remote is in prerelease. Public Windows and Android downloads, a Google
+Play listing, and a Microsoft Store listing are not available yet. Official
+download links will be added here after the release artifacts and listings are
+published and verified. Version
+history is in [`CHANGELOG.md`](CHANGELOG.md).
+
+## Using QC Remote
+
+The [user guide](docs/USER-GUIDE.md) explains what you need, how to connect a
+Quad Cortex over USB, what the connection indicators mean, the access levels
+and safety checks, how to connect an AI assistant, and what to try when
+something does not connect. The Android app's requirements and USB permission
+behavior are summarized in [`apps/android/README.md`](apps/android/README.md).
+
+## Connecting an AI assistant (MCP)
+
+QC Remote lets an AI assistant read and control a connected Quad Cortex
+through the Model Context Protocol, in one of two ways:
+
+- **On the same computer (Windows).** Open the **LOCAL** indicator in the app
+  and choose your assistant. Claude Desktop gets a one-click extension;
+  ChatGPT Desktop/Codex, Google Antigravity, Bionic (formerly LM Studio) and
+  Jan are configured automatically; any other MCP client gets a copyable stdio
+  configuration. The connection stays on the computer, although the assistant
+  itself sends what it receives to its own provider. Details:
+  [`apps/windows/README.md`](apps/windows/README.md).
+- **From anywhere (Windows or Android).** Open the **REMOTE** indicator and
+  pair the app with the relay, signing in with Google. Then add
+  `https://qcrc.freevia.org/mcp` as a custom connector in Claude or ChatGPT.
+  The relay is the Cloudflare Worker in
+  [`services/qc-remote-cloud`](services/qc-remote-cloud), operated by Freevia
+  EOOD; what it receives and keeps is described in [`PRIVACY.md`](PRIVACY.md).
+
+Both routes enforce the access tier selected in the app (Read-only,
+Performance, Modify, or Full). On either route, the assistant must confirm
+deleting a preset or a setlist with you in the AI conversation; that is the
+only confirmation, and the paired app does not ask a second time.
+
+## What this repository contains
+
+- **`apps/windows/`** — a Tauri (Rust + React) desktop app for Windows, with
+  guarded live device control, workspaces, typed commands, and explicit
+  device-save confirmation. It embeds the MCP server directly in the same
+  binary.
+- **`apps/android/`** — a Capacitor (Java + React) mobile companion
+  app, talking to the device over USB via a JNI binding to the shared native
+  library.
+- **`services/rust-mcp/`** (crate `qc-remote-mcp`) — the Model Context
+  Protocol server that lets an AI assistant read and control a connected Quad
+  Cortex through a device-backend-agnostic trait. The Windows app embeds it.
+- **`services/device-broker/`** (crate `qc-device-broker`) — the native
+  single-owner USB/HID broker library that holds the exclusive device
+  connection, with its notification icon. It is linked into the shipped
+  `qc-device-broker.exe` (built from `apps/windows/src-tauri`, see
+  [Windows app](#windows-app)); its own binary is a broker-only developer
+  build.
+- **`services/qc-remote-cloud/`** — the Cloudflare Worker relay that pairs a
+  device host with a remote client for control away from the local network.
+- **`packages/rust/quadcortex/`** — the unified Rust library for the Quad
+  Cortex wire protocol, device state, sessions, transport, and backups.
+  Its protobuf bindings and message registry are generated from the
+  project-maintained protocol schema and checked for drift. A
+  [guide and tutorial](packages/rust/quadcortex/docs/guide/index.md) with
+  compile-checked examples is built into its API documentation.
+- **`packages/rust/qc-windows-midi/`**, **`packages/rust/qc-windows-process/`**,
+  **`packages/rust/quadcortex-windows/`**, **`packages/rust/qc-owner-only-file/`**,
+  **`packages/rust/qc-relay-client/`**, **`packages/rust/qc-relay-protocol/`**,
+  **`packages/rust/quadcortex-android/`** — supporting Rust crates: Windows MIDI
+  transport, Windows process-liveness checks, the Windows USB/HID transport the
+  broker uses, owner-only credential file storage, the outbound relay client,
+  its shared wire frames, and the Android JNI binding.
+- **`packages/typescript/{qc-client,qc-core,qc-form-factors,qc-theme,qc-ui}`**
+  — the shared frontend layer used by both apps: generated action/gateway
+  bindings, device-state reducers, form-factor-aware layout, the shared
+  theme, and UI components.
+- **`skills/qc-device-knowledge/`** — a Claude/Codex-compatible skill bundling
+  structured compatibility information from publicly available Quad Cortex
+  product documentation. The skill and its catalogue data are not covered by
+  the open-source license (see [`LICENSE`](LICENSE), Schedule A). Built into
+  the MCP server (`services/rust-mcp/src/server.rs` embeds it directly) and
+  installable into local AI-assistant configurations by the Windows app.
+- **`contracts/public/`** — the JSON contracts the apps, services, and library
+  are generated from and tested against: the device action catalogue
+  (`qc-actions.v1.json`), the gateway method list (`gateway-methods.v1.json`),
+  the device domain model (`qc-domain.v1.json`), the relay wire profile
+  (`qc-relay-profile.v1.json`), and the broker and tray schemas
+  (`native-broker.v1.schema.json`, `broker-tray-surface.v1.json`). The
+  `generated_*`, `generated-*` and `Generated*` files in the tree are snapshots
+  of these contracts. Their generators and additional reference specifications remain private.
+  Run `npm run contracts:check` for public value-level drift checks, and propose contract changes in an issue or pull request
+  rather than editing the generated files by hand.
+
+## Building
+
+### Prerequisites
+
+| Tool | Version | Needed for |
+| --- | --- | --- |
+| Node.js and npm | 22.6 or newer (the tests use `--experimental-strip-types`) | TypeScript packages, both apps' web layers, the Tauri and Capacitor CLIs, Wrangler (each installed by `npm install`) |
+| Rust (rustup) | stable, at least 1.90 for the Windows app (see "Rust version floors" below); on Windows the MSVC toolchain (`stable-x86_64-pc-windows-msvc`), which `apps/windows/src-tauri/rust-toolchain.toml` pins | the Rust workspace, the Windows app, the Android native library |
+| Visual Studio Build Tools (Desktop development with C++) and WebView2 | current | the Windows app (MSVC linker, Tauri runtime) |
+| PowerShell 7 (`pwsh`) | any | the Android native build script off Windows; on Windows, Gradle and the Windows-only `android:build:debug` and `branding:generate` scripts use the inbox Windows PowerShell |
+| JDK | 21 (Temurin in CI) | Android |
+| Android SDK | platform 36, build-tools 36.0.0 | Android |
+| Android NDK | 27.2.12479018, with `ANDROID_NDK_HOME` pointing at it | the Android native library |
+| cargo-ndk | 4.1.2, with the Rust targets `aarch64-linux-android` and `x86_64-linux-android` | the Android native library |
+
+For Android, install the last two with
+`cargo install cargo-ndk --version 4.1.2 --locked` and
+`rustup target add aarch64-linux-android x86_64-linux-android`.
+
+#### Rust version floors
+
+The Rust workspace and the Windows app are separate Cargo graphs with
+different declared compiler requirements. CI builds both on current stable and
+checks only the `quadcortex` library on its declared minimum.
+
+| Graph | Declared lower bound | Where it comes from |
+| --- | --- | --- |
+| `apps/windows/src-tauri` (Windows app) | Rust 1.90 | `tauri-utils` 2.10.1 (locked in `apps/windows/src-tauri/Cargo.lock`) declares `edition = "2024"` and `rust-version = "1.90"`. The app manifest declares no `rust-version` of its own. |
+| Root workspace (`cargo build --workspace`) | At least Rust 1.88 | `services/rust-mcp/Cargo.toml` declares `rust-version = "1.88"`. This component declaration does not establish the entire workspace's effective minimum on every target. |
+| `quadcortex` library alone | Rust 1.87 | `packages/rust/quadcortex/Cargo.toml` declares `rust-version = "1.87"`; `.github/workflows/ci.yml` (`rust-msrv`) checks it. |
+
+Only the `quadcortex` minimum is tested by a dedicated CI job. The other rows
+record known lower bounds, not successful builds on those compiler versions.
+Re-check the complete target-specific dependency graph after lockfile updates.
+
+### Rust workspace
+
+```sh
+cargo build --workspace
+cargo test --workspace
+```
+
+CI builds and tests the Rust workspace on `windows-latest` only; several
+crates are Windows-specific.
+
+### TypeScript packages and apps
+
+```sh
+npm install
+npm run build
+```
+
+`npm run build` builds every workspace that defines a `build` script
+(`apps/windows`, `apps/android`, and any `packages/typescript/*` package that
+has one). To build or typecheck a single workspace:
+
+```sh
+npm run build --workspace @qc-remote/windows
+npm run typecheck --workspace @qc-remote/android
+```
+
+### Windows app
+
+`apps/windows/src-tauri` is its own Cargo workspace (a different toolchain
+and build-script setup than the rest of the Rust code) and is built
+separately. Its Tauri configuration bundles one sidecar executable,
+`qc-device-broker.exe`: the device broker, its notification icon and the
+background MCP host in one process. Its build script refuses to run until it
+exists under `apps/windows/src-tauri/binaries/`. A bare `cargo build` there
+fails with ``resource path `binaries\qc-device-broker-x86_64-pc-windows-msvc.exe`
+doesn't exist`` until it does.
+
+For a check-only build, stage empty placeholders, as CI does:
+
+```powershell
+cd apps/windows/src-tauri
+New-Item -ItemType File -Force binaries/qc-device-broker-x86_64-pc-windows-msvc.exe
+cargo check --locked
+```
+
+For a runnable build, build the real sidecar and copy it over the
+placeholder. The shipped broker links the app's MCP host, so it is built from
+this crate (not from `services/device-broker`, whose own binary is a
+broker-only developer build without the host); its build needs the placeholder
+in place first, and it needs the `tray-sidecar` feature:
+
+```powershell
+# From apps/windows/src-tauri, with the placeholder above in place
+cargo build --release --locked --bin qc-device-broker --features tray-sidecar
+Copy-Item target/release/qc-device-broker.exe binaries/qc-device-broker-x86_64-pc-windows-msvc.exe
+```
+
+(If you set `CARGO_TARGET_DIR`, copy from there instead of `target/`.) Then
+package the app; the NSIS installer is written under
+`apps/windows/src-tauri/target/release/bundle/nsis/`:
+
+```powershell
+npm run tauri:build --workspace @qc-remote/windows
+```
+
+For development, `npm run tauri:dev --workspace @qc-remote/windows` runs the
+app against the Vite dev server, with the same sidecar requirement.
+
+### Android app
+
+With the prerequisites above installed:
+
+```sh
+npm install
+npm run android:sync --workspace @qc-remote/android
+cd apps/android/android
+sh ./gradlew assembleDebug        # on Windows: .\gradlew.bat assembleDebug
+```
+
+`android:sync` builds the web layer and copies it into the Gradle project with
+Capacitor. Gradle's `preBuild` then cross-compiles
+`packages/rust/quadcortex-android` into the APK through
+`scripts/build-android-rust.ps1`. The debug APK is written to
+`apps/android/android/app/build/outputs/apk/debug/`. Release signing is not
+part of this repository.
+
+### Cloud relay
+
+```sh
+npm install
+npm run cloud:check   # wrangler types + tsc --noEmit + wrangler deploy --dry-run
+```
+
+The relay is an npm workspace of the root `package.json`, so its dependencies
+are locked by the root `package-lock.json`; it has no lockfile of its own. Run
+`npm ci` and `npm install` from the repository root. `npm ci` run from inside
+`services/qc-remote-cloud` prunes the root `node_modules` to that one
+workspace.
+
+## License, contributing, and security
+
+- [`LICENSE`](LICENSE) — what is licensed under `MIT OR Apache-2.0`, and what
+  is not: brand assets, third-party components, and device-derived and
+  third-party-sourced material (reference catalogues, transcribed screen
+  content and traced device iconography in Schedule A, screen reconstructions
+  in Schedule B), each listed as whole files. Those files are covered by
+  [`LICENSES/LicenseRef-QC-Remote-Reference.txt`](LICENSES/LicenseRef-QC-Remote-Reference.txt),
+  and a package that contains, embeds, links, or bundles one declares
+  `(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference`.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — the inbound contribution policy
+  (Developer Certificate of Origin 1.1).
+- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — the Contributor Covenant 2.1.
+- [`SECURITY.md`](SECURITY.md) — how to report a vulnerability.
+- [`PRIVACY.md`](PRIVACY.md) — what the optional relay receives and keeps.
+- [`TRADEMARKS.md`](TRADEMARKS.md) — compatibility and trademark notice.
+- [`THIRD_PARTY-NOTICES.md`](THIRD_PARTY-NOTICES.md) — third-party components
+  bundled with this repository's builds.

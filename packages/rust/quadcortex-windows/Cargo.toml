@@ -1,0 +1,26 @@
+[package]
+name = "quadcortex-windows"
+version = "0.1.0"
+publish = false
+edition = "2021"
+description = "Windows-native USB/HID transport for the Quad Cortex"
+license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
+
+[dependencies]
+# The pure-Rust Windows backend exposes independent read/write OVERLAPPED
+# state. The broker places those two lanes on dedicated threads while retaining
+# one exclusive HID handle.
+#
+# Pinned exactly: `unsafe impl Sync for SharedWindowsHid` in src/usb.rs is
+# sound only because of hidapi 2.6.7's windows-native backend internals --
+# disjoint read_state/write_state RefCells, a read_pending flag touched only
+# by the RX lane, and an immutable native handle. Those are private details
+# that a semver-compatible release may change. Any hidapi upgrade must first
+# re-audit that impl against the new backend source, then bump this pin.
+hidapi = { version = "=2.6.7", default-features = false, features = ["windows-native"] }
+prost.workspace = true
+quadcortex = { path = "../quadcortex" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

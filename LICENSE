@@ -1,0 +1,179 @@
+# QC Remote licensing
+
+## Source-code license
+
+Except for the material listed under "Material not covered by this license"
+below, the source code and project documentation in this repository are
+licensed, at your option, under either:
+
+- the Apache License, Version 2.0 — see [`LICENSE-APACHE`](LICENSE-APACHE); or
+- the MIT License — see [`LICENSE-MIT`](LICENSE-MIT).
+
+The SPDX expression is `MIT OR Apache-2.0`.
+
+Unless stated otherwise, contributions intentionally submitted for inclusion
+in this project are licensed on the same terms. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions must not add material of
+the kinds described in "Device-derived and third-party-sourced material"
+below unless the contribution also places it in a file listed in the
+schedules in this file.
+
+## Material not covered by this license
+
+The `MIT OR Apache-2.0` grant above applies only to original work whose
+copyright is held by Freevia EOOD ("Freevia") or by the contributors who
+submitted it on the same terms. It does not apply to, and no license is
+granted by Freevia for, the three categories below.
+
+### Brand assets
+
+The QC Remote name, wordmark, application icon, and derived platform icon sets
+are not included in the open-source license grant and must be replaced in a
+fork's public identity. See [`TRADEMARKS.md`](TRADEMARKS.md). They are:
+
+- `packages/typescript/qc-theme/assets/app-icon.svg`
+- `apps/windows/src-tauri/icons/**`
+- `apps/android/android/app/src/main/res/mipmap-*/**`
+- `apps/android/android/app/src/main/res/drawable-*/splash.png`
+- the `appName`, `appWordmark`, and `companionCaption` values in
+  `packages/typescript/qc-theme/src/brand.json`
+
+### Third-party components
+
+Third-party software and assets retain their own licenses and notices. The
+repository's dependency notices and complete applicable license texts are in
+[`THIRD_PARTY-NOTICES.md`](THIRD_PARTY-NOTICES.md) and `legal/`. In-tree
+third-party material includes:
+
+- `packages/typescript/qc-theme/assets/fonts/*.ttf` — IBM Plex Sans, SIL Open
+  Font License 1.1 (`packages/typescript/qc-theme/assets/fonts/LICENSE.txt`);
+- protocol information incorporated from the `pyquadcortex` community project,
+  MIT (`legal/COMMUNITY-PROTOCOL-LICENSE.txt`,
+  `packages/rust/quadcortex/licenses/pyquadcortex-MIT.txt`);
+- the Gradle Wrapper 8.14.3 — `apps/android/android/gradlew`,
+  `apps/android/android/gradlew.bat`, and
+  `apps/android/android/gradle/wrapper/gradle-wrapper.jar` — Apache-2.0,
+  copyright the original Gradle authors (unmodified; the JAR matches the
+  SHA-256 Gradle publishes for that version);
+- everything under `legal/`, which reproduces other parties' license texts.
+
+### Device-derived and third-party-sourced material
+
+Some files describe, measure, transcribe, or reconstruct the Neural DSP Quad
+Cortex, its CorOS software, and Neural DSP's published documentation, so that
+QC Remote can interoperate with the device. That material originates with
+Neural DSP Technologies Oy or other third parties, not with Freevia.
+
+That material is kept in whole files of its own. Each file is listed in
+Schedule A or Schedule B below, by path or by a glob that matches whole
+files, and is covered by the terms in
+[`LICENSES/LicenseRef-QC-Remote-Reference.txt`](LICENSES/LicenseRef-QC-Remote-Reference.txt),
+whose SPDX identifier is `LicenseRef-QC-Remote-Reference`. A package that
+contains or embeds a listed file declares the SPDX expression
+`(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference` in its metadata;
+every other package declares `MIT OR Apache-2.0`. No file is covered only in
+part: a file that is not listed is QC Remote's original work under
+`MIT OR Apache-2.0`.
+
+**Terms for this material, in summary.** It is provided for interoperability
+and reference only. Freevia grants no license to Schedule A files and
+claims no ownership of them; whatever rights subsist in them remain
+with their respective owners. Schedule B files are licensed under
+`MIT OR Apache-2.0` only to the extent of Freevia's own expression, and no
+license is granted in Neural DSP's screen designs, user
+interface, iconography, product design, or trade dress. Inclusion here is
+not a statement that any owner has authorized the material. Whether a
+particular use is permitted (for example under interoperability, quotation,
+or fair-use provisions of applicable law) is for the person making the use
+to determine. The material is provided "AS IS", without warranty of any
+kind. The full terms are in `LICENSES/LicenseRef-QC-Remote-Reference.txt`.
+
+#### Schedule A — device-derived and third-party-sourced files (no license granted)
+
+| Path | What it is |
+| --- | --- |
+| `docs/reference/qc-live-parameter-defaults.json` | Factory parameter defaults read from the device |
+| `docs/reference/qc-live-parameter-scales.json` | Model catalogue read from the device: model names, categories, parameter names, ranges, scales, and option labels |
+| `skills/qc-device-knowledge/references/data/qc-model-lineage.json` | Catalogue compiled from Neural DSP's device list, Quad Cortex User Manual 4.1.0, plugin pages, and CorOS release notes, including the third-party equipment names in its `based_on` fields |
+| `skills/qc-device-knowledge/SKILL.md` | The device-knowledge skill, which quotes passages from Neural DSP documentation (marked by quotation marks and a `[MANUAL …]` or similar citation) alongside QC Remote's own explanatory text; listed whole |
+| `packages/typescript/qc-ui/src/device-reference/**` | Text, names, values, and geometry transcribed from CorOS screens or Neural DSP documentation: on-screen and settings help copy, factory preset, capture, IR, model, and plugin names and their authors, the "Software information" values (Linux kernel, U-Boot, Zenjack, Zencoder, Zenwireless strings), the CorOS open-source license list, the device news QR matrix, glyph geometry traced from device screen frames or the manual, and the third-party application marks (Claude, ChatGPT, Antigravity, Bionic/LM Studio, Jan), which belong to their owners |
+| `packages/typescript/qc-core/src/device-reference/**` | Parameter names, ranges, option labels (including factory IR names), and model-specific parameter orders as the device reports them; the demo preset with its model, capture, and plugin names; and the scene, preset-slot, block-category, and footswitch-lamp colour tables read from the device |
+| `packages/typescript/qc-theme/src/screen-icon-vectors.ts` | Vector geometry traced from the device's screen frames |
+| `packages/rust/quadcortex/src/device/native_library_seeds.rs` | Factory library folder and content names and keys |
+
+Copies of these files produced or embedded by a build carry the same terms.
+These include the two parameter catalogues copied into the Windows and
+Android web bundles, and `SKILL.md` and `qc-model-lineage.json` compiled
+into the Windows application and the `qc-remote-mcp` server.
+
+#### Schedule B — screen reconstructions and device depictions (own expression only)
+
+The files below reconstruct the layout, colours, and iconography of CorOS
+screens, or depict Quad Cortex hardware, so that QC Remote's control surface
+corresponds to the device it controls. They are licensed under
+`MIT OR Apache-2.0` only to the extent of Freevia's own expression. **No
+license is granted in Neural DSP's screen designs, user
+interface, iconography, product design, or trade dress**, which these files
+describe but which Freevia does not own.
+
+| Path | What it is |
+| --- | --- |
+| `packages/typescript/qc-ui/src/official-*.css` | Device screen layout stylesheets |
+| `packages/typescript/qc-ui/src/qc-*.css` | Shared device-control stylesheets |
+| `packages/typescript/qc-ui/src/coros-capture-connections.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/fixture-live-surface.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/io-global-eq-screens.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/live-surface.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/looper-x-screen.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/modes-configuration-screen.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/reference-parameter-editor.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/remaining-fixtures.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/remaining-fixtures-fixes.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/settings-system-panes.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/surface-shell.css` | Device chassis stylesheet |
+| `packages/typescript/qc-ui/src/coros-*.ts` | CorOS screen model and reference screens |
+| `packages/typescript/qc-ui/src/coros-*.tsx` | CorOS screen components |
+| `packages/typescript/qc-ui/src/*-screen.tsx` | Device screen components |
+| `packages/typescript/qc-ui/src/quad-cortex-surface.tsx` | Device chassis and screen host |
+| `packages/typescript/qc-ui/src/parameter-editor.tsx` | Device parameter editor screen |
+| `packages/typescript/qc-ui/src/lane-control-panel.tsx` | Device lane control screen |
+| `packages/typescript/qc-ui/src/scene-editor.tsx` | Device scene editor screen |
+| `packages/typescript/qc-ui/src/expression-assignment.tsx` | Device expression assignment screen |
+| `packages/typescript/qc-ui/src/io-global-eq-screens.tsx` | Device I/O and global EQ screens |
+| `packages/typescript/qc-ui/src/theme-icons.tsx` | Device iconography components |
+| `packages/typescript/qc-ui/src/device-glyph.tsx` | Device block glyphs |
+| `packages/typescript/qc-ui/src/device-category-glyph.tsx` | Device category glyphs |
+| `packages/typescript/qc-ui/src/device-tile.tsx` | Device block tiles |
+| `packages/typescript/qc-ui/src/qc-io-jack.tsx` | Device I/O jack depiction |
+| `packages/typescript/qc-ui/src/block-visuals.ts` | Device block category visuals |
+| `packages/typescript/qc-ui/src/add-device-catalog.ts` | Device browser catalogue layout |
+| `packages/typescript/qc-theme/src/colors.json` | Device screen palette |
+| `packages/typescript/qc-theme/src/theme.css` | Device screen palette |
+| `packages/typescript/qc-theme/assets/qc-chassis-neutral.svg` | Hardware depiction |
+| `apps/windows/src/device-info-screen.css` | Device information pane stylesheet |
+| `apps/windows/src/app-window.tsx` | Device information pane |
+
+#### Protocol identifiers
+
+`packages/rust/quadcortex/proto/*.proto` and
+`references/public/cortex-protocol/*.json` record the message, field, and
+enumeration names of the device's USB protocol, partly incorporated from
+`pyquadcortex` (see "Third-party components"). They are licensed under
+`MIT OR Apache-2.0` as to Freevia's own selection, arrangement, and
+annotation. Freevia claims no rights in, and grants no
+license to, the protocol identifiers themselves, which are reproduced solely
+for interoperability.
+
+### Trademarks
+
+Nothing in this file grants any right to use any trademark, including those
+listed in [`TRADEMARKS.md`](TRADEMARKS.md). The Apache License, Version 2.0,
+Section 6, applies to the code licensed under it.
+
+## Independence
+
+QC Remote is an independent, unofficial project. It is not affiliated with,
+authorized, sponsored, endorsed, or supported by Neural DSP Technologies Oy.
+Neural DSP is a trademark, and Quad Cortex® a registered trademark, of Neural
+DSP Technologies Oy. They, and other Neural DSP product names such as CorOS
+and Cortex Control, are referenced only to identify compatibility. See [`TRADEMARKS.md`](TRADEMARKS.md).
