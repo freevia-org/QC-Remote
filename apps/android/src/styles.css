@@ -49,50 +49,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
    recipe as .connection-pill, minus the status LED, since it is not a
    connection indicator. */
 
-.mobile-screen { position: relative; min-width: 0; overflow: visible; border-radius: 10px; box-shadow: 0 13px 30px var(--qc-palette-000b); }
-.mobile-screen > .qc-chassis {
-  width: 100%;
-  min-height: 0;
-  max-height: none;
-  aspect-ratio: 800 / 480;
-  overflow: visible;
-  border: 1px solid var(--qc-palette-35383d);
-  border-radius: 10px;
-  background: var(--qc-palette-080809);
-  box-shadow: inset 0 0 0 1px var(--qc-palette-7773), 0 4px 13px var(--qc-palette-000b);
-}
-.mobile-screen > .qc-chassis::before,
-.mobile-screen > .qc-chassis::after,
-.mobile-screen .chassis-vector-viewport,
-.mobile-screen .chassis-edge,
-.mobile-screen .master-volume,
-.mobile-screen .device-plate,
-.mobile-screen .screen-nav-control,
-.mobile-screen .footswitch-deck { display: none !important; }
-.mobile-screen .qc-screen-bezel {
-  left: 0;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  /* Zero, like every other .qc-screen-bezel rule: the bezel is the inline-size
-     container the screens measure cqw from, and padding on a query container
-     comes out of the content box its own cq units are 1% of. The screen root is
-     absolutely positioned at inset 0, so this 2px never inset anything - it only
-     made every cqw on the phone 0.5% short. */
-  padding: 0;
-  border: 0;
-  border-radius: 9px;
-  background: var(--qc-palette-050506);
-  box-shadow: none;
-}
-.mobile-screen .qc-screen { border-radius: 7px; }
-.mobile-screen .directory-favorites-official .directory-official-list .qc-library-icon-binoculars { translate: 0 0; }
-.mobile-screen .preset-title.is-dirty { font-style: italic; font-weight: 500; }
-.mobile-screen .preset-title-hit { right: 100px; width: auto; }
-.mobile-screen .undo-hit { left: auto; right: 75px; width: 25px; }
-.mobile-screen .scene-hit { left: auto; right: 50px; width: 25px; }
-.mobile-screen .save-hit { left: auto; right: 25px; width: 25px; }
-.mobile-screen .more-hit { left: auto; right: 0; width: 25px; }
+/* The display. This is only the container the shared display frame (qc-ui,
+   display-frame.css) fills; the frame decides its own shape, canvas and style.
+   The shadow is the phone's own chrome, around the display, never over it. */
+.mobile-screen { position: relative; min-width: 0; overflow: visible; box-shadow: 0 13px 30px var(--qc-palette-000b); }
 
 .quick-controls { min-height: 210px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(66px, 1fr)); gap: 4px 4px; padding: 7px 4px; border: 1px solid var(--qc-palette-292d32); border-radius: 13px; background: linear-gradient(155deg, var(--qc-palette-34363a), var(--qc-palette-202226)); box-shadow: inset 0 1px var(--qc-palette-ffffff24), 0 4px 12px var(--qc-palette-0007); overscroll-behavior: contain; touch-action: none; }
 .quick-controls .hardware-switch { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 60px; grid-template-rows: 14px 50px; gap: 0; color: var(--qc-palette-e9ebed); }
@@ -210,8 +170,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 @media (orientation: landscape) and (max-height: 800px) {
   .android-app { grid-template-columns: minmax(0, 1fr) minmax(220px, 40%); grid-template-rows: auto minmax(0, 1fr) minmax(28px, auto); gap: 6px 8px; }
   .mobile-header { grid-column: 1 / -1; grid-row: 1; }
-  .mobile-screen { grid-column: 1; grid-row: 2; min-height: 0; width: 100%; display: grid; place-items: center; container-type: size; }
-  .mobile-screen > .qc-chassis { width: min(100cqw, 166.667cqh); }
+  .mobile-screen { grid-column: 1; grid-row: 2; min-height: 0; width: 100%; display: grid; place-items: center; container-type: size; --qc-display-max-height: 100cqh; }
   .quick-controls { min-width: 0; min-height: 0; height: 100%; grid-column: 2; grid-row: 2; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 2px; padding: 3px; }
   .quick-controls .hardware-switch { min-height: 0; grid-template-rows: 10px minmax(0, 1fr); }
   .quick-controls .switch-led { width: 8px; margin-bottom: 1px; }
@@ -243,6 +202,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .app-mark { width: 30px; height: 30px; }
   .quick-controls { min-height: 94px; grid-template-rows: repeat(2, minmax(44px, 1fr)); gap: 5px; }
   .quick-controls button { min-height: 44px; }
-  .mobile-screen > .qc-chassis { max-height: 36vh; }
+  .mobile-screen { --qc-display-max-height: 36vh; }
 }
 .mobile-status-notice { min-height: 32px; padding: 7px 10px; overflow: hidden; border: 1px solid var(--qc-palette-23272c); border-radius: 10px; background: var(--qc-palette-0d0f12cc); color: var(--qc-palette-aab5ae); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; }

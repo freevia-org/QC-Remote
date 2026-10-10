@@ -274,15 +274,14 @@ select { min-width: 128px; padding: 6px 26px 6px 8px; color: var(--qc-palette-d9
 
 /* Padding ramps from 10px (at 1100px wide or 850px tall) to 34px (1700px wide or 1450px tall) with no media-query step, so the fitted chassis never jumps while the window resizes. */
 .workspace { min-width: 0; min-height: 0; display: grid; place-items: center; padding: clamp(10px, calc(4vh - 24px), 34px) clamp(10px, calc(4vw - 34px), 34px); overflow: hidden; container-type: size; }
-.workspace.view-fit .qc-chassis {
-  /* Fit by both axes of the usable workspace. The previous 1120px cap left
-     unused space in large windows; Actual Size below remains the 1096px
-     reference canvas. */
-  width: min(100cqi, 152.65cqb);
-  max-width: none;
-}
+/* The workspace is only a container. The unit fills what it offers, fitted by
+   both axes of the usable box; the unit's own sizing rules live with the
+   display (qc-ui display-frame.css), which reads --qc-surface-width. The
+   previous 1120px cap left unused space in large windows; Actual Size below
+   remains the 1096px reference canvas. */
+.workspace.view-fit { --qc-surface-width: min(100cqi, 152.65cqb); }
 .workspace.view-actual { place-items: start center; overflow: auto; }
-.workspace.view-actual .qc-chassis { width: 1096px; min-width: 1096px; max-width: none; max-height: none; }
+.workspace.view-actual { --qc-surface-width: 1096px; }
 .status-strip { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 6px 10px; border-top: 1px solid var(--qc-palette-2d3137); background: var(--qc-palette-14171a); color: var(--qc-palette-aeb3bb); font-size: var(--ui-font-footer); line-height: 1.35; overflow: hidden; white-space: nowrap; }
 .status-symbol { flex: 0 0 auto; display: grid; place-items: center; width: 20px; height: 20px; border: 1px solid var(--qc-palette-69717d); border-radius: 50%; font: var(--ui-font-footer)/1 serif; }
 .status-notice { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; }
@@ -322,7 +321,7 @@ select { min-width: 128px; padding: 6px 26px 6px 8px; color: var(--qc-palette-d9
 .setting-row.borderless { border-top: 0; }
 
 .dialog-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--qc-palette-050608c7); backdrop-filter: blur(5px); }
-.app-dialog { position: relative; width: min(520px, 100%); padding: 30px; border: 1px solid var(--qc-palette-3f444d); border-radius: 14px; background: linear-gradient(145deg, var(--qc-palette-22262c), var(--qc-palette-16191d)); box-shadow: 0 30px 90px var(--qc-screen); }
+.app-dialog { position: relative; width: min(520px, 100%); padding: 30px; border: 1px solid var(--qc-palette-3f444d); border-radius: 14px; background: linear-gradient(145deg, var(--qc-palette-22262c), var(--qc-palette-16191d)); box-shadow: 0 30px 90px var(--qc-palette-000000); }
 .dialog-close { position: absolute; right: 14px; top: 12px; width: 30px; height: 30px; border: 0; background: var(--qc-transparent); color: var(--qc-palette-8d939d); font-size: 22px; cursor: pointer; }
 .dialog-kicker { color: var(--qc-palette-6dcff6); font: 9px var(--qc-font-mono); letter-spacing: .16em; }
 .app-dialog h2 { margin: 8px 0 14px; font-size: 22px; }

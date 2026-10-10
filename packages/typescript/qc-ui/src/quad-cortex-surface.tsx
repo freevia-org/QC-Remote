@@ -32,6 +32,7 @@ import "./surface-shell.css";
 import "./live-surface.css";
 import "./reference-parameter-editor.css";
 import "./qc-device-typography.css";
+import "./display-frame.css";
 
 const CorOsScreenFixture = lazy(() => import("./coros-screen-fixtures").then((module) => ({ default: module.CorOsScreenFixture })));
 
@@ -100,6 +101,11 @@ interface QuadCortexSurfaceProps {
    * the Grid. */
   cpuMonitor?: { cpuLoad: number; cpuColumns: readonly CpuColumnLoad[]; returnFocusTarget?: "grid-menu"; onClose: () => void };
   deviceInformation?: CorOsDeviceInformation;
+  /** "hardware" draws the unit's panel around the display; "display" draws the
+   * display alone. The display itself - its 5:3 shape, its 800x480 canvas and
+   * how that is scaled - is identical in both (display-frame.css); a host only
+   * chooses how much of the unit to show and what box to offer it. */
+  presentation?: "hardware" | "display";
   onCloseScreen?: () => void;
   onOpenGigView?: () => void;
   onOpenIoView?: () => void;
@@ -852,7 +858,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
     {rowY.flatMap((y, row) => columns.map((x, column) => (cellOccupied(row, column) && !(liftedBlock && liftedBlock.row === row && liftedBlock.column === column)) ? null : <rect key={`slot-${row}-${column}`} className="move-drop-slot" x={x - 8} y={y - 8} width="16" height="16" rx="4" />))}
   </g> : null;
   return <div className="qc-screen coros-vector-screen" aria-label="CorOS Grid">
-    <svg className="coros-vector-canvas" viewBox="0 0 800 480" preserveAspectRatio="none" role="img" aria-label={`${snapshot.presetLocation} ${snapshot.presetName}, ${snapshot.mode} mode`}>
+    <svg className="coros-vector-canvas" viewBox="0 0 800 480" role="img" aria-label={`${snapshot.presetLocation} ${snapshot.presetName}, ${snapshot.mode} mode`}>
       <rect width="800" height="480" fill={QC_COLORS.reference.screen} />
       <g transform="matrix(1.012 0 0 1 -2 0)" fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize="68">
         <text x="14" y="75"><tspan fill="var(--qc-grid-white-ink)" letterSpacing={PRESET_LOCATION_TRACKING}>{presetBank}</tspan><tspan fill={presetSlotAccent} letterSpacing={PRESET_LOCATION_TRACKING}>{presetSlot}</tspan></text>
@@ -984,7 +990,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
     </div></>}
     {routingPicker && <>
       <button className="coros-route-picker-dismiss" aria-label="Close route selection" onClick={routingPicker.onClose} />
-      <svg className="coros-route-focus-layer" viewBox="0 0 800 480" preserveAspectRatio="none" aria-hidden="true">
+      <svg className="coros-route-focus-layer" viewBox="0 0 800 480" aria-hidden="true">
         <rect width="800" height="480" fill={QC_COLORS.device.focusOverlay} fillOpacity=".27" />
         {routingPickerIsPort
           ? <>
@@ -1038,7 +1044,7 @@ function controlByRole(controls: HardwareControl[], role: string) { return contr
 // Edit Details focus their own name input instead.
 const GRID_MENU_FOCUS_TARGETS = new Set<string>(["settings", "tempo", "modes-configuration", "preset-midi-out", "cpu-monitor"]);
 
-export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, screenView = "grid", screenContent, cpuMonitor, deviceInformation, onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, sceneEditor, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
+export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, screenView = "grid", screenContent, cpuMonitor, deviceInformation, presentation = "hardware", onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, sceneEditor, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
   const scenes = formFactor.controls.filter((control) => control.group === "scene");
   const bankUp = controlByRole(formFactor.controls, "bank:up")!;
   const bankDown = controlByRole(formFactor.controls, "bank:down")!;
@@ -1205,7 +1211,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
     left: `${-skin.svgAsset.crop.x / skin.svgAsset.crop.width * 100}%`,
     top: `${-skin.svgAsset.crop.y / skin.svgAsset.crop.height * 100}%`
   } as CSSProperties : undefined;
-  return <section className={`qc-chassis ${skin.className}`} aria-label={formFactor.displayName}>
+  return <section className={`qc-chassis ${skin.className}${presentation === "display" ? " is-display-only" : ""}`} aria-label={formFactor.displayName}>
     {skin.svgAsset && <div className="chassis-vector-viewport" aria-hidden="true"><img className="chassis-vector-source" src={`${skin.svgAsset.url}#qc-foreground`} alt="" style={chassisVectorCropStyle} /></div>}
     <div className="chassis-edge" aria-hidden="true" />
     <MasterVolume value={snapshot.masterVolume} onAction={onAction} onInteractionStart={onMasterVolumeInteractionStart} onInteractionEnd={onMasterVolumeInteractionEnd} />

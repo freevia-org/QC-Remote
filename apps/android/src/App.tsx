@@ -958,7 +958,7 @@ export function App() {
     </header>
 
     <section className="mobile-screen" aria-label="Quad Cortex display">
-      <QuadCortexSurface formFactor={formFactor} snapshot={snapshot} selectedBlockId={selectedBlockId} skin={skin}
+      <QuadCortexSurface presentation="display" formFactor={formFactor} snapshot={snapshot} selectedBlockId={selectedBlockId} skin={skin}
         screenView={fixtureScreenView ?? (cpuMonitorOpen ? undefined : mobileScreenView) ?? undefined} screenContent={mobileScreenContent} cpuMonitor={cpuMonitor} onCloseScreen={closeMobileScreen} onDeviceScreenGesture={(x, y, toX, toY, kind) => void forwardDeviceScreenGesture(x, y, toX, toY, kind)}
         onOpenGigView={() => void toggleGigView()} onOpenIoView={() => void toggleIoView()} onEditScene={sceneWorkflow.openLabelColor} onRecallGigPreset={(entry) => void presetWorkflow.recall(entry)} onCopyGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, false)} onSwapGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, true)}
         sceneEditor={sceneWorkflow.labelColorOpen ? { sourceScene: sceneWorkflow.sourceScene, setSourceScene: sceneWorkflow.setSourceScene, scenes: snapshot.scenes, label: sceneWorkflow.label, setLabel: sceneWorkflow.setLabel, color: sceneWorkflow.color, setColor: sceneWorkflow.setColor, colors: sceneWorkflow.colors, pending: devicePending, saveLabel: () => void sceneWorkflow.saveLabel(), saveColor: () => void sceneWorkflow.saveColor(), onClose: sceneWorkflow.closeLabelColor } : undefined}

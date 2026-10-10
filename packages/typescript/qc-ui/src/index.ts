@@ -1,4 +1,5 @@
 export { QcHardwareSwitch, QcMasterVolumeKnob, QuadCortexSurface } from "./quad-cortex-surface";
+export { QcDeviceInformationDisplay } from "./device-information-display";
 export type { CorOsContextAction, CorOsScreenView, HardwareAction, PresetDirectoryState } from "./quad-cortex-surface";
 export { QC_DEVICE_SCREEN_GESTURES } from "./device-screen-navigation";
 export { footswitchLeds, optimisticallyPressFootswitch } from "@qc-remote/core";
