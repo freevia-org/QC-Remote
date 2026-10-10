@@ -10,9 +10,12 @@ tools. QC Remote is free, open-source software from Freevia.
 [Support & feedback](SUPPORT.md) ·
 [Privacy](PRIVACY.md)
 
-![QC Remote Windows app in demo mode, showing the virtual Quad Cortex control surface](docs/images/01-main-window.png)
+<p align="center">
+  <img src="https://freevia.org/assets/qcremote/windows-app-real.png" alt="QC Remote for Windows showing the 7F Money for Nothing preset on a connected Quad Cortex" width="700">
+  <img src="https://freevia.org/assets/qcremote/android-app-money-for-nothing.png" alt="QC Remote for Android showing the same 7F Money for Nothing preset" width="175">
+</p>
 
-*Windows app in demo mode. No device or personal account data is shown.*
+*Real Windows and Android app captures of the same preset. The [website](https://freevia.org/qcremote/) and this README use the same image URLs, so the presentation screenshots cannot diverge. The [user guide](docs/USER-GUIDE.md) uses separate, clearly labeled demo-mode screenshots for its step-by-step instructions.*
 
 ## Download
 
