@@ -15,6 +15,10 @@ concurrency:
 jobs:
   rust:
     name: Rust workspace
+    # Pull requests validate the candidate tree. A push to protected master
+    # reruns only the history/policy audit below; rebuilding the same tree adds
+    # latency without testing a different program.
+    if: github.event_name == 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -35,6 +39,7 @@ jobs:
   # toolchain below equal to that `rust-version`.
   rust-msrv:
     name: quadcortex on its declared Rust minimum (1.87)
+    if: github.event_name == 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -51,6 +56,7 @@ jobs:
 
   rust-windows-app:
     name: Windows app (Rust backend)
+    if: github.event_name == 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -90,6 +96,7 @@ jobs:
 
   quadcortex-linux:
     name: Quad Cortex crate docs and Linux tests
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -103,6 +110,7 @@ jobs:
 
   third-party-notices:
     name: Third-party notices drift check
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -128,6 +136,7 @@ jobs:
 
   typescript:
     name: TypeScript packages and apps
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -166,9 +175,9 @@ jobs:
       # ref the checkout carries. The path boundary always fails the run. The
       # identity rules fail it for a branch of this repository and are advisory
       # for a fork: CONTRIBUTING.md asks outside contributors for a real-name DCO
-      # sign-off, and a maintainer squash-merges the change, so those commits are
-      # never published as they stand. The squashed commit is then held to the
-      # strict whole-history rules by the push run above. Values arrive through
+      # sign-off, and a maintainer publishes a privacy-preserving signed-off
+      # commit instead of those identities as they stand. The published commit is
+      # then held to the strict whole-history rules by the push run above. Values arrive through
       # env, never interpolated into the script.
       - name: Pull request range (path boundary; identity per origin)
         if: github.event_name == 'pull_request'
@@ -189,6 +198,7 @@ jobs:
 
   cloud-relay:
     name: Cloud relay (dry-run deploy)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # services/qc-remote-cloud is an npm workspace of the root package.json and
@@ -218,6 +228,7 @@ jobs:
 
   android:
     name: Android app (debug build + unit tests)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     # Deliberately debug-only: no release signing or keystore. Do not set QC_ANDROID_KEYSTORE_BASE64,
