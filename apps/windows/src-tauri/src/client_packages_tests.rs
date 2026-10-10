@@ -4400,7 +4400,7 @@ fn a_route_pointing_at_another_command_is_left_completely_alone() {
 }
 
 #[test]
-fn a_route_whose_arguments_were_customised_is_left_completely_alone() {
+fn a_managed_route_with_edited_arguments_is_repaired_and_other_servers_survive() {
     let directory = refresh_fixture("customised-args");
     let target = lm_studio_target(&directory);
     let mut server = json_mcp_route_server(&target.executable_path, "lm-studio:0.1.100", false);
@@ -4411,37 +4411,83 @@ fn a_route_whose_arguments_were_customised_is_left_completely_alone() {
         "--their-own-flag"
     ]);
     seed_json_route(&target.config_path, server);
-    let before = fs::read(&target.config_path).expect("seeded configuration");
-
     let outcome = refresh_managed_route(&target);
-    assert_eq!(outcome.decision, RouteRefreshDecision::Customised);
     assert_eq!(
-        fs::read(&target.config_path).expect("configuration after the pass"),
-        before,
-        "an argument the user added is an edit this app must not undo"
+        outcome.decision,
+        RouteRefreshDecision::Stale {
+            paired: "0.1.100".to_string()
+        }
     );
-    assert!(config_backups(&target.config_path).is_empty());
+    let document: Value =
+        serde_json::from_slice(&fs::read(&target.config_path).expect("repaired configuration"))
+            .expect("valid repaired configuration");
+    assert_eq!(
+        document["mcpServers"][CLAUDE_EXTENSION_NAME]["args"],
+        json!(["--local-mcp-bridge", CLIENT_ID_ARGUMENT, target.client_id])
+    );
+    assert_eq!(
+        document["mcpServers"]["their-own-server"]["command"],
+        json!("their-own-server.exe")
+    );
+    assert_eq!(config_backups(&target.config_path).len(), 1);
     fs::remove_dir_all(directory).expect("remove route refresh fixture");
 }
 
 #[test]
-fn a_route_the_user_disabled_stays_disabled() {
+fn a_managed_route_disabled_in_the_host_is_restored_by_startup_repair() {
     let directory = refresh_fixture("disabled");
     let target = lm_studio_target(&directory);
     let mut server = json_mcp_route_server(&target.executable_path, "lm-studio:0.1.100", false);
     server["disabled"] = Value::Bool(true);
     seed_json_route(&target.config_path, server);
-    let before = fs::read(&target.config_path).expect("seeded configuration");
+    let outcome = refresh_managed_route(&target);
+    assert_eq!(
+        outcome.decision,
+        RouteRefreshDecision::Stale {
+            paired: "0.1.100".to_string()
+        },
+    );
+    let document: Value =
+        serde_json::from_slice(&fs::read(&target.config_path).expect("repaired configuration"))
+            .expect("valid repaired configuration");
+    assert_eq!(
+        document["mcpServers"][CLAUDE_EXTENSION_NAME]["disabled"],
+        Value::Bool(false)
+    );
+    fs::remove_dir_all(directory).expect("remove route refresh fixture");
+}
+
+#[test]
+fn a_managed_route_with_a_moved_executable_path_is_repaired_at_the_same_version() {
+    let directory = refresh_fixture("moved-executable-path");
+    let target = lm_studio_target(&directory);
+    let old_path = PathBuf::from("E:\\QC Remote\\QC Remote.exe");
+    seed_json_route(
+        &target.config_path,
+        json_mcp_route_server(
+            &old_path,
+            &format!("{}{}", target.client_prefix, env!("CARGO_PKG_VERSION")),
+            false,
+        ),
+    );
 
     let outcome = refresh_managed_route(&target);
     assert_eq!(
         outcome.decision,
-        RouteRefreshDecision::Customised,
-        "freshening a route the user switched off would switch it back on"
+        RouteRefreshDecision::Stale {
+            paired: env!("CARGO_PKG_VERSION").to_string()
+        }
+    );
+    let document: Value =
+        serde_json::from_slice(&fs::read(&target.config_path).expect("repaired configuration"))
+            .expect("valid repaired configuration");
+    assert_eq!(
+        document["mcpServers"][CLAUDE_EXTENSION_NAME]["command"],
+        target.executable_path.to_string_lossy().as_ref()
     );
     assert_eq!(
-        fs::read(&target.config_path).expect("configuration after the pass"),
-        before
+        document["mcpServers"]["their-own-server"]["command"],
+        json!("their-own-server.exe")
     );
     fs::remove_dir_all(directory).expect("remove route refresh fixture");
 }
