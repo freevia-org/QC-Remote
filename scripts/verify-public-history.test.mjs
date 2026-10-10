@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { auditHistory, identityErrors, parseOptions } from './verify-public-history.mjs';
+import {
+  auditHistory,
+  identityErrors,
+  isPublishedIdentityException,
+  parseOptions,
+  publishedIdentityExceptions,
+} from './verify-public-history.mjs';
 
 const noreply = '1+someone@users.noreply.github.com';
 
@@ -182,6 +188,15 @@ test('whole-history mode fails on a Co-authored-by trailer', () => {
     const { errors } = auditHistory({ cwd });
     assert.deepEqual(errors, [`${sha}: commit message contains a Co-authored-by trailer`]);
   });
+});
+
+test('the published squash exception is exact and cannot weaken later history', () => {
+  const publishedCommit = '2badc68ea4d30f53fc98ae9e000c70df109d0970';
+  const trailerFinding = 'commit message contains a Co-authored-by trailer';
+  assert.equal(publishedIdentityExceptions.size, 1);
+  assert.equal(isPublishedIdentityException(publishedCommit, trailerFinding), true);
+  assert.equal(isPublishedIdentityException(publishedCommit, 'author email is not a noreply identity'), false);
+  assert.equal(isPublishedIdentityException('0'.repeat(40), trailerFinding), false);
 });
 
 test('range mode, strict identity, still rejects a real author address and a trailer', () => {
