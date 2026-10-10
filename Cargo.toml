@@ -38,7 +38,7 @@ exclude = ["apps/windows/src-tauri"]
 # against this table, wherever cargo is started from.
 [workspace.dependencies]
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 prost = "0.14"
 prost-build = "0.14"
 rand = "0.9"

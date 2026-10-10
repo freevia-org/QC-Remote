@@ -1408,7 +1408,7 @@ version = "0.1.0"
 name = "qc-device-broker"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "prost",
  "qc-broker-framing",
  "qc-owner-only-file",
@@ -1490,7 +1490,7 @@ dependencies = [
 name = "quadcortex"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "flate2",
  "proptest",
  "prost",
