@@ -111,3 +111,14 @@ test("mode cycle screen reorder is ordered, bounded, and preserves a copy", () =
   assert.deepEqual(splitModeSlot([3, 2], 0), [0, 1, 2]);
   assert.equal(splitModeSlot([0, 3, 2], 1), undefined, "splitting beyond three modes is refused");
 });
+
+test("both hosts take the screen destination and the Grid context-action routing from the shared hooks", () => {
+  const read = (url: URL) => readFileSync(url, "utf8").replaceAll("\r\n", "\n");
+  for (const [name, source] of [["windows", read(new URL("../../../../apps/windows/src/App.tsx", import.meta.url))], ["android", read(new URL("../../../../apps/android/src/App.tsx", import.meta.url))]] as const) {
+    assert.ok(source.includes("const screenDestination = useQcScreenDestination();"), `${name} uses the shared screen destination`);
+    assert.ok(source.includes("qcContextActionHandler({ destination: screenDestination,"), `${name} routes context actions through the shared handler`);
+    assert.ok(source.includes("disabledContextActions={QC_DISABLED_CONTEXT_ACTIONS}"), `${name} shares the disabled-action table`);
+    assert.ok(!/setScreenDestination|useState<\{ view: CorOsScreenView/.test(source), `${name} keeps no screen-view state of its own`);
+    assert.ok(!source.includes("corOsUnavailableContextActionMessage"), `${name} leaves the unavailable-action wording to the router`);
+  }
+});

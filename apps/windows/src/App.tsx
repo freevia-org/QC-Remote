@@ -4,7 +4,7 @@ import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, 
 import { demoBlockDetails, demoSnapshot, sceneLetter, SupersededPresetOperation, saveWorkspaceDocument, type ControlAccessMode, type PublicRelayConnector } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND } from "@qc-remote/theme";
-import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, CorOsDeviceSettings, CorOsGlobalEqScreen, CorOsIoSettingsScreen, CorOsSceneCommand, CorOsTempoScreen, CorOsTunerScreen, corOsUnavailableContextActionMessage, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, LooperXScreen, ModesConfigurationScreen, PresetMidiOutEditor, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, writeQcScreenFollowSetting, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist, type CorOsContextAction, type CorOsScreenView, type QcScreenObservation } from "@qc-remote/ui";
+import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, CorOsDeviceSettings, QC_DISABLED_CONTEXT_ACTIONS, qcContextActionHandler, CorOsGlobalEqScreen, CorOsIoSettingsScreen, CorOsSceneCommand, CorOsTempoScreen, CorOsTunerScreen, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, LooperXScreen, ModesConfigurationScreen, PresetMidiOutEditor, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, writeQcScreenFollowSetting, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist, type QcScreenObservation } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { appWindows, brokerDevice, DEVICE_INFO_EVENTS, diagnosticsFiles, externalLinks, helpWindows, localAccess, localClientPackages, physicalDevices, type PhysicalQcDevice, onDevicePhase, publicRelay, publishWindowState, serveAppWindowRequests, serveDiagnosticsRequests, SETTINGS_EVENTS, tauriTransport, virtualDeviceStorage, WORKSPACE_EVENTS, workspaceFiles, type AntigravityLocalIntegrationStatus, type ChatGptLocalIntegrationStatus, type ClaudeDesktopExtensionStatus, type JanLocalIntegrationStatus, type LmStudioLocalIntegrationStatus, type LocalAccessStatus, type OtherMcpStdioSetup } from "./tauri-transport";
 import { createWindowsQcTransport } from "./qc-transport";
@@ -108,16 +108,9 @@ export function App() {
   const [surfaceView, setSurfaceView] = useState<"fit" | "actual">("fit");
   const gridRefreshRequest = useRef(0);
   const gridRepair = useRef(createGridRepairCoordinator());
-  const [deviceScreenViewState, setScreenDestination] = useState<{ view: CorOsScreenView | null; returnFocusTarget?: "grid-menu" }>({ view: null });
-  const deviceScreenView = deviceScreenViewState.view;
-  const setDeviceScreenView = useCallback((next: CorOsScreenView | null | ((current: CorOsScreenView | null) => CorOsScreenView | null)) => {
-    setScreenDestination((current) => {
-      const view = typeof next === "function" ? next(current.view) : next;
-      // Preserve a functional no-op from an unrelated gig-state publication.
-      if (typeof next === "function" && view === current.view) return current;
-      return { view };
-    });
-  }, []);
+  const screenDestination = useQcScreenDestination();
+  const deviceScreenView = screenDestination.view;
+  const setDeviceScreenView = screenDestination.setView;
   const cpuTelemetry = useQcCpuTelemetry();
   const [deviceUndoAvailable, setDeviceUndoAvailable] = useState(false);
   const [deviceRedoAvailable, setDeviceRedoAvailable] = useState(false);
@@ -2749,34 +2742,13 @@ export function App() {
     }
   };
 
-  const handleCorOsContextAction = (action: CorOsContextAction, returnFocusTarget?: "grid-menu") => {
-    if (action === "edit-details") void openDeviceSave();
-    // The Grid's own Settings row opens the device's real multi-section
-    // Settings screen (Account/System/Device/MIDI) in-app - never the
-    // separate app-preferences window the MenuBar's own "Settings…" item
-    // opens (menuSelect's "settings" case below, untouched).
-    else if (action === "settings") deviceSettingsWorkflow.openSettings(returnFocusTarget);
-    else if (action === "copy-scene") sceneWorkflow.openCommand(false);
-    else if (action === "swap-scene") sceneWorkflow.openCommand(true);
-    else if (action === "preset-midi-out") setScreenDestination({ view: "midi-out", returnFocusTarget });
-    else if (action === "modes-configuration") { setScreenDestination({ view: "modes", returnFocusTarget }); void modesWorkflow.refresh(); }
-    else if (action === "tempo") tempoWorkflow.openTempo(returnFocusTarget);
-    else if (action === "cpu-monitor") setScreenDestination({ view: "cpu-monitor", returnFocusTarget });
-    else setNotice(corOsUnavailableContextActionMessage(action));
-  };
-
-  const disabledContextActions: Partial<Record<CorOsContextAction, string>> = {
-    "create-new": "Creating an empty preset is not exposed by the current semantic gateway.",
-    favorite: "Favorites require library identity that is not available for the active working buffer.",
-    "delete-preset": "Delete the preset from the Preset Directory, where its exact stored position can be verified.",
-    "new-capture": "The Neural Capture creation workflow is not exposed by the current semantic gateway."
-  };
+  const handleCorOsContextAction = qcContextActionHandler({ destination: screenDestination, openSave: openDeviceSave, deviceSettings: deviceSettingsWorkflow, scene: sceneWorkflow, modes: modesWorkflow, tempo: tempoWorkflow, notice: setNotice });
   // Device Settings and Tempo are device screens: they render in the bezel's
   // own 800x480 canvas, not as a sibling that fills the whole window.
   // The CPU Monitor is not a screen of its own: the unit lays it over the Grid, so the
   // surface keeps drawing its normal Grid and adds the panel (see QuadCortexSurface).
   const cpuMonitorOpen = deviceScreenView === "cpu-monitor";
-  const cpuMonitor = cpuTelemetry.monitor(cpuMonitorOpen, deviceScreenViewState.returnFocusTarget, () => setDeviceScreenView(null));
+  const cpuMonitor = cpuTelemetry.monitor(cpuMonitorOpen, screenDestination.returnFocusTarget, () => setDeviceScreenView(null));
   const screenContent = productionAuditScreen ? <CorOsProductionScreenAudit view={productionAuditScreen} snapshot={snapshot} />
     : deviceSettingsWorkflow.open ? <CorOsDeviceSettings workflow={deviceSettingsWorkflow} onClose={deviceSettingsWorkflow.close} />
     : tempoWorkflow.open ? <CorOsTempoScreen workflow={tempoWorkflow} snapshot={snapshot} queueTempo={queueTempo} onSelectScene={(index) => void chooseScene(index)} onClose={tempoWorkflow.close} />
@@ -2795,8 +2767,8 @@ export function App() {
       setDeviceScreenView(null);
       await gridWorkflow.openBlock(looper);
     }} onClose={() => void closeDeviceScreen()} />
-    : deviceScreenView === "modes" ? <ModesConfigurationScreen returnFocusTarget={deviceScreenViewState.returnFocusTarget} workflow={modesWorkflow} onClose={() => setDeviceScreenView(null)} />
-    : deviceScreenView === "midi-out" ? <PresetMidiOutEditor returnFocusTarget={deviceScreenViewState.returnFocusTarget} workflow={midiOutWorkflow} onClose={() => setDeviceScreenView(null)} />
+    : deviceScreenView === "modes" ? <ModesConfigurationScreen returnFocusTarget={screenDestination.returnFocusTarget} workflow={modesWorkflow} onClose={() => setDeviceScreenView(null)} />
+    : deviceScreenView === "midi-out" ? <PresetMidiOutEditor returnFocusTarget={screenDestination.returnFocusTarget} workflow={midiOutWorkflow} onClose={() => setDeviceScreenView(null)} />
     : deviceScreenView === "global-eq" ? <CorOsGlobalEqScreen workflow={ioEqWorkflow} onBack={() => setDeviceScreenView("io-overview")} />
     : deviceScreenView?.startsWith("io-") ? <CorOsIoSettingsScreen workflow={ioEqWorkflow} onGlobalEq={() => setDeviceScreenView("global-eq")} onClose={() => void closeDeviceScreen()} />
     : undefined;
@@ -2893,7 +2865,7 @@ export function App() {
 
     <div className="app-content">
       <main className={`workspace view-${surfaceView}`}>
-        <QuadCortexSurface formFactor={formFactor} snapshot={snapshot} selectedBlockId={selectedBlockId} skin={skin} screenView={fixtureScreenView ?? (cpuMonitorOpen ? undefined : deviceScreenView) ?? undefined} screenContent={screenContent} cpuMonitor={cpuMonitor} deviceInformation={deviceInformation} onCloseScreen={() => void closeDeviceScreen()} onDeviceScreenGesture={(x, y, toX, toY, kind) => void forwardDeviceScreenGesture(x, y, toX, toY, kind)} onOpenGigView={() => void showDeviceView("gig")} onOpenIoView={() => void showIoSettings()} onEditScene={sceneWorkflow.openLabelColor} onRecallGigPreset={(entry) => void presetWorkflow.recall(entry)} onCopyGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, false)} onSwapGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, true)} sceneEditor={sceneWorkflow.labelColorOpen ? { sourceScene: sceneWorkflow.sourceScene, setSourceScene: sceneWorkflow.setSourceScene, scenes: snapshot.scenes, label: sceneWorkflow.label, setLabel: sceneWorkflow.setLabel, color: sceneWorkflow.color, setColor: sceneWorkflow.setColor, colors: sceneWorkflow.colors, pending: commandPending, saveLabel: () => void sceneWorkflow.saveLabel(), saveColor: () => void sceneWorkflow.saveColor(), onClose: sceneWorkflow.closeLabelColor } : undefined} onAction={handleHardwareAction} onMasterVolumeInteractionStart={continuousControls.beginMasterVolumeInteraction} onMasterVolumeInteractionEnd={continuousControls.endMasterVolumeInteraction} onOpenPreset={() => void openPresetBrowser()} onUndo={() => void undoLastAction()} canUndo={Boolean(undoEntry) || deviceUndoAvailable} undoLabel={undoEntry?.label} onSave={openDeviceSave} onOpenRouting={openRoutePicker} onRefresh={() => void refreshSnapshot()} savePreset={presetWorkflow.saveProps} presetDirectory={presetWorkflow.directoryProps} gigPresetList={presetWorkflow.presetList} routingPicker={routingWorkflow.pickerProps} addDevicePicker={gridWorkflow.addPickerProps} expressionAssignment={expressionAssignment} laneControlEditor={laneControlEditor} parameterEditor={parameterEditorBindings} onContextAction={handleCorOsContextAction} disabledContextActions={disabledContextActions} />
+        <QuadCortexSurface formFactor={formFactor} snapshot={snapshot} selectedBlockId={selectedBlockId} skin={skin} screenView={fixtureScreenView ?? (cpuMonitorOpen ? undefined : deviceScreenView) ?? undefined} screenContent={screenContent} cpuMonitor={cpuMonitor} deviceInformation={deviceInformation} onCloseScreen={() => void closeDeviceScreen()} onDeviceScreenGesture={(x, y, toX, toY, kind) => void forwardDeviceScreenGesture(x, y, toX, toY, kind)} onOpenGigView={() => void showDeviceView("gig")} onOpenIoView={() => void showIoSettings()} onEditScene={sceneWorkflow.openLabelColor} onRecallGigPreset={(entry) => void presetWorkflow.recall(entry)} onCopyGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, false)} onSwapGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, true)} sceneEditor={sceneWorkflow.labelColorOpen ? { sourceScene: sceneWorkflow.sourceScene, setSourceScene: sceneWorkflow.setSourceScene, scenes: snapshot.scenes, label: sceneWorkflow.label, setLabel: sceneWorkflow.setLabel, color: sceneWorkflow.color, setColor: sceneWorkflow.setColor, colors: sceneWorkflow.colors, pending: commandPending, saveLabel: () => void sceneWorkflow.saveLabel(), saveColor: () => void sceneWorkflow.saveColor(), onClose: sceneWorkflow.closeLabelColor } : undefined} onAction={handleHardwareAction} onMasterVolumeInteractionStart={continuousControls.beginMasterVolumeInteraction} onMasterVolumeInteractionEnd={continuousControls.endMasterVolumeInteraction} onOpenPreset={() => void openPresetBrowser()} onUndo={() => void undoLastAction()} canUndo={Boolean(undoEntry) || deviceUndoAvailable} undoLabel={undoEntry?.label} onSave={openDeviceSave} onOpenRouting={openRoutePicker} onRefresh={() => void refreshSnapshot()} savePreset={presetWorkflow.saveProps} presetDirectory={presetWorkflow.directoryProps} gigPresetList={presetWorkflow.presetList} routingPicker={routingWorkflow.pickerProps} addDevicePicker={gridWorkflow.addPickerProps} expressionAssignment={expressionAssignment} laneControlEditor={laneControlEditor} parameterEditor={parameterEditorBindings} onContextAction={handleCorOsContextAction} disabledContextActions={QC_DISABLED_CONTEXT_ACTIONS} />
       </main>
     </div>
 
