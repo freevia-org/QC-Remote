@@ -46,11 +46,11 @@ test("the CPU Monitor is an overlay on the live Grid, never a second Grid", () =
     assert.ok(!source.includes(`${view} === "cpu-monitor" ? <`), `${name} must not swap the Grid for a CPU screen`);
     assert.ok(source.includes(`cpuMonitorOpen ? undefined : ${view}`), `${name} keeps the surface on the Grid while the monitor is open`);
     assert.ok(source.includes("cpuMonitor={cpuMonitor}"), `${name} passes the monitor to the surface`);
-    // Both hosts track per-block load the same way and hand the tracked state (never an empty literal) to the monitor.
-    assert.ok(source.includes("const [cpuColumns, setCpuColumns] = useState<CpuColumnLoad[]>([]);"), `${name} tracks cpuColumns`);
-    assert.ok(source.includes("if (state.cpuColumns) setCpuColumns(state.cpuColumns);"), `${name} stores observed cpuColumns`);
-    const monitorProp = source.slice(source.indexOf("const cpuMonitor = "), source.indexOf("const cpuMonitor = ") + 200);
-    assert.ok(/\{ cpuLoad, cpuColumns, returnFocusTarget/.test(monitorProp), `${name} passes tracked cpuColumns, not an empty list`);
+    // Neither host owns CPU readings: both take them from the one shared hook and hand its monitor to the surface.
+    assert.ok(source.includes("const cpuTelemetry = useQcCpuTelemetry();"), `${name} uses the shared CPU telemetry hook`);
+    assert.ok(source.includes("cpuTelemetry.consume(states);"), `${name} feeds every state batch to the hook`);
+    assert.ok(source.includes("cpuTelemetry.monitor(cpuMonitorOpen, "), `${name} builds the monitor from the hook`);
+    assert.ok(!/setCpu(?:Load|Columns)|useState<CpuColumnLoad/.test(source), `${name} keeps no CPU state of its own`);
   }
 });
 

@@ -2,11 +2,11 @@ import { RemoteAccountDeletionLink } from "@qc-remote/ui";
 import { openRemoteAccountDeletionPage } from "./native-services";
 import { Capacitor } from "@capacitor/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { QC_SCENE_COUNT, type CpuColumnLoad } from "@qc-remote/client";
+import { QC_SCENE_COUNT } from "@qc-remote/client";
 import { demoSnapshot, footswitchLeds, sceneLetter, type ControlAccessMode, type PublicRelayUsage } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_LEGAL, QC_LEGAL_DOCUMENTS, QC_VISUAL_ASSETS } from "@qc-remote/theme";
-import { ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, corOsUnavailableContextActionMessage, CorOsDeviceSettings, CorOsGlobalEqScreen, CorOsIoSettingsScreen, CorOsSceneCommand, CorOsTempoScreen, CorOsTunerScreen, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, LooperXScreen, ModesConfigurationScreen, parameterEditorAccent, parameterEditorControlSlots, parameterEditorPageSize, parseDemoLibraryText, PresetMidiOutEditor, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, QcUiIcon, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, refreshGridSnapshot, serializeDemoLibrary, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting, type CorOsContextAction, type CorOsScreenView, type QcScreenObservation } from "@qc-remote/ui";
+import { ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, corOsUnavailableContextActionMessage, CorOsDeviceSettings, CorOsGlobalEqScreen, CorOsIoSettingsScreen, CorOsSceneCommand, CorOsTempoScreen, CorOsTunerScreen, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, LooperXScreen, ModesConfigurationScreen, parameterEditorAccent, parameterEditorControlSlots, parameterEditorPageSize, parseDemoLibraryText, PresetMidiOutEditor, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, QcUiIcon, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, refreshGridSnapshot, serializeDemoLibrary, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting, type CorOsContextAction, type CorOsScreenView, type QcScreenObservation } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { androidGatewayTransport, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage } from "./native-services";
 import { useAndroidPrompts } from "./use-android-prompts";
@@ -105,8 +105,7 @@ export function App() {
       return { view };
     });
   }, []);
-  const [cpuLoad, setCpuLoad] = useState(0);
-  const [cpuColumns, setCpuColumns] = useState<CpuColumnLoad[]>([]);
+  const cpuTelemetry = useQcCpuTelemetry();
   const [deviceUndoAvailable, setDeviceUndoAvailable] = useState(false);
   const modeChord = useRef<{ active: boolean; held: boolean; timer?: number }>({ active: false, held: false });
   const controlContacts = useRef({ bankDown: false, tempo: false });
@@ -328,6 +327,7 @@ export function App() {
     reconcileFrame,
     editor,
     onStates: (states, frame) => {
+      cpuTelemetry.consume(states);
       for (const state of states) {
         if (state.kind === "gigView" && state.gigViewShown !== undefined) {
           setMobileScreenView((current) => state.gigViewShown ? "gig" : current?.startsWith("gig") ? null : current);
@@ -349,9 +349,6 @@ export function App() {
             onError: (error) => setNotice(error instanceof Error ? error.message : "The Grid layout is incomplete; current preset could not be refreshed."),
             onFinished: () => setGridRefreshPending(false)
           });
-        } else if (state.kind === "cpuLoad") {
-          if (state.cpuTotalLoad !== undefined) setCpuLoad(state.cpuTotalLoad);
-          if (state.cpuColumns) setCpuColumns(state.cpuColumns);
         } else if (state.kind === "history" && state.undoAvailable !== undefined) {
           setDeviceUndoAvailable(state.undoAvailable);
         } else if (state.kind === "suspend" && state.suspended !== undefined) {
@@ -937,7 +934,7 @@ export function App() {
   };
   // The CPU Monitor is laid over the normal Grid, as on the unit, rather than replacing it.
   const cpuMonitorOpen = mobileScreenView === "cpu-monitor";
-  const cpuMonitor = cpuMonitorOpen ? { cpuLoad, cpuColumns, returnFocusTarget: mobileScreenViewState.returnFocusTarget, onClose: () => setMobileScreenView(null) } : undefined;
+  const cpuMonitor = cpuTelemetry.monitor(cpuMonitorOpen, mobileScreenViewState.returnFocusTarget, () => setMobileScreenView(null));
   const mobileScreenContent = productionAuditScreen ? <CorOsProductionScreenAudit view={productionAuditScreen} snapshot={snapshot} />
     : deviceSettingsWorkflow.open ? <CorOsDeviceSettings workflow={deviceSettingsWorkflow} onClose={deviceSettingsWorkflow.close} />
     : tempoWorkflow.open ? <CorOsTempoScreen workflow={tempoWorkflow} snapshot={snapshot} queueTempo={continuousControls.queueTempo} onSelectScene={(index) => void performanceWorkflow.selectScene(index)} onClose={tempoWorkflow.close} />
