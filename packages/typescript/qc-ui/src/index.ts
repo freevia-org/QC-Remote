@@ -44,6 +44,8 @@ export { useQcController } from "./use-qc-controller";
 export type { QcController } from "./use-qc-controller";
 export { useQcCpuTelemetry } from "./use-qc-cpu-telemetry";
 export type { QcCpuMonitorProps, QcCpuTelemetry } from "./use-qc-cpu-telemetry";
+export { QC_DISABLED_CONTEXT_ACTIONS, qcContextActionHandler, useQcScreenDestination } from "./use-qc-screen-destination";
+export type { QcContextActionOptions, QcScreenDestination, QcScreenReturnFocus, QcScreenViewUpdate } from "./use-qc-screen-destination";
 export { useQcLiveState } from "./use-qc-live-state";
 export type { QcLiveStateOptions } from "./use-qc-live-state";
 export { consumeQcNativeStateFrame } from "./qc-native-state-frame";
