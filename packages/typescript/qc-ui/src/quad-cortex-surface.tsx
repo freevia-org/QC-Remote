@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
-import { QC_GRID_COLUMNS, QC_GRID_ROWS, QC_OUTPUT_ROUTES, type GridBlock, type LaneControl, type LibraryEntry, type PresetEntry, type PresetList, type PresetSnapshot } from "@qc-remote/client";
+import { QC_GRID_COLUMNS, QC_GRID_ROWS, QC_OUTPUT_ROUTES, type CpuColumnLoad, type GridBlock, type LaneControl, type LibraryEntry, type PresetEntry, type PresetList, type PresetSnapshot } from "@qc-remote/client";
 import { footswitchLeds, QC_PRESET_SLOT_COLORS, routePickerGroup, routePickerLabel, sceneLetter as sceneLabel, type QcSurfaceAction } from "@qc-remote/core";
 import type { FormFactorManifest, HardwareControl, SkinManifest } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_SCREEN_ICON_VECTORS, QC_TYPOGRAPHY } from "@qc-remote/theme";
@@ -11,6 +11,7 @@ import { CorOsAddDevicePicker, type CorOsAddDevicePickerState } from "./add-devi
 import { CorOsExpressionAssignment, type ExpressionAssignmentState } from "./expression-assignment";
 import { CorOsLaneControlPanel, type LaneControlPanelState } from "./lane-control-panel";
 import { fixtureSnapshot, type CorOsScreenView } from "./coros-screen-fixture-data";
+import { CorOsCpuMonitorPanel } from "./coros-cpu-monitor";
 import type { CorOsDeviceInformation } from "./coros-reference-settings-pane";
 import { QcDeviceGlyph } from "./device-glyph";
 import { sceneDisplayLabel } from "./scene-display-label";
@@ -92,6 +93,12 @@ interface QuadCortexSurfaceProps {
    * Visual corpus fixtures remain available through screenView, but live
    * screens use this slot so every enabled element owns a semantic action. */
   screenContent?: ReactNode;
+  /** The CPU Monitor, which the unit lays over its normal Grid rather than
+   * replacing it. The Grid underneath is the same one the surface always
+   * draws (title, port labels, blocks); this adds the readout panel and each
+   * block's load fill. Ignored while a screenView or screenContent replaces
+   * the Grid. */
+  cpuMonitor?: { cpuLoad: number; cpuColumns: readonly CpuColumnLoad[]; returnFocusTarget?: "grid-menu"; onClose: () => void };
   deviceInformation?: CorOsDeviceInformation;
   onCloseScreen?: () => void;
   onOpenGigView?: () => void;
@@ -378,7 +385,7 @@ type GridActions = Pick<QuadCortexSurfaceProps,
   | "disabledContextActions"
 >;
 
-function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions }: Pick<QuadCortexSurfaceProps, "snapshot" | "selectedBlockId"> & { presetSlotAccent: string; gridActions: GridActions }) {
+function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, cpuColumns }: Pick<QuadCortexSurfaceProps, "snapshot" | "selectedBlockId"> & { presetSlotAccent: string; gridActions: GridActions; cpuColumns?: readonly CpuColumnLoad[] }) {
   const { onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, routingPicker, addDevicePicker, savePreset, onContextAction, disabledContextActions } = gridActions;
   const [sceneMenuOpen, setSceneMenuOpen] = useState(false);
   const [screenMenuOpen, setScreenMenuOpen] = useState(false);
@@ -735,7 +742,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions }:
     const selected = selectedBlockId === block.id;
     const drag = dragPreview?.blockId === block.id ? dragPreview : undefined;
     return <g key={block.id} className={drag ? `coros-grid-drag-glyph${drag.target === "remove" ? " is-removing" : ""}` : undefined} transform={drag ? `translate(${drag.dx} ${drag.dy})` : undefined}>
-      <QcDeviceGlyph block={block} x={cx} y={cy} selected={selected} />
+      <QcDeviceGlyph block={block} x={cx} y={cy} selected={selected} cpuLoad={cpuColumns?.[block.row * QC_GRID_COLUMNS + block.column]?.load} cpuCore={cpuColumns?.[block.row * QC_GRID_COLUMNS + block.column]?.core} />
     </g>;
   };
   // Input Gate/Lane Output no longer get a separate tap target here: the
@@ -1031,7 +1038,7 @@ function controlByRole(controls: HardwareControl[], role: string) { return contr
 // Edit Details focus their own name input instead.
 const GRID_MENU_FOCUS_TARGETS = new Set<string>(["settings", "tempo", "modes-configuration", "preset-midi-out", "cpu-monitor"]);
 
-export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, screenView = "grid", screenContent, deviceInformation, onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, sceneEditor, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
+export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, screenView = "grid", screenContent, cpuMonitor, deviceInformation, onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, sceneEditor, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
   const scenes = formFactor.controls.filter((control) => control.group === "scene");
   const bankUp = controlByRole(formFactor.controls, "bank:up")!;
   const bankDown = controlByRole(formFactor.controls, "bank:down")!;
@@ -1214,7 +1221,8 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
         presetSlotAccent={presetSlotAccent}
         selectedBlockId={selectedBlockId}
         gridActions={{ onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, routingPicker, addDevicePicker, savePreset, onContextAction, disabledContextActions }}
-      />{parameterEditor && <CorOsParameterEditor {...parameterEditor} />}{laneControlEditor && <>
+        cpuColumns={cpuMonitor?.cpuColumns}
+      />{cpuMonitor && <CorOsCpuMonitorPanel cpuLoad={cpuMonitor.cpuLoad} returnFocusTarget={cpuMonitor.returnFocusTarget} onClose={cpuMonitor.onClose} />}{parameterEditor && <CorOsParameterEditor {...parameterEditor} />}{laneControlEditor && <>
       {/* The manual's own dismissal for Input Gate/Lane Output Control is a
           tap anywhere outside the panel (INPUT & OUTPUT BLOCKS describes
           opening it but not this, though
