@@ -10,6 +10,10 @@ use std::ffi::c_void;
 
 type Handle = *mut c_void;
 pub(crate) const SESSION_MARKER: &str = "Local\\QCRemote.DeviceBrokerTray.v1";
+// SAFETY: these declarations match the kernel32 signatures `HANDLE OpenMutexW(DWORD, BOOL,
+// LPCWSTR)`, `HANDLE CreateMutexW(LPSECURITY_ATTRIBUTES, BOOL, LPCWSTR)` (tests only) and
+// `BOOL CloseHandle(HANDLE)`. `isize` stands in for HANDLE in CloseHandle: both are
+// pointer-sized and passed the same way on the x86 and x64 Windows ABIs.
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn OpenMutexW(access: u32, inherit: i32, name: *const u16) -> Handle;

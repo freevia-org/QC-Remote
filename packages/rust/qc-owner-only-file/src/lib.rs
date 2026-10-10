@@ -167,6 +167,9 @@ fn remove_claim(claim: File, _path: &Path) -> io::Result<()> {
         FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
     };
     let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: `claim` is an open `File` owned by this function, so its handle is valid for the
+    // whole call, and `claim_options` opened it with DELETE access. `disposition` is a live
+    // local of the type `FileDispositionInfo` names, and its own size is passed.
     let result = unsafe {
         SetFileInformationByHandle(
             claim.as_raw_handle().cast(),

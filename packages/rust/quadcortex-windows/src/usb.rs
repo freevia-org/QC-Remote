@@ -365,21 +365,31 @@ impl WriteProgress {
 /// a report.
 struct SharedWindowsHid(UnsafeCell<HidDevice>);
 
-// Safety: exactly one RX thread calls read_timeout and exactly one TX thread
-// calls write. The selected windows-native backend touches disjoint
-// read_state/write_state RefCells; read_pending is RX-only and the native
-// handle is immutable. HidIo joins both lanes before releasing the handle.
-// Those backend facts were audited against hidapi 2.6.7 only; Cargo.toml pins
-// `hidapi = "=2.6.7"` for that reason. Re-audit this impl before bumping it.
+// SAFETY: exactly one RX thread calls read_timeout and exactly one TX thread
+// calls write. The windows-native backend touches disjoint read_state and
+// write_state RefCells, read_pending is RX-only and the native handle is
+// immutable. Both lanes hold an `Arc` clone, so the handle outlives any lane
+// still running (HidIo joins both on drop; `finish_writes` may detach a wedged
+// writer, which keeps its clone). Audited against hidapi 2.6.7 only: Cargo.toml
+// pins `hidapi = "=2.6.7"`, and this impl is unsound against a backend that
+// shares state between the lanes. Re-audit it before bumping the pin.
 unsafe impl Sync for SharedWindowsHid {}
 
 impl SharedWindowsHid {
     fn read_timeout(&self, report: &mut [u8], timeout_ms: i32) -> Result<usize, String> {
+        // SAFETY: see the `unsafe impl Sync` above. This is the RX lane's only call into the device
+        // and only the single qc-native-hid-rx thread makes it, so it never overlaps itself; it
+        // touches the read-side state of the hidapi 2.6.7 backend, which no TX call touches. The
+        // shared reference ends with the call, and the `Arc` holding `self` keeps the device alive.
         unsafe { (&*self.0.get()).read_timeout(report, timeout_ms) }
             .map_err(|error| error.to_string())
     }
 
     fn write(&self, report: &[u8]) -> Result<usize, HidError> {
+        // SAFETY: see the `unsafe impl Sync` above. This is the TX lane's only call into the device
+        // and only the single qc-native-hid-tx thread makes it, so it never overlaps itself; it
+        // touches the write-side state of the hidapi 2.6.7 backend, which no RX call touches. The
+        // shared reference ends with the call, and the `Arc` holding `self` keeps the device alive.
         unsafe { (&*self.0.get()).write(report) }
     }
 }
