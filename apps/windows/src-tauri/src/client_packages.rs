@@ -3548,11 +3548,9 @@ fn host_restart_required(process_restart_required: bool, evidence: LocalClientEv
 
 /// The managed ChatGPT/Codex server entry, exactly as this app writes it.
 ///
-/// `write_codex_config` installs it, and [`classify_route_refresh`] rebuilds it
-/// to decide whether an entry already on disk is one this app wrote. Those two
-/// have to agree on every key or the start-up refresh would either condemn a
-/// route the app itself produced or rewrite one the user owns, so there is one
-/// builder and both go through it.
+/// `write_codex_config` installs it, and [`classify_route_refresh`] uses it as
+/// the desired configuration when repairing an entry carrying this app's
+/// managed identity. The startup repair preserves all other host entries.
 fn codex_route_table(executable_path: &Path, client_id: &str) -> Table {
     let mut server = Table::new();
     server.insert("command", value(executable_path.to_string_lossy().as_ref()));
@@ -4949,8 +4947,8 @@ enum RouteRefreshDecision {
     NotPaired,
     /// The entry already names this build.
     Current,
-    /// Not the entry this app's writer produces for the version it claims, so
-    /// it belongs to whoever edited it and is left exactly as it is.
+    /// The entry has no valid managed identity, or its command now names a
+    /// different executable, so ownership cannot be established safely.
     Customised,
     /// The configuration could not be read or parsed, so this app cannot prove
     /// the entry is its own and does not touch the file.
@@ -4988,12 +4986,9 @@ impl RouteRefreshDecision {
 
 /// One managed server entry projected to plain JSON.
 ///
-/// The ChatGPT route is TOML and the other three are JSON, and "is this the
-/// entry this app writes" has to be one decision for all four. Everything this
-/// app's writer emits - strings, integers, an array of strings, one sub-table -
-/// converts exactly. Anything it does not emit converts to `null`, which no
-/// rebuilt entry can ever equal, so a float, a datetime or an array of tables
-/// reads as an entry this app did not write, which is the right answer.
+/// The ChatGPT route is TOML and the other three are JSON. Values emitted by
+/// the route builders convert exactly, allowing one repair decision to cover
+/// all four formats. Unsupported TOML value kinds convert to `null`.
 fn toml_value_as_json(item: &toml_edit::Value) -> Value {
     match item {
         toml_edit::Value::String(text) => Value::String(text.value().clone()),
@@ -5027,11 +5022,9 @@ fn toml_item_as_json(item: &Item) -> Value {
 
 /// The client id a configured entry names itself by.
 ///
-/// Both channels carry it and this app's writer always writes one value to
-/// both, so reading either answers the question. `env` is read because every
-/// generation of every writer has filled it, and an entry whose two channels
-/// disagree fails the rebuild below and is left alone - which is the right
-/// answer for an entry somebody has edited.
+/// The environment value is the durable marker written by this app. Some
+/// clients do not pass it through to the bridge process, so the argument
+/// channel is kept for runtime identification but is not required here.
 fn route_client_identity(server: &Value) -> Option<&str> {
     // Bionic nests the whole connection - transport, command, arguments and
     // environment - one level below the entry, so the identity is looked for
@@ -5048,6 +5041,22 @@ fn route_client_identity(server: &Value) -> Option<&str> {
     .filter_map(Value::as_object)
     .find_map(|environment| environment.get(LOCAL_MCP_CLIENT_ENV))
     .and_then(Value::as_str)
+}
+
+/// The command name is the second ownership check for an automatic repair.
+/// The managed identity says QC Remote paired this entry; the executable name
+/// makes sure a hand-edited entry that now launches another product is left
+/// alone. Comparing only the basename allows the normal install path to move.
+fn route_command_name(server: &Value) -> Option<&str> {
+    let command = server
+        .get("command")
+        .or_else(|| {
+            server
+                .get("connection")
+                .and_then(|value| value.get("command"))
+        })?
+        .as_str()?;
+    command.rsplit(['\\', '/']).next()
 }
 
 /// Decide what to do about one configured entry, from the entry alone.
@@ -5073,11 +5082,16 @@ fn classify_route_refresh(
     else {
         return RouteRefreshDecision::Customised;
     };
-    // The whole of rule three in one comparison: rebuild what this app writes,
-    // at the version the entry claims, and require every key to match. What
-    // survives that can differ from the entry on disk in nothing but the
-    // identity strings, which are the only part this app owns.
-    if expected_for(identity) != *present {
+    // The identity marks an entry QC Remote previously installed. Require its
+    // command to still name our executable before replacing the entry, but do
+    // not treat edits inside that entry as a veto: startup repair is meant to
+    // fix stale paths and restore the managed route. Other server entries in
+    // the host configuration remain the writer's responsibility to preserve.
+    let expected = expected_for(identity);
+    if !route_command_name(present)
+        .zip(route_command_name(&expected))
+        .is_some_and(|(present, expected)| present.eq_ignore_ascii_case(expected))
+    {
         return RouteRefreshDecision::Customised;
     }
     match compare_versions(current_version, paired) {
@@ -5085,6 +5099,9 @@ fn classify_route_refresh(
             paired: paired.to_string(),
         },
         Some(Ordering::Less) => RouteRefreshDecision::PairedWithNewerBuild {
+            paired: paired.to_string(),
+        },
+        _ if expected != *present => RouteRefreshDecision::Stale {
             paired: paired.to_string(),
         },
         _ => RouteRefreshDecision::Current,
@@ -5439,7 +5456,7 @@ fn refresh_managed_routes_blocking() -> Vec<(&'static str, RouteRefreshOutcome)>
         .collect()
 }
 
-/// Brings every route this app wrote up to this build, once per app start.
+/// Repairs every recognizable QC Remote route to this build, once per app start.
 ///
 /// Off the start-up path entirely: the work runs on its own detached thread,
 /// the way `record_local_client_attach` defers its durable write and the way
