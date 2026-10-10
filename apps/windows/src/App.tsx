@@ -12,7 +12,7 @@ import { useWindowsDeviceFrames } from "./use-windows-device-frames";
 import { useWindowsPrompts } from "./use-windows-prompts";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
 import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
-import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionIsVerified, qcShouldConnectOnDetection, qcShouldDisconnectForDemo, qcVirtualSessionIsReady, qcVisibleStatusNotice, runtimeHasSynchronizedQc, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
+import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcConnectionIsVerified, qcShouldConnectOnDetection, qcShouldDisconnectForDemo, qcVirtualSessionIsReady, qcVisibleStatusNotice, runtimeHasSynchronizedQc, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
 import { DEFAULT_BROKER_TRAY_STATUS, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
 import appPackage from "../package.json";
@@ -1190,9 +1190,9 @@ export function App() {
     setConnectionEvents((current) => [...current, { at: new Date().toISOString(), event: mode === "reset" ? "reset-started" : "connection-started", result: "pending", detail: mode === "reset" ? "Restarting the private gateway session and USB handshake." : "Discovering the gateway and opening the Quad Cortex session." }]);
     stopSyncProgressAnimation();
     showSyncProgress(null);
-    // Gray, with no bar, until a Quad Cortex answers. The bar starts when the
-    // broker reports a handshake (see the device phase listener) or, from a
-    // broker that cannot report one, when the reconnect itself comes back ready.
+    // Gray, with no bar, until HID enumeration finds a Quad Cortex. The bar
+    // starts when the broker reports its open/handshake phase (see the device
+    // phase listener), or when a legacy broker's reconnect comes back ready.
     awaitingDetection.current = true;
     const discovering = { phase: "discovering" as const, detail: "Looking for a Quad Cortex…", demo: true, source: "device" as const };
     connectionRef.current = discovering;
@@ -1711,16 +1711,24 @@ export function App() {
   // long after mount still runs the current render's connect.
   const connectOnDetection = useRef(connect);
   connectOnDetection.current = connect;
-  useEffect(() => onDevicePhase(({ phase, deviceId }) => {
+  useEffect(() => onDevicePhase(({ phase, detail, deviceId }) => {
     if (selectedPhysicalRef.current && deviceId !== selectedPhysicalRef.current) return;
     if (!brokerPhaseDetectsDevice(phase)) return;
     if (awaitingDetection.current) {
       beginSyncProgress();
-      if (connectionRef.current.phase === "discovering") {
-        const detected = { ...connectionRef.current, phase: "handshaking" as const, detail: "Quad Cortex found; reading its active preset…" };
+      const detected = qcConnectionDuringBrokerPhase(phase, detail);
+      if (detected && (connectionRef.current.phase !== detected.phase || connectionRef.current.detail !== detected.detail)) {
         connectionRef.current = detected;
         setConnection(detected);
         setNotice(detected.detail);
+        setSnapshot({
+          ...CONNECTING_PLACEHOLDER_SNAPSHOT,
+          presetName: detected.phase === "opening"
+            ? "Opening the Quad Cortex…"
+            : detected.phase === "handshaking"
+              ? "Handshaking with the Quad Cortex…"
+              : "Synchronizing the Quad Cortex…"
+        });
       }
       return;
     }
