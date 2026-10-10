@@ -8,9 +8,9 @@ prerelease Windows and Android builds, and the relay Freevia EOOD operates at
 
 Do not post suspected vulnerabilities, credentials, tokens, private device
 data, or exploit details in a public issue or pull request. Report privately
-by email to **security@freevia.org**.
-
-Email is the only reporting channel this policy supports.
+by email to **security@freevia.org**, or through GitHub private vulnerability
+reporting: open the repository's **Security** tab and choose **Report a
+vulnerability**.
 
 Include only what is needed to reproduce and assess the problem: the affected
 component and version, the steps, and the impact. Do not include unrelated
@@ -19,9 +19,10 @@ user, device, account, or third-party proprietary data.
 ## What to expect
 
 Receipt is acknowledged as resources permit; no fixed response time is
-promised. During prerelease, fixes may be included in a later test build or
-deployed directly to the relay. No public Windows or Android release is
-currently supported.
+promised. During prerelease, fixes ship in the next release or are deployed
+directly to the relay. Only the latest Windows and Android release published
+on GitHub Releases or Google Play receives fixes; update before reporting a
+problem in an older build.
 
 ## Scope
 

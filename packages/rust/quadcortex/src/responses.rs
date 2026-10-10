@@ -174,11 +174,10 @@ pub fn merge_general_settings_publication(
 /// Whether a settings publication may be retained, or folded into the retained
 /// one, as this session's settings state.
 ///
-/// The pinned desktop receiver publishes nothing for a type-3 UPDATE whose
-/// request_id differs from its own pending reset id (IOSettingsMessageReceiver
-/// publisher, 0x141c00ec4..0x141c00edb). This host never sends one, so any
-/// tagged type-3, a zero id included, is neither retained nor folded and the
-/// last good publication stays. Folding it would also copy the tag into the
+/// The desktop application does not apply a type-3 UPDATE whose request_id
+/// differs from the reset request it is waiting for. This host never sends
+/// one, so any tagged type-3, a zero id included, is neither retained nor
+/// folded and the last good publication stays. Folding it would also copy the tag into the
 /// retained payload, which the I/O decoders then reject on every later read.
 /// Every other payload is admitted unchanged; the merges and decoders keep
 /// their own validation.
