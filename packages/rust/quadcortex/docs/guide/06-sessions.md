@@ -1,3 +1,5 @@
+# Sessions, handshake, suspension and recovery
+
 How a connection starts, how the library keeps it alive, what happens when the
 unit asks the host to stand down, and how to recover. This is the part that makes
 a long-running host correct. The offline snippets drive the real state machines

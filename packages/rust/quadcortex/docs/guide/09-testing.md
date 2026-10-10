@@ -1,3 +1,5 @@
+# Testing your code without a device
+
 How to test code that uses `quadcortex` without a unit on the desk. The library
 never reads a clock and never opens a handle, so its behaviour can be driven by
 bytes and numbers you choose.

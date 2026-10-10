@@ -125,10 +125,68 @@ the same "do not send protected material" rule applies.
 
 ## Before you open a pull request
 
-- Make sure `.github/workflows/ci.yml` passes for your change.
+- Make sure `.github/workflows/ci.yml` passes for your change. It runs its
+  build and test jobs on pull requests; a push to `master` runs only the
+  public-history audit.
+- Run the checks below that your change can affect, and say in the pull
+  request which ones you ran.
 - Keep the change scoped, and say in the message what you measured.
 - Third-party components keep their own licenses and notices; see
   [`THIRD_PARTY-NOTICES.md`](THIRD_PARTY-NOTICES.md).
+
+### Checks to run locally
+
+These are the commands `.github/workflows/ci.yml` runs, from the repository
+root unless noted; the workflow is the authoritative list. Prerequisites and
+per-platform setup are in the
+[Building section of the README](https://github.com/freevia-org/QC-Remote/blob/HEAD/README.md#building).
+Several Rust crates are Windows-specific, so the workspace commands are run on
+Windows in CI.
+
+Rust workspace:
+
+```sh
+cargo build --workspace --locked
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo fmt --all -- --check
+```
+
+The `quadcortex` library, on its declared minimum Rust version and with its
+documentation built (in PowerShell, set `$env:RUSTDOCFLAGS = "-D warnings"`
+first instead of the inline assignment):
+
+```sh
+cargo +1.87 test -p quadcortex --locked
+cargo test -p quadcortex --locked
+RUSTDOCFLAGS="-D warnings" cargo doc -p quadcortex --no-deps --locked
+```
+
+TypeScript packages and apps:
+
+```sh
+npm ci
+npm run contracts:check
+npm run typecheck
+npm test
+```
+
+Licences, notices, manifests and history:
+
+```sh
+npm run legal:notices:check
+npm run legal:carveout:check
+node --test scripts/verify-manifest-pins.test.mjs
+npm run audit:public-history
+```
+
+`npm run audit:public-history` checks every reachable commit; on a pull request
+CI checks only the commits the pull request adds.
+
+The Windows app (`apps/windows/src-tauri`), the Android app and the cloud relay
+have their own CI jobs (`rust-windows-app`, `android` and `cloud-relay` in
+`ci.yml`) with steps that depend on the platform; follow those jobs, and
+`npm run cloud:check` for the relay.
 
 ## Security
 

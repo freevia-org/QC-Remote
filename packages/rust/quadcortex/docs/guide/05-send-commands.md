@@ -1,3 +1,5 @@
+# Tutorial: sending commands safely
+
 How to change something on the unit without acting on stale information. The
 library has four levels of protection; this page climbs them one at a time. The
 snippets all run offline against synthetic state.

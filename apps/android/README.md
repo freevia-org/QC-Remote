@@ -17,7 +17,7 @@ The Android app contains no built-in conversational interface or speech-recognit
 The full end-user guide is [`docs/USER-GUIDE.md`](../../docs/USER-GUIDE.md).
 In short:
 
-- **Install.** QC Remote is in prerelease; no public Android package or Google Play listing is available yet. Official installation links will be added after publication is verified.
+- **Install.** Download the signed APK (`qc-remote-<version>.apk`) from the [latest release](https://github.com/freevia-org/QC-Remote/releases/latest) and open it on the phone; the release page lists its SHA-256 checksum. The `.aab` file on the same page is the Android App Bundle prepared for Google Play, not an installable package. The Google Play listing is pending an internal-test upload, so its link may not open yet. QC Remote is early, pre-1.0 software, and only the latest release receives fixes.
 - **Requirements.** Android 7.0 or newer (API level 24) and a phone that can act
   as a USB host (OTG). You also need a Quad Cortex, switched on, and a cable or
   adapter that connects it to the phone. The manifest does not make USB host

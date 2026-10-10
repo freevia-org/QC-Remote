@@ -1,3 +1,5 @@
+# Concepts and the layer map
+
 The vocabulary the rest of the guide uses, and a map of which module owns which
 job. Skim it once; every later section links back here.
 

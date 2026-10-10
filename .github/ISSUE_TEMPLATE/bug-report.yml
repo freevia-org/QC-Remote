@@ -24,7 +24,7 @@ body:
     attributes:
       label: QC Remote version
       description: Shown in About.
-      placeholder: e.g. Windows 0.1.170 or Android 0.3.29
+      placeholder: e.g. Windows 0.1.182 or Android 0.3.36
     validations:
       required: true
   - type: input

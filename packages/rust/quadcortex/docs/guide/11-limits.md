@@ -1,3 +1,5 @@
+# FAQ and limits
+
 Frequently asked questions, and a register of what the library and this guide
 say is **not established**. The register links the doc comments that say so. If a
 point you care about is on it, treat the library's behaviour there as a policy
@@ -189,9 +191,10 @@ what it does not cover.
 
 ### Which operating systems does it work on?
 
-The crate has no platform-specific code or dependencies, and the repository's CI
-builds and tests it on Windows. Whether it builds and behaves on other platforms
-has not been checked by this guide. The *hosts* in the repository exist for
+The crate has no platform-specific code or dependencies. On pull requests, the
+repository's CI builds and tests it on Windows and tests and documents it on
+Linux (`ubuntu-latest`). Whether it builds and behaves on other platforms has
+not been checked by this guide. The *hosts* in the repository exist for
 Windows and Android only.
 
 ### Do I need `serde_json`?

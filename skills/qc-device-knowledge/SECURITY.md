@@ -1,8 +1,10 @@
 # Security policy
 
-QC Remote accepts responsible security reports for the prerelease source,
-prerelease Windows and Android builds, and the relay Freevia EOOD operates at
-`qcrc.freevia.org` (the Cloudflare Worker in `services/qc-remote-cloud`).
+QC Remote accepts responsible security reports for the source, the Windows and
+Android builds published as
+[GitHub releases](https://github.com/freevia-org/QC-Remote/releases), and the
+relay Freevia EOOD operates at `qcrc.freevia.org` (the Cloudflare Worker in
+`services/qc-remote-cloud`).
 
 ## How to report
 
@@ -19,9 +21,10 @@ user, device, account, or third-party proprietary data.
 ## What to expect
 
 Receipt is acknowledged as resources permit; no fixed response time is
-promised. During prerelease, fixes may be included in a later test build or
-deployed directly to the relay. No public Windows or Android release is
-currently supported.
+promised. QC Remote is early, pre-1.0 software. Only the latest released
+Windows and Android builds receive fixes; earlier builds are not supported.
+A fix may be included in a later release of the apps or deployed directly to
+the relay.
 
 ## Scope
 
