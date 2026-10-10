@@ -144,6 +144,10 @@ fn midi_container(device_id: u32) -> Result<[u8; 16], String> {
     let mut bytes = 0_u32;
     // For these system-intercepted messages WinMM accepts the numeric device
     // index in the handle slot. No MIDI data is sent by either query.
+    // SAFETY: the pointer argument is the address of the live local `bytes`, which is what
+    // DRV_QUERYDEVICEINTERFACESIZE fills in (a byte count). The first argument is a device
+    // index, not a pointer, and an index WinMM does not know is reported through the return
+    // value.
     if unsafe {
         midiOutMessage(
             device_id as usize as _,
@@ -158,6 +162,9 @@ fn midi_container(device_id: u32) -> Result<[u8; 16], String> {
         return Err("Could not identify the MIDI device interface".into());
     }
     let mut path = vec![0_u16; bytes as usize / 2];
+    // SAFETY: `path` holds `bytes / 2` u16 units, exactly `bytes` bytes, and is passed as the
+    // writable output buffer together with its size, which is what DRV_QUERYDEVICEINTERFACE
+    // expects.
     if unsafe {
         midiOutMessage(
             device_id as usize as _,
@@ -186,6 +193,10 @@ fn interface_container(path: &[u16]) -> Result<[u8; 16], String> {
     };
     let mut kind = 0;
     let mut bytes = 0;
+    // SAFETY: `path` is a NUL-terminated UTF-16 slice (hid_container appends the terminator and
+    // midi_container checks for it before calling). `kind` and `bytes` are live locals and the
+    // property key is a static. A null buffer with `bytes == 0` is the documented sizing call;
+    // its CR_BUFFER_SMALL result is deliberately ignored and `bytes` is validated below.
     unsafe {
         CM_Get_Device_Interface_PropertyW(
             path.as_ptr(),
@@ -200,6 +211,8 @@ fn interface_container(path: &[u16]) -> Result<[u8; 16], String> {
         return Err("Device interface has no instance identity".into());
     }
     let mut instance = vec![0_u16; bytes as usize / 2];
+    // SAFETY: `instance` holds `bytes / 2` u16 units, exactly `bytes` bytes, and is passed as the
+    // writable buffer with that size in `bytes`; `path` is NUL-terminated as above.
     if unsafe {
         CM_Get_Device_Interface_PropertyW(
             path.as_ptr(),
@@ -216,11 +229,15 @@ fn interface_container(path: &[u16]) -> Result<[u8; 16], String> {
         return Err("Could not read the device instance".into());
     }
     let mut node = 0;
+    // SAFETY: `instance` is a NUL-terminated UTF-16 string (its last unit was checked to be 0
+    // above) and `node` is a writable local.
     if unsafe { CM_Locate_DevNodeW(&mut node, instance.as_ptr(), 0) } != CR_SUCCESS {
         return Err("Device instance is not present".into());
     }
     let mut container = [0_u8; 16];
     bytes = 16;
+    // SAFETY: `node` came from the successful CM_Locate_DevNodeW above. `container` is a
+    // writable 16-byte buffer, `bytes` was set to 16 as its size, and `kind` is a live local.
     if unsafe {
         CM_Get_DevNode_PropertyW(
             node,
@@ -257,8 +274,11 @@ fn open_matching_qc_midi_output(target: Option<[u8; 16]>) -> Result<(usize, Stri
     };
 
     let mut endpoint = None;
+    // SAFETY: takes no arguments and reads no memory of ours.
     for device_id in 0..unsafe { midiOutGetNumDevs() } {
         let mut caps = MIDIOUTCAPSW::default();
+        // SAFETY: `caps` is a live, writable MIDIOUTCAPSW and its size_of is passed. `device_id` is
+        // below midiOutGetNumDevs, and a failure is reported through the return value.
         let result = unsafe {
             midiOutGetDevCapsW(
                 device_id as usize,
@@ -289,6 +309,9 @@ fn open_matching_qc_midi_output(target: Option<[u8; 16]>) -> Result<(usize, Stri
             .to_string()
     })?;
     let mut handle: HMIDIOUT = null_mut();
+    // SAFETY: `handle` is a live, writable slot for the HMIDIOUT. No callback, instance data or
+    // flags are passed, so WinMM keeps no pointer into this process. On success the handle
+    // stays open until `close_qc_midi_output` closes it.
     let opened = unsafe { midiOutOpen(&mut handle, device_id, 0, 0, 0) };
     if opened != 0 {
         return Err(format!(
@@ -302,6 +325,10 @@ fn open_matching_qc_midi_output(target: Option<[u8; 16]>) -> Result<(usize, Stri
 fn send_qc_midi_short(handle: usize, message: u32) -> Result<(), String> {
     use windows_sys::Win32::Media::Audio::midiOutShortMsg;
 
+    // SAFETY: the only caller (send_raw) passes the handle midiOutOpen produced. It is closed only
+    // by `close_qc_midi_output`, which every caller feeds from `Option::take` on the stored
+    // handle, so a stored handle is still open here. A short message carries no pointer, and
+    // `&mut self` upstream means the handle is not used concurrently.
     let sent = unsafe { midiOutShortMsg(handle as _, message) };
     if sent != 0 {
         return Err(format!(
@@ -326,6 +353,9 @@ fn close_qc_midi_output(handle: Option<usize>) {
     use windows_sys::Win32::Media::Audio::midiOutClose;
 
     if let Some(handle) = handle {
+        // SAFETY: `handle` was returned by midiOutOpen and every caller passes `Option::take` of
+        // the stored handle, so each opened handle is closed at most once. Only short messages
+        // are ever sent, so no long-message buffer is outstanding on it.
         unsafe { midiOutClose(handle as _) };
     }
 }

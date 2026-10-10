@@ -3548,9 +3548,10 @@ fn host_restart_required(process_restart_required: bool, evidence: LocalClientEv
 
 /// The managed ChatGPT/Codex server entry, exactly as this app writes it.
 ///
-/// `write_codex_config` installs it, and [`classify_route_refresh`] uses it as
-/// the desired configuration when repairing an entry carrying this app's
-/// managed identity. The startup repair preserves all other host entries.
+/// `write_codex_config` installs it, and the startup repair uses it, through
+/// the rebuilder [`classify_route_refresh`] is given, as the desired
+/// configuration for an entry carrying this app's managed identity. The
+/// startup repair preserves all other host entries.
 fn codex_route_table(executable_path: &Path, client_id: &str) -> Table {
     let mut server = Table::new();
     server.insert("command", value(executable_path.to_string_lossy().as_ref()));
@@ -4919,17 +4920,29 @@ pub fn other_mcp_stdio_setup() -> Result<Value, String> {
 /// those routes, it can read them back, and it knows exactly what the current
 /// one should say.
 ///
-/// So it brings its own routes up to date, once, in the background, and under
-/// rules narrow enough that it can never take a decision away from the user:
+/// So it repairs its own routes, once per app start, in the background, under
+/// these rules:
 ///
 /// - only a provider that is already paired, because the entry is on disk;
-/// - only an entry this app's own writer produced, decided by rebuilding that
-///   writer's output at the version the entry names itself by and requiring the
-///   two to be equal - a different command, an argument somebody added, a
-///   timeout they changed, a key they introduced and a route they disabled all
-///   make the two differ, and every one of them means the entry is theirs;
-/// - only when this build is strictly newer than the version the entry names,
-///   so the rewrite changes nothing but the identity this app owns.
+/// - ownership is the managed identity plus the command name: the client id in
+///   the entry's `env` must carry this provider's prefix and a version, and
+///   the command's file name must equal this executable's file name
+///   (case-insensitive; the directory is not compared). An entry that fails
+///   either test is left exactly as it is, and a configuration that cannot be
+///   read is not touched;
+/// - an entry that passes is repaired by replacing the whole entry with the one
+///   this build writes. Nothing inside the entry is protected: arguments or
+///   environment keys somebody added are dropped, and a route switched off in
+///   the entry is switched back on. Other servers in the host's configuration
+///   are preserved, and the writer copies the file aside (a bounded history of
+///   timestamped backups) before it replaces it;
+/// - the repair runs when the entry names an older build, and also when it
+///   names this build but differs from what this build would write, for
+///   instance because it points at another path of the same executable name.
+///   So a copy of the app started from a portable, development or second
+///   install path repoints the managed routes at itself;
+/// - an entry naming a newer build than this one is never downgraded, however
+///   else it differs; the explicit Update control keeps that decision.
 ///
 /// Absence of a running bridge is deliberately not a trigger. No host has one
 /// after an app restart, so it proves nothing; this is keyed on the route's
@@ -4945,19 +4958,26 @@ enum RouteRefreshDecision {
     /// No `qc-remote` entry in this host's configuration. Nothing to freshen,
     /// and pairing is the owner's decision to make.
     NotPaired,
-    /// The entry already names this build.
+    /// The entry names this build and is exactly the entry this build would
+    /// write.
     Current,
     /// The entry has no valid managed identity, or its command now names a
-    /// different executable, so ownership cannot be established safely.
+    /// different executable, so ownership cannot be established safely and the
+    /// entry is left exactly as it is.
     Customised,
     /// The configuration could not be read or parsed, so this app cannot prove
     /// the entry is its own and does not touch the file.
     Unreadable,
     /// Ours, and naming a build newer than this one - the owner is running an
     /// older app than the one that paired. Rewriting would quietly downgrade
-    /// the identity, so the explicit Update control keeps that decision.
+    /// the identity, so the explicit Update control keeps that decision. The
+    /// version is judged before the rest of the entry, so this holds whatever
+    /// else differs in it.
     PairedWithNewerBuild { paired: String },
-    /// Ours, and naming an older build. This is the one case that is rewritten.
+    /// Ours, and either naming an older build, or naming this build but
+    /// differing from the entry this build would write (another executable
+    /// path, edited arguments or environment, a disabled flag). The whole
+    /// entry is replaced. This is the only decision that rewrites.
     Stale { paired: String },
 }
 
@@ -5138,12 +5158,13 @@ enum ManagedRouteFormat {
     Json { uses_active_field: bool },
     /// Bionic's `ng-mcp.json`, whose `servers` is an **array**.
     ///
-    /// The refresh rule - rebuild what this app's writer produces and require
-    /// equality - is unchanged by that, because the rule was always about one
-    /// entry rather than the document around it. What the array does change is
-    /// that the entry has no key to be found under: it is located by the
-    /// identity `bionic_entry_is_managed` declares, and everything beside it
-    /// is untouched whatever the pass decides.
+    /// The repair rule - the managed identity in the entry plus this app's
+    /// executable name, then replace the whole entry - is unchanged by that,
+    /// because the rule is about one entry rather than the document around it.
+    /// What the array does change is that the entry has no key to be found
+    /// under: it is located by the identity `bionic_entry_is_managed`
+    /// declares, and everything beside it is untouched whatever the pass
+    /// decides.
     Bionic,
 }
 
@@ -5157,7 +5178,9 @@ const JAN_ROUTE: &str = "jan";
 /// [`RouteRefreshDecision`].
 fn managed_route_targets() -> Result<Vec<ManagedRouteTarget>, String> {
     // Every managed route runs this executable. Antigravity's has since
-    // 0.1.143, and `antigravity_bridge_path` resolves to the same file.
+    // 0.1.143, and `antigravity_bridge_path` resolves to the same file. It is
+    // the running copy, so whichever copy of the app is started becomes the
+    // command the repaired routes name.
     let executable_path = std::env::current_exe()
         .map_err(|error| format!("Could not resolve the QC Remote executable: {error}"))?;
     let profile_unavailable = || "The Windows user profile directory is unavailable.".to_string();
@@ -5258,8 +5281,9 @@ impl ManagedRouteTarget {
     /// `present` is the entry on disk, because for one format the writer's
     /// output depends on it: Bionic's entry carries an `id` the host minted,
     /// and [`write_bionic_mcp_route`] keeps it. Rebuilding with a different id
-    /// would read this app's own freshly written route as a stranger's and
-    /// never freshen it. Every other format ignores it, as their writers do.
+    /// would make this app's own freshly written route differ from what it
+    /// would write, and it would be rewritten at every start. Every other
+    /// format ignores it, as their writers do.
     fn expected_route(&self, client_id: &str, present: Option<&Value>) -> Value {
         match self.format {
             ManagedRouteFormat::Toml => toml_item_as_json(&Item::Table(codex_route_table(
@@ -5326,7 +5350,7 @@ impl RouteRefreshOutcome {
         json!({
             // "failed" is reserved for a rewrite that was attempted and
             // refused, because that is the state whose remedy differs: the
-            // route is this app's own and one version behind, and something
+            // route is this app's own and needed repair, and something
             // stopped the write. A configuration this app could not read keeps
             // its own word - it never reached the point of attempting
             // anything - and both carry the reason in `error`.
@@ -5341,8 +5365,10 @@ impl RouteRefreshOutcome {
     }
 }
 
-/// Reads one provider's route and rewrites it when, and only when, it is this
-/// app's own and at least one release behind.
+/// Reads one provider's route and replaces it when it carries this app's
+/// managed identity and command name (see [`RouteRefreshDecision`]) and is
+/// either at least one release behind or different from what this build would
+/// write.
 fn refresh_managed_route(target: &ManagedRouteTarget) -> RouteRefreshOutcome {
     // Held from the read through the rewrite: an Unpair that lands in between
     // must find the route already freshened, never have its removal written

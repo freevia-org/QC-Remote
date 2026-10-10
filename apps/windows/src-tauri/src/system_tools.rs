@@ -8,6 +8,9 @@
 //! read the registry. These helpers name the copies Windows itself ships.
 use std::path::{Path, PathBuf};
 
+// SAFETY: these declarations match the kernel32 signatures `UINT GetSystemDirectoryW(LPWSTR,
+// UINT)` and `UINT GetSystemWindowsDirectoryW(LPWSTR, UINT)`. Callers pass a writable
+// buffer and its length in UTF-16 units, as `known_directory` does.
 #[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -15,6 +18,8 @@ unsafe extern "system" {
     fn GetSystemWindowsDirectoryW(buffer: *mut u16, size: u32) -> u32;
 }
 
+// SAFETY: `read` is only ever one of the two functions declared above, and is called with a
+// writable buffer and that buffer's length (see the SAFETY comment in the body).
 #[cfg(windows)]
 fn known_directory(read: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
     use std::os::windows::ffi::OsStringExt;

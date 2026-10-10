@@ -167,7 +167,12 @@ jobs:
         with:
           node-version: 22
       # Pushes to master are the published history: every reachable commit must
-      # carry only public paths, noreply identities and no Co-authored-by trailer.
+      # carry only public paths, privacy-preserving identities and no
+      # Co-authored-by trailer, with one exemption. Commit
+      # 2badc68ea4d30f53fc98ae9e000c70df109d0970 may carry that trailer: the
+      # script pins that one full SHA and that one exact finding, and any other
+      # finding on that commit, or the same finding on another commit, still
+      # fails (publishedIdentityExceptions in scripts/verify-public-history.mjs).
       - name: Whole history (strict)
         if: github.event_name != 'pull_request'
         run: npm run audit:public-history
@@ -177,8 +182,8 @@ jobs:
       # for a fork: CONTRIBUTING.md asks outside contributors for a real-name DCO
       # sign-off, and a maintainer publishes a privacy-preserving signed-off
       # commit instead of those identities as they stand. The published commit is
-      # then held to the strict whole-history rules by the push run above. Values arrive through
-      # env, never interpolated into the script.
+      # then held to the strict whole-history rules by the push run above. Values
+      # arrive through env, never interpolated into the script.
       - name: Pull request range (path boundary; identity per origin)
         if: github.event_name == 'pull_request'
         env:

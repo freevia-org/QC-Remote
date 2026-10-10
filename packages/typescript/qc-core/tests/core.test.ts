@@ -511,7 +511,7 @@ test("footswitch LEDs and optimistic STOMP behavior belong to the core", () => {
   assert.equal(applyFootswitchPreview(preset, 5).presetLocation, "2F");
 });
 
-test("qc-client ships no device-derived names or colours, so it stays plain MIT OR Apache-2.0 (OD-7)", () => {
+test("qc-client ships no device-derived names or colours, so it stays plain MIT OR Apache-2.0", () => {
   const clientRoot = new URL("../../qc-client/", import.meta.url);
   assert.equal(JSON.parse(readFileSync(new URL("package.json", clientRoot), "utf8")).license, "MIT OR Apache-2.0");
   const sources = readdirSync(new URL("src/", clientRoot)).filter((name) => name.endsWith(".ts"))
