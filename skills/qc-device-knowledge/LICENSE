@@ -121,6 +121,7 @@ describe but which Freevia does not own.
 | `packages/typescript/qc-ui/src/official-*.css` | Device screen layout stylesheets |
 | `packages/typescript/qc-ui/src/qc-*.css` | Shared device-control stylesheets |
 | `packages/typescript/qc-ui/src/coros-capture-connections.css` | Screen stylesheet |
+| `packages/typescript/qc-ui/src/display-frame.css` | Device display frame stylesheet |
 | `packages/typescript/qc-ui/src/fixture-live-surface.css` | Screen stylesheet |
 | `packages/typescript/qc-ui/src/io-global-eq-screens.css` | Screen stylesheet |
 | `packages/typescript/qc-ui/src/live-surface.css` | Screen stylesheet |
@@ -135,6 +136,7 @@ describe but which Freevia does not own.
 | `packages/typescript/qc-ui/src/coros-*.tsx` | CorOS screen components |
 | `packages/typescript/qc-ui/src/*-screen.tsx` | Device screen components |
 | `packages/typescript/qc-ui/src/quad-cortex-surface.tsx` | Device chassis and screen host |
+| `packages/typescript/qc-ui/src/device-information-display.tsx` | Device information screen host |
 | `packages/typescript/qc-ui/src/parameter-editor.tsx` | Device parameter editor screen |
 | `packages/typescript/qc-ui/src/lane-control-panel.tsx` | Device lane control screen |
 | `packages/typescript/qc-ui/src/scene-editor.tsx` | Device scene editor screen |
@@ -150,7 +152,6 @@ describe but which Freevia does not own.
 | `packages/typescript/qc-theme/src/colors.json` | Device screen palette |
 | `packages/typescript/qc-theme/src/theme.css` | Device screen palette |
 | `packages/typescript/qc-theme/assets/qc-chassis-neutral.svg` | Hardware depiction |
-| `apps/windows/src/device-info-screen.css` | Device information pane stylesheet |
 | `apps/windows/src/app-window.tsx` | Device information pane |
 
 #### Protocol identifiers
