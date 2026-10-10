@@ -3220,54 +3220,61 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                 );
                 continue;
             }
-            begin_connection_epoch(&state, "Opening native QC USB session");
+            // Enumerate before publishing `connecting`. A machine with no QC
+            // used to flash an opening phase every retry even though HID had
+            // already proved there was nothing to open. Hosts may now treat
+            // `connecting` as evidence that a matching USB device exists.
+            let devices = quadcortex_windows::usb::connected_devices().unwrap_or_default();
+            let selected = {
+                let mut selected = device_id.lock_recover();
+                let detected = devices
+                    .into_iter()
+                    .find(|device| selected.as_ref().is_none_or(|id| id == &device.id))
+                    .map(|device| device.id);
+                if selected.is_none() {
+                    *selected = detected.clone();
+                }
+                detected
+            };
+            let Some(selected) = selected else {
+                session
+                    .lock_recover()
+                    .disconnect(session_clock.elapsed().as_millis() as u64, true);
+                set_phase(&state, "searching", &lease.busy_detail(), false, false);
+                continue;
+            };
+            begin_connection_epoch(&state, "Quad Cortex found; opening its USB session");
             let started = Instant::now();
             let _ = state_messages.send(StateDecoderCommand::Reset);
             // Once chosen, a missing unit never falls through to another one.
-            let selected = {
-                let mut selected = device_id.lock_recover();
-                if selected.is_none() {
-                    *selected = quadcortex_windows::usb::connected_devices()
-                        .ok()
-                        .and_then(|devices| devices.into_iter().next())
-                        .map(|device| device.id);
-                }
-                selected.clone()
-            };
             let prior_failures = session.lock_recover().transport.connect_failures();
             let interrupted = connect_interrupt.watch();
-            let opened = selected
-                .as_deref()
-                .ok_or(UsbError::NotAvailable)
-                .and_then(|id| {
-                    QcUsb::connect_device_cancellable(
-                        Arc::clone(&session),
-                        &session_clock,
-                        Some(id),
-                        |attempt, telemetry| {
-                            let mut status = state.lock_recover();
-                            status.phase = "handshaking".into();
-                            status.detail = handshake_detail(attempt, prior_failures);
-                            status.connected = false;
-                            status.synchronized = false;
-                            status.messages_sent = telemetry.messages_sent;
-                            status.write_delivery = telemetry.write_delivery;
-                            status.expected_write_stalls = telemetry.expected_write_stalls;
-                            status.last_hid_write_duration_ms =
-                                telemetry.last_hid_write_duration_ms;
-                            status.max_hid_write_duration_ms = telemetry.max_hid_write_duration_ms;
-                            status.last_hid_write_completed = telemetry.last_hid_write_completed;
-                            status.reader_lock_stall_events = telemetry.reader_lock_stall_events;
-                            status.max_reader_lock_stall_ms = telemetry.max_reader_lock_stall_ms;
-                            status.messages_sent_by_type = telemetry.messages_sent_by_type;
-                        },
-                        |message| {
-                            let _ = queue_state_observation(&state_messages, &session, message);
-                            refresh_startup_detail(&state, &session);
-                        },
-                        &interrupted,
-                    )
-                });
+            let opened = QcUsb::connect_device_cancellable(
+                Arc::clone(&session),
+                &session_clock,
+                Some(&selected),
+                |attempt, telemetry| {
+                    let mut status = state.lock_recover();
+                    status.phase = "handshaking".into();
+                    status.detail = handshake_detail(attempt, prior_failures);
+                    status.connected = false;
+                    status.synchronized = false;
+                    status.messages_sent = telemetry.messages_sent;
+                    status.write_delivery = telemetry.write_delivery;
+                    status.expected_write_stalls = telemetry.expected_write_stalls;
+                    status.last_hid_write_duration_ms = telemetry.last_hid_write_duration_ms;
+                    status.max_hid_write_duration_ms = telemetry.max_hid_write_duration_ms;
+                    status.last_hid_write_completed = telemetry.last_hid_write_completed;
+                    status.reader_lock_stall_events = telemetry.reader_lock_stall_events;
+                    status.max_reader_lock_stall_ms = telemetry.max_reader_lock_stall_ms;
+                    status.messages_sent_by_type = telemetry.messages_sent_by_type;
+                },
+                |message| {
+                    let _ = queue_state_observation(&state_messages, &session, message);
+                    refresh_startup_detail(&state, &session);
+                },
+                &interrupted,
+            );
             match opened {
                 Ok(connected) => {
                     session.lock_recover().transport.connect_succeeded();

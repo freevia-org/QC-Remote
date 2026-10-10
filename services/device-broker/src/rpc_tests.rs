@@ -3,6 +3,18 @@
 use super::*;
 
 #[test]
+fn reconnect_waits_only_when_the_requested_qc_is_present() {
+    let devices = vec![quadcortex_windows::usb::QcUsbDevice {
+        id: "qc-a".into(),
+        name: "Quad Cortex".into(),
+    }];
+    assert!(!requested_device_is_present(None, &[]));
+    assert!(requested_device_is_present(None, &devices));
+    assert!(requested_device_is_present(Some("qc-a"), &devices));
+    assert!(!requested_device_is_present(Some("qc-b"), &devices));
+}
+
+#[test]
 fn cached_snapshot_preserves_incomplete_grid_without_requesting_a_refresh() {
     let snapshot = quadcortex::device::GatewaySnapshot {
         setlist_key: "test-setlist".into(),
@@ -66,14 +78,17 @@ fn backup_name_is_checked_before_the_export_is_dispatched() {
 }
 
 #[test]
-fn phase_events_publish_the_worker_phase_once_per_change() {
+fn phase_events_publish_each_visible_status_change() {
     let controller = DeviceController::start_disconnected().expect("controller starts");
     let output = Mutex::new(Vec::<u8>::new());
     let stop = AtomicBool::new(false);
     thread::scope(|scope| {
         let publisher = scope.spawn(|| publish_phase_changes(&controller, &output, &stop));
-        // Several polls against an unchanged phase must still yield one frame.
-        thread::sleep(PHASE_EVENT_POLL * 4);
+        // Several polls against an unchanged phase still yield one frame.
+        thread::sleep(PHASE_EVENT_POLL * 3);
+        // Startup detail changes within one phase are visible progress too.
+        controller.hold_status_lock_for_test().detail = "Handshake attempt 2".into();
+        thread::sleep(PHASE_EVENT_POLL * 3);
         stop.store(true, Ordering::Release);
         publisher
             .join()
@@ -90,12 +105,14 @@ fn phase_events_publish_the_worker_phase_once_per_change() {
     assert!(rest.is_empty(), "every published byte belongs to a frame");
     assert_eq!(
         frames.len(),
-        1,
-        "an unchanged phase is published exactly once"
+        2,
+        "an unchanged status is deduplicated but changed progress is published"
     );
     assert_eq!(frames[0]["method"], json!("device.phase"));
     assert_eq!(frames[0]["params"]["phase"], json!("disconnected"));
     assert_eq!(frames[0]["params"]["connected"], json!(false));
+    assert_eq!(frames[1]["params"]["phase"], json!("disconnected"));
+    assert_eq!(frames[1]["params"]["detail"], json!("Handshake attempt 2"));
     assert!(
         frames[0].get("id").is_none(),
         "a notification never claims a request id"

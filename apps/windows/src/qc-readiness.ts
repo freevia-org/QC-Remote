@@ -95,12 +95,29 @@ export function qcVisibleStatusNotice(notice: string, deviceReady: boolean, pres
 /**
  * Broker phases that prove a Quad Cortex is actually on the other end.
  *
- * "connecting" is only the broker trying to open HID and "searching" is it
- * finding nothing, so neither may turn the badge blue. "handshaking" is set
- * once the device has been opened and is being asked for its reset reply.
+ * "searching" means enumeration found nothing. The broker publishes
+ * "connecting" only after enumeration found a matching QC and it is opening
+ * HID; "handshaking" follows once that handle is open.
  */
 export function brokerPhaseDetectsDevice(phase: string): boolean {
-  return phase === "handshaking" || phase === "syncing" || phase === "ready";
+  return phase === "connecting" || phase === "handshaking" || phase === "syncing" || phase === "ready";
+}
+
+/** Translate a live broker phase into the state shown during one connect. */
+export function qcConnectionDuringBrokerPhase(
+  phase: string,
+  detail: string
+): ConnectionState | undefined {
+  if (phase === "connecting") {
+    return { phase: "opening", detail: "Quad Cortex found; opening its USB connection…", demo: true, source: "device" };
+  }
+  if (phase === "handshaking") {
+    return { phase: "handshaking", detail: detail || "USB open; handshaking with the Quad Cortex…", demo: true, source: "device" };
+  }
+  if (phase === "syncing" || phase === "ready") {
+    return { phase: "syncing", detail: "Quad Cortex connected; synchronizing its live state…", demo: false, source: "device" };
+  }
+  return undefined;
 }
 
 /**
