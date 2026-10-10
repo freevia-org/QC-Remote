@@ -7,7 +7,7 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
-## Unreleased — Windows 0.1.181 / Android 0.3.35
+## Released 10 October 2026 — Windows 0.1.181 / Android 0.3.35
 
 Changes since Windows 0.1.170 / Android 0.3.29.
 

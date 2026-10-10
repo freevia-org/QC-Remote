@@ -5,7 +5,7 @@ Cortex. It is not affiliated with, endorsed by, or supported by Neural DSP
 Technologies Oy, and Neural DSP support does not cover it. See
 [`TRADEMARKS.md`](TRADEMARKS.md).
 
-QC Remote is published by Freevia EOOD. Support is provided on a
+QC Remote is published by Freevia. Support is provided on a
 best-effort basis: no response time, fix date, or compatibility with any
 particular firmware version is promised.
 
