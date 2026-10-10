@@ -6,7 +6,7 @@ tools. QC Remote is free, open-source software from Freevia.
 
 [Website](https://freevia.org/qcremote/) ·
 [User guide](docs/USER-GUIDE.md) ·
-[Latest release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.181) ·
+[Latest release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.182) ·
 [Support & feedback](SUPPORT.md) ·
 [Privacy](PRIVACY.md)
 
@@ -21,11 +21,11 @@ tools. QC Remote is free, open-source software from Freevia.
 
 | Platform | Current release | Download | Store |
 | --- | --- | --- | --- |
-| Windows 10/11, x64 | 0.1.181 | [Signed installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.181/QC-Remote-Windows-0.1.181-x64-setup.exe) | Microsoft Store: pending |
-| Android 7.0+, USB host/OTG | 0.3.35 | [Signed APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.181/QC-Remote-Android-0.3.35-release.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote): review pending; link may not open yet |
+| Windows 10/11, x64 | 0.1.182 | [Signed installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/QC-Remote-Windows-0.1.182-x64-setup.exe) | Microsoft Store: pending |
+| Android 7.0+, USB host/OTG | 0.3.36 | [Signed APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/qc-remote-0.3.36.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote): pending internal-test upload; link may not open yet |
 
-The [release page](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.181)
-has release notes and [checksums](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.181/qc-remote-v0.1.181-SHA256SUMS.txt).
+The [release page](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.182)
+has release notes and SHA-256 checksums for the signed downloads.
 These are prerelease builds; hardware and installed-device acceptance are not
 claimed by this release. See the [changelog](CHANGELOG.md) for version history.
 
