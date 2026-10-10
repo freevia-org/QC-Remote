@@ -11,7 +11,7 @@ name = "quadcortex_android"
 crate-type = ["cdylib"]
 
 [dependencies]
-jni = "0.21"
+jni = "0.22"
 quadcortex = { path = "../quadcortex" }
 serde_json.workspace = true
 
