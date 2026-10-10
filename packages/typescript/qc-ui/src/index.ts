@@ -42,6 +42,8 @@ export { classifyQcGraphicsTree, qcAdaptiveScreenPollDelay, qcGraphicsTreeStruct
 export type { QcObservedScreenKind, QcScreenObservation, QcScreenPollingPhase } from "./use-adaptive-screen-polling";
 export { useQcController } from "./use-qc-controller";
 export type { QcController } from "./use-qc-controller";
+export { useQcCpuTelemetry } from "./use-qc-cpu-telemetry";
+export type { QcCpuMonitorProps, QcCpuTelemetry } from "./use-qc-cpu-telemetry";
 export { useQcLiveState } from "./use-qc-live-state";
 export type { QcLiveStateOptions } from "./use-qc-live-state";
 export { consumeQcNativeStateFrame } from "./qc-native-state-frame";

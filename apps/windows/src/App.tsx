@@ -1,10 +1,10 @@
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type ConnectionState, type CpuColumnLoad, type DeviceActionResult, type DiagnosticsReport, type PresetSnapshot, type RuntimeStatus, type WorkspaceDocument } from "@qc-remote/client";
+import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, type PresetSnapshot, type RuntimeStatus, type WorkspaceDocument } from "@qc-remote/client";
 import { demoBlockDetails, demoSnapshot, sceneLetter, SupersededPresetOperation, saveWorkspaceDocument, type ControlAccessMode, type PublicRelayConnector } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND } from "@qc-remote/theme";
-import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, CorOsDeviceSettings, CorOsGlobalEqScreen, CorOsIoSettingsScreen, CorOsSceneCommand, CorOsTempoScreen, CorOsTunerScreen, corOsUnavailableContextActionMessage, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, LooperXScreen, ModesConfigurationScreen, PresetMidiOutEditor, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, writeQcScreenFollowSetting, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist, type CorOsContextAction, type CorOsScreenView, type QcScreenObservation } from "@qc-remote/ui";
+import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, CorOsDeviceSettings, CorOsGlobalEqScreen, CorOsIoSettingsScreen, CorOsSceneCommand, CorOsTempoScreen, CorOsTunerScreen, corOsUnavailableContextActionMessage, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, LooperXScreen, ModesConfigurationScreen, PresetMidiOutEditor, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, writeQcScreenFollowSetting, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist, type CorOsContextAction, type CorOsScreenView, type QcScreenObservation } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { appWindows, brokerDevice, DEVICE_INFO_EVENTS, diagnosticsFiles, externalLinks, helpWindows, localAccess, localClientPackages, physicalDevices, type PhysicalQcDevice, onDevicePhase, publicRelay, publishWindowState, serveAppWindowRequests, serveDiagnosticsRequests, SETTINGS_EVENTS, tauriTransport, virtualDeviceStorage, WORKSPACE_EVENTS, workspaceFiles, type AntigravityLocalIntegrationStatus, type ChatGptLocalIntegrationStatus, type ClaudeDesktopExtensionStatus, type JanLocalIntegrationStatus, type LmStudioLocalIntegrationStatus, type LocalAccessStatus, type OtherMcpStdioSetup } from "./tauri-transport";
 import { createWindowsQcTransport } from "./qc-transport";
@@ -118,14 +118,14 @@ export function App() {
       return { view };
     });
   }, []);
-  const [cpuLoad, setCpuLoad] = useState(0);
-  const [cpuColumns, setCpuColumns] = useState<CpuColumnLoad[]>([]);
+  const cpuTelemetry = useQcCpuTelemetry();
   const [deviceUndoAvailable, setDeviceUndoAvailable] = useState(false);
   const [deviceRedoAvailable, setDeviceRedoAvailable] = useState(false);
   const consumeLiveState = useQcLiveState({
     reconcileFrame,
     editor,
     onStates: (states, frame) => {
+      cpuTelemetry.consume(states);
       for (const state of states) {
         if (state.kind === "gigView" && state.gigViewShown !== undefined) {
           setDeviceScreenView((current) => state.gigViewShown ? "gig" : current?.startsWith("gig") ? null : current);
@@ -148,9 +148,6 @@ export function App() {
             onError: (error) => setNotice(error instanceof Error ? error.message : "The Grid layout is incomplete; current preset could not be refreshed."),
             onFinished: () => setGridRefreshPending(false)
           });
-        } else if (state.kind === "cpuLoad") {
-          if (state.cpuTotalLoad !== undefined) setCpuLoad(state.cpuTotalLoad);
-          if (state.cpuColumns) setCpuColumns(state.cpuColumns);
         } else if (state.kind === "history") {
           if (state.undoAvailable !== undefined) setDeviceUndoAvailable(state.undoAvailable);
           if (state.redoAvailable !== undefined) setDeviceRedoAvailable(state.redoAvailable);
@@ -2779,7 +2776,7 @@ export function App() {
   // The CPU Monitor is not a screen of its own: the unit lays it over the Grid, so the
   // surface keeps drawing its normal Grid and adds the panel (see QuadCortexSurface).
   const cpuMonitorOpen = deviceScreenView === "cpu-monitor";
-  const cpuMonitor = cpuMonitorOpen ? { cpuLoad, cpuColumns, returnFocusTarget: deviceScreenViewState.returnFocusTarget, onClose: () => setDeviceScreenView(null) } : undefined;
+  const cpuMonitor = cpuTelemetry.monitor(cpuMonitorOpen, deviceScreenViewState.returnFocusTarget, () => setDeviceScreenView(null));
   const screenContent = productionAuditScreen ? <CorOsProductionScreenAudit view={productionAuditScreen} snapshot={snapshot} />
     : deviceSettingsWorkflow.open ? <CorOsDeviceSettings workflow={deviceSettingsWorkflow} onClose={deviceSettingsWorkflow.close} />
     : tempoWorkflow.open ? <CorOsTempoScreen workflow={tempoWorkflow} snapshot={snapshot} queueTempo={queueTempo} onSelectScene={(index) => void chooseScene(index)} onClose={tempoWorkflow.close} />
