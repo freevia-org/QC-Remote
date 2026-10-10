@@ -1,24 +1,48 @@
 # QC Remote
 
-QC Remote is an independent, unofficial controller for the Neural DSP Quad
-Cortex. It is not affiliated with, authorized, sponsored, endorsed, or
-supported by Neural DSP Technologies Oy. See [`TRADEMARKS.md`](TRADEMARKS.md).
-Its device screens are independent reconstructions made for interoperability,
-not Neural DSP assets.
+Control a Quad Cortex from a Windows PC or Android phone, or let a compatible
+AI app inspect the rig, make changes, and verify the result through guarded MCP
+tools. QC Remote is free, open-source software from Freevia.
 
-QC Remote is developed by Freevia EOOD. It runs on **Windows 10 or 11
-(64-bit)** and on **Android 7.0 or newer** (API level 24, `minSdk 24`, with USB
-host/OTG support). It was developed and tested with Quad Cortex firmware (CorOS)
-4.1.0. It does not contain, replace, or modify Quad Cortex firmware, and it does
-not replace Neural DSP's own Cortex Control.
+[Website](https://freevia.org/qcremote/) ·
+[User guide](docs/USER-GUIDE.md) ·
+[Latest release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.181) ·
+[Support & feedback](SUPPORT.md) ·
+[Privacy](PRIVACY.md)
 
-## Availability
+![QC Remote Windows app in demo mode, showing the virtual Quad Cortex control surface](docs/images/01-main-window.png)
 
-QC Remote is in prerelease. Public Windows and Android downloads, a Google
-Play listing, and a Microsoft Store listing are not available yet. Official
-download links will be added here after the release artifacts and listings are
-published and verified. Version
-history is in [`CHANGELOG.md`](CHANGELOG.md).
+*Windows app in demo mode. No device or personal account data is shown.*
+
+## Download
+
+| Platform | Current release | Download | Store |
+| --- | --- | --- | --- |
+| Windows 10/11, x64 | 0.1.181 | [Signed installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.181/QC-Remote-Windows-0.1.181-x64-setup.exe) | Microsoft Store: pending |
+| Android 7.0+, USB host/OTG | 0.3.35 | [Signed APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.181/QC-Remote-Android-0.3.35-release.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote): review pending; link may not open yet |
+
+The [release page](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.181)
+has release notes and [checksums](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.181/qc-remote-v0.1.181-SHA256SUMS.txt).
+These are prerelease builds; hardware and installed-device acceptance are not
+claimed by this release. See the [changelog](CHANGELOG.md) for version history.
+
+QC Remote was developed and tested with Quad Cortex firmware (CorOS) 4.1.0. It
+does not contain, replace, or modify Quad Cortex firmware, and it does not
+replace Neural DSP's own Cortex Control. Its device screens are independent
+reconstructions made for interoperability, not Neural DSP assets. QC Remote is
+independent and unofficial; it is not affiliated with, authorized, sponsored,
+endorsed, or supported by Neural DSP Technologies Oy. See
+[`TRADEMARKS.md`](TRADEMARKS.md).
+
+## What you can do
+
+- Control the device manually: switch Scenes, work on signal chains, edit
+  parameters, and organize presets and setlists.
+- Explore the virtual device in demo mode, online or offline, without hardware.
+- Connect a local MCP-compatible desktop AI app on Windows, or use an MCP
+  connector through the optional remote relay from a Windows or Android host.
+- Set the AI access level in QC Remote: Read-only, Performance, Modify, or Full.
+  The host enforces that ceiling independently of the AI app.
 
 ## Using QC Remote
 
@@ -44,8 +68,8 @@ through the Model Context Protocol, in one of two ways:
   pair the app with the relay, signing in with Google. Then add
   `https://qcrc.freevia.org/mcp` as a custom connector in Claude or ChatGPT.
   The relay is the Cloudflare Worker in
-  [`services/qc-remote-cloud`](services/qc-remote-cloud), operated by Freevia
-  EOOD; what it receives and keeps is described in [`PRIVACY.md`](PRIVACY.md).
+  [`services/qc-remote-cloud`](services/qc-remote-cloud), operated by Freevia;
+  what it receives and keeps is described in [`PRIVACY.md`](PRIVACY.md).
 
 Both routes enforce the access tier selected in the app (Read-only,
 Performance, Modify, or Full). On either route, the assistant must confirm
