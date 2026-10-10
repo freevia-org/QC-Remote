@@ -1,3 +1,5 @@
+# Troubleshooting
+
 What the library's typed errors mean, what to do about each, and how to find out
 what it quietly did *not* act on. Every row below is a behaviour of the types it
 names; nothing here is a statement about firmware.

@@ -67,12 +67,30 @@ Other things to know before you start:
 
 ## Installing
 
-QC Remote is in prerelease. Public Windows and Android installers are not
-available yet. Official installation links and instructions will be added here
-after their publication has been verified.
+QC Remote is early, pre-1.0 software (Windows 0.1.x, Android 0.3.x). Signed
+builds are published as GitHub releases; the
+[README](../README.md#download) names the current version and links each file
+directly.
 
-Only the latest released Windows and Android builds receive fixes
-([`SECURITY.md`](../SECURITY.md)).
+- **Windows 10 or 11 (x64).** Download the installer from the
+  [latest release](https://github.com/freevia-org/QC-Remote/releases/latest)
+  and run it. Its file name has the form
+  `QC-Remote-Windows-<version>-x64-setup.exe`.
+- **Android 7.0 or newer.** Download the APK from the same page and open it on
+  the phone. Its file name has the form `qc-remote-<version>.apk`. The release
+  also carries a `.aab` file; that is the Android App Bundle prepared for
+  Google Play, not something to install on a phone.
+
+The release page lists a SHA-256 checksum for each file. To compare one with
+your download on Windows, run `Get-FileHash <file> -Algorithm SHA256` in
+PowerShell.
+
+The Microsoft Store listing is pending, and the Google Play listing is pending
+an internal-test upload, so its link may not open yet. Hardware and
+installed-device acceptance are not claimed for these releases.
+
+Only the latest released Windows and Android builds receive fixes; earlier
+builds are not supported ([`SECURITY.md`](../SECURITY.md)).
 
 ## Connecting your Quad Cortex
 
@@ -244,8 +262,13 @@ another preset, reloading, or switching the unit off throws unsaved edits away.
 
 **Previous Preset** and **Next Preset** (disabled while there are unsaved
 edits), **Tempo…**, the unit's mode slots, **I/O Settings**, **Tuner**,
-**Looper X** and **Gig View**. Tuner and Gig View open on the unit's own
-screen.
+**Looper X** and **Gig View**. **Tuner** opens QC Remote's own tuner screen,
+which reads and sets the unit's tuner settings. With a unit connected, QC
+Remote also sends it the message that asks it to show its tuner, but on a
+CorOS 4.1.0 unit that message was observed to do nothing (no tuner screen
+appeared), so do not expect the unit's own screen to change; see the
+[limits register](../packages/rust/quadcortex/docs/guide/11-limits.md).
+**Gig View** opens in QC Remote and is requested on the unit's own screen.
 
 ### Copying, backups and the demo device
 
@@ -271,7 +294,7 @@ On Android, the demo device panel has **Copy library**, **Paste library** and
 | Ctrl+1 to 8 | Select Scenes A to H |
 | [ and ] | Step a whole bank down or up |
 | Arrow keys, Enter | Select the nearest Grid block, open its parameters |
-| T / Shift+T | Tap tempo / open the tuner |
+| T / Shift+T | Tap tempo / open QC Remote's tuner screen |
 | B | Toggle the selected block on or off |
 | Ctrl+Z, Ctrl+Y | Undo, redo |
 | Ctrl+S, Ctrl+Shift+S | Save workspace file, Save to QC |
@@ -345,7 +368,7 @@ The **View** menu has **Fit to Window**, **Actual Size** and **Full Screen**.
 ### Android extras
 
 The Android app has **I/O** and **GIG** buttons beside the master volume. Holding
-or double-tapping **TEMPO** opens the tuner or the tempo screen (which gesture
+or double-tapping **TEMPO** opens QC Remote's tuner screen or the tempo screen (which gesture
 does which follows the unit's tempo and tuner access setting). Tap the QC Remote
 mark to open **About**, where **Display** has a **Keep screen awake while
 connected** option (on by default).
@@ -360,8 +383,8 @@ control**, so lower it if you want the assistant to do less.
 
 | Level | What an assistant can do |
 | --- | --- |
-| **Read-only** | Inspect: current preset, block details, lists of presets, models, captures and IRs, settings, tempo, looper status, device diagnostics and screen captures. Changes nothing. |
-| **Performance** | Everything above, plus the performance controls: press footswitches, tap tempo, move between banks, open the tuner or Gig View, select a mode slot, control Looper X, and set the master volume and tempo. |
+| **Read-only** | Inspect: current preset, block details, lists of presets, models, captures and IRs, settings, tempo, looper status and screen captures. Changes nothing. (The device diagnostics tool is also read-level, but it is not currently supported; see [Tools for assistants](#tools-for-assistants).) |
+| **Performance** | Everything above, plus the performance controls: press footswitches, tap tempo, move between banks, ask the unit to show its tuner or Gig View (on a CorOS 4.1.0 unit the tuner request was observed to do nothing), select a mode slot, control Looper X, and set the master volume and tempo. |
 | **Modify** | Everything above, plus editing: scenes (select, copy, label, colour), recalling or reloading a preset, blocks and parameters (add, replace, move, remove, bypass, reset, set values and assignments), captures and IRs, routing and splits, undo and redo, rename and copy the current preset, and saving a preset to a device slot. |
 | **Full control** | Everything above, plus system operations: reconnecting, resetting or disconnecting the device session, device backups, the device name, on-screen taps, swipes, drags and single raw touch frames, global and I/O settings, Global EQ, tuner and tempo settings, favourites and pinned models, requesting a device model preset from a block (QC Remote sends the request and does not confirm what the unit does with it), and creating, duplicating, deleting or moving setlists and presets. |
 

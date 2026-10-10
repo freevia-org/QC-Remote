@@ -1,7 +1,15 @@
+# Guide to the `quadcortex` crate
+
 A guide and tutorial for the `quadcortex` crate, written for a Rust developer
 who wants to talk to a Quad Cortex, or to analyse its USB traffic, without
 having read the codebase first. You are expected to know Rust. You are not
 expected to know the device protocol; the guide introduces it as it is needed.
+
+> **Where the links work.** The `crate::...` links in these pages are rustdoc
+> intra-doc links. They resolve only in the documentation built with
+> `cargo doc -p quadcortex --no-deps --open`; on GitHub they appear as plain
+> text, and the chapters are the numbered files `01-overview.md` to
+> `11-limits.md` in this directory.
 
 > **Independent and unofficial.** `quadcortex` is part of QC Remote, an
 > independent project. It is not affiliated with, authorized, sponsored,

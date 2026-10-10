@@ -1,3 +1,5 @@
+# What the library is and is not
+
 What `quadcortex` is, what it deliberately is not, and how much you can lean
 on its API. Read this page first if you are deciding whether the crate fits.
 
@@ -79,12 +81,15 @@ that reason.
 - **Minimum supported Rust version: 1.87.** It was verified by building the
   library, examples and tests with 1.87 against the repository's `Cargo.lock`;
   1.86 fails because the crate uses `is_multiple_of`, which stabilized in 1.87.
-  The repository's CI builds the crate on exactly 1.87 as a separate job. A
-  dependency update may raise the floor, and resolving dependencies without the
-  lock file may pick versions with a higher floor than the one verified.
+  On pull requests, the repository's CI builds and tests the crate on exactly
+  1.87 as a separate job. A dependency update may raise the floor, and
+  resolving dependencies without the lock file may pick versions with a higher
+  floor than the one verified.
 - **Platform neutral by construction.** The crate has no platform-specific code
-  or dependencies. The repository's CI builds and tests it on Windows; this
-  guide establishes nothing about other platforms.
+  or dependencies. On pull requests, the repository's CI builds and tests it on
+  Windows (with the rest of the workspace) and, in a separate job, tests and
+  documents it on Linux (`ubuntu-latest`); this guide establishes nothing about
+  other platforms.
 
 The guide itself is documentation only. It is compiled by a module that exists
 only under `cfg(doc)`, so it is not part of the compiled library and does not

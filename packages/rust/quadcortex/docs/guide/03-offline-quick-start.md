@@ -1,3 +1,5 @@
+# Quick start, offline
+
 Five short, runnable steps that need no device: build a command, frame it,
 reassemble reports, decode a recorded trace, and decode state. Every snippet on
 this page runs under `cargo test --doc`.

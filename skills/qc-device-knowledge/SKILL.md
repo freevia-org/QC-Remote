@@ -68,7 +68,9 @@ release-note entry (79.8%) -- **307 with a stated hardware basis**
 (e.g. catalogue `"Brit 2203"` -> manual `based_on: "Marshall® JCM800®"`),
 174 matched entries have no stated hardware basis (the Quad Cortex's own
 original algorithm, a plugin-original design, or a public listing that does
-not name underlying hardware). **122 are
+not name underlying hardware): 172 have a manual entry that names none (the
+data file's `matched_but_manual_states_no_basis`), and 2 (Horizon Devices®
+Compressor, Overlord Synth) matched only through a plugin page. **122 are
 honestly unmatched** -- no published Neural DSP source states what, if
 anything, they are modelled on. [DEVICE_LIST, MANUAL, PLUGIN_PAGE,
 COROS_RELEASE_NOTE]
