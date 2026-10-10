@@ -23,7 +23,7 @@ test("broker phase aliases normalize and unknown phases stay attention-worthy", 
   assert.equal(normalizeBrokerConnection(connection("ready")).phase, "ready");
   assert.equal(normalizeBrokerConnection(connection("error")).phase, "needs-attention");
   const connecting = normalizeBrokerConnection(connection("connecting"));
-  assert.equal(connecting.phase, "searching");
+  assert.equal(connecting.phase, "opening");
   assert.equal(connecting.demo, true);
   assert.equal(normalizeBrokerConnection(connection("future-phase")).phase, "needs-attention");
 });
