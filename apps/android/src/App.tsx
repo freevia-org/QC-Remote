@@ -63,6 +63,13 @@ export function App() {
   const sessionReady = demoActive || (hardwareConnected && !deviceSuspended && !deviceBulkBlocking);
   const [demoPending, setDemoPending] = useState(false);
   const demoStartInFlight = useRef(false);
+  // Automatic fallback Demo yields to a newly detected QC. A Demo session the
+  // user deliberately selected stays active until they select USB.
+  const demoCanYieldToDevice = useRef(true);
+  // Native availability may be published while connect() is still in flight.
+  // Remember that edge and retry once if the owning attempt does not connect.
+  const usbRetryRequested = useRef(false);
+  const resumeHardwareInFlight = useRef(false);
   const [notice, setNotice] = useState("Connect the Quad Cortex by USB. Use REMOTE to let an AI app control it.");
   const [gridRefreshPending, setGridRefreshPending] = useState(false);
   const [usbWritesQuarantined, setUsbWritesQuarantined] = useState(false);
@@ -111,6 +118,7 @@ export function App() {
   const nativeStateRecoveryRevision = useRef(0);
   const gridRepair = useRef(createGridRepairCoordinator());
   const startDemoDeviceRef = useRef<(reason?: string) => Promise<void>>(async () => undefined);
+  const resumeHardwareDeviceRef = useRef<(knownConnected?: boolean) => Promise<void>>(async () => undefined);
   useEffect(() => () => {
     if (modeChord.current.timer !== undefined) window.clearTimeout(modeChord.current.timer);
   }, []);
@@ -360,7 +368,10 @@ export function App() {
       }
       if (states.some((state) => state.kind === "preset")) {
         setHardwareConnected(true);
-        if (activeSourceRef.current === "virtual") return;
+        if (activeSourceRef.current === "virtual") {
+          if (demoCanYieldToDevice.current) void resumeHardwareDeviceRef.current(true);
+          return;
+        }
         presetSynchronized.current = true;
         // A preset frame can only come from a live native session, which is
         // stronger evidence than the connect() promise that sets this flag.
@@ -377,12 +388,17 @@ export function App() {
   const attemptUsbConnection = async (announce = false) => {
     if (!native) return;
     const latchOwner = connectAttemptLatch.current.acquire();
-    if (latchOwner === undefined) return;
+    if (latchOwner === undefined) {
+      usbRetryRequested.current = true;
+      return;
+    }
+    usbRetryRequested.current = false;
     const fromDemo = activeSourceRef.current === "virtual";
     const attempt = connectionAttempts.begin();
     if (fromDemo) {
       demoDeviceSession.useDevice();
       activeSourceRef.current = "device";
+      demoCanYieldToDevice.current = false;
       deviceHistory.clear();
       presetWorkflow.resetCache();
       setSelectedBlockId("");
@@ -422,7 +438,12 @@ export function App() {
       }
       if (fromDemo && attempt.current()) void startDemoDeviceRef.current(primary);
     } finally {
-      connectAttemptLatch.current.release(latchOwner);
+      const released = connectAttemptLatch.current.release(latchOwner);
+      if (released && usbRetryRequested.current && !usbSessionReady.current
+          && (activeSourceRef.current !== "virtual" || demoCanYieldToDevice.current)) {
+        usbRetryRequested.current = false;
+        void attemptUsbConnection(false);
+      }
     }
   };
 
@@ -434,10 +455,11 @@ export function App() {
       QcUsbNative.addListener("qcConnection", ({ state }) => {
         if (cancelled) return;
         if (state === "available") {
-          void attemptUsbConnection();
+          if (activeSourceRef.current !== "virtual" || demoCanYieldToDevice.current) void attemptUsbConnection();
         } else {
           connectionAttempts.invalidate();
           connectAttemptLatch.current.clear();
+          usbRetryRequested.current = false;
           usbSessionReady.current = false;
           presetSynchronized.current = false;
           nativeStateSequence.current = 0;
@@ -454,7 +476,10 @@ export function App() {
       QcUsbNative.addListener("qcStateBatch", (frame) => {
         if (cancelled) return;
         setHardwareConnected(true);
-        if (activeSourceRef.current === "virtual") return;
+        if (activeSourceRef.current === "virtual") {
+          if (demoCanYieldToDevice.current) void resumeHardwareDeviceRef.current(true);
+          return;
+        }
         consumeQcNativeStateFrame(frame, {
           sequence: nativeStateSequence,
           streamId: nativeStateStream,
@@ -491,14 +516,18 @@ export function App() {
         // preset changes. Reattaching USB mid-handshake reproduced it every
         // time: connected, streaming, and showing disconnected.
         if (synchronized) presetSynchronized.current = true;
-        if (activeSourceRef.current !== "virtual") transitionConnection(presetSynchronized.current ? "connected" : "syncing");
+        if (activeSourceRef.current === "virtual") {
+          if (demoCanYieldToDevice.current) void resumeHardwareDeviceRef.current(true);
+        } else {
+          transitionConnection(presetSynchronized.current ? "connected" : "syncing");
+        }
         return;
       }
       if (!devices.length) {
         setHardwareConnected(false);
         if (activeSourceRef.current !== "virtual") {
           transitionConnection("absent");
-          void startDemoDeviceRef.current();
+          void startDemoDeviceRef.current("No Quad Cortex was found.");
         }
         return;
       }
@@ -513,6 +542,7 @@ export function App() {
       cancelled = true;
       connectionAttempts.invalidate();
       connectAttemptLatch.current.clear();
+      usbRetryRequested.current = false;
       for (const promise of listenerPromises) void promise.then((listener) => listener.remove());
     };
   }, [native]);
@@ -610,6 +640,7 @@ export function App() {
 
   const startDemoDevice = async (reason?: string) => {
     if (!native || corpusFixtureEnabled || demoStartInFlight.current || demoActive) return;
+    if (reason === undefined) usbRetryRequested.current = false;
     const attempt = connectionAttempts.begin();
     demoStartInFlight.current = true;
     setDemoPending(true);
@@ -619,6 +650,7 @@ export function App() {
       if (!opened) return;
       const { connection: state, snapshot: current } = opened;
       activeSourceRef.current = "virtual";
+      demoCanYieldToDevice.current = reason !== undefined;
       deviceHistory.clear();
       presetWorkflow.resetCache();
       setConnection(state);
@@ -648,10 +680,12 @@ export function App() {
   };
   startDemoDeviceRef.current = startDemoDevice;
 
-  const resumeHardwareDevice = async () => {
-    if (!native || devicePending || demoPending) return;
-    if (!hardwareConnected) {
-      await attemptUsbConnection(true);
+  const resumeHardwareDevice = async (knownConnected = false) => {
+    if (!native || devicePending || demoPending || resumeHardwareInFlight.current) return;
+    resumeHardwareInFlight.current = true;
+    if (!hardwareConnected && !knownConnected) {
+      try { await attemptUsbConnection(true); }
+      finally { resumeHardwareInFlight.current = false; }
       return;
     }
     const attempt = connectionAttempts.begin();
@@ -661,6 +695,7 @@ export function App() {
       if (!attempt.current()) return;
       demoDeviceSession.useDevice();
       activeSourceRef.current = "device";
+      demoCanYieldToDevice.current = false;
       deviceHistory.clear();
       presetWorkflow.resetCache();
       setSnapshot(current);
@@ -673,8 +708,10 @@ export function App() {
       setNotice(`The Quad Cortex connection was not available; the demo device remains active. ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setDevicePending(false);
+      resumeHardwareInFlight.current = false;
     }
   };
+  resumeHardwareDeviceRef.current = resumeHardwareDevice;
 
   const stopDemoDevice = () => {
     if (devicePending || demoPending) return;
