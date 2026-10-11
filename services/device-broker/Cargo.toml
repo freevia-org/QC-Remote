@@ -12,9 +12,7 @@ qc-owner-only-file = { path = "../../packages/rust/qc-owner-only-file" }
 base64.workspace = true
 prost.workspace = true
 quadcortex = { path = "../../packages/rust/quadcortex" }
-quadcortex-windows = { path = "../../packages/rust/quadcortex-windows" }
-qc-windows-midi = { path = "../../packages/rust/qc-windows-midi" }
-qc-windows-process = { path = "../../packages/rust/qc-windows-process" }
+quadcortex-hid = { path = "../../packages/rust/quadcortex-hid" }
 # The workspace `rand` (root Cargo.toml) stays on the same version as
 # apps/windows/src-tauri/Cargo.toml's, so the shared-broker token/instance-id
 # generation follows the same conceptual recipe as local_access.rs's loopback
@@ -30,6 +28,8 @@ subtle = "2"
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+qc-windows-midi = { path = "../../packages/rust/qc-windows-midi" }
+qc-windows-process = { path = "../../packages/rust/qc-windows-process" }
 # The broker tray and interactive-session check add features of this shared
 # workspace dependency; parent-pid lookup lives in qc-windows-process.
 # The broker's own tray icon (tray/ui.rs, tray/install_stop.rs and the
@@ -46,3 +46,7 @@ windows-sys = { workspace = true, features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+signal-hook = "0.3"

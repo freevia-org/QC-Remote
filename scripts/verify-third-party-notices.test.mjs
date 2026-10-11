@@ -13,6 +13,7 @@ import {
   NPM_HEADING,
   RUST_HEADING,
   SHIPPED_SECTION,
+  SHIPPED_CARGO_ROOTS,
   androidRuntimeLibraries,
   diffDependencies,
   inventoryErrors,
@@ -25,6 +26,14 @@ import {
   sourceOfferErrors,
   sourceOfferRows,
 } from './verify-third-party-notices.mjs';
+
+test('the shipped broker inventory includes both native dependency graphs', () => {
+  assert.deepEqual(
+    SHIPPED_CARGO_ROOTS.filter(({ manifest }) => manifest === 'services/device-broker/Cargo.toml')
+      .map(({ target }) => target).sort(),
+    ['x86_64-pc-windows-msvc', 'x86_64-unknown-linux-gnu'],
+  );
+});
 
 test('license expressions normalize to one SPDX spelling per choice', () => {
   for (const spelling of ['MIT OR Apache-2.0', 'Apache-2.0 OR MIT', 'MIT/Apache-2.0', 'Apache-2.0/MIT', 'Apache-2.0 / MIT']) {

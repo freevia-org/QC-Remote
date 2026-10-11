@@ -155,6 +155,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "basic-udev",
+      "version": "0.1.2",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/xobs/basic-udev",
+      "selectedLicense": "Apache-2.0",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "bit-set",
       "version": "0.8.0",
       "license": "Apache-2.0 OR MIT",
@@ -1840,6 +1851,16 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "nix",
+      "version": "0.30.1",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/nix-rust/nix",
+      "licenseTextHashes": [
+        "b9b039b5058cfe9680025ca12f8591df832666baef9f469ea8ba24e73a7fee60"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "num-conv",
       "version": "0.2.2",
       "license": "MIT OR Apache-2.0",
@@ -2861,6 +2882,28 @@
       "licenseTextHashes": [
         "a759ce38c686a2042f62a0a6b8ea01781e3447726dcb68f4bb8b9f199feff12e",
         "cc5ba5589dfb7bbc1545df0cd433427aac08b1cdf3484161d6785996317b8c3c"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "signal-hook-registry",
+      "version": "1.4.8",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/vorner/signal-hook",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
+        "aaac889d0a4a18753c87911502e36f2e04185d0c8bab33b42895c8bcc2570cfd"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "signal-hook",
+      "version": "0.3.18",
+      "license": "Apache-2.0/MIT",
+      "sourceUrl": "https://github.com/vorner/signal-hook",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
+        "aaac889d0a4a18753c87911502e36f2e04185d0c8bab33b42895c8bcc2570cfd"
       ]
     },
     {
@@ -6927,9 +6970,11 @@
         "Apache License 2.0 (canonical; declared by Maven POM org.jetbrains:annotations@23.0.0, SHA-256 c9490f655132328df2cfbcfdf743f53fc3916d6c1d10437175a6ca6e3a67771c)",
         "Apache License 2.0 (canonical; declared by Maven POM org.jspecify:jspecify@1.0.0, SHA-256 cdab929a3b95211f43d2090c5e2d0dfe8465960e378bc32b35841dab324433a6)",
         "LICENSE-APACHE",
-        "LICENSE-APACHE.md"
+        "LICENSE-APACHE.md",
+        "https://www.apache.org/licenses/LICENSE-2.0.txt (SHA-256 283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b)"
       ],
       "components": [
+        "cargo:basic-udev@0.1.2",
         "cargo:encoding_rs@0.8.35",
         "cargo:lru-slab@0.1.2",
         "cargo:quinn-proto@0.11.17",
@@ -8298,6 +8343,8 @@
         "cargo:serde_with@3.22.0",
         "cargo:serde_with_macros@3.22.0",
         "cargo:servo_arc@0.4.3",
+        "cargo:signal-hook-registry@1.4.8",
+        "cargo:signal-hook@0.3.18",
         "cargo:smallvec@1.15.2",
         "cargo:socket2@0.6.5",
         "cargo:stable_deref_trait@1.2.1",
@@ -8518,6 +8565,16 @@
       ]
     },
     {
+      "sha256": "aaac889d0a4a18753c87911502e36f2e04185d0c8bab33b42895c8bcc2570cfd",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:signal-hook-registry@1.4.8",
+        "cargo:signal-hook@0.3.18"
+      ]
+    },
+    {
       "sha256": "ac9859ce4e9a80a4846ee0b453981427f4fc2ba9ac7d0e568de61ab80a53d86d",
       "names": [
         "LICENSE-MIT.md"
@@ -8682,6 +8739,15 @@
       ],
       "components": [
         "cargo:muda@0.19.3"
+      ]
+    },
+    {
+      "sha256": "b9b039b5058cfe9680025ca12f8591df832666baef9f469ea8ba24e73a7fee60",
+      "names": [
+        "LICENSE"
+      ],
+      "components": [
+        "cargo:nix@0.30.1"
       ]
     },
     {

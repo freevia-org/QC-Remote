@@ -25,7 +25,7 @@ impl Scratch {
                 .unwrap()
                 .as_nanos()
         ));
-        fs::create_dir_all(&directory).unwrap();
+        crate::device_lease::testing::create_directory(&directory).unwrap();
         Self(directory)
     }
     fn descriptor(&self) -> PathBuf {
@@ -786,6 +786,24 @@ fn start_is_idempotent_while_a_broker_serves() {
     test_support::finish(&served.handle);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_control_refuses_a_symlinked_descriptor_without_authenticating() {
+    use std::os::unix::fs::symlink;
+    let live = Scratch::new("linux-live-descriptor");
+    let served = resident(&live);
+    let redirected = Scratch::new("linux-symlink-descriptor");
+    symlink(live.descriptor(), redirected.descriptor()).unwrap();
+    let env = TestEnv::new(&redirected.0).watching(&served);
+    for command in [Command::Release, Command::Connect, Command::Quit] {
+        let outcome = invoke(command, true, &env);
+        assert_eq!(outcome.exit_code, exit::REFUSED, "{}", outcome.report);
+        assert!(!served.exited.load(Ordering::Acquire));
+        assert_eq!(test_support::connection_count(&served.handle), 0);
+    }
+    test_support::finish(&served.handle);
+}
+
 /// `quit --confirm` records the user's Quit with the tray switch off too, and
 /// with no client attached: the record is the broker's own, written before
 /// the shutdown commits, bound to the generation that was quit.
@@ -1121,7 +1139,10 @@ fn only_the_callers_own_directory_is_accepted() {
         "9.9.9",
         &env,
     );
+    #[cfg(windows)]
     assert_eq!(outcome.exit_code, exit::OK, "{}", outcome.report);
+    #[cfg(not(windows))]
+    assert_eq!(outcome.exit_code, exit::REFUSED, "{}", outcome.report);
     struct NoDirectory;
     impl Env for NoDirectory {
         fn own_directory(&self) -> Option<PathBuf> {

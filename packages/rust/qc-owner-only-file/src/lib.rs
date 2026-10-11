@@ -22,15 +22,7 @@ pub use windows::{is_owner_only, write_staged};
 pub fn write_staged(path: &Path, contents: &[u8]) -> Result<(), String> {
     #[cfg(unix)]
     {
-        use std::{io::Write, os::unix::fs::OpenOptionsExt};
-        let _ = fs::remove_file(path);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|e| e.to_string())?;
-        file.write_all(contents).map_err(|e| e.to_string())
+        write_staged_unix(path, contents).map_err(|error| error.to_string())
     }
     #[cfg(not(unix))]
     {
@@ -40,14 +32,82 @@ pub fn write_staged(path: &Path, contents: &[u8]) -> Result<(), String> {
 }
 
 #[cfg(unix)]
+fn write_staged_unix(path: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let result = file.write_all(contents).and_then(|()| file.sync_all());
+    if result.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    result
+}
+
+#[cfg(unix)]
+fn stage_unix(contents: &[u8], mut next_path: impl FnMut() -> PathBuf) -> io::Result<PathBuf> {
+    // A killed publisher may leave a stage with this PID/counter before a
+    // reboot or PID reuse. Skip it without deleting somebody else's bytes.
+    for _ in 0..64 {
+        let temporary = next_path();
+        match write_staged_unix(&temporary, contents) {
+            Ok(()) => return Ok(temporary),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "Could not reserve a fresh credential staging file",
+    ))
+}
+
+#[cfg(unix)]
 pub fn is_owner_only(path: &Path) -> Result<bool, String> {
-    use std::os::unix::fs::PermissionsExt;
-    Ok(fs::metadata(path)
-        .map_err(|e| e.to_string())?
-        .permissions()
-        .mode()
-        & 0o777
-        == 0o600)
+    let file = open_unix_document(path).map_err(|error| error.to_string())?;
+    unix_owner_only(&file).map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+fn open_unix_document(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // NONBLOCK ensures a malicious FIFO cannot hang before we inspect type.
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(unix)]
+fn unix_owner_only(file: &File) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    // SAFETY: geteuid has no arguments or preconditions.
+    let uid = unsafe { libc::geteuid() };
+    Ok(metadata.is_file()
+        && metadata.uid() == uid
+        && metadata.mode() & 0o777 == 0o600
+        && metadata.nlink() == 1)
+}
+
+/// Read precisely the owner-only regular file whose metadata was verified,
+/// never a symlink or a replacement opened after the permission check.
+#[cfg(unix)]
+pub fn read_owner_only(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut file = open_unix_document(path)?;
+    if !unix_owner_only(&file)? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Credential file is not a current-user, owner-only regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// Stage a complete owner-only document beside its destination, then replace
@@ -57,14 +117,23 @@ pub fn publish_atomically(path: &Path, contents: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or("Published file has no parent directory")?;
-    let temporary = parent.join(format!(
-        ".{}.{}.{}.tmp",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("document"),
-        std::process::id(),
-        NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
-    ));
+    let next_path = || {
+        parent.join(format!(
+            ".{}.{}.{}.tmp",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("document"),
+            std::process::id(),
+            NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
+        ))
+    };
+    // Unix staging removes only a file it created. An existing name may
+    // belong to an older process generation and is never ours to delete.
+    #[cfg(unix)]
+    let temporary = stage_unix(contents, next_path).map_err(|error| error.to_string())?;
+    #[cfg(not(unix))]
+    let temporary = next_path();
+    #[cfg(not(unix))]
     if let Err(error) = write_staged(&temporary, contents) {
         let _ = fs::remove_file(&temporary);
         return Err(error);
@@ -92,6 +161,13 @@ pub fn claim_path(path: &Path) -> PathBuf {
 fn claim_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     options.read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -125,7 +201,16 @@ impl ClaimedFile {
         ensure_current_claim(&claim, &lock_path)?;
         // Retain create_new on the document too: a broker from before the
         // sidecar protocol still owns this name and must never be overwritten.
-        if let Err(error) = OpenOptions::new().write(true).create_new(true).open(path) {
+        let mut document_options = OpenOptions::new();
+        document_options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            document_options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        if let Err(error) = document_options.open(path) {
             let _ = remove_claim(claim, &lock_path);
             return Err(error);
         }
@@ -139,12 +224,24 @@ impl ClaimedFile {
         if self.claim.is_none() {
             return Err("The publication claim has been released".into());
         }
+        #[cfg(unix)]
+        ensure_current_claim(
+            self.claim.as_ref().expect("claim checked"),
+            &claim_path(&self.path),
+        )
+        .map_err(|error| error.to_string())?;
         publish_atomically(&self.path, contents)
     }
 
     /// Remove the document before atomically deleting the held claim. On
     /// Windows deletion is by handle, so no path race can delete a successor.
     pub fn release(mut self) -> io::Result<()> {
+        #[cfg(unix)]
+        if let Some(claim) = self.claim.as_ref() {
+            // Unix permits unlinking an open claim. An old holder whose name
+            // was removed must not publish over or remove a successor.
+            ensure_current_claim(claim, &claim_path(&self.path))?;
+        }
         remove_document(&self.path)?;
         if let Some(claim) = self.claim.take() {
             remove_claim(claim, &claim_path(&self.path))?;
@@ -199,7 +296,13 @@ fn remove_claim(claim: File, path: &Path) -> io::Result<()> {
 fn ensure_current_claim(claim: &File, path: &Path) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let held = claim.metadata()?;
-    let current = fs::metadata(path)?;
+    let current = fs::symlink_metadata(path)?;
+    if !unix_owner_only(claim)? || !current.is_file() || current.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Unsafe publication claim",
+        ));
+    }
     if (held.dev(), held.ino()) != (current.dev(), current.ino()) {
         return Err(io::Error::other("Publication claim has been replaced"));
     }
@@ -249,6 +352,111 @@ mod tests {
         ));
         fs::create_dir_all(&directory).unwrap();
         directory.join("device-broker.json")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_claim_and_placeholder_are_private_before_first_write() {
+        let path = scratch("private-before-write");
+        let claim = ClaimedFile::try_claim(&path).unwrap();
+        assert!(is_owner_only(&path).unwrap());
+        assert!(is_owner_only(&claim_path(&path)).unwrap());
+        claim.release().unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_credentials_refuse_symlinks_hardlinks_and_public_modes() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let path = scratch("untrusted-files");
+        write_staged(&path, b"secret").unwrap();
+        let link = path.with_extension("link");
+        symlink(&path, &link).unwrap();
+        assert!(read_owner_only(&link).is_err());
+        assert!(write_staged(&link, b"replacement").is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"secret");
+        fs::remove_file(&link).unwrap();
+        fs::hard_link(&path, &link).unwrap();
+        assert!(!is_owner_only(&path).unwrap());
+        fs::remove_file(&link).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!is_owner_only(&path).unwrap());
+        assert!(read_owner_only(&path).is_err());
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_atomic_publish_cleans_only_its_stage() {
+        let path = scratch("failed-publish");
+        fs::create_dir(&path).unwrap();
+        assert!(publish_atomically(&path, b"secret").is_err());
+        let entries: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(path.is_dir());
+        fs::remove_dir(&path).unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_preexisting_stage_is_preserved_and_the_next_name_is_published() {
+        let path = scratch("stale-stage");
+        let stale = path.with_extension("0.tmp");
+        let fresh = path.with_extension("1.tmp");
+        fs::write(&stale, b"older process's bytes").unwrap();
+        let mut names = [stale.clone(), fresh.clone()].into_iter();
+        let staged = stage_unix(b"new credential", || {
+            names.next().expect("second name is free")
+        })
+        .unwrap();
+        fs::rename(staged, &path).unwrap();
+        assert_eq!(fs::read(&stale).unwrap(), b"older process's bytes");
+        assert_eq!(read_owner_only(&path).unwrap(), b"new credential");
+        assert!(!fresh.exists());
+        fs::remove_file(&stale).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_inode_cannot_remove_a_successor_claim() {
+        let path = scratch("successor-inode");
+        let first = ClaimedFile::try_claim(&path).unwrap();
+        let old = claim_options().open(claim_path(&path)).unwrap();
+        first.release().unwrap();
+        let mut next = ClaimedFile::try_claim(&path).unwrap();
+        next.write(b"successor").unwrap();
+        assert!(ensure_current_claim(&old, &claim_path(&path)).is_err());
+        assert!(remove_claim(old, &claim_path(&path)).is_err());
+        assert_eq!(read_owner_only(&path).unwrap(), b"successor");
+        next.release().unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replaced_claim_prevents_old_holder_from_writing_or_releasing_successor() {
+        let path = scratch("replaced-live-claim");
+        let mut first = ClaimedFile::try_claim(&path).unwrap();
+        first.write(b"predecessor").unwrap();
+        // Model an external unlink, which Unix permits even for a held file.
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(claim_path(&path)).unwrap();
+        let mut next = ClaimedFile::try_claim(&path).unwrap();
+        next.write(b"successor").unwrap();
+        assert!(first.write(b"old refresh").is_err());
+        assert!(first.release().is_err());
+        assert_eq!(read_owner_only(&path).unwrap(), b"successor");
+        assert!(release_if_unclaimed(&path).is_err());
+        next.release().unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
     }
 
     #[test]

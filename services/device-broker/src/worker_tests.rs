@@ -32,7 +32,7 @@ fn wait_for_status(
 fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
     use crate::device_lease::testing::{write_record, Sleeper};
     let dir = std::env::temp_dir().join(format!("qc-contested-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&dir);
+    crate::device_lease::testing::create_directory(&dir).unwrap();
     let path = dir.join("device-owner.json");
     let mut owner = Sleeper::start();
     write_record(&path, &owner.record());
@@ -914,7 +914,7 @@ fn a_stalled_state_subscriber_is_held_to_the_journal_budget_and_counted() {
 #[test]
 fn latest_cache_refusals_are_reported_by_size() {
     let mut latest = HashMap::new();
-    let capacity = quadcortex_windows::LATEST_MESSAGE_CACHE_MAX_ENTRIES as u16;
+    let capacity = quadcortex_hid::LATEST_MESSAGE_CACHE_MAX_ENTRIES as u16;
     assert!(capacity > 0, "the latest-message cache must accept entries");
     for message_type in 0..capacity {
         let mut message = raw_frame(1, 1);
@@ -3446,7 +3446,7 @@ fn a_new_connection_epoch_clears_all_prior_transport_telemetry() {
         handshake_ms: Some(456),
         messages_received: 98,
         messages_sent: 76,
-        write_delivery: quadcortex_windows::WriteDeliveryCounts {
+        write_delivery: quadcortex_hid::WriteDeliveryCounts {
             admitted: 80,
             started: 77,
             completed: 76,
@@ -3574,7 +3574,7 @@ fn controller_searching_for_an_absent_qc(
 ) -> (DeviceController, std::path::PathBuf, String) {
     let dir = std::env::temp_dir().join(format!("qc-absent-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
+    crate::device_lease::testing::create_directory(&dir).unwrap();
     let path = dir.join("device-owner.json");
     let controller = DeviceController::start_for_device_with_lease(
         Some("no-such-device".into()),

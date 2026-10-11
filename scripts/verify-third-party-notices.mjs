@@ -15,12 +15,9 @@
 //
 // Shipped and development tooling are told apart the same way the inventory
 // generator tells them apart:
-//   - Rust: the crates reachable over normal and build edges from the three
-//     artefacts that ship - the Windows app (apps/windows/src-tauri), the
-//     device broker (services/device-broker), both for x86_64-pc-windows-msvc,
-//     and the Android library (packages/rust/quadcortex-android) for
-//     aarch64-linux-android. Dev-dependencies and other platforms' crates do
-//     not ship.
+//   - Rust: crates reachable over normal and build edges from the Windows app,
+//     Windows and Linux broker, and Android library, each resolved for its
+//     native target. Dev-dependencies and other platforms' crates do not ship.
 //   - npm: the packages reachable over `dependencies`, `optionalDependencies`
 //     and `peerDependencies` from the two app workspaces (apps/windows,
 //     apps/android). Build tools such as vite, typescript, wrangler or sharp are
@@ -65,6 +62,7 @@ export const SOURCE_OFFER = 'legal/THIRD_PARTY-SOURCE-OFFER.md';
 export const SHIPPED_CARGO_ROOTS = [
   { manifest: 'apps/windows/src-tauri/Cargo.toml', target: 'x86_64-pc-windows-msvc' },
   { manifest: 'services/device-broker/Cargo.toml', target: 'x86_64-pc-windows-msvc' },
+  { manifest: 'services/device-broker/Cargo.toml', target: 'x86_64-unknown-linux-gnu' },
   { manifest: 'packages/rust/quadcortex-android/Cargo.toml', target: 'aarch64-linux-android' },
 ];
 export const SHIPPED_NPM_ROOTS = ['apps/windows', 'apps/android'];

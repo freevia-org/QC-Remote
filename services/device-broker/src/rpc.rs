@@ -1,9 +1,9 @@
 use crate::generated_broker_surface::{BrokerDescriptor, BrokerReleaseMarker, ConnectionRole};
+use crate::platform::midi::{PerformanceMidi, PerformanceMidiReceipt};
 use crate::tray_settings::IdlePolicy;
 use crate::worker::{BrokerStatus, DeviceController, PresetCatalogUnpublished, ReconnectOutcome};
 use crate::write_quarantine::{self, WriteQuarantine};
 use base64::Engine as _;
-use qc_windows_midi::{PerformanceMidi, PerformanceMidiReceipt};
 use quadcortex::device::owner::DEVICE_SUSPENDED_MARKER;
 use quadcortex::device::{
     generated_gateway,
@@ -688,7 +688,7 @@ fn suspension_refusal(
 
 fn requested_device_is_present(
     selected_device_id: Option<&str>,
-    devices: &[quadcortex_windows::usb::QcUsbDevice],
+    devices: &[quadcortex_hid::usb::QcUsbDevice],
 ) -> bool {
     devices
         .iter()
@@ -703,7 +703,7 @@ fn await_ready_status(controller: &DeviceController) -> BrokerStatus {
     // stream will announce a device plugged in later.
     let selected_device_id = controller.device_id();
     if controller.status().phase == "searching" {
-        if let Ok(devices) = quadcortex_windows::usb::connected_devices() {
+        if let Ok(devices) = quadcortex_hid::usb::connected_devices() {
             let selected_is_present =
                 requested_device_is_present(selected_device_id.as_deref(), &devices);
             if !selected_is_present {
@@ -2725,10 +2725,10 @@ fn required_text(params: &Value, field: &str) -> Result<String, String> {
 // many clients are attached at once, so several hosts on the same machine
 // can share one USB owner instead of racing each other for the device.
 
-/// This process's creation time as the raw `FILETIME` value; see
+/// This process's native creation identity (Windows FILETIME, Linux boot/start hash); see
 /// `BrokerDescriptor::process_created_at`.
 fn own_process_created_at() -> Option<u64> {
-    qc_windows_process::os_process_created_at(std::process::id())
+    crate::platform::process::os_process_created_at(std::process::id())
 }
 
 /// Mirrors `DEVICE_BROKER_DESCRIPTOR_REFRESH_INTERVAL` in
@@ -3093,6 +3093,22 @@ fn write_descriptor(
     file.write(&json)
 }
 
+/// A Linux startup failure must remove only its own publication. The refresh
+/// worker observes the empty slot and stops; a replacement can elect safely.
+#[cfg(target_os = "linux")]
+struct PublicationCleanup(Arc<Mutex<Option<qc_owner_only_file::ClaimedFile>>>);
+
+#[cfg(target_os = "linux")]
+impl Drop for PublicationCleanup {
+    fn drop(&mut self) {
+        if let Some(claim) = self.0.lock_recover().take() {
+            if let Err(error) = claim.release() {
+                eprintln!("Could not clean up broker publication: {error}");
+            }
+        }
+    }
+}
+
 /// Requires the first frame a TCP client sends to be a `broker.authenticate`
 /// request carrying the correct bearer token.
 ///
@@ -3364,7 +3380,7 @@ fn dispatch_broker_client_request(
         // Read the caller's selection (`clients`) before taking `devices`:
         // never hold `devices` while acquiring `clients` (see BrokerShared).
         let selected_device_id = shared.controller_for(connection_id).device_id();
-        return match quadcortex_windows::usb::connected_devices() {
+        return match quadcortex_hid::usb::connected_devices() {
             Ok(devices) => {
                 let owners = shared.devices.lock_recover();
                 let rows: Vec<_> = devices.into_iter().map(|device| {
@@ -4747,7 +4763,7 @@ impl BrokerShared {
 
     fn select_device(&self, connection_id: u64, id: &str) -> Result<(), String> {
         let present =
-            quadcortex_windows::usb::connected_devices().map_err(|error| error.to_string())?;
+            quadcortex_hid::usb::connected_devices().map_err(|error| error.to_string())?;
         if !present.iter().any(|device| device.id == id) {
             return Err("The selected Quad Cortex is no longer available".into());
         }
@@ -5589,6 +5605,22 @@ impl BrokerShared {
 pub struct BrokerHandle(Arc<BrokerShared>);
 
 impl BrokerHandle {
+    /// SIGTERM/SIGINT are process lifecycle requests, not a recorded user Quit.
+    /// Commit shutdown before stopping workers so no concurrent client can
+    /// reopen USB. Reuse the shared bounded notification and teardown path.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn shutdown_from_os(&self) {
+        {
+            let mut clients = self.0.clients.lock_recover();
+            if clients.shutting_down {
+                return;
+            }
+            clients.shutting_down = true;
+        }
+        self.0.observer_changed.notify_all();
+        self.0.notify_shutdown(u64::MAX, true);
+        self.0.finish_shutdown();
+    }
     /// The directory the descriptor, the tray settings and the host status
     /// file share.
     pub fn directory(&self) -> PathBuf {
@@ -5937,8 +5969,11 @@ fn serve_broker_tcp_full(
     // owns a `--resident` start's election lock) is dropped and that lock
     // released before the caller exits 1. `process::exit` runs no
     // destructors: it left the lock for the app to wait out as stale.
-    let mut descriptor_file = try_claim_descriptor_slot(&descriptor_path)
+    let descriptor_file = try_claim_descriptor_slot(&descriptor_path)
         .map_err(|()| descriptor_claim_refusal(&descriptor_path))?;
+    let descriptor_claim = Arc::new(Mutex::new(Some(descriptor_file)));
+    #[cfg(target_os = "linux")]
+    let _publication_cleanup = PublicationCleanup(Arc::clone(&descriptor_claim));
 
     // The empty registry is ready before publication; native endpoints are
     // created only by admitted per-device worker jobs.
@@ -5953,10 +5988,11 @@ fn serve_broker_tcp_full(
         published_at_unix_ms: unix_time_ms(),
         gateway_api_version: generated_gateway::API_VERSION,
     };
-    write_descriptor(&mut descriptor_file, &descriptor)
-        .map_err(|error| format!("Could not publish the device broker descriptor: {error}"))?;
-
-    let descriptor_claim = Arc::new(Mutex::new(Some(descriptor_file)));
+    {
+        let mut claim = descriptor_claim.lock_recover();
+        write_descriptor(claim.as_mut().expect("claimed descriptor"), &descriptor)
+            .map_err(|error| format!("Could not publish the device broker descriptor: {error}"))?;
+    }
     let refresh_claim = Arc::clone(&descriptor_claim);
     thread::Builder::new()
         .name("qc-broker-descriptor-refresh".into())
@@ -6407,7 +6443,7 @@ mod tcp_tests {
             std::process::id(),
             generate_token(8)
         ));
-        std::fs::create_dir_all(&dir).expect("scratch dir");
+        crate::device_lease::testing::create_directory(&dir).expect("scratch dir");
         let path = dir.join("device-broker.json");
         let _ = std::fs::remove_file(&path);
         path
@@ -8836,7 +8872,7 @@ mod tcp_tests {
     #[test]
     #[ignore = "manual attached-device MIDI identity check; never sends MIDI or USB commands"]
     fn attached_hid_has_an_unambiguous_matching_midi_output() {
-        let devices = quadcortex_windows::usb::connected_devices().expect("enumerate HID");
+        let devices = quadcortex_hid::usb::connected_devices().expect("enumerate HID");
         assert!(
             !devices.is_empty(),
             "a physical Quad Cortex must be attached"

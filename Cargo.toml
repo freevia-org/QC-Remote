@@ -19,6 +19,7 @@ members = [
     "packages/rust/qc-windows-process",
     "packages/rust/quadcortex-android",
     "packages/rust/quadcortex-windows",
+    "packages/rust/quadcortex-hid",
     "services/device-broker",
     "services/rust-mcp",
 ]
@@ -39,6 +40,7 @@ exclude = ["apps/windows/src-tauri"]
 [workspace.dependencies]
 async-trait = "0.1"
 base64 = "0.22"
+libc = "0.2"
 prost = "0.14"
 prost-build = "0.14"
 rand = "0.9"

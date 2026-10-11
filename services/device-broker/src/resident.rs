@@ -357,6 +357,7 @@ impl Drop for ElectionGuard {
 
 /// Mirrors `DEVICE_BROKER_ELECTION_LOCK_STALE_AFTER` in
 /// apps/windows/src-tauri/src/lib.rs.
+#[cfg(any(not(target_os = "linux"), test))]
 const ELECTION_LOCK_STALE_AFTER: Duration = Duration::from_secs(15);
 
 pub fn election_path(descriptor: &Path) -> PathBuf {
@@ -367,6 +368,18 @@ pub fn election_path(descriptor: &Path) -> PathBuf {
 /// spawns a broker, so a logon start can never put a second broker on the
 /// device or delete a live broker's descriptor. Never touches USB.
 pub fn elect(descriptor: &Path, budget: Duration) -> Result<Election, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let directory = descriptor
+            .parent()
+            .ok_or("Broker descriptor has no directory")?;
+        crate::platform::paths::prepare_directory(directory)?;
+        match qc_owner_only_file::read_owner_only(descriptor) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Refusing an unsafe broker descriptor: {error}")),
+        }
+    }
     elect_with(descriptor, budget, &os_liveness)
 }
 
@@ -426,20 +439,28 @@ fn elect_with(
                 // only under the sidecar's lock, so a live holder refuses and
                 // keeps both. A sidecar whose lock is already gone (what that
                 // older cleanup left behind) is aged by the sidecar itself.
-                let age = |path: &Path| {
-                    std::fs::metadata(path)
-                        .and_then(|metadata| metadata.modified())
-                        .ok()
-                        .and_then(|modified| modified.elapsed().ok())
-                };
-                let abandoned = match age(&election) {
-                    Some(age) => age > ELECTION_LOCK_STALE_AFTER,
-                    None => {
-                        !election.exists()
-                            && age(&qc_owner_only_file::claim_path(&election))
-                                .is_some_and(|age| age > ELECTION_LOCK_STALE_AFTER)
+                #[cfg(target_os = "linux")]
+                let abandoned = true;
+                #[cfg(not(target_os = "linux"))]
+                let abandoned = {
+                    let age = |path: &Path| {
+                        std::fs::metadata(path)
+                            .and_then(|metadata| metadata.modified())
+                            .ok()
+                            .and_then(|modified| modified.elapsed().ok())
+                    };
+                    match age(&election) {
+                        Some(age) => age > ELECTION_LOCK_STALE_AFTER,
+                        None => {
+                            !election.exists()
+                                && age(&qc_owner_only_file::claim_path(&election))
+                                    .is_some_and(|age| age > ELECTION_LOCK_STALE_AFTER)
+                        }
                     }
                 };
+                // Linux relies on the OS lock and inode identity alone. A
+                // process killed before publication must not keep the slot
+                // for 15 seconds while the next launch's budget expires.
                 if abandoned {
                     match qc_owner_only_file::release_if_unclaimed(&election) {
                         Ok(()) => continue,
@@ -466,9 +487,27 @@ fn elect_with(
 }
 
 fn os_liveness(pid: u32, created_at: Option<u64>) -> bool {
-    qc_windows_process::os_process_is_alive(pid)
-        && created_at
-            .is_none_or(|created| qc_windows_process::os_process_created_at(pid) == Some(created))
+    #[cfg(target_os = "linux")]
+    {
+        if !crate::platform::process::os_process_is_alive(pid) {
+            return false;
+        }
+        // An unreadable identity is unknown, never authority to reap an owner.
+        match (
+            created_at,
+            crate::platform::process::os_process_created_at(pid),
+        ) {
+            (Some(recorded), Some(current)) => recorded == current,
+            _ => true,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        crate::platform::process::os_process_is_alive(pid)
+            && created_at.is_none_or(|created| {
+                crate::platform::process::os_process_created_at(pid) == Some(created)
+            })
+    }
 }
 
 #[derive(Deserialize)]
@@ -732,6 +771,24 @@ mod tests {
         drop(guard);
         assert!(!election.exists() && !qc_owner_only_file::claim_path(&election).exists());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_recovers_a_fresh_abandoned_election_without_waiting_for_age() {
+        let directory = scratch("linux-fresh-crash");
+        let descriptor = directory.join(DESCRIPTOR_FILE);
+        let election = election_path(&descriptor);
+        drop(qc_owner_only_file::ClaimedFile::try_claim(&election).unwrap());
+        let Election::Serve(guard) =
+            elect_with(&descriptor, Duration::from_millis(500), &|_, _| false).unwrap()
+        else {
+            panic!("a freshly abandoned OS lock must not consume the restart budget");
+        };
+        drop(guard);
+        assert!(!election.exists());
+        assert!(!qc_owner_only_file::claim_path(&election).exists());
+        std::fs::remove_dir(directory).unwrap();
     }
 
     /// A held election lock is never cleared, however old its file.

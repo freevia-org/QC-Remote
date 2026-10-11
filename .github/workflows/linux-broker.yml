@@ -1,0 +1,41 @@
+name: Linux device broker
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-broker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-linux:
+    name: Headless broker on native Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: linux-broker
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Build the standalone Linux broker
+        run: cargo build --locked -p qc-device-broker --bin qc-device-broker
+      # These real subprocess tests start disconnected; authentication/status,
+      # election, filesystem modes, crash recovery and shutdown need no QC.
+      # --probe, --verify-live and --auto-connect are deliberately absent.
+      - name: Test shared engines and Linux native boundaries
+        run: cargo test --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-device-broker
+      - name: Lint Linux broker and adapters
+        run: cargo clippy --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-device-broker --all-targets -- -D warnings
+      - name: Check non-hardware executable entry point
+        run: ./target/debug/qc-device-broker --self-check

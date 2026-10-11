@@ -28,7 +28,7 @@ use crate::rpc::BrokerHandle;
 use crate::tray;
 use crate::worker::DeviceController;
 use quadcortex::sync::RecoverPoison;
-use quadcortex_windows as usb;
+use quadcortex_hid as usb;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -52,8 +52,10 @@ pub struct Binary {
 /// The host is stopped before exit, after clients were told; never longer.
 const EXIT_HOST_STOP: Duration = Duration::from_secs(2);
 /// An installer's request stops the host first, bounded.
+#[cfg(any(windows, test))]
 const INSTALL_HOST_STOP: Duration = Duration::from_secs(3);
 /// After the host stopped, its connection may still be closing.
+#[cfg(any(windows, test))]
 const INSTALL_RELEASE_WAIT: Duration = Duration::from_secs(1);
 /// Mirrors `DEVICE_BROKER_ELECTION_TIMEOUT` in the app.
 const RESIDENT_ELECTION_BUDGET: Duration = Duration::from_secs(10);
@@ -312,16 +314,35 @@ pub fn main(binary: Binary) {
                 .find(|pair| pair[0] == "--descriptor-path")
                 .map(|pair| PathBuf::from(&pair[1]))
                 .unwrap_or_else(|| fail("--broker-serve requires --descriptor-path <path>"));
+            #[cfg(target_os = "linux")]
+            let election = {
+                let directory = descriptor_path.parent().unwrap_or_else(|| {
+                    fail("The broker descriptor needs an absolute parent directory")
+                });
+                crate::platform::paths::prepare_directory(directory)
+                    .unwrap_or_else(|error| fail(error));
+                match resident::elect(&descriptor_path, RESIDENT_ELECTION_BUDGET)
+                    .unwrap_or_else(|error| fail(error))
+                {
+                    Election::AlreadyServed => return,
+                    Election::Serve(guard) => Some(guard),
+                }
+            };
+            #[cfg(not(target_os = "linux"))]
+            let election = None;
             serve(
                 &args,
                 descriptor_path,
                 args.iter().any(|argument| argument == "--auto-connect"),
                 binary.host,
-                None,
+                election,
                 false,
             )
         }
         Mode::Stdio => {
+            #[cfg(target_os = "linux")]
+            let signals =
+                crate::platform::shutdown::Pending::new().unwrap_or_else(|error| fail(error));
             // A first broker starts idle so it cannot race its client's explicit
             // reconnect. A replacement spawned after a transport failure is the
             // opposite case: its client already had a session and has no step that
@@ -337,6 +358,21 @@ pub fn main(binary: Binary) {
                 DeviceController::start_disconnected()
             }
             .unwrap_or_else(|error| fail(error));
+            #[cfg(target_os = "linux")]
+            let _signal_watch = {
+                let shutdown = controller.shutdown_handle();
+                signals
+                    .watch(move || {
+                        let _ = shutdown.stop_and_join(crate::worker::WORKER_EXIT_BUDGET);
+                        std::process::exit(0);
+                    })
+                    .unwrap_or_else(|error| {
+                        let _ = controller
+                            .shutdown_handle()
+                            .stop_and_join(crate::worker::WORKER_EXIT_BUDGET);
+                        fail(error)
+                    })
+            };
             if let Err(error) = crate::rpc::serve_stdio(controller, phase_events) {
                 fail(error);
             }
@@ -480,6 +516,16 @@ fn serve(
     // Opt-in, so every other client of this stream keeps receiving only the
     // frames it already knows how to handle.
     let phase_events = args.iter().any(|argument| argument == "--phase-events");
+    #[cfg(target_os = "linux")]
+    let signals = match crate::platform::shutdown::Pending::new() {
+        Ok(signals) => signals,
+        Err(error) => {
+            drop(election);
+            fail(error)
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let mut signal_watch = None;
     // Always start disconnected here, regardless of `--auto-connect`: the
     // real USB handshake can take upwards of ten seconds against real
     // hardware, and this branch's job is to bind the TCP listener, claim the
@@ -489,15 +535,25 @@ fn serve(
     // or absent device can never delay publication past
     // `DEVICE_BROKER_PUBLISH_TIMEOUT` in the Windows host. A `--resident`
     // start never auto-connects at all: it has no client.
-    let controller = DeviceController::start_disconnected().unwrap_or_else(|error| fail(error));
+    let controller = match DeviceController::start_disconnected() {
+        Ok(controller) => controller,
+        Err(error) => {
+            drop(election);
+            fail(error)
+        }
+    };
     // The icon belongs to this process: it appears once this broker has won
     // the descriptor election and goes when it exits. Only an interactive
     // desktop gets one; `--stdio` and every probe never do. Without an icon
     // thread there is no residence, so no host either.
     let tray_allowed = tray_allowed(args);
     let supervisor: Arc<OnceLock<Arc<Supervisor>>> = Arc::new(OnceLock::new());
+    #[cfg(target_os = "linux")]
+    let exit_status = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let on_exit = {
         let supervisor = Arc::clone(&supervisor);
+        #[cfg(target_os = "linux")]
+        let exit_status = Arc::clone(&exit_status);
         Arc::new(move || {
             // Clients were already sent `broker.shuttingDown` and the device
             // was released; stop the host, bounded, then go.
@@ -505,15 +561,34 @@ fn serve(
                 supervisor.stop_for_exit(EXIT_HOST_STOP);
             }
             tray::remove_icon_now();
+            #[cfg(target_os = "linux")]
+            std::process::exit(exit_status.load(std::sync::atomic::Ordering::Acquire));
+            #[cfg(not(target_os = "linux"))]
             std::process::exit(0)
         })
     };
     let published = {
         let supervisor = Arc::clone(&supervisor);
+        #[cfg(target_os = "linux")]
+        let signal_watch_slot = &mut signal_watch;
         move |handle: BrokerHandle| {
             // Published: a peer's election now attaches to this broker.
             drop(election);
             note_publication(&handle, started_for_residence);
+            #[cfg(target_os = "linux")]
+            {
+                let shutdown = handle.clone();
+                *signal_watch_slot = Some(
+                    signals
+                        .watch(move || shutdown.shutdown_from_os())
+                        .unwrap_or_else(|error| {
+                            eprintln!("{error}");
+                            exit_status.store(1, std::sync::atomic::Ordering::Release);
+                            handle.shutdown_from_os();
+                            fail(error)
+                        }),
+                );
+            }
             #[cfg(windows)]
             {
                 let installer = handle.clone();
@@ -571,6 +646,7 @@ fn note_publication(handle: &BrokerHandle, started_for_residence: bool) {
 /// the broker; any other participant still refuses, exactly as before. Every
 /// wait is bounded, so a wedged host costs at most `INSTALL_HOST_STOP` and the
 /// installer then reports the broker in use rather than hanging.
+#[cfg(any(windows, test))]
 fn install_release(handle: &BrokerHandle, supervisor: Option<&Supervisor>) {
     install_release_with(
         || handle.participants_other_than_host(),
@@ -580,11 +656,13 @@ fn install_release(handle: &BrokerHandle, supervisor: Option<&Supervisor>) {
 }
 
 /// What an installer stop needs of the host supervisor.
+#[cfg(any(windows, test))]
 trait HostPause {
     fn pause(&self, within: Duration) -> bool;
     fn resume(&self);
 }
 
+#[cfg(any(windows, test))]
 impl HostPause for Supervisor {
     fn pause(&self, within: Duration) -> bool {
         Supervisor::pause(self, within)
@@ -598,6 +676,7 @@ impl HostPause for Supervisor {
 /// so a refused install (the helper repeats every 500 ms for 5 s) never drops
 /// the host's AI sessions. Only with nobody but the host attached is the host
 /// paused, and then the release is retried while its connection closes.
+#[cfg(any(windows, test))]
 fn install_release_with(
     others_attached: impl Fn() -> usize,
     release: impl Fn() -> bool,
