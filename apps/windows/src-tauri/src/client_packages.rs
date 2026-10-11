@@ -1,10 +1,11 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "windows")]
+use std::ffi::c_void;
 use std::{
     cell::Cell,
     cmp::Ordering,
     collections::BTreeMap,
-    ffi::c_void,
     fs,
     io::Cursor,
     io::Write,
@@ -24,6 +25,8 @@ use crate::local_stdio::CLIENT_ID_ARGUMENT;
 mod device_knowledge_skill;
 use device_knowledge_skill::*;
 
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
@@ -739,8 +742,31 @@ fn where_command(executable_name: &str) -> Vec<PathBuf> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn where_command(_executable_name: &str) -> Vec<PathBuf> {
-    Vec::new()
+fn where_command(executable_name: &str) -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(path) = std::env::var_os("PATH") else {
+            return Vec::new();
+        };
+        return where_command_in(executable_name, &path);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = executable_name;
+        Vec::new()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn where_command_in(executable_name: &str, search_path: &std::ffi::OsStr) -> Vec<PathBuf> {
+    std::env::split_paths(search_path)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(executable_name))
+        .filter(|candidate| {
+            fs::metadata(candidate)
+                .is_ok_and(|metadata| metadata.is_file() && metadata.mode() & 0o111 != 0)
+        })
+        .collect()
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1806,7 +1832,20 @@ fn chatgpt_package_registered() -> bool {
 }
 
 fn chatgpt_desktop_installed() -> bool {
-    chatgpt_desktop_installation().is_some() || chatgpt_package_registered()
+    chatgpt_desktop_installation().is_some()
+        || chatgpt_package_registered()
+        || codex_cli_executable().is_some()
+}
+
+fn codex_cli_executable() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        where_command("codex").into_iter().next()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 fn antigravity_installation() -> Option<DesktopInstallation> {
@@ -1818,7 +1857,17 @@ fn lm_studio_installation() -> Option<DesktopInstallation> {
 }
 
 fn jan_installation() -> Option<DesktopInstallation> {
-    resolve_desktop_app(&JAN_SEARCH)
+    #[cfg(target_os = "linux")]
+    {
+        // Jan's Linux distribution is sandboxed. Detecting its Flatpak ref
+        // does not prove it can launch this host executable over stdio or read
+        // host-managed configuration, so Linux pairing remains unavailable.
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        resolve_desktop_app(&JAN_SEARCH)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2189,27 +2238,68 @@ async fn antigravity_runtime_connected() -> bool {
         .unwrap_or(false)
 }
 
+fn user_home_directory() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let variable = "USERPROFILE";
+    #[cfg(not(target_os = "windows"))]
+    let variable = "HOME";
+    std::env::var_os(variable)
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+}
+
+#[cfg(target_os = "linux")]
+fn xdg_directory_from(value: Option<&Path>, home: &Path, fallback: &str) -> PathBuf {
+    value
+        .filter(|path| path.is_absolute())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.join(fallback))
+}
+
+#[cfg(target_os = "linux")]
+fn xdg_config_home() -> Option<PathBuf> {
+    let home = user_home_directory()?;
+    Some(xdg_directory_from(
+        std::env::var_os("XDG_CONFIG_HOME")
+            .as_deref()
+            .map(Path::new),
+        &home,
+        ".config",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn xdg_data_home() -> Option<PathBuf> {
+    let home = user_home_directory()?;
+    Some(xdg_directory_from(
+        std::env::var_os("XDG_DATA_HOME").as_deref().map(Path::new),
+        &home,
+        ".local/share",
+    ))
+}
+
+fn codex_config_path_in(home: &Path, codex_home: Option<&Path>) -> PathBuf {
+    let default_codex_home = home.join(".codex");
+    let codex_directory = codex_home
+        .filter(|path| path.is_absolute())
+        .unwrap_or(&default_codex_home);
+    codex_directory.join("config.toml")
+}
+
 fn codex_config_path() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .map(|home| PathBuf::from(home).join(".codex").join("config.toml"))
+    let home = user_home_directory()?;
+    Some(codex_config_path_in(
+        &home,
+        std::env::var_os("CODEX_HOME").as_deref().map(Path::new),
+    ))
 }
 
 fn antigravity_config_path() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").map(|home| {
-        PathBuf::from(home)
-            .join(".gemini")
-            .join("config")
-            .join("mcp_config.json")
-    })
+    user_home_directory().map(|home| home.join(".gemini").join("config").join("mcp_config.json"))
 }
 
 fn antigravity_settings_path() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").map(|home| {
-        PathBuf::from(home)
-            .join(".gemini")
-            .join("config")
-            .join("config.json")
-    })
+    user_home_directory().map(|home| home.join(".gemini").join("config").join("config.json"))
 }
 
 /// Where a **pre-rename** LM Studio keeps its MCP servers.
@@ -2217,8 +2307,7 @@ fn antigravity_settings_path() -> Option<PathBuf> {
 /// Still the right file for a 0.3.x install, and no longer the right file for
 /// anything else: Bionic does not read it.
 fn lm_studio_config_path() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .map(|home| PathBuf::from(home).join(".lmstudio").join("mcp.json"))
+    user_home_directory().map(|home| home.join(".lmstudio").join("mcp.json"))
 }
 
 /// Where **Bionic** keeps its MCP servers.
@@ -2226,9 +2315,8 @@ fn lm_studio_config_path() -> Option<PathBuf> {
 /// `~\.lmstudio\mcp.json` and `~\.lmstudio\ng-mcp.json` are not read by
 /// Bionic, so there is no fallback to try and nothing to guess at.
 fn bionic_config_path() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE").map(|home| {
-        PathBuf::from(home)
-            .join(".lmstudio")
+    user_home_directory().map(|home| {
+        home.join(".lmstudio")
             .join("apps")
             .join("bionic")
             .join(".internal")
@@ -2280,10 +2368,11 @@ fn lm_studio_mcp_document(
     } else {
         lm_studio_config_path()
     }
-    .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+    .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     Ok(LmStudioMcpDocument { path, bionic })
 }
 
+#[cfg(target_os = "windows")]
 fn jan_data_directory() -> Option<PathBuf> {
     let app_data = std::env::var_os("APPDATA").map(PathBuf::from)?;
     let settings = app_data.join("Jan").join("settings.json");
@@ -2300,27 +2389,72 @@ fn jan_data_directory() -> Option<PathBuf> {
     Some(app_data.join("Jan").join("data"))
 }
 
+#[cfg(target_os = "linux")]
+fn jan_data_directory() -> Option<PathBuf> {
+    let config_home = xdg_config_home()?;
+    let data_home = xdg_data_home()?;
+    Some(jan_data_directory_in(&config_home, &data_home))
+}
+
+#[cfg(target_os = "linux")]
+fn jan_data_directory_in(config_home: &Path, data_home: &Path) -> PathBuf {
+    let settings = config_home.join("Jan").join("settings.json");
+    if let Ok(contents) = fs::read_to_string(settings) {
+        if let Ok(document) = serde_json::from_str::<Value>(&contents) {
+            if let Some(path) = document.get("data_folder").and_then(Value::as_str) {
+                let path = PathBuf::from(path);
+                if path.is_absolute() {
+                    return path;
+                }
+            }
+        }
+    }
+    data_home.join("Jan").join("data")
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+fn jan_data_directory() -> Option<PathBuf> {
+    None
+}
+
 fn jan_config_path() -> Option<PathBuf> {
     jan_data_directory().map(|directory| directory.join("mcp_config.json"))
 }
 
 fn legacy_gemini_settings_path() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .map(|home| PathBuf::from(home).join(".gemini").join("settings.json"))
+    user_home_directory().map(|home| home.join(".gemini").join("settings.json"))
 }
 
 fn canonical_integration_directory() -> Result<PathBuf, String> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|directory| directory.join("QC Remote").join("integrations"))
-        .ok_or_else(|| "Windows local application data is unavailable.".to_string())
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|directory| directory.join("QC Remote").join("integrations"))
+            .ok_or_else(|| "Windows local application data is unavailable.".to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        xdg_data_home()
+            .map(|directory| directory.join("QC Remote").join("integrations"))
+            .ok_or_else(|| "The user data directory is unavailable.".to_string())
+    }
 }
 
 fn durable_antigravity_integration_directory() -> Result<PathBuf, String> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|directory| directory.join(WINDOWS_APP_IDENTIFIER).join("integrations"))
-        .ok_or_else(|| "Windows local application data is unavailable.".to_string())
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|directory| directory.join(WINDOWS_APP_IDENTIFIER).join("integrations"))
+            .ok_or_else(|| "Windows local application data is unavailable.".to_string())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        xdg_data_home()
+            .map(|directory| directory.join(WINDOWS_APP_IDENTIFIER).join("integrations"))
+            .ok_or_else(|| "The user data directory is unavailable.".to_string())
+    }
 }
 
 /// The paired launcher is the installed QC Remote executable itself.
@@ -3998,6 +4132,7 @@ fn chatgpt_local_integration_status_blocking(
     evidence: LocalClientEvidence,
 ) -> Result<Value, String> {
     let desktop = chatgpt_desktop_installation();
+    let codex_cli_installed = codex_cli_executable().is_some();
     let config_path = codex_config_path();
     let executable_path = std::env::current_exe()
         .map_err(|error| format!("Could not resolve the QC Remote executable: {error}"))?;
@@ -4008,7 +4143,7 @@ fn chatgpt_local_integration_status_blocking(
                 "installed": false,
                 "availableVersion": DEVICE_KNOWLEDGE_SKILL_VERSION,
                 "state": "status-error",
-                "statusError": "The Windows user profile directory is unavailable.",
+                "statusError": "The user home directory is unavailable.",
             })
         });
     let (route, status_error) = match config_path.as_deref() {
@@ -4018,12 +4153,12 @@ fn chatgpt_local_integration_status_blocking(
         },
         None => (
             ConfiguredChatgptRoute::default(),
-            Some("The Windows user profile directory is unavailable.".to_string()),
+            Some("The user home directory is unavailable.".to_string()),
         ),
     };
     let configuration_current = route.launcher_current && route.approval_mode_current;
     let mut status = chatgpt_status_document(
-        desktop.is_some() || chatgpt_package_registered(),
+        desktop.is_some() || chatgpt_package_registered() || codex_cli_installed,
         route.configured,
         route.launcher_current,
         route.approval_mode_current,
@@ -4043,6 +4178,12 @@ fn chatgpt_local_integration_status_blocking(
         status["appVersion"] = Value::String(version);
     }
     status["chatgptRunning"] = Value::Bool(chatgpt_is_running());
+    status["codexCliInstalled"] = Value::Bool(codex_cli_installed);
+    status["clientName"] = Value::String(if cfg!(target_os = "linux") {
+        "Codex CLI".to_owned()
+    } else {
+        "ChatGPT".to_owned()
+    });
     status["skillInstalled"] = skill_status["installed"].clone();
     status["installedSkillVersion"] = skill_status
         .get("installedVersion")
@@ -4090,9 +4231,11 @@ pub async fn chatgpt_local_integration_status() -> Result<Value, String> {
 
 fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
     if !chatgpt_desktop_installed() {
-        return Err(
-            "ChatGPT Desktop or Codex is not installed for this Windows account.".to_string(),
-        );
+        #[cfg(target_os = "linux")]
+        let message = "Codex CLI is not installed for this Linux user.";
+        #[cfg(not(target_os = "linux"))]
+        let message = "ChatGPT Desktop or Codex is not installed for this user account.";
+        return Err(message.to_string());
     }
     let executable_path = std::env::current_exe()
         .map_err(|error| format!("Could not resolve the QC Remote executable: {error}"))?;
@@ -4197,7 +4340,9 @@ fn apply_device_knowledge_skill_status(status: &mut Value, skill_status: &Value)
 pub async fn install_chatgpt_local_integration() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(install_chatgpt_local_integration_blocking)
         .await
-        .map_err(|error| format!("Could not install the ChatGPT Desktop integration: {error}"))?
+        .map_err(|error| {
+            format!("Could not configure the local Codex/ChatGPT integration: {error}")
+        })?
 }
 
 fn remove_chatgpt_local_integration_blocking() -> Result<Value, String> {
@@ -4232,52 +4377,105 @@ fn remove_chatgpt_local_integration_blocking() -> Result<Value, String> {
 pub async fn remove_chatgpt_local_integration() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(remove_chatgpt_local_integration_blocking)
         .await
-        .map_err(|error| format!("Could not remove the ChatGPT Desktop integration: {error}"))?
+        .map_err(|error| format!("Could not remove the local Codex/ChatGPT integration: {error}"))?
 }
 
 fn open_chatgpt_desktop_blocking() -> Result<(), String> {
-    let chatgpt = chatgpt_desktop_installation()
-        .and_then(|installation| installation.executable)
-        .or_else(chatgpt_msix_path);
-    let Some(chatgpt) = chatgpt else {
-        return Err(
-            "ChatGPT Desktop or Codex is not installed for this Windows account.".to_string(),
-        );
-    };
-    Command::new(chatgpt)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Could not open ChatGPT Desktop: {error}"))
+    #[cfg(target_os = "linux")]
+    {
+        let codex = codex_cli_executable()
+            .ok_or_else(|| "Codex CLI is not installed for this Linux user.".to_owned())?;
+        return launch_codex_cli_in_terminal(&codex);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let chatgpt = chatgpt_desktop_installation()
+            .and_then(|installation| installation.executable)
+            .or_else(chatgpt_msix_path);
+        let Some(chatgpt) = chatgpt else {
+            return Err(
+                "ChatGPT Desktop or Codex is not installed for this user account.".to_string(),
+            );
+        };
+        Command::new(chatgpt)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Could not open ChatGPT Desktop: {error}"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn launch_codex_cli_in_terminal(codex: &Path) -> Result<(), String> {
+    for (terminal, separator) in [
+        ("x-terminal-emulator", "-e"),
+        ("gnome-terminal", "--"),
+        ("konsole", "-e"),
+        ("xterm", "-e"),
+    ] {
+        let Some(program) = where_command(terminal).into_iter().next() else {
+            continue;
+        };
+        let mut command = Command::new(program);
+        command.arg(separator).arg(codex);
+        return crate::broker_tray_control::spawn_owned(command)
+            .map_err(|error| format!("Could not open Codex CLI in a terminal: {error}"));
+    }
+    Err(
+        "Codex CLI is installed, but no terminal emulator is available; run `codex` in a terminal."
+            .to_owned(),
+    )
 }
 
 #[tauri::command]
 pub async fn open_chatgpt_desktop() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(open_chatgpt_desktop_blocking)
         .await
-        .map_err(|error| format!("Could not launch ChatGPT Desktop: {error}"))?
+        .map_err(|error| {
+            if cfg!(target_os = "linux") {
+                format!("Could not launch Codex CLI: {error}")
+            } else {
+                format!("Could not launch ChatGPT Desktop: {error}")
+            }
+        })?
 }
 
 #[tauri::command]
 pub fn open_chatgpt_desktop_download() -> Result<(), String> {
-    webbrowser::open("https://chatgpt.com/download/")
+    #[cfg(target_os = "linux")]
+    let url = "https://developers.openai.com/codex/cli";
+    #[cfg(not(target_os = "linux"))]
+    let url = "https://chatgpt.com/download/";
+    webbrowser::open(url)
         .map(|_| ())
-        .map_err(|error| format!("Could not open the ChatGPT Desktop download page: {error}"))
+        .map_err(|error| format!("Could not open the client download page: {error}"))
 }
 
 #[tauri::command]
 pub fn open_chatgpt_configuration() -> Result<(), String> {
-    let config_path = codex_config_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+    let config_path =
+        codex_config_path().ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     if !config_path.is_file() {
         return Err("The shared ChatGPT and Codex MCP configuration does not exist.".to_string());
     }
-    Command::new(crate::system_tools::notepad_exe())
-        .arg(config_path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| {
+    #[cfg(target_os = "windows")]
+    {
+        let result = Command::new(crate::system_tools::notepad_exe())
+            .arg(&config_path)
+            .spawn();
+        return result.map(|_| ()).map_err(|error| {
             format!("Could not open the shared ChatGPT and Codex MCP configuration: {error}")
-        })
+        });
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut command = Command::new("xdg-open");
+        command.arg(&config_path);
+        return crate::broker_tray_control::spawn_owned(command).map_err(|error| {
+            format!("Could not open the shared ChatGPT and Codex MCP configuration: {error}")
+        });
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    Err("opening the MCP configuration is unsupported on this platform".to_owned())
 }
 
 fn antigravity_status_document(
@@ -4440,10 +4638,19 @@ fn open_antigravity_blocking() -> Result<(), String> {
         .ok_or_else(|| {
             "Google Antigravity is not installed for this Windows account.".to_string()
         })?;
-    Command::new(executable)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Could not open Google Antigravity: {error}"))
+    let command = Command::new(executable);
+    #[cfg(target_os = "linux")]
+    {
+        crate::broker_tray_control::spawn_owned(command)
+            .map_err(|error| format!("Could not open Google Antigravity: {error}"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        command
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Could not open Google Antigravity: {error}"))
+    }
 }
 
 #[tauri::command]
@@ -4786,10 +4993,19 @@ pub async fn open_lm_studio() -> Result<(), String> {
         let executable = lm_studio_installation()
             .and_then(|installation| installation.executable)
             .ok_or_else(|| "LM Studio is not installed for this Windows account.".to_string())?;
-        Command::new(executable)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("Could not open LM Studio: {error}"))
+        let command = Command::new(executable);
+        #[cfg(target_os = "linux")]
+        {
+            crate::broker_tray_control::spawn_owned(command)
+                .map_err(|error| format!("Could not open LM Studio: {error}"))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            command
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| format!("Could not open LM Studio: {error}"))
+        }
     })
     .await
     .map_err(|error| format!("Could not launch LM Studio: {error}"))?
@@ -4806,9 +5022,8 @@ fn jan_status_blocking() -> Result<Value, String> {
     let installation = jan_installation();
     let executable = std::env::current_exe()
         .map_err(|error| format!("Could not resolve the QC Remote executable: {error}"))?;
-    let config = jan_config_path().ok_or_else(|| {
-        "The Windows roaming application data directory is unavailable.".to_string()
-    })?;
+    let config =
+        jan_config_path().ok_or_else(|| "Jan's data directory is unavailable.".to_string())?;
     let route = configured_json_mcp_route(&config, &executable, "jan:", JAN_CLIENT_ID, "Jan", true);
     let mut status = local_json_integration_status(
         installation.is_some(),
@@ -4831,13 +5046,17 @@ pub async fn jan_local_integration_status() -> Result<Value, String> {
 
 fn install_jan_local_integration_blocking() -> Result<Value, String> {
     if jan_installation().is_none() {
-        return Err("Jan is not installed for this Windows account.".to_string());
+        return Err(if cfg!(target_os = "linux") {
+            "Jan pairing is unavailable on Linux; use the generic MCP configuration instead."
+                .to_string()
+        } else {
+            "Jan is not installed for this user account.".to_string()
+        });
     }
     let executable = std::env::current_exe()
         .map_err(|error| format!("Could not resolve the QC Remote executable: {error}"))?;
-    let config = jan_config_path().ok_or_else(|| {
-        "The Windows roaming application data directory is unavailable.".to_string()
-    })?;
+    let config =
+        jan_config_path().ok_or_else(|| "Jan's data directory is unavailable.".to_string())?;
     write_json_mcp_route(&config, &executable, JAN_CLIENT_ID, "Jan", true)?;
     Ok(json!({ "installed": true, "availableVersion": env!("CARGO_PKG_VERSION") }))
 }
@@ -4852,9 +5071,8 @@ pub async fn install_jan_local_integration() -> Result<Value, String> {
 #[tauri::command]
 pub async fn remove_jan_local_integration() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let config = jan_config_path().ok_or_else(|| {
-            "The Windows roaming application data directory is unavailable.".to_string()
-        })?;
+        let config =
+            jan_config_path().ok_or_else(|| "Jan's data directory is unavailable.".to_string())?;
         Ok(json!({ "removed": remove_json_mcp_route(&config, "Jan")? }))
     })
     .await
@@ -4864,13 +5082,21 @@ pub async fn remove_jan_local_integration() -> Result<Value, String> {
 #[tauri::command]
 pub async fn open_jan() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let executable = jan_installation()
-            .and_then(|installation| installation.executable)
-            .ok_or_else(|| "Jan is not installed for this Windows account.".to_string())?;
-        Command::new(executable)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("Could not open Jan: {error}"))
+        #[cfg(target_os = "linux")]
+        {
+            Err("Jan is not available as a native MCP host on Linux.".to_owned())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let executable = jan_installation()
+                .and_then(|installation| installation.executable)
+                .ok_or_else(|| "Jan is not installed for this user account.".to_string())?;
+            let mut command = Command::new(executable);
+            command
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| format!("Could not open Jan: {error}"))
+        }
     })
     .await
     .map_err(|error| format!("Could not launch Jan: {error}"))?

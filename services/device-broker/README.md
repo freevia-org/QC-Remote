@@ -1,10 +1,60 @@
 # QC Remote device broker
 
 The broker runs the shared `quadcortex` session, command, framing, state,
-verification and backup engines. Linux uses the headless binary in this crate;
-Windows also links this crate into its existing broker/tray/MCP executable.
-The Linux milestone exposes the existing authenticated loopback RPC transport.
-It does not yet supply a Linux desktop shell or an MCP host.
+verification and backup engines. Windows and Linux link this crate into one
+resident broker/tray/MCP executable. The standalone binary in this crate also
+supports headless operation through the same authenticated loopback transport.
+
+The Linux desktop port is under validation. Historical hardware results below
+cover the headless broker; they do not yet establish the new tray, desktop or
+performance MIDI behavior on hardware.
+
+## Native Linux desktop and resident host
+
+The desktop source retains its shared `apps/windows` path. It builds as a
+native Tauri/WebKit app on Linux. Its sibling `qc-device-broker` links the tray,
+USB owner and background MCP host in one process. A browser development preview
+does not provide native broker connectivity.
+
+On Ubuntu, install the native build prerequisites:
+
+```sh
+sudo apt-get install build-essential pkg-config libwebkit2gtk-4.1-dev \
+  libgtk-3-dev libxdo-dev libssl-dev libayatana-appindicator3-dev \
+  librsvg2-dev libdbus-1-dev libsecret-1-dev
+```
+
+With Node 22 and Rust stable available, build from the repository root:
+
+```sh
+npm ci
+npm run build --workspace @qc-remote/windows
+TAURI_CONFIG='{"bundle":{"externalBin":[]}}' \
+  cargo +stable build --locked --manifest-path apps/windows/src-tauri/Cargo.toml \
+  --features tray-sidecar,custom-protocol --bins
+./apps/windows/src-tauri/target/debug/qc-remote
+```
+
+The explicit toolchain overrides the app directory's Windows MSVC toolchain.
+`custom-protocol` embeds the built frontend, so this executable needs no Vite
+server. The Cargo-only override disables external-binary packaging, not the
+host build: keep both executables together. Linux package metadata is in
+`apps/windows/src-tauri/tauri.linux.conf.json`; these commands do not produce
+an installer.
+
+Launch in a graphical user session with D-Bus and a StatusNotifierItem tray
+host. A desktop without a tray host cannot display the broker icon. The broker
+must register its icon before applying a tray idle hold. Tray preferences and
+MCP grants share the persistent directory described below. Enabling login
+startup writes an owned entry under `${XDG_CONFIG_HOME:-$HOME/.config}/autostart`.
+The background host also supports `--resident`; the standalone headless build
+does not link the MCP host.
+
+The app's LOCAL panel provides the native STDIO command for other MCP clients.
+It uses `qc-remote --local-mcp-bridge`, which attaches to the same host. Linux
+pairing credentials use the desktop's Secret Service keyring; an unavailable
+or locked keyring produces an error rather than storing credentials in plain
+text. Tray confirmation dialogs use `zenity` or `kdialog` when installed.
 
 ## Build and test on Linux
 
@@ -46,15 +96,15 @@ sudo udevadm control --reload-rules
 ```
 
 The rule grants the active local user's seat access to the two supported QC
-product IDs (`152a:880a` and `152a:892f`) on hidraw only. It does not grant access
-to every HID device. Check the actual node with `udevadm info --attribute-walk
+product IDs (`152a:880a` and `152a:892f`) on hidraw and raw MIDI only. It does not
+grant access to every HID or sound device. Check the actual node with `udevadm info --attribute-walk
 --name=/dev/hidrawN` and `getfacl /dev/hidrawN`; do not assume its number remains
 stable after reconnect. This follows the kernel's [hidraw interface](https://docs.kernel.org/hid/hidraw.html)
 and systemd's [uaccess rules](https://github.com/systemd/systemd/blob/main/rules.d/70-uaccess.rules.in).
 
 An SSH-only account is not an active local seat. An administrator can instead
 create a dedicated `qc-remote` group, add only the broker user, and replace the
-two rules' `TAG+="uaccess"` with `GROUP="qc-remote", MODE="0660"`. Log in again
+rules' `TAG+="uaccess"` with `GROUP="qc-remote", MODE="0660"`. Log in again
 after changing group membership and reconnect the QC after reloading rules.
 Do not run the broker as root or make hidraw nodes world-writable to bypass a
 permission error. The supplied rule is not installed by a build or test.
@@ -62,9 +112,9 @@ permission error. The supplied rule is not installed by a build or test.
 ## Headless use
 
 Run as your ordinary user. The default discovery directory is
-`$XDG_RUNTIME_DIR/org.freevia.qcremote`, then
-`$XDG_STATE_HOME/org.freevia.qcremote`, or
-`$HOME/.local/state/org.freevia.qcremote` when the preceding base is unset.
+`$XDG_STATE_HOME/org.freevia.qcremote`, then
+`$HOME/.local/state/org.freevia.qcremote`, or
+`$XDG_RUNTIME_DIR/org.freevia.qcremote` when the preceding bases are unset.
 Relative base paths are ignored. If none is available, it uses a private
 `qc-remote-<uid>` directory under the system temporary directory.
 Use an absolute, user-owned path. The broker's directory is mode `0700` and its
@@ -76,15 +126,15 @@ For a usual systemd login:
 ```sh
 ./target/debug/qc-device-broker --self-check
 ./target/debug/qc-device-broker --broker-serve \
-  --descriptor-path "$XDG_RUNTIME_DIR/org.freevia.qcremote/device-broker.json" \
+  --descriptor-path "${XDG_STATE_HOME:-$HOME/.local/state}/org.freevia.qcremote/device-broker.json" \
   --no-tray
 ```
 
 Keep a client attached to keep this nonresident broker alive. It starts
 disconnected. Add `--auto-connect` only for an intentional hardware session, or
 ask it to connect through the existing RPC. With no authenticated participant
-the shared five-second grace releases the device and exits. Linux does not
-pretend a tray icon exists, and `--resident`/autostart are not this milestone.
+the shared five-second grace releases the device and exits. This headless
+command registers no icon and never acquires a tray idle hold.
 
 A client reads the private descriptor, connects to `127.0.0.1:<port>`, and sends
 a four-byte big-endian length followed by this JSON as its first frame:
@@ -122,11 +172,12 @@ two processes running as the same user.
 
 HID report I/O and Linux process/path services are platform adapters. The
 Windows native HID concurrency implementation and Windows process safeguards
-remain behind their Windows backends. Linux performance MIDI is unsupported
-in this milestone and must return an explicit error; HID command transport
-must not silently substitute for a performance MIDI operation. Tray, logon
-integration, packaged installers and desktop/MCP host discovery remain
-follow-up work. Audio stays on the Quad Cortex and the OS audio stack.
+remain behind their Windows backends. Linux performance MIDI resolves the
+selected HID identity to its physical USB ancestor, requires one matching ALSA
+raw MIDI endpoint and rechecks the opened node before bounded writes. It never
+chooses an output by its display name or substitutes HID for MIDI. Audio stays
+on the Quad Cortex and the OS audio stack. Packaged installers are separate
+from the native source/build validation described here.
 
 Automated native Linux tests cover disconnected authenticated RPC, duplicate
 launches, rejected authentication/framing, file modes, crash recovery,

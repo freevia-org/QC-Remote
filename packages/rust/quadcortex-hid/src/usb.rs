@@ -14,8 +14,6 @@ use quadcortex::profile;
 use quadcortex::sync::RecoverPoison;
 use std::collections::HashMap;
 use std::ffi::CStr;
-#[cfg(target_os = "linux")]
-use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};

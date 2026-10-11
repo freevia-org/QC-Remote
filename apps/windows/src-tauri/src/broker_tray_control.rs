@@ -25,6 +25,8 @@ use std::sync::Mutex;
 #[cfg(target_os = "linux")]
 #[path = "broker_tray_control_linux.rs"]
 mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::spawn_owned;
 
 const CONTROL_LOCK: &str = "device-broker-tray-control.lock";
 #[cfg(windows)]
@@ -69,7 +71,10 @@ pub trait TrayEffects: Send + Sync {
     fn remove_run_entry(&self) -> Result<(), String>;
 }
 
-pub struct NativeTrayEffects;
+pub struct NativeTrayEffects {
+    #[cfg(target_os = "linux")]
+    directory: PathBuf,
+}
 
 pub struct BrokerTrayControl<E = NativeTrayEffects> {
     directory: PathBuf,
@@ -79,9 +84,13 @@ pub struct BrokerTrayControl<E = NativeTrayEffects> {
 
 impl BrokerTrayControl<NativeTrayEffects> {
     pub fn new(directory: PathBuf) -> Self {
+        let effects = NativeTrayEffects {
+            #[cfg(target_os = "linux")]
+            directory: directory.clone(),
+        };
         Self {
             directory,
-            effects: NativeTrayEffects,
+            effects,
             last_error: Mutex::new(None),
         }
     }

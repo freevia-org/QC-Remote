@@ -139,6 +139,12 @@ impl ksni::Tray for LinuxTray {
     }
 
     fn status(&self) -> ksni::Status {
+        if !self.shared.wanted.load(Ordering::Acquire) {
+            // Keep the SNI registered so the same resident host can restore
+            // Active status when the preference is enabled again. Passive is
+            // the protocol's hide request; it also releases the device hold.
+            return ksni::Status::Passive;
+        }
         match model::icon_tone(&self.snapshot()) {
             model::IconTone::Attention | model::IconTone::Error => ksni::Status::NeedsAttention,
             _ => ksni::Status::Active,
@@ -146,7 +152,10 @@ impl ksni::Tray for LinuxTray {
     }
 
     fn icon_name(&self) -> String {
-        "audio-card".into()
+        // IconName takes precedence over IconPixmap on common SNI hosts. This
+        // item draws its own live status glyph, so a theme name would replace
+        // it with a generic sound-card icon.
+        String::new()
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
@@ -156,7 +165,7 @@ impl ksni::Tray for LinuxTray {
     fn tool_tip(&self) -> ToolTip {
         let presentation = model::presentation(&self.snapshot());
         ToolTip {
-            icon_name: "audio-card".into(),
+            icon_name: String::new(),
             icon_pixmap: vec![self.icon()],
             title: "QC Remote".into(),
             description: escape_markup(&presentation.tooltip),
@@ -387,5 +396,42 @@ mod tests {
         watcher_online.store(false, Ordering::Release);
         update_registration(&shared, &watcher_online, true);
         assert!(!shared.registered.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn disabled_status_hides_then_reenables_without_replacing_tray_item() {
+        let shared = Arc::new(Shared {
+            snapshot: std::sync::Mutex::new(Snapshot::default()),
+            wanted: AtomicBool::new(false),
+            registered: AtomicBool::new(true),
+            refreshed: std::sync::Mutex::new(std::time::Instant::now()),
+        });
+        let (actions, _received) = std::sync::mpsc::channel();
+        let tray = LinuxTray {
+            shared: Arc::clone(&shared),
+            actions,
+            watcher_online: Arc::new(AtomicBool::new(true)),
+            sync_frame: 0,
+        };
+
+        assert_eq!(tray.status(), ksni::Status::Passive);
+        assert!(tray.icon_name().is_empty());
+        assert!(tray.icon_pixmap().len() == 1);
+        assert!(tray.tool_tip().icon_name.is_empty());
+
+        shared.wanted.store(true, Ordering::Release);
+        assert_eq!(tray.status(), ksni::Status::Active);
+
+        shared
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stale = true;
+        assert_eq!(tray.status(), ksni::Status::NeedsAttention);
+
+        shared.wanted.store(false, Ordering::Release);
+        assert_eq!(tray.status(), ksni::Status::Passive);
+        shared.wanted.store(true, Ordering::Release);
+        assert_eq!(tray.status(), ksni::Status::NeedsAttention);
     }
 }

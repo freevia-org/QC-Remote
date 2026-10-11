@@ -170,6 +170,17 @@ fn send_to_reaper(reaper: &Arc<Mutex<Vec<Child>>>, child: Child) {
         .push(child);
 }
 
+/// Spawn a short-lived Linux desktop helper and transfer its handle to the
+/// process-wide reaper, so completed launches do not remain zombies.
+pub(crate) fn spawn_owned(mut command: Command) -> Result<(), String> {
+    let reaper = reaper_children()?;
+    let child = command
+        .spawn()
+        .map_err(|error| format!("Could not start desktop helper: {error}"))?;
+    send_to_reaper(reaper, child);
+    Ok(())
+}
+
 static CHILD_REAPER: OnceLock<Result<Arc<Mutex<Vec<Child>>>, String>> = OnceLock::new();
 
 fn reaper_children() -> Result<&'static Arc<Mutex<Vec<Child>>>, String> {

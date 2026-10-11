@@ -1677,6 +1677,7 @@ fn check_gateway_api_version(status: &Value, broker_pid: u32) -> Result<(), Stri
 /// The broker executable: beside this app, or in a debug build from
 /// `QC_GATEWAY_EXECUTABLE`.
 fn native_broker_command() -> Result<Command, String> {
+    #[allow(unused_mut)] // Only Windows creation flags and test env mutate it.
     let mut command = match broker_executable_override(
         cfg!(debug_assertions),
         std::env::var_os("QC_GATEWAY_EXECUTABLE"),
@@ -4744,7 +4745,8 @@ pub fn run() {
             // headless MCP entrypoint never runs this setup or these effects.
             // Its resident start never clears a recorded Quit itself
             // (`--keep-user-quit`), and does not serve while one stands.
-            let tray_control = broker_tray_control::BrokerTrayControl::new(descriptor_directory);
+            let tray_control =
+                broker_tray_control::BrokerTrayControl::new(descriptor_directory.clone());
             if let Err(error) = tray_control.reconcile() {
                 // status().last_error retains this for the Settings window.
                 eprintln!("QC Remote tray could not be reconciled: {error}");

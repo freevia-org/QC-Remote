@@ -2413,6 +2413,7 @@ export function App() {
   };
 
   const openChatgptDesktop = async () => {
+    const hostName = chatgptIntegrationStatus?.clientName ?? "ChatGPT";
     try {
       await localClientPackages.openChatgpt();
       // One sentence in every case. The branch this replaces walked the user
@@ -2420,28 +2421,39 @@ export function App() {
       // exist and which nothing here needs: ChatGPT spawns its MCP servers
       // per chat session, so a new chat is the whole of what makes a
       // rewritten route take effect.
-      reportLocal({ tone: "ready", message: "ChatGPT Desktop opened. Start a new chat and type /mcp to confirm QC Remote is connected." });
+      reportLocal({
+        tone: "ready",
+        message: hostName === "Codex CLI"
+          ? "Codex CLI opened in a terminal. QC Remote is configured as an MCP server for new sessions."
+          : "ChatGPT Desktop opened. Start a new chat and type /mcp to confirm QC Remote is connected."
+      });
       await refreshChatgptIntegrationStatus();
     } catch (error) {
-      failLocal("ChatGPT", error, "Open");
+      failLocal(hostName, error, "Open");
     }
   };
 
   const openChatgptDesktopDownload = async () => {
+    const hostName = chatgptIntegrationStatus?.clientName ?? "ChatGPT Desktop";
     try {
       await localClientPackages.openChatgptDownload();
-      reportLocal({ tone: "action-required", message: "The official ChatGPT Desktop download page opened. Install it for this Windows account, then press Refresh here." });
+      reportLocal({ tone: "action-required", message: hostName === "Codex CLI"
+        ? "The official Codex CLI documentation opened. Install the CLI, then press Refresh here."
+        : "The official ChatGPT Desktop download page opened. Install it for this user account, then press Refresh here." });
     } catch (error) {
-      failLocal("ChatGPT", error, "Install ChatGPT Desktop");
+      failLocal(hostName, error, `Install ${hostName}`);
     }
   };
 
   const openChatgptConfiguration = async () => {
+    const hostName = chatgptIntegrationStatus?.clientName ?? "ChatGPT";
     try {
       await localClientPackages.openChatgptConfiguration();
-      reportLocal({ tone: "action-required", message: "The shared ChatGPT and Codex MCP configuration is selected. Fix config.toml, then press Refresh here." });
+      reportLocal({ tone: "action-required", message: hostName === "Codex CLI"
+        ? "Codex config.toml opened. Save your changes, then press Refresh here."
+        : "The shared ChatGPT and Codex MCP configuration is selected. Fix config.toml, then press Refresh here." });
     } catch (error) {
-      failLocal("ChatGPT", error);
+      failLocal(hostName, error);
     }
   };
 
