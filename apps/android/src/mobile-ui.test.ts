@@ -8,6 +8,7 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   const performanceWorkflow = readFileSync(new URL("../../../packages/typescript/qc-ui/src/use-performance-workflow.ts", import.meta.url), "utf8");
   const destinationHook = readFileSync(new URL("../../../packages/typescript/qc-ui/src/use-qc-screen-destination.ts", import.meta.url), "utf8");
   const deviceViews = readFileSync(new URL("../../../packages/typescript/qc-ui/src/use-qc-device-views.ts", import.meta.url), "utf8");
+  const displayModel = readFileSync(new URL("../../../packages/typescript/qc-ui/src/qc-device-display.tsx", import.meta.url), "utf8");
   const screenContent = readFileSync(new URL("../../../packages/typescript/qc-ui/src/qc-device-screen-content.tsx", import.meta.url), "utf8");
   const deviceSettingsScreen = readFileSync(new URL("../../../packages/typescript/qc-ui/src/device-settings-screen.tsx", import.meta.url), "utf8");
   const deviceBrowser = readFileSync(new URL("../../../packages/typescript/qc-ui/src/add-device-picker.tsx", import.meta.url), "utf8");
@@ -40,9 +41,9 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   assert.doesNotMatch(appSource, /Switch to a connected Quad Cortex before opening (?:I\/O Settings|Gig View)/, "virtual-device screens open locally instead of requiring USB");
   assert.match(deviceViews, /workflows\.performance\.showDeviceView\(view, true\)[\s\S]*destination\.setView\(view\)/, "Gig View opens through the same command path as on Windows");
   assert.doesNotMatch(appSource, /androidGatewayTransport\.showGigView/, "no host-local Gig View command");
-  assert.match(appSource, /gigPresetList=\{presetWorkflow\.presetList\}/);
-  assert.match(appSource, /onOpenGigView=\{\(\) => void deviceViews\.toggle\("gig"\)\} onOpenIoView=\{\(\) => void deviceViews\.toggle\("io"\)\}/);
-  assert.match(appSource, /sceneEditor=\{sceneWorkflow\.labelColorOpen \?/);
+  assert.match(displayModel, /gigPresetList: preset\.presetList/);
+  assert.match(displayModel, /onOpenGigView: \(\) => void views\.toggle\("gig"\), onOpenIoView|onOpenGigView: \(\) => void views\.toggle\("gig"\),\s+onOpenIoView: \(\) => void views\.toggle\("io"\)/);
+  assert.match(displayModel, /sceneEditor: scene\.labelColorOpen \?/);
   assert.doesNotMatch(appSource, /mobile-scene-trigger/);
   assert.match(appSource, /mobile-device-view-control mobile-io-control[\s\S]*onClick=\{\(\) => void deviceViews\.toggle\("io"\)\}[\s\S]*>I\/O<\/button>/, "I/O remains reachable by an explicit control when a WebView gesture is interrupted");
   assert.match(appSource, /mobile-device-view-control mobile-gig-control[\s\S]*onClick=\{\(\) => void deviceViews\.toggle\("gig"\)\}[\s\S]*>GIG<\/button>/, "Gig View remains reachable by an explicit control when a WebView gesture is interrupted");
@@ -57,22 +58,22 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   assert.match(appSource, /handleModeChordContact\("tempo", pressed\)/);
   assert.match(appSource, /gigViewStompAccess/, "BANK DOWN + TEMPO hold respects the device's Gig View setting");
   assert.match(appSource, /void deviceSettingsWorkflow\.refresh\(\)/, "gesture settings are read from the connected QC before use");
-  assert.match(appSource, /onOpenIoView=\{\(\) => void deviceViews\.toggle\("io"\)\}/, "the QC top-edge swipe opens I\/O Settings");
+  assert.match(displayModel, /onOpenIoView: \(\) => void views\.toggle\("io"\)/, "the QC top-edge swipe toggles I\/O Settings");
   assert.match(appSource, /mobileScreenView === "tuner"\) void deviceViews\.close\(\)/, "BANK UP exits Tuner through the QC control");
   assert.match(appSource, /tempoWorkflow\.open\) tempoWorkflow\.close\(\)/, "BANK UP exits Tempo through the QC control");
   assert.match(appSource, /\bLOOPER\b|\\blooper\\b/i, "Looper X opens from its Grid block");
   assert.match(deviceViews, /gateway\.longTapScreen\(x, y\)/, "device-screen holds reach the physical QC as long taps");
-  assert.match(appSource, /deviceViews\.forwardGesture\(x, y, toX, toY, kind\)/);
+  assert.match(displayModel, /views\.forwardGesture\(x, y, toX, toY, kind\)/);
   assert.match(deviceBrowser, /onTogglePinned\(modelId\)/, "holding a model uses the QC's pin gesture");
   assert.match(deviceBrowser, /consumedModelTap\.current === model\.id/, "a model hold cannot also place the model");
   assert.match(gridWorkflow, /gateway\.setModelPinned\(modelId, !expectedPinned, expectedPinned\)/);
   assert.match(gridWorkflow, /confirmed\.models\.includes\(modelId\) === expectedPinned/, "model pinning is confirmed by readback");
   assert.match(destinationHook, /deviceSettings\.openSettings\(returnFocusTarget\)/, "Grid Settings opens device settings, not the Remote panel");
-  assert.match(appSource, /qcDeviceScreenContent\(\{[\s\S]*?deviceSettings: deviceSettingsWorkflow/);
+  assert.match(appSource, /createQcDeviceDisplay\(\{[\s\S]*?deviceSettings: deviceSettingsWorkflow/);
   assert.match(screenContent, /<CorOsDeviceSettings workflow=\{workflows\.deviceSettings\}/);
   assert.match(deviceSettingsScreen, /Support[\s\S]*Device Information/);
   assert.match(deviceSettingsScreen, /DeviceInformationDetail/);
-  assert.match(appSource, /qcDeviceScreenContent\(\{[\s\S]*?tempo: tempoWorkflow/);
+  assert.match(appSource, /createQcDeviceDisplay\(\{[\s\S]*?tempo: tempoWorkflow/);
   assert.match(screenContent, /<CorOsTempoScreen workflow=\{workflows\.tempo\}/);
   assert.match(appSource, /QcHardwareSwitch role="bank:up" label=\{<QcUiIcon kind="up" \/>\}/);
   assert.match(appSource, /QcHardwareSwitch role="bank:down" label=\{<span className="mobile-down-glyph"><QcUiIcon kind="up" \/><\/span>\}/);
@@ -110,11 +111,12 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   assert.match(styles, /\.mobile-volume-control \{ grid-column: 1; grid-row: 1;/);
   assert.match(styles, /@media \(orientation: landscape\)[\s\S]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
   assert.match(styles, /@media \(orientation: landscape\)[\s\S]*\.mobile-screen \{[^}]*container-type: size; --qc-display-max-height: 100cqh; \}/, "landscape only changes the box the display may fill; the display frame keeps its own 5:3 shape");
-  assert.match(appSource, /<QuadCortexSurface presentation="display" /, "the phone shows the shared display frame without the hardware panel");
+  assert.match(appSource, /<QcDeviceDisplay display=\{display\} presentation="display" /, "the phone shows the shared display frame without the hardware panel");
 });
 
 test("tapping a live Grid block opens the shared parameter editor and commits over USB", () => {
   const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const displayModel = readFileSync(new URL("../../../packages/typescript/qc-ui/src/qc-device-display.tsx", import.meta.url), "utf8");
   const gridWorkflow = readFileSync(new URL("../../../packages/typescript/qc-ui/src/use-grid-workflow.ts", import.meta.url), "utf8");
   const parameterWorkflow = readFileSync(new URL("../../../packages/typescript/qc-ui/src/use-parameter-workflow.ts", import.meta.url), "utf8");
   const parameterBindings = readFileSync(new URL("../../../packages/typescript/qc-ui/src/qc-parameter-editor-bindings.ts", import.meta.url), "utf8");
@@ -125,7 +127,8 @@ test("tapping a live Grid block opens the shared parameter editor and commits ov
   const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
   assert.match(gridWorkflow, /gateway\.blockDetails\(block\.row, block\.column, snapshot\.presetName, requirePresetIdentity\(snapshot\)\)/);
-  assert.match(appSource, /parameterEditor=\{parameterEditorBindings\}/);
+  assert.match(appSource, /parameterEditor: parameterEditorBindings/);
+  assert.match(displayModel, /hardwareLeds: qcParameterEditorLeds\(host\.parameterEditor\)/, "the phone's switches light from the display's own LED derivation");
   assert.match(parameterBindings, /const details = editor\.details;[\s\S]*if \(!details\) return undefined/);
   assert.match(parameterWorkflow, /operationGateway\.setParameter\(row, column, parameter\.index, value/);
   assert.match(nativeSource, /createAndroidQcTransport[\s\S]*createQcGatewayTransport/);

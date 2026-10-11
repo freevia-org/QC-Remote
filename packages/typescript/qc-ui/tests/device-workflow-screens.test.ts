@@ -40,17 +40,17 @@ test("the CPU Monitor is an overlay on the live Grid, never a second Grid", () =
   const panel = monitor.slice(monitor.indexOf("export function CorOsCpuMonitorPanel"), monitor.indexOf("export function CorOsCpuMonitor("));
   assert.ok(panel.includes('aria-label="CPU Monitor"') && panel.includes("Close CPU Monitor"));
   assert.ok(!panel.includes("CorOsOfficialGrid"), "the overlay must not bring its own Grid");
-  // Hosts must not replace the Grid with a CPU screen: no screen-content branch, and the surface keeps the grid view.
-  for (const [name, source, view] of [["windows", windows, "deviceScreenView"], ["android", android, "mobileScreenView"]] as const) {
+  // Hosts must not replace the Grid with a CPU screen, and own no CPU readings: the shared display assembles the monitor from the one telemetry hook.
+  const display = read(new URL("../src/qc-device-display.tsx", import.meta.url));
+  assert.ok(display.includes("const cpuMonitorOpen = destination.view === \"cpu-monitor\";"));
+  assert.ok(display.includes("cpu.monitor(cpuMonitorOpen, destination.returnFocusTarget, () => destination.setView(null))"), "the display builds the monitor from the telemetry hook");
+  assert.ok(display.includes("(cpuMonitorOpen ? undefined : destination.view)"), "the surface keeps the Grid while the monitor is open");
+  assert.ok(display.includes("    cpuMonitor,"), "the display passes the monitor to the surface");
+  for (const [name, source] of [["windows", windows], ["android", android]] as const) {
     assert.ok(!source.includes("<CorOsCpuMonitor"), `${name} must not render the fixture Grid wrapper`);
-    assert.ok(!source.includes(`${view} === "cpu-monitor" ? <`), `${name} must not swap the Grid for a CPU screen`);
-    assert.ok(source.includes(`cpuMonitorOpen ? undefined : ${view}`), `${name} keeps the surface on the Grid while the monitor is open`);
-    assert.ok(source.includes("cpuMonitor={cpuMonitor}"), `${name} passes the monitor to the surface`);
-    // Neither host owns CPU readings: both take them from the one shared hook and hand its monitor to the surface.
     assert.ok(source.includes("const cpuTelemetry = useQcCpuTelemetry();"), `${name} uses the shared CPU telemetry hook`);
     assert.ok(source.includes("cpu: cpuTelemetry"), `${name} feeds every state batch to the hook`);
-    assert.ok(source.includes("cpuTelemetry.monitor(cpuMonitorOpen, "), `${name} builds the monitor from the hook`);
-    assert.ok(!/setCpu(?:Load|Columns)|useState<CpuColumnLoad/.test(source), `${name} keeps no CPU state of its own`);
+    assert.ok(!/setCpu(?:Load|Columns)|useState<CpuColumnLoad|cpuMonitor/.test(source), `${name} keeps no CPU state or monitor of its own`);
   }
 });
 
@@ -112,24 +112,24 @@ test("mode cycle screen reorder is ordered, bounded, and preserves a copy", () =
   assert.equal(splitModeSlot([0, 3, 2], 1), undefined, "splitting beyond three modes is refused");
 });
 
-test("both hosts take the screen destination and the Grid context-action routing from the shared hooks", () => {
+test("both hosts take the screen destination from the shared hook and the display routes the Grid context actions", () => {
   const read = (url: URL) => readFileSync(url, "utf8").replaceAll("\r\n", "\n");
+  const display = read(new URL("../src/qc-device-display.tsx", import.meta.url));
+  assert.ok(display.includes("qcContextActionHandler({") && display.includes("disabledContextActions: QC_DISABLED_CONTEXT_ACTIONS"), "the display routes context actions and shares the disabled-action table");
   for (const [name, source] of [["windows", read(new URL("../../../../apps/windows/src/App.tsx", import.meta.url))], ["android", read(new URL("../../../../apps/android/src/App.tsx", import.meta.url))]] as const) {
     assert.ok(source.includes("const screenDestination = useQcScreenDestination();"), `${name} uses the shared screen destination`);
-    assert.ok(source.includes("qcContextActionHandler({ destination: screenDestination,"), `${name} routes context actions through the shared handler`);
-    assert.ok(source.includes("disabledContextActions={QC_DISABLED_CONTEXT_ACTIONS}"), `${name} shares the disabled-action table`);
-    assert.ok(!/setScreenDestination|useState<\{ view: CorOsScreenView/.test(source), `${name} keeps no screen-view state of its own`);
-    assert.ok(!source.includes("corOsUnavailableContextActionMessage"), `${name} leaves the unavailable-action wording to the router`);
+    assert.ok(!/setScreenDestination|useState<\{ view: CorOsScreenView|corOsUnavailableContextActionMessage|qcContextActionHandler/.test(source), `${name} keeps no screen-view state or context routing of its own`);
   }
 });
 
-test("both hosts take the device screen content from the shared mapping and draw no CorOS screen themselves", () => {
+test("the display takes the device screen content from the shared mapping and no host draws a CorOS screen", () => {
   const read = (url: URL) => readFileSync(url, "utf8").replaceAll("\r\n", "\n");
+  const display = read(new URL("../src/qc-device-display.tsx", import.meta.url));
+  assert.ok(/host\.auditContent \?\? qcDeviceScreenContent\(\{/.test(display), "the display maps the screen through qcDeviceScreenContent, after the development audit override");
   for (const [name, source] of [["windows", read(new URL("../../../../apps/windows/src/App.tsx", import.meta.url))], ["android", read(new URL("../../../../apps/android/src/App.tsx", import.meta.url))]] as const) {
-    assert.ok(/: qcDeviceScreenContent\(\{/.test(source), `${name} maps the screen through qcDeviceScreenContent`);
     assert.doesNotMatch(source, /<(?:LooperXScreen|ModesConfigurationScreen|PresetMidiOutEditor|CorOs(?:Tuner|Tempo|DeviceSettings|GlobalEq|IoSettings)\w*)\b/, `${name} must not assemble a device screen itself`);
     assert.ok(!source.includes('block.name === "Looper X"'), `${name} leaves the Looper X block lookup to the shared screen actions`);
-    assert.ok(!source.includes('looperWorkflow.run("close")'), `${name} closes Looper X only through closeQcLooperScreen`);
+    assert.ok(!source.includes('looperWorkflow.run("close")'), `${name} closes Looper X only through the shared views`);
   }
 });
 
@@ -144,11 +144,12 @@ test("both hosts follow the unit's screen and consume display states through the
 
 test("both hosts open, close and toggle device screens, forward gestures and undo through the shared hooks", () => {
   const read = (url: URL) => readFileSync(url, "utf8").replaceAll("\r\n", "\n");
+  const display = read(new URL("../src/qc-device-display.tsx", import.meta.url));
+  assert.ok(display.includes('onOpenGigView: () => void views.toggle("gig")') && display.includes('onOpenIoView: () => void views.toggle("io")'), "the display toggles Gig View and I/O");
+  assert.ok(display.includes("deviceInformation: views.deviceInformation"), "the display shows the Device Information screen");
   for (const [name, source] of [["windows", read(new URL("../../../../apps/windows/src/App.tsx", import.meta.url))], ["android", read(new URL("../../../../apps/android/src/App.tsx", import.meta.url))]] as const) {
     assert.ok(source.includes("useQcDeviceViews({"), `${name} uses the shared device views`);
     assert.ok(source.includes("useQcDeviceUndo({"), `${name} uses the shared undo path`);
-    assert.ok(source.includes('onOpenGigView={() => void deviceViews.toggle("gig")}') && source.includes('onOpenIoView={() => void deviceViews.toggle("io")}'), `${name} toggles Gig View and I/O`);
-    assert.ok(source.includes("deviceInformation={deviceViews.deviceInformation}"), `${name} shows the Device Information screen`);
     assert.doesNotMatch(source, /showDeviceView\(|\.showGigView\(|\.longTapScreen\(|\.tapScreen\(|\.swipeScreen\(|Gateway\.undo\(|setDeviceInformation/, `${name} sends no device-screen command itself`);
     assert.doesNotMatch(source, /Opening the Quad Cortex|Synchronizing the Quad Cortex/, `${name} takes the connecting wording from the shared placeholder`);
     assert.doesNotMatch(source, /parameterEditorControlSlots|parameterEditorPageSize/, `${name} derives no parameter-editor LEDs of its own`);

@@ -4,7 +4,7 @@ import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, 
 import { demoBlockDetails, demoSnapshot, sceneLetter, SupersededPresetOperation, saveWorkspaceDocument, type ControlAccessMode, type PublicRelayConnector } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND } from "@qc-remote/theme";
-import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, QC_DISABLED_CONTEXT_ACTIONS, qcDeviceScreenContent, qcContextActionHandler, CorOsSceneCommand, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, writeQcScreenFollowSetting, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist } from "@qc-remote/ui";
+import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, readControlAccessMode, readQcScreenFollowSetting, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, writeQcScreenFollowSetting, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { appWindows, brokerDevice, DEVICE_INFO_EVENTS, diagnosticsFiles, externalLinks, helpWindows, localAccess, localClientPackages, physicalDevices, type PhysicalQcDevice, onDevicePhase, publicRelay, publishWindowState, serveAppWindowRequests, serveDiagnosticsRequests, SETTINGS_EVENTS, tauriTransport, virtualDeviceStorage, WORKSPACE_EVENTS, workspaceFiles, type AntigravityLocalIntegrationStatus, type ChatGptLocalIntegrationStatus, type ClaudeDesktopExtensionStatus, type JanLocalIntegrationStatus, type LmStudioLocalIntegrationStatus, type LocalAccessStatus, type OtherMcpStdioSetup } from "./tauri-transport";
 import { createWindowsQcTransport } from "./qc-transport";
@@ -289,7 +289,7 @@ export function App() {
       // that now opens the live expression-assignment screen instead.
       // Add Device is the unit's own device browser, opened over the live Grid.
       liveAddDevicePicker: true
-      // Scene copy/swap opens CorOsSceneCommand from the Grid context menu.
+      // Scene copy/swap opens the shared scene command from the Grid context menu.
       // Label/color follows the unit's own Scene mode -> Gig View -> tile Edit
       // path and is rendered as the current device screen. Neither uses this
       // hook's generic scenes panel, so openScenes/close have nothing to pop.
@@ -2646,18 +2646,15 @@ export function App() {
     }
   };
 
-  const handleCorOsContextAction = qcContextActionHandler({ destination: screenDestination, openSave: openDeviceSave, deviceSettings: deviceSettingsWorkflow, scene: sceneWorkflow, modes: modesWorkflow, tempo: tempoWorkflow, notice: setNotice });
-  // Device Settings and Tempo are device screens: they render in the bezel's
-  // own 800x480 canvas, not as a sibling that fills the whole window.
-  // The CPU Monitor is not a screen of its own: the unit lays it over the Grid, so the
-  // surface keeps drawing its normal Grid and adds the panel (see QuadCortexSurface).
-  const cpuMonitorOpen = deviceScreenView === "cpu-monitor";
-  const cpuMonitor = cpuTelemetry.monitor(cpuMonitorOpen, screenDestination.returnFocusTarget, () => setDeviceScreenView(null));
-  const screenContent = productionAuditScreen ? <CorOsProductionScreenAudit view={productionAuditScreen} snapshot={snapshot} />
-    : qcDeviceScreenContent({
-      snapshot, destination: screenDestination, selectScene: chooseScene, queueTempo, setParameterMenuInitiallyOpen, closeScreen: deviceViews.close, notice: setNotice,
-      workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow }
-    });
+  const display = createQcDeviceDisplay({
+    snapshot, selectedBlockId, pending: commandPending, destination: screenDestination, views: deviceViews, cpu: cpuTelemetry, undo: deviceUndo,
+    workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow, scene: sceneWorkflow, preset: presetWorkflow, routing: routingWorkflow },
+    selectScene: chooseScene, queueTempo, setParameterMenuInitiallyOpen, notice: setNotice,
+    expressionAssignment, laneControlEditor, parameterEditor: parameterEditorBindings,
+    openPreset: () => void openPresetBrowser(), refresh: () => void refreshSnapshot(), openRouting: openRoutePicker,
+    fixtureScreenView,
+    auditContent: productionAuditScreen ? <CorOsProductionScreenAudit view={productionAuditScreen} snapshot={snapshot} /> : undefined
+  });
 
   return <div className="app-shell">
     <MenuBar
@@ -2751,7 +2748,7 @@ export function App() {
 
     <div className="app-content">
       <main className={`workspace view-${surfaceView}`}>
-        <QuadCortexSurface formFactor={formFactor} snapshot={snapshot} selectedBlockId={selectedBlockId} skin={skin} screenView={fixtureScreenView ?? (cpuMonitorOpen ? undefined : deviceScreenView) ?? undefined} screenContent={screenContent} cpuMonitor={cpuMonitor} deviceInformation={deviceViews.deviceInformation} onCloseScreen={() => void deviceViews.close()} onDeviceScreenGesture={(x, y, toX, toY, kind) => void deviceViews.forwardGesture(x, y, toX, toY, kind)} onOpenGigView={() => void deviceViews.toggle("gig")} onOpenIoView={() => void deviceViews.toggle("io")} onEditScene={sceneWorkflow.openLabelColor} onRecallGigPreset={(entry) => void presetWorkflow.recall(entry)} onCopyGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, false)} onSwapGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, true)} sceneEditor={sceneWorkflow.labelColorOpen ? { sourceScene: sceneWorkflow.sourceScene, setSourceScene: sceneWorkflow.setSourceScene, scenes: snapshot.scenes, label: sceneWorkflow.label, setLabel: sceneWorkflow.setLabel, color: sceneWorkflow.color, setColor: sceneWorkflow.setColor, colors: sceneWorkflow.colors, pending: commandPending, saveLabel: () => void sceneWorkflow.saveLabel(), saveColor: () => void sceneWorkflow.saveColor(), onClose: sceneWorkflow.closeLabelColor } : undefined} onAction={handleHardwareAction} onMasterVolumeInteractionStart={continuousControls.beginMasterVolumeInteraction} onMasterVolumeInteractionEnd={continuousControls.endMasterVolumeInteraction} onOpenPreset={() => void openPresetBrowser()} onUndo={() => void undoLastAction()} canUndo={deviceUndo.canUndo} undoLabel={deviceUndo.undoLabel} onSave={openDeviceSave} onOpenRouting={openRoutePicker} onRefresh={() => void refreshSnapshot()} savePreset={presetWorkflow.saveProps} presetDirectory={presetWorkflow.directoryProps} gigPresetList={presetWorkflow.presetList} routingPicker={routingWorkflow.pickerProps} addDevicePicker={gridWorkflow.addPickerProps} expressionAssignment={expressionAssignment} laneControlEditor={laneControlEditor} parameterEditor={parameterEditorBindings} onContextAction={handleCorOsContextAction} disabledContextActions={QC_DISABLED_CONTEXT_ACTIONS} />
+        <QcDeviceDisplay display={display} formFactor={formFactor} skin={skin} onAction={handleHardwareAction} onMasterVolumeInteractionStart={continuousControls.beginMasterVolumeInteraction} onMasterVolumeInteractionEnd={continuousControls.endMasterVolumeInteraction} />
       </main>
     </div>
 
@@ -2763,9 +2760,9 @@ export function App() {
 
 
     {/* Copy/swap is still the Grid context-menu command. Scene label/color is
-        rendered by QuadCortexSurface as the current device screen, reached
+        rendered by the shared display as the current device screen, reached
         through Scene mode -> Gig View -> the scene tile's Edit control. */}
-    {sceneWorkflow.command && <CorOsSceneCommand scenes={snapshot.scenes} sourceScene={sceneWorkflow.sourceScene} swap={sceneWorkflow.command === "swap"} pending={commandPending} onSelect={(destination) => void sceneWorkflow.chooseDestination(destination)} onCancel={sceneWorkflow.closeCommand} returnFocusTarget={sceneWorkflow.commandReturnTarget} />}
+    <QcDeviceDisplayOverlay display={display} />
     {textPromptOverlay}
   </div>;
 }
