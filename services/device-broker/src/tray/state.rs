@@ -272,7 +272,12 @@ fn open_app() -> Result<(), String> {
 }
 
 fn app_beside(broker: &Path) -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
     let candidate = broker.parent()?.join("qc-remote.exe");
+    #[cfg(target_os = "linux")]
+    let candidate = broker.parent()?.join("qc-remote");
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let candidate = broker.parent()?.join("qc-remote");
     candidate.is_file().then_some(candidate)
 }
 
@@ -474,10 +479,14 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
+        #[cfg(windows)]
+        let app_name = "qc-remote.exe";
+        #[cfg(not(windows))]
+        let app_name = "qc-remote";
         let broker = directory.join("qc-device-broker.exe");
         assert_eq!(app_beside(&broker), None);
-        std::fs::write(directory.join("qc-remote.exe"), b"").unwrap();
-        assert_eq!(app_beside(&broker), Some(directory.join("qc-remote.exe")));
+        std::fs::write(directory.join(app_name), b"").unwrap();
+        assert_eq!(app_beside(&broker), Some(directory.join(app_name)));
         std::fs::remove_dir_all(&directory).unwrap();
     }
 }

@@ -3,14 +3,13 @@
 //! has won the descriptor election and disappears when it exits, and the
 //! device is held past the shipped grace only while the icon is registered.
 //!
-//! Three threads, none of which can wedge the device:
-//! - the UI thread owns a hidden window, the icon and the popup menu, and
-//!   touches nothing of the broker's;
-//! - the state thread builds a snapshot from the broker's cached status and
-//!   runs menu commands (each on its own short-lived thread);
-//! - the idle timer is the broker's own backstop thread, not either of these.
+//! The platform tray backend owns only its native icon and menu. The state
+//! thread builds a snapshot from cached broker status and forwards menu
+//! commands; the broker's idle timer remains its own backstop thread.
 pub mod host_status;
 pub mod install_stop;
+#[cfg(all(target_os = "linux", feature = "linux-tray"))]
+mod linux;
 pub mod model;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod state;
@@ -99,6 +98,11 @@ pub fn interactive_session() -> bool {
 
 #[cfg(not(windows))]
 pub fn interactive_session() -> bool {
+    #[cfg(all(target_os = "linux", feature = "linux-tray"))]
+    {
+        return linux::interactive_session();
+    }
+    #[cfg(not(all(target_os = "linux", feature = "linux-tray")))]
     false
 }
 
@@ -113,7 +117,17 @@ pub fn start(handle: BrokerHandle, host: Option<Arc<dyn ResidentHost>>) {
             eprintln!("The broker icon could not start; the broker runs without it: {error}");
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(all(target_os = "linux", feature = "linux-tray"))]
+    {
+        let fallback = handle.clone();
+        if let Err(error) = state::start(handle, host, linux::start) {
+            fallback.set_tray_hold(None);
+            fallback.set_resident(false);
+            linux::remove_icon_now();
+            eprintln!("The broker tray could not start; it runs without an icon: {error}");
+        }
+    }
+    #[cfg(not(any(windows, all(target_os = "linux", feature = "linux-tray"))))]
     {
         let _ = (handle, host);
     }
@@ -124,6 +138,8 @@ pub fn start(handle: BrokerHandle, host: Option<Arc<dyn ResidentHost>>) {
 pub fn remove_icon_now() {
     #[cfg(windows)]
     ui::remove_icon_now();
+    #[cfg(all(target_os = "linux", feature = "linux-tray"))]
+    linux::remove_icon_now();
 }
 
 #[cfg(test)]

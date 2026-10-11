@@ -3,12 +3,19 @@
 #[cfg(windows)]
 pub(crate) use qc_windows_midi::{PerformanceMidi, PerformanceMidiReceipt};
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "linux_midi.rs"]
+mod linux;
+
+#[cfg(target_os = "linux")]
+pub(crate) use linux::{PerformanceMidi, PerformanceMidiReceipt};
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub(crate) use unavailable::{PerformanceMidi, PerformanceMidiReceipt};
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 mod unavailable {
-    const UNAVAILABLE: &str = "Performance MIDI is not available in this headless Linux milestone; a verified HID-to-ALSA device mapping is required";
+    const UNAVAILABLE: &str = "Performance MIDI is not available on this platform";
 
     #[derive(Default)]
     pub struct PerformanceMidi {

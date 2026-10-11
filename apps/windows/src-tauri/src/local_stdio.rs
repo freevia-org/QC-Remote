@@ -202,22 +202,31 @@ pub(crate) fn state_paths() -> Result<Vec<PathBuf>, String> {
     if let Some(path) = std::env::var_os(STATE_OVERRIDE) {
         return Ok(vec![PathBuf::from(path)]);
     }
-    let profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .or_else(|| {
-            profile
-                .as_ref()
-                .map(|path| path.join("AppData").join("Local"))
-        });
-    let roaming = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| profile.map(|path| path.join("AppData").join("Roaming")));
-    let paths = state_paths_from(local, roaming);
-    if paths.is_empty() {
-        Err("Windows user data directories are unavailable.".into())
-    } else {
-        Ok(paths)
+    #[cfg(target_os = "linux")]
+    {
+        let directory = crate::broker_paths::app_local_data_dir();
+        qc_native_platform::paths::prepare_directory(&directory)?;
+        return Ok(vec![directory.join(STATE_FILE)]);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
+        let local = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                profile
+                    .as_ref()
+                    .map(|path| path.join("AppData").join("Local"))
+            });
+        let roaming = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| profile.map(|path| path.join("AppData").join("Roaming")));
+        let paths = state_paths_from(local, roaming);
+        if paths.is_empty() {
+            Err("Windows user data directories are unavailable.".into())
+        } else {
+            Ok(paths)
+        }
     }
 }
 
@@ -1326,10 +1335,19 @@ impl HeadlessHostSettings {
 /// relay-only forever - the two processes on the same machine never finding
 /// each other's broker.
 pub(crate) fn app_local_data_dir() -> Option<PathBuf> {
-    resolve_app_local_data_dir(
-        std::env::var_os("LOCALAPPDATA"),
-        std::env::var_os("USERPROFILE"),
-    )
+    #[cfg(target_os = "linux")]
+    {
+        let directory = crate::broker_paths::app_local_data_dir();
+        qc_native_platform::paths::prepare_directory(&directory).ok()?;
+        return Some(directory);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        resolve_app_local_data_dir(
+            std::env::var_os("LOCALAPPDATA"),
+            std::env::var_os("USERPROFILE"),
+        )
+    }
 }
 
 /// `app_local_data_dir`'s resolution, taking the two environment lookups as

@@ -60,7 +60,8 @@ export const SOURCE_OFFER = 'legal/THIRD_PARTY-SOURCE-OFFER.md';
 
 /** The artefacts that ship, as the inventory generator defines them. */
 export const SHIPPED_CARGO_ROOTS = [
-  { manifest: 'apps/windows/src-tauri/Cargo.toml', target: 'x86_64-pc-windows-msvc' },
+  { manifest: 'apps/windows/src-tauri/Cargo.toml', target: 'x86_64-pc-windows-msvc', features: 'tray-sidecar' },
+  { manifest: 'apps/windows/src-tauri/Cargo.toml', target: 'x86_64-unknown-linux-gnu', features: 'tray-sidecar' },
   { manifest: 'services/device-broker/Cargo.toml', target: 'x86_64-pc-windows-msvc' },
   { manifest: 'services/device-broker/Cargo.toml', target: 'x86_64-unknown-linux-gnu' },
   { manifest: 'packages/rust/quadcortex-android/Cargo.toml', target: 'aarch64-linux-android' },
@@ -114,9 +115,10 @@ function addLicense(map, name, license) {
   map.get(name).add(normalizeLicense(license));
 }
 
-function cargoMetadata(manifestPath, target) {
+function cargoMetadata(manifestPath, target, features) {
   const args = ['metadata', '--format-version', '1', '--locked', '--manifest-path', manifestPath];
   if (target) args.push('--filter-platform', target);
+  if (features) args.push('--features', features);
   const out = execFileSync('cargo', args, { cwd: repoRoot, maxBuffer: 1024 * 1024 * 64, encoding: 'utf8' });
   return JSON.parse(out);
 }
@@ -488,9 +490,9 @@ function main() {
   const lock = JSON.parse(read('package-lock.json'));
 
   const shippedCargo = new Map();
-  for (const { manifest, target } of SHIPPED_CARGO_ROOTS) {
+  for (const { manifest, target, features } of SHIPPED_CARGO_ROOTS) {
     const manifestPath = path.join(repoRoot, manifest);
-    for (const [key, item] of shippedCargoPackages(cargoMetadata(manifestPath, target), manifestPath)) shippedCargo.set(key, item);
+    for (const [key, item] of shippedCargoPackages(cargoMetadata(manifestPath, target, features), manifestPath)) shippedCargo.set(key, item);
   }
   const shippedNpm = shippedNpmPackages(lock);
   const androidLocked = androidRuntimeLibraries(read(ANDROID_LOCKFILE));

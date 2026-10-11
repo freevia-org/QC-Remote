@@ -14,6 +14,8 @@ use quadcortex::profile;
 use quadcortex::sync::RecoverPoison;
 use std::collections::HashMap;
 use std::ffi::CStr;
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -929,6 +931,82 @@ pub fn connected_devices() -> Result<Vec<QcUsbDevice>, UsbError> {
         }
     }
     Ok(devices)
+}
+
+/// Resolve an explicitly selected Quad Cortex HID identity to its current
+/// hidraw node. Linux performance MIDI uses this only to find the physical USB
+/// ancestor; callers must still validate that ancestor and the MIDI node before
+/// every write. An identity that maps to multiple supported HID interfaces is
+/// ambiguous and is refused.
+#[cfg(target_os = "linux")]
+pub fn linux_hidraw_path_for_device(device_id: &str) -> Result<std::path::PathBuf, UsbError> {
+    let api = HidApi::new().map_err(|error| UsbError::Hid(error.to_string()))?;
+    let candidates = api.device_list().map(|device| {
+        (
+            device.vendor_id(),
+            device.product_id(),
+            device.path(),
+            crate::backend::device_id(device),
+        )
+    });
+    unique_supported_hid_path(candidates, device_id)
+}
+
+#[cfg(target_os = "linux")]
+fn unique_supported_hid_path<'a>(
+    candidates: impl Iterator<Item = (u16, u16, &'a CStr, String)>,
+    device_id: &str,
+) -> Result<std::path::PathBuf, UsbError> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let selected = candidates
+        .filter(|(vendor, product, _, identity)| {
+            *vendor == profile::VENDOR_ID
+                && profile::supports_product_id(*product)
+                && identity == device_id
+        })
+        .map(|(_, _, path, _)| path)
+        .collect::<Vec<_>>();
+    if selected.len() != 1 {
+        return Err(UsbError::NotAvailable);
+    }
+    Ok(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+        selected[0].to_bytes(),
+    )))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_identity_resolution_tests {
+    use super::*;
+    use std::ffi::CString;
+
+    #[test]
+    fn selected_hid_identity_requires_one_supported_path() {
+        let first = CString::new("/dev/hidraw1").unwrap();
+        let duplicate = CString::new("/dev/hidraw2").unwrap();
+        let selected_id = "opaque-selected-id".to_owned();
+        let one = unique_supported_hid_path(
+            [(0x152a, 0x880a, first.as_c_str(), selected_id.clone())].into_iter(),
+            &selected_id,
+        )
+        .unwrap();
+        assert_eq!(one, std::path::PathBuf::from("/dev/hidraw1"));
+
+        assert!(unique_supported_hid_path(
+            [
+                (0x152a, 0x880a, first.as_c_str(), selected_id.clone()),
+                (0x152a, 0x880a, duplicate.as_c_str(), selected_id.clone()),
+            ]
+            .into_iter(),
+            &selected_id,
+        )
+        .is_err());
+        assert!(unique_supported_hid_path(
+            [(0x1234, 0x880a, first.as_c_str(), selected_id.clone())].into_iter(),
+            &selected_id,
+        )
+        .is_err());
+    }
 }
 
 fn selected_supported_path<'a>(

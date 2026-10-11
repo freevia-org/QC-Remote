@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "shortDescription": "Independent modular desktop controller for compatible guitar hardware",
+    "longDescription": "Unofficial desktop controller for compatible Quad Cortex hardware. Not affiliated with or endorsed by Neural DSP Technologies Oy.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png"
+    ]
+  }
+}

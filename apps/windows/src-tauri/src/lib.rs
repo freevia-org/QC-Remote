@@ -4,9 +4,9 @@ use broker_attach::{
     published_broker_process_is_alive, published_process_is_alive_with,
     DEVICE_BROKER_AUTHENTICATE_METHOD,
 };
-use qc_relay_client::{DeviceAdapter, DeviceError};
 #[cfg(test)]
-use qc_windows_process::{os_process_created_at, os_process_is_alive};
+use qc_native_platform::process::{os_process_created_at, os_process_is_alive};
+use qc_relay_client::{DeviceAdapter, DeviceError};
 use quadcortex::device::{generated_gateway, generated_gateway::rpc};
 use serde_json::{json, Value};
 use std::fs;
@@ -1713,7 +1713,10 @@ fn default_broker_executable() -> Result<PathBuf, String> {
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf));
     locate_native_broker(executable_directory.as_deref()).ok_or_else(|| {
-        "The QC Remote device broker (qc-device-broker.exe) is missing beside QC Remote. Reinstall QC Remote.".into()
+        format!(
+            "The QC Remote device broker ({}) is missing beside QC Remote. Reinstall QC Remote.",
+            native_broker_filename()
+        )
     })
 }
 
@@ -1889,6 +1892,26 @@ fn resolve_descriptor_directory(
     })
 }
 
+fn app_descriptor_directory(
+    app_local_data_dir: Result<PathBuf, impl std::fmt::Display>,
+    bundle_identifier: &str,
+) -> Result<PathBuf, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (app_local_data_dir, bundle_identifier);
+        let directory = broker_paths::app_local_data_dir();
+        qc_native_platform::paths::prepare_directory(&directory)?;
+        Ok(directory)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(resolve_descriptor_directory(
+            app_local_data_dir,
+            bundle_identifier,
+        ))
+    }
+}
+
 /// Record where the shared broker's descriptor lives. Called once from Tauri
 /// setup, before any command can reach the gateway.
 fn set_device_broker_descriptor_directory(app_local_data_dir: &Path) {
@@ -1995,9 +2018,12 @@ fn hidden_resident_refusal(
     let attachable = device_broker_descriptor::read_descriptor(descriptor_path, now_ms)
         .is_some_and(|descriptor| alive(&descriptor));
     (session_marker && !attachable).then(|| {
-        "No new broker was started. Quit QC Remote from its notification-area icon, then \
-         open QC Remote again from the Start menu."
-            .to_owned()
+        if cfg!(target_os = "linux") {
+            "No new broker was started. Quit QC Remote from its tray icon, then open QC Remote again from your applications menu."
+        } else {
+            "No new broker was started. Quit QC Remote from its notification-area icon, then open QC Remote again from the Start menu."
+        }
+        .to_owned()
     })
 }
 
@@ -2020,8 +2046,17 @@ fn session_marker_present(descriptor_path: &Path) -> bool {
     }
     #[cfg(all(not(test), not(windows)))]
     {
-        let _ = descriptor_path;
-        false
+        #[cfg(target_os = "linux")]
+        {
+            descriptor_path
+                .parent()
+                .is_some_and(qc_native_platform::resident_marker::is_running)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = descriptor_path;
+            false
+        }
     }
 }
 
@@ -2856,9 +2891,64 @@ fn locate_native_broker(executable_directory: Option<&Path>) -> Option<PathBuf> 
         target
             .join("app-host-broker")
             .join(profile)
-            .join("qc-device-broker.exe")
+            .join(native_broker_filename())
     });
     locate_native_broker_in(executable_directory, &fallbacks, cfg!(debug_assertions))
+}
+
+fn native_broker_filename() -> &'static str {
+    if cfg!(windows) {
+        "qc-device-broker.exe"
+    } else {
+        "qc-device-broker"
+    }
+}
+
+fn native_broker_sidecar_names() -> Vec<String> {
+    let base = native_broker_filename();
+    let mut names = vec![base.to_owned()];
+    if cfg!(windows) {
+        names.extend([
+            "qc-device-broker-x86_64-pc-windows-msvc.exe".to_owned(),
+            "qc-device-broker-x86_64-pc-windows-gnu.exe".to_owned(),
+        ]);
+    } else if let Some(target) = native_linux_target_triple() {
+        names.push(format!("qc-device-broker-{target}"));
+    }
+    names
+}
+
+fn native_linux_target_triple() -> Option<&'static str> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    return Some("x86_64-unknown-linux-gnu");
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))]
+    return Some("x86_64-unknown-linux-musl");
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "gnu"))]
+    return Some("aarch64-unknown-linux-gnu");
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "musl"))]
+    return Some("aarch64-unknown-linux-musl");
+    #[allow(unreachable_code)]
+    None
+}
+
+#[cfg(test)]
+mod native_broker_filename_tests {
+    use super::*;
+
+    #[test]
+    fn broker_sidecar_names_match_the_current_tauri_target() {
+        let names = native_broker_sidecar_names();
+        if cfg!(windows) {
+            assert_eq!(native_broker_filename(), "qc-device-broker.exe");
+            assert!(names.contains(&"qc-device-broker-x86_64-pc-windows-msvc.exe".into()));
+        } else {
+            assert_eq!(native_broker_filename(), "qc-device-broker");
+            #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+            assert!(names.contains(&"qc-device-broker-x86_64-unknown-linux-gnu".into()));
+            #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "gnu"))]
+            assert!(names.contains(&"qc-device-broker-aarch64-unknown-linux-gnu".into()));
+        }
+    }
 }
 
 fn locate_native_broker_in(
@@ -2867,14 +2957,10 @@ fn locate_native_broker_in(
     allow_development_fallback: bool,
 ) -> Option<PathBuf> {
     if let Some(directory) = executable_directory {
-        let installed = [
-            "qc-device-broker.exe",
-            "qc-device-broker-x86_64-pc-windows-msvc.exe",
-            "qc-device-broker-x86_64-pc-windows-gnu.exe",
-        ]
-        .into_iter()
-        .map(|name| directory.join(name))
-        .find(|path| path.is_file());
+        let installed = native_broker_sidecar_names()
+            .iter()
+            .map(|name| directory.join(name))
+            .find(|path| path.is_file());
         if installed.is_some() {
             return installed;
         }
@@ -3901,9 +3987,7 @@ async fn pair_public_relay(
         .pair(
             &endpoint,
             &pairing_code,
-            device_name
-                .as_deref()
-                .unwrap_or(relay::WINDOWS_RELAY_DEVICE_NAME),
+            device_name.as_deref().unwrap_or(relay::RELAY_DEVICE_NAME),
             relay_adapter(&app),
         )
         .await
@@ -3961,9 +4045,7 @@ async fn poll_public_relay_browser_pairing(
 ) -> Result<BrowserPairingProgress, String> {
     state
         .poll_browser_pairing(
-            device_name
-                .as_deref()
-                .unwrap_or(relay::WINDOWS_RELAY_DEVICE_NAME),
+            device_name.as_deref().unwrap_or(relay::RELAY_DEVICE_NAME),
             relay_adapter(&app),
         )
         .await
@@ -4606,7 +4688,7 @@ pub fn run() {
     // correctly refuses descriptor takeover, which can leave two windows
     // showing different client states. Redirect every later launch to the one
     // process that owns the UI and bring that window back from the taskbar.
-    #[cfg(all(windows, not(test)))]
+    #[cfg(all(any(windows, target_os = "linux"), not(test)))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         // A second launch is a user reopening QC Remote (bridges never reach
         // this: `--local-mcp-bridge` returns before `run`). It is that
@@ -4646,10 +4728,9 @@ pub fn run() {
             // it names a directory without creating or verifying it - so this
             // keeps every window on the one, better-tested hosting mode instead
             // of silently degrading to the other on a resolution error.
-            let descriptor_directory = resolve_descriptor_directory(
-                app.path().app_local_data_dir(),
-                &app.config().identifier,
-            );
+            let descriptor_directory =
+                app_descriptor_directory(app.path().app_local_data_dir(), &app.config().identifier)
+                    .map_err(std::io::Error::other)?;
             set_device_broker_descriptor_directory(&descriptor_directory);
             // An actual app launch is a user action: this launch's one clear
             // point for a recorded Quit (`user_quit_refusal`), before the tray
@@ -4697,13 +4778,7 @@ pub fn run() {
                 LocalAccess::new(handle.clone(), adapter.clone(), relay.access_receiver());
             let local_access_failure = local_access.start_if_enabled().err();
             app.manage(local_access);
-            external_host::start(
-                handle.clone(),
-                resolve_descriptor_directory(
-                    app.path().app_local_data_dir(),
-                    &app.config().identifier,
-                ),
-            );
+            external_host::start(handle.clone(), descriptor_directory.clone());
             if let Some(error) = local_access_failure {
                 // The failure is not swallowed here: it is on
                 // `local_mcp_status().lastError` for the UI to surface. The

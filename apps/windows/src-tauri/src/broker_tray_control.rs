@@ -22,6 +22,10 @@ use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+#[cfg(target_os = "linux")]
+#[path = "broker_tray_control_linux.rs"]
+mod linux;
+
 const CONTROL_LOCK: &str = "device-broker-tray-control.lock";
 #[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -251,17 +255,36 @@ impl TrayEffects for NativeTrayEffects {
         {
             crate::tray_native::is_running()
         }
-        #[cfg(not(windows))]
-        false
+        #[cfg(target_os = "linux")]
+        {
+            linux::is_running(&self.directory)
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            false
+        }
     }
 
     fn locate(&self) -> Result<PathBuf, String> {
-        let executable = std::env::current_exe()
-            .map_err(|error| format!("Locate the running QC Remote executable: {error}"))?;
-        executable
-            .parent()
-            .and_then(locate_resident_host)
-            .ok_or_else(|| "The qc-device-broker sidecar is missing beside QC Remote".to_owned())
+        #[cfg(windows)]
+        {
+            let executable = std::env::current_exe()
+                .map_err(|error| format!("Locate the running QC Remote executable: {error}"))?;
+            executable
+                .parent()
+                .and_then(locate_resident_host)
+                .ok_or_else(|| {
+                    "The qc-device-broker sidecar is missing beside QC Remote".to_owned()
+                })
+        }
+        #[cfg(target_os = "linux")]
+        {
+            linux::locate()
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        {
+            Err("The QC Remote tray is supported on Windows and Linux".to_owned())
+        }
     }
 
     fn spawn(
@@ -344,10 +367,14 @@ impl TrayEffects for NativeTrayEffects {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            linux::spawn(executable, directory, supersede_user_quit)
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = (executable, directory, supersede_user_quit);
-            Err("The QC Remote tray is supported on Windows".to_owned())
+            Err("The QC Remote tray is supported on Windows and Linux".to_owned())
         }
     }
 
@@ -370,10 +397,14 @@ impl TrayEffects for NativeTrayEffects {
             }
             Ok(())
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            linux::set_run_entry(executable, directory)
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = (executable, directory);
-            Err("The QC Remote tray is supported on Windows".to_owned())
+            Err("The QC Remote tray is supported on Windows and Linux".to_owned())
         }
     }
 
@@ -389,13 +420,17 @@ impl TrayEffects for NativeTrayEffects {
             }
             Ok(())
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        {
+            linux::remove_run_entry()
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
         Ok(())
     }
 }
 
 /// A fresh descriptor naming a live broker is published in `directory`.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn serving_broker_published(directory: &Path) -> bool {
     crate::device_broker_descriptor::read_descriptor(
         &crate::device_broker_descriptor::device_broker_descriptor_path(directory),
@@ -404,9 +439,9 @@ fn serving_broker_published(directory: &Path) -> bool {
     .is_some_and(|descriptor| {
         // Alive, and still the process that published (a recycled pid has a
         // different creation time). A descriptor without one is not enough.
-        qc_windows_process::os_process_is_alive(descriptor.process_id)
+        qc_native_platform::process::os_process_is_alive(descriptor.process_id)
             && descriptor.process_created_at.is_some()
-            && qc_windows_process::os_process_created_at(descriptor.process_id)
+            && qc_native_platform::process::os_process_created_at(descriptor.process_id)
                 == descriptor.process_created_at
     })
 }

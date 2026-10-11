@@ -29,13 +29,76 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
       - name: Build the standalone Linux broker
-        run: cargo build --locked -p qc-device-broker --bin qc-device-broker
+        run: cargo build --locked -p qc-device-broker --bin qc-device-broker --features linux-tray
       # These real subprocess tests start disconnected; authentication/status,
       # election, filesystem modes, crash recovery and shutdown need no QC.
       # --probe, --verify-live and --auto-connect are deliberately absent.
       - name: Test shared engines and Linux native boundaries
-        run: cargo test --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-device-broker
+        run: cargo test --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --features qc-device-broker/linux-tray
       - name: Lint Linux broker and adapters
-        run: cargo clippy --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-device-broker --all-targets -- -D warnings
+        run: cargo clippy --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --all-targets --features qc-device-broker/linux-tray -- -D warnings
       - name: Check non-hardware executable entry point
         run: ./target/debug/qc-device-broker --self-check
+
+  linux-desktop-host:
+    name: Linux Tauri host and resident tray
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Tauri, tray and Secret Service development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential curl file libayatana-appindicator3-dev libdbus-1-dev \
+            libgtk-3-dev libsecret-1-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev \
+            libxdo-dev pkg-config
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install frontend dependencies and build the Linux UI
+        run: |
+          npm ci
+          npm run build --workspace @qc-remote/windows
+      - name: Prepare Cargo-only Linux Tauri configuration
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = json.loads(Path("apps/windows/src-tauri/tauri.linux.conf.json").read_text())
+          config.setdefault("bundle", {})["externalBin"] = []
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("TAURI_CONFIG=" + json.dumps(config, separators=(",", ":")) + "\n")
+          PY
+      # The app's checked-in rust-toolchain.toml intentionally pins Windows
+      # MSVC. Explicit +stable selects this Linux runner's host toolchain.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/windows/src-tauri -> target
+          key: linux-tauri-host
+      # Cargo validates Rust host code only; packaging needs a verified,
+      # target-suffixed external broker. Avoid a placeholder that could be
+      # mistaken for a shippable sidecar.
+      - name: Format the Linux GUI workspace
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable fmt --all -- --check
+      - name: Check the GUI and Linux tray sidecar
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable check --locked --all-targets --features tray-sidecar,custom-protocol
+      - name: Link the native Linux desktop executable
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable build --locked --features tray-sidecar,custom-protocol --bin qc-remote
+      - name: Link the resident broker and MCP host
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable build --locked --features tray-sidecar,custom-protocol --bin qc-device-broker
+      - name: Test the GUI host with its in-process broker
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable test --locked --features tray-sidecar,custom-protocol
+      - name: Lint Linux GUI, tray and sidecar targets
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable clippy --locked --all-targets --features tray-sidecar,custom-protocol -- -D warnings

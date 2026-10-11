@@ -4,13 +4,21 @@ use std::path::PathBuf;
 pub const APP_DIRECTORY: &str = "org.freevia.qcremote";
 
 pub fn app_local_data_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("AppData").join("Local"))
-        })
-        .unwrap_or_else(std::env::temp_dir)
-        .join(APP_DIRECTORY)
+    #[cfg(target_os = "linux")]
+    {
+        qc_native_platform::paths::default_directory()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .map(|p| PathBuf::from(p).join("AppData").join("Local"))
+            })
+            .unwrap_or_else(std::env::temp_dir)
+            .join(APP_DIRECTORY)
+    }
 }
 
 pub fn unix_time_ms() -> u64 {
