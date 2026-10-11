@@ -1064,6 +1064,25 @@ mod tests {
     }
 
     #[test]
+    fn transition_claim_crash_child_helper() {
+        let Ok(lock_path) = std::env::var("QC_DEVICE_LEASE_TEST_TRANSITION_LOCK_PATH") else {
+            return;
+        };
+        let lock_path = PathBuf::from(lock_path);
+        let _claim = qc_owner_only_file::ClaimedFile::try_claim(&lock_path)
+            .expect("child acquires the valid transition claim");
+        let ready_path = lock_path.with_extension("ready");
+        let ready_temp = lock_path.with_extension(format!("ready-{}.tmp", std::process::id()));
+        std::fs::write(&ready_temp, std::process::id().to_string())
+            .expect("child signals that it holds the transition claim");
+        std::fs::rename(&ready_temp, &ready_path)
+            .expect("child atomically publishes its ready marker");
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    #[test]
     fn lease_release_retry_child_helper() {
         let Ok(path) = std::env::var("QC_DEVICE_LEASE_TEST_RELEASE_PATH") else {
             return;
@@ -1469,24 +1488,86 @@ mod tests {
 
     #[test]
     fn transition_lock_reaps_a_claim_left_by_a_crashed_owner() {
-        let path = scratch("transition-crash");
+        let directory = std::env::temp_dir().join(format!(
+            "qc-lease-transition-crash-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        create_test_directory(&directory).unwrap();
+        let _directory = TestDirectory(directory.clone());
+        let path = directory.join("device-owner.json");
         let lock = path.with_extension("transition");
         let claim = PathBuf::from(format!("{}.claim", lock.display()));
-        // Use the same owner-only sidecar/document pair as production, then
-        // drop the handle without calling `release` to model a crashed owner.
-        // A plain `fs::write` here creates a 0644 claim under the usual umask;
-        // Linux correctly refuses to reap a claim that fails owner-only checks.
-        let abandoned = qc_owner_only_file::ClaimedFile::try_claim(&lock)
-            .expect("the fixture creates a valid transition claim");
-        drop(abandoned);
-        assert!(lock.exists(), "the crashed owner left its lock document");
-        assert!(claim.exists(), "the crashed owner left its claim sidecar");
-        let guard = LeaseTransitionGuard::acquire(&[path], Duration::from_millis(100))
+        let ready = lock.with_extension("ready");
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "device_lease::tests::transition_claim_crash_child_helper",
+            ])
+            .env("QC_DEVICE_LEASE_TEST_TRANSITION_LOCK_PATH", &lock)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("transition claim owner child starts");
+        let mut child = ChildGuard { child };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "child signals after acquiring the valid transition claim"
+            );
+            assert!(
+                child.child.try_wait().unwrap().is_none(),
+                "transition claim owner remains alive until the parent kills it"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let claimed_pid: u32 = std::fs::read_to_string(&ready)
+            .expect("the child wrote its ready marker")
+            .parse()
+            .expect("the ready marker contains the child pid");
+        assert_eq!(claimed_pid, child.child.id());
+        assert!(
+            child.child.try_wait().unwrap().is_none(),
+            "the child still owns the claim before the live-owner check"
+        );
+        assert!(lock.exists(), "the live owner keeps its lock document");
+        assert!(claim.exists(), "the live owner keeps its claim sidecar");
+        assert!(
+            qc_owner_only_file::release_if_unclaimed(&lock).is_err(),
+            "a live child claim is never reaped"
+        );
+        assert!(lock.exists(), "the live owner keeps its lock document");
+        assert!(claim.exists(), "the live owner keeps its claim sidecar");
+
+        child
+            .child
+            .kill()
+            .expect("the parent terminates its exact owner child");
+        let status = child
+            .child
+            .wait()
+            .expect("the terminated claim owner is reaped");
+        assert!(!status.success(), "the child was forcibly terminated");
+        assert!(lock.exists(), "process death leaves the lock document");
+        assert!(claim.exists(), "process death leaves the claim sidecar");
+
+        let guard = LeaseTransitionGuard::acquire(&[path], TRANSITION_LOCK_WAIT)
             .expect("the unlocked abandoned claim is safely reaped");
         assert!(lock.exists(), "the new owner has installed its document");
         drop(guard);
         assert!(!lock.exists());
         assert!(!claim.exists());
+        assert!(
+            ready.exists(),
+            "the owned test directory still contains its marker"
+        );
+        drop(_directory);
+        assert!(
+            !directory.exists(),
+            "the test removes its owned scratch directory"
+        );
+        assert!(!ready.exists());
     }
 
     #[test]
