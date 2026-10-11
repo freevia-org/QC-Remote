@@ -72,7 +72,7 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   assert.match(appSource, /createQcDeviceDisplay\(\{[\s\S]*?deviceSettings: deviceSettingsWorkflow/);
   assert.match(screenContent, /<CorOsDeviceSettings workflow=\{workflows\.deviceSettings\}/);
   assert.match(deviceSettingsScreen, /Support[\s\S]*Device Information/);
-  assert.match(deviceSettingsScreen, /DeviceInformationDetail/);
+  assert.match(deviceSettingsScreen, /<CorOsReferenceSettingsPane view="settings-info" deviceInformation=\{info\} \/>/, "Device Information is the shared pane fed the unit's real values");
   assert.match(appSource, /createQcDeviceDisplay\(\{[\s\S]*?tempo: tempoWorkflow/);
   assert.match(screenContent, /<CorOsTempoScreen workflow=\{workflows\.tempo\}/);
   assert.match(appSource, /QcHardwareSwitch role="bank:up" label=\{<QcUiIcon kind="up" \/>\}/);

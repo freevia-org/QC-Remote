@@ -200,7 +200,7 @@ test("Device Information needs a session, reads the unit's identity and falls ba
   const host = mount();
   await act(async () => { await host.views.open("info"); });
   assert.equal(host.world.view, "settings-info");
-  assert.deepEqual(host.views.deviceInformation, { serial: "S1", deviceName: "Rig", corOsVersion: "3.1" });
+  assert.deepEqual({ ...host.views.deviceInformation }, { serial: "S1", deviceName: "Rig", macAddress: undefined, corOsVersion: undefined, linuxKernel: undefined, uBoot: undefined, zenjackApp: "3.1", zenjackBootloader: undefined, zencoderApp: undefined, zencoderBootloader: undefined, zenwireless: undefined }, "the application firmware build is the Zenjack row, not CorOS");
   host.renderer.unmount();
   const failing = mount({ identityFails: true });
   await act(async () => { await failing.views.open("info"); });

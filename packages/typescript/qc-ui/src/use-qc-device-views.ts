@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { qcDeviceInformation } from "./device-information.ts";
 import type { GatewayTransport, PresetList, PresetSnapshot } from "@qc-remote/client";
 import type { CorOsDeviceInformation } from "./coros-reference-settings-pane.tsx";
 import { QC_DEVICE_SCREEN_GESTURES } from "./device-screen-navigation.ts";
@@ -139,16 +140,23 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
     }
     destination.setView("settings-info");
     try {
-      const identity = await gateway.identity();
-      setDeviceInformation({
-        serial: identity.serial,
-        deviceName: identity.customName || snapshot.deviceName,
-        corOsVersion: identity.appFwVersion
-      });
+      setDeviceInformation(qcDeviceInformation(await gateway.identity(), snapshot.deviceName));
     } catch (error) {
       fail(error);
     }
   }, []);
+
+  // Keep the unit's identity at hand once a session answers, so every window that shows it (the app's own
+  // Device Information screen and the Windows Device Info window) has the real values without being asked.
+  const sessionReady = options.session.sessionReady;
+  useEffect(() => {
+    if (!sessionReady) return;
+    let current = true;
+    latest.current.gateway.identity()
+      .then((identity) => { if (current) setDeviceInformation(qcDeviceInformation(identity, latest.current.snapshot.deviceName)); })
+      .catch(() => undefined);
+    return () => { current = false; };
+  }, [sessionReady]);
 
   const toggle = useCallback(async (view: "gig" | "io") => {
     const current = latest.current.destination.view;

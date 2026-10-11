@@ -1,6 +1,7 @@
 import { closeUserOpenedTarget, escapeUserOpenedTarget } from "./user-open-focus";
 import { useRef, useState, type ReactNode } from "react";
 import { CorOsReferenceSettingsPane, type ReferenceSettingsView } from "./coros-reference-settings-pane";
+import { qcDeviceInformation } from "./device-information";
 import { QcDeviceCategoryGlyph } from "./device-category-glyph";
 import { QcBrightnessInstructions, QcBrightnessModeRow, QcSegmentBarHit } from "./qc-brightness-panel";
 import { QcPillToggle } from "./qc-pill-toggle";
@@ -300,23 +301,6 @@ function StorageDetail({ workflow }: { workflow: DeviceSettingsWorkflow }) {
   </>;
 }
 
-function DeviceInformationDetail({ workflow }: { workflow: DeviceSettingsWorkflow }) {
-  const identity = workflow.identity;
-  return <>
-    <h1>Device information</h1>
-    <div className="information-table">
-      <span><b>Serial number:</b><i>{identity?.serial ?? "Not exposed"}</i></span>
-      <span><b>Device name:</b><i>{identity?.customName || "Quad Cortex"}</i></span>
-      <span><b>MAC address:</b><i>Not exposed</i></span>
-    </div>
-    <hr />
-    <h1>Software information</h1>
-    <div className="information-table">
-      <span><b>CorOS:</b><i>{identity?.appFwVersion ?? "Not exposed"}</i></span>
-    </div>
-  </>;
-}
-
 /**
  * The header glyph next to the section name. Always the Device mark for the
  * Device section, even while browsing its own MIDI row: CorOsOfficialSettings'
@@ -379,7 +363,7 @@ export function CorOsDeviceSettings({ workflow, onClose }: DeviceSettingsScreenP
   const [menuOpen, setMenuOpen] = useState(false);
   const sectionSelector = useRef<HTMLButtonElement>(null);
   const sectionTitle = DEVICE_SETTINGS_SECTIONS.find(([key]) => key === section)?.[1] ?? "Device";
-  const info = { serial: workflow.identity?.serial, deviceName: workflow.identity?.customName || undefined, corOsVersion: workflow.identity?.appFwVersion };
+  const info = qcDeviceInformation(workflow.identity);
   const select = (message: string | undefined, apply: () => void) => () => { apply(); if (message) announce(message); };
 
   let nav: { key: string; label: string; active: boolean; unavailable: boolean; icon: () => ReactNode; onSelect(): void }[];
@@ -424,7 +408,7 @@ export function CorOsDeviceSettings({ workflow, onClose }: DeviceSettingsScreenP
         onSelect: select(readOnly ? unavailableMessage(SUPPORT_ROW_LABELS[row]) : undefined, () => setSupportRow(row))
       };
     });
-    detail = supportRow === "info" ? <DeviceInformationDetail workflow={workflow} />
+    detail = supportRow === "info" ? <CorOsReferenceSettingsPane view="settings-info" deviceInformation={info} />
       : referenceView ? <CorOsReferenceSettingsPane view={referenceView} deviceInformation={info} />
       : <UnavailableDetail label={SUPPORT_ROW_LABELS[supportRow]} />;
   }

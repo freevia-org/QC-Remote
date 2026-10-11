@@ -222,7 +222,7 @@ The coloured light on each indicator uses the same scheme:
 The panel also lists the **Connection log** (with **Clear history**) and a
 **Device info…** button, which opens the Device Info window with the device
 name, connection state, setlist, preset, mode, scene, tempo, block count and
-whether there are unsaved changes. The app never reads or shows serial numbers.
+whether there are unsaved changes, and the Device Information screen with the serial number, name and software versions the Quad Cortex reports about itself. They are shown on this computer only and are never included in diagnostics.
 
 **REMOTE panel states:** *Not set up* (not yet paired), *Waiting for sign-in*,
 *Connecting*, *Ready* ("This host's secure outbound relay route is connected"),

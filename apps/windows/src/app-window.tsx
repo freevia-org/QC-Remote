@@ -51,14 +51,13 @@ const waitingLine = (unanswered: boolean) => unanswered ? WINDOW_STATE_NO_ANSWER
 /**
  * The Device Information screen is the shared display from @qc-remote/ui, the
  * same frame, canvas and screen the main window draws, so it cannot drift from
- * it. Only Device name is real. Serial number and CorOS are left blank because
- * this app's own policy never reads them, and the screen says so for the MAC
- * address; no firmware strings are invented. Done closes this native window, as
- * it closes Settings on the unit. The live fields the device screen has no
- * rows for sit in the accessible `<dl>` below it.
+ * it, with the same data: what the unit reports about itself, row by row (a row
+ * the unit did not report says so). Done closes this native window, as it
+ * closes Settings on the unit. The live fields the device screen has no rows
+ * for sit in the accessible `<dl>` below it.
  */
-function DeviceInfoScreen({ deviceName, onClose }: { deviceName: string; onClose(): void }) {
-  return <QcDeviceInformationDisplay deviceInformation={{ deviceName, serial: "", corOsVersion: "" }} onClose={onClose} />;
+function DeviceInfoScreen({ device, onClose }: { device: DeviceInfoState; onClose(): void }) {
+  return <QcDeviceInformationDisplay deviceInformation={device.information ?? { deviceName: device.deviceName }} onClose={onClose} />;
 }
 
 function DeviceInfoContent() {
@@ -85,7 +84,7 @@ function DeviceInfoContent() {
     </header>
     <div className="help-window-scroll">
       {device ? <>
-        <DeviceInfoScreen deviceName={device.deviceName} onClose={close} />
+        <DeviceInfoScreen device={device} onClose={close} />
         <dl className="app-window-facts">
           <dt>Connection</dt><dd>{device.connection}</dd>
           <dt>Setlist</dt><dd>{device.setlistName}</dd>
@@ -97,7 +96,7 @@ function DeviceInfoContent() {
           <dt>State</dt><dd>{device.dirty ? "Unsaved device changes" : "Clean"}</dd>
         </dl>
       </> : <p role="status">{waitingLine(unanswered)}</p>}
-      <p>Hardware serial numbers and account identifiers are intentionally not read or displayed.</p>
+      <p>The values on the screen are the ones the Quad Cortex reports about itself. Cloud account identifiers are not read or displayed, and none of this is included in diagnostics.</p>
       <p>Software and firmware versions are not currently read from the connected device by this app.</p>
       {closeError && <p className="about-message" role="status">Could not close this window: {closeError}</p>}
     </div>

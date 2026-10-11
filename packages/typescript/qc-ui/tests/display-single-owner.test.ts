@@ -17,7 +17,7 @@ const hosts = [["windows", code("../../../../apps/windows/src/App.tsx")], ["andr
 const index = read("../src/index.ts");
 
 test("neither host assembles the display: no surface, no screen, no display state of its own", () => {
-  const forbidden = /\bQuadCortexSurface\b|\bCorOs\w*Screen\b|\bCorOsCpuMonitor\w*\b|\bCorOsSceneCommand\b|\bLooperXScreen\b|\bModesConfigurationScreen\b|\bPresetMidiOutEditor\b|setScreenDestination|\bcpuColumns\b|\bcpuLoad\b|\bdeviceInformation\b|screenContent|\bscreenView=/i;
+  const forbidden = /\bQuadCortexSurface\b|\bCorOs\w*Screen\b|\bCorOsCpuMonitor\w*\b|\bCorOsSceneCommand\b|\bLooperXScreen\b|\bModesConfigurationScreen\b|\bPresetMidiOutEditor\b|setScreenDestination|\bcpuColumns\b|\bcpuLoad\b|(?<!deviceViews\.)\bdeviceInformation\b|screenContent|\bscreenView=/i;
   for (const [name, source] of hosts) assert.doesNotMatch(source, forbidden, `${name} must leave the display to the shared code`);
 });
 
