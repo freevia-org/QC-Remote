@@ -156,3 +156,10 @@ test("both hosts open, close and toggle device screens, forward gestures and und
     assert.doesNotMatch(source, /rotate: \(role|editorUnhandled|unhandled: \(action/, `${name} leaves the unhandled-control wording to the shared router`);
   }
 });
+
+test("the Windows menu toggles Gig View and I/O Settings through the shared views, like the on-screen controls", () => {
+  const windows = readFileSync(new URL("../../../../apps/windows/src/App.tsx", import.meta.url), "utf8");
+  assert.ok(windows.includes('case "open-gig-view": void deviceViews.toggle("gig"); break;'));
+  assert.ok(windows.includes('case "open-io-settings": void deviceViews.toggle("io"); break;'));
+  assert.ok(windows.includes('case "open-tuner": void deviceViews.open("tuner"); break;'), "the Tuner may mute the rig, so its menu item stays an explicit open");
+});
