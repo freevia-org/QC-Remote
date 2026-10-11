@@ -1513,22 +1513,29 @@ fn unique_fixture_directory_with_suffix(
     }
     for _ in 0..16 {
         let directory = parent.join(format!("qc-owned-{name}-{:032x}", suffix()));
-        let mut builder = fs::DirBuilder::new();
-        // Broker subprocess fixtures validate the same owner-only descriptor
-        // directory policy as production. Apply the mode in mkdir itself so
-        // there is no interval where another process can observe 0755.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        match builder.create(&directory) {
+        match create_private_fixture_directory(&directory) {
             Ok(()) => return directory,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => panic!("create owned fixture: {error}"),
         }
     }
     panic!("unique fixture allocation exhausted");
+}
+
+#[cfg(unix)]
+fn create_private_fixture_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut builder = fs::DirBuilder::new();
+    // Apply the owner-only mode during creation so no process can observe a
+    // less restrictive intermediate directory.
+    builder.mode(0o700);
+    builder.create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_fixture_directory(path: &Path) -> std::io::Result<()> {
+    fs::create_dir(path)
 }
 
 fn test_descriptor_path(name: &str) -> PathBuf {

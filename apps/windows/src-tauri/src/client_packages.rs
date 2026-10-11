@@ -4665,17 +4665,16 @@ pub async fn antigravity_local_integration_status() -> Result<Value, String> {
 fn open_antigravity_blocking() -> Result<(), String> {
     let executable = antigravity_installation()
         .and_then(|installation| installation.executable)
-        .ok_or_else(|| {
-            "Google Antigravity is not installed for this Windows account.".to_string()
-        })?;
-    let command = Command::new(executable);
+        .ok_or_else(|| "Google Antigravity is not installed on this computer.".to_string())?;
     #[cfg(target_os = "linux")]
     {
+        let command = Command::new(executable);
         crate::broker_tray_control::spawn_owned(command)
             .map_err(|error| format!("Could not open Google Antigravity: {error}"))
     }
     #[cfg(not(target_os = "linux"))]
     {
+        let mut command = Command::new(executable);
         command
             .spawn()
             .map(|_| ())
@@ -5022,15 +5021,16 @@ pub async fn open_lm_studio() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         let executable = lm_studio_installation()
             .and_then(|installation| installation.executable)
-            .ok_or_else(|| "LM Studio is not installed for this Windows account.".to_string())?;
-        let command = Command::new(executable);
+            .ok_or_else(|| "LM Studio is not installed on this computer.".to_string())?;
         #[cfg(target_os = "linux")]
         {
+            let command = Command::new(executable);
             crate::broker_tray_control::spawn_owned(command)
                 .map_err(|error| format!("Could not open LM Studio: {error}"))
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let mut command = Command::new(executable);
             command
                 .spawn()
                 .map(|_| ())

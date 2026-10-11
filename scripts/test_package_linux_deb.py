@@ -59,6 +59,42 @@ def _fixture_deb(
 
 @unittest.skipUnless(sys.platform == "linux", "process-group cleanup is Linux-only")
 class PackageSafetyTests(unittest.TestCase):
+    def test_expected_deb_app_hash_uses_private_copy_and_cleans_it(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="qc-deb-patch-") as temporary:
+            root = Path(temporary)
+            source = root / "app"
+            destination = root / "tmp/qc-remote-expected-deb"
+            destination.parent.mkdir()
+            token = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
+            replacement = b"__TAURI_BUNDLE_TYPE_VAR_DEB"
+            prefix = b"x" * (1024 * 1024 - 9)
+            original = prefix + token + b"tail"
+            source.write_bytes(original)
+            source.chmod(0o700)
+
+            result = package_linux_deb.expected_deb_app_sha256(source, destination)
+
+            self.assertEqual(result, hashlib.sha256(prefix + replacement + b"tail").hexdigest())
+            self.assertEqual(source.read_bytes(), original)
+            self.assertFalse(destination.exists(), "private patched app copy survived cleanup")
+
+    def test_expected_deb_app_hash_rejects_absent_or_duplicate_marker_and_cleans_copy(self) -> None:
+        token = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
+        cases = ((b"no marker", 0), (token + b"and" + token, 2))
+        for payload, count in cases:
+            with self.subTest(marker_count=count), tempfile.TemporaryDirectory(prefix="qc-deb-patch-invalid-") as temporary:
+                root = Path(temporary)
+                source = root / "app"
+                destination = root / "tmp/qc-remote-expected-deb"
+                destination.parent.mkdir()
+                source.write_bytes(payload)
+                source.chmod(0o700)
+
+                with self.assertRaisesRegex(package_linux_deb.PackageError, f"found {count}"):
+                    package_linux_deb.expected_deb_app_sha256(source, destination)
+
+                self.assertFalse(destination.exists(), "rejected private app copy survived cleanup")
+
     def test_binary_command_output_collision_preserves_preexisting_file(self) -> None:
         with tempfile.TemporaryDirectory(prefix="qc-deb-binary-collision-") as temporary:
             root = Path(temporary)

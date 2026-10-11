@@ -121,14 +121,14 @@ def active_rust_toolchain() -> str:
 
 @contextlib.contextmanager
 def stage_sidecar(source: Path, destination: Path) -> Iterator[Path]:
-    """Install one exclusive, temporary Tauri externalBin input."""
+    """Install one exclusive, temporary executable input."""
     source.lstat()
     if not source.is_file() or source.is_symlink():
-        raise PackageError(f"broker binary must be a regular file, not a symlink: {source}")
+        raise PackageError(f"executable input must be a regular file, not a symlink: {source}")
     source = source.resolve(strict=True)
     metadata = source.stat()
     if metadata.st_size == 0 or not os.access(source, os.X_OK):
-        raise PackageError(f"broker binary must be a nonempty executable regular file: {source}")
+        raise PackageError(f"executable input must be a nonempty executable regular file: {source}")
     created_parent = False
     try:
         destination.parent.mkdir(mode=0o755)
@@ -169,6 +169,45 @@ def stage_sidecar(source: Path, destination: Path) -> Iterator[Path]:
                 destination.parent.rmdir()
             except OSError:
                 pass
+
+
+def expected_deb_app_sha256(source: Path, destination: Path) -> str:
+    """Hash Tauri 2.11.5's DEB marker image without changing the app binary.
+
+    Tauri CLI 2.11.5 is pinned in package-lock.json and the matching
+    tauri-v2.11.5 source (crates/tauri-bundler/src/bundle.rs) replaces the
+    27-byte UNK marker with the equal-length DEB marker for a Debian bundle.
+    """
+    token = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
+    replacement = b"__TAURI_BUNDLE_TYPE_VAR_DEB"
+    if len(token) != len(replacement):
+        raise PackageError("Tauri bundle marker replacement changed binary length")
+    with stage_sidecar(source, destination) as patched:
+        matches: list[int] = []
+        overlap = b""
+        processed = 0
+        with patched.open("rb") as binary:
+            while block := binary.read(1024 * 1024):
+                combined = overlap + block
+                base = processed - len(overlap)
+                min_new_start = max(0, processed - len(token) + 1)
+                search_at = max(0, min_new_start - base)
+                while True:
+                    found = combined.find(token, search_at)
+                    if found < 0:
+                        break
+                    matches.append(base + found)
+                    search_at = found + 1
+                processed += len(block)
+                overlap = combined[-(len(token) - 1):]
+        if len(matches) != 1:
+            raise PackageError(f"expected one Tauri bundle marker in app binary; found {len(matches)}")
+        with patched.open("r+b") as binary:
+            binary.seek(matches[0])
+            binary.write(replacement)
+            binary.flush()
+            os.fsync(binary.fileno())
+        return sha256_file(patched)
 
 
 def run_owned_to_file(
@@ -478,11 +517,14 @@ def package(
             packages = list(deb_dir.glob("*.deb")) if deb_dir.is_dir() else []
             if len(packages) != 1:
                 raise PackageError(f"Tauri produced {len(packages)} Debian packages in {deb_dir}")
+            expected_app_hash = expected_deb_app_sha256(
+                staged_app, debug_dir / "qc-remote-expected-deb"
+            )
             expected_hashes = {
-                # Tauri patches the prepared app in place with bundle metadata.
-                # Verify those exact post-patch bytes in the package while
-                # retaining the untouched prebuilt input for provenance.
-                "/usr/bin/qc-remote": sha256_file(staged_app),
+                # Tauri patches its bundle copy with a fixed marker and restores
+                # the target binary afterwards. Compare against a private copy
+                # transformed with the exact same equal-length marker update.
+                "/usr/bin/qc-remote": expected_app_hash,
                 "/usr/bin/qc-device-broker": sha256_file(broker_binary),
                 PACKAGE_RULE_PATH: sha256_file(RULES),
             }
@@ -536,7 +578,10 @@ def package(
     if not packages:
         raise PackageError(f"Tauri reported success but no .deb exists in {deb_dir}")
     expected_hashes = {
-        "/usr/bin/qc-remote": sha256_file(target_dir / target / "release/qc-remote"),
+        "/usr/bin/qc-remote": expected_deb_app_sha256(
+            target_dir / target / "release/qc-remote",
+            target_dir / target / "release/qc-remote-expected-deb",
+        ),
         "/usr/bin/qc-device-broker": sha256_file(broker_binary),
         PACKAGE_RULE_PATH: sha256_file(RULES),
     }
