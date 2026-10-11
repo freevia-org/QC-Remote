@@ -172,7 +172,71 @@ def stage_sidecar(source: Path, destination: Path) -> Iterator[Path]:
                 pass
 
 
-def _data_tar_from_deb(deb: Path) -> bytes:
+def run_owned_to_file(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    timeout: float,
+    output: Path,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """Stream a bounded native command's binary stdout to one owned file."""
+    if os.name != "posix":
+        raise PackageError("Debian package inspection requires Linux")
+    if timeout <= 0 or timeout > MAX_TIMEOUT_SECONDS:
+        raise ValueError(f"timeout must be between 0 and {MAX_TIMEOUT_SECONDS} seconds")
+    process: subprocess.Popen[bytes] | None = None
+    identity: tuple[int, int] | None = None
+    try:
+        with output.open("xb") as output_file:
+            created = os.fstat(output_file.fileno())
+            identity = (created.st_dev, created.st_ino)
+            process = subprocess.Popen(
+                list(command),
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=output_file,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                env=env,
+            )
+            try:
+                _stdout, stderr = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                _stop_process_group(process)
+                _stdout, stderr = process.communicate()
+                detail = (stderr or b"").decode("utf-8", errors="replace")[-4000:]
+                raise PackageError(
+                    f"binary command timed out after {timeout:g}s: {' '.join(command)}\n{detail}"
+                ) from error
+            finally:
+                if process.poll() is None:
+                    _stop_process_group(process)
+                    process.wait()
+                else:
+                    _stop_process_group(process)
+        if process.returncode:
+            detail = (stderr or b"").decode("utf-8", errors="replace")[-4000:]
+            raise PackageError(
+                f"binary command exited {process.returncode}: {' '.join(command)}\n{detail}"
+            )
+        if output.stat().st_size == 0:
+            raise PackageError(f"binary command produced empty output: {' '.join(command)}")
+    except BaseException:
+        if identity is not None:
+            try:
+                current = output.lstat()
+                if (current.st_dev, current.st_ino) == identity and stat.S_ISREG(current.st_mode):
+                    output.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
+def _extract_data_tar(deb: Path, output: Path, *, timeout: float = 120) -> None:
+    data_offset: int | None = None
+    data_size = 0
+    data_name: str | None = None
     with deb.open("rb") as archive:
         if archive.read(8) != b"!<arch>\n":
             raise PackageError(f"not a Debian ar archive: {deb}")
@@ -190,6 +254,7 @@ def _data_tar_from_deb(deb: Path) -> bytes:
                 raise PackageError(f"malformed ar member size in {deb}") from error
             if size < 0:
                 raise PackageError(f"negative ar member size in {deb}")
+            member_offset = archive.tell()
             if name == "debian-binary":
                 if archive.read(size) != b"2.0\n":
                     raise PackageError(f"unsupported Debian package format in {deb}")
@@ -197,17 +262,64 @@ def _data_tar_from_deb(deb: Path) -> bytes:
                 if size & 1:
                     archive.seek(1, os.SEEK_CUR)
                 continue
-            if name == "data.tar.xz":
+            if name.startswith("data.tar."):
                 if not has_version:
                     raise PackageError(f"Debian archive is missing debian-binary: {deb}")
-                data = archive.read(size)
-                if len(data) != size:
-                    raise PackageError(f"truncated data archive in {deb}")
-                return data
+                data_offset = member_offset
+                data_size = size
+                data_name = name
+                break
             archive.seek(size, os.SEEK_CUR)
             if size & 1:
                 archive.seek(1, os.SEEK_CUR)
-    raise PackageError(f"Debian archive has no data.tar.xz member: {deb}")
+    if data_offset is None or data_name is None:
+        raise PackageError(f"Debian archive has no data.tar.* member: {deb}")
+
+    if data_name == "data.tar.xz":
+        compressed = output.with_name(output.name + ".xz")
+        compressed_identity: tuple[int, int] | None = None
+        try:
+            with deb.open("rb") as archive, compressed.open("xb") as compressed_file:
+                created = os.fstat(compressed_file.fileno())
+                compressed_identity = (created.st_dev, created.st_ino)
+                archive.seek(data_offset)
+                remaining = data_size
+                while remaining:
+                    block = archive.read(min(1024 * 1024, remaining))
+                    if not block:
+                        raise PackageError(f"truncated data archive in {deb}")
+                    compressed_file.write(block)
+                    remaining -= len(block)
+            with lzma.open(compressed, "rb") as source, output.open("xb") as destination:
+                shutil.copyfileobj(source, destination, length=1024 * 1024)
+        except lzma.LZMAError as error:
+            raise PackageError(f"cannot decompress Debian data archive: {error}") from error
+        finally:
+            if compressed_identity is not None:
+                try:
+                    current = compressed.lstat()
+                    if (current.st_dev, current.st_ino) == compressed_identity and stat.S_ISREG(current.st_mode):
+                        compressed.unlink()
+                except FileNotFoundError:
+                    pass
+        return
+
+    # dpkg-deb normalizes zstd and other Debian compression formats to a plain
+    # tar stream without buffering package contents in memory.
+    run_owned_to_file(
+        ["dpkg-deb", "--fsys-tarfile", str(deb)],
+        cwd=deb.parent,
+        timeout=timeout,
+        output=output,
+    )
+
+
+@contextlib.contextmanager
+def open_deb_data_tar(deb: Path, *, timeout: float = 120) -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="qc-deb-inspect-") as temporary:
+        data_tar = Path(temporary) / "data.tar"
+        _extract_data_tar(deb, data_tar, timeout=timeout)
+        yield data_tar
 
 
 def verify_deb(
@@ -218,26 +330,26 @@ def verify_deb(
 ) -> None:
     if not deb.is_file() or deb.stat().st_size == 0:
         raise PackageError(f"Tauri did not produce a Debian package at {deb}")
-    data_tar = _data_tar_from_deb(deb)
     try:
         package_files: dict[str, tuple[str, int]] = {}
-        with tarfile.open(fileobj=io.BytesIO(data_tar), mode="r:xz") as package_archive:
-            for member in package_archive.getmembers():
-                path = "/" + posixpath.normpath(member.name).removeprefix("./").lstrip("/")
-                if path in ("/usr/bin/qc-remote", "/usr/bin/qc-device-broker", PACKAGE_RULE_PATH):
-                    if not member.isfile():
-                        raise PackageError(f"package member is not a regular file: {path}")
-                    if path != PACKAGE_RULE_PATH and not member.mode & 0o111:
-                        raise PackageError(f"package executable is not executable: {path}")
-                    if path in package_files:
-                        raise PackageError(f"Debian data archive contains duplicate member: {path}")
-                    stream = package_archive.extractfile(member)
-                    if stream is None:
-                        raise PackageError(f"cannot read packaged executable: {path}")
-                    digest = hashlib.sha256()
-                    with stream:
-                        shutil.copyfileobj(stream, _HashSink(digest))
-                    package_files[path] = (digest.hexdigest(), member.mode)
+        with open_deb_data_tar(deb) as data_tar:
+            with tarfile.open(data_tar, mode="r:") as package_archive:
+                for member in package_archive.getmembers():
+                    path = "/" + posixpath.normpath(member.name).removeprefix("./").lstrip("/")
+                    if path in ("/usr/bin/qc-remote", "/usr/bin/qc-device-broker", PACKAGE_RULE_PATH):
+                        if not member.isfile():
+                            raise PackageError(f"package member is not a regular file: {path}")
+                        if path != PACKAGE_RULE_PATH and not member.mode & 0o111:
+                            raise PackageError(f"package executable is not executable: {path}")
+                        if path in package_files:
+                            raise PackageError(f"Debian data archive contains duplicate member: {path}")
+                        stream = package_archive.extractfile(member)
+                        if stream is None:
+                            raise PackageError(f"cannot read packaged executable: {path}")
+                        digest = hashlib.sha256()
+                        with stream:
+                            shutil.copyfileobj(stream, _HashSink(digest))
+                        package_files[path] = (digest.hexdigest(), member.mode)
     except (tarfile.TarError, lzma.LZMAError, EOFError) as error:
         raise PackageError(f"cannot inspect Debian data archive: {error}") from error
 

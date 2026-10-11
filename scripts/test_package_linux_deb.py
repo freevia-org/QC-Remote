@@ -31,7 +31,13 @@ def _ar_member(name: str, payload: bytes) -> bytes:
     return header + payload + (b"\n" if len(payload) & 1 else b"")
 
 
-def _fixture_deb(path: Path, files: dict[str, bytes]) -> None:
+def _fixture_deb(
+    path: Path,
+    files: dict[str, bytes],
+    *,
+    data_member: str = "data.tar.xz",
+    data_payload: bytes | None = None,
+) -> None:
     data_tar = io.BytesIO()
     with tarfile.open(fileobj=data_tar, mode="w:xz") as archive:
         for member_path, contents in files.items():
@@ -42,16 +48,128 @@ def _fixture_deb(path: Path, files: dict[str, bytes]) -> None:
     empty_tar = io.BytesIO()
     with tarfile.open(fileobj=empty_tar, mode="w:xz"):
         pass
+    payload = data_tar.getvalue() if data_payload is None else data_payload
     path.write_bytes(
         b"!<arch>\n"
         + _ar_member("debian-binary", b"2.0\n")
         + _ar_member("control.tar.xz", empty_tar.getvalue())
-        + _ar_member("data.tar.xz", data_tar.getvalue())
+        + _ar_member(data_member, payload)
     )
 
 
 @unittest.skipUnless(sys.platform == "linux", "process-group cleanup is Linux-only")
 class PackageSafetyTests(unittest.TestCase):
+    def test_binary_command_output_collision_preserves_preexisting_file(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="qc-deb-binary-collision-") as temporary:
+            root = Path(temporary)
+            output = root / "data.tar"
+            output.write_bytes(b"belongs to another operation")
+            with self.assertRaises(FileExistsError):
+                package_linux_deb.run_owned_to_file(
+                    [sys.executable, "-c", "raise SystemExit(0)"],
+                    cwd=root,
+                    timeout=2,
+                    output=output,
+                )
+            self.assertEqual(output.read_bytes(), b"belongs to another operation")
+
+    def test_timed_out_binary_command_reaps_descendant_and_removes_partial_tar(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="qc-deb-binary-process-") as temporary:
+            root = Path(temporary)
+            pid_file = root / "child.pid"
+            output = root / "data.tar"
+            code = (
+                "import os,pathlib,sys,time; "
+                "pid=os.fork(); "
+                "(pathlib.Path(os.environ['QC_CHILD_PID']).write_text(str(os.getpid())),time.sleep(60)) "
+                "if pid==0 else (sys.stdout.buffer.write(b'partial'),sys.stdout.flush(),sys.exit(7))"
+            )
+            env = os.environ.copy()
+            env["QC_CHILD_PID"] = str(pid_file)
+            with self.assertRaisesRegex(package_linux_deb.PackageError, "timed out"):
+                package_linux_deb.run_owned_to_file(
+                    [sys.executable, "-c", code], cwd=root, timeout=0.5, output=output, env=env,
+                )
+
+            self.assertFalse(output.exists(), "partial tar survived child timeout cleanup")
+            self.assertTrue(pid_file.exists(), "fixture child did not start")
+            child_pid = int(pid_file.read_text(encoding="ascii"))
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    stat = Path(f"/proc/{child_pid}/stat").read_text(encoding="ascii")
+                    process_state = stat[stat.rfind(")") + 2]
+                except FileNotFoundError:
+                    break
+                if process_state == "Z":
+                    break
+                time.sleep(0.025)
+            else:
+                self.fail(f"owned binary-output child {child_pid} survived process-group cleanup")
+
+    def test_zstd_data_member_uses_dpkg_normalization_and_hash_checks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="qc-deb-zstd-") as temporary:
+            root = Path(temporary)
+            deb = root / "candidate.deb"
+            app = b"QC Remote zstd fixture"
+            broker = b"QC broker zstd fixture"
+            files = {
+                "/usr/bin/qc-remote": app,
+                "/usr/bin/qc-device-broker": broker,
+                package_linux_deb.PACKAGE_RULE_PATH: b"scoped rules",
+            }
+            data_tar = io.BytesIO()
+            with tarfile.open(fileobj=data_tar, mode="w") as archive:
+                for member_path, contents in files.items():
+                    info = tarfile.TarInfo("./" + member_path.lstrip("/"))
+                    info.mode = 0o755 if member_path.endswith(("qc-remote", "qc-device-broker")) else 0o644
+                    info.size = len(contents)
+                    archive.addfile(info, io.BytesIO(contents))
+            _fixture_deb(deb, files, data_member="data.tar.zst", data_payload=b"fixture-zstd-bytes")
+
+            captured: list[Path] = []
+
+            def normalize(_command, *, cwd, timeout, output) -> None:
+                self.assertEqual(timeout, 120)
+                self.assertEqual(cwd, root)
+                captured.append(output)
+                output.write_bytes(data_tar.getvalue())
+
+            with patch.object(package_linux_deb, "run_owned_to_file", side_effect=normalize) as normalizer:
+                package_linux_deb.verify_deb(
+                    deb,
+                    target="x86_64-unknown-linux-gnu",
+                    expected_hashes={
+                        "/usr/bin/qc-remote": hashlib.sha256(app).hexdigest(),
+                        "/usr/bin/qc-device-broker": hashlib.sha256(broker).hexdigest(),
+                        package_linux_deb.PACKAGE_RULE_PATH: hashlib.sha256(b"scoped rules").hexdigest(),
+                    },
+                )
+
+            normalizer.assert_called_once()
+            self.assertEqual(len(captured), 1)
+            self.assertFalse(captured[0].exists(), "normalized temporary tar survived verification")
+
+    def test_failed_zstd_normalization_removes_partial_tar(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="qc-deb-zstd-failure-") as temporary:
+            root = Path(temporary)
+            deb = root / "candidate.deb"
+            _fixture_deb(deb, {}, data_member="data.tar.zst", data_payload=b"fixture-zstd-bytes")
+            captured: list[Path] = []
+
+            def fail_after_partial_write(_command, *, cwd, timeout, output) -> None:
+                captured.append(output)
+                output.write_bytes(b"partial tar")
+                raise package_linux_deb.PackageError("simulated dpkg-deb failure")
+
+            with patch.object(package_linux_deb, "run_owned_to_file", side_effect=fail_after_partial_write):
+                with self.assertRaisesRegex(package_linux_deb.PackageError, "simulated dpkg-deb failure"):
+                    with package_linux_deb.open_deb_data_tar(deb):
+                        self.fail("failed normalization unexpectedly yielded a tar")
+
+            self.assertEqual(len(captured), 1)
+            self.assertFalse(captured[0].exists(), "partial normalized tar survived failure cleanup")
+
     def test_failed_package_publication_removes_only_its_partial_output(self) -> None:
         with tempfile.TemporaryDirectory(prefix="qc-deb-publish-") as temporary:
             root = Path(temporary)
