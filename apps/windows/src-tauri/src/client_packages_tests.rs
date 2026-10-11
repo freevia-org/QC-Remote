@@ -591,6 +591,10 @@ fn desktop_versions_cover_squirrel_and_store_package_layouts() {
         )),
         Some("1.2.34".into())
     );
+}
+
+#[test]
+fn package_version_extracts_only_known_package_families() {
     assert_eq!(
         package_version(
             "Claude_1.49585.0.0_x64__pzs8sxrjxfjjc",

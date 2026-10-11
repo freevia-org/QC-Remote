@@ -1358,7 +1358,7 @@ fn uninstall_registry_installation(search: &DesktopAppSearch) -> Option<DesktopI
 
 /// The executable inside an MSIX package's install location, as
 /// `Get-AppxPackage` reports it.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 fn msix_executable_from_install_location(
     value: &[u8],
     executable_candidates: &[&str],
