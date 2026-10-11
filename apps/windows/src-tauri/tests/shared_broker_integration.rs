@@ -644,5 +644,15 @@ fn two_real_processes_converge_on_one_shared_broker_and_survive_host_handoff() {
     assert_eq!(third.request(), "ok");
 
     third.kill();
-    let _ = fs::remove_dir_all(&root);
+    assert!(
+        wait_until(BROKER_GRACE_PERIOD_MARGIN, || !process_is_alive(
+            third_status.broker_pid
+        )),
+        "the final harness's broker must exit before the test releases its staged executable"
+    );
+    assert!(
+        !descriptor_path.exists(),
+        "reaping releases the descriptor slot"
+    );
+    fs::remove_dir_all(&root).expect("clean integration test directory");
 }
