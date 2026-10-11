@@ -10,7 +10,7 @@ license = "MIT OR Apache-2.0"
 async-trait.workspace = true
 futures-util = "0.3"
 rand.workspace = true
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { workspace = true, features = ["json"] }
 qc-relay-protocol = { path = "../qc-relay-protocol" }
 serde.workspace = true
 serde_json.workspace = true

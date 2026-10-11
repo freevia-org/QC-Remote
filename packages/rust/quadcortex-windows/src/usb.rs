@@ -904,6 +904,11 @@ pub struct QcUsb {
     session_clock: Instant,
     _api: HidApi,
     next_sequence: u64,
+    /// Whether the latest `read_message` got no HID report: a timed-out poll or
+    /// the reader's idle marker. A report that only completed part of a frame
+    /// is not empty. (The idle marker is queued after about 200 ms of silence;
+    /// reports that arrived after it can still be waiting behind it.)
+    last_read_was_empty: bool,
     report_layout: ReportLayout,
     flight: FlightRecorder,
     disconnected_state_sent: bool,
@@ -984,6 +989,17 @@ impl QcUsb {
         self.next_sequence.saturating_sub(1)
     }
 
+    /// Whether the latest [`Self::read_message`] got no HID report: the poll
+    /// timed out or returned the reader's idle marker. `Ok(None)` alone cannot
+    /// say this, because a report that completes only part of a frame also
+    /// returns `Ok(None)`; that case is not empty, more of the frame is
+    /// arriving. An idle marker is queued after about 200 ms of silence, so
+    /// reports that arrived after it can still be waiting behind it; the caller
+    /// treats it as empty all the same.
+    pub fn last_read_was_empty(&self) -> bool {
+        self.last_read_was_empty
+    }
+
     fn open(
         owner: Arc<Mutex<SessionRuntime>>,
         session_clock: &Instant,
@@ -1027,6 +1043,7 @@ impl QcUsb {
             session_clock: *session_clock,
             _api: api,
             next_sequence: 1,
+            last_read_was_empty: false,
             report_layout: ReportLayout::ReportIdPrefixed,
             flight,
             disconnected_state_sent: false,
@@ -1439,7 +1456,9 @@ impl QcUsb {
         &mut self,
         timeout_ms: i32,
     ) -> Result<(Option<IncomingMessage>, bool), UsbError> {
+        self.last_read_was_empty = false;
         let (report, native_read_succeeded) = self.io.read(timeout_ms)?;
+        self.last_read_was_empty = report.is_none();
         let Some(report) = report else {
             return Ok((None, native_read_succeeded));
         };

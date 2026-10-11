@@ -21,12 +21,20 @@ qc-windows-process = { path = "../../packages/rust/qc-windows-process" }
 # MCP descriptor minting. The shell is outside the workspace and cannot
 # inherit it; scripts/verify-manifest-pins.test.mjs checks the two agree.
 rand.workspace = true
+# The update-only HTTP relay (src/updater_relay) is the broker's one outbound
+# network use. Both crates are already in the lock file through
+# qc-relay-client, so this adds no package. The relay's client turns off
+# redirects, the system proxy and response decompression itself (explicit
+# builder calls, not the absence of features), and tokio supplies only the
+# current-thread runtime that drives it.
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
 # Constant-time bearer-token comparison, the same crate and version
 # apps/windows/src-tauri's local_access.rs already uses.
 subtle = "2"
+tokio = { workspace = true, features = ["rt", "time"] }
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]

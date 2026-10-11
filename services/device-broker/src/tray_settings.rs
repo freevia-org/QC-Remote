@@ -1,9 +1,17 @@
-//! The two broker tray preferences, read from beside the descriptor.
+//! The broker tray preferences, read from beside the descriptor.
 //!
 //! The app's Settings window owns `trayEnabled`; this process only reads it. The
 //! broker's own menu may write `idleDisconnectMinutes`, through the same stable
 //! side-file lock and temp-plus-rename the app uses, so neither writer can tear
 //! the document or erase the other's key.
+//!
+//! The same document carries the update relay's settings
+//! (`updaterRelayEnabled`, `updaterRelayExtraDomains`,
+//! `updaterRelayMaxDownloadBytes`); see [`UpdaterRelaySettings`]. The relay is
+//! on unless `updaterRelayEnabled` is `false`. A Settings screen's switch for
+//! it writes that key with [`set_updater_relay_enabled_in`] (or the app's copy
+//! of the same lock-and-rename writer), and every other key in the file is left
+//! as it was.
 use serde_json::{Map, Value};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -18,6 +26,15 @@ pub const IDLE_MINUTES_MAX: u32 = 1440;
 const DEFAULT_IDLE_MINUTES: u32 = 15;
 const IDLE_MINUTES_ERROR: &str =
     "idleDisconnectMinutes must be an integer from 0 through 1440, or null for Never";
+const UPDATER_RELAY_ENABLED_KEY: &str = "updaterRelayEnabled";
+const UPDATER_RELAY_DOMAINS_KEY: &str = "updaterRelayExtraDomains";
+const UPDATER_RELAY_MAX_BYTES_KEY: &str = "updaterRelayMaxDownloadBytes";
+/// The firmware-image size cap when the file names none: far above any CorOS
+/// image, far below a disk-filling answer.
+pub const UPDATER_RELAY_DEFAULT_MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
+const UPDATER_RELAY_MIN_MAX_DOWNLOAD_BYTES: u64 = 1024 * 1024;
+const UPDATER_RELAY_MAX_MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const UPDATER_RELAY_MAX_EXTRA_DOMAINS: usize = 8;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 /// What the broker does once no participant is attached, while its icon shows.
@@ -108,11 +125,130 @@ pub fn read_in(directory: &Path) -> TraySettings {
     applied(&read_document(directory))
 }
 
+/// The update relay's settings. Absent, unreadable or malformed values mean the
+/// defaults, key by key: the relay on, `neuraldsp.com` only, the default size cap.
+/// The running relay reads the file with [`try_read_updater_relay_in`] instead,
+/// so a file that exists but cannot be used keeps its last known value rather
+/// than falling back to these.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdaterRelaySettings {
+    /// Whether the broker answers the unit's type-61 update requests. Only a
+    /// JSON `false` turns it off.
+    pub enabled: bool,
+    /// Domains allowed in addition to `neuraldsp.com`, each with its
+    /// subdomains: lower-case plain DNS names. An entry that is not a plain
+    /// name is ignored.
+    pub extra_domains: Vec<String>,
+    /// The most body bytes accepted for a firmware image.
+    pub max_download_bytes: u64,
+}
+
+impl Default for UpdaterRelaySettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            extra_domains: Vec::new(),
+            max_download_bytes: UPDATER_RELAY_DEFAULT_MAX_DOWNLOAD_BYTES,
+        }
+    }
+}
+
+fn applied_updater_relay(document: &Map<String, Value>) -> UpdaterRelaySettings {
+    let defaults = UpdaterRelaySettings::default();
+    let mut extra_domains: Vec<String> = Vec::new();
+    if let Some(entries) = document
+        .get(UPDATER_RELAY_DOMAINS_KEY)
+        .and_then(Value::as_array)
+    {
+        for entry in entries {
+            let Some(host) = entry
+                .as_str()
+                .and_then(crate::updater_relay::policy::normalize_allowlist_domain)
+            else {
+                continue;
+            };
+            if extra_domains.len() < UPDATER_RELAY_MAX_EXTRA_DOMAINS
+                && !extra_domains.contains(&host)
+            {
+                extra_domains.push(host);
+            }
+        }
+    }
+    UpdaterRelaySettings {
+        enabled: document
+            .get(UPDATER_RELAY_ENABLED_KEY)
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.enabled),
+        extra_domains,
+        max_download_bytes: document
+            .get(UPDATER_RELAY_MAX_BYTES_KEY)
+            .and_then(Value::as_u64)
+            .filter(|bytes| {
+                (UPDATER_RELAY_MIN_MAX_DOWNLOAD_BYTES..=UPDATER_RELAY_MAX_MAX_DOWNLOAD_BYTES)
+                    .contains(bytes)
+            })
+            .unwrap_or(defaults.max_download_bytes),
+    }
+}
+
+/// The update relay's settings, from beside the descriptor.
+pub fn read_updater_relay_in(directory: &Path) -> UpdaterRelaySettings {
+    applied_updater_relay(&read_document(directory))
+}
+
+/// Why the settings file could not be turned into settings at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsReadError {
+    /// The file is there but could not be read: a sharing violation while the
+    /// app replaces it, a scanner's lock, a permissions fault.
+    Unreadable(std::io::ErrorKind),
+    /// The file was read but is not a JSON object.
+    Malformed,
+}
+
+/// Like [`read_updater_relay_in`], but a file that is there and cannot be used
+/// is an error instead of the defaults. Only an absent file means the defaults
+/// (on); a caller that already holds a value from an earlier read keeps it
+/// across an error, so a read that fails at the wrong moment cannot turn a
+/// switch the user cleared back on.
+pub fn try_read_updater_relay_in(
+    directory: &Path,
+) -> Result<UpdaterRelaySettings, SettingsReadError> {
+    let bytes = match fs::read(directory.join(SETTINGS_FILE)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(UpdaterRelaySettings::default());
+        }
+        Err(error) => return Err(SettingsReadError::Unreadable(error.kind())),
+    };
+    match serde_json::from_slice::<Value>(&bytes) {
+        Ok(Value::Object(document)) => Ok(applied_updater_relay(&document)),
+        _ => Err(SettingsReadError::Malformed),
+    }
+}
+
+/// Switch the update relay on or off, leaving every other key as it was. This
+/// is the call a Settings screen's switch makes.
+pub fn set_updater_relay_enabled_in(
+    directory: &Path,
+    enabled: bool,
+) -> Result<UpdaterRelaySettings, String> {
+    let document = update_key(directory, UPDATER_RELAY_ENABLED_KEY, Value::Bool(enabled))?;
+    Ok(applied_updater_relay(&document))
+}
+
 /// Replace `idleDisconnectMinutes` only. Validation precedes any I/O, so a
 /// rejected value leaves the file's bytes untouched.
 pub fn set_idle_minutes_in(directory: &Path, minutes: Option<u32>) -> Result<TraySettings, String> {
     let value = minutes.map_or(Value::Null, Value::from);
     parse_idle_minutes(&value)?;
+    update_key(directory, IDLE_MINUTES_KEY, value).map(|document| applied(&document))
+}
+
+/// Replace one key under the stable lock and write the whole document back,
+/// so no other key is lost. A missing tray switch is written out as its
+/// default, never as off.
+fn update_key(directory: &Path, key: &str, value: Value) -> Result<Map<String, Value>, String> {
     fs::create_dir_all(directory)
         .map_err(|error| format!("Create tray settings directory: {error}"))?;
     // Lock the stable side-file, never the replaced document, and keep it after
@@ -131,12 +267,11 @@ pub fn set_idle_minutes_in(directory: &Path, minutes: Option<u32>) -> Result<Tra
     document
         .entry(TRAY_ENABLED_KEY)
         .or_insert(Value::Bool(defaults.tray_enabled));
-    document.insert(IDLE_MINUTES_KEY.to_owned(), value);
-    let settings = applied(&document);
+    document.insert(key.to_owned(), value);
     let bytes = serde_json::to_vec_pretty(&document)
         .map_err(|error| format!("Serialize tray settings: {error}"))?;
     atomic_write(directory, &bytes)?;
-    Ok(settings)
+    Ok(document)
 }
 
 fn atomic_write(directory: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -312,5 +447,147 @@ mod tests {
             .unwrap_err()
             .contains("0 through 1440"));
         assert_eq!(fs::read(dir.0.join(SETTINGS_FILE)).unwrap(), before);
+    }
+
+    #[test]
+    fn the_update_relay_is_on_unless_the_file_says_false() {
+        let dir = Scratch::new();
+        let defaults = UpdaterRelaySettings::default();
+        assert!(defaults.enabled && defaults.extra_domains.is_empty());
+        assert_eq!(read_updater_relay_in(&dir.0), defaults, "no file");
+        for bytes in [&b"not json"[..], b"[]", b"{}", br#"{"trayEnabled":false}"#] {
+            dir.write(bytes);
+            assert_eq!(
+                read_updater_relay_in(&dir.0),
+                defaults,
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+        for not_a_bool in [
+            json!("false"),
+            json!(0),
+            json!(null),
+            json!([]),
+            json!("off"),
+        ] {
+            dir.write(&serde_json::to_vec(&json!({"updaterRelayEnabled": not_a_bool})).unwrap());
+            assert!(read_updater_relay_in(&dir.0).enabled, "{not_a_bool}");
+        }
+        dir.write(br#"{"updaterRelayEnabled": false}"#);
+        assert!(!read_updater_relay_in(&dir.0).enabled);
+        dir.write(br#"{"updaterRelayEnabled": true}"#);
+        assert!(read_updater_relay_in(&dir.0).enabled);
+    }
+
+    #[test]
+    fn only_an_absent_file_means_the_defaults_when_the_read_can_fail() {
+        let dir = Scratch::new();
+        assert_eq!(
+            try_read_updater_relay_in(&dir.0),
+            Ok(UpdaterRelaySettings::default()),
+            "an absent file is the default, on"
+        );
+        dir.write(br#"{"updaterRelayEnabled": false}"#);
+        assert!(!try_read_updater_relay_in(&dir.0).unwrap().enabled);
+        dir.write(b"{}");
+        assert!(try_read_updater_relay_in(&dir.0).unwrap().enabled);
+        for bytes in [&b"not json"[..], b"[]", b"\"x\"", b"", b"{\"updaterRelay"] {
+            dir.write(bytes);
+            assert_eq!(
+                try_read_updater_relay_in(&dir.0),
+                Err(SettingsReadError::Malformed),
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+        // A file that is there but cannot be read: here a directory in its place.
+        fs::remove_file(dir.0.join(SETTINGS_FILE)).unwrap();
+        fs::create_dir(dir.0.join(SETTINGS_FILE)).unwrap();
+        assert!(matches!(
+            try_read_updater_relay_in(&dir.0),
+            Err(SettingsReadError::Unreadable(_))
+        ));
+        // The lenient reader the writers use still treats every case as the defaults.
+        assert!(read_updater_relay_in(&dir.0).enabled);
+    }
+
+    #[test]
+    fn the_relay_keys_are_independent_of_the_tray_keys() {
+        let dir = Scratch::new();
+        dir.write(
+            br#"{"trayEnabled": false, "idleDisconnectMinutes": 5, "updaterRelayEnabled": false}"#,
+        );
+        assert!(!read_updater_relay_in(&dir.0).enabled);
+        assert_eq!(
+            read_in(&dir.0),
+            TraySettings {
+                tray_enabled: false,
+                idle: IdlePolicy::Minutes(5)
+            }
+        );
+    }
+
+    #[test]
+    fn extra_domains_and_the_size_cap_fall_back_key_by_key() {
+        let dir = Scratch::new();
+        dir.write(
+            br#"{"updaterRelayExtraDomains": ["Downloads.Example.NET", "*.bad.example", "127.0.0.1",
+                 7, "downloads.example.net", "cdn.example.org"],
+                 "updaterRelayMaxDownloadBytes": 104857600}"#,
+        );
+        let settings = read_updater_relay_in(&dir.0);
+        assert_eq!(
+            settings.extra_domains,
+            ["downloads.example.net", "cdn.example.org"]
+        );
+        assert_eq!(settings.max_download_bytes, 104_857_600);
+        for bad in [
+            json!(0),
+            json!(1023),
+            json!(5_000_000_000_u64),
+            json!("big"),
+            json!(-1),
+        ] {
+            dir.write(&serde_json::to_vec(&json!({"updaterRelayMaxDownloadBytes": bad})).unwrap());
+            assert_eq!(
+                read_updater_relay_in(&dir.0).max_download_bytes,
+                UPDATER_RELAY_DEFAULT_MAX_DOWNLOAD_BYTES,
+                "{bad}"
+            );
+        }
+        dir.write(br#"{"updaterRelayExtraDomains": "downloads.example.net"}"#);
+        assert!(read_updater_relay_in(&dir.0).extra_domains.is_empty());
+        let many: Vec<String> = (0..20).map(|n| format!("h{n}.example.net")).collect();
+        dir.write(&serde_json::to_vec(&json!({"updaterRelayExtraDomains": many})).unwrap());
+        assert_eq!(read_updater_relay_in(&dir.0).extra_domains.len(), 8);
+    }
+
+    #[test]
+    fn switching_the_relay_writes_only_its_key_and_keeps_the_rest() {
+        let dir = Scratch::new();
+        dir.write(br#"{"trayEnabled": false, "idleDisconnectMinutes": 30, "other": 1}"#);
+        let off = set_updater_relay_enabled_in(&dir.0, false).unwrap();
+        assert!(!off.enabled);
+        let document: Value =
+            serde_json::from_slice(&fs::read(dir.0.join(SETTINGS_FILE)).unwrap()).unwrap();
+        assert_eq!(
+            document,
+            json!({
+                "trayEnabled": false, "idleDisconnectMinutes": 30, "other": 1,
+                "updaterRelayEnabled": false
+            })
+        );
+        assert!(set_updater_relay_enabled_in(&dir.0, true).unwrap().enabled);
+        assert!(read_updater_relay_in(&dir.0).enabled);
+        // The tray's own writer keeps the relay key.
+        set_idle_minutes_in(&dir.0, Some(10)).unwrap();
+        set_updater_relay_enabled_in(&dir.0, false).unwrap();
+        set_idle_minutes_in(&dir.0, Some(20)).unwrap();
+        assert!(!read_updater_relay_in(&dir.0).enabled);
+        // A missing tray switch is written as its default, never as off.
+        let fresh = Scratch::new();
+        set_updater_relay_enabled_in(&fresh.0, false).unwrap();
+        assert!(read_in(&fresh.0).tray_enabled);
     }
 }
