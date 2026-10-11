@@ -3226,10 +3226,12 @@ dependencies = [
  "quadcortex",
  "quadcortex-windows",
  "rand 0.9.5",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "subtle",
+ "tokio",
  "uuid",
  "windows-sys 0.61.2",
 ]
