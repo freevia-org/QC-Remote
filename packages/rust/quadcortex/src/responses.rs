@@ -309,6 +309,29 @@ pub struct DeviceIdentity {
     /// for this project's tests. This crate treats `1` as an unsupported
     /// device during startup.
     pub device_type: Option<i32>,
+    /// Network MAC address text, if the reply carries one. Shown on the unit's
+    /// Settings > Device Information screen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mac_address: Option<String>,
+    /// Linux kernel build line (for example `Linux buildroot ... armv7l (none)`),
+    /// if the reply carries one. The unit's Device Information screen's "Linux kernel" row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linux_kernel_version: Option<String>,
+    /// U-Boot build line, if the reply carries one. The "U-Boot" row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uboot_version: Option<String>,
+    /// Zenjack bootloader firmware build, if the reply carries one. The "Zenjack FW bootloader" row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootloader_fw_version: Option<String>,
+    /// Zencoder application firmware build, if the reply carries one. The "Zencoder FW app" row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zencoder_fw_app: Option<String>,
+    /// Zencoder bootloader firmware build, if the reply carries one. The "Zencoder FW bootloader" row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zencoder_fw_bootloader: Option<String>,
+    /// Zenwireless firmware build, if the reply carries one. The "Zenwireless FW" row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zenwireless_fw_version: Option<String>,
 }
 
 /// Which global processing modules the device reports as inhibited. A field is `None` when the reply does not mention that module.
@@ -795,11 +818,42 @@ pub fn decode_device_identity(payload: &[u8]) -> Result<DeviceIdentity, Response
     let device_type = message.device_type.map(|value| match value {
         pa::version_message::DeviceTypeOneOf::DeviceType(value) => value,
     });
+    // The version reply has no CorOS version number: the only version-like fields besides
+    // those below are `zenos_git_hash` (a build hash, not a version) and the host's own
+    // `cortex_control_version`, so none is reported as the CorOS version.
+    let mac_address = message
+        .mac_address
+        .map(|pa::version_message::MacAddress::MacAddress(value)| value);
+    let linux_kernel_version = message
+        .linux_kernel_version
+        .map(|pa::version_message::LinuxKernelVersion::LinuxKernelVersion(value)| value);
+    let uboot_version = message
+        .uboot_version
+        .map(|pa::version_message::UbootVersion::UbootVersion(value)| value);
+    let bootloader_fw_version = message
+        .bootloader_fw_version
+        .map(|pa::version_message::BootloaderFwVersion::BootloaderFwVersion(value)| value);
+    let zencoder_fw_app = message
+        .zencoder_fw_app
+        .map(|pa::version_message::ZencoderFwApp::ZencoderFwApp(value)| value);
+    let zencoder_fw_bootloader = message
+        .zencoder_fw_bootloader
+        .map(|pa::version_message::ZencoderFwBootloader::ZencoderFwBootloader(value)| value);
+    let zenwireless_fw_version = message
+        .zenwireless_fw_version
+        .map(|pa::version_message::ZenwirelessFwVersion::ZenwirelessFwVersion(value)| value);
     Ok(DeviceIdentity {
         serial,
         app_fw_version,
         custom_name,
         device_type,
+        mac_address,
+        linux_kernel_version,
+        uboot_version,
+        bootloader_fw_version,
+        zencoder_fw_app,
+        zencoder_fw_bootloader,
+        zenwireless_fw_version,
     })
 }
 
@@ -2272,6 +2326,67 @@ mod tests {
     }
 
     #[test]
+    fn device_identity_carries_every_firmware_field_the_reply_reports() {
+        use pa::version_message as v;
+        let payload = pa::VersionMessage {
+            action: pa::message_action::Enum::Update as i32,
+            device_serial_number: Some(v::DeviceSerialNumber::DeviceSerialNumber(
+                "SYN-0001".into(),
+            )),
+            custom_name: Some(v::CustomName::CustomName("Synthetic QC".into())),
+            mac_address: Some(v::MacAddress::MacAddress("00:00:5e:00:53:01".into())),
+            linux_kernel_version: Some(v::LinuxKernelVersion::LinuxKernelVersion(
+                "Linux synthetic 1.0.0 #1 test armv7l".into(),
+            )),
+            uboot_version: Some(v::UbootVersion::UbootVersion("U-Boot synthetic 1.0".into())),
+            app_fw_version: Some(v::AppFwVersion::AppFwVersion("zj-app".into())),
+            bootloader_fw_version: Some(v::BootloaderFwVersion::BootloaderFwVersion(
+                "zj-boot".into(),
+            )),
+            zencoder_fw_app: Some(v::ZencoderFwApp::ZencoderFwApp("zc-app".into())),
+            zencoder_fw_bootloader: Some(v::ZencoderFwBootloader::ZencoderFwBootloader(
+                "zc-boot".into(),
+            )),
+            zenwireless_fw_version: Some(v::ZenwirelessFwVersion::ZenwirelessFwVersion(
+                "zw".into(),
+            )),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let identity = decode_device_identity(&payload).unwrap();
+        assert_eq!(identity.serial, "SYN-0001");
+        assert_eq!(identity.custom_name.as_deref(), Some("Synthetic QC"));
+        assert_eq!(identity.mac_address.as_deref(), Some("00:00:5e:00:53:01"));
+        assert_eq!(
+            identity.linux_kernel_version.as_deref(),
+            Some("Linux synthetic 1.0.0 #1 test armv7l")
+        );
+        assert_eq!(
+            identity.uboot_version.as_deref(),
+            Some("U-Boot synthetic 1.0")
+        );
+        assert_eq!(identity.app_fw_version.as_deref(), Some("zj-app"));
+        assert_eq!(identity.bootloader_fw_version.as_deref(), Some("zj-boot"));
+        assert_eq!(identity.zencoder_fw_app.as_deref(), Some("zc-app"));
+        assert_eq!(identity.zencoder_fw_bootloader.as_deref(), Some("zc-boot"));
+        assert_eq!(identity.zenwireless_fw_version.as_deref(), Some("zw"));
+        // The gateway result carries them under the names the client type declares.
+        let json = serde_json::to_value(&identity).unwrap();
+        for (key, value) in [
+            ("macAddress", "00:00:5e:00:53:01"),
+            ("linuxKernelVersion", "Linux synthetic 1.0.0 #1 test armv7l"),
+            ("ubootVersion", "U-Boot synthetic 1.0"),
+            ("appFwVersion", "zj-app"),
+            ("bootloaderFwVersion", "zj-boot"),
+            ("zencoderFwApp", "zc-app"),
+            ("zencoderFwBootloader", "zc-boot"),
+            ("zenwirelessFwVersion", "zw"),
+        ] {
+            assert_eq!(json[key], value, "{key}");
+        }
+    }
+
+    #[test]
     fn device_identity_requires_update_and_serial_presence() {
         let payload = pa::VersionMessage {
             action: pa::message_action::Enum::Update as i32,
@@ -2287,6 +2402,15 @@ mod tests {
         let identity = decode_device_identity(&payload).unwrap();
         assert_eq!(identity.serial, "serial-1");
         assert_eq!(identity.app_fw_version.as_deref(), Some("4.1.0"));
+
+        let none_reported = decode_device_identity(&payload).unwrap();
+        assert_eq!(none_reported.mac_address, None);
+        assert_eq!(none_reported.zencoder_fw_app, None);
+        let json = serde_json::to_value(&none_reported).unwrap();
+        assert!(
+            json.get("macAddress").is_none() && json.get("linuxKernelVersion").is_none(),
+            "fields the unit did not report are left out of the gateway result"
+        );
 
         let missing_serial = pa::VersionMessage {
             action: pa::message_action::Enum::Update as i32,
