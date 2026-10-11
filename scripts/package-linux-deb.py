@@ -348,16 +348,21 @@ def package(
                 package_env["CARGO_TARGET_DIR"] = str(target_dir)
                 package_env["RUSTUP_TOOLCHAIN"] = toolchain
                 package_env.pop("TAURI_CONFIG", None)
-                run_owned(
-                    [
-                        "npm", "exec", "--workspace", "@qc-remote/windows", "--", "tauri", "bundle",
-                        "--bundles", "deb", "--features", "tray-sidecar,custom-protocol",
-                        "--target", target, "--debug", "--ci",
-                    ],
-                    cwd=ROOT,
-                    timeout=timeout,
-                    env=package_env,
-                )
+                # `tauri bundle` packages an already prepared Cargo target.
+                # Unlike `tauri build`, it does not copy configured externalBin
+                # inputs into that target, so place the same exact sidecar there
+                # for this scoped prebuilt-bundle invocation.
+                with stage_sidecar(broker_binary, debug_dir / "qc-device-broker"):
+                    run_owned(
+                        [
+                            "npm", "exec", "--workspace", "@qc-remote/windows", "--", "tauri", "bundle",
+                            "--bundles", "deb", "--features", "tray-sidecar,custom-protocol",
+                            "--target", target, "--debug", "--ci",
+                        ],
+                        cwd=ROOT,
+                        timeout=timeout,
+                        env=package_env,
+                    )
             deb_dir = debug_dir / "bundle/deb"
             packages = list(deb_dir.glob("*.deb")) if deb_dir.is_dir() else []
             if len(packages) != 1:
