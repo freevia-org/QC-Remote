@@ -1517,6 +1517,7 @@ mod tests {
         IncomingMessage, ReportLayout, TransportRuntime, UsbError, UsbTelemetry,
         READER_LOCK_STALL_THRESHOLD_MS,
     };
+    use crate::backend::WriteStallPolicy;
     use hidapi::HidError;
     use quadcortex::device::owner::SessionRuntime;
     #[cfg(windows)]
