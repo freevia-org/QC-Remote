@@ -13,6 +13,7 @@ import { CorOsLaneControlPanel, type LaneControlPanelState } from "./lane-contro
 import { fixtureSnapshot, type CorOsScreenView } from "./coros-screen-fixture-data";
 import { CorOsCpuMonitorPanel } from "./coros-cpu-monitor";
 import type { CorOsDeviceInformation } from "./coros-reference-settings-pane";
+import type { QcPopup } from "./use-qc-screen-destination";
 import { QcDeviceGlyph } from "./device-glyph";
 import { sceneDisplayLabel } from "./scene-display-label";
 import { clientPointToGrid, createGridTapMachine, exceedsDragThreshold, GRID_LONG_PRESS_MS, gridClickIsPointerEcho, gridDropTarget, resolveGridCellFromPoint, resolveGridGestureRelease, type GridCellHit, type GridDropTarget } from "./grid-drag-geometry";
@@ -106,6 +107,9 @@ export interface QcDisplaySurfaceProps {
   /** Commands which are visible in the device menu but cannot be performed
    * safely by this host. Disabled rows remain visible and explain why. */
   disabledContextActions?: Partial<Record<CorOsContextAction | "save-as", string>>;
+  /** The Grid popup that is open (shared with the unit's own menu); undefined popup + no controller = local state. */
+  popup?: QcPopup | null;
+  onPopupChange?: (popup: QcPopup | null) => void;
   screenView?: CorOsScreenView;
   /** A stateful production screen rendered inside the physical display.
    * Visual corpus fixtures remain available through screenView, but live
@@ -401,18 +405,29 @@ type GridActions = Pick<QuadCortexSurfaceProps,
   | "savePreset"
   | "onContextAction"
   | "disabledContextActions"
+  | "popup"
+  | "onPopupChange"
 >;
 
 function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, cpuColumns }: Pick<QuadCortexSurfaceProps, "snapshot" | "selectedBlockId"> & { presetSlotAccent: string; gridActions: GridActions; cpuColumns?: readonly CpuColumnLoad[] }) {
-  const { onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, routingPicker, addDevicePicker, savePreset, onContextAction, disabledContextActions } = gridActions;
-  const [sceneMenuOpen, setSceneMenuOpen] = useState(false);
-  const [screenMenuOpen, setScreenMenuOpen] = useState(false);
-  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const { onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, routingPicker, addDevicePicker, savePreset, onContextAction, disabledContextActions, popup, onPopupChange } = gridActions;
+  // Which popup is open is shared state (the screen destination), so the unit's own menu and the app's stay in step.
+  // Without a controller (a surface drawn on its own) the popup is local.
+  const [localPopup, setLocalPopup] = useState<QcPopup | null>(null);
+  const openPopup = onPopupChange ? popup ?? null : localPopup;
+  const changePopup = onPopupChange ?? setLocalPopup;
+  const sceneMenuOpen = openPopup === "scene-menu";
+  const screenMenuOpen = openPopup === "grid-menu";
+  const modeMenuOpen = openPopup === "mode-menu";
+  const popupSetter = (name: QcPopup) => (open: boolean) => changePopup(open ? name : openPopup === name ? null : openPopup);
+  const setSceneMenuOpen = popupSetter("scene-menu");
+  const setScreenMenuOpen = popupSetter("grid-menu");
+  const setModeMenuOpen = popupSetter("mode-menu");
   // One keyboard model for the three Grid menus (APG menu button): see use-menu-button.ts.
   // onOpen keeps them exclusive on every opening path, keyboard included.
-  const sceneMenu = useMenuButton({ open: sceneMenuOpen, setOpen: setSceneMenuOpen, onOpen: () => { setScreenMenuOpen(false); setModeMenuOpen(false); } });
-  const modeMenu = useMenuButton({ open: modeMenuOpen, setOpen: setModeMenuOpen, onOpen: () => { setSceneMenuOpen(false); setScreenMenuOpen(false); } });
-  const gridMenu = useMenuButton({ open: screenMenuOpen, setOpen: setScreenMenuOpen, onOpen: () => { setSceneMenuOpen(false); setModeMenuOpen(false); } });
+  const sceneMenu = useMenuButton({ open: sceneMenuOpen, setOpen: setSceneMenuOpen });
+  const modeMenu = useMenuButton({ open: modeMenuOpen, setOpen: setModeMenuOpen });
+  const gridMenu = useMenuButton({ open: screenMenuOpen, setOpen: setScreenMenuOpen });
   const [, setDeviceFontReady] = useState(false);
   const actionsLayer = useRef<HTMLDivElement>(null);
   const blockGesture = useRef<GridBlockGesture | null>(null);
@@ -1056,7 +1071,7 @@ function controlByRole(controls: HardwareControl[], role: string) { return contr
 // Edit Details focus their own name input instead.
 const GRID_MENU_FOCUS_TARGETS = new Set<string>(["settings", "tempo", "modes-configuration", "preset-midi-out", "cpu-monitor"]);
 
-export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, screenView = "grid", screenContent, cpuMonitor, deviceInformation, presentation = "hardware", onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, sceneEditor, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
+export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, popup, onPopupChange, screenView = "grid", screenContent, cpuMonitor, deviceInformation, presentation = "hardware", onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, sceneEditor, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
   const scenes = formFactor.controls.filter((control) => control.group === "scene");
   const bankUp = controlByRole(formFactor.controls, "bank:up")!;
   const bankDown = controlByRole(formFactor.controls, "bank:down")!;
@@ -1082,7 +1097,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
       gesture.captureTarget.releasePointerCapture(gesture.pointerId);
     }
   }, []);
-  const forwardsDeviceScreenGestures = screenView === "tuner" || screenView.startsWith("io-");
+  const forwardsDeviceScreenGestures = screenView === "tuner" || screenView.startsWith("io-") || screenView === "unit-mirror";
   const gridEdgeGesturesEnabled = screenView === "grid"
     && !sceneEditor
     && !parameterEditor
@@ -1221,7 +1236,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
         snapshot={displaySnapshot}
         presetSlotAccent={presetSlotAccent}
         selectedBlockId={selectedBlockId}
-        gridActions={{ onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, routingPicker, addDevicePicker, savePreset, onContextAction, disabledContextActions }}
+        gridActions={{ onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, routingPicker, addDevicePicker, savePreset, onContextAction, disabledContextActions, popup, onPopupChange }}
         cpuColumns={cpuMonitor?.cpuColumns}
       />{cpuMonitor && <CorOsCpuMonitorPanel cpuLoad={cpuMonitor.cpuLoad} returnFocusTarget={cpuMonitor.returnFocusTarget} onClose={cpuMonitor.onClose} />}{parameterEditor && <CorOsParameterEditor {...parameterEditor} />}{laneControlEditor && <>
       {/* The manual's own dismissal for Input Gate/Lane Output Control is a

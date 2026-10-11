@@ -3,7 +3,7 @@ import type { CorOsScreenView } from "./coros-screen-fixture-data.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
 
 /** The device screens the hosts draw in place of the Grid. */
-export type QcDeviceScreenKind = "device-settings" | "tempo" | "tuner" | "looper-editor" | "modes" | "midi-out" | "global-eq" | "io";
+export type QcDeviceScreenKind = "device-settings" | "tempo" | "tuner" | "looper-editor" | "modes" | "midi-out" | "global-eq" | "io" | "unit-mirror";
 
 /**
  * Which device screen to draw. Device Settings and Tempo are workflows with
@@ -13,7 +13,7 @@ export type QcDeviceScreenKind = "device-settings" | "tempo" | "tuner" | "looper
 export function resolveQcDeviceScreen(view: CorOsScreenView | null, open: { deviceSettings: boolean; tempo: boolean }): QcDeviceScreenKind | undefined {
   if (open.deviceSettings) return "device-settings";
   if (open.tempo) return "tempo";
-  if (view === "tuner" || view === "looper-editor" || view === "modes" || view === "midi-out" || view === "global-eq") return view;
+  if (view === "tuner" || view === "looper-editor" || view === "modes" || view === "midi-out" || view === "global-eq" || view === "unit-mirror") return view;
   if (view?.startsWith("io-")) return "io";
   return undefined;
 }

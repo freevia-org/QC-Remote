@@ -1,70 +1,142 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { QcStateUpdate } from "@qc-remote/core";
-import { useAdaptiveQcScreenPolling, type QcScreenObservation, type QcScreenPollingPhase } from "./use-adaptive-screen-polling.ts";
+import {
+  readQcScreenFollowSetting, useAdaptiveQcScreenPolling, writeQcScreenFollowSetting,
+  type QcObservedScreenKind, type QcScreenObservation, type QcScreenPollingPhase
+} from "./use-adaptive-screen-polling.ts";
+import { appScreenKind, closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, QC_UNIT_MIRROR_KINDS, type QcCloseTarget, type QcOpenTarget, type QcScreenPoll } from "./qc-unit-screens.ts";
 import type { QcCpuTelemetry } from "./use-qc-cpu-telemetry.ts";
 import type { QcDeviceUndo } from "./use-qc-device-undo.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
+import type { GatewayTransport } from "@qc-remote/client";
 
-/** The workflows following the unit's own screen opens and closes. */
+/**
+ * The "Follow the Quad Cortex screen" setting, read and written in one place
+ * for every host. Off by default. It governs only the unit moving the app's
+ * screen; the app moving the unit's screen (the user opening or closing a
+ * screen in the app) is never affected by it.
+ */
+export function useQcFollowSetting(storage: Pick<Storage, "getItem" | "setItem">): { follow: boolean; setFollow(enabled: boolean): void } {
+  const [follow, setFollowState] = useState(() => readQcScreenFollowSetting(storage));
+  const setFollow = useCallback((enabled: boolean) => {
+    setFollowState(enabled);
+    writeQcScreenFollowSetting(storage, enabled);
+  }, [storage]);
+  return { follow, setFollow };
+}
+
+/** The workflows the unit's screens open and close in the app. */
 export interface QcScreenFollowWorkflows {
   grid: { close(): void };
   preset: { closeDirectory(): void; openDirectory(): unknown };
-  deviceSettings: { close(): void; openSettings(): unknown };
-  tempo: { close(): void; openTempo(): unknown };
+  deviceSettings: { open: boolean; close(): void; openSettings(): unknown };
+  tempo: { open: boolean; close(): void; openTempo(): unknown };
   tuner: { close(): void; openTuner(): unknown };
   ioEq: { refresh(): unknown };
+  modes: { refresh(): unknown };
 }
 
 export interface QcScreenFollowOptions {
-  gateway: Parameters<typeof useAdaptiveQcScreenPolling>[0]["gateway"];
-  /** The user's "follow the Quad Cortex screen" setting. */
+  gateway: Pick<GatewayTransport, "graphicsTree" | "tapScreen" | "swipeScreen" | "longTapScreen">;
+  /** The user's "follow the Quad Cortex screen" setting: whether the unit's screens move the app's. */
   follow: boolean;
   /** Host gating that is not about the session: a demo device, a fixture run, a non-native build. */
   available: boolean;
   /** The device session can answer: connected, not suspended, not in a bulk transfer. */
   ready: boolean;
-  setView: QcScreenDestination["setView"];
+  destination: QcScreenDestination;
   workflows: QcScreenFollowWorkflows;
+  notice(message: string): void;
+  screenPoll?: QcScreenPoll;
 }
 
+const ROUTED: readonly QcObservedScreenKind[] = ["preset-menu", "settings", "modes"];
+
 /**
- * Mirrors the unit's screen into the app: when the unit opens Tuner, Tempo,
- * Gig View, Settings, I/O, the Directory, the CPU Monitor or Looper X, the
- * matching app screen opens; when it returns to the Grid, the local overlays
- * close. Each kind is followed once until the unit shows a different one.
- * The "already followed" latch resets whenever following stops or the session
- * stops answering (a suspend, a bulk transfer, a disconnect), so the screen
- * showing on resume is followed again.
+ * Keeps the app and the unit on the same screen, both ways, with one loop guard.
+ *
+ * Unit to app (only with the setting on): when the unit shows a screen, the
+ * matching app screen opens; when it returns to the Grid, the local screens
+ * close. Each kind is followed once until the unit shows a different one, and
+ * the latch re-arms whenever following stops or the session stops answering.
+ *
+ * App to unit (always): when the user opens or closes the preset menu,
+ * Settings or Modes in the app, the unit is driven to the same screen by its
+ * proven gesture (qc-unit-screens.ts), after reading what it shows. The
+ * latch keeps a screen one side opened from being sent back by the other.
+ * Tuner, Gig View and I/O have their own commands in useQcDeviceViews.
  */
 export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcScreenPollingPhase; observe(observation: QcScreenObservation): void } {
   const { gateway, follow, available, ready } = options;
-  const followed = useRef<QcScreenObservation["kind"] | undefined>(undefined);
+  const followed = useRef<QcObservedScreenKind | undefined>(undefined);
   useEffect(() => {
     if (!follow || !ready) followed.current = undefined;
   }, [follow, ready]);
   const latest = useRef(options);
   latest.current = options;
+
   const observe = useCallback((observation: QcScreenObservation) => {
-    if (followed.current === observation.kind) return;
-    followed.current = observation.kind;
-    const { setView, workflows } = latest.current;
-    if (observation.kind === "parameter-editor" || observation.kind === "unknown") return;
+    const kind = observation.kind;
+    if (followed.current === kind) return;
+    followed.current = kind;
+    const { destination, workflows } = latest.current;
+    if (kind === "parameter-editor" || kind === "unknown") return;
+    // The app asked the unit for this screen, so the app already shows it.
+    if (destination.latch.takeUnit(kind)) return;
+    // The unit is moving the app: the app's change must not be driven back to the unit.
+    destination.latch.expectApp(kind === "grid" ? "grid" : kind);
     workflows.grid.close();
     workflows.preset.closeDirectory();
     workflows.deviceSettings.close();
     workflows.tempo.close();
     workflows.tuner.close();
-    setView(null);
-    if (observation.kind === "tuner") { setView("tuner"); void workflows.tuner.openTuner(); }
-    else if (observation.kind === "tempo") void workflows.tempo.openTempo();
-    else if (observation.kind === "gig") setView("gig");
-    else if (observation.kind === "settings") void workflows.deviceSettings.openSettings();
-    else if (observation.kind === "io") { setView("io-overview"); void workflows.ioEq.refresh(); }
-    else if (observation.kind === "directory") void workflows.preset.openDirectory();
-    else if (observation.kind === "cpu-monitor") setView("cpu-monitor");
-    else if (observation.kind === "looper") setView("looper-editor");
+    destination.setView(null);
+    destination.setPopup(null);
+    const { setView, setPopup } = destination;
+    if (kind === "tuner") { setView("tuner"); void workflows.tuner.openTuner(); }
+    else if (kind === "tempo") void workflows.tempo.openTempo();
+    else if (kind === "gig") setView("gig");
+    else if (kind === "settings") void workflows.deviceSettings.openSettings();
+    else if (kind === "io") { setView("io-overview"); void workflows.ioEq.refresh(); }
+    else if (kind === "directory") void workflows.preset.openDirectory();
+    else if (kind === "cpu-monitor") setView("cpu-monitor");
+    else if (kind === "looper") setView("looper-editor");
+    else if (kind === "modes") { setView("modes"); void workflows.modes.refresh(); }
+    else if (kind === "midi-out") setView("midi-out");
+    else if (kind === "preset-menu") setPopup("grid-menu");
+    else if (kind === "scene-selector") setPopup("scene-menu");
+    else if (QC_UNIT_MIRROR_KINDS.includes(kind)) setView("unit-mirror");
   }, []);
+
   const { phase } = useAdaptiveQcScreenPolling({ gateway, enabled: follow && available, connected: ready, onObservation: observe });
+
+  // App to unit: the screen the app shows, in the unit's terms, changing by the user's hand.
+  const appKind = appScreenKind({ view: options.destination.view, deviceSettingsOpen: options.workflows.deviceSettings.open, tempoOpen: options.workflows.tempo.open, popup: options.destination.popup });
+  const previousAppKind = useRef<QcObservedScreenKind | undefined>(undefined);
+  useEffect(() => {
+    const previous = previousAppKind.current;
+    previousAppKind.current = appKind;
+    if (previous === undefined || previous === appKind) return;
+    const current = latest.current;
+    if (!current.ready || !current.available) return;
+    // A change the unit made is not sent back.
+    if (current.destination.latch.takeApp(appKind)) return;
+    const { gateway: unit, destination, notice } = current;
+    const poll = current.screenPoll ?? DEFAULT_SCREEN_POLL;
+    const run = async () => {
+      if (ROUTED.includes(appKind)) {
+        destination.latch.expectUnit(appKind);
+        const result = await openOnUnit(unit, poll, appKind as QcOpenTarget);
+        if (result === "busy") notice("Close the screen open on the Quad Cortex first; the app does not drive it from another screen.");
+        else if (result === "not-shown") notice("The Quad Cortex did not show the same screen.");
+      } else if (ROUTED.includes(previous)) {
+        destination.latch.expectUnit("grid");
+        if (!await closeOnUnit(unit, poll, previous as QcCloseTarget)) notice("The Quad Cortex did not close the same screen.");
+      }
+    };
+    void run().catch((error: unknown) => notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed."));
+  }, [appKind]);
+
   return { phase, observe };
 }
 
@@ -75,12 +147,15 @@ export function qcGigViewTransition(current: QcScreenDestination["view"], shown:
 
 /**
  * The part of every native state batch that decides what the display shows:
- * Gig View shown or hidden on the unit, the CPU readings, and whether the unit has something to undo or redo. The hosts call
- * this first and keep only their transport-specific handling.
+ * the CPU readings and whether the unit has something to undo or redo always,
+ * and Gig View shown or hidden on the unit only when the user follows the
+ * unit's screen (the same setting that gates every other screen). The hosts
+ * call this first and keep only their transport-specific handling.
  */
-export function consumeQcDisplayStates(states: readonly QcStateUpdate[], display: { setView: QcScreenDestination["setView"]; cpu: Pick<QcCpuTelemetry, "consume">; undo: Pick<QcDeviceUndo, "consume"> }): void {
+export function consumeQcDisplayStates(states: readonly QcStateUpdate[], display: { setView: QcScreenDestination["setView"]; cpu: Pick<QcCpuTelemetry, "consume">; undo: Pick<QcDeviceUndo, "consume">; follow: boolean }): void {
   display.cpu.consume(states);
   display.undo.consume(states);
+  if (!display.follow) return;
   for (const state of states) {
     if (state.kind === "gigView" && state.gigViewShown !== undefined) {
       const shown = state.gigViewShown;

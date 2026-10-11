@@ -23,7 +23,7 @@ test("the live Grid keeps view state separate from its grouped action contract",
   const surface = readFileSync(new URL("../src/quad-cortex-surface.tsx", import.meta.url), "utf8");
   assert.match(surface, /type GridActions = Pick<QuadCortexSurfaceProps,[\s\S]*?"onAction"[\s\S]*?"onContextAction"/);
   assert.match(surface, /function CorOsGrid\(\{ snapshot, presetSlotAccent, selectedBlockId, gridActions, cpuColumns \}/);
-  assert.match(surface, /gridActions=\{\{ onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, routingPicker, addDevicePicker, savePreset, onContextAction, disabledContextActions \}\}/);
+  assert.match(surface, /gridActions=\{\{ onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, routingPicker, addDevicePicker, savePreset, onContextAction, disabledContextActions, popup, onPopupChange \}\}/);
   assert.doesNotMatch(surface, /<CorOsGrid[^>]+\bonAction=\{onAction\}/);
 });
 
@@ -161,5 +161,5 @@ test("the Windows menu toggles Gig View and I/O Settings through the shared view
   const windows = readFileSync(new URL("../../../../apps/windows/src/App.tsx", import.meta.url), "utf8");
   assert.ok(windows.includes('case "open-gig-view": void deviceViews.toggle("gig"); break;'));
   assert.ok(windows.includes('case "open-io-settings": void deviceViews.toggle("io"); break;'));
-  assert.ok(windows.includes('case "open-tuner": void deviceViews.open("tuner"); break;'), "the Tuner may mute the rig, so its menu item stays an explicit open");
+  assert.ok(windows.includes('case "open-tuner": void deviceViews.toggle("tuner"); break;'), "the Tuner toggles too");
 });

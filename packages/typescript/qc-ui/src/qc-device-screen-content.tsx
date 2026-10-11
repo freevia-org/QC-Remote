@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { GridBlock, PresetSnapshot } from "@qc-remote/client";
+import type { GatewayTransport, GridBlock, PresetSnapshot } from "@qc-remote/client";
 import { CorOsIoSettingsScreen, CorOsGlobalEqScreen } from "./io-global-eq-screens";
 import { CorOsDeviceSettings } from "./device-settings-screen";
 import { CorOsTempoScreen } from "./tempo-screen";
@@ -8,6 +8,7 @@ import { LooperXScreen } from "./looper-x-screen";
 import { ModesConfigurationScreen, type ModesConfigurationWorkflow } from "./modes-configuration-screen";
 import { PresetMidiOutEditor } from "./preset-midi-out-editor";
 import { qcLooperScreenActions, resolveQcDeviceScreen } from "./qc-device-screen";
+import { QcUnitScreenMirror } from "./qc-unit-screen-mirror";
 import type { DeviceSettingsWorkflow } from "./use-device-settings-workflow";
 import type { IoEqWorkflow } from "./use-io-eq-workflows";
 import type { LooperXWorkflow } from "./use-looper-x-workflow";
@@ -29,6 +30,8 @@ export interface QcDeviceScreenContentOptions {
     ioEq: IoEqWorkflow;
     grid: { openBlock(block: GridBlock): Promise<unknown> };
   };
+  /** The unit, for screens the app mirrors as a picture. */
+  mirror: Pick<GatewayTransport, "captureScreen">;
   selectScene(scene: number): unknown;
   queueTempo(bpm: number, source?: "Encoder" | "Tap"): void;
   setParameterMenuInitiallyOpen(open: boolean): void;
@@ -43,7 +46,7 @@ export interface QcDeviceScreenContentOptions {
  * straight to the surface's screenContent.
  */
 export function qcDeviceScreenContent(options: QcDeviceScreenContentOptions): ReactNode | undefined {
-  const { snapshot, destination, workflows, selectScene, queueTempo, setParameterMenuInitiallyOpen, closeScreen, notice } = options;
+  const { snapshot, destination, workflows, mirror, selectScene, queueTempo, setParameterMenuInitiallyOpen, closeScreen, notice } = options;
   const { setView, returnFocusTarget } = destination;
   const kind = resolveQcDeviceScreen(destination.view, { deviceSettings: workflows.deviceSettings.open, tempo: workflows.tempo.open });
   switch (kind) {
@@ -55,6 +58,7 @@ export function qcDeviceScreenContent(options: QcDeviceScreenContentOptions): Re
       return <LooperXScreen workflow={workflows.looper} activeScene={snapshot.activeScene} onSelectScene={(scene) => void selectScene(scene)} onParameters={looper.onParameters} onMenu={looper.onMenu} onClose={() => void looper.onClose()} />;
     }
     case "modes": return <ModesConfigurationScreen returnFocusTarget={returnFocusTarget} workflow={workflows.modes} onClose={() => setView(null)} />;
+    case "unit-mirror": return <QcUnitScreenMirror gateway={mirror} />;
     case "midi-out": return <PresetMidiOutEditor returnFocusTarget={returnFocusTarget} workflow={workflows.midiOut} onClose={() => setView(null)} />;
     case "global-eq": return <CorOsGlobalEqScreen workflow={workflows.ioEq} onBack={() => setView("io-overview")} />;
     case "io": return <CorOsIoSettingsScreen workflow={workflows.ioEq} onGlobalEq={() => setView("global-eq")} onClose={() => void closeScreen()} />;

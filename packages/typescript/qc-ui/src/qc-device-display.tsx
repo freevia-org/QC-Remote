@@ -38,6 +38,8 @@ export interface QcDeviceDisplayHost {
     preset: ReturnType<typeof usePresetWorkflow>;
     routing: ReturnType<typeof useRoutingWorkflow>;
   };
+  /** The unit, to mirror the screens the app has none of. */
+  mirror: QcDeviceScreenContentOptions["mirror"];
   selectScene: QcDeviceScreenContentOptions["selectScene"];
   queueTempo: QcDeviceScreenContentOptions["queueTempo"];
   setParameterMenuInitiallyOpen: QcDeviceScreenContentOptions["setParameterMenuInitiallyOpen"];
@@ -77,7 +79,7 @@ export function createQcDeviceDisplay(host: QcDeviceDisplayHost): QcDeviceDispla
   // The CPU Monitor is laid over the normal Grid, as on the unit, rather than replacing it.
   const cpuMonitor = cpu.monitor(cpuMonitorOpen, destination.returnFocusTarget, () => destination.setView(null));
   const screenContent = host.auditContent ?? qcDeviceScreenContent({
-    snapshot, destination, workflows, selectScene: host.selectScene, queueTempo: host.queueTempo,
+    snapshot, destination, workflows, mirror: host.mirror, selectScene: host.selectScene, queueTempo: host.queueTempo,
     setParameterMenuInitiallyOpen: host.setParameterMenuInitiallyOpen, closeScreen: views.close, notice: host.notice
   });
   const contextAction = qcContextActionHandler({
@@ -119,7 +121,9 @@ export function createQcDeviceDisplay(host: QcDeviceDisplayHost): QcDeviceDispla
     laneControlEditor: host.laneControlEditor,
     parameterEditor: host.parameterEditor,
     onContextAction: contextAction,
-    disabledContextActions: QC_DISABLED_CONTEXT_ACTIONS
+    disabledContextActions: QC_DISABLED_CONTEXT_ACTIONS,
+    popup: destination.popup,
+    onPopupChange: destination.setPopup
   };
   // Copy/swap is the Grid context-menu command; it is a dialog over the whole app, not part of the display's canvas.
   const overlay = scene.command ? <CorOsSceneCommand scenes={snapshot.scenes} sourceScene={scene.sourceScene} swap={scene.command === "swap"} pending={pending} onSelect={(destinationScene) => void scene.chooseDestination(destinationScene)} onCancel={scene.closeCommand} returnFocusTarget={scene.commandReturnTarget} /> : null;

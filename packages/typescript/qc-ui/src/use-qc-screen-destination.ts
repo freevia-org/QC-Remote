@@ -1,7 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { createQcScreenLatch, type QcPopupName, type QcScreenLatch } from "./qc-unit-screens.ts";
 import { corOsUnavailableContextActionMessage, type CorOsContextAction } from "./coros-ui.ts";
 import type { CorOsScreenView } from "./coros-screen-fixture-data.ts";
 
+export type { QcPopupName as QcPopup } from "./qc-unit-screens.ts";
 export type QcScreenReturnFocus = "grid-menu";
 export type QcScreenViewUpdate = CorOsScreenView | null | ((current: CorOsScreenView | null) => CorOsScreenView | null);
 
@@ -15,6 +17,11 @@ export interface QcScreenDestination {
   setView(next: QcScreenViewUpdate): void;
   /** Open a screen and remember where focus returns to. */
   open(view: CorOsScreenView, returnFocusTarget?: QcScreenReturnFocus): void;
+  /** The Grid popup that is open (the preset menu, the scene menu, the mode menu): shared with the unit's own menu. */
+  popup: QcPopupName | null;
+  setPopup(popup: QcPopupName | null): void;
+  /** The loop guard shared by everything that moves the app's screen or the unit's. */
+  latch: QcScreenLatch;
 }
 
 /**
@@ -34,7 +41,9 @@ export function useQcScreenDestination(): QcScreenDestination {
   const open = useCallback((view: CorOsScreenView, returnFocusTarget?: QcScreenReturnFocus) => {
     setState({ view, returnFocusTarget });
   }, []);
-  return { view: state.view, returnFocusTarget: state.returnFocusTarget, setView, open };
+  const [popup, setPopup] = useState<QcPopupName | null>(null);
+  const latch = useMemo(() => createQcScreenLatch(), []);
+  return { view: state.view, returnFocusTarget: state.returnFocusTarget, setView, open, popup, setPopup, latch };
 }
 
 /** Grid-menu entries the device cannot honour through the semantic gateway, with the reason shown on the entry. */
