@@ -7,6 +7,77 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## Unreleased
+
+### Windows
+
+- **A Quad Cortex connected to QC Remote can now use this computer's internet
+  connection for CorOS updates.** With only QC Remote attached (Cortex Control
+  closed), the unit has no network path of its own while USB is connected, so its
+  DOWNLOAD UPDATE button used to go unanswered, and the capture shows it asking
+  again about once a minute (what it finally does was not observed). The unit sends its
+  update request to its host in a plain message (type 61, `UpdaterForward`: the
+  URL, the headers and the timeout it chose). The device broker now carries that
+  request over the computer's internet connection and returns the reply in
+  chunks, with its keepalive running on its own clock for the length of the
+  transfer.
+- **New Settings switch, "Internet for the Quad Cortex" (Edit > Settings…).** It
+  is on by default, including for settings saved by an earlier version, and shows
+  what the relay is doing (passing a request through now, the last result, a
+  request declined for another domain, or how often the unit asked while the
+  switch was off). Turning it off ends a transfer in progress; the broker then
+  behaves as before (the frame is counted and dropped) and
+  `usbDiagnostics.updaterRelay` counts that the unit asked. The switch is an
+  app setting stored as `updaterRelayEnabled` in `device-broker-tray.json`; it
+  is not a Quad Cortex action and no AI tool can change it. It applies to every
+  shipped broker, including one started over stdio for a local MCP client (a
+  developer build that is given no settings directory has no switch and runs on
+  the defaults), and a settings file that cannot be read for a moment keeps the
+  last known setting instead of switching the relay back on; with no earlier
+  value, such as at start, the relay is on. If the broker's value and the
+  stored switch differ, the row's line says so.
+- The relay carries the unit's update channel only. It does not carry the unit's
+  account, cloud-library, backup or log forwards (message types 29, 30, 31) or
+  its cloud login (type 18), which the broker still neither decodes nor answers,
+  and it adds no cryptography. The unit supplies the request, its headers and its
+  own credentials, so its serial number and those credentials reach Neural DSP as
+  they would over Wi-Fi. The broker opens the connection on the unit's behalf but
+  makes no request of its own: it forwards the unit's headers as they are, and
+  its HTTP library adds only what HTTP itself needs (`Host`) and a generic
+  `Accept: */*` header when the unit sent no `Accept`; it stores none and never writes a header value or a query value to a
+  log or to the status.
+- Network hygiene: only HTTPS requests to `neuraldsp.com` and its subdomains
+  (matched on a whole label, so `evilneuraldsp.com` is not one), at any path, and
+  to any domain named in `updaterRelayExtraDomains` (empty by default). A request
+  for any other domain is not carried: the unit gets an error reply, and the host
+  name only (no path, no query) is written to the broker's error output and the
+  device flight recorder (a local file; its audit lines carry the host name and
+  the path as a shape, with query values removed and long or token-like segments
+  replaced, short segments as they are). `usbDiagnostics.updaterRelay`, which AI apps can
+  read, carries counts (`refusedDomainRequests`) and the outcome word of the last
+  request, and no host, path, domain list or time. No address literals, user
+  names or ports other than 443; names that resolve to a private, loopback, link-local or carrier-grade-NAT
+  address are refused at connection time; at most three redirects, each target
+  checked again against the same rules, and a redirect to another host carries
+  only the byte-range header; one request at a time; a response size cap
+  (`updaterRelayMaxDownloadBytes`, 512 MiB by default); GET only with no request
+  body; no system proxy and no retries. See `services/device-broker/src/updater_relay`.
+- Known limitations: the update relay was built from one captured request (the
+  unit's firmware check). Until it has been run against a real update, the
+  request method for the download types, the meaning the unit gives the reply's
+  `error_code`, and which host serves the image are unverified assumptions. If the
+  image is served from a domain outside `neuraldsp.com` (for example a CDN), the
+  request is declined and its host is written to the broker's log until that
+  domain is added to `updaterRelayExtraDomains`. The first run against a real
+  update will probably need iteration. A computer that must use an HTTP proxy
+  cannot use the relay. Host-to-device throughput is bounded by the USB link, so a
+  large image takes many minutes; Wi-Fi on the unit remains the faster route.
+
+### Android
+
+- No change. The Android app's USB host does not answer the unit's update
+  requests; whether it should is a separate decision.
+
 ## Released 10 October 2026 — Windows 0.1.182 / Android 0.3.36
 
 Changes since Windows 0.1.181 / Android 0.3.35.

@@ -73,6 +73,32 @@ export interface NativeStateFrames<TState = unknown> {
   frames: NativeStateFrame<TState>[];
 }
 
+/**
+ * The device broker's update relay: the part of the host that carries the Quad
+ * Cortex's own update requests to Neural DSP over this computer's internet
+ * connection while the unit is connected over USB. Every field is optional
+ * because an older broker omits the whole object. `system.status` is readable
+ * by the AI apps attached to the broker, so this carries counts, the switch and
+ * the outcome word of the last request, and no host, path, query, domain list
+ * or timestamp.
+ */
+export interface UpdaterRelayDiagnostics {
+  enabled?: boolean;
+  requestsSeen?: number;
+  /** Requests the unit made while the relay was off; they were not carried. */
+  requestsWhileDisabled?: number;
+  requestsCompleted?: number;
+  requestsFailed?: number;
+  requestsRefused?: number;
+  /** Requests for a domain that is not allowed (outside neuraldsp.com and the extra domains). */
+  refusedDomainRequests?: number;
+  bytesFromServer?: number;
+  bytesToDevice?: number;
+  inFlight?: boolean;
+  /** How the latest finished request ended: "completed", "timeout", "refused:domain-not-allowed", ... */
+  lastOutcome?: string | null;
+}
+
 export interface RuntimeStatus {
   platform: string;
   gatewayAvailable: boolean;
@@ -93,6 +119,7 @@ export interface RuntimeStatus {
     messagesReceivedByType?: Record<string, number>;
     messagesSentByType?: Record<string, number>;
     lastMessageType?: number;
+    updaterRelay?: UpdaterRelayDiagnostics;
     /** Inbound frames this connection received and could not act on, keyed by
      * reason and then by message type, plus the per-type tally of the two
      * device trailer bytes nothing on the host interprets.
