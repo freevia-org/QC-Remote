@@ -18,7 +18,9 @@ const browser = findBrowser();
 const mustRun = Boolean(process.env.CI) || process.env.QC_REQUIRE_BROWSER === "1";
 const skip = !browser && !mustRun ? "no Chrome or Chromium found; set QC_BROWSER_EXECUTABLE to run the display layout check" : false;
 
-const ASPECT = 5 / 3;
+/** The display's one physical aspect (the vector's inner opening) and the width:height of each 800x480 pixel it implies. */
+const ASPECT = 585.353 / 327.749;
+const PIXEL_ASPECT = ASPECT / (800 / 480);
 const aspectTolerance = 0.005;
 
 let measured: DisplayMeasurement[] = [];
@@ -38,24 +40,25 @@ test("lay out the shared display in both hosts", { skip, timeout: 240_000 }, asy
   assert.equal(clamped.length, measured.length);
 });
 
-test("the display box is 5:3 within 0.5% at every viewport, in both hosts", { skip }, () => {
+test("the display box has the physical aspect within 0.5% at every viewport, in both hosts", { skip }, () => {
   for (const sample of measured) {
     const [, , width, height] = sample.bezel;
     const aspect = width / height;
-    assert.ok(Math.abs(aspect / ASPECT - 1) <= aspectTolerance, `${sample.key}: display box is ${width.toFixed(2)}x${height.toFixed(2)} (${aspect.toFixed(4)}), not 5:3`);
+    assert.ok(Math.abs(aspect / ASPECT - 1) <= aspectTolerance, `${sample.key}: display box is ${width.toFixed(2)}x${height.toFixed(2)} (${aspect.toFixed(4)}), not the physical aspect ${ASPECT.toFixed(4)}`);
     assert.deepEqual(sample.border, ["0px", "0px"], `${sample.key}: the display box has no border or padding of its own`);
   }
 });
 
-test("the canvas scale is one factor on both axes and fills the display box exactly", { skip }, () => {
+test("the canvas is scaled by the fixed pixel aspect and fills the display box exactly", { skip }, () => {
   for (const sample of measured) {
     const [a, b, c, d] = sample.matrix;
     assert.equal(b, 0);
     assert.equal(c, 0);
-    assert.ok(Math.abs(a - d) < 1e-9, `${sample.key}: scale is ${a} on x and ${d} on y`);
     assert.ok(Math.abs(a * 800 - sample.bezel[2]) < 0.01, `${sample.key}: the canvas is 800 * ${a} wide, the display box ${sample.bezel[2]}`);
+    assert.ok(Math.abs(d * 480 - sample.bezel[3]) < 0.01, `${sample.key}: the canvas is 480 * ${d} tall, the display box ${sample.bezel[3]}`);
+    assert.ok(Math.abs(a / d / PIXEL_ASPECT - 1) < 1e-3, `${sample.key}: x scale ${a} over y scale ${d} is ${(a / d).toFixed(5)}, not the pixel aspect ${PIXEL_ASPECT.toFixed(5)}`);
     for (let index = 0; index < 4; index += 1) assert.ok(Math.abs(sample.root[index] - sample.bezel[index]) < 0.6, `${sample.key}: the canvas covers the display box (${sample.root} vs ${sample.bezel})`);
-    if (sample.svg) for (let index = 0; index < 4; index += 1) assert.ok(Math.abs(sample.svg[index] - sample.bezel[index]) < 0.6, `${sample.key}: the Grid's SVG fills the canvas undistorted`);
+    if (sample.svg) for (let index = 0; index < 4; index += 1) assert.ok(Math.abs(sample.svg[index] - sample.bezel[index]) < 0.6, `${sample.key}: the Grid's SVG fills the canvas`);
   }
 });
 
@@ -75,7 +78,8 @@ test("the same screen has the same shape and scale in every host at a given disp
     for (const sample of samples.slice(1)) {
       assert.equal(sample.texts.length, base.texts.length, `${sample.key}: same text runs as ${base.key}`);
       sample.texts.forEach((text, index) => {
-        const norm = (s: DisplayMeasurement, t: DisplayMeasurement["texts"][number]) => t.box.map((v, k) => (k < 2 ? v - s.bezel[k] : v) / s.bezel[2] * 800);
+        // x and width in canvas pixels by the box width over 800, y and height by the box height over 480.
+        const norm = (s: DisplayMeasurement, t: DisplayMeasurement["texts"][number]) => t.box.map((v, k) => (k < 2 ? v - s.bezel[k] : v) / s.bezel[2 + (k % 2)] * (k % 2 ? 480 : 800));
         const a = norm(sample, text);
         const b = norm(base, base.texts[index]);
         a.forEach((value, k) => assert.ok(Math.abs(value - b[k]) < 0.5, `${sample.key} vs ${base.key}: "${text.text}" box[${k}] ${value.toFixed(2)} vs ${b[k].toFixed(2)} canvas px`));
