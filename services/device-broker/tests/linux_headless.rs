@@ -22,11 +22,15 @@ impl Scratch {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("qc-linux-broker-{}", uuid::Uuid::new_v4()));
         fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(path.join("state"))
+            .unwrap();
         Self(path)
     }
 
     fn directory(&self) -> PathBuf {
-        self.0.join(APP_DIRECTORY)
+        self.0.join("state").join(APP_DIRECTORY)
     }
 
     fn descriptor(&self) -> PathBuf {
