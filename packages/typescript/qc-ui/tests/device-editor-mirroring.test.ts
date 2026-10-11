@@ -3,10 +3,10 @@ import test from "node:test";
 import { closeGridBlockOnDevice } from "../src/device-editor-mirroring.ts";
 import type { GatewayTransport } from "@qc-remote/client";
 
-function unit(classes: string[]) {
+function unit(classes: string[], withGrid = true) {
   const taps: string[] = [];
   const gateway = {
-    graphicsTree: async () => ({ tree: ["zenUI::RootGraphicsItem", "zenUI::Grid", ...classes.map((name) => `zenUI::${name}`)].join("\n") }),
+    graphicsTree: async () => ({ tree: ["zenUI::RootGraphicsItem", ...(withGrid ? ["zenUI::Grid"] : []), ...classes.map((name) => `zenUI::${name}`)].join("\n") }),
     tapScreen: async (x: number, y: number) => { taps.push(`${x},${y}`); }
   } as unknown as GatewayTransport;
   return { gateway, taps };
@@ -43,4 +43,19 @@ test("a superseded close reports nothing and taps nothing", async () => {
   const left: string[] = [];
   assert.equal(await closeGridBlockOnDevice(host.gateway, () => false, (screen) => left.push(screen)), false);
   assert.deepEqual([host.taps, left], [[], []]);
+});
+
+test("the Cab editor, whose tree has no Grid at all, is closed by the check tap", async () => {
+  const cab = unit(["ParameterEditor", "ModelEditor", "CabsimModelEditor", "CabsimPanel", "CabsimPanel", "TabBar", "ParameterEditorTitle"], false);
+  assert.equal(await closeGridBlockOnDevice(cab.gateway), true);
+  assert.deepEqual(cab.taps, ["742,30"]);
+});
+
+test("a popup over the editor is named, not tapped over, whether or not the Grid is in the tree", async () => {
+  for (const withGrid of [true, false]) {
+    const host = unit(["ParameterEditor", "_OptionsPopup"], withGrid);
+    const left: string[] = [];
+    assert.equal(await closeGridBlockOnDevice(host.gateway, () => true, (screen) => left.push(screen)), false);
+    assert.deepEqual([host.taps, left], [[], ["block-menu"]]);
+  }
 });

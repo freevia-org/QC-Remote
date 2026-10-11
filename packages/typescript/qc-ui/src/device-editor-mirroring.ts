@@ -57,9 +57,10 @@ export async function closeGridBlockOnDevice(
   onLeftOpen?: (screen: QcObservedScreenKind) => void
 ): Promise<boolean> {
   const { tree } = await gateway.graphicsTree();
-  requireGrid(tree);
-  if (!tree.includes("zenUI::ParameterEditor") || !stillCurrent()) {
-    const screen = classifyQcGraphicsTree(tree);
+  // Measured on the unit: while a parameter editor (the Cab editor included) is open its tree has no zenUI::Grid at
+  // all, so the Grid must not be required here; the editor itself is what is being closed.
+  const screen = classifyQcGraphicsTree(tree);
+  if (screen !== "parameter-editor" || !tree.includes("zenUI::ParameterEditor") || !stillCurrent()) {
     if (stillCurrent() && screen !== "grid") onLeftOpen?.(screen);
     return false;
   }
