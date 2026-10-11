@@ -1772,12 +1772,15 @@ fn a_second_gateway_process_attaches_to_the_first_instead_of_spawning_a_new_brok
         wait_until(Duration::from_secs(12), || !process_is_alive(first_pid)),
         "with every client gone, the broker ends through its own grace period"
     );
+    // Only now is the broker known gone; a failure above leaves the
+    // directory, which it may still be using.
+    let _ = remove_dir_with_retries(descriptor_path.parent().unwrap());
 }
 
 #[test]
 fn dropping_an_attached_only_client_does_not_kill_the_hosting_process() {
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("attach-drop-safety");
+    let (_cleanup, descriptor_path) = armed_broker_descriptor_path("attach-drop-safety");
     let first = GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path).unwrap();
     let broker_pid = first.hosted_broker_pid().unwrap();
 
@@ -1842,6 +1845,9 @@ fn an_attached_client_drop_closes_its_connection_without_killing_the_broker() {
         let _ = broker.kill();
         let _ = broker.wait();
     }
+    // Armed only once the broker is reaped: before that, a failure leaves
+    // the directory to the broker that may still be using it.
+    let _directory_guard = RemoveDirOnDrop::new(descriptor_path.parent().unwrap());
     assert!(
         alive_after_drop,
         "dropping an attached-only client must not kill the broker"
@@ -1859,7 +1865,7 @@ fn an_attached_client_drop_closes_its_connection_without_killing_the_broker() {
 #[test]
 fn a_descriptor_left_by_a_dead_broker_is_replaced_by_a_new_host() {
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("dead-descriptor");
+    let (_cleanup, descriptor_path) = armed_broker_descriptor_path("dead-descriptor");
     // A fresh descriptor naming a port nothing listens on: the shape a
     // crashed or killed broker leaves behind for up to its staleness window.
     let unused_port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -2391,7 +2397,7 @@ fn processes_started_together_converge_on_one_broker() {
     // before the timed race starts, means the race measures only the
     // real runtime behaviour this test exists to check.
     default_broker_executable().expect("the test broker builds");
-    let descriptor_path = test_descriptor_path("converge");
+    let (_cleanup, descriptor_path) = armed_broker_descriptor_path("converge");
     let processes: Vec<GatewayProcess> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..4)
             .map(|_| {
@@ -2465,6 +2471,10 @@ fn a_hosting_process_dropped_after_a_transport_failure_leaves_the_shared_broker_
     drop(recovered);
     drop(other);
     let exited_on_its_own = wait_until(Duration::from_secs(12), || !process_is_alive(broker_pid));
+    // Armed only once the broker is seen gone: otherwise the directory is
+    // left to the broker that may still be using it.
+    let _directory_guard =
+        exited_on_its_own.then(|| RemoveDirOnDrop::new(descriptor_path.parent().unwrap()));
 
     assert!(
         alive_after_drop,
@@ -2696,7 +2706,7 @@ fn an_expired_descriptor_for_a_live_unanswering_broker_is_never_replaced() {
 #[test]
 fn a_handshake_timeout_against_a_dead_process_is_replaced() {
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("dead-silent-broker");
+    let (_cleanup, descriptor_path) = armed_broker_descriptor_path("dead-silent-broker");
     let dead_pid = exited_process_id();
     let _listener = publish_silent_broker(
         &descriptor_path,
@@ -2721,7 +2731,7 @@ fn a_handshake_timeout_against_a_dead_process_is_replaced() {
 #[test]
 fn a_descriptor_whose_pid_was_recycled_by_another_process_is_replaced() {
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("recycled-pid-broker");
+    let (_cleanup, descriptor_path) = armed_broker_descriptor_path("recycled-pid-broker");
     let recycled_pid = std::process::id();
     let broker_created_at = own_process_created_at() - 1;
     let _listener = publish_silent_broker(
@@ -2848,7 +2858,7 @@ fn shared_gateway(descriptor_path: &Path) -> Gateway {
 #[test]
 fn forced_tray_release_survives_socket_close_and_blocks_automatic_restart() {
     let _serialize = serialize_real_broker_test();
-    let descriptor = test_descriptor_path("intentional-tray-release");
+    let (_cleanup, descriptor) = armed_broker_descriptor_path("intentional-tray-release");
     let mut window = shared_gateway(&descriptor);
     window.request(rpc::RUNTIME_STATUS, json!({})).unwrap();
     let mut tray = GatewayProcess::start_with_descriptor_path(None, false, &descriptor).unwrap();
@@ -2895,7 +2905,7 @@ fn forced_tray_release_survives_socket_close_and_blocks_automatic_restart() {
 #[test]
 fn participant_names_are_announced_only_when_the_tray_is_enabled() {
     let _serialize = serialize_real_broker_test();
-    let descriptor = test_descriptor_path("participant-announcement");
+    let (_cleanup, descriptor) = armed_broker_descriptor_path("participant-announcement");
     let directory = descriptor.parent().unwrap();
     broker_tray_settings::set_tray_enabled_in(directory, false).unwrap();
     let mut window = shared_gateway(&descriptor);
@@ -3353,7 +3363,7 @@ fn an_explicit_reconnect_supersedes_a_delayed_old_reader_generation() {
 #[test]
 fn a_disconnect_leaves_a_shared_session_open_while_others_use_it() {
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("disconnect-shared");
+    let (_cleanup, descriptor_path) = armed_broker_descriptor_path("disconnect-shared");
     let mut window = shared_gateway(&descriptor_path);
     let mut other = shared_gateway(&descriptor_path);
     window.request(rpc::RUNTIME_STATUS, json!({})).unwrap();
@@ -3415,7 +3425,7 @@ fn only_a_gateway_asked_to_opens_the_session_from_its_first_broker() {
 #[test]
 fn a_gateway_with_a_descriptor_path_meets_the_shared_broker() {
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("gateway-own-path");
+    let (_cleanup, descriptor_path) = armed_broker_descriptor_path("gateway-own-path");
     let mut gateway = shared_gateway(&descriptor_path);
     gateway.request(rpc::RUNTIME_STATUS, json!({})).unwrap();
     assert!(gateway
@@ -3678,7 +3688,7 @@ fn received_so_far(broker: &ScriptedBroker) -> Vec<String> {
 #[test]
 fn a_resource_read_racing_a_failing_tool_call_never_brings_a_broker_up() {
     use qc_remote_mcp::QcBackend as _;
-    let descriptor_path = test_descriptor_path("resource-read-race");
+    let (_directory_guard, descriptor_path) = guarded_descriptor_path("resource-read-race");
     let (gateway, broker) =
         gateway_with_scripted_broker(&descriptor_path, true, Some(rpc::SELECT_SCENE));
     let adapter = local_stdio::HeadlessDeviceAdapter::over_gateway(gateway);
@@ -3739,7 +3749,6 @@ fn a_resource_read_racing_a_failing_tool_call_never_brings_a_broker_up() {
         "and no election was held"
     );
     assert!(received_so_far(&broker).is_empty(), "nothing else was sent");
-    let _ = fs::remove_dir_all(descriptor_path.parent().unwrap());
 }
 
 /// Control: the same race with a tool call in the read's
@@ -3805,6 +3814,9 @@ fn a_tool_call_racing_a_failing_tool_call_still_recovers_the_broker() {
         )),
         "with every client gone, the broker ends through its own grace period"
     );
+    // Only now is the broker known gone; a failure above leaves the
+    // directory, which it may still be using.
+    let _ = remove_dir_with_retries(descriptor_path.parent().unwrap());
 }
 
 /// A resource read uses a healthy connection the gateway holds. The
@@ -3813,7 +3825,7 @@ fn a_tool_call_racing_a_failing_tool_call_still_recovers_the_broker() {
 #[test]
 fn a_resource_read_uses_the_open_session_on_the_connection_the_gateway_holds() {
     use qc_remote_mcp::QcBackend as _;
-    let descriptor_path = test_descriptor_path("resource-read-open-session");
+    let (_directory_guard, descriptor_path) = guarded_descriptor_path("resource-read-open-session");
     let (gateway, broker) = gateway_with_scripted_broker(&descriptor_path, true, None);
     let adapter = local_stdio::HeadlessDeviceAdapter::over_gateway(gateway);
     let backend = local_backend_over(&adapter);
@@ -3838,7 +3850,6 @@ fn a_resource_read_uses_the_open_session_on_the_connection_the_gateway_holds() {
     );
     assert!(adapter.gateway_attached());
     assert!(!descriptor_path.exists(), "no other broker was looked for");
-    let _ = fs::remove_dir_all(descriptor_path.parent().unwrap());
 }
 
 /// On a connection whose device session is closed (an idle release, or
@@ -3848,7 +3859,8 @@ fn a_resource_read_uses_the_open_session_on_the_connection_the_gateway_holds() {
 #[test]
 fn a_resource_read_sends_no_device_demand_on_a_closed_session() {
     use qc_remote_mcp::QcBackend as _;
-    let descriptor_path = test_descriptor_path("resource-read-closed-session");
+    let (_directory_guard, descriptor_path) =
+        guarded_descriptor_path("resource-read-closed-session");
     let (gateway, broker) = gateway_with_scripted_broker(&descriptor_path, false, None);
     let adapter = local_stdio::HeadlessDeviceAdapter::over_gateway(gateway);
     let backend = local_backend_over(&adapter);
@@ -3888,7 +3900,6 @@ fn a_resource_read_sends_no_device_demand_on_a_closed_session() {
         vec![rpc::LIST_MODELS.to_string()],
         "a tool call sends its demand, with no status read first"
     );
-    let _ = fs::remove_dir_all(descriptor_path.parent().unwrap());
 }
 
 /// A broker connection that admits requests the way the device broker does,
@@ -4049,7 +4060,8 @@ fn resource_read_across_a_close(
 /// own lock: no reopen, and the structured offline answer.
 #[test]
 fn a_session_closed_between_the_status_and_the_read_is_never_reopened() {
-    let descriptor_path = test_descriptor_path("resource-read-close-between");
+    let (_directory_guard, descriptor_path) =
+        guarded_descriptor_path("resource-read-close-between");
     let (gateway, broker) = gateway_with_admitting_broker(&descriptor_path, true);
     let adapter = local_stdio::HeadlessDeviceAdapter::over_gateway(gateway);
     let backend = local_backend_over(&adapter);
@@ -4073,7 +4085,6 @@ fn a_session_closed_between_the_status_and_the_read_is_never_reopened() {
         "nothing reopened the session"
     );
     assert!(!descriptor_path.exists(), "no other broker was looked for");
-    let _ = fs::remove_dir_all(descriptor_path.parent().unwrap());
 }
 
 /// A broker that does not list the capability cannot
@@ -4084,7 +4095,7 @@ fn a_session_closed_between_the_status_and_the_read_is_never_reopened() {
 /// so that broker never gets the chance to reopen the session.
 #[test]
 fn an_older_broker_fails_a_resource_read_closed_and_is_sent_no_device_request() {
-    let descriptor_path = test_descriptor_path("resource-read-older-broker");
+    let (_directory_guard, descriptor_path) = guarded_descriptor_path("resource-read-older-broker");
     let (gateway, broker) = gateway_with_admitting_broker(&descriptor_path, false);
     let adapter = local_stdio::HeadlessDeviceAdapter::over_gateway(gateway);
     let backend = local_backend_over(&adapter);
@@ -4104,7 +4115,6 @@ fn an_older_broker_fails_a_resource_read_closed_and_is_sent_no_device_request() 
         0,
         "nothing reopened the session"
     );
-    let _ = fs::remove_dir_all(descriptor_path.parent().unwrap());
 }
 
 /// Control: a tool call to the same older broker is
@@ -4112,7 +4122,7 @@ fn an_older_broker_fails_a_resource_read_closed_and_is_sent_no_device_request() 
 #[test]
 fn a_tool_call_to_an_older_broker_still_goes_through() {
     use qc_remote_mcp::QcBackend as _;
-    let descriptor_path = test_descriptor_path("tool-call-older-broker");
+    let (_directory_guard, descriptor_path) = guarded_descriptor_path("tool-call-older-broker");
     let (gateway, broker) = gateway_with_admitting_broker(&descriptor_path, false);
     let adapter = local_stdio::HeadlessDeviceAdapter::over_gateway(gateway);
     let backend = local_backend_over(&adapter);
@@ -4136,7 +4146,6 @@ fn a_tool_call_to_an_older_broker_still_goes_through() {
         broker.status_answered.try_recv().is_err(),
         "no status read came first"
     );
-    let _ = fs::remove_dir_all(descriptor_path.parent().unwrap());
 }
 
 /// Control: a tool call is never marked, sends no status
@@ -4144,7 +4153,7 @@ fn a_tool_call_to_an_older_broker_still_goes_through() {
 #[test]
 fn a_tool_call_is_never_marked_as_a_resource_read() {
     use qc_remote_mcp::QcBackend as _;
-    let descriptor_path = test_descriptor_path("tool-call-unmarked");
+    let (_directory_guard, descriptor_path) = guarded_descriptor_path("tool-call-unmarked");
     let (gateway, broker) = gateway_with_admitting_broker(&descriptor_path, true);
     let adapter = local_stdio::HeadlessDeviceAdapter::over_gateway(gateway);
     let backend = local_backend_over(&adapter);
@@ -4168,7 +4177,6 @@ fn a_tool_call_is_never_marked_as_a_resource_read() {
         broker.status_answered.try_recv().is_err(),
         "no status read came first"
     );
-    let _ = fs::remove_dir_all(descriptor_path.parent().unwrap());
 }
 
 /// Removes one test's scratch directory when dropped: after its assertions
@@ -5694,6 +5702,41 @@ fn guarded_descriptor_path(name: &str) -> (RemoveDirOnDrop, PathBuf) {
     let descriptor_path = test_descriptor_path(name);
     let guard = RemoveDirOnDrop::new(descriptor_path.parent().unwrap());
     (guard, descriptor_path)
+}
+
+/// `test_descriptor_path` for a test that starts a real broker there, with
+/// its teardown armed before anything can spawn: every broker spawned for the
+/// path is owned through its handle from the spawn (`arm_spawned_broker`),
+/// given the 12 s it needs to end through its own grace period once its
+/// clients are gone, and terminated through that handle only after that.
+/// The directory goes last, and only once every exit was acknowledged.
+///
+/// Bind the stack after the real-broker lock and before every client: the
+/// clients drop first, so the broker can reach its own zero-client exit, and
+/// the lock is still held while it does. Teardown runs from the stack's
+/// `Drop` on success and on a panic alike, and only reports, never fails.
+fn armed_broker_descriptor_path(name: &str) -> (CleanupStack, PathBuf) {
+    let descriptor_path = test_descriptor_path(name);
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut cleanup = CleanupStack::default();
+    #[cfg(windows)]
+    {
+        let directory = descriptor_path.parent().unwrap().to_path_buf();
+        cleanup.arm("directory", move |report| {
+            report.remove_dir_unless_blocked(&directory)
+        });
+        let (spawns, _sink) = arm_spawned_broker(
+            &mut cleanup,
+            &descriptor_path,
+            Duration::from_secs(12),
+            TERMINATION_ACK_BOUND,
+            SpawnInjection::default(),
+            HeldProcess::terminate,
+        );
+        // Dropped first at teardown; the broker step keeps its own sink.
+        cleanup.arm("spawn sink", move |_| drop(spawns));
+    }
+    (cleanup, descriptor_path)
 }
 
 /// The guard cleans up on a panic, not only on success, and
