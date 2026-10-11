@@ -48,7 +48,7 @@ test("the CPU Monitor is an overlay on the live Grid, never a second Grid", () =
     assert.ok(source.includes("cpuMonitor={cpuMonitor}"), `${name} passes the monitor to the surface`);
     // Neither host owns CPU readings: both take them from the one shared hook and hand its monitor to the surface.
     assert.ok(source.includes("const cpuTelemetry = useQcCpuTelemetry();"), `${name} uses the shared CPU telemetry hook`);
-    assert.ok(source.includes("cpuTelemetry.consume(states);"), `${name} feeds every state batch to the hook`);
+    assert.ok(source.includes("cpu: cpuTelemetry"), `${name} feeds every state batch to the hook`);
     assert.ok(source.includes("cpuTelemetry.monitor(cpuMonitorOpen, "), `${name} builds the monitor from the hook`);
     assert.ok(!/setCpu(?:Load|Columns)|useState<CpuColumnLoad/.test(source), `${name} keeps no CPU state of its own`);
   }
@@ -130,5 +130,14 @@ test("both hosts take the device screen content from the shared mapping and draw
     assert.doesNotMatch(source, /<(?:LooperXScreen|ModesConfigurationScreen|PresetMidiOutEditor|CorOs(?:Tuner|Tempo|DeviceSettings|GlobalEq|IoSettings)\w*)\b/, `${name} must not assemble a device screen itself`);
     assert.ok(!source.includes('block.name === "Looper X"'), `${name} leaves the Looper X block lookup to the shared screen actions`);
     assert.ok(!source.includes('looperWorkflow.run("close")'), `${name} closes Looper X only through closeQcLooperScreen`);
+  }
+});
+
+test("both hosts follow the unit's screen and consume display states through the shared hooks", () => {
+  const read = (url: URL) => readFileSync(url, "utf8").replaceAll("\r\n", "\n");
+  for (const [name, source] of [["windows", read(new URL("../../../../apps/windows/src/App.tsx", import.meta.url))], ["android", read(new URL("../../../../apps/android/src/App.tsx", import.meta.url))]] as const) {
+    assert.ok(source.includes("useQcScreenFollow({"), `${name} follows the unit's screen through the shared hook`);
+    assert.ok(source.includes("consumeQcDisplayStates(states, {"), `${name} consumes the display states through the shared function`);
+    assert.ok(!/followedScreenKind|useAdaptiveQcScreenPolling|gigViewShown/.test(source), `${name} keeps no screen-follow or Gig-state logic of its own`);
   }
 });

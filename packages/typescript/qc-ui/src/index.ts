@@ -51,6 +51,8 @@ export { qcDeviceScreenContent } from "./qc-device-screen-content";
 export type { QcDeviceScreenContentOptions } from "./qc-device-screen-content";
 export { QC_DISABLED_CONTEXT_ACTIONS, qcContextActionHandler, useQcScreenDestination } from "./use-qc-screen-destination";
 export type { QcContextActionOptions, QcScreenDestination, QcScreenReturnFocus, QcScreenViewUpdate } from "./use-qc-screen-destination";
+export { consumeQcDisplayStates, qcGigViewTransition, useQcScreenFollow } from "./use-qc-screen-follow";
+export type { QcScreenFollowOptions, QcScreenFollowWorkflows } from "./use-qc-screen-follow";
 export { useQcLiveState } from "./use-qc-live-state";
 export type { QcLiveStateOptions } from "./use-qc-live-state";
 export { consumeQcNativeStateFrame } from "./qc-native-state-frame";
