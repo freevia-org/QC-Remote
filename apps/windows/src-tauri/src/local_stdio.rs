@@ -4518,8 +4518,19 @@ mod tests {
     }
 
     fn test_owned_sleeper() -> std::process::Child {
-        std::process::Command::new("ping")
-            .args(["-n", "60", "127.0.0.1"])
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("ping");
+            command.args(["-n", "60", "127.0.0.1"]);
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = std::process::Command::new("/usr/bin/sleep");
+            command.arg("60");
+            command
+        };
+        command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
