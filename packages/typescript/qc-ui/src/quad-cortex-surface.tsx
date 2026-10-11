@@ -63,12 +63,29 @@ export interface CorOsSavePresetState {
   onCancel: () => void;
 }
 
-interface QuadCortexSurfaceProps {
+/**
+ * What a host decides about the display: how much of the unit to draw around
+ * it, the unit's hardware controls, and how a hardware action reaches its own
+ * workflows. A host sets nothing else; everything the display shows is
+ * assembled once, by createQcDeviceDisplay.
+ */
+export interface QcHostSurfaceProps {
   formFactor: FormFactorManifest;
+  skin: SkinManifest;
+  /** "hardware" draws the unit's panel around the display; "display" draws the
+   * display alone. The display itself - its 5:3 shape, its 800x480 canvas and
+   * how that is scaled - is identical in both (display-frame.css); a host only
+   * chooses how much of the unit to show and what box to offer it. */
+  presentation?: "hardware" | "display";
+  onAction: (action: HardwareAction) => void;
+  onMasterVolumeInteractionStart?: () => void;
+  onMasterVolumeInteractionEnd?: () => void;
+}
+
+/** Everything the display shows and does. Assembled only by createQcDeviceDisplay, never by a host. */
+export interface QcDisplaySurfaceProps {
   snapshot: PresetSnapshot;
   selectedBlockId?: string;
-  skin: SkinManifest;
-  onAction: (action: HardwareAction) => void;
   onOpenPreset: () => void;
   onUndo: () => void;
   canUndo: boolean;
@@ -101,11 +118,6 @@ interface QuadCortexSurfaceProps {
    * the Grid. */
   cpuMonitor?: { cpuLoad: number; cpuColumns: readonly CpuColumnLoad[]; returnFocusTarget?: "grid-menu"; onClose: () => void };
   deviceInformation?: CorOsDeviceInformation;
-  /** "hardware" draws the unit's panel around the display; "display" draws the
-   * display alone. The display itself - its 5:3 shape, its 800x480 canvas and
-   * how that is scaled - is identical in both (display-frame.css); a host only
-   * chooses how much of the unit to show and what box to offer it. */
-  presentation?: "hardware" | "display";
   onCloseScreen?: () => void;
   onOpenGigView?: () => void;
   onOpenIoView?: () => void;
@@ -117,9 +129,9 @@ interface QuadCortexSurfaceProps {
    * I/O Settings) to the same 800x480 coordinates on the physical QC. */
   onDeviceScreenGesture?: (x: number, y: number, toX: number, toY: number, kind: "tap" | "long-tap" | "swipe") => void;
   sceneEditor?: Omit<SceneQuickEditPopoverProps, "inDeviceDisplay">;
-  onMasterVolumeInteractionStart?: () => void;
-  onMasterVolumeInteractionEnd?: () => void;
 }
+
+export type QuadCortexSurfaceProps = QcHostSurfaceProps & QcDisplaySurfaceProps;
 
 export function QcHardwareSwitch({ role, label, ariaLabel, active, assigned = false, accent, compact = false, pulseBpm, pulseEpochMs, readout, holdDelayMs = QC_HOLD_DELAY_MS, doubleTapDelayMs = 300, onTap, onDoubleTap, onHold, onContactChange, onAction }: {
   role: string; label: ReactNode; ariaLabel?: string; active?: boolean; assigned?: boolean; accent?: string; compact?: boolean; pulseBpm?: number; pulseEpochMs?: number; readout?: string;

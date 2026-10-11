@@ -28,6 +28,30 @@ export function findBrowser(): string | undefined {
   return candidates.find((path): path is string => Boolean(path) && existsSync(path as string));
 }
 
+/** Bundle a module (with every stylesheet it imports) the way the app bundles it, and import the result. */
+export async function bundleModule<T>(workDirectory: string, name: string, source: string): Promise<{ module: T; css: string }> {
+  const { build } = await import("esbuild");
+  const entry = join(workDirectory, `${name}.tsx`);
+  writeFileSync(entry, source);
+  const outfile = join(workDirectory, `${name}.bundle.mjs`);
+  await build({
+    entryPoints: [entry],
+    outfile,
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    jsx: "automatic",
+    loader: { ".ttf": "dataurl", ".svg": "dataurl", ".png": "dataurl", ".woff2": "dataurl" },
+    logLevel: "error",
+    absWorkingDir: workDirectory,
+    nodePaths: [fileURLToPath(new URL("../../../../../node_modules", import.meta.url))],
+    banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" }
+  });
+  const module = await import(new URL(`file:///${outfile.replace(/\\/g, "/")}`).href) as T;
+  const cssFile = outfile.replace(/\.mjs$/, ".css");
+  return { module, css: existsSync(cssFile) ? readFileSync(cssFile, "utf8") : "" };
+}
+
 /**
  * Bundles the real QuadCortexSurface (and every stylesheet it pulls in) with
  * esbuild, renders it to static markup for each screen and presentation, and
@@ -36,12 +60,11 @@ export function findBrowser(): string | undefined {
  * it, minus their own chrome.
  */
 export async function renderDisplays(workDirectory: string): Promise<{ css: string; markup: Record<string, string> }> {
-  const { build } = await import("esbuild");
-  const entry = join(workDirectory, "entry.tsx");
-  writeFileSync(entry, `
+  const { module: bundle, css } = await bundleModule<{ render(screen: string, presentation: string): Promise<string> }>(workDirectory, "entry", `
 import { createElement } from "react";
 import { prerenderToNodeStream } from "react-dom/static";
-import { QuadCortexSurface, IDLE_PLACEHOLDER_SNAPSHOT } from ${JSON.stringify(join(uiSource, "index.ts"))};
+import { QuadCortexSurface } from ${JSON.stringify(join(uiSource, "quad-cortex-surface.tsx"))};
+import { IDLE_PLACEHOLDER_SNAPSHOT } from ${JSON.stringify(join(uiSource, "index.ts"))};
 import { formFactors, skins } from "@qc-remote/form-factors";
 import "@qc-remote/theme/theme.css";
 
@@ -58,26 +81,11 @@ export async function render(screen, presentation) {
   return Buffer.concat(chunks).toString("utf8");
 }
 `);
-  const outfile = join(workDirectory, "bundle.mjs");
-  await build({
-    entryPoints: [entry],
-    outfile,
-    bundle: true,
-    format: "esm",
-    platform: "node",
-    jsx: "automatic",
-    loader: { ".ttf": "dataurl", ".svg": "dataurl", ".png": "dataurl", ".woff2": "dataurl" },
-    logLevel: "error",
-    absWorkingDir: workDirectory,
-    nodePaths: [fileURLToPath(new URL("../../../../../node_modules", import.meta.url))],
-    banner: { js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);" }
-  });
-  const bundle = await import(new URL(`file:///${outfile.replace(/\\/g, "/")}`).href) as { render(screen: string, presentation: string): Promise<string> };
   const markup: Record<string, string> = {};
   for (const screen of SCREENS) {
     for (const presentation of ["hardware", "display"]) markup[`${screen}/${presentation}`] = await bundle.render(screen, presentation);
   }
-  return { css: readFileSync(join(workDirectory, "bundle.css"), "utf8"), markup };
+  return { css, markup };
 }
 
 /** What each host puts around the display: a container, and nothing else the display reads. */
