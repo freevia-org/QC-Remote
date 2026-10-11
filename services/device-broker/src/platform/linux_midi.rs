@@ -108,7 +108,8 @@ impl PerformanceMidi {
             self.device_id = None;
             let hidraw = selected_hidraw_path(device_id)?;
             let target = physical_usb_for_hid(&hidraw, Path::new("/sys"))?;
-            let endpoint = open_matching_endpoint(&target, Path::new("/sys"), Path::new("/dev/snd"))?;
+            let endpoint =
+                open_matching_endpoint(&target, Path::new("/sys"), Path::new("/dev/snd"))?;
             let name = endpoint.candidate.name.clone();
             self.endpoint = Some(endpoint);
             self.device_id = Some(device_id.to_owned());
@@ -208,8 +209,12 @@ fn discover_candidates(
     dev_root: &Path,
 ) -> Result<Vec<Candidate>, String> {
     let sound = sysfs_root.join("class/sound");
-    let entries = fs::read_dir(&sound)
-        .map_err(|error| format!("Enumerate ALSA raw MIDI devices {}: {error}", sound.display()))?;
+    let entries = fs::read_dir(&sound).map_err(|error| {
+        format!(
+            "Enumerate ALSA raw MIDI devices {}: {error}",
+            sound.display()
+        )
+    })?;
     let mut matches = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| format!("Read ALSA device entry: {error}"))?;
@@ -238,7 +243,10 @@ fn discover_candidates(
             name,
             path,
             sysfs_device: fs::canonicalize(&sysfs_device_link).map_err(|error| {
-                format!("Resolve ALSA raw MIDI ancestry {}: {error}", sysfs_device_link.display())
+                format!(
+                    "Resolve ALSA raw MIDI ancestry {}: {error}",
+                    sysfs_device_link.display()
+                )
             })?,
             generation: NodeGeneration {
                 device: metadata.dev(),
@@ -288,8 +296,12 @@ fn verify_open_node(file: &File, candidate: &Candidate) -> Result<(), String> {
     let held = file
         .metadata()
         .map_err(|error| format!("Inspect open ALSA MIDI endpoint: {error}"))?;
-    let current = fs::symlink_metadata(&candidate.path)
-        .map_err(|error| format!("Recheck ALSA MIDI node {}: {error}", candidate.path.display()))?;
+    let current = fs::symlink_metadata(&candidate.path).map_err(|error| {
+        format!(
+            "Recheck ALSA MIDI node {}: {error}",
+            candidate.path.display()
+        )
+    })?;
     if !held.file_type().is_char_device()
         || current.file_type().is_symlink()
         || !current.file_type().is_char_device()
@@ -306,8 +318,7 @@ fn same_node_generation(
     expected: &NodeGeneration,
 ) -> bool {
     (held.dev(), held.ino(), held.rdev()) == (current.dev(), current.ino(), current.rdev())
-        && (held.dev(), held.ino(), held.rdev())
-            == (expected.device, expected.inode, expected.rdev)
+        && (held.dev(), held.ino(), held.rdev()) == (expected.device, expected.inode, expected.rdev)
 }
 
 fn validate_open_endpoint(device_id: &str, endpoint: &RawMidiEndpoint) -> Result<(), String> {
@@ -325,9 +336,11 @@ fn validate_open_endpoint(device_id: &str, endpoint: &RawMidiEndpoint) -> Result
 }
 
 fn write_bounded(file: &File, message: &[u8]) -> Result<(), String> {
-    write_bounded_with(message, |bytes| write_once(file, bytes), |remaining| {
-        wait_writable(file, remaining)
-    })
+    write_bounded_with(
+        message,
+        |bytes| write_once(file, bytes),
+        |remaining| wait_writable(file, remaining),
+    )
 }
 
 fn write_bounded_with(
@@ -339,10 +352,18 @@ fn write_bounded_with(
     let mut written = 0;
     while written < message.len() {
         if Instant::now() >= deadline {
-            return Err(delivery_failure(written, "raw MIDI write exceeded its time budget"));
+            return Err(delivery_failure(
+                written,
+                "raw MIDI write exceeded its time budget",
+            ));
         }
         match write(&message[written..]) {
-            Ok(0) => return Err(delivery_failure(written, "raw MIDI write returned zero bytes")),
+            Ok(0) => {
+                return Err(delivery_failure(
+                    written,
+                    "raw MIDI write returned zero bytes",
+                ))
+            }
             Ok(count) => written += count,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -357,7 +378,10 @@ fn write_bounded_with(
             Err(error) => return Err(delivery_failure(written, &error.to_string())),
         }
         if Instant::now() >= deadline && written < message.len() {
-            return Err(delivery_failure(written, "raw MIDI write exceeded its time budget"));
+            return Err(delivery_failure(
+                written,
+                "raw MIDI write exceeded its time budget",
+            ));
         }
     }
     Ok(())
@@ -380,9 +404,7 @@ fn wait_writable(file: &File, remaining: Duration) -> Result<(), String> {
         events: libc::POLLOUT,
         revents: 0,
     };
-    let timeout = remaining
-        .as_millis()
-        .clamp(1, MIDI_RETRY_POLL_MS as u128) as i32;
+    let timeout = remaining.as_millis().clamp(1, MIDI_RETRY_POLL_MS as u128) as i32;
     // SAFETY: descriptor points to one initialized pollfd and its count is one.
     let result = unsafe { libc::poll(&mut descriptor, 1, timeout) };
     if result < 0 {
@@ -417,7 +439,13 @@ mod tests {
     fn midi_node_names_accept_only_raw_midi_class_entries() {
         assert!(is_raw_midi_name("midiC0D0"));
         assert!(is_raw_midi_name("midiC12D3"));
-        for name in ["midiC0", "midiC0D", "midiX0D0", "midiC0D0extra", "controlC0"] {
+        for name in [
+            "midiC0",
+            "midiC0D",
+            "midiX0D0",
+            "midiC0D0extra",
+            "controlC0",
+        ] {
             assert!(!is_raw_midi_name(name), "{name}");
         }
     }
@@ -444,17 +472,21 @@ mod tests {
         let fixture = SysfsFixture::new();
         fixture.add_usb("usb/1-1", 0x1234, 0xabcd);
         fixture.add_hidraw("hidraw0", "usb/1-1/1-1:1.5/hidraw/hidraw0");
-        assert!(physical_usb_for_hid(&fixture.dev.join("hidraw0"), &fixture.sys)
-            .unwrap_err()
-            .contains("not a supported Quad Cortex"));
+        assert!(
+            physical_usb_for_hid(&fixture.dev.join("hidraw0"), &fixture.sys)
+                .unwrap_err()
+                .contains("not a supported Quad Cortex")
+        );
         let loose = fixture.sys.join("devices/pci/1-1:1.5/hidraw/hidraw9");
         fs::create_dir_all(&loose).unwrap();
         let class_link = fixture.sys.join("class/hidraw/hidraw9");
         fs::create_dir_all(&class_link).unwrap();
         symlink(&loose, class_link.join("device")).unwrap();
-        assert!(physical_usb_for_hid(&fixture.dev.join("hidraw9"), &fixture.sys)
-            .unwrap_err()
-            .contains("no physical Quad Cortex"));
+        assert!(
+            physical_usb_for_hid(&fixture.dev.join("hidraw9"), &fixture.sys)
+                .unwrap_err()
+                .contains("no physical Quad Cortex")
+        );
     }
 
     #[test]
@@ -615,7 +647,9 @@ fn discover_sysfs_midi(target: &PhysicalUsb, sysfs_root: &Path) -> Result<Vec<St
         }
     }
     if matches.len() > 1 {
-        return Err("Multiple ALSA raw MIDI endpoints map to the selected USB device (ambiguous)".into());
+        return Err(
+            "Multiple ALSA raw MIDI endpoints map to the selected USB device (ambiguous)".into(),
+        );
     }
     Ok(matches)
 }
