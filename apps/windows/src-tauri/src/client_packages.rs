@@ -4492,9 +4492,9 @@ pub fn open_chatgpt_configuration() -> Result<(), String> {
         let result = Command::new(crate::system_tools::notepad_exe())
             .arg(&config_path)
             .spawn();
-        return result.map(|_| ()).map_err(|error| {
+        result.map(|_| ()).map_err(|error| {
             format!("Could not open the shared ChatGPT and Codex MCP configuration: {error}")
-        });
+        })
     }
     #[cfg(target_os = "linux")]
     {
