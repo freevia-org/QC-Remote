@@ -18,17 +18,25 @@ export interface QcSurfaceActionOptions {
   openRoutingNode?(row: number, node: "splitter" | "mixer"): void;
   openLaneControl?(row: number, control: LaneControl): void;
   openSplitPlacement?(row: number): void;
-  rotate?(role: string, delta: number): void;
-  editorUnhandled?(action: Extract<QcSurfaceAction, { kind: "switch" }>): void;
-  unhandled?(action: QcSurfaceAction): void;
+  /** What an encoder turn adjusts: the open parameter editor first (returns whether it took the turn), then Tempo or Master Volume. */
+  rotation: { editor(role: string, delta: number): boolean; tempo(delta: number): void; masterVolume(delta: number): void };
+  /** A demo or virtual device: unhandled controls say so instead of claiming to be unverified. */
+  demo: boolean;
+  notice(message: string): void;
 }
 
 /** Route the portable QC surface once; hosts supply only screen-specific behavior. */
 export function useQcSurfaceActions(options: QcSurfaceActionOptions) {
   const {
     snapshot, selectedBlockId, blockDetails, grid, performance,
-    openBlock, closeBlock, openRoutingNode, openLaneControl, openSplitPlacement, rotate, editorUnhandled, unhandled
+    openBlock, closeBlock, openRoutingNode, openLaneControl, openSplitPlacement, rotation, demo, notice
   } = options;
+
+  const unhandled = (action: QcSurfaceAction) => {
+    if (action.kind !== "switch" || action.phase !== "release") return;
+    if (action.role === "power") notice("Power and lock actions are intentionally available only on the physical Quad Cortex.");
+    else notice(demo ? `Demo switch: ${action.role}. Hardware was not changed.` : `${action.role} has no verified action on the current screen.`);
+  };
 
   return useCallback((action: QcSurfaceAction) => {
     const command = surfaceCommand(action);
@@ -57,11 +65,16 @@ export function useQcSurfaceActions(options: QcSurfaceActionOptions) {
       },
       removeBlock: (blockId) => void grid.removeBlock(snapshot.blocks.find((candidate) => candidate.id === blockId)),
       selectModeSlot: (slot) => void performance.selectModeSlot(slot),
-      rotate
+      rotate: (role, delta) => {
+        if (rotation.editor(role, delta)) return;
+        if (role === "tempo") rotation.tempo(delta);
+        else if (role === "master-volume") rotation.masterVolume(delta);
+        else notice(demo ? `Demo encoder: ${role} ${delta > 0 ? "+" : "−"}1.` : `${role} has no verified encoder action on the current screen.`);
+      }
     })) return;
 
     if (action.kind !== "switch") {
-      unhandled?.(action);
+      unhandled(action);
       return;
     }
     if (blockDetails && grid.footswitchAssignmentPending && action.phase === "release" && action.role.startsWith("footswitch:")) {
@@ -72,7 +85,8 @@ export function useQcSurfaceActions(options: QcSurfaceActionOptions) {
       return;
     }
     if (blockDetails && action.phase === "release") {
-      editorUnhandled?.(action);
+      if (action.role === "bank:up") notice("BANK UP cycles models on the hardware. Model replacement stays disabled until the gateway can perform it atomically.");
+      else notice(`${action.role} is mapped to the on-screen parameter above it; drag or rotate it to adjust the value.`);
       return;
     }
     if (dispatchSurfaceCommand(command, {
@@ -80,6 +94,6 @@ export function useQcSurfaceActions(options: QcSurfaceActionOptions) {
       movePreset: (delta) => void performance.movePreset(delta),
       tapTempo: () => void performance.tapTempo()
     })) return;
-    unhandled?.(action);
-  }, [blockDetails, closeBlock, editorUnhandled, grid, openBlock, openLaneControl, openRoutingNode, openSplitPlacement, performance, rotate, selectedBlockId, snapshot.blocks, unhandled]);
+    unhandled(action);
+  }, [blockDetails, closeBlock, demo, grid, notice, openBlock, openLaneControl, openRoutingNode, openSplitPlacement, performance, rotation, selectedBlockId, snapshot.blocks]);
 }

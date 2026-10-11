@@ -141,3 +141,17 @@ test("both hosts follow the unit's screen and consume display states through the
     assert.ok(!/followedScreenKind|useAdaptiveQcScreenPolling|gigViewShown/.test(source), `${name} keeps no screen-follow or Gig-state logic of its own`);
   }
 });
+
+test("both hosts open, close and toggle device screens, forward gestures and undo through the shared hooks", () => {
+  const read = (url: URL) => readFileSync(url, "utf8").replaceAll("\r\n", "\n");
+  for (const [name, source] of [["windows", read(new URL("../../../../apps/windows/src/App.tsx", import.meta.url))], ["android", read(new URL("../../../../apps/android/src/App.tsx", import.meta.url))]] as const) {
+    assert.ok(source.includes("useQcDeviceViews({"), `${name} uses the shared device views`);
+    assert.ok(source.includes("useQcDeviceUndo({"), `${name} uses the shared undo path`);
+    assert.ok(source.includes('onOpenGigView={() => void deviceViews.toggle("gig")}') && source.includes('onOpenIoView={() => void deviceViews.toggle("io")}'), `${name} toggles Gig View and I/O`);
+    assert.ok(source.includes("deviceInformation={deviceViews.deviceInformation}"), `${name} shows the Device Information screen`);
+    assert.doesNotMatch(source, /showDeviceView\(|\.showGigView\(|\.longTapScreen\(|\.tapScreen\(|\.swipeScreen\(|Gateway\.undo\(|setDeviceInformation/, `${name} sends no device-screen command itself`);
+    assert.doesNotMatch(source, /Opening the Quad Cortex|Synchronizing the Quad Cortex/, `${name} takes the connecting wording from the shared placeholder`);
+    assert.doesNotMatch(source, /parameterEditorControlSlots|parameterEditorPageSize/, `${name} derives no parameter-editor LEDs of its own`);
+    assert.doesNotMatch(source, /rotate: \(role|editorUnhandled|unhandled: \(action/, `${name} leaves the unhandled-control wording to the shared router`);
+  }
+});
