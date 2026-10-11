@@ -2777,6 +2777,9 @@ mod tests {
     /// written one after another, so a DRAG queued between two two-report
     /// messages is never split by, nor split across, their fragments. The
     /// neighbours are synthetic 138-byte type-72 payloads, not real commands.
+    /// Windows also exercises its accepted error-31 completion here. Linux
+    /// exercises full writes; its separate failure test requires error 31 to
+    /// stop the writer instead of treating it as a delivered report.
     #[test]
     fn hid_writer_keeps_each_queued_message_contiguous_around_a_failed_drag_frame() {
         let (label, coordinates, prefix_hex) = FAILED_DRAG_FRAMES[1];
@@ -2789,7 +2792,8 @@ mod tests {
         let fragments = encode_session_reports(&session, &synthetic, layout).unwrap();
         assert_eq!(fragments.len(), 2, "138 + 8 trailer bytes need two chunks");
 
-        let (mut io, written) = io_capturing_writes(true);
+        let stall = cfg!(windows);
+        let (mut io, written) = io_capturing_writes(stall);
         io.queue_message(profile::MESSAGE_TYPE_REMOTE_CONTROL, fragments.clone())
             .unwrap();
         io.queue_message(
@@ -2811,7 +2815,10 @@ mod tests {
         assert_exact_drag_report(label, &written[2], prefix_hex, layout);
         assert_eq!(written[3], fragments[0], "{label}");
         assert_eq!(written[4], fragments[1], "{label}");
-        assert_eq!(io.telemetry().expected_write_stalls, 5);
+        assert_eq!(
+            io.telemetry().expected_write_stalls,
+            if stall { 5 } else { 0 }
+        );
         assert_eq!(io.telemetry().messages_sent, 3);
     }
 }
