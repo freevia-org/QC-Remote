@@ -282,7 +282,7 @@ test("loop guard: a screen cannot flap between the two sides however often eithe
 
 // ---------------------------------------------------------------------------------------------- the setting
 
-test("every host reads and writes the follow setting through one hook; it is off by default", async () => {
+test("every host reads and writes the follow setting through one hook; it is on by default", async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const store = new Map<string, string>();
   const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); } };
@@ -290,13 +290,19 @@ test("every host reads and writes the follow setting through one hook; it is off
   function Probe() { seen.current = useQcFollowSetting(storage); return null; }
   let renderer!: ReactTestRenderer;
   act(() => { renderer = create(createElement(Probe)); });
-  assert.equal(seen.current!.follow, false, "off by default");
-  act(() => seen.current!.setFollow(true));
-  assert.equal(seen.current!.follow, true);
-  assert.equal(store.get("qc-remote.follow-qc-screen-v1"), "true");
+  assert.equal(seen.current!.follow, true, "on by default: nothing is stored yet");
+  act(() => seen.current!.setFollow(false));
+  assert.equal(seen.current!.follow, false);
+  assert.equal(store.get("qc-remote.follow-qc-screen-v1"), "false");
   renderer.unmount();
   act(() => { renderer = create(createElement(Probe)); });
-  assert.equal(seen.current!.follow, true, "read back from storage by the next session");
+  assert.equal(seen.current!.follow, false, "a stored false is read back by the next session");
+  act(() => seen.current!.setFollow(true));
+  assert.equal(store.get("qc-remote.follow-qc-screen-v1"), "true");
+  renderer.unmount();
+  store.set("qc-remote.follow-qc-screen-v1", "unexpected");
+  act(() => { renderer = create(createElement(Probe)); });
+  assert.equal(seen.current!.follow, true, "anything but a stored false is on");
   renderer.unmount();
 });
 

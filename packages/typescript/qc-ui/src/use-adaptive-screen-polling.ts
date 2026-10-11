@@ -38,8 +38,9 @@ export type QcScreenObservation = {
 
 export type QcScreenPollingPhase = "off" | "paused" | "polling" | "ready" | "error";
 
+/** On unless the user turned it off: an absent or unreadable stored value means on; only a stored "false" is off. */
 export function readQcScreenFollowSetting(storage: Pick<Storage, "getItem">): boolean {
-  return storage.getItem(QC_SCREEN_FOLLOW_STORAGE_KEY) === "true";
+  return storage.getItem(QC_SCREEN_FOLLOW_STORAGE_KEY) !== "false";
 }
 
 export function writeQcScreenFollowSetting(storage: Pick<Storage, "setItem">, enabled: boolean): void {

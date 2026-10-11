@@ -12,7 +12,7 @@ import type { GatewayTransport } from "@qc-remote/client";
 
 /**
  * The "Follow the Quad Cortex screen" setting, read and written in one place
- * for every host. Off by default. It governs only the unit moving the app's
+ * for every host. On by default; only a stored "false" turns it off. It governs only the unit moving the app's
  * screen; the app moving the unit's screen (the user opening or closing a
  * screen in the app) is never affected by it.
  */
