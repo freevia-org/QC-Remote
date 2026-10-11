@@ -4083,11 +4083,22 @@ fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
     if let Some(claude) = claude {
         Command::new(claude).arg(&package_path).spawn()
     } else {
-        // Keep the shell fallback for future Claude packages that register the
-        // protocol but expose neither a classic nor discoverable MSIX binary.
-        Command::new(crate::system_tools::explorer_exe())
-            .arg(&package_path)
-            .spawn()
+        #[cfg(windows)]
+        {
+            // Keep the shell fallback for future Claude packages that register
+            // the protocol but expose neither a classic nor discoverable MSIX
+            // binary.
+            Command::new(crate::system_tools::explorer_exe())
+                .arg(&package_path)
+                .spawn()
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(
+                "Claude Desktop extension installation is unavailable on this platform. Use the generic MCP configuration instead."
+                    .to_string(),
+            );
+        }
     }
     .map_err(|error| format!("Could not open the extension in Claude Desktop: {error}"))?;
 
@@ -4122,11 +4133,20 @@ fn open_claude_desktop_blocking() -> Result<(), String> {
             .map_err(|error| format!("Could not open Claude Desktop: {error}"));
     }
     if claude_uri_handler_registered() {
-        return Command::new(crate::system_tools::explorer_exe())
-            .arg("claude://")
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("Could not open Claude Desktop: {error}"));
+        #[cfg(windows)]
+        {
+            return Command::new(crate::system_tools::explorer_exe())
+                .arg("claude://")
+                .spawn()
+                .map(|_| ())
+                .map_err(|error| format!("Could not open Claude Desktop: {error}"));
+        }
+        #[cfg(not(windows))]
+        {
+            return Err(
+                "Claude Desktop URI launching is unavailable on this platform.".to_string(),
+            );
+        }
     }
     Err("Claude Desktop is not installed for this Windows account.".to_string())
 }

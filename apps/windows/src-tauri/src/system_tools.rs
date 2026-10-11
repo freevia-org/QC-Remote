@@ -6,6 +6,7 @@
 //! app was started from, could then supply its own `reg.exe` or
 //! `powershell.exe`, and it would run with the user's rights every time the app
 //! read the registry. These helpers name the copies Windows itself ships.
+#[cfg(any(windows, test))]
 use std::path::{Path, PathBuf};
 
 // SAFETY: these declarations match the kernel32 signatures `UINT GetSystemDirectoryW(LPWSTR,
