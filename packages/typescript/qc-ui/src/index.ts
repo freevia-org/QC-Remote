@@ -55,7 +55,7 @@ export { useQcDeviceUndo } from "./use-qc-device-undo";
 export type { QcDeviceUndo, QcDeviceUndoOptions } from "./use-qc-device-undo";
 export { useQcDeviceViews } from "./use-qc-device-views";
 export type { QcDeviceGesture, QcDeviceViewName, QcDeviceViews, QcDeviceViewsOptions } from "./use-qc-device-views";
-export { consumeQcDisplayStates, qcGigViewTransition, useQcScreenFollow } from "./use-qc-screen-follow";
+export { consumeQcDisplayStates, qcGigViewTransition, useQcFollowSetting, useQcScreenFollow } from "./use-qc-screen-follow";
 export type { QcScreenFollowOptions, QcScreenFollowWorkflows } from "./use-qc-screen-follow";
 export { useQcLiveState } from "./use-qc-live-state";
 export type { QcLiveStateOptions } from "./use-qc-live-state";

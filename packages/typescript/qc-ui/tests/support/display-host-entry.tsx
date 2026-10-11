@@ -10,6 +10,7 @@ import {
   useDeviceSettingsWorkflow, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow,
   usePresetMidiOutWorkflow, useTempoWorkflow, useTunerWorkflow
 } from "../../src/index.ts";
+import { createQcScreenLatch } from "../../src/qc-unit-screens.ts";
 
 const formFactor = formFactors[0];
 const skin = skins.find((entry) => entry.id === formFactor.defaultSkinId) ?? skins[0];
@@ -17,7 +18,7 @@ const refusing = new Proxy({}, { get: () => async () => { throw new Error("no de
 const columns = [{ load: 0.4, core: 0 }, { load: 0.9, core: 1 }];
 
 export type Flavour = "windows" | "android";
-export interface Scenario { view: string | null; open?: "deviceSettings" | "tempo"; presentation?: "hardware" | "display"; cpuOpen?: boolean; information?: boolean }
+export interface Scenario { popup?: "grid-menu" | "scene-menu" | "mode-menu" | null; view: string | null; open?: "deviceSettings" | "tempo"; presentation?: "hardware" | "display"; cpuOpen?: boolean; information?: boolean }
 
 /** What a host owns: its transports, its connection state and its own entry points. They differ per flavour on purpose. */
 function adapter(flavour: Flavour) {
@@ -45,7 +46,7 @@ function useDisplay(flavour: Flavour, scenario: Scenario) {
   const modes = useModesConfigurationWorkflow(options);
   const ioEq = useIoEqWorkflows({ ...options, snapshot: IDLE_PLACEHOLDER_SNAPSHOT });
   const midiOut = usePresetMidiOutWorkflow({ gateway: refusing, snapshot: IDLE_PLACEHOLDER_SNAPSHOT, demo: false });
-  const destination = { view: scenario.view as never, returnFocusTarget: undefined, setView() {}, open() {} };
+  const destination = { view: scenario.view as never, returnFocusTarget: undefined, popup: scenario.popup ?? null, setPopup() {}, latch: createQcScreenLatch(), setView() {}, open() {} };
   const display = createQcDeviceDisplay({
     snapshot: IDLE_PLACEHOLDER_SNAPSHOT,
     selectedBlockId: "",
@@ -69,6 +70,7 @@ function useDisplay(flavour: Flavour, scenario: Scenario) {
       preset: { openSave() {}, recall: async () => {}, saveProps: undefined, directoryProps: undefined, presetList: undefined },
       routing: { pickerProps: undefined }
     } as never,
+    mirror: { captureScreen: async () => ({ pngBase64: "" }) as never },
     selectScene: host.selectScene,
     queueTempo: host.queueTempo,
     setParameterMenuInitiallyOpen() {},

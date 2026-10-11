@@ -4,7 +4,7 @@ import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, 
 import { demoBlockDetails, demoSnapshot, sceneLetter, SupersededPresetOperation, saveWorkspaceDocument, type ControlAccessMode, type PublicRelayConnector } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND } from "@qc-remote/theme";
-import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, readControlAccessMode, readQcScreenFollowSetting, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, writeQcScreenFollowSetting, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist } from "@qc-remote/ui";
+import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, readControlAccessMode, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, useQcFollowSetting, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { appWindows, brokerDevice, DEVICE_INFO_EVENTS, diagnosticsFiles, externalLinks, helpWindows, localAccess, localClientPackages, physicalDevices, type PhysicalQcDevice, onDevicePhase, publicRelay, publishWindowState, serveAppWindowRequests, serveDiagnosticsRequests, SETTINGS_EVENTS, tauriTransport, virtualDeviceStorage, WORKSPACE_EVENTS, workspaceFiles, type AntigravityLocalIntegrationStatus, type ChatGptLocalIntegrationStatus, type ClaudeDesktopExtensionStatus, type JanLocalIntegrationStatus, type LmStudioLocalIntegrationStatus, type LocalAccessStatus, type OtherMcpStdioSetup } from "./tauri-transport";
 import { createWindowsQcTransport } from "./qc-transport";
@@ -64,7 +64,7 @@ export function App() {
   const [commandPending, setCommandPending] = useState(false);
   const { prompts: appPrompts, overlay: textPromptOverlay } = useWindowsPrompts();
   const [controlAccessMode, setControlAccessMode] = useState<ControlAccessMode>(storedAccessMode);
-  const [followQcScreen, setFollowQcScreen] = useState(() => readQcScreenFollowSetting(localStorage));
+  const { follow: followQcScreen, setFollow: setFollowQcScreen } = useQcFollowSetting(localStorage);
   const [relayBrowserPairing, setRelayBrowserPairing] = useState<{ pairUrl: string; expiresAt: number; qrCode: string }>();
   const [relayPairingStarting, setRelayPairingStarting] = useState(false);
   const [relayPairingError, setRelayPairingError] = useState<string>();
@@ -116,7 +116,7 @@ export function App() {
     reconcileFrame,
     editor,
     onStates: (states, frame) => {
-      consumeQcDisplayStates(states, { setView: setDeviceScreenView, cpu: cpuTelemetry, undo: deviceUndo });
+      consumeQcDisplayStates(states, { setView: setDeviceScreenView, cpu: cpuTelemetry, undo: deviceUndo, follow: followQcScreen });
       for (const state of states) {
         if (state.kind === "gridTopology" && state.gridLayoutComplete === false
             && !connection.demo && connection.source !== "virtual") {
@@ -345,8 +345,8 @@ export function App() {
   const modesWorkflow = useModesConfigurationWorkflow({ gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed });
   const ioEqWorkflow = useIoEqWorkflows({ gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed, snapshot });
   useQcScreenFollow({
-    gateway: activeGateway, follow: followQcScreen, available: !connection.demo && !corpusFixtureEnabled, ready: deviceReady, setView: setDeviceScreenView,
-    workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow }
+    gateway: activeGateway, follow: followQcScreen, available: !connection.demo && !corpusFixtureEnabled, ready: deviceReady, destination: screenDestination, notice: setNotice,
+    workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow, modes: modesWorkflow }
   });
   const continuousControls = useContinuousControlWorkflow({
     controller: qcController,
@@ -1798,7 +1798,6 @@ export function App() {
   };
   const changeFollowQcScreen = (enabled: boolean) => {
     setFollowQcScreen(enabled);
-    writeQcScreenFollowSetting(localStorage, enabled);
     setNotice(enabled ? "Following supported Quad Cortex screen changes while QC Remote is visible." : "Quad Cortex screen following is off.");
   };
 
@@ -2620,7 +2619,7 @@ export function App() {
       case "reset-session": void connect("reset", undefined, true); break;
       case "refresh-state": void refreshSnapshot(); break;
       case "discard-changes": void reloadPreset(); break;
-      case "open-tuner": void deviceViews.open("tuner"); break;
+      case "open-tuner": void deviceViews.toggle("tuner"); break;
       case "open-gig-view": void deviceViews.toggle("gig"); break;
       case "open-io-settings": void deviceViews.toggle("io"); break;
       case "previous-preset": void navigatePreset(-1); break;
@@ -2650,6 +2649,7 @@ export function App() {
   const display = createQcDeviceDisplay({
     snapshot, selectedBlockId, pending: commandPending, destination: screenDestination, views: deviceViews, cpu: cpuTelemetry, undo: deviceUndo,
     workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow, scene: sceneWorkflow, preset: presetWorkflow, routing: routingWorkflow },
+    mirror: activeGateway,
     selectScene: chooseScene, queueTempo, setParameterMenuInitiallyOpen, notice: setNotice,
     expressionAssignment, laneControlEditor, parameterEditor: parameterEditorBindings,
     openPreset: () => void openPresetBrowser(), refresh: () => void refreshSnapshot(), openRouting: openRoutePicker,

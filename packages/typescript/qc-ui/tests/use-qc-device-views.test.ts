@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { register } from "node:module";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { createQcScreenLatch } from "../src/qc-unit-screens.ts";
 import type { QcDeviceViews, QcDeviceViewsOptions } from "../src/use-qc-device-views.ts";
 
 // Load the hook only after the test loader shares React with react-test-renderer.
@@ -23,19 +24,22 @@ interface World {
   unit: "Grid" | "CheatSheetDialog" | "ParameterEditor" | "TunerDialog";
   /** The unit ignores the gesture (a wrong state or a lost frame). */
   unitIgnoresGestures: boolean;
+  /** Extra text the unit's tree carries (a label on the screen). */
+  treeText?: string;
 }
 
 function mount(overrides: Partial<World> = {}) {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const log: string[] = [];
   const world: World = { view: null, demo: false, hardwareReady: true, sessionReady: true, showResult: true, setlistKey: "set-a", presetList: undefined, ioFails: false, identityFails: false, unit: "Grid", unitIgnoresGestures: false, ...overrides };
+  const latch = createQcScreenLatch();
   const options = (): QcDeviceViewsOptions => ({
-    destination: { get view() { return world.view as never; }, setView: ((next: unknown) => { world.view = typeof next === "function" ? (next as (current: string | null) => string | null)(world.view) : next as string | null; log.push(`view:${world.view}`); }) as never },
+    destination: { latch, get view() { return world.view as never; }, setView: ((next: unknown) => { world.view = typeof next === "function" ? (next as (current: string | null) => string | null)(world.view) : next as string | null; log.push(`view:${world.view}`); }) as never },
     snapshot: { setlistKey: world.setlistKey, deviceName: "Rig" },
     session: { demo: world.demo, hardwareReady: world.hardwareReady, sessionReady: world.sessionReady },
     gateway: {
       identity: async () => { if (world.identityFails) throw new Error("identity failed"); return { serial: "S1", customName: "", appFwVersion: "3.1" } as never; },
-      graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem\nzenUI::${world.unit}` }),
+      graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem\nzenUI::${world.unit}${world.treeText ? ` text '${world.treeText}'` : ""}` }),
       tapScreen: async (x: number, y: number) => { log.push(`tap:${x},${y}`); if (!world.unitIgnoresGestures && world.unit === "CheatSheetDialog") world.unit = "Grid"; },
       longTapScreen: async (x: number, y: number) => { log.push(`long:${x},${y}`); },
       swipeScreen: async (x: number, y: number, toX: number, toY: number) => { log.push(`swipe:${x},${y},${toX},${toY}`); if (!world.unitIgnoresGestures && world.unit === "Grid" && Math.abs(toY - y) > 245) world.unit = "CheatSheetDialog"; }
@@ -56,7 +60,7 @@ function mount(overrides: Partial<World> = {}) {
   let renderer!: ReactTestRenderer;
   act(() => { renderer = create(createElement(Probe)); });
   const rerender = () => act(() => renderer.update(createElement(Probe)));
-  return { log, world, rerender, get views() { return seen.current!; }, renderer };
+  return { log, world, latch, rerender, get views() { return seen.current!; }, renderer };
 }
 
 test("opening Gig View goes through the shared command, then loads the setlist the Gig list needs", async () => {
@@ -238,5 +242,35 @@ test("the workflows are stable across renders and always act on the latest sessi
   host.rerender();
   await act(async () => { await first.forwardGesture(1, 2, 0, 0, "tap"); });
   assert.deepEqual(host.log, ["notice:The Quad Cortex disconnected before the screen gesture could be sent."]);
+  host.renderer.unmount();
+});
+
+test("the Tuner toggles like Gig View: tapping it again closes it on the unit and in the app", async () => {
+  const host = mount();
+  await act(async () => { await host.views.toggle("tuner"); });
+  assert.deepEqual(host.log, ["show:tuner:true", "tuner.open", "view:tuner"]);
+  host.log.length = 0;
+  await act(async () => { await host.views.toggle("tuner"); });
+  assert.deepEqual(host.log, ["show:tuner:false", "view:null"]);
+  host.renderer.unmount();
+});
+
+test("asking the unit for a screen tells the loop guard to expect it, so following the answer does not move the app again", async () => {
+  const host = mount();
+  await act(async () => { await host.views.open("gig"); await host.views.open("tuner"); });
+  assert.equal(host.latch.takeUnit("gig"), true);
+  assert.equal(host.latch.takeUnit("tuner"), true);
+  await act(async () => { await host.views.open("io"); });
+  assert.equal(host.latch.takeUnit("io"), true);
+  host.renderer.unmount();
+});
+
+test("the app sends no tap while the unit shows an update screen", async () => {
+  const host = mount();
+  host.world.unit = "UpdaterDialog" as never;
+  host.world.treeText = "DOWNLOAD UPDATE";
+  host.rerender();
+  await act(async () => { await host.views.forwardGesture(100, 100, 0, 0, "tap"); });
+  assert.deepEqual(host.log, ["notice:The Quad Cortex is showing an update screen. Update screens are display only in the app; use the unit."]);
   host.renderer.unmount();
 });

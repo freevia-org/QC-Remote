@@ -15,7 +15,7 @@ import { bundleModule } from "./support/display-page.ts";
  */
 
 type Flavour = "windows" | "android";
-interface Scenario { view: string | null; open?: "deviceSettings" | "tempo"; presentation?: "hardware" | "display"; cpuOpen?: boolean; information?: boolean }
+interface Scenario { popup?: "grid-menu" | "scene-menu" | "mode-menu" | null; view: string | null; open?: "deviceSettings" | "tempo"; presentation?: "hardware" | "display"; cpuOpen?: boolean; information?: boolean }
 type Renderer = { render(flavour: Flavour, scenario: Scenario): Promise<string>; surfaceKeys(flavour: Flavour): Promise<string[]> };
 
 const workDirectory = mkdtempSync(join(tmpdir(), "qc-display-parity-"));
@@ -34,6 +34,9 @@ const SCREENS: [string, Scenario][] = [
   ["cpu monitor over the grid", { view: "cpu-monitor" }],
   ["gig view", { view: "gig" }],
   ["device information", { view: "settings-info", information: true }],
+  ["unit mirror", { view: "unit-mirror" }],
+  ["preset menu popup", { view: null, popup: "grid-menu" }],
+  ["scene menu popup", { view: null, popup: "scene-menu" }],
   ["device settings", { view: null, open: "deviceSettings" }],
   ["tempo", { view: null, open: "tempo" }]
 ];

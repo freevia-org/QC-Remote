@@ -14,6 +14,20 @@ export type QcObservedScreenKind =
   | "directory"
   | "cpu-monitor"
   | "looper"
+  | "modes"
+  | "midi-out"
+  | "preset-menu"
+  | "scene-selector"
+  | "route-selector"
+  | "copy-scene"
+  | "device-browser"
+  | "search"
+  | "keyboard"
+  | "message-dialog"
+  | "neural-capture"
+  | "block-menu"
+  | "expression-assign"
+  | "busy"
   | "unknown";
 
 export type QcScreenObservation = {
@@ -33,22 +47,46 @@ export function writeQcScreenFollowSetting(storage: Pick<Storage, "setItem">, en
 }
 
 /**
- * Identify only screens whose owning class is unambiguous in the QC graphics
- * tree. Specific overlays must win over Grid and ParameterEditor because the
- * tree retains its parent screen underneath them.
+ * What the unit shows, by the class at the root of each screen in its
+ * graphics tree. First match wins, so an overlay is listed before the screen
+ * it sits on (the tree keeps the parent screen underneath it). Class names
+ * match whole, never as a substring: a substring read the Settings > Gig View
+ * pane as Gig View.
  */
+const QC_SCREEN_CLASSES: ReadonlyArray<readonly [QcObservedScreenKind, readonly string[]]> = [
+  ["gig", ["GigView"]],
+  ["tuner", ["TunerDialog", "Tuner"]],
+  ["tempo", ["MetronomeEditor"]],
+  ["busy", ["RotatingBusyIndicator"]],
+  ["message-dialog", ["MessageDialog"]],
+  ["keyboard", ["Keyboard"]],
+  ["search", ["SearchResultsDialog", "SearchDialog"]],
+  ["modes", ["HybridModeConfigDialog"]],
+  ["midi-out", ["MidiMatrixDialog"]],
+  ["io", ["CheatSheetDialog"]],
+  ["neural-capture", ["NeuralCaptureDialog", "NCMetadataDialog", "NCModelEditor"]],
+  ["settings", ["SettingsDialog", "DSPDiagnosticsDialog", "ZencoderDiagnosticsDialog", "SOC2ARMDiagnosticsDialog"]],
+  ["directory", ["DirectoryDialog"]],
+  ["copy-scene", ["CopySceneDialog"]],
+  ["scene-selector", ["SceneSelectorPopup"]],
+  ["route-selector", ["PortSelector"]],
+  ["preset-menu", ["MainMenuPopup"]],
+  ["block-menu", ["_OptionsPopup"]],
+  ["device-browser", ["ModelMenu"]],
+  ["expression-assign", ["AssignExpressionPedal"]],
+  ["cpu-monitor", ["CpuLoadIndicator"]],
+  ["looper", ["Looper1TrackModelEditor"]],
+  ["parameter-editor", ["ParameterEditor", "SMParamsEditor", "LaneInputControlEditor", "LaneOutputControlEditor"]],
+  ["grid", ["Grid"]]
+];
+
 export function classifyQcGraphicsTree(tree: string): QcObservedScreenKind {
-  const has = (name: string) => tree.includes(`zenUI::${name}`);
-  if (has("TunerDialog")) return "tuner";
-  if (has("MetronomeEditor")) return "tempo";
-  if (has("GigView")) return "gig";
-  if (has("SettingsDialog")) return "settings";
-  if (has("CheatSheetDialog")) return "io";
-  if (has("DirectoryDialog")) return "directory";
-  if (has("CpuLoadIndicator")) return "cpu-monitor";
-  if (has("Looper1TrackModelEditor")) return "looper";
-  if (has("ParameterEditor")) return "parameter-editor";
-  if (has("Grid")) return "grid";
+  const present = new Set<string>();
+  for (const line of tree.split(/\r?\n/)) {
+    const name = line.match(/zenUI::([A-Za-z0-9_]+)/)?.[1];
+    if (name) present.add(name);
+  }
+  for (const [kind, classes] of QC_SCREEN_CLASSES) if (classes.some((name) => present.has(name))) return kind;
   return "unknown";
 }
 
