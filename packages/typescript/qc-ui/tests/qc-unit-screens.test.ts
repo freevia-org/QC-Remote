@@ -42,7 +42,7 @@ test("the table describes every screen the classifier can return, and the mirror
   assert.equal(QC_UNIT_SCREENS["message-dialog"].close, "never");
   // Gestures are only claimed for screens with an observed route; the rest wait for a probe on the unit.
   const probes = Object.entries(QC_UNIT_SCREENS).filter(([, entry]) => entry.open === "probe-needed").map(([kind]) => kind).sort();
-  assert.ok(["directory", "midi-out", "cpu-monitor", "tempo"].every((kind) => probes.includes(kind)));
+  assert.ok(["directory", "midi-out"].every((kind) => probes.includes(kind)));
 });
 
 test("the app's own screen is described in the unit's terms", () => {

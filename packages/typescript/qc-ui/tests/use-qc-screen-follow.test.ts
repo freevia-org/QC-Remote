@@ -13,7 +13,7 @@ const { createElement } = (await import("react")).default;
 const { consumeQcDisplayStates, qcGigViewTransition, useQcFollowSetting, useQcScreenFollow } = await import("../src/use-qc-screen-follow.ts");
 
 const observation = (kind: QcObservedScreenKind): QcScreenObservation => ({ kind, signature: kind, observedAt: 0 });
-type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard";
+type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard" | "MetronomeEditor" | "CpuLoadIndicator";
 
 interface Scenario {
   follow?: boolean; ready?: boolean; available?: boolean;
@@ -33,13 +33,16 @@ function harness(initial: Scenario = {}) {
   const state = { view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
   const gateway = {
-    graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem\nzenUI::${world.unit}` }),
+    graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem${world.unit === "CpuLoadIndicator" ? "\nzenUI::Grid" : ""}\nzenUI::${world.unit}` }),
     tapScreen: async (x: number, y: number) => {
       log.push(`tap:${x},${y}`);
       if (world.unitIgnores) return;
       if (x === 764 && y === 22) world.unit = world.unit === "Grid" ? "MainMenuPopup" : world.unit === "MainMenuPopup" ? "Grid" : world.unit;
       else if (x === 600 && y === 406 && world.unit === "MainMenuPopup") world.unit = "SettingsDialog";
-      else if (x === 743 && y === 30 && world.unit !== "Grid") world.unit = "Grid";
+      else if (x === 610 && y === 286 && world.unit === "MainMenuPopup") world.unit = "MetronomeEditor";
+      else if (x === 578 && y === 346 && world.unit === "MainMenuPopup") world.unit = "CpuLoadIndicator";
+      else if (x === 628 && y === 32 && world.unit === "CpuLoadIndicator") world.unit = "Grid";
+      else if (x === 743 && y === 30 && world.unit !== "Grid" && world.unit !== "CpuLoadIndicator") world.unit = "Grid";
       for (const watch of watchers) watch(world.unit);
     },
     longTapScreen: async (x: number, y: number) => { log.push(`hold:${x},${y}`); if (!world.unitIgnores && world.unit === "Grid" && x === 700 && y === 70) world.unit = "HybridModeConfigDialog"; },
@@ -406,4 +409,43 @@ test("with the setting off the unit's screens, including a block editor, never m
   assert.deepEqual(off.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), []);
   assert.ok(off.log.some((entry) => entry.startsWith("notice:Close the screen open on the Quad Cortex first")));
   off.renderer.unmount();
+});
+
+test("Tempo and the CPU Monitor open from the menu rows, and close on their own button: the check for Tempo, the overlay's X for the CPU", async () => {
+  const tempo = harness({ follow: false, available: true });
+  await tempo.rerender({ tempoOpen: true });
+  assert.deepEqual(tempo.log.filter((entry) => entry.startsWith("tap:")), ["tap:764,22", "tap:610,286"]);
+  assert.equal(tempo.world.unit, "MetronomeEditor");
+  tempo.log.length = 0;
+  await tempo.rerender({ tempoOpen: false });
+  assert.deepEqual(tempo.log.filter((entry) => entry.startsWith("tap:")), ["tap:743,30"]);
+  assert.equal(tempo.world.unit, "Grid");
+  tempo.renderer.unmount();
+  const cpu = harness({ follow: false, available: true });
+  await cpu.rerender({ view: "cpu-monitor" });
+  assert.deepEqual(cpu.log.filter((entry) => entry.startsWith("tap:")), ["tap:764,22", "tap:578,346"]);
+  assert.equal(cpu.world.unit, "CpuLoadIndicator");
+  cpu.log.length = 0;
+  await cpu.rerender({ view: null });
+  assert.deepEqual(cpu.log.filter((entry) => entry.startsWith("tap:")), ["tap:628,32"], "the X, never the check button (743,30)");
+  assert.equal(cpu.world.unit, "Grid");
+  cpu.renderer.unmount();
+});
+
+test("the CPU overlay is seen with the Grid still in the tree, and followed both ways without flapping", async () => {
+  const { classifyQcGraphicsTree } = await import("../src/use-adaptive-screen-polling.ts");
+  assert.equal(classifyQcGraphicsTree("zenUI::RootGraphicsItem" + String.fromCharCode(10) + "zenUI::Grid" + String.fromCharCode(10) + "zenUI::CpuLoadIndicator"), "cpu-monitor");
+  const host = harness({ follow: false, available: true });
+  host.watchers.push((unit) => { if (unit === "CpuLoadIndicator") act(() => host.follower.observe(observation("cpu-monitor"))); if (unit === "Grid") act(() => host.follower.observe(observation("grid"))); });
+  await host.rerender({ view: "cpu-monitor" });
+  await host.rerender({ view: null });
+  assert.deepEqual(host.log.filter((entry) => entry.startsWith("tap:")), ["tap:764,22", "tap:578,346", "tap:628,32"], "the unit's answers are not echoed back");
+  host.renderer.unmount();
+  // Unit to app: the user opens the overlay on the unit, then closes it on the unit.
+  const unitFirst = harness({ unit: "CpuLoadIndicator" });
+  act(() => unitFirst.follower.observe(observation("cpu-monitor")));
+  assert.equal(unitFirst.state.view, "cpu-monitor");
+  act(() => unitFirst.follower.observe(observation("grid")));
+  assert.equal(unitFirst.state.view, null);
+  unitFirst.renderer.unmount();
 });
