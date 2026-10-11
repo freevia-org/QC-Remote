@@ -565,7 +565,7 @@ test("Android I/O and Gig View mirror the physical QC screen and live assignment
   assert.match(rustRuntimeRequestSource, /operation_inter_message_interval_ms[\s\S]*REMOTE_GESTURE_INTERVAL_MS/);
   assert.match(usbProfileSource, /REMOTE_GESTURE_INTERVAL_MS = 20L/);
   assert.doesNotMatch(appSource, /QC_DEVICE_SCREEN_GESTURES/, "app-local I/O navigation is semantic and does not depend on physical screen coordinates");
-  assert.match(appSource, /androidGatewayTransport\.showGigView\(true\)/);
+  assert.match(readFileSync(new URL("../../../packages/typescript/qc-ui/src/use-qc-device-views.ts", import.meta.url), "utf8"), /showDeviceView\(view, true\)/);
   assert.match(corOsGigViewSource, /snapshot\.footswitchModes\?\.\[index < 4 \? 0 : 1\]/);
   assert.match(corOsGigViewSource, /listedPresets\.find\(\(candidate\) => candidate\.position === position\)/);
 });

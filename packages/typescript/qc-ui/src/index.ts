@@ -49,8 +49,14 @@ export { closeQcLooperScreen, findLooperXBlock, qcLooperScreenActions, resolveQc
 export type { QcDeviceScreenKind, QcLooperScreenOptions } from "./qc-device-screen";
 export { qcDeviceScreenContent } from "./qc-device-screen-content";
 export type { QcDeviceScreenContentOptions } from "./qc-device-screen-content";
+export { qcParameterEditorLeds } from "./qc-parameter-editor-leds";
+export type { QcParameterEditorLed } from "./qc-parameter-editor-leds";
 export { QC_DISABLED_CONTEXT_ACTIONS, qcContextActionHandler, useQcScreenDestination } from "./use-qc-screen-destination";
 export type { QcContextActionOptions, QcScreenDestination, QcScreenReturnFocus, QcScreenViewUpdate } from "./use-qc-screen-destination";
+export { useQcDeviceUndo } from "./use-qc-device-undo";
+export type { QcDeviceUndo, QcDeviceUndoOptions } from "./use-qc-device-undo";
+export { useQcDeviceViews } from "./use-qc-device-views";
+export type { QcDeviceGesture, QcDeviceViewName, QcDeviceViews, QcDeviceViewsOptions } from "./use-qc-device-views";
 export { consumeQcDisplayStates, qcGigViewTransition, useQcScreenFollow } from "./use-qc-screen-follow";
 export type { QcScreenFollowOptions, QcScreenFollowWorkflows } from "./use-qc-screen-follow";
 export { useQcLiveState } from "./use-qc-live-state";
@@ -131,7 +137,8 @@ export { defaultParameterValues, synthesizeParameterDefault, synthesizeParameter
 export type { MeasuredModelDefaults, MeasuredParameterDefault, MeasuredParameterDefaults, VirtualCatalogueModel, VirtualCatalogueParameter, VirtualModelCatalogue } from "./virtual-device-defaults";
 export { createDemoDeviceSession, DEMO_PARAMETER_DEFAULTS_URL, DEMO_PARAMETER_SCALES_URL, loadDemoModelCatalogue, loadDemoParameterDefaults, openDemoDevice } from "./demo-device-session";
 export type { DemoDeviceSession, DemoDeviceSource, DemoDeviceStartResult } from "./demo-device-session";
-export { CONNECTING_PLACEHOLDER_SNAPSHOT, IDLE_PLACEHOLDER_SNAPSHOT } from "./device-placeholder";
+export { CONNECTING_PLACEHOLDER_SNAPSHOT, IDLE_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, isConnectingPlaceholder } from "./device-placeholder";
+export type { QcConnectingPhase } from "./device-placeholder";
 export { capturedPresetForDemo, capturePresetText, captureSetlistForDemo, DEMO_LIBRARY_TEXT_FORMAT, DEMO_LIBRARY_TEXT_MAX_CHARACTERS, demoLibraryCounts, importCapturedSetlistIntoDemo, isGridDevice, parseDemoLibraryText, parsePresetText, pastePresetIntoDemo, PRESET_TEXT_FORMAT, PRESET_TEXT_MAX_CHARACTERS, presetReplayConfirmation, presetReplaySummary, replayPresetOnDevice, serializeDemoLibrary } from "./preset-transfer";
 export type { CapturedPresetText, CapturedSetlist, CapturedSetlistPreset, CapturedSetlistScene, DemoLibraryTextDocument, DemoPasteResult, ParsedText, PresetReplayReport, PresetTextDocument, PresetTextValues } from "./preset-transfer";
 

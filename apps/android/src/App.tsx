@@ -6,7 +6,7 @@ import { QC_SCENE_COUNT } from "@qc-remote/client";
 import { demoSnapshot, footswitchLeds, sceneLetter, type ControlAccessMode, type PublicRelayUsage } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_LEGAL, QC_LEGAL_DOCUMENTS, QC_VISUAL_ASSETS } from "@qc-remote/theme";
-import { ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, QC_DISABLED_CONTEXT_ACTIONS, closeQcLooperScreen, qcDeviceScreenContent, qcContextActionHandler, CorOsSceneCommand, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, parameterEditorAccent, parameterEditorControlSlots, parameterEditorPageSize, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, QcUiIcon, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, refreshGridSnapshot, serializeDemoLibrary, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcScreenFollow, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting } from "@qc-remote/ui";
+import { ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, QC_DISABLED_CONTEXT_ACTIONS, qcDeviceScreenContent, qcContextActionHandler, CorOsSceneCommand, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, isConnectingPlaceholder, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, QcUiIcon, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, refreshGridSnapshot, serializeDemoLibrary, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, qcParameterEditorLeds, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { androidGatewayTransport, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage } from "./native-services";
 import { useAndroidPrompts } from "./use-android-prompts";
@@ -106,7 +106,6 @@ export function App() {
   const mobileScreenView = screenDestination.view;
   const setMobileScreenView = screenDestination.setView;
   const cpuTelemetry = useQcCpuTelemetry();
-  const [deviceUndoAvailable, setDeviceUndoAvailable] = useState(false);
   const modeChord = useRef<{ active: boolean; held: boolean; timer?: number }>({ active: false, held: false });
   const controlContacts = useRef({ bankDown: false, tempo: false });
   const suppressControlTapUntil = useRef({ bankDown: 0, tempo: 0 });
@@ -246,6 +245,12 @@ export function App() {
   const midiOutWorkflow = usePresetMidiOutWorkflow({ gateway: activeGateway, snapshot, demo: demoActive, onSaved: reconcileWorkflowSnapshot });
   const modesWorkflow = useModesConfigurationWorkflow({ gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
   const ioEqWorkflow = useIoEqWorkflows({ gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed, snapshot });
+  const deviceUndo = useQcDeviceUndo({ history: deviceHistory, snapshot, gateway: activeGateway, fail: workflowFailed });
+  const deviceViews = useQcDeviceViews({
+    destination: screenDestination, snapshot, gateway: activeGateway, notice: setNotice, fail: workflowFailed,
+    session: { demo: demoActive, hardwareReady: native && hardwareConnected && !deviceSuspended && !deviceBulkBlocking, sessionReady },
+    workflows: { performance: performanceWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, ioEq: ioEqWorkflow, preset: presetWorkflow }
+  });
   useQcScreenFollow({
     gateway: activeGateway, follow: followQcScreen, available: native && !demoActive && !corpusFixtureEnabled, ready: hardwareConnected && !deviceSuspended && !deviceBulkBlocking, setView: setMobileScreenView,
     workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow }
@@ -301,7 +306,7 @@ export function App() {
     reconcileFrame,
     editor,
     onStates: (states, frame) => {
-      consumeQcDisplayStates(states, { setView: setMobileScreenView, cpu: cpuTelemetry });
+      consumeQcDisplayStates(states, { setView: setMobileScreenView, cpu: cpuTelemetry, undo: deviceUndo });
       for (const state of states) {
         if (state.kind === "gridTopology" && state.gridLayoutComplete === false
             && activeSourceRef.current !== "virtual") {
@@ -321,8 +326,6 @@ export function App() {
             onError: (error) => setNotice(error instanceof Error ? error.message : "The Grid layout is incomplete; current preset could not be refreshed."),
             onFinished: () => setGridRefreshPending(false)
           });
-        } else if (state.kind === "history" && state.undoAvailable !== undefined) {
-          setDeviceUndoAvailable(state.undoAvailable);
         } else if (state.kind === "suspend" && state.suspended !== undefined) {
           setDeviceSuspended(state.suspended);
           setNotice(state.suspended ? `Quad Cortex temporarily suspended control${state.suspendReason ? ` (${state.suspendReason.replaceAll("_", " ").toLowerCase()})` : ""}.` : "Quad Cortex control resumed.");
@@ -373,6 +376,8 @@ export function App() {
       deviceHistory.clear();
       presetWorkflow.resetCache();
       setSelectedBlockId("");
+      // The demo's preset must not sit on screen as if it were active while the hardware is being reached.
+      setSnapshot(connectingPlaceholderSnapshot("opening"));
     }
     presetSynchronized.current = false;
     nativeStateSequence.current = 0;
@@ -390,6 +395,7 @@ export function App() {
       setHardwareConnected(true);
       if (result.synchronized) presetSynchronized.current = true;
       transitionConnection(presetSynchronized.current ? "connected" : "syncing");
+      if (!presetSynchronized.current && isConnectingPlaceholder(snapshotRef.current)) setSnapshot(connectingPlaceholderSnapshot("synchronizing"));
       if (announce) setNotice("Quad Cortex connected directly over USB.");
     } catch (error) {
       if (!attempt.current()) return;
@@ -771,87 +777,14 @@ export function App() {
     openRoutingNode: (row, node) => { void gridWorkflow.openRoutingNode(row, node); },
     openLaneControl: (row, control) => { void gridWorkflow.openLaneControl(row, control); },
     openSplitPlacement: (row) => routingWorkflow.openSplitPlacement(row),
-    rotate: (role, delta) => {
-      if (adjustEditorParameter(role, delta)) return;
-      if (role === "tempo") continuousControls.adjustTempo(delta);
-      else if (role === "master-volume") continuousControls.adjustMasterVolume(delta);
-      else setNotice(`${role} has no parameter on the current screen.`);
-    },
-    editorUnhandled: (action) => setNotice(`${action.role} is mapped to the on-screen parameter above it; drag vertically to adjust it.`)
+    rotation: { editor: adjustEditorParameter, tempo: continuousControls.adjustTempo, masterVolume: continuousControls.adjustMasterVolume },
+    demo: demoActive,
+    notice: setNotice
   });
-  const parameterLeds = parameterEditorBindings ? (() => {
-    const accent = parameterEditorAccent(parameterEditorBindings.details.name, parameterEditorBindings.accent);
-    const visible = parameterEditorControlSlots(
-      parameterEditorBindings.details.parameters.filter((parameter) => parameter.normalizedValue !== null),
-      parameterEditorBindings.details.category,
-      parameterEditorBindings.page,
-      parameterEditorPageSize(parameterEditorBindings.details.category, parameterEditorBindings.details.parameters)
-    );
-    return Array.from({ length: 10 }, (_, index) => ({
-      active: Boolean(visible[index]),
-      assigned: Boolean(visible[index]),
-      color: /\bcab\b/i.test(parameterEditorBindings.details.category) && ((parameterEditorBindings.page === 0 && index >= 5 && index <= 8) || (parameterEditorBindings.page === 1 && index === 2))
-        ? QC_COLORS.category.pitch
-        : accent
-    }));
-  })() : undefined;
+  const parameterLeds = qcParameterEditorLeds(parameterEditorBindings);
   const mobileLed = (slot: number, fallback: { active: boolean; assigned: boolean; color: string }) => parameterLeds?.[slot] ?? fallback;
   const ioViewOpen = Boolean(mobileScreenView?.startsWith("io-"));
   const gigViewOpen = Boolean(mobileScreenView?.startsWith("gig"));
-  const tunerViewOpen = Boolean(mobileScreenView?.startsWith("tuner"));
-  const closeMobileScreen = async () => {
-    try {
-      if (mobileScreenView === "looper-editor") { await closeQcLooperScreen({ looper: looperWorkflow, setView: setMobileScreenView }); return; }
-      if (native && hardwareConnected && !demoActive) {
-        if (gigViewOpen) await androidGatewayTransport.showGigView(false);
-        else if (tunerViewOpen) await performanceWorkflow.showDeviceView("tuner", false);
-      }
-      setMobileScreenView(null);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The Quad Cortex screen did not close.");
-    }
-  };
-  const showMobileDeviceView = async (view: "tuner" | "gig") => {
-    setWorkflowPanel(null);
-    try {
-      if (!demoActive && !(native && hardwareConnected)) {
-        setNotice(`Connect the Quad Cortex or start the Demo device before opening ${view === "tuner" ? "Tuner" : "Gig View"}.`);
-        return;
-      }
-      if (!demoActive && !(await performanceWorkflow.showDeviceView(view, true))) return;
-      if (view === "tuner") tunerWorkflow.openTuner();
-      setMobileScreenView(view);
-      if (demoActive) setNotice(`Demo: ${view === "tuner" ? "Tuner" : "Gig View"} opened.`);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : `The Quad Cortex did not open ${view}.`);
-    }
-  };
-  const toggleIoView = async () => {
-    if (ioViewOpen) { await closeMobileScreen(); return; }
-    try {
-      if (!demoActive) await ioEqWorkflow.refresh();
-      setMobileScreenView("io-overview");
-      if (demoActive) setNotice("Demo: I/O Settings opened.");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The Quad Cortex did not open I/O Settings.");
-    }
-  };
-  const toggleGigView = async () => {
-    if (gigViewOpen) {
-      await closeMobileScreen();
-      return;
-    }
-    try {
-      if (native && hardwareConnected && !demoActive) await androidGatewayTransport.showGigView(true);
-      setMobileScreenView("gig");
-      if (demoActive) setNotice("Demo: Gig View opened.");
-      if (!presetWorkflow.presetList || presetWorkflow.presetList.setlistKey !== snapshot.setlistKey) {
-        void presetWorkflow.loadDirectory(false, snapshot.setlistKey, true);
-      }
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The Quad Cortex did not open Gig View.");
-    }
-  };
   const cycleMode = () => {
     const current = snapshotRef.current;
     const slots = current.modeSlots?.filter((slot) => slot.mode) ?? [];
@@ -880,7 +813,7 @@ export function App() {
         chord.timer = undefined;
         if (!modeChord.current.active || !deviceSettingsWorkflow.settings?.gigViewStompAccess) return;
         modeChord.current.held = true;
-        void toggleGigView();
+        void deviceViews.toggle("gig");
       }, holdDelayMs);
       return;
     }
@@ -900,18 +833,8 @@ export function App() {
     if (modeChord.current.active || blockDetails || deviceSettingsWorkflow.open || tempoWorkflow.open || mobileScreenView !== null) return;
     const swapped = Boolean(deviceSettingsWorkflow.settings?.swapTempoTunerAccess);
     const openTuner = gesture === (swapped ? "double-tap" : "hold");
-    if (openTuner) void showMobileDeviceView("tuner");
+    if (openTuner) { setWorkflowPanel(null); void deviceViews.open("tuner"); }
     else tempoWorkflow.openTempo();
-  };
-  const forwardDeviceScreenGesture = async (x: number, y: number, toX: number, toY: number, kind: "tap" | "long-tap" | "swipe") => {
-    if (!native || demoActive || !hardwareConnected) return;
-    try {
-      if (kind === "long-tap") await androidGatewayTransport.longTapScreen(x, y);
-      else if (kind === "tap") await androidGatewayTransport.tapScreen(x, y);
-      else await androidGatewayTransport.swipeScreen(x, y, toX, toY);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "The Quad Cortex did not accept the screen gesture.");
-    }
   };
   const handleCorOsContextAction = qcContextActionHandler({ destination: screenDestination, openSave: presetWorkflow.openSave, deviceSettings: deviceSettingsWorkflow, scene: sceneWorkflow, modes: modesWorkflow, tempo: tempoWorkflow, notice: setNotice });
   // The CPU Monitor is laid over the normal Grid, as on the unit, rather than replacing it.
@@ -919,7 +842,7 @@ export function App() {
   const cpuMonitor = cpuTelemetry.monitor(cpuMonitorOpen, screenDestination.returnFocusTarget, () => setMobileScreenView(null));
   const mobileScreenContent = productionAuditScreen ? <CorOsProductionScreenAudit view={productionAuditScreen} snapshot={snapshot} />
     : qcDeviceScreenContent({
-      snapshot, destination: screenDestination, selectScene: performanceWorkflow.selectScene, queueTempo: continuousControls.queueTempo, setParameterMenuInitiallyOpen, closeScreen: closeMobileScreen, notice: setNotice,
+      snapshot, destination: screenDestination, selectScene: performanceWorkflow.selectScene, queueTempo: continuousControls.queueTempo, setParameterMenuInitiallyOpen, closeScreen: deviceViews.close, notice: setNotice,
       workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow }
     });
 
@@ -967,10 +890,10 @@ export function App() {
 
     <section className="mobile-screen" aria-label="Quad Cortex display">
       <QuadCortexSurface presentation="display" formFactor={formFactor} snapshot={snapshot} selectedBlockId={selectedBlockId} skin={skin}
-        screenView={fixtureScreenView ?? (cpuMonitorOpen ? undefined : mobileScreenView) ?? undefined} screenContent={mobileScreenContent} cpuMonitor={cpuMonitor} onCloseScreen={closeMobileScreen} onDeviceScreenGesture={(x, y, toX, toY, kind) => void forwardDeviceScreenGesture(x, y, toX, toY, kind)}
-        onOpenGigView={() => void toggleGigView()} onOpenIoView={() => void toggleIoView()} onEditScene={sceneWorkflow.openLabelColor} onRecallGigPreset={(entry) => void presetWorkflow.recall(entry)} onCopyGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, false)} onSwapGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, true)}
+        screenView={fixtureScreenView ?? (cpuMonitorOpen ? undefined : mobileScreenView) ?? undefined} screenContent={mobileScreenContent} cpuMonitor={cpuMonitor} onCloseScreen={() => void deviceViews.close()} onDeviceScreenGesture={(x, y, toX, toY, kind) => void deviceViews.forwardGesture(x, y, toX, toY, kind)}
+        onOpenGigView={() => void deviceViews.toggle("gig")} onOpenIoView={() => void deviceViews.toggle("io")} deviceInformation={deviceViews.deviceInformation} onEditScene={sceneWorkflow.openLabelColor} onRecallGigPreset={(entry) => void presetWorkflow.recall(entry)} onCopyGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, false)} onSwapGigScene={(scene) => sceneWorkflow.openCommandForScene(scene, true)}
         sceneEditor={sceneWorkflow.labelColorOpen ? { sourceScene: sceneWorkflow.sourceScene, setSourceScene: sceneWorkflow.setSourceScene, scenes: snapshot.scenes, label: sceneWorkflow.label, setLabel: sceneWorkflow.setLabel, color: sceneWorkflow.color, setColor: sceneWorkflow.setColor, colors: sceneWorkflow.colors, pending: devicePending, saveLabel: () => void sceneWorkflow.saveLabel(), saveColor: () => void sceneWorkflow.saveColor(), onClose: sceneWorkflow.closeLabelColor } : undefined}
-        onAction={handleSurfaceAction} onMasterVolumeInteractionStart={continuousControls.beginMasterVolumeInteraction} onMasterVolumeInteractionEnd={continuousControls.endMasterVolumeInteraction} onOpenPreset={() => void presetWorkflow.openDirectory()} onUndo={() => { if (deviceHistory.undoEntry) void deviceHistory.undo(); else if (deviceUndoAvailable && snapshot.presetIdentity) void activeGateway.undo(snapshot.presetIdentity); }} canUndo={Boolean(deviceHistory.undoEntry) || deviceUndoAvailable} undoLabel={deviceHistory.undoEntry?.label}
+        onAction={handleSurfaceAction} onMasterVolumeInteractionStart={continuousControls.beginMasterVolumeInteraction} onMasterVolumeInteractionEnd={continuousControls.endMasterVolumeInteraction} onOpenPreset={() => void presetWorkflow.openDirectory()} onUndo={() => void deviceUndo.undo()} canUndo={deviceUndo.canUndo} undoLabel={deviceUndo.undoLabel}
         onSave={presetWorkflow.openSave} onOpenRouting={routingWorkflow.openPicker} onRefresh={() => void presetWorkflow.refresh()}
         savePreset={presetWorkflow.saveProps} presetDirectory={presetWorkflow.directoryProps} routingPicker={routingWorkflow.pickerProps}
         addDevicePicker={gridWorkflow.addPickerProps} expressionAssignment={expressionAssignment} laneControlEditor={laneControlEditor}
@@ -979,10 +902,10 @@ export function App() {
 
     <nav className="quick-controls" aria-label="Quick device controls">
       <div className="mobile-volume-control"><QcMasterVolumeKnob value={snapshot.masterVolume} readout={`${snapshot.masterVolume}`} onAction={handleSurfaceAction} onInteractionStart={continuousControls.beginMasterVolumeInteraction} onInteractionEnd={continuousControls.endMasterVolumeInteraction} /></div>
-      <button type="button" className="mobile-device-view-control mobile-io-control" aria-label={ioViewOpen ? "I/O Settings, close view" : "Open I/O Settings"} aria-pressed={ioViewOpen} onClick={() => void toggleIoView()}>I/O</button>
-      <button type="button" className="mobile-device-view-control mobile-gig-control" aria-label={gigViewOpen ? "Gig View, close view" : "Open Gig View"} aria-pressed={gigViewOpen} onClick={() => void toggleGigView()}>GIG</button>
+      <button type="button" className="mobile-device-view-control mobile-io-control" aria-label={ioViewOpen ? "I/O Settings, close view" : "Open I/O Settings"} aria-pressed={ioViewOpen} onClick={() => void deviceViews.toggle("io")}>I/O</button>
+      <button type="button" className="mobile-device-view-control mobile-gig-control" aria-label={gigViewOpen ? "Gig View, close view" : "Open Gig View"} aria-pressed={gigViewOpen} onClick={() => void deviceViews.toggle("gig")}>GIG</button>
       <div className="mobile-up-control"><QcHardwareSwitch role="bank:up" label={<QcUiIcon kind="up" />} ariaLabel="Previous preset" active={Boolean(parameterEditorBindings)} assigned={Boolean(parameterEditorBindings)} accent={QC_COLORS.hardware.whiteLed} onTap={() => {
-        if (mobileScreenView === "tuner") void closeMobileScreen();
+        if (mobileScreenView === "tuner") void deviceViews.close();
         else if (tempoWorkflow.open) tempoWorkflow.close();
         else pressSurfaceSwitch("bank:up");
       }} onAction={handleSurfaceAction} /></div>
@@ -1015,6 +938,7 @@ export function App() {
             {!demoActive && snapshot.gridLayoutComplete === false && <div><dt>Grid</dt><dd role="status">{gridRefreshPending ? "Refreshing the current preset… Grid editing is paused." : "Grid layout is incomplete. Grid editing is paused until a fresh current-preset read succeeds."}</dd></div>}
             <div><dt>Status</dt><dd>{usbPanelDetail}</dd></div>
           </dl>
+          <div className="mobile-panel-actions"><button disabled={!sessionReady || devicePending || demoPending} onClick={() => { setWorkflowPanel(null); void deviceViews.open("info"); }}>Device information</button></div>
           {demoActive && <div className="mobile-panel-actions"><button disabled={devicePending || demoPending} onClick={() => void copyDemoLibrary()}>Copy library</button><button disabled={devicePending || demoPending} onClick={() => void pasteDemoLibrary()}>Paste library</button><button className="danger" disabled={devicePending || demoPending} onClick={stopDemoDevice}>Stop demo</button></div>}
         </div>}
         {workflowPanel === "remote" && <div className="mobile-connection-panel mobile-remote-panel">

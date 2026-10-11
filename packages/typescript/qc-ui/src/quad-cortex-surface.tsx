@@ -16,7 +16,7 @@ import type { CorOsDeviceInformation } from "./coros-reference-settings-pane";
 import { QcDeviceGlyph } from "./device-glyph";
 import { sceneDisplayLabel } from "./scene-display-label";
 import { clientPointToGrid, createGridTapMachine, exceedsDragThreshold, GRID_LONG_PRESS_MS, gridClickIsPointerEcho, gridDropTarget, resolveGridCellFromPoint, resolveGridGestureRelease, type GridCellHit, type GridDropTarget } from "./grid-drag-geometry";
-import { parameterEditorAccent, parameterEditorControlSlots, parameterEditorPageSize } from "./parameter-model";
+import { qcParameterEditorLeds } from "./qc-parameter-editor-leds";
 import { SceneQuickEditPopover, type SceneQuickEditPopoverProps } from "./scene-editor";
 import { QcHardwareIcon, QcModeGlyph, QcRouteGlyph, QcScreenHeaderGlyph, QcScreenVectorGlyph, QcUiIcon } from "./theme-icons";
 import { QC_HOLD_DELAY_MS, useHoldGesture } from "./use-hold-gesture";
@@ -1055,24 +1055,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
   // than from a lamp: reading it off the LED array coupled what the screen
   // draws to how the footswitches happen to be lit.
   const presetSlotAccent = QC_PRESET_SLOT_COLORS[presetSlotIndex];
-  const parameterLeds = parameterEditor ? (() => {
-    const editorAccent = parameterEditorAccent(parameterEditor.details.name, parameterEditor.accent);
-    const size = parameterEditorPageSize(parameterEditor.details.category, parameterEditor.details.parameters);
-    const visible = parameterEditorControlSlots(
-      parameterEditor.details.parameters.filter((parameter) => parameter.normalizedValue !== null),
-      parameterEditor.details.category,
-      parameterEditor.page,
-      size
-    );
-    return Array.from({ length: 10 }, (_, index) => ({
-      active: Boolean(visible[index]),
-      assigned: Boolean(visible[index]),
-      color: /\bcab\b/i.test(parameterEditor.details.category) && (
-        (parameterEditor.page === 0 && index >= 5 && index <= 8)
-        || (parameterEditor.page === 1 && index === 2)
-      ) ? QC_COLORS.category.pitch : editorAccent
-    }));
-  })() : undefined;
+  const parameterLeds = qcParameterEditorLeds(parameterEditor);
   const parameterLed = (slot: number, fallback: { active: boolean; assigned: boolean; color: string }) => parameterLeds?.[slot] ?? fallback;
   const navigationLedColor = QC_COLORS.hardware.whiteLed;
   const bankDownLed = parameterLed(4, { active: false, assigned: false, color: navigationLedColor });

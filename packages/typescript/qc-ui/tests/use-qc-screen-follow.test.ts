@@ -120,15 +120,16 @@ test("Gig View on the unit opens and closes the app's Gig screen without touchin
   assert.equal(qcGigViewTransition(null, false), null);
 });
 
-test("every native state batch feeds the CPU readings and the Gig screen from one place", () => {
+test("every native state batch feeds the CPU readings, the undo availability and the Gig screen from one place", () => {
   const seen: string[] = [];
   const views: unknown[] = [];
   const states = [{ kind: "gigView", gigViewShown: true }, { kind: "cpuLoad", cpuTotalLoad: 20 }, { kind: "gigView" }, { kind: "history" }] as QcStateUpdate[];
   consumeQcDisplayStates(states, {
     setView: ((next: unknown) => { views.push(next); }) as never,
-    cpu: { consume: (batch) => { seen.push(`cpu:${batch.length}`); } }
+    cpu: { consume: (batch) => { seen.push(`cpu:${batch.length}`); } },
+    undo: { consume: (batch) => { seen.push(`undo:${batch.length}`); } }
   });
-  assert.deepEqual(seen, ["cpu:4"]);
+  assert.deepEqual(seen, ["cpu:4", "undo:4"]);
   assert.equal(views.length, 1, "a gigView update without a shown flag is ignored");
   assert.equal((views[0] as (current: string | null) => string | null)(null), "gig");
 });

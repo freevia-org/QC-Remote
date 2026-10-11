@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type { QcStateUpdate } from "@qc-remote/core";
 import { useAdaptiveQcScreenPolling, type QcScreenObservation, type QcScreenPollingPhase } from "./use-adaptive-screen-polling.ts";
 import type { QcCpuTelemetry } from "./use-qc-cpu-telemetry.ts";
+import type { QcDeviceUndo } from "./use-qc-device-undo.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
 
 /** The workflows following the unit's own screen opens and closes. */
@@ -74,11 +75,12 @@ export function qcGigViewTransition(current: QcScreenDestination["view"], shown:
 
 /**
  * The part of every native state batch that decides what the display shows:
- * Gig View shown or hidden on the unit, and the CPU readings. The hosts call
+ * Gig View shown or hidden on the unit, the CPU readings, and whether the unit has something to undo or redo. The hosts call
  * this first and keep only their transport-specific handling.
  */
-export function consumeQcDisplayStates(states: readonly QcStateUpdate[], display: { setView: QcScreenDestination["setView"]; cpu: Pick<QcCpuTelemetry, "consume"> }): void {
+export function consumeQcDisplayStates(states: readonly QcStateUpdate[], display: { setView: QcScreenDestination["setView"]; cpu: Pick<QcCpuTelemetry, "consume">; undo: Pick<QcDeviceUndo, "consume"> }): void {
   display.cpu.consume(states);
+  display.undo.consume(states);
   for (const state of states) {
     if (state.kind === "gigView" && state.gigViewShown !== undefined) {
       const shown = state.gigViewShown;
