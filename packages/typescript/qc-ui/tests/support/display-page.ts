@@ -91,6 +91,9 @@ const MEASURE_SCRIPT = `
 (async () => {
   // React reveals streamed Suspense boundaries (the lazily loaded screens) on a short timer after load.
   for (let waited = 0; waited < 5000 && document.querySelector('template[id^="B:"]'); waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+  // The canvas scale is a container-query length; give style and layout time to settle on bezel width / 800.
+  const scaleSettled = () => { const box = document.querySelector('.qc-screen-bezel'); const canvas = box.querySelector(':scope > .qc-screen-fixture-root'); return Math.abs(new DOMMatrix(getComputedStyle(canvas).transform).a * 800 - box.getBoundingClientRect().width) < 0.01; };
+  for (let waited = 0; waited < 5000 && !scaleSettled(); waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
   await document.fonts.ready;
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   const bezel = document.querySelector(".qc-screen-bezel");
@@ -144,19 +147,24 @@ async function withBrowser<T>(browser: string, workDirectory: string, browserArg
     const socket = new WebSocket(version.webSocketDebuggerUrl);
     await new Promise<void>((resolve, reject) => { socket.onopen = () => resolve(); socket.onerror = () => reject(new Error("debugging socket failed")); });
     let nextId = 0;
-    const pending = new Map<number, (message: CdpMessage) => void>();
+    const pending = new Map<number, { method: string; resolve(result: unknown): void; reject(error: Error): void }>();
     const waiters: Array<{ method: string; sessionId?: string; resolve: () => void }> = [];
     socket.onmessage = (event) => {
       const message = JSON.parse(String(event.data)) as CdpMessage;
-      if (message.id !== undefined) pending.get(message.id)?.(message);
-      else {
+      if (message.id !== undefined) {
+        const request = Number.isInteger(message.id) ? pending.get(message.id) : undefined;
+        if (!request) return;
+        pending.delete(message.id);
+        if (message.error) request.reject(new Error(`${request.method}: ${message.error.message}`));
+        else request.resolve(message.result);
+      } else {
         const index = waiters.findIndex((waiter) => waiter.method === message.method && waiter.sessionId === message.sessionId);
         if (index >= 0) waiters.splice(index, 1)[0].resolve();
       }
     };
     const send = (method: string, params: object = {}, sessionId?: string) => new Promise<any>((resolve, reject) => {
       nextId += 1;
-      pending.set(nextId, (message) => message.error ? reject(new Error(`${method}: ${message.error.message}`)) : resolve(message.result));
+      pending.set(nextId, { method, resolve, reject });
       socket.send(JSON.stringify({ id: nextId, method, params, sessionId }));
     });
     const { targetId } = await send("Target.createTarget", { url: "about:blank" });
