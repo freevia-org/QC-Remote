@@ -1,3 +1,4 @@
+import type { CorOsDeviceInformation } from "@qc-remote/ui";
 /**
  * The data behind the three app windows: Settings, Device Info, and Workspace.
  *
@@ -50,6 +51,8 @@ export type DeviceInfoState = {
   tempo: number;
   blockCount: number;
   dirty: boolean;
+  /** What the unit reports about itself, for the Device Information screen. Absent until a session answers. */
+  information?: CorOsDeviceInformation;
 };
 
 /**

@@ -1818,8 +1818,9 @@ export function App() {
     scene: sceneLetter(snapshot.activeScene),
     tempo: snapshot.tempo,
     blockCount: snapshot.blocks.length,
-    dirty: snapshot.dirty
-  }), [snapshot.deviceName, deviceConnectionLabel, snapshot.setlistName, snapshot.presetLocation, snapshot.presetName, snapshot.mode, snapshot.activeScene, snapshot.tempo, snapshot.blocks.length, snapshot.dirty]);
+    dirty: snapshot.dirty,
+    information: deviceViews.deviceInformation
+  }), [deviceViews.deviceInformation, snapshot.deviceName, deviceConnectionLabel, snapshot.setlistName, snapshot.presetLocation, snapshot.presetName, snapshot.mode, snapshot.activeScene, snapshot.tempo, snapshot.blocks.length, snapshot.dirty]);
   const workspaceState = useMemo<WorkspaceState>(() => loadedWorkspace ? {
     name: workspaceName ?? "QC Workspace",
     savedAt: loadedWorkspace.savedAt,

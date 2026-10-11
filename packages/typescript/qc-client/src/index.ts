@@ -226,11 +226,27 @@ export interface ModelList {
   audit: ModelCatalogAudit;
 }
 
+/**
+ * The unit's version reply. `appFwVersion` is the Zenjack application firmware
+ * build (the Device Information screen's "Zenjack FW app", e.g. `d14e`), NOT
+ * the CorOS version number. The other firmware fields are what the reply
+ * carries beyond what the gateway has so far been taught to pass on; each is
+ * optional because a gateway that does not pass it on leaves it out.
+ */
 export interface DeviceIdentity {
   serial: string;
   appFwVersion?: string;
   customName?: string;
   deviceType?: number;
+  macAddress?: string;
+  linuxKernelVersion?: string;
+  ubootVersion?: string;
+  bootloaderFwVersion?: string;
+  zencoderFwApp?: string;
+  zencoderFwBootloader?: string;
+  zenwirelessFwVersion?: string;
+  /** The CorOS version number, if a gateway reports it. The version reply has no field for it. */
+  corOsVersion?: string;
 }
 
 export interface InhibitedModules {

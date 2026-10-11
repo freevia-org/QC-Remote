@@ -49,6 +49,8 @@ export { useQcCpuTelemetry } from "./use-qc-cpu-telemetry";
 export type { QcCpuMonitorProps, QcCpuTelemetry } from "./use-qc-cpu-telemetry";
 export { useQcScreenDestination } from "./use-qc-screen-destination";
 export type { QcScreenDestination, QcScreenReturnFocus, QcScreenViewUpdate } from "./use-qc-screen-destination";
+export { qcDeviceInformation } from "./device-information";
+export type { CorOsDeviceInformation } from "./coros-reference-settings-pane";
 export { useQcDeviceUndo } from "./use-qc-device-undo";
 export type { QcDeviceUndo, QcDeviceUndoOptions } from "./use-qc-device-undo";
 export { useQcDeviceViews } from "./use-qc-device-views";
