@@ -148,7 +148,7 @@ THE SOFTWARE.
 ================================================================================
 SHA-256: 05fa1ba3228aab8d2bf637f286d7579ed76256c1dab3fa955c2489b920ffeb35
 Source file names: LICENSE-MIT
-Applies to: cargo:quinn-proto@0.11.17, cargo:quinn-udp@0.5.15, cargo:quinn@0.11.11
+Applies to: cargo:quinn-proto@0.11.17, cargo:quinn-proto@0.11.18, cargo:quinn-udp@0.5.15, cargo:quinn@0.11.11, cargo:quinn@0.11.12
 --------------------------------------------------------------------------------
 Copyright (c) 2018 The quinn Developers
 
@@ -677,8 +677,8 @@ APPENDIX: How to apply the Apache License to your work.
 
 ================================================================================
 SHA-256: 1847e0e0698142ed4347c1441a9fa81c8fbddd44b1d8bbcd5e3647f991759d7f
-Source file names: LICENSE
-Applies to: cargo:ident_case@1.0.1
+Source file names: LICENSE, LICENSE-MIT
+Applies to: cargo:ident_case@1.0.1, cargo:simdutf8@0.1.5
 --------------------------------------------------------------------------------
 MIT License
 
@@ -730,7 +730,7 @@ SOFTWARE.
 ================================================================================
 SHA-256: 1961703c278284db0ba353f5cfb2f3e2b1c1f584a2791db44aacfe7d78656f70
 Source file names: COPYRIGHT
-Applies to: cargo:encoding_rs@0.8.35
+Applies to: cargo:encoding_rs@0.8.35, cargo:encoding_rs@0.8.41
 --------------------------------------------------------------------------------
 encoding_rs is copyright Mozilla Foundation.
 
@@ -836,7 +836,7 @@ freely, subject to the following restrictions:
 ================================================================================
 SHA-256: 1b0258c48739a24ea7c8e4e45fd32862666ea416630cdae24179b2d64ef742e3
 Source file names: LICENSE-MIT
-Applies to: cargo:tokio-rustls@0.26.4
+Applies to: cargo:tokio-rustls@0.26.4, cargo:tokio-rustls@0.26.5
 --------------------------------------------------------------------------------
 Copyright (c) 2017 quininer kel
 
@@ -1573,7 +1573,7 @@ THE SOFTWARE.
 ================================================================================
 SHA-256: 2411d70acb18e15ac32f7aace439a5c2725b8d0074510caf651d4c270d7c05aa
 Source file names: COPYRIGHT
-Applies to: cargo:rand@0.10.2, cargo:rand@0.9.5, cargo:rand_chacha@0.9.0, cargo:rand_core@0.9.5, cargo:rand_pcg@0.10.2
+Applies to: cargo:rand@0.10.2, cargo:rand@0.10.3, cargo:rand@0.9.5, cargo:rand_chacha@0.9.0, cargo:rand_core@0.9.5, cargo:rand_pcg@0.10.2
 --------------------------------------------------------------------------------
 Copyrights in the Rand project are retained by their contributors. No
 copyright assignment is required to contribute to the Rand project.
@@ -1661,6 +1661,35 @@ PackageDownloadLocation: git://github.com/tauri-apps/wry
 PackageDownloadLocation: git+https://github.com/tauri-apps/wry.git
 PackageDownloadLocation: git+ssh://github.com/tauri-apps/wry.git
 Creator: Person: Daniel Thompson-Yvetot
+
+================================================================================
+SHA-256: 26633be0c19e2e61e709a8c61d7fce2baa352ae3278d42846abe229a6bd68d4f
+Source file names: https://github.com/OpenByteDev/dlopen2/blob/cc80e4a0a90d499b677fdf7743699b4b3a43a989/LICENSE (SHA-256 39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2)
+Applies to: cargo:dlopen2@0.8.2, cargo:dlopen2_derive@0.4.3
+--------------------------------------------------------------------------------
+MIT License
+
+Copyright (c) 2017 Szymon Wieloch
+Copyright (C) 2019 Ahmed Masud <ahmed.masud@saf.ai>
+Copyright (C) 2022 OpenByte <development.openbyte@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ================================================================================
 SHA-256: 26d1e12fda78c82891263c8f1251bc22e629ef732c6ca4346fbfddc3594a0dd9
@@ -1929,7 +1958,7 @@ limitations under the License.
 ================================================================================
 SHA-256: 283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b
 Source file names: Apache License 2.0 (canonical; declared by Maven POM androidx.annotation:annotation-experimental@1.4.1, SHA-256 fe57b228417f4d7c677903dc61fb4a7cf993d603499de26d8d8113e477cc4f1b), Apache License 2.0 (canonical; declared by Maven POM androidx.annotation:annotation-jvm@1.8.1, SHA-256 d49203733aa6fae046c3a3de4e796eed347595755486a64273989844759750b4), Apache License 2.0 (canonical; declared by Maven POM androidx.annotation:annotation@1.8.1, SHA-256 b71225974ec087eb96c25ef6819f55b1c22f530e85ca446ba735fb66ed04ff5c), Apache License 2.0 (canonical; declared by Maven POM androidx.appcompat:appcompat-resources@1.7.1, SHA-256 2faf922e8c3d706f29d862b3fbb3aa1347705c21c6eae18586d2bb1f7366ea01), Apache License 2.0 (canonical; declared by Maven POM androidx.appcompat:appcompat@1.7.1, SHA-256 1f79910cc20de198acf3867b1e93f9ed59ddb643585b2e9c28ee55518af1bc00), Apache License 2.0 (canonical; declared by Maven POM androidx.arch.core:core-common@2.2.0, SHA-256 1e17d4af8d6425be2a69f8af4d654a87e0456259a9eef1542869bcb023547e28), Apache License 2.0 (canonical; declared by Maven POM androidx.arch.core:core-runtime@2.2.0, SHA-256 0f953706598140d9d8735cdd5aeb1fa35933f4e2f31c0bf3eb81a053a4c8c1a5), Apache License 2.0 (canonical; declared by Maven POM androidx.collection:collection-jvm@1.4.2, SHA-256 adbb379e2b160f08e63e341ad04bbcc7033f6d868ec51ac11e4334642a4e39ef), Apache License 2.0 (canonical; declared by Maven POM androidx.collection:collection@1.4.2, SHA-256 4f2615a17aeacfe12b68298214a19f2a19c68c66d590075bdbbfb659ebce2b7f), Apache License 2.0 (canonical; declared by Maven POM androidx.concurrent:concurrent-futures@1.1.0, SHA-256 748a34eb5d13d19d187adecaea82667fded5f1b0b98a655e13ed2e4a8b3d8ae6), Apache License 2.0 (canonical; declared by Maven POM androidx.cursoradapter:cursoradapter@1.0.0, SHA-256 62d95c89850af21030b19f14d5f7ecd6d8bcc9a3014c59002ec99624caac8100), Apache License 2.0 (canonical; declared by Maven POM androidx.customview:customview@1.0.0, SHA-256 ce9e47b87184f5bd5e139e9becd5b26476d42d78c31bf2fdedc37acb41b9ad49), Apache License 2.0 (canonical; declared by Maven POM androidx.drawerlayout:drawerlayout@1.0.0, SHA-256 da6733425a83f5ce850878fa7201082345fed7c668dd58550fdd19c0396c6fa4), Apache License 2.0 (canonical; declared by Maven POM androidx.emoji2:emoji2-views-helper@1.3.0, SHA-256 2673b0f5859d4361a4e9a30457852a6745d0c3c85b5e0412070483f3963ef526), Apache License 2.0 (canonical; declared by Maven POM androidx.emoji2:emoji2@1.3.0, SHA-256 14ebbea8234f013211965fdd08b42ee907ce0075af321018c8c2865c2e5db0eb), Apache License 2.0 (canonical; declared by Maven POM androidx.fragment:fragment@1.8.9, SHA-256 8135a58b3ec9379c8afb4acce863f35e7654fddf1c602191f8d3feec13afed36), Apache License 2.0 (canonical; declared by Maven POM androidx.interpolator:interpolator@1.0.0, SHA-256 0ddc07cc39699f48ecd9ec894b5830c0f09e22e82959294edf37217224c88b7b), Apache License 2.0 (canonical; declared by Maven POM androidx.lifecycle:lifecycle-common@2.6.2, SHA-256 57304cdac4da289a6ecdd0738e16b1d8858f1ef8e9fabe2d65a963719fd81dba), Apache License 2.0 (canonical; declared by Maven POM androidx.lifecycle:lifecycle-livedata-core@2.6.2, SHA-256 1faf8ebf53f28b2f0ae2c2095371ae67d0ca16ac328fce7f163609a43214b5a4), Apache License 2.0 (canonical; declared by Maven POM androidx.lifecycle:lifecycle-livedata@2.6.2, SHA-256 d7c9e019cf68779387481877878f6c499d1786b85f2c0480e9264dd5097c51c0), Apache License 2.0 (canonical; declared by Maven POM androidx.lifecycle:lifecycle-process@2.6.2, SHA-256 1f14396ec764b44d37c143adacee01e5b68cb5f35a21bcd9cdebd7c83ea7d2e9), Apache License 2.0 (canonical; declared by Maven POM androidx.lifecycle:lifecycle-runtime@2.6.2, SHA-256 8175255546e2a5f510865f84ace680660954730240b1905d9175b4345beda977), Apache License 2.0 (canonical; declared by Maven POM androidx.lifecycle:lifecycle-viewmodel-savedstate@2.6.2, SHA-256 7fc854440644cf52c35894d58d946b208e42769e8517d71a5efcba17865432de), Apache License 2.0 (canonical; declared by Maven POM androidx.lifecycle:lifecycle-viewmodel@2.6.2, SHA-256 a9fb0b39a8360beef7bdc8f3953d4d78f3d85304fc80adac3c8eaf530d758050), Apache License 2.0 (canonical; declared by Maven POM androidx.loader:loader@1.0.0, SHA-256 c978d550808b47434aa49a63164110a50b55b0bcc6160a93a2e37d5110df8c5e), Apache License 2.0 (canonical; declared by Maven POM androidx.resourceinspection:resourceinspection-annotation@1.0.1, SHA-256 b8eb4938ed95d7fcdaa2712ebca363e46a0f9228b8be7f23154def56846815dc), Apache License 2.0 (canonical; declared by Maven POM androidx.savedstate:savedstate@1.2.1, SHA-256 0d33bc285df1e12f22780f1624a6f0b38ea2a6181b0955ec6641caf620c50cbf), Apache License 2.0 (canonical; declared by Maven POM androidx.startup:startup-runtime@1.1.1, SHA-256 f4114b5c6859bb1bc3caf281cb6d6f25998fa7f7292c64ceaea74a93210e746b), Apache License 2.0 (canonical; declared by Maven POM androidx.tracing:tracing@1.2.0, SHA-256 f34bec4eb58871d31002901377108aaa1ebfe77fa6d882b8b86200b158e26ea1), Apache License 2.0 (canonical; declared by Maven POM androidx.vectordrawable:vectordrawable-animated@1.1.0, SHA-256 276a20116b705fb75b9003ee9496c56f6fd3b32375fb232472811eba60a040bd), Apache License 2.0 (canonical; declared by Maven POM androidx.vectordrawable:vectordrawable@1.1.0, SHA-256 5b0e2d5b2179e54804785cbc21ce5f473b5e1ddd55a57da482e94dcd39492bb2), Apache License 2.0 (canonical; declared by Maven POM androidx.versionedparcelable:versionedparcelable@1.1.1, SHA-256 5f51e65873ca612de3838fa90d2ee95b8d040efd31b9c390a19bf94d615cdb2f), Apache License 2.0 (canonical; declared by Maven POM androidx.viewpager:viewpager@1.0.0, SHA-256 1f72f836339d03c6eb013f65075e76ca87075a577578eb4f95f74a3a5d253128), Apache License 2.0 (canonical; declared by Maven POM com.google.guava:guava-parent@26.0-android, SHA-256 f8698ab46ca996ce889c1afc8ca4f25eb8ac6b034dc898d4583742360016cc04), Apache License 2.0 (canonical; declared by Maven POM com.squareup.okhttp3:okhttp@4.12.0, SHA-256 7c737040a9419522e7c50cc027416a70fe7c7629e52b219935ade6b4119c7d38), Apache License 2.0 (canonical; declared by Maven POM com.squareup.okio:okio-jvm@3.6.0, SHA-256 61b4d7c515a0894ffad925fd7052620c1425a86433fd35113b5fab0de890a57f), Apache License 2.0 (canonical; declared by Maven POM com.squareup.okio:okio@3.6.0, SHA-256 aeb3b70a24c103ed0c54541f35f5c511d27ce60cae376a596d7d653697f8cc95), Apache License 2.0 (canonical; declared by Maven POM org.apache.cordova:framework@14.0.1, SHA-256 42e80ef61dfa52af19d8ec9296d20b13759fc2a72021866e4f74e05c894bde20), Apache License 2.0 (canonical; declared by Maven POM org.jetbrains.kotlin:kotlin-stdlib-common@2.0.21, SHA-256 5f402cfb8d773195b967050124c9e89b5f84b172464e1894929789bf5c4c2f29), Apache License 2.0 (canonical; declared by Maven POM org.jetbrains.kotlin:kotlin-stdlib-jdk7@1.9.10, SHA-256 c7fa67c7961320b89d85a3ca59a2e18c2c65850845595dcae4b46af6945edcd5), Apache License 2.0 (canonical; declared by Maven POM org.jetbrains.kotlin:kotlin-stdlib-jdk8@1.9.10, SHA-256 5f4b94dd3065a7764c37fa15de2ad6d81f40d59f8cb33f17d181c6384fb7a72e), Apache License 2.0 (canonical; declared by Maven POM org.jetbrains.kotlin:kotlin-stdlib@2.0.21, SHA-256 fcbada4cd2e9f39658293570ef613752331db69fd1dad1cabaa60548403e17da), Apache License 2.0 (canonical; declared by Maven POM org.jetbrains.kotlinx:kotlinx-coroutines-android@1.8.1, SHA-256 88e8c7ede4d29b8027a2da6ea9e3ce550c556a4213633f8f6de28bb9fb201c90), Apache License 2.0 (canonical; declared by Maven POM org.jetbrains.kotlinx:kotlinx-coroutines-bom@1.8.1, SHA-256 563e4aa29fa8fe09a6e1746d0a5b51308f7c7dedc468dc5a0ca810a485877030), Apache License 2.0 (canonical; declared by Maven POM org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm@1.8.1, SHA-256 47c6a50b14151e8faf7f350a95235c37d12abc38bfb055b668974293172daf2c), Apache License 2.0 (canonical; declared by Maven POM org.jetbrains.kotlinx:kotlinx-coroutines-core@1.8.1, SHA-256 f88918dbfa8787c4d171ab02553a14ad1def8aa9b0c5c2c20cc99455d3241e22), Apache License 2.0 (canonical; declared by Maven POM org.jetbrains:annotations@23.0.0, SHA-256 c9490f655132328df2cfbcfdf743f53fc3916d6c1d10437175a6ca6e3a67771c), Apache License 2.0 (canonical; declared by Maven POM org.jspecify:jspecify@1.0.0, SHA-256 cdab929a3b95211f43d2090c5e2d0dfe8465960e378bc32b35841dab324433a6), LICENSE-APACHE, LICENSE-APACHE.md, https://www.apache.org/licenses/LICENSE-2.0.txt (SHA-256 283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b)
-Applies to: cargo:basic-udev@0.1.2, cargo:encoding_rs@0.8.35, cargo:lru-slab@0.1.2, cargo:quinn-proto@0.11.17, cargo:quinn-udp@0.5.15, cargo:quinn@0.11.11, cargo:rustls-platform-verifier@0.7.0, cargo:serialize-to-javascript-impl@0.1.2, cargo:serialize-to-javascript@0.1.2, cargo:sse-stream@0.2.6, cargo:tinyvec@1.12.0, cargo:utf8_iter@1.0.4, cargo:zeroize@1.9.0, cargo:zeroize_derive@1.5.0, gradle:androidx.annotation:annotation-experimental@1.4.1, gradle:androidx.annotation:annotation-jvm@1.8.1, gradle:androidx.annotation:annotation@1.8.1, gradle:androidx.appcompat:appcompat-resources@1.7.1, gradle:androidx.appcompat:appcompat@1.7.1, gradle:androidx.arch.core:core-common@2.2.0, gradle:androidx.arch.core:core-runtime@2.2.0, gradle:androidx.collection:collection-jvm@1.4.2, gradle:androidx.collection:collection@1.4.2, gradle:androidx.concurrent:concurrent-futures@1.1.0, gradle:androidx.cursoradapter:cursoradapter@1.0.0, gradle:androidx.customview:customview@1.0.0, gradle:androidx.drawerlayout:drawerlayout@1.0.0, gradle:androidx.emoji2:emoji2-views-helper@1.3.0, gradle:androidx.emoji2:emoji2@1.3.0, gradle:androidx.fragment:fragment@1.8.9, gradle:androidx.interpolator:interpolator@1.0.0, gradle:androidx.lifecycle:lifecycle-common@2.6.2, gradle:androidx.lifecycle:lifecycle-livedata-core@2.6.2, gradle:androidx.lifecycle:lifecycle-livedata@2.6.2, gradle:androidx.lifecycle:lifecycle-process@2.6.2, gradle:androidx.lifecycle:lifecycle-runtime@2.6.2, gradle:androidx.lifecycle:lifecycle-viewmodel-savedstate@2.6.2, gradle:androidx.lifecycle:lifecycle-viewmodel@2.6.2, gradle:androidx.loader:loader@1.0.0, gradle:androidx.resourceinspection:resourceinspection-annotation@1.0.1, gradle:androidx.savedstate:savedstate@1.2.1, gradle:androidx.startup:startup-runtime@1.1.1, gradle:androidx.tracing:tracing@1.2.0, gradle:androidx.vectordrawable:vectordrawable-animated@1.1.0, gradle:androidx.vectordrawable:vectordrawable@1.1.0, gradle:androidx.versionedparcelable:versionedparcelable@1.1.1, gradle:androidx.viewpager:viewpager@1.0.0, gradle:com.google.guava:listenablefuture@1.0, gradle:com.squareup.okhttp3:okhttp@4.12.0, gradle:com.squareup.okio:okio-jvm@3.6.0, gradle:com.squareup.okio:okio@3.6.0, gradle:org.apache.cordova:framework@14.0.1, gradle:org.jetbrains.kotlin:kotlin-stdlib-common@2.0.21, gradle:org.jetbrains.kotlin:kotlin-stdlib-jdk7@1.9.10, gradle:org.jetbrains.kotlin:kotlin-stdlib-jdk8@1.9.10, gradle:org.jetbrains.kotlin:kotlin-stdlib@2.0.21, gradle:org.jetbrains.kotlinx:kotlinx-coroutines-android@1.8.1, gradle:org.jetbrains.kotlinx:kotlinx-coroutines-bom@1.8.1, gradle:org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm@1.8.1, gradle:org.jetbrains.kotlinx:kotlinx-coroutines-core@1.8.1, gradle:org.jetbrains:annotations@23.0.0, gradle:org.jspecify:jspecify@1.0.0
+Applies to: cargo:basic-udev@0.1.2, cargo:encoding_rs@0.8.35, cargo:encoding_rs@0.8.41, cargo:lru-slab@0.1.2, cargo:lru-slab@0.1.3, cargo:multiversion-macros@0.9.0, cargo:multiversion@0.9.0, cargo:multiversion_no_op@1.0.0, cargo:quinn-proto@0.11.17, cargo:quinn-proto@0.11.18, cargo:quinn-udp@0.5.15, cargo:quinn@0.11.11, cargo:quinn@0.11.12, cargo:rustls-platform-verifier@0.7.0, cargo:serialize-to-javascript-impl@0.1.2, cargo:serialize-to-javascript@0.1.2, cargo:sse-stream@0.2.6, cargo:tinyvec@1.12.0, cargo:tinyvec@1.13.3, cargo:utf8_iter@1.0.4, cargo:zeroize@1.9.0, cargo:zeroize_derive@1.5.0, gradle:androidx.annotation:annotation-experimental@1.4.1, gradle:androidx.annotation:annotation-jvm@1.8.1, gradle:androidx.annotation:annotation@1.8.1, gradle:androidx.appcompat:appcompat-resources@1.7.1, gradle:androidx.appcompat:appcompat@1.7.1, gradle:androidx.arch.core:core-common@2.2.0, gradle:androidx.arch.core:core-runtime@2.2.0, gradle:androidx.collection:collection-jvm@1.4.2, gradle:androidx.collection:collection@1.4.2, gradle:androidx.concurrent:concurrent-futures@1.1.0, gradle:androidx.cursoradapter:cursoradapter@1.0.0, gradle:androidx.customview:customview@1.0.0, gradle:androidx.drawerlayout:drawerlayout@1.0.0, gradle:androidx.emoji2:emoji2-views-helper@1.3.0, gradle:androidx.emoji2:emoji2@1.3.0, gradle:androidx.fragment:fragment@1.8.9, gradle:androidx.interpolator:interpolator@1.0.0, gradle:androidx.lifecycle:lifecycle-common@2.6.2, gradle:androidx.lifecycle:lifecycle-livedata-core@2.6.2, gradle:androidx.lifecycle:lifecycle-livedata@2.6.2, gradle:androidx.lifecycle:lifecycle-process@2.6.2, gradle:androidx.lifecycle:lifecycle-runtime@2.6.2, gradle:androidx.lifecycle:lifecycle-viewmodel-savedstate@2.6.2, gradle:androidx.lifecycle:lifecycle-viewmodel@2.6.2, gradle:androidx.loader:loader@1.0.0, gradle:androidx.resourceinspection:resourceinspection-annotation@1.0.1, gradle:androidx.savedstate:savedstate@1.2.1, gradle:androidx.startup:startup-runtime@1.1.1, gradle:androidx.tracing:tracing@1.2.0, gradle:androidx.vectordrawable:vectordrawable-animated@1.1.0, gradle:androidx.vectordrawable:vectordrawable@1.1.0, gradle:androidx.versionedparcelable:versionedparcelable@1.1.1, gradle:androidx.viewpager:viewpager@1.0.0, gradle:com.google.guava:listenablefuture@1.0, gradle:com.squareup.okhttp3:okhttp@4.12.0, gradle:com.squareup.okio:okio-jvm@3.6.0, gradle:com.squareup.okio:okio@3.6.0, gradle:org.apache.cordova:framework@14.0.1, gradle:org.jetbrains.kotlin:kotlin-stdlib-common@2.0.21, gradle:org.jetbrains.kotlin:kotlin-stdlib-jdk7@1.9.10, gradle:org.jetbrains.kotlin:kotlin-stdlib-jdk8@1.9.10, gradle:org.jetbrains.kotlin:kotlin-stdlib@2.0.21, gradle:org.jetbrains.kotlinx:kotlinx-coroutines-android@1.8.1, gradle:org.jetbrains.kotlinx:kotlinx-coroutines-bom@1.8.1, gradle:org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm@1.8.1, gradle:org.jetbrains.kotlinx:kotlinx-coroutines-core@1.8.1, gradle:org.jetbrains:annotations@23.0.0, gradle:org.jspecify:jspecify@1.0.0
 --------------------------------------------------------------------------------
 Apache License
                            Version 2.0, January 2004
@@ -2822,9 +2851,22 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
+SHA-256: 309a4d30eeef89f6fb2a3dc7d2e0ae8c36d7e0045691233b2791aff7f8d9eeb9
+Source file names: LICENSE-MIT
+Applies to: cargo:multiversion-macros@0.9.0, cargo:multiversion@0.9.0
+--------------------------------------------------------------------------------
+Copyright 2019 Caleb Zulawski
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+================================================================================
 SHA-256: 30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652
 Source file names: LICENSE, LICENSE-MIT
-Applies to: cargo:adler2@2.0.1, cargo:anyhow@1.0.104, cargo:async-channel@2.5.0, cargo:async-executor@1.14.0, cargo:async-fs@2.2.0, cargo:async-io@2.6.0, cargo:async-lock@3.4.2, cargo:async-net@2.0.0, cargo:async-process@2.5.0, cargo:async-recursion@1.1.1, cargo:async-signal@0.2.14, cargo:async-task@4.7.1, cargo:async-trait@0.1.92, cargo:atomic-waker@1.1.2, cargo:blocking@1.7.0, cargo:camino@1.2.5, cargo:cargo-platform@0.1.9, cargo:cargo_metadata@0.19.2, cargo:concurrent-queue@2.5.0, cargo:displaydoc@0.2.7, cargo:dtoa@1.0.11, cargo:dyn-clone@1.0.20, cargo:endi@1.1.1, cargo:erased-serde@0.4.10, cargo:event-listener-strategy@0.5.4, cargo:event-listener@5.4.2, cargo:fastrand@2.5.0, cargo:futures-lite@2.6.1, cargo:itoa@1.0.18, cargo:linux-raw-sys@0.12.1, cargo:once_cell@1.21.4, cargo:ordered-stream@0.2.0, cargo:parking@2.2.1, cargo:pastey@0.2.3, cargo:pin-project-lite@0.2.17, cargo:piper@0.2.5, cargo:polling@3.11.0, cargo:prettyplease@0.2.37, cargo:proc-macro-crate@1.3.1, cargo:proc-macro-crate@2.0.2, cargo:proc-macro-crate@3.5.0, cargo:proc-macro2@1.0.107, cargo:quote@1.0.47, cargo:ref-cast-impl@1.0.27, cargo:ref-cast@1.0.27, cargo:rustc-hash@2.1.3, cargo:rustix@1.1.4, cargo:rustix@1.1.5, cargo:semver@1.0.28, cargo:serde-untagged@0.1.9, cargo:serde@1.0.229, cargo:serde_core@1.0.229, cargo:serde_derive@1.0.229, cargo:serde_derive_internals@0.29.1, cargo:serde_derive_internals@0.30.0, cargo:serde_json@1.0.151, cargo:serde_path_to_error@0.1.20, cargo:serde_repr@0.1.21, cargo:servo_arc@0.4.3, cargo:syn@1.0.109, cargo:syn@2.0.119, cargo:syn@3.0.4, cargo:syn@3.0.6, cargo:system-deps@6.2.2, cargo:thiserror-impl@1.0.69, cargo:thiserror-impl@2.0.20, cargo:thiserror-impl@2.0.21, cargo:thiserror@1.0.69, cargo:thiserror@2.0.20, cargo:thiserror@2.0.21, cargo:typed-path@0.12.3, cargo:typeid@1.0.3, cargo:unicode-ident@1.0.24, cargo:unicode-ident@1.0.26, cargo:utf-8@0.7.6, cargo:zmij@1.0.23, cargo:zvariant_utils@4.2.0
+Applies to: cargo:adler2@2.0.1, cargo:anyhow@1.0.104, cargo:async-channel@2.5.0, cargo:async-executor@1.14.0, cargo:async-fs@2.2.0, cargo:async-io@2.6.0, cargo:async-lock@3.4.2, cargo:async-net@2.0.0, cargo:async-process@2.5.0, cargo:async-recursion@1.1.1, cargo:async-signal@0.2.14, cargo:async-task@4.7.1, cargo:async-trait@0.1.92, cargo:atomic-waker@1.1.2, cargo:blocking@1.7.0, cargo:camino@1.2.5, cargo:cargo-platform@0.1.9, cargo:cargo_metadata@0.19.2, cargo:concurrent-queue@2.5.0, cargo:displaydoc@0.2.7, cargo:dtoa@1.0.11, cargo:dyn-clone@1.0.20, cargo:endi@1.1.1, cargo:erased-serde@0.4.10, cargo:event-listener-strategy@0.5.4, cargo:event-listener@5.4.2, cargo:fastrand@2.5.0, cargo:futures-lite@2.6.1, cargo:itoa@1.0.18, cargo:linux-raw-sys@0.12.1, cargo:once_cell@1.21.4, cargo:ordered-stream@0.2.0, cargo:parking@2.2.1, cargo:pastey@0.2.3, cargo:pin-project-lite@0.2.17, cargo:piper@0.2.5, cargo:polling@3.11.0, cargo:prettyplease@0.2.37, cargo:proc-macro-crate@1.3.1, cargo:proc-macro-crate@2.0.2, cargo:proc-macro-crate@3.5.0, cargo:proc-macro2@1.0.107, cargo:quote@1.0.47, cargo:ref-cast-impl@1.0.27, cargo:ref-cast@1.0.27, cargo:rustc-hash@2.1.3, cargo:rustix@1.1.4, cargo:rustix@1.1.5, cargo:rustversion@1.0.23, cargo:semver@1.0.28, cargo:serde-untagged@0.1.9, cargo:serde@1.0.229, cargo:serde_core@1.0.229, cargo:serde_derive@1.0.229, cargo:serde_derive_internals@0.29.1, cargo:serde_derive_internals@0.30.0, cargo:serde_json@1.0.151, cargo:serde_path_to_error@0.1.20, cargo:serde_repr@0.1.21, cargo:servo_arc@0.4.3, cargo:syn@1.0.109, cargo:syn@2.0.119, cargo:syn@3.0.4, cargo:syn@3.0.6, cargo:system-deps@6.2.2, cargo:thiserror-impl@1.0.69, cargo:thiserror-impl@2.0.20, cargo:thiserror-impl@2.0.21, cargo:thiserror@1.0.69, cargo:thiserror@2.0.20, cargo:thiserror@2.0.21, cargo:typed-path@0.12.3, cargo:typeid@1.0.3, cargo:unicode-ident@1.0.24, cargo:unicode-ident@1.0.26, cargo:utf-8@0.7.6, cargo:zmij@1.0.23, cargo:zvariant_utils@4.2.0
 --------------------------------------------------------------------------------
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -3154,39 +3196,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ================================================================================
-SHA-256: 39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2
-Source file names: https://github.com/OpenByteDev/dlopen2/blob/cc80e4a0a90d499b677fdf7743699b4b3a43a989/LICENSE (SHA-256 39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2)
-Applies to: cargo:dlopen2@0.8.2, cargo:dlopen2_derive@0.4.3
---------------------------------------------------------------------------------
-MIT License
-
-Copyright (c) 2017 Szymon Wieloch
-Copyright (C) 2019 Ahmed Masud <ahmed.masud@saf.ai>
-Copyright (C) 2022 OpenByte <development.openbyte@gmail.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-
-================================================================================
 SHA-256: 3a036676ec8c0dba1c24b96f83595456280b7a754ddee64585dd8048ed2b087f
 Source file names: LICENSE
-Applies to: cargo:synstructure@0.13.2
+Applies to: cargo:synstructure@0.13.2, cargo:synstructure@0.14.0
 --------------------------------------------------------------------------------
 Copyright 2016 Nika Layzell
 
@@ -4195,7 +4207,7 @@ SOFTWARE.
 ================================================================================
 SHA-256: 49f5cc2a2e4db6cc86cc1c853cbf00af70abd12c55dae8d6561f26ccd1bfd162
 Source file names: LICENSE
-Applies to: cargo:aws-lc-sys@0.44.0
+Applies to: cargo:aws-lc-sys@0.44.0, cargo:aws-lc-sys@0.45.0
 --------------------------------------------------------------------------------
 AWS Libcrypto (AWS-LC)
 
@@ -5130,7 +5142,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 ================================================================================
 SHA-256: 4bf96504d6e83ce5c6fc7167f1795d9ceaa68e70ab86bc5d08ab93184262bbbe
 Source file names: LICENSE, LICENSE-APACHE, LICENSE-APACHE-2.0, LICENSE-APACHE.md, LICENSE-Apache, LICENSE_APACHE-2.0, activity-1.11.0.aar!/META-INF/androidx/activity/activity/LICENSE.txt, coordinatorlayout-1.3.0.aar!/META-INF/androidx/coordinatorlayout/coordinatorlayout/LICENSE.txt, core-1.17.0.aar!/META-INF/androidx/core/core/LICENSE.txt, core-ktx-1.17.0.aar!/META-INF/androidx/core/core-ktx/LICENSE.txt, core-splashscreen-1.2.0.aar!/META-INF/androidx/core/core-splashscreen/LICENSE.txt, core-viewtree-1.0.0.aar!/META-INF/androidx/core/core-viewtree/LICENSE.txt, profileinstaller-1.4.0.aar!/META-INF/androidx/profileinstaller/profileinstaller/LICENSE.txt, webkit-1.14.0.aar!/META-INF/androidx/webkit/webkit/LICENSE.txt
-Applies to: cargo:fdeflate@0.3.7, cargo:field-offset@0.3.6, cargo:miniz_oxide@0.8.9, cargo:miniz_oxide@0.9.1, cargo:num-conv@0.2.2, cargo:pin-project-lite@0.2.17, cargo:raw-window-handle@0.6.2, cargo:sync_wrapper@1.0.2, cargo:tauri-build@2.6.3, cargo:tauri-codegen@2.6.3, cargo:tauri-macros@2.6.3, cargo:tauri-plugin-single-instance@2.4.5, cargo:tauri-runtime-wry@2.11.4, cargo:tauri-runtime@2.11.3, cargo:tauri-utils@2.10.1, cargo:tauri@2.11.5, cargo:time-core@0.1.9, cargo:time-macros@0.2.32, cargo:time@0.3.55, gradle:androidx.activity:activity@1.11.0, gradle:androidx.coordinatorlayout:coordinatorlayout@1.3.0, gradle:androidx.core:core-ktx@1.17.0, gradle:androidx.core:core-splashscreen@1.2.0, gradle:androidx.core:core-viewtree@1.0.0, gradle:androidx.core:core@1.17.0, gradle:androidx.profileinstaller:profileinstaller@1.4.0, gradle:androidx.webkit:webkit@1.14.0, npm:@tauri-apps/api@2.11.1
+Applies to: cargo:fdeflate@0.3.7, cargo:field-offset@0.3.6, cargo:miniz_oxide@0.8.9, cargo:miniz_oxide@0.9.1, cargo:num-conv@0.2.2, cargo:pin-project-lite@0.2.17, cargo:raw-window-handle@0.6.2, cargo:simdutf8@0.1.5, cargo:sync_wrapper@1.0.2, cargo:tauri-build@2.6.3, cargo:tauri-codegen@2.6.3, cargo:tauri-macros@2.6.3, cargo:tauri-plugin-single-instance@2.4.5, cargo:tauri-runtime-wry@2.11.4, cargo:tauri-runtime@2.11.3, cargo:tauri-utils@2.10.1, cargo:tauri@2.11.5, cargo:time-core@0.1.9, cargo:time-macros@0.2.32, cargo:time@0.3.55, gradle:androidx.activity:activity@1.11.0, gradle:androidx.coordinatorlayout:coordinatorlayout@1.3.0, gradle:androidx.core:core-ktx@1.17.0, gradle:androidx.core:core-splashscreen@1.2.0, gradle:androidx.core:core-viewtree@1.0.0, gradle:androidx.core:core@1.17.0, gradle:androidx.profileinstaller:profileinstaller@1.4.0, gradle:androidx.webkit:webkit@1.14.0, npm:@tauri-apps/api@2.11.1
 --------------------------------------------------------------------------------
 Apache License
                            Version 2.0, January 2004
@@ -5454,6 +5466,37 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
+SHA-256: 57895cdbc8febf233f2296b27ee98593e57f974896a4216b4a9629f5bd953f1d
+Source file names: LICENSE-MIT
+Applies to: cargo:core_detect@1.0.0
+--------------------------------------------------------------------------------
+Copyright (c) 2017-2020 The Rust Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+================================================================================
 SHA-256: 57f841bc9767b5b843e0c0c471bd50a95ddb00f13b1f4a2c6d6f57a7dbfdc1f3
 Source file names: LICENSE
 Applies to: cargo:http-body-util@0.1.5, cargo:http-body@1.1.0
@@ -5591,7 +5634,7 @@ THE SOFTWARE.
 ================================================================================
 SHA-256: 5c3866f31ed28362d86aa475660b5bc4d8f064188261fbbfa421fab5da09198c
 Source file names: LICENSE-APACHE
-Applies to: cargo:reqwest@0.13.4
+Applies to: cargo:reqwest@0.13.4, cargo:reqwest@0.13.5
 --------------------------------------------------------------------------------
 Apache License
                         Version 2.0, January 2004
@@ -8417,7 +8460,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA-256: 7dc2f64024477c92b147ae4a93bbcef90031b33ba0de6a84bd570d59e6c0688b
 Source file names: LICENSE-MIT
-Applies to: cargo:encoding_rs@0.8.35, cargo:utf8_iter@1.0.4
+Applies to: cargo:encoding_rs@0.8.35, cargo:encoding_rs@0.8.41, cargo:multiversion_no_op@1.0.0, cargo:utf8_iter@1.0.4
 --------------------------------------------------------------------------------
 Copyright Mozilla Foundation
 
@@ -8444,37 +8487,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-
-================================================================================
-SHA-256: 7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c
-Source file names: https://github.com/iovxw/ksni/blob/4e31ee48d91b0babb472d05936b9b68bca736b06/UNLICENSE (SHA-256 7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c)
-Applies to: cargo:ksni@0.3.6
---------------------------------------------------------------------------------
-This is free and unencumbered software released into the public domain.
-
-Anyone is free to copy, modify, publish, use, compile, sell, or
-distribute this software, either in source code form or as a compiled
-binary, for any purpose, commercial or non-commercial, and by any
-means.
-
-In jurisdictions that recognize copyright laws, the author or authors
-of this software dedicate any and all copyright interest in the
-software to the public domain. We make this dedication for the benefit
-of the public at large and to the detriment of our heirs and
-successors. We intend this dedication to be an overt act of
-relinquishment in perpetuity of all present and future rights to this
-software under copyright law.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-OTHER DEALINGS IN THE SOFTWARE.
-
-For more information, please refer to <http://unlicense.org/>
-
 
 ================================================================================
 SHA-256: 7e1b38c60796dd9949d6f26bd124e353a4a709b70e90810e2608f30195454da0
@@ -8713,7 +8725,7 @@ SOFTWARE.
 ================================================================================
 SHA-256: 7f194ae45c2525a57443f7edabd392e8218109ee81a4bce70d385104c87c1a71
 Source file names: LICENSE-MIT
-Applies to: cargo:smallvec@1.15.2
+Applies to: cargo:smallvec@1.15.2, cargo:smallvec@1.16.1
 --------------------------------------------------------------------------------
 Copyright (c) 2018 The Servo Project Developers
 
@@ -9185,7 +9197,7 @@ SOFTWARE.
 ================================================================================
 SHA-256: 85ad950cce8752f716dbf49be95b2639172cb49f291336d57f1fdc9989e38179
 Source file names: LICENSE-APACHE
-Applies to: cargo:anyhow@1.0.104, cargo:async-trait@0.1.92, cargo:dtoa@1.0.11, cargo:dyn-clone@1.0.20, cargo:erased-serde@0.4.10, cargo:itoa@1.0.18, cargo:libc@0.2.189, cargo:pastey@0.2.3, cargo:prettyplease@0.2.37, cargo:proc-macro2@1.0.107, cargo:quote@1.0.47, cargo:ref-cast-impl@1.0.27, cargo:ref-cast@1.0.27, cargo:rustc-hash@2.1.3, cargo:ryu@1.0.23, cargo:semver@1.0.28, cargo:serde-untagged@0.1.9, cargo:serde@1.0.229, cargo:serde_core@1.0.229, cargo:serde_derive@1.0.229, cargo:serde_derive_internals@0.29.1, cargo:serde_derive_internals@0.30.0, cargo:serde_json@1.0.151, cargo:serde_path_to_error@0.1.20, cargo:serde_repr@0.1.21, cargo:serde_urlencoded@0.7.1, cargo:syn@2.0.119, cargo:syn@3.0.4, cargo:syn@3.0.6, cargo:thiserror-impl@1.0.69, cargo:thiserror-impl@2.0.20, cargo:thiserror-impl@2.0.21, cargo:thiserror@1.0.69, cargo:thiserror@2.0.20, cargo:thiserror@2.0.21, cargo:typed-path@0.12.3, cargo:typeid@1.0.3, cargo:unicode-ident@1.0.24, cargo:unicode-ident@1.0.26, cargo:utf-8@0.7.6
+Applies to: cargo:anyhow@1.0.104, cargo:async-trait@0.1.92, cargo:dtoa@1.0.11, cargo:dyn-clone@1.0.20, cargo:erased-serde@0.4.10, cargo:itoa@1.0.18, cargo:libc@0.2.189, cargo:pastey@0.2.3, cargo:prettyplease@0.2.37, cargo:proc-macro2@1.0.107, cargo:quote@1.0.47, cargo:ref-cast-impl@1.0.27, cargo:ref-cast@1.0.27, cargo:rustc-hash@2.1.3, cargo:rustversion@1.0.23, cargo:ryu@1.0.23, cargo:semver@1.0.28, cargo:serde-untagged@0.1.9, cargo:serde@1.0.229, cargo:serde_core@1.0.229, cargo:serde_derive@1.0.229, cargo:serde_derive_internals@0.29.1, cargo:serde_derive_internals@0.30.0, cargo:serde_json@1.0.151, cargo:serde_path_to_error@0.1.20, cargo:serde_repr@0.1.21, cargo:serde_urlencoded@0.7.1, cargo:syn@2.0.119, cargo:syn@3.0.4, cargo:syn@3.0.6, cargo:thiserror-impl@1.0.69, cargo:thiserror-impl@2.0.20, cargo:thiserror-impl@2.0.21, cargo:thiserror@1.0.69, cargo:thiserror@2.0.20, cargo:thiserror@2.0.21, cargo:typed-path@0.12.3, cargo:typeid@1.0.3, cargo:unicode-ident@1.0.24, cargo:unicode-ident@1.0.26, cargo:utf-8@0.7.6
 --------------------------------------------------------------------------------
 Apache License
                         Version 2.0, January 2004
@@ -10114,7 +10126,7 @@ SOFTWARE.
 ================================================================================
 SHA-256: 943f36fd309fb5ea67a82f577433f4ed3bc877e5b00f9b874e2f8b7f72bf0bdc
 Source file names: LICENSE-ZLIB.md
-Applies to: cargo:tinyvec@1.12.0
+Applies to: cargo:tinyvec@1.12.0, cargo:tinyvec@1.13.3
 --------------------------------------------------------------------------------
 Copyright (c) 2019 Daniel "Lokathor" Gee.
 
@@ -10163,7 +10175,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA-256: 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76
 Source file names: LICENSE, LICENSE-APACHE
-Applies to: cargo:async-channel@2.5.0, cargo:async-executor@1.14.0, cargo:async-fs@2.2.0, cargo:async-io@2.6.0, cargo:async-lock@3.4.2, cargo:async-net@2.0.0, cargo:async-process@2.5.0, cargo:async-recursion@1.1.1, cargo:async-signal@0.2.14, cargo:async-task@4.7.1, cargo:atomic-waker@1.1.2, cargo:autocfg@1.5.1, cargo:base64@0.22.1, cargo:base64@0.23.1, cargo:bitflags@1.3.2, cargo:bitflags@2.13.1, cargo:bitflags@2.13.2, cargo:blocking@1.7.0, cargo:bs58@0.5.1, cargo:camino@1.2.5, cargo:cc@1.4.4, cargo:cc@1.4.7, cargo:cfg-if@1.0.4, cargo:cfg-if@1.0.5, cargo:cmake@0.1.58, cargo:concurrent-queue@2.5.0, cargo:crossbeam-channel@0.5.16, cargo:crossbeam-utils@0.8.22, cargo:dbus-secret-service@4.1.0, cargo:displaydoc@0.2.7, cargo:either@1.18.0, cargo:equivalent@1.0.2, cargo:errno@0.3.14, cargo:event-listener-strategy@0.5.4, cargo:event-listener@5.4.2, cargo:fastrand@2.5.0, cargo:find-msvc-tools@0.1.11, cargo:find-msvc-tools@0.1.13, cargo:fixedbitset@0.5.7, cargo:flate2@1.1.10, cargo:fnv@1.0.7, cargo:form_urlencoded@1.2.2, cargo:futures-lite@2.6.1, cargo:glob@0.3.4, cargo:hashbrown@0.12.3, cargo:hashbrown@0.15.5, cargo:hashbrown@0.17.1, cargo:heck@0.4.1, cargo:heck@0.5.0, cargo:html5ever@0.39.0, cargo:httparse@1.10.1, cargo:hyper-rustls@0.27.9, cargo:idna@1.1.0, cargo:idna_adapter@1.2.2, cargo:indexmap@1.9.3, cargo:indexmap@2.14.1, cargo:indexmap@2.14.2, cargo:itertools@0.14.0, cargo:jni@0.21.1, cargo:jobserver@0.1.35, cargo:keyboard-types@0.7.0, cargo:linux-raw-sys@0.12.1, cargo:lock_api@0.4.14, cargo:log@0.4.34, cargo:markup5ever@0.39.0, cargo:mime@0.3.17, cargo:muda@0.19.3, cargo:multimap@0.10.1, cargo:num-traits@0.2.19, cargo:once_cell@1.21.4, cargo:openssl-probe@0.2.1, cargo:ordered-stream@0.2.0, cargo:parking@2.2.1, cargo:parking_lot@0.12.5, cargo:parking_lot_core@0.9.12, cargo:percent-encoding@2.3.2, cargo:petgraph@0.8.3, cargo:piper@0.2.5, cargo:pkg-config@0.3.34, cargo:png@0.17.16, cargo:polling@3.11.0, cargo:pollster@0.4.0, cargo:prost-build@0.14.4, cargo:prost-derive@0.14.4, cargo:prost-types@0.14.4, cargo:prost@0.14.4, cargo:regex-automata@0.4.18, cargo:regex-syntax@0.8.11, cargo:regex@1.13.1, cargo:rustc_version@0.4.1, cargo:rustix@1.1.4, cargo:rustix@1.1.5, cargo:rustls-native-certs@0.8.4, cargo:rustls@0.23.45, cargo:scoped-tls@1.0.1, cargo:scopeguard@1.2.0, cargo:serde_with@3.22.0, cargo:serde_with_macros@3.22.0, cargo:servo_arc@0.4.3, cargo:signal-hook-registry@1.4.8, cargo:signal-hook@0.3.18, cargo:smallvec@1.15.2, cargo:socket2@0.6.5, cargo:stable_deref_trait@1.2.1, cargo:string_cache@0.9.0, cargo:string_cache_codegen@0.6.1, cargo:syn@1.0.109, cargo:system-deps@6.2.2, cargo:tempfile@3.27.0, cargo:tendril@0.5.1, cargo:toml_datetime@0.6.3, cargo:tungstenite@0.28.0, cargo:unicode-segmentation@1.13.3, cargo:url@2.5.8, cargo:uuid@1.26.0, cargo:uuid@1.26.1, cargo:version_check@0.9.5, cargo:web_atoms@0.2.6, cargo:window-vibrancy@0.6.0, cargo:wry@0.55.1
+Applies to: cargo:async-channel@2.5.0, cargo:async-executor@1.14.0, cargo:async-fs@2.2.0, cargo:async-io@2.6.0, cargo:async-lock@3.4.2, cargo:async-net@2.0.0, cargo:async-process@2.5.0, cargo:async-recursion@1.1.1, cargo:async-signal@0.2.14, cargo:async-task@4.7.1, cargo:atomic-waker@1.1.2, cargo:autocfg@1.5.1, cargo:base64@0.22.1, cargo:base64@0.23.1, cargo:bitflags@1.3.2, cargo:bitflags@2.13.1, cargo:bitflags@2.13.2, cargo:blocking@1.7.0, cargo:bs58@0.5.1, cargo:camino@1.2.5, cargo:cc@1.4.4, cargo:cc@1.4.7, cargo:cfg-if@1.0.4, cargo:cfg-if@1.0.5, cargo:cmake@0.1.58, cargo:concurrent-queue@2.5.0, cargo:core_detect@1.0.0, cargo:crossbeam-channel@0.5.16, cargo:crossbeam-utils@0.8.22, cargo:dbus-secret-service@4.1.0, cargo:displaydoc@0.2.7, cargo:either@1.18.0, cargo:equivalent@1.0.2, cargo:errno@0.3.14, cargo:event-listener-strategy@0.5.4, cargo:event-listener@5.4.2, cargo:fastrand@2.5.0, cargo:find-msvc-tools@0.1.11, cargo:find-msvc-tools@0.1.13, cargo:fixedbitset@0.5.7, cargo:flate2@1.1.10, cargo:fnv@1.0.7, cargo:form_urlencoded@1.2.2, cargo:futures-lite@2.6.1, cargo:glob@0.3.4, cargo:hashbrown@0.12.3, cargo:hashbrown@0.15.5, cargo:hashbrown@0.17.1, cargo:heck@0.4.1, cargo:heck@0.5.0, cargo:html5ever@0.39.0, cargo:httparse@1.10.1, cargo:hyper-rustls@0.27.10, cargo:hyper-rustls@0.27.9, cargo:idna@1.1.0, cargo:idna_adapter@1.2.2, cargo:indexmap@1.9.3, cargo:indexmap@2.14.1, cargo:indexmap@2.14.2, cargo:itertools@0.14.0, cargo:jni@0.21.1, cargo:jobserver@0.1.35, cargo:keyboard-types@0.7.0, cargo:linux-raw-sys@0.12.1, cargo:lock_api@0.4.14, cargo:log@0.4.34, cargo:markup5ever@0.39.0, cargo:mime@0.3.17, cargo:muda@0.19.3, cargo:multimap@0.10.1, cargo:num-traits@0.2.19, cargo:once_cell@1.21.4, cargo:openssl-probe@0.2.1, cargo:ordered-stream@0.2.0, cargo:parking@2.2.1, cargo:parking_lot@0.12.5, cargo:parking_lot_core@0.9.12, cargo:percent-encoding@2.3.2, cargo:petgraph@0.8.3, cargo:piper@0.2.5, cargo:pkg-config@0.3.34, cargo:png@0.17.16, cargo:polling@3.11.0, cargo:pollster@0.4.0, cargo:prost-build@0.14.4, cargo:prost-derive@0.14.4, cargo:prost-types@0.14.4, cargo:prost@0.14.4, cargo:regex-automata@0.4.18, cargo:regex-syntax@0.8.11, cargo:regex@1.13.1, cargo:rustc_version@0.4.1, cargo:rustix@1.1.4, cargo:rustix@1.1.5, cargo:rustls-native-certs@0.8.4, cargo:rustls@0.23.45, cargo:scoped-tls@1.0.1, cargo:scopeguard@1.2.0, cargo:serde_with@3.22.0, cargo:serde_with_macros@3.22.0, cargo:servo_arc@0.4.3, cargo:signal-hook-registry@1.4.8, cargo:signal-hook@0.3.18, cargo:smallvec@1.15.2, cargo:smallvec@1.16.1, cargo:socket2@0.6.5, cargo:stable_deref_trait@1.2.1, cargo:string_cache@0.9.0, cargo:string_cache_codegen@0.6.1, cargo:syn@1.0.109, cargo:system-deps@6.2.2, cargo:tempfile@3.27.0, cargo:tendril@0.5.1, cargo:toml_datetime@0.6.3, cargo:tungstenite@0.28.0, cargo:unicode-segmentation@1.13.3, cargo:url@2.5.8, cargo:uuid@1.26.0, cargo:uuid@1.26.1, cargo:version_check@0.9.5, cargo:web_atoms@0.2.6, cargo:window-vibrancy@0.6.0, cargo:wry@0.55.1
 --------------------------------------------------------------------------------
 Apache License
                         Version 2.0, January 2004
@@ -11146,7 +11158,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA-256: 9d8e882729a53481b83a5fba9da762bec38a289be159690c607a5375778331ee
 Source file names: LICENSE-APACHE
-Applies to: cargo:ipnet@2.12.1
+Applies to: cargo:ipnet@2.12.1, cargo:ipnet@2.12.2
 --------------------------------------------------------------------------------
 Apache License
                            Version 2.0, January 2004
@@ -11565,7 +11577,7 @@ THE SOFTWARE.
 ================================================================================
 SHA-256: a3320aa8d192a02cc2c9f31ebcceb861d71b737acdff1397d0d8a49361e86e73
 Source file names: LICENSE-MIT
-Applies to: cargo:hyper-rustls@0.27.9, cargo:rustls-native-certs@0.8.4, cargo:rustls@0.23.45
+Applies to: cargo:hyper-rustls@0.27.10, cargo:hyper-rustls@0.27.9, cargo:rustls-native-certs@0.8.4, cargo:rustls@0.23.45
 --------------------------------------------------------------------------------
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
 
@@ -11972,7 +11984,7 @@ SOFTWARE.
 ================================================================================
 SHA-256: acddfb05f07ab0048f60a6080856befa9a37cd2f2e4aaef35bd3fe5cba145b62
 Source file names: LICENSE-APACHE
-Applies to: cargo:tokio-rustls@0.26.4
+Applies to: cargo:tokio-rustls@0.26.4, cargo:tokio-rustls@0.26.5
 --------------------------------------------------------------------------------
 Apache License
                         Version 2.0, January 2004
@@ -12249,7 +12261,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA-256: af6da3f3f6b4929e02f81fd890835fd6d70ffddae12a8d735c0d7f294ac5ffd7
 Source file names: LICENSE-ISC
-Applies to: cargo:hyper-rustls@0.27.9, cargo:rustls-native-certs@0.8.4, cargo:rustls@0.23.45
+Applies to: cargo:hyper-rustls@0.27.10, cargo:hyper-rustls@0.27.9, cargo:rustls-native-certs@0.8.4, cargo:rustls@0.23.45
 --------------------------------------------------------------------------------
 ISC License (ISC)
 Copyright (c) 2016, Joseph Birr-Pixton <jpixton@gmail.com>
@@ -12295,7 +12307,7 @@ the following restrictions:
 ================================================================================
 SHA-256: b1d6d97b0476a82862312e776bd4f2b902fb6c53e46f28166ccd2f63b17d4f8a
 Source file names: LICENSE-WHATWG
-Applies to: cargo:encoding_rs@0.8.35
+Applies to: cargo:encoding_rs@0.8.35, cargo:encoding_rs@0.8.41
 --------------------------------------------------------------------------------
 Copyright © WHATWG (Apple, Google, Mozilla, Microsoft).
 
@@ -13086,7 +13098,7 @@ THIS SOFTWARE.
 ================================================================================
 SHA-256: bccaa8b6c09f94e81f06696e179dbe058464bbdfbc823b6d49cada1d71e84ac3
 Source file names: LICENSE-MIT, LICENSE-MIT.md
-Applies to: cargo:ctor@1.0.13, cargo:tinyvec@1.12.0
+Applies to: cargo:ctor@1.0.13, cargo:tinyvec@1.12.0, cargo:tinyvec@1.13.3
 --------------------------------------------------------------------------------
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
@@ -13109,7 +13121,7 @@ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH RE
 ================================================================================
 SHA-256: bde59a7e336fcb583f03ede4e7ae63fed99f1148dcee7a7717904d76f116cb84
 Source file names: LICENSE-MIT
-Applies to: cargo:reqwest@0.13.4
+Applies to: cargo:reqwest@0.13.4, cargo:reqwest@0.13.5
 --------------------------------------------------------------------------------
 Copyright (c) 2016-2026 Sean McArthur
 
@@ -13145,7 +13157,7 @@ https://mozilla.org/MPL/2.0/
 ================================================================================
 SHA-256: c0fdcda1a4ffc5fd63c452e40ce25e54f2098669e3415033b228773eea24a871
 Source file names: LICENSE
-Applies to: cargo:tokio-macros@2.7.1
+Applies to: cargo:tokio-macros@2.7.1, cargo:tokio-macros@2.7.2
 --------------------------------------------------------------------------------
 MIT License
 
@@ -13774,7 +13786,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA-256: c804065b0956d00a65ce119456ec48ee456f5446b904b07ee85225ba5a88ce41
 Source file names: LICENSE
-Applies to: cargo:mio@1.2.2
+Applies to: cargo:mio@1.2.2, cargo:mio@1.2.3
 --------------------------------------------------------------------------------
 Copyright (c) 2014 Carl Lerche and other MIO contributors
 
@@ -14022,7 +14034,7 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 ================================================================================
 SHA-256: c935506fff2ef821003680006758f03bd869f1ae051b11c5879a0c24b0c07ecf
 Source file names: LICENSE-MIT
-Applies to: cargo:ipnet@2.12.1
+Applies to: cargo:ipnet@2.12.1, cargo:ipnet@2.12.2
 --------------------------------------------------------------------------------
 Copyright 2017 Juniper Networks, Inc.
 
@@ -14081,7 +14093,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ================================================================================
 SHA-256: c9cf4d18fd9d2ab3fb30d39facfe8cff8ff8354950e2de5c864707e6c80a2764
 Source file names: LICENSE-MIT
-Applies to: cargo:lru-slab@0.1.2
+Applies to: cargo:lru-slab@0.1.2, cargo:lru-slab@0.1.3
 --------------------------------------------------------------------------------
 Copyright (c) 2024 The lru-slab Developers
 
@@ -14092,9 +14104,39 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
+SHA-256: ca2abdf695884c77ea4b4a5b64ca7b732d9d9dbade4eebc1c2e76c53e9e3bc83
+Source file names: https://github.com/iovxw/ksni/blob/4e31ee48d91b0babb472d05936b9b68bca736b06/UNLICENSE (SHA-256 7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c)
+Applies to: cargo:ksni@0.3.6
+--------------------------------------------------------------------------------
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or
+distribute this software, either in source code form or as a compiled
+binary, for any purpose, commercial or non-commercial, and by any
+means.
+
+In jurisdictions that recognize copyright laws, the author or authors
+of this software dedicate any and all copyright interest in the
+software to the public domain. We make this dedication for the benefit
+of the public at large and to the detriment of our heirs and
+successors. We intend this dedication to be an overt act of
+relinquishment in perpetuity of all present and future rights to this
+software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <http://unlicense.org/>
+
+================================================================================
 SHA-256: cc367a7134c2b07d995a2f8dea591094a1d100e49c68513f729fdf3eaf580a21
 Source file names: LICENSE-MIT
-Applies to: cargo:rand@0.10.2, cargo:rand@0.9.5, cargo:rand_chacha@0.9.0, cargo:rand_core@0.9.5
+Applies to: cargo:rand@0.10.2, cargo:rand@0.10.3, cargo:rand@0.9.5, cargo:rand_chacha@0.9.0, cargo:rand_core@0.9.5
 --------------------------------------------------------------------------------
 Copyright 2018 Developers of the Rand project
 Copyright (c) 2014 The Rust Project Developers
@@ -14180,7 +14222,7 @@ SOFTWARE.
 ================================================================================
 SHA-256: cde87abe221f413fede55ded0f17985f37b8fdc23e5f6cba9a3955437facb3ae
 Source file names: LICENSE
-Applies to: cargo:icu_collections@2.3.0, cargo:icu_locale_core@2.3.0, cargo:icu_normalizer@2.3.0, cargo:icu_normalizer_data@2.3.0, cargo:icu_properties@2.3.0, cargo:icu_properties_data@2.3.0, cargo:icu_provider@2.3.1, cargo:litemap@0.8.3, cargo:potential_utf@0.1.6, cargo:tinystr@0.8.4, cargo:writeable@0.6.4, cargo:yoke-derive@0.8.2, cargo:yoke@0.8.3, cargo:zerofrom-derive@0.1.7, cargo:zerofrom@0.1.8, cargo:zerotrie@0.2.5, cargo:zerovec-derive@0.11.6, cargo:zerovec@0.11.8
+Applies to: cargo:icu_collections@2.3.0, cargo:icu_locale_core@2.3.0, cargo:icu_normalizer@2.3.0, cargo:icu_normalizer_data@2.3.0, cargo:icu_properties@2.3.0, cargo:icu_properties_data@2.3.0, cargo:icu_provider@2.3.1, cargo:litemap@0.8.3, cargo:potential_utf@0.1.6, cargo:tinystr@0.8.4, cargo:writeable@0.6.4, cargo:yoke-derive@0.8.2, cargo:yoke-derive@0.8.4, cargo:yoke@0.8.3, cargo:zerofrom-derive@0.1.7, cargo:zerofrom-derive@0.1.8, cargo:zerofrom@0.1.8, cargo:zerotrie@0.2.5, cargo:zerovec-derive@0.11.6, cargo:zerovec@0.11.8
 --------------------------------------------------------------------------------
 UNICODE LICENSE V3
 
@@ -14477,7 +14519,7 @@ limitations under the License.
 ================================================================================
 SHA-256: cebce11166dcba4336442c8d748df16c004b436c49b40b30721e59f221bae058
 Source file names: LICENSE-ZLIB
-Applies to: cargo:lru-slab@0.1.2
+Applies to: cargo:lru-slab@0.1.2, cargo:lru-slab@0.1.3
 --------------------------------------------------------------------------------
 Copyright (c) 2024 The lru-slab Developers
 
@@ -15604,6 +15646,27 @@ have been licensed under extremely permissive terms.
 ------------------------------------------------------------------------------
 
 ================================================================================
+SHA-256: e08d6d9195b9428a64353f1392fb44c0acdf9cb5bdab00d1daa7b9a41bcd77fb
+Source file names: COPYRIGHT
+Applies to: cargo:multiversion_no_op@1.0.0
+--------------------------------------------------------------------------------
+Copyright Mozilla Foundation
+
+Licensed under the Apache License (Version 2.0), or the MIT license,
+(the "Licenses") at your option. You may not use this file except in
+compliance with one of the Licenses. You may obtain copies of the
+Licenses at:
+
+   https://www.apache.org/licenses/LICENSE-2.0
+   https://opensource.org/licenses/MIT
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the Licenses is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the Licenses for the specific language governing permissions and
+limitations under the Licenses.
+
+================================================================================
 SHA-256: e5a8da5b43b01f431431db9cb0a25e878701f5664d54fbb0057838bea07c8bd1
 Source file names: license
 Applies to: npm:qrcode@1.5.4
@@ -16320,7 +16383,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA-256: efbbbcefb4b8588630bec285cd7372a4dc3eb208a6c457d4313f62cb10f87aa3
 Source file names: LICENSE
-Applies to: cargo:aws-lc-rs@1.18.0
+Applies to: cargo:aws-lc-rs@1.18.0, cargo:aws-lc-rs@1.18.1
 --------------------------------------------------------------------------------
 SPDX-License-Identifier: ISC AND (Apache-2.0 OR ISC)
 
@@ -18057,7 +18120,7 @@ Apache License
 ================================================================================
 SHA-256: fee4d7ce394c9161daabd2797e22d8d5ed80ea3c0f4524b242ab22582d2cc412
 Source file names: LICENSE-APACHE
-Applies to: cargo:rand@0.10.2, cargo:rand@0.9.5, cargo:rand_chacha@0.9.0
+Applies to: cargo:rand@0.10.2, cargo:rand@0.10.3, cargo:rand@0.9.5, cargo:rand_chacha@0.9.0
 --------------------------------------------------------------------------------
 Apache License
                         Version 2.0, January 2004

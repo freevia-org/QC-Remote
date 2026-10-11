@@ -44,11 +44,11 @@ QC Remote is developed by Freevia EOOD under the licences described in
 
 ## Requirements
 
-| | Windows | Android |
-| --- | --- | --- |
-| System | Windows 10 or 11, 64-bit | Android 7.0 or newer (API level 24) |
-| Connection to the unit | USB cable to the PC | USB host (OTG) support on the phone, plus a suitable cable or adapter |
-| Hardware | A Quad Cortex, switched on and connected by USB | A Quad Cortex, switched on and connected by USB |
+| | Windows | Linux preview | Android |
+| --- | --- | --- | --- |
+| System | Windows 10 or 11, 64-bit | Ubuntu 24.04, x86_64 | Android 7.0 or newer (API level 24) |
+| Connection to the unit | USB cable to the PC | USB cable and a one-time udev rule setup | USB host (OTG) support on the phone, plus a suitable cable or adapter |
+| Hardware | A Quad Cortex, switched on and connected by USB | A Quad Cortex, switched on and connected by USB | A Quad Cortex, switched on and connected by USB |
 
 Other things to know before you start:
 
@@ -67,8 +67,8 @@ Other things to know before you start:
 
 ## Installing
 
-QC Remote is early, pre-1.0 software (Windows 0.1.x, Android 0.3.x). Signed
-builds are published as GitHub releases; the
+QC Remote is early, pre-1.0 software (Windows 0.1.x, Linux 0.1.x preview,
+Android 0.3.x). Builds are published as GitHub releases; the
 [README](../README.md#download) names the current version and links each file
 directly.
 
@@ -80,17 +80,54 @@ directly.
   the phone. Its file name has the form `qc-remote-<version>.apk`. The release
   also carries a `.aab` file; that is the Android App Bundle prepared for
   Google Play, not something to install on a phone.
+- **Linux preview (Ubuntu 24.04, x86_64).** Download
+  [`qc-remote_0.1.184_amd64.deb`](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.184/qc-remote_0.1.184_amd64.deb)
+  from the [v0.1.184 prerelease](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.184),
+  then install it with `sudo apt install ./qc-remote_0.1.184_amd64.deb`. The
+  package includes the application, resident broker/MCP host, and a udev rule.
+  After installing, reload udev rules and reconnect the Quad Cortex. If the
+  desktop does not provide a StatusNotifier/AppIndicator tray host, the resident
+  tray controls may not be visible. Other Linux distributions are not yet
+  supported by this preview.
 
-The release page lists a SHA-256 checksum for each file. To compare one with
-your download on Windows, run `Get-FileHash <file> -Algorithm SHA256` in
-PowerShell.
+The release page lists a SHA-256 checksum for each file. On Linux, verify a
+download with `sha256sum -c SHA256SUMS`; on Windows, run
+`Get-FileHash <file> -Algorithm SHA256` in PowerShell.
 
 The Microsoft Store listing is pending, and the Google Play listing is pending
 an internal-test upload, so its link may not open yet. Hardware and
 installed-device acceptance are not claimed for these releases.
 
-Only the latest released Windows and Android builds receive fixes; earlier
-builds are not supported ([`SECURITY.md`](../SECURITY.md)).
+The Linux package is a preview and may change independently of the stable
+Windows and Android releases. Only the latest released build for each platform
+receives fixes; earlier builds are not supported ([`SECURITY.md`](../SECURITY.md)).
+
+### Linux preview
+
+The Linux preview targets Ubuntu 24.04 x86_64. The GUI, tray resident, local
+MCP HTTP endpoint, and stdio bridge share one broker process and one per-user
+state directory. The app uses USB HID for device control and the matching ALSA
+raw MIDI endpoint for its performance MIDI feature; it is not a USB audio
+interface. Remote MCP requires the same account/network setup described below
+and is separate from local MCP.
+
+The package places its rule at `/usr/share/qc-remote/70-qc-remote.rules` but
+does not activate it automatically. Install it into udev's rules directory,
+reload rules, then reconnect the device:
+
+```sh
+sudo install -m 0644 /usr/share/qc-remote/70-qc-remote.rules /etc/udev/rules.d/70-qc-remote.rules
+sudo udevadm control --reload-rules
+```
+
+The rule grants access only to the supported Quad Cortex USB product IDs and
+uses `uaccess` for an active local desktop seat, covering HID and raw MIDI
+nodes. It does not rebind kernel drivers or grant access to all HID/audio
+devices. SSH-only users are not an active local seat; the broker guide documents
+the optional dedicated-group alternative. If your desktop lacks a
+StatusNotifier/AppIndicator host, the main window and MCP connections still
+work, but the tray icon may not be shown. This preview has not been qualified
+on other Linux distributions.
 
 ## Connecting your Quad Cortex
 

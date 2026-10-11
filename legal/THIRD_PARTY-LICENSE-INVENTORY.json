@@ -255,8 +255,28 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "aws-lc-rs",
+      "version": "1.18.1",
+      "license": "ISC AND (Apache-2.0 OR ISC)",
+      "sourceUrl": "https://github.com/aws/aws-lc-rs",
+      "licenseTextHashes": [
+        "efbbbcefb4b8588630bec285cd7372a4dc3eb208a6c457d4313f62cb10f87aa3"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "aws-lc-sys",
       "version": "0.44.0",
+      "license": "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",
+      "sourceUrl": "https://github.com/aws/aws-lc-rs",
+      "licenseTextHashes": [
+        "49f5cc2a2e4db6cc86cc1c853cbf00af70abd12c55dae8d6561f26ccd1bfd162"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "aws-lc-sys",
+      "version": "0.45.0",
       "license": "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",
       "sourceUrl": "https://github.com/aws/aws-lc-rs",
       "licenseTextHashes": [
@@ -639,6 +659,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "core_detect",
+      "version": "1.0.0",
+      "license": "MIT/Apache-2.0",
+      "sourceUrl": "https://github.com/thomcc/core_detect",
+      "licenseTextHashes": [
+        "57895cdbc8febf233f2296b27ee98593e57f974896a4216b4a9629f5bd953f1d",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "cpufeatures",
       "version": "0.2.17",
       "license": "MIT OR Apache-2.0",
@@ -987,7 +1018,7 @@
       "license": "MIT",
       "sourceUrl": "https://github.com/OpenByteDev/dlopen2",
       "licenseTextHashes": [
-        "39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2"
+        "26633be0c19e2e61e709a8c61d7fce2baa352ae3278d42846abe229a6bd68d4f"
       ]
     },
     {
@@ -997,7 +1028,7 @@
       "license": "MIT",
       "sourceUrl": "https://github.com/OpenByteDev/dlopen2",
       "licenseTextHashes": [
-        "39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2"
+        "26633be0c19e2e61e709a8c61d7fce2baa352ae3278d42846abe229a6bd68d4f"
       ]
     },
     {
@@ -1100,6 +1131,19 @@
       "ecosystem": "cargo",
       "name": "encoding_rs",
       "version": "0.8.35",
+      "license": "(Apache-2.0 OR MIT) AND BSD-3-Clause",
+      "sourceUrl": "https://github.com/hsivonen/encoding_rs",
+      "licenseTextHashes": [
+        "1961703c278284db0ba353f5cfb2f3e2b1c1f584a2791db44aacfe7d78656f70",
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "7dc2f64024477c92b147ae4a93bbcef90031b33ba0de6a84bd570d59e6c0688b",
+        "b1d6d97b0476a82862312e776bd4f2b902fb6c53e46f28166ccd2f63b17d4f8a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "encoding_rs",
+      "version": "0.8.41",
       "license": "(Apache-2.0 OR MIT) AND BSD-3-Clause",
       "sourceUrl": "https://github.com/hsivonen/encoding_rs",
       "licenseTextHashes": [
@@ -1790,6 +1834,18 @@
     {
       "ecosystem": "cargo",
       "name": "hyper-rustls",
+      "version": "0.27.10",
+      "license": "Apache-2.0 OR ISC OR MIT",
+      "sourceUrl": "https://github.com/rustls/hyper-rustls",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
+        "a3320aa8d192a02cc2c9f31ebcceb861d71b737acdff1397d0d8a49361e86e73",
+        "af6da3f3f6b4929e02f81fd890835fd6d70ffddae12a8d735c0d7f294ac5ffd7"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "hyper-rustls",
       "version": "0.27.9",
       "license": "Apache-2.0 OR ISC OR MIT",
       "sourceUrl": "https://github.com/rustls/hyper-rustls",
@@ -1989,6 +2045,17 @@
       "ecosystem": "cargo",
       "name": "ipnet",
       "version": "2.12.1",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/krisprice/ipnet",
+      "licenseTextHashes": [
+        "9d8e882729a53481b83a5fba9da762bec38a289be159690c607a5375778331ee",
+        "c935506fff2ef821003680006758f03bd869f1ae051b11c5879a0c24b0c07ecf"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "ipnet",
+      "version": "2.12.2",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/krisprice/ipnet",
       "licenseTextHashes": [
@@ -2210,7 +2277,7 @@
       "license": "Unlicense",
       "sourceUrl": "https://github.com/iovxw/ksni",
       "licenseTextHashes": [
-        "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c"
+        "ca2abdf695884c77ea4b4a5b64ca7b732d9d9dbade4eebc1c2e76c53e9e3bc83"
       ]
     },
     {
@@ -2294,6 +2361,18 @@
       "ecosystem": "cargo",
       "name": "lru-slab",
       "version": "0.1.2",
+      "license": "MIT OR Apache-2.0 OR Zlib",
+      "sourceUrl": "https://github.com/Ralith/lru-slab",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "c9cf4d18fd9d2ab3fb30d39facfe8cff8ff8354950e2de5c864707e6c80a2764",
+        "cebce11166dcba4336442c8d748df16c004b436c49b40b30721e59f221bae058"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "lru-slab",
+      "version": "0.1.3",
       "license": "MIT OR Apache-2.0 OR Zlib",
       "sourceUrl": "https://github.com/Ralith/lru-slab",
       "licenseTextHashes": [
@@ -2394,6 +2473,16 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "mio",
+      "version": "1.2.3",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/tokio-rs/mio",
+      "licenseTextHashes": [
+        "c804065b0956d00a65ce119456ec48ee456f5446b904b07ee85225ba5a88ce41"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "muda",
       "version": "0.19.3",
       "license": "Apache-2.0 OR MIT",
@@ -2413,6 +2502,40 @@
       "licenseTextHashes": [
         "6c01c81081c98bfc63e00403dd06121047d785f807f16f2b40626d0b3c42ea9e",
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "multiversion_no_op",
+      "version": "1.0.0",
+      "license": "Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/hsivonen/multiversion_no_op",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "7dc2f64024477c92b147ae4a93bbcef90031b33ba0de6a84bd570d59e6c0688b",
+        "e08d6d9195b9428a64353f1392fb44c0acdf9cb5bdab00d1daa7b9a41bcd77fb"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "multiversion-macros",
+      "version": "0.9.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/calebzulawski/multiversion",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "309a4d30eeef89f6fb2a3dc7d2e0ae8c36d7e0045691233b2791aff7f8d9eeb9"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "multiversion",
+      "version": "0.9.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/calebzulawski/multiversion",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "309a4d30eeef89f6fb2a3dc7d2e0ae8c36d7e0045691233b2791aff7f8d9eeb9"
       ]
     },
     {
@@ -2987,6 +3110,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "quinn-proto",
+      "version": "0.11.18",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/quinn-rs/quinn",
+      "licenseTextHashes": [
+        "05fa1ba3228aab8d2bf637f286d7579ed76256c1dab3fa955c2489b920ffeb35",
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "quinn-udp",
       "version": "0.5.15",
       "license": "MIT OR Apache-2.0",
@@ -3000,6 +3134,17 @@
       "ecosystem": "cargo",
       "name": "quinn",
       "version": "0.11.11",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/quinn-rs/quinn",
+      "licenseTextHashes": [
+        "05fa1ba3228aab8d2bf637f286d7579ed76256c1dab3fa955c2489b920ffeb35",
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "quinn",
+      "version": "0.11.12",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/quinn-rs/quinn",
       "licenseTextHashes": [
@@ -3070,6 +3215,18 @@
       "ecosystem": "cargo",
       "name": "rand",
       "version": "0.10.2",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/rust-random/rand",
+      "licenseTextHashes": [
+        "2411d70acb18e15ac32f7aace439a5c2725b8d0074510caf651d4c270d7c05aa",
+        "cc367a7134c2b07d995a2f8dea591094a1d100e49c68513f729fdf3eaf580a21",
+        "fee4d7ce394c9161daabd2797e22d8d5ed80ea3c0f4524b242ab22582d2cc412"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "rand",
+      "version": "0.10.3",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rust-random/rand",
       "licenseTextHashes": [
@@ -3161,6 +3318,17 @@
       "ecosystem": "cargo",
       "name": "reqwest",
       "version": "0.13.4",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/seanmonstar/reqwest",
+      "licenseTextHashes": [
+        "5c3866f31ed28362d86aa475660b5bc4d8f064188261fbbfa421fab5da09198c",
+        "bde59a7e336fcb583f03ede4e7ae63fed99f1148dcee7a7717904d76f116cb84"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "reqwest",
+      "version": "0.13.5",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/seanmonstar/reqwest",
       "licenseTextHashes": [
@@ -3313,6 +3481,17 @@
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
         "a3320aa8d192a02cc2c9f31ebcceb861d71b737acdff1397d0d8a49361e86e73",
         "af6da3f3f6b4929e02f81fd890835fd6d70ffddae12a8d735c0d7f294ac5ffd7"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "rustversion",
+      "version": "1.0.23",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/dtolnay/rustversion",
+      "licenseTextHashes": [
+        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
+        "85ad950cce8752f716dbf49be95b2639172cb49f291336d57f1fdc9989e38179"
       ]
     },
     {
@@ -3685,6 +3864,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "simdutf8",
+      "version": "0.1.5",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/rusticstuff/simdutf8",
+      "licenseTextHashes": [
+        "1847e0e0698142ed4347c1441a9fa81c8fbddd44b1d8bbcd5e3647f991759d7f",
+        "4bf96504d6e83ce5c6fc7167f1795d9ceaa68e70ab86bc5d08ab93184262bbbe"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "siphasher",
       "version": "1.0.3",
       "license": "MIT/Apache-2.0",
@@ -3707,6 +3897,17 @@
       "ecosystem": "cargo",
       "name": "smallvec",
       "version": "1.15.2",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/servo/rust-smallvec",
+      "licenseTextHashes": [
+        "7f194ae45c2525a57443f7edabd392e8218109ee81a4bce70d385104c87c1a71",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "smallvec",
+      "version": "1.16.1",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/servo/rust-smallvec",
       "licenseTextHashes": [
@@ -3878,6 +4079,16 @@
       "ecosystem": "cargo",
       "name": "synstructure",
       "version": "0.13.2",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/mystor/synstructure",
+      "licenseTextHashes": [
+        "3a036676ec8c0dba1c24b96f83595456280b7a754ddee64585dd8048ed2b087f"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "synstructure",
+      "version": "0.14.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/mystor/synstructure",
       "licenseTextHashes": [
@@ -4184,6 +4395,18 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "tinyvec",
+      "version": "1.13.3",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/Lokathor/tinyvec",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "943f36fd309fb5ea67a82f577433f4ed3bc877e5b00f9b874e2f8b7f72bf0bdc",
+        "bccaa8b6c09f94e81f06696e179dbe058464bbdfbc823b6d49cada1d71e84ac3"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "tokio-macros",
       "version": "2.7.1",
       "license": "MIT",
@@ -4194,8 +4417,29 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "tokio-macros",
+      "version": "2.7.2",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/tokio-rs/tokio",
+      "licenseTextHashes": [
+        "c0fdcda1a4ffc5fd63c452e40ce25e54f2098669e3415033b228773eea24a871"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "tokio-rustls",
       "version": "0.26.4",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/rustls/tokio-rustls",
+      "licenseTextHashes": [
+        "1b0258c48739a24ea7c8e4e45fd32862666ea416630cdae24179b2d64ef742e3",
+        "acddfb05f07ab0048f60a6080856befa9a37cd2f2e4aaef35bd3fe5cba145b62"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "tokio-rustls",
+      "version": "0.26.5",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rustls/tokio-rustls",
       "licenseTextHashes": [
@@ -5186,6 +5430,16 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "yoke-derive",
+      "version": "0.8.4",
+      "license": "Unicode-3.0",
+      "sourceUrl": "https://github.com/unicode-org/icu4x",
+      "licenseTextHashes": [
+        "cde87abe221f413fede55ded0f17985f37b8fdc23e5f6cba9a3955437facb3ae"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "yoke",
       "version": "0.8.3",
       "license": "Unicode-3.0",
@@ -5262,6 +5516,16 @@
       "ecosystem": "cargo",
       "name": "zerofrom-derive",
       "version": "0.1.7",
+      "license": "Unicode-3.0",
+      "sourceUrl": "https://github.com/unicode-org/icu4x",
+      "licenseTextHashes": [
+        "cde87abe221f413fede55ded0f17985f37b8fdc23e5f6cba9a3955437facb3ae"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "zerofrom-derive",
+      "version": "0.1.8",
       "license": "Unicode-3.0",
       "sourceUrl": "https://github.com/unicode-org/icu4x",
       "licenseTextHashes": [
@@ -7632,8 +7896,10 @@
       ],
       "components": [
         "cargo:quinn-proto@0.11.17",
+        "cargo:quinn-proto@0.11.18",
         "cargo:quinn-udp@0.5.15",
-        "cargo:quinn@0.11.11"
+        "cargo:quinn@0.11.11",
+        "cargo:quinn@0.11.12"
       ]
     },
     {
@@ -7777,10 +8043,12 @@
     {
       "sha256": "1847e0e0698142ed4347c1441a9fa81c8fbddd44b1d8bbcd5e3647f991759d7f",
       "names": [
-        "LICENSE"
+        "LICENSE",
+        "LICENSE-MIT"
       ],
       "components": [
-        "cargo:ident_case@1.0.1"
+        "cargo:ident_case@1.0.1",
+        "cargo:simdutf8@0.1.5"
       ]
     },
     {
@@ -7799,7 +8067,8 @@
         "COPYRIGHT"
       ],
       "components": [
-        "cargo:encoding_rs@0.8.35"
+        "cargo:encoding_rs@0.8.35",
+        "cargo:encoding_rs@0.8.41"
       ]
     },
     {
@@ -7836,7 +8105,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:tokio-rustls@0.26.4"
+        "cargo:tokio-rustls@0.26.4",
+        "cargo:tokio-rustls@0.26.5"
       ]
     },
     {
@@ -7973,6 +8243,7 @@
       ],
       "components": [
         "cargo:rand@0.10.2",
+        "cargo:rand@0.10.3",
         "cargo:rand@0.9.5",
         "cargo:rand_chacha@0.9.0",
         "cargo:rand_core@0.9.5",
@@ -8004,6 +8275,16 @@
       ],
       "components": [
         "cargo:wry@0.55.1"
+      ]
+    },
+    {
+      "sha256": "26633be0c19e2e61e709a8c61d7fce2baa352ae3278d42846abe229a6bd68d4f",
+      "names": [
+        "https://github.com/OpenByteDev/dlopen2/blob/cc80e4a0a90d499b677fdf7743699b4b3a43a989/LICENSE (SHA-256 39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2)"
+      ],
+      "components": [
+        "cargo:dlopen2@0.8.2",
+        "cargo:dlopen2_derive@0.4.3"
       ]
     },
     {
@@ -8102,15 +8383,23 @@
       "components": [
         "cargo:basic-udev@0.1.2",
         "cargo:encoding_rs@0.8.35",
+        "cargo:encoding_rs@0.8.41",
         "cargo:lru-slab@0.1.2",
+        "cargo:lru-slab@0.1.3",
+        "cargo:multiversion-macros@0.9.0",
+        "cargo:multiversion@0.9.0",
+        "cargo:multiversion_no_op@1.0.0",
         "cargo:quinn-proto@0.11.17",
+        "cargo:quinn-proto@0.11.18",
         "cargo:quinn-udp@0.5.15",
         "cargo:quinn@0.11.11",
+        "cargo:quinn@0.11.12",
         "cargo:rustls-platform-verifier@0.7.0",
         "cargo:serialize-to-javascript-impl@0.1.2",
         "cargo:serialize-to-javascript@0.1.2",
         "cargo:sse-stream@0.2.6",
         "cargo:tinyvec@1.12.0",
+        "cargo:tinyvec@1.13.3",
         "cargo:utf8_iter@1.0.4",
         "cargo:zeroize@1.9.0",
         "cargo:zeroize_derive@1.5.0",
@@ -8278,6 +8567,16 @@
       ]
     },
     {
+      "sha256": "309a4d30eeef89f6fb2a3dc7d2e0ae8c36d7e0045691233b2791aff7f8d9eeb9",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:multiversion-macros@0.9.0",
+        "cargo:multiversion@0.9.0"
+      ]
+    },
+    {
       "sha256": "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
       "names": [
         "LICENSE",
@@ -8332,6 +8631,7 @@
         "cargo:rustc-hash@2.1.3",
         "cargo:rustix@1.1.4",
         "cargo:rustix@1.1.5",
+        "cargo:rustversion@1.0.23",
         "cargo:semver@1.0.28",
         "cargo:serde-untagged@0.1.9",
         "cargo:serde@1.0.229",
@@ -8457,22 +8757,13 @@
       ]
     },
     {
-      "sha256": "39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2",
-      "names": [
-        "https://github.com/OpenByteDev/dlopen2/blob/cc80e4a0a90d499b677fdf7743699b4b3a43a989/LICENSE (SHA-256 39fa265207450e77c62e90c5594a06c085b655d8374c7ced4bf7894b6bd95dd2)"
-      ],
-      "components": [
-        "cargo:dlopen2@0.8.2",
-        "cargo:dlopen2_derive@0.4.3"
-      ]
-    },
-    {
       "sha256": "3a036676ec8c0dba1c24b96f83595456280b7a754ddee64585dd8048ed2b087f",
       "names": [
         "LICENSE"
       ],
       "components": [
-        "cargo:synstructure@0.13.2"
+        "cargo:synstructure@0.13.2",
+        "cargo:synstructure@0.14.0"
       ]
     },
     {
@@ -8682,7 +8973,8 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:aws-lc-sys@0.44.0"
+        "cargo:aws-lc-sys@0.44.0",
+        "cargo:aws-lc-sys@0.45.0"
       ]
     },
     {
@@ -8739,6 +9031,7 @@
         "cargo:num-conv@0.2.2",
         "cargo:pin-project-lite@0.2.17",
         "cargo:raw-window-handle@0.6.2",
+        "cargo:simdutf8@0.1.5",
         "cargo:sync_wrapper@1.0.2",
         "cargo:tauri-build@2.6.3",
         "cargo:tauri-codegen@2.6.3",
@@ -8811,6 +9104,15 @@
       ]
     },
     {
+      "sha256": "57895cdbc8febf233f2296b27ee98593e57f974896a4216b4a9629f5bd953f1d",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:core_detect@1.0.0"
+      ]
+    },
+    {
       "sha256": "57f841bc9767b5b843e0c0c471bd50a95ddb00f13b1f4a2c6d6f57a7dbfdc1f3",
       "names": [
         "LICENSE"
@@ -8865,7 +9167,8 @@
         "LICENSE-APACHE"
       ],
       "components": [
-        "cargo:reqwest@0.13.4"
+        "cargo:reqwest@0.13.4",
+        "cargo:reqwest@0.13.5"
       ]
     },
     {
@@ -9291,16 +9594,9 @@
       ],
       "components": [
         "cargo:encoding_rs@0.8.35",
+        "cargo:encoding_rs@0.8.41",
+        "cargo:multiversion_no_op@1.0.0",
         "cargo:utf8_iter@1.0.4"
-      ]
-    },
-    {
-      "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c",
-      "names": [
-        "https://github.com/iovxw/ksni/blob/4e31ee48d91b0babb472d05936b9b68bca736b06/UNLICENSE (SHA-256 7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c)"
-      ],
-      "components": [
-        "cargo:ksni@0.3.6"
       ]
     },
     {
@@ -9335,7 +9631,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:smallvec@1.15.2"
+        "cargo:smallvec@1.15.2",
+        "cargo:smallvec@1.16.1"
       ]
     },
     {
@@ -9462,6 +9759,7 @@
         "cargo:ref-cast-impl@1.0.27",
         "cargo:ref-cast@1.0.27",
         "cargo:rustc-hash@2.1.3",
+        "cargo:rustversion@1.0.23",
         "cargo:ryu@1.0.23",
         "cargo:semver@1.0.28",
         "cargo:serde-untagged@0.1.9",
@@ -9636,7 +9934,8 @@
         "LICENSE-ZLIB.md"
       ],
       "components": [
-        "cargo:tinyvec@1.12.0"
+        "cargo:tinyvec@1.12.0",
+        "cargo:tinyvec@1.13.3"
       ]
     },
     {
@@ -9681,6 +9980,7 @@
         "cargo:cfg-if@1.0.5",
         "cargo:cmake@0.1.58",
         "cargo:concurrent-queue@2.5.0",
+        "cargo:core_detect@1.0.0",
         "cargo:crossbeam-channel@0.5.16",
         "cargo:crossbeam-utils@0.8.22",
         "cargo:dbus-secret-service@4.1.0",
@@ -9706,6 +10006,7 @@
         "cargo:heck@0.5.0",
         "cargo:html5ever@0.39.0",
         "cargo:httparse@1.10.1",
+        "cargo:hyper-rustls@0.27.10",
         "cargo:hyper-rustls@0.27.9",
         "cargo:idna@1.1.0",
         "cargo:idna_adapter@1.2.2",
@@ -9757,6 +10058,7 @@
         "cargo:signal-hook-registry@1.4.8",
         "cargo:signal-hook@0.3.18",
         "cargo:smallvec@1.15.2",
+        "cargo:smallvec@1.16.1",
         "cargo:socket2@0.6.5",
         "cargo:stable_deref_trait@1.2.1",
         "cargo:string_cache@0.9.0",
@@ -9856,7 +10158,8 @@
         "LICENSE-APACHE"
       ],
       "components": [
-        "cargo:ipnet@2.12.1"
+        "cargo:ipnet@2.12.1",
+        "cargo:ipnet@2.12.2"
       ]
     },
     {
@@ -9942,6 +10245,7 @@
         "LICENSE-MIT"
       ],
       "components": [
+        "cargo:hyper-rustls@0.27.10",
         "cargo:hyper-rustls@0.27.9",
         "cargo:rustls-native-certs@0.8.4",
         "cargo:rustls@0.23.45"
@@ -10027,7 +10331,8 @@
         "LICENSE-APACHE"
       ],
       "components": [
-        "cargo:tokio-rustls@0.26.4"
+        "cargo:tokio-rustls@0.26.4",
+        "cargo:tokio-rustls@0.26.5"
       ]
     },
     {
@@ -10065,6 +10370,7 @@
         "LICENSE-ISC"
       ],
       "components": [
+        "cargo:hyper-rustls@0.27.10",
         "cargo:hyper-rustls@0.27.9",
         "cargo:rustls-native-certs@0.8.4",
         "cargo:rustls@0.23.45"
@@ -10086,7 +10392,8 @@
         "LICENSE-WHATWG"
       ],
       "components": [
-        "cargo:encoding_rs@0.8.35"
+        "cargo:encoding_rs@0.8.35",
+        "cargo:encoding_rs@0.8.41"
       ]
     },
     {
@@ -10245,7 +10552,8 @@
       ],
       "components": [
         "cargo:ctor@1.0.13",
-        "cargo:tinyvec@1.12.0"
+        "cargo:tinyvec@1.12.0",
+        "cargo:tinyvec@1.13.3"
       ]
     },
     {
@@ -10263,7 +10571,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:reqwest@0.13.4"
+        "cargo:reqwest@0.13.4",
+        "cargo:reqwest@0.13.5"
       ]
     },
     {
@@ -10281,7 +10590,8 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:tokio-macros@2.7.1"
+        "cargo:tokio-macros@2.7.1",
+        "cargo:tokio-macros@2.7.2"
       ]
     },
     {
@@ -10377,7 +10687,8 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:mio@1.2.2"
+        "cargo:mio@1.2.2",
+        "cargo:mio@1.2.3"
       ]
     },
     {
@@ -10404,7 +10715,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:ipnet@2.12.1"
+        "cargo:ipnet@2.12.1",
+        "cargo:ipnet@2.12.2"
       ]
     },
     {
@@ -10443,7 +10755,17 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:lru-slab@0.1.2"
+        "cargo:lru-slab@0.1.2",
+        "cargo:lru-slab@0.1.3"
+      ]
+    },
+    {
+      "sha256": "ca2abdf695884c77ea4b4a5b64ca7b732d9d9dbade4eebc1c2e76c53e9e3bc83",
+      "names": [
+        "https://github.com/iovxw/ksni/blob/4e31ee48d91b0babb472d05936b9b68bca736b06/UNLICENSE (SHA-256 7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c)"
+      ],
+      "components": [
+        "cargo:ksni@0.3.6"
       ]
     },
     {
@@ -10453,6 +10775,7 @@
       ],
       "components": [
         "cargo:rand@0.10.2",
+        "cargo:rand@0.10.3",
         "cargo:rand@0.9.5",
         "cargo:rand_chacha@0.9.0",
         "cargo:rand_core@0.9.5"
@@ -10499,8 +10822,10 @@
         "cargo:tinystr@0.8.4",
         "cargo:writeable@0.6.4",
         "cargo:yoke-derive@0.8.2",
+        "cargo:yoke-derive@0.8.4",
         "cargo:yoke@0.8.3",
         "cargo:zerofrom-derive@0.1.7",
+        "cargo:zerofrom-derive@0.1.8",
         "cargo:zerofrom@0.1.8",
         "cargo:zerotrie@0.2.5",
         "cargo:zerovec-derive@0.11.6",
@@ -10522,7 +10847,8 @@
         "LICENSE-ZLIB"
       ],
       "components": [
-        "cargo:lru-slab@0.1.2"
+        "cargo:lru-slab@0.1.2",
+        "cargo:lru-slab@0.1.3"
       ]
     },
     {
@@ -10655,6 +10981,15 @@
       ],
       "components": [
         "cargo:dpi@0.1.2"
+      ]
+    },
+    {
+      "sha256": "e08d6d9195b9428a64353f1392fb44c0acdf9cb5bdab00d1daa7b9a41bcd77fb",
+      "names": [
+        "COPYRIGHT"
+      ],
+      "components": [
+        "cargo:multiversion_no_op@1.0.0"
       ]
     },
     {
@@ -10803,7 +11138,8 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:aws-lc-rs@1.18.0"
+        "cargo:aws-lc-rs@1.18.0",
+        "cargo:aws-lc-rs@1.18.1"
       ]
     },
     {
@@ -10965,6 +11301,7 @@
       ],
       "components": [
         "cargo:rand@0.10.2",
+        "cargo:rand@0.10.3",
         "cargo:rand@0.9.5",
         "cargo:rand_chacha@0.9.0"
       ]

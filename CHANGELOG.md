@@ -2,7 +2,7 @@
 
 Notable changes across QC Remote app versions. A version entry records project
 history and does not by itself mean that a build was publicly distributed. The
-Windows and Android apps are
+desktop and Android apps are
 versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
@@ -77,6 +77,15 @@ and are not published to a registry.
 
 - No change. The Android app's USB host does not answer the unit's update
   requests; whether it should is a separate decision.
+
+## Linux preview 0.1.184 — 12 October 2026
+
+- Native desktop app for Ubuntu 24.04 x86_64, packaged as a Debian installer.
+- Shared resident USB/HID broker, StatusNotifier tray, local MCP HTTP host and
+  stdio bridge. Windows and Linux share the app, protocol and broker engines.
+- Scoped udev rule with explicit setup instructions. USB audio is not used;
+  other Linux distributions have not yet been qualified.
+- Existing Windows and Android downloads remain on release v0.1.182.
 
 ## Released 10 October 2026 — Windows 0.1.182 / Android 0.3.36
 

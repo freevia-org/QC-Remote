@@ -1,8 +1,8 @@
 # QC Remote
 
-Control a Quad Cortex from a Windows PC or Android phone, or let a compatible
-AI app inspect the rig, make changes, and verify the result through guarded MCP
-tools. QC Remote is free, open-source software from Freevia.
+Control a Quad Cortex from a Windows PC, Linux desktop, or Android phone, or let
+a compatible AI app inspect the rig, make changes, and verify the result through
+guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 [Website](https://freevia.org/qcremote/) ·
 [User guide](docs/USER-GUIDE.md) ·
@@ -22,12 +22,17 @@ tools. QC Remote is free, open-source software from Freevia.
 | Platform | Current release | Download | Store |
 | --- | --- | --- | --- |
 | Windows 10/11, x64 | 0.1.182 | [Signed installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/QC-Remote-Windows-0.1.182-x64-setup.exe) | Microsoft Store: pending |
+| Ubuntu 24.04, x86_64 (preview) | 0.1.184 | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.184/qc-remote_0.1.184_amd64.deb) | — |
 | Android 7.0+, USB host/OTG | 0.3.36 | [Signed APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/qc-remote-0.3.36.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote): in Google Play review; link may not open until the listing is approved |
 
-The [release page](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.182)
-has release notes and SHA-256 checksums for the signed downloads.
-These are early, pre-1.0 releases; hardware and installed-device acceptance are
-not claimed by this release. See the [changelog](CHANGELOG.md) for version history.
+The Windows and Android downloads remain on the stable
+[v0.1.182 release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.182).
+The Linux package is a separate preview on the
+[v0.1.184 prerelease](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.184),
+with a SHA-256 checksum alongside the package. It targets Ubuntu 24.04 on x86_64;
+other distributions are not yet claimed. See the [changelog](CHANGELOG.md) for
+version history and the [user guide](docs/USER-GUIDE.md#linux-preview) for setup.
+These are early, pre-1.0 releases; installed-device acceptance is not claimed.
 
 QC Remote was developed and tested with Quad Cortex firmware (CorOS) 4.1.0. It
 does not contain, replace, or modify Quad Cortex firmware, and it does not
@@ -42,7 +47,7 @@ endorsed, or supported by Neural DSP Technologies Oy. See
 - Control the device manually: switch Scenes, work on signal chains, edit
   parameters, and organize presets and setlists.
 - Explore the virtual device in demo mode, online or offline, without hardware.
-- Connect a local MCP-compatible desktop AI app on Windows, or use an MCP
+- Connect a local MCP-compatible desktop AI app on Windows or Linux, or use an MCP
   connector through the optional remote relay from a Windows or Android host.
 - Set the AI access level in QC Remote: Read-only, Performance, Modify, or Full.
   The host enforces that ceiling independently of the AI app.
@@ -81,10 +86,10 @@ only confirmation, and the paired app does not ask a second time.
 
 ## What this repository contains
 
-- **`apps/windows/`** — a Tauri (Rust + React) desktop app for Windows, with
-  guarded live device control, workspaces, typed commands, and explicit
-  device-save confirmation. It embeds the MCP server directly in the same
-  binary.
+- **`apps/windows/`** — the Tauri (Rust + React) desktop app for Windows and
+  Linux, with guarded live device control, workspaces, typed commands, and
+  explicit device-save confirmation. Windows ships the broker as a sidecar;
+  the Linux package runs that same broker as a resident host.
 - **`apps/android/`** — a Capacitor (Java + React) mobile companion
   app, talking to the device over USB via a JNI binding to the shared native
   library.
@@ -93,10 +98,8 @@ only confirmation, and the paired app does not ask a second time.
   Cortex through a device-backend-agnostic trait. The Windows app embeds it.
 - **`services/device-broker/`** (crate `qc-device-broker`) — the native
   single-owner USB/HID broker library that holds the exclusive device
-  connection, with its notification icon. It is linked into the shipped
-  `qc-device-broker.exe` (built from `apps/windows/src-tauri`, see
-  [Windows app](#windows-app)); its own binary is a broker-only developer
-  build.
+  connection and resident tray. Windows and Linux each ship its platform-native
+  sidecar built from `apps/windows/src-tauri`.
 - **`services/qc-remote-cloud/`** — the Cloudflare Worker relay that pairs a
   device host with a remote client for control away from the local network.
 - **`packages/rust/quadcortex/`** — the unified Rust library for the Quad
