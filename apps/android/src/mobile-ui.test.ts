@@ -146,7 +146,7 @@ test("Android exposes shared About, privacy, legal, and third-party notices", ()
   assert.match(themeSource, /identify the product with which this application is compatible/);
   // The in-app Privacy view is a pointer to PRIVACY.md and carries no facts of
   // its own, so it cannot drift from the policy.
-  assert.match(themeSource, /privacy: \{\s*(?:\/\/[^\n]*\s*)*pointer: "This screen only points to the privacy policy, the one authoritative text\./);
+  assert.match(themeSource, /privacy: \{\s*(?:\/\/[^\n]*\n\s*)*pointer: "This screen only points to the privacy policy, the one authoritative text\./);
   assert.doesNotMatch(themeSource, /operated by Freevia EOOD|can access routed commands|does not include advertising or analytics/);
   assert.match(appSource, /QC_LEGAL\.privacy\.pointer/);
   assert.match(appSource, /QC_BRAND\.privacyPolicyUrl/);

@@ -24,7 +24,7 @@ import {
   type PresetFolder,
   type PresetSnapshot
 } from "@qc-remote/client";
-import { demoSnapshot, QC_CATEGORY_COLORS, QC_HARDWARE_COLORS, QC_SCENE_COLORS, SHARED_QC_ACTIONS } from "@qc-remote/core";
+import { demoSnapshot, QC_CATEGORY_COLORS, QC_HARDWARE_COLORS, QC_SCENE_COLORS, SHARED_QC_ACTIONS, trimTrailingSlashes } from "@qc-remote/core";
 import {
   defaultParameterValues,
   normalizedToReal,
@@ -243,7 +243,7 @@ const defaultSceneLabel = (scene: number) => `Scene ${sceneLetter(scene)}`;
 const perScene = <T,>(value: T): T[] => Array.from({ length: QC_SCENE_COUNT }, () => value);
 const rustOption = (value: number | null | undefined) => value == null ? "None" : `Some(${value})`;
 const setlistKeyFor = (name: string) => `${USER_SETLIST_ROOT}/${name}`;
-const trimKey = (key: string) => key.replace(/\/+$/, "");
+const trimKey = trimTrailingSlashes;
 
 /** CorOS's slot name: bank number then A-H. */
 export function virtualSlotName(position: number): string {
@@ -1163,10 +1163,13 @@ function laneState(preset: VirtualPreset, index: CatalogueIndex, row: number, co
 }
 
 function currentValue(state: VirtualParameterState, parameterIndex: number, scene: number): number | undefined {
+  // A parameter index is a small non-negative integer; anything else (such as "__proto__") would address the prototype chain.
+  if (!Number.isInteger(parameterIndex) || parameterIndex < 0 || parameterIndex > PARAMETER_INDEX_LIMIT) return undefined;
   return state.sceneValues?.[parameterIndex]?.[scene] ?? state.parameterValues[parameterIndex];
 }
 
 function writeValue(state: VirtualParameterState, parameterIndex: number, scene: number, value: number): void {
+  assertInteger(parameterIndex, 0, PARAMETER_INDEX_LIMIT, "parameterIndex");
   const scenes = state.sceneValues?.[parameterIndex];
   if (scenes) scenes[scene] = value;
   else state.parameterValues[parameterIndex] = value;
