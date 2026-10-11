@@ -13,7 +13,7 @@ import { useWindowsPrompts } from "./use-windows-prompts";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
 import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
 import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcConnectionIsVerified, qcShouldConnectOnDetection, qcShouldDisconnectForDemo, qcVirtualSessionIsReady, qcVisibleStatusNotice, runtimeHasSynchronizedQc, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
-import { DEFAULT_BROKER_TRAY_STATUS, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
+import { DEFAULT_BROKER_TRAY_STATUS, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
 import appPackage from "../package.json";
 import QRCode from "qrcode";
@@ -1991,14 +1991,19 @@ export function App() {
     try { return await changeBrokerTray(change, setBrokerTrayStatus); }
     finally { trayChangePending.current = false; trayStatusReadVersion.current += 1; }
   }, []);
+  // The runtime status is replaced every poll; keying the summary on its text
+  // keeps the Settings window from being re-sent identical state.
+  const updaterRelayKey = JSON.stringify(summarizeUpdaterRelay(runtime?.usbDiagnostics?.updaterRelay));
+  const updaterRelaySummary = useMemo(() => JSON.parse(updaterRelayKey) as SettingsState["updaterRelay"], [updaterRelayKey]);
   const settingsState = useMemo<SettingsState>(() => ({
     ...brokerTrayStatus,
+    updaterRelay: updaterRelaySummary,
     formFactorId,
     formFactors: formFactors.map((item) => ({ id: item.id, displayName: item.displayName })),
     controlAccessMode,
     followQcScreen,
     localAccessCondition: localAccessCondition ? { tone: localAccessCondition.tone, message: localAccessCondition.message, detail: localAccessCondition.detail } : null
-  }), [brokerTrayStatus, formFactorId, controlAccessMode, followQcScreen, localAccessCondition?.tone, localAccessCondition?.message, localAccessCondition?.detail]);
+  }), [brokerTrayStatus, updaterRelaySummary, formFactorId, controlAccessMode, followQcScreen, localAccessCondition?.tone, localAccessCondition?.message, localAccessCondition?.detail]);
   useEffect(() => publishWindowState(DEVICE_INFO_EVENTS, deviceInfoState), [deviceInfoState]);
   useEffect(() => publishWindowState(WORKSPACE_EVENTS, workspaceState), [workspaceState]);
   useEffect(() => publishWindowState(SETTINGS_EVENTS, settingsState), [settingsState]);
@@ -2034,6 +2039,13 @@ export function App() {
       const status = await applyBrokerTrayChange(() => brokerTray.setEnabled(enabled));
       return status.trayStopping ? "Broker tray stopping; it will exit within five seconds."
         : status.trayEnabled ? "Tray icon shown." : "Tray icon hidden.";
+    },
+    setUpdaterRelayEnabled: async (enabled) => {
+      if (typeof enabled !== "boolean") throw new Error("Internet for the Quad Cortex must be on or off.");
+      const status = await applyBrokerTrayChange(() => brokerTray.setUpdaterRelayEnabled(enabled));
+      return status.updaterRelayEnabled
+        ? "Internet for the Quad Cortex is on."
+        : "Internet for the Quad Cortex is off.";
     },
     setIdleDisconnectMinutes: async (minutes) => {
       const status = await applyBrokerTrayChange(() => brokerTray.setIdleMinutes(minutes));
