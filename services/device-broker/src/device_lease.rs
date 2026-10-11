@@ -1472,8 +1472,15 @@ mod tests {
         let path = scratch("transition-crash");
         let lock = path.with_extension("transition");
         let claim = PathBuf::from(format!("{}.claim", lock.display()));
-        std::fs::write(&lock, b"abandoned lock document").unwrap();
-        std::fs::write(&claim, b"abandoned OS claim name").unwrap();
+        // Use the same owner-only sidecar/document pair as production, then
+        // drop the handle without calling `release` to model a crashed owner.
+        // A plain `fs::write` here creates a 0644 claim under the usual umask;
+        // Linux correctly refuses to reap a claim that fails owner-only checks.
+        let abandoned = qc_owner_only_file::ClaimedFile::try_claim(&lock)
+            .expect("the fixture creates a valid transition claim");
+        drop(abandoned);
+        assert!(lock.exists(), "the crashed owner left its lock document");
+        assert!(claim.exists(), "the crashed owner left its claim sidecar");
         let guard = LeaseTransitionGuard::acquire(&[path], Duration::from_millis(100))
             .expect("the unlocked abandoned claim is safely reaped");
         assert!(lock.exists(), "the new owner has installed its document");
