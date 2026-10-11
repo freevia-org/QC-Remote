@@ -164,13 +164,17 @@ mod tests {
         std::io::Write::write_all(file, &serde_json::to_vec(&wire).unwrap()).unwrap();
     }
 
-    fn scratch_path(name: &str) -> PathBuf {
+    /// The descriptor path in a directory of this test's own, with the guard
+    /// that removes it. Bind the guard before any file taken from the
+    /// directory, so it drops last.
+    fn scratch_path(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "qc-broker-descriptor-test-{name}-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        dir.join("device-broker.json")
+        let path = dir.join("device-broker.json");
+        (crate::tests::RemoveDirOnDrop::new(dir), path)
     }
 
     #[test]
@@ -193,7 +197,7 @@ mod tests {
 
     #[test]
     fn app_cleanup_cannot_reap_a_live_broker_claim() {
-        let path = scratch_path("protected-broker-claim");
+        let (_guard, path) = scratch_path("protected-broker-claim");
         release_descriptor_slot(&path);
         let mut claim = qc_owner_only_file::ClaimedFile::try_claim(&path).unwrap();
         let descriptor = DeviceBrokerDescriptor {
@@ -235,7 +239,7 @@ mod tests {
 
     #[test]
     fn read_descriptor_returns_none_when_file_is_absent() {
-        let path = scratch_path("absent");
+        let (_guard, path) = scratch_path("absent");
         // Clean up from any previous run
         let _ = fs::remove_file(&path);
         assert!(read_descriptor(&path, unix_time_ms()).is_none());
@@ -243,7 +247,7 @@ mod tests {
 
     #[test]
     fn write_then_read_round_trips() {
-        let path = scratch_path("round-trip");
+        let (_guard, path) = scratch_path("round-trip");
         // Clean up from any previous run
         let _ = fs::remove_file(&path);
 
@@ -295,7 +299,7 @@ mod tests {
 
     #[test]
     fn read_descriptor_treats_a_descriptor_older_than_150s_as_stale() {
-        let path = scratch_path("stale");
+        let (_guard, path) = scratch_path("stale");
         // Clean up from any previous run
         let _ = fs::remove_file(&path);
 
@@ -319,7 +323,7 @@ mod tests {
 
     #[test]
     fn second_claim_of_the_same_path_fails() {
-        let path = scratch_path("race");
+        let (_guard, path) = scratch_path("race");
         // Clean up from any previous run
         let _ = fs::remove_file(&path);
 
@@ -332,7 +336,7 @@ mod tests {
 
     #[test]
     fn release_removes_the_file_so_the_next_launcher_does_not_wait_out_staleness() {
-        let path = scratch_path("release");
+        let (_guard, path) = scratch_path("release");
         // Clean up from any previous run
         let _ = fs::remove_file(&path);
 
