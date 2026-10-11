@@ -32,10 +32,14 @@ Inbound normalization continues through the shared transport runtime. A native
 Linux hardware probe observed one full 129-byte type-52 `ResetCommsBuffers`
 report followed by `EPIPE`, then a type-52 reply echoing the request's fresh
 session UUID; that reply omitted the optional request ID. This demonstrates the
-specific Linux `SET_REPORT` status-stage behavior for the descriptor above. The
-shared protocol layer still requires the exact fresh session UUID before the
-handshake completes. This single exchange does not establish full startup,
-reconnect, or general Linux USB conformance.
+accepted Linux `SET_REPORT` behavior for the descriptor above, consistent with
+a control status-stage stall. The shared protocol layer still requires the
+exact fresh session UUID before startup can advance. A subsequent live broker
+test completed synchronization in 13.245 seconds, exchanged 33 outbound and
+over 440 inbound logical messages, served two authenticated clients and a
+session-tagged snapshot, and notified both clients before clean SIGTERM exit.
+These checks do not establish preset/settings mutations, unplug/replug,
+audio/MIDI streaming, or behavior on the untested product ID `892f`.
 
 Linux device selection uses vendor/product and an advertised serial, so a
 different unit cannot inherit a reused `/dev/hidrawN` path. If no serial is

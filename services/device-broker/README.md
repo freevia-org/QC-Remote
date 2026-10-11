@@ -28,9 +28,13 @@ A hardware probe sent one complete 129-byte type-52 `ResetCommsBuffers`
 handshake report. hidraw returned `EPIPE`, and the device then replied with a
 type-52 message containing the exact fresh session UUID; the optional request
 ID was absent. The shared session layer still requires that fresh UUID echo
-before it completes the handshake. Other Linux device profiles, short writes,
-and other errors remain fail-closed. This proves only that first handshake
-exchange for this descriptor; it does not prove full startup or reconnect.
+before startup can advance. Other Linux device profiles, short writes,
+and other errors remain fail-closed. A follow-up live broker test completed
+synchronization in 13.245 seconds, exchanged 33 outbound and over 440 inbound
+logical messages, served two authenticated clients and a session-tagged
+snapshot, and notified both clients before a clean SIGTERM exit. No
+preset/settings mutation or audio/MIDI stream was exercised; the other QC
+product ID `892f` remains untested.
 
 ## Permissions
 
@@ -127,5 +131,5 @@ follow-up work. Audio stays on the Quad Cortex and the OS audio stack.
 Automated native Linux tests cover disconnected authenticated RPC, duplicate
 launches, rejected authentication/framing, file modes, crash recovery,
 SIGTERM and control-quit cleanup, including test-harness failure cleanup.
-They do not exercise physical-device I/O. The measured type-52 exchange above
-is separate hardware evidence and does not establish reconnect or full startup.
+They do not exercise physical-device I/O. The live hardware checks above are
+separate evidence and do not establish the full physical-device checklist.
