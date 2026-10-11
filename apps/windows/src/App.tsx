@@ -2620,8 +2620,8 @@ export function App() {
       case "refresh-state": void refreshSnapshot(); break;
       case "discard-changes": void reloadPreset(); break;
       case "open-tuner": void deviceViews.open("tuner"); break;
-      case "open-gig-view": void deviceViews.open("gig"); break;
-      case "open-io-settings": void deviceViews.open("io"); break;
+      case "open-gig-view": void deviceViews.toggle("gig"); break;
+      case "open-io-settings": void deviceViews.toggle("io"); break;
       case "previous-preset": void navigatePreset(-1); break;
       case "next-preset": void navigatePreset(1); break;
       case "set-tempo": tempoWorkflow.openTempo(); break;

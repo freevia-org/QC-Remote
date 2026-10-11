@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import type { GatewayTransport, PresetList, PresetSnapshot } from "@qc-remote/client";
 import type { CorOsDeviceInformation } from "./coros-reference-settings-pane.tsx";
+import { QC_DEVICE_SCREEN_GESTURES } from "./device-screen-navigation.ts";
 import { closeQcLooperScreen } from "./qc-device-screen.ts";
+import { classifyQcGraphicsTree, type QcObservedScreenKind } from "./use-adaptive-screen-polling.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
 
 export type QcDeviceViewName = "tuner" | "gig" | "io" | "info";
@@ -18,7 +20,9 @@ export interface QcDeviceViewsOptions {
     /** Either the physical unit or a demo device answers. */
     sessionReady: boolean;
   };
-  gateway: Pick<GatewayTransport, "identity" | "tapScreen" | "longTapScreen" | "swipeScreen">;
+  gateway: Pick<GatewayTransport, "identity" | "tapScreen" | "longTapScreen" | "swipeScreen" | "graphicsTree">;
+  /** How often, and for how long, to read the unit's screen while waiting for it to change. */
+  screenPoll?: { intervalMs: number; timeoutMs: number };
   workflows: {
     performance: { showDeviceView(view: "tuner" | "gig", visible?: boolean): Promise<boolean> };
     tuner: { openTuner(): unknown };
@@ -45,7 +49,9 @@ export interface QcDeviceViews {
 
 const isGigView = (view: string | null | undefined) => Boolean(view?.startsWith("gig"));
 const isTunerView = (view: string | null | undefined) => Boolean(view?.startsWith("tuner"));
-const isIoView = (view: string | null | undefined) => Boolean(view?.startsWith("io-"));
+/** The I/O family: the I/O screens and Global EQ, which the unit shows inside its I/O dialog. */
+const isIoView = (view: string | null | undefined) => Boolean(view?.startsWith("io-") || view === "global-eq");
+const DEFAULT_SCREEN_POLL = { intervalMs: 250, timeoutMs: 2_500 };
 
 /**
  * The one set of open, close and toggle workflows for the device screens
@@ -60,11 +66,25 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
   latest.current = options;
 
   const close = useCallback(async () => {
-    const { destination, session, workflows, notice } = latest.current;
+    const { destination, session, workflows, notice, fail } = latest.current;
     const view = destination.view;
     if (isIoView(view)) {
+      if (session.demo) {
+        destination.setView(null);
+        notice("Demo: I/O Settings closed.");
+        return;
+      }
+      if (session.hardwareReady) {
+        try {
+          // The unit has no command for this screen: it closes on a tap of its check button, and only if it is showing it.
+          const closed = await closeIoOnUnit(latest.current);
+          if (!closed) { notice("The Quad Cortex did not close I/O Settings."); return; }
+        } catch (error) {
+          fail(error);
+          return;
+        }
+      }
       destination.setView(null);
-      if (session.demo) notice("Demo: I/O Settings closed.");
       return;
     }
     if (view === "looper-editor") { await closeQcLooperScreen({ looper: workflows.looper, setView: destination.setView }); return; }
@@ -97,6 +117,14 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
         return;
       }
       try {
+        // The unit has no command for this screen: it opens on a long downward drag, but only from its Grid.
+        const shown = await openIoOnUnit(latest.current);
+        if (shown !== "shown") {
+          notice(shown === "busy"
+            ? "Close the screen open on the Quad Cortex before opening I/O Settings."
+            : "The Quad Cortex did not show I/O Settings.");
+          return;
+        }
         await workflows.ioEq.refresh();
         destination.setView("io-overview");
         notice("I/O Settings opened.");
@@ -145,4 +173,53 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
   }, []);
 
   return useMemo(() => ({ deviceInformation, open, close, toggle, forwardGesture }), [deviceInformation, open, close, toggle, forwardGesture]);
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** What the unit is showing, read from its graphics tree. */
+async function unitScreen(gateway: Pick<GatewayTransport, "graphicsTree">): Promise<QcObservedScreenKind> {
+  return classifyQcGraphicsTree((await gateway.graphicsTree()).tree);
+}
+
+/** Wait (bounded) until the unit shows a screen satisfying `wanted`. */
+async function untilUnitShows(options: QcDeviceViewsOptions, wanted: (kind: QcObservedScreenKind) => boolean): Promise<boolean> {
+  const { intervalMs, timeoutMs } = options.screenPoll ?? DEFAULT_SCREEN_POLL;
+  for (let waited = 0; waited <= timeoutMs; waited += intervalMs) {
+    if (wanted(await unitScreen(options.gateway))) return true;
+    await sleep(intervalMs);
+  }
+  return false;
+}
+
+/**
+ * Open I/O Settings on the unit with its one drag gesture. The drag is only
+ * sent when the unit shows its Grid: on any other screen the same drag could
+ * scroll a list or turn a knob. "busy" means another screen is open.
+ */
+async function openIoOnUnit(options: QcDeviceViewsOptions): Promise<"shown" | "busy" | "not-shown"> {
+  const { gateway } = options;
+  const current = await unitScreen(gateway);
+  if (current === "io") return "shown";
+  if (current !== "grid") return "busy";
+  const { x, y, toX, toY } = QC_DEVICE_SCREEN_GESTURES.openIo;
+  await gateway.swipeScreen(x, y, toX, toY);
+  return await untilUnitShows(options, (kind) => kind === "io") ? "shown" : "not-shown";
+}
+
+/**
+ * Close I/O Settings on the unit with a tap on its check button, only while it
+ * shows I/O (a tap elsewhere could press something). Global EQ is drawn inside
+ * the same dialog and its check button may only step back, so a still-open
+ * dialog gets one more tap before the close is reported as failed.
+ */
+async function closeIoOnUnit(options: QcDeviceViewsOptions): Promise<boolean> {
+  const { gateway } = options;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const current = await unitScreen(gateway);
+    if (current !== "io") return true;
+    await gateway.tapScreen(QC_DEVICE_SCREEN_GESTURES.done.x, QC_DEVICE_SCREEN_GESTURES.done.y);
+    if (await untilUnitShows(options, (kind) => kind !== "io")) return true;
+  }
+  return false;
 }
