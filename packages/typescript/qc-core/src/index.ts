@@ -3,7 +3,7 @@ export { recordTempoTap, synchronizeTempoPulseEpoch, type TapTempoResult } from 
 export { canAdoptNativeState } from "./state.ts";
 export { buildWorkspaceDocument, saveWorkspaceDocument, type WorkspaceWriter } from "./workspace-save.ts";
 export { admitGlobalEqPreset, adoptModelPresetCatalog, globalEqPresetsFor, globalEqPresetsFrom, globalEqUnavailableNotice, withoutModelPresetCatalog, type GlobalEqPresets, type GlobalEqPresetsUnavailable } from "./model-preset-catalog.ts";
-export { samePresetAddress, type PresetAddress } from "./preset-address.ts";
+export { samePresetAddress, trimTrailingSlashes, type PresetAddress } from "./preset-address.ts";
 export { PresetLifetime, SupersededPresetOperation, type PresetOperation } from "./preset-lifetime.ts";
 export { blockSelectionIntent, emptyBlockEditorSession, laneControlSelectionId, parameterDrafts, parseLaneControlSelectionId, reduceBlockEditorSession, updateBlockParameter, updateBlockParameters, type BlockEditorSession, type BlockEditorSessionAction } from "./editor.ts";
 export { dispatchSurfaceCommand, surfaceCommand, type QcSurfaceAction, type QcSurfaceCommand, type QcSurfaceCommandHandlers } from "./surface-actions.ts";

@@ -9,7 +9,7 @@
     "./footswitch": "./src/footswitch.ts"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/core.test.ts",
+    "test": "node --experimental-strip-types --test tests/core.test.ts tests/preset-address.test.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

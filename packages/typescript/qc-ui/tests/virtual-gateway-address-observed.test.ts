@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { trimTrailingSlashes } from "@qc-remote/core";
 import type { DeviceActionResult, PresetSnapshot } from "../../qc-client/src/index.ts";
 import { createMemoryVirtualDeviceStorage, createVirtualGatewayTransport, VirtualDeviceStore } from "../src/virtual-gateway.ts";
 import type { VirtualModelCatalogue } from "../src/virtual-device-defaults.ts";
@@ -29,7 +30,7 @@ function claimsVerification(detail: string): boolean {
 
 function assertAddressObserved(result: DeviceActionResult, snapshot: PresetSnapshot, reload: boolean) {
   assert.equal(claimsVerification(result.detail), false, `an unverified result claims verification: ${result.detail}`);
-  const address = `${snapshot.setlistKey.replace(/\/+$/, "")} position ${snapshot.presetPosition}`;
+  const address = `${trimTrailingSlashes(snapshot.setlistKey)} position ${snapshot.presetPosition}`;
   const expected = {
     accepted: true,
     verified: false,
