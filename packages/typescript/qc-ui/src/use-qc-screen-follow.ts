@@ -51,7 +51,7 @@ export interface QcScreenFollowOptions {
   screenPoll?: QcScreenPoll;
 }
 
-const ROUTED: readonly QcObservedScreenKind[] = ["preset-menu", "settings", "modes"];
+const ROUTED: readonly QcObservedScreenKind[] = ["preset-menu", "settings", "modes", "tempo", "cpu-monitor"];
 
 /**
  * Keeps the app and the unit on the same screen, both ways, with one loop guard.

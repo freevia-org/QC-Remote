@@ -16,5 +16,10 @@ export const QC_DEVICE_SCREEN_GESTURES = {
   /** A long press on the mode indicator opens Modes Configuration. */
   modesHold: { x: 700, y: 70 },
   /** The Settings row of the preset menu when it opens scrolled to the bottom. Audited, not re-run on the unit. */
-  settingsRow: { x: 600, y: 406 }
+  settingsRow: { x: 600, y: 406 },
+  /** The Tempo row of the preset menu, which opens scrolled to the bottom (measured on 4.1.0). Its screen closes on the check button (743,30). */
+  tempoRow: { x: 610, y: 286 },
+  /** The CPU Monitor row of the same menu. The monitor is an overlay on the Grid and closes only on its own X, not the check button. */
+  cpuRow: { x: 578, y: 346 },
+  cpuClose: { x: 628, y: 32 }
 } as const;
