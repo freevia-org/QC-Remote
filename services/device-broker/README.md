@@ -20,6 +20,18 @@ The Linux backend uses hidraw. Do not install a libusb driver or detach the
 kernel's USB audio/MIDI driver. Hardware permissions are a separate step;
 building and the automated tests require no attached Quad Cortex.
 
+## Measured Linux HID completion
+
+The Linux writer has one measured control-status `EPIPE` exception, scoped to
+VID/PID `152a:880a`, HID interface 5, and its exact 32-byte report descriptor.
+A hardware probe sent one complete 129-byte type-52 `ResetCommsBuffers`
+handshake report. hidraw returned `EPIPE`, and the device then replied with a
+type-52 message containing the exact fresh session UUID; the optional request
+ID was absent. The shared session layer still requires that fresh UUID echo
+before it completes the handshake. Other Linux device profiles, short writes,
+and other errors remain fail-closed. This proves only that first handshake
+exchange for this descriptor; it does not prove full startup or reconnect.
+
 ## Permissions
 
 For a systemd desktop session, install the supplied rules and reconnect the QC:
@@ -115,4 +127,5 @@ follow-up work. Audio stays on the Quad Cortex and the OS audio stack.
 Automated native Linux tests cover disconnected authenticated RPC, duplicate
 launches, rejected authentication/framing, file modes, crash recovery,
 SIGTERM and control-quit cleanup, including test-harness failure cleanup.
-They do not prove a physical device handshake, reconnect or write.
+They do not exercise physical-device I/O. The measured type-52 exchange above
+is separate hardware evidence and does not establish reconnect or full startup.

@@ -1,4 +1,4 @@
-use crate::backend::{write_report_delivered, NativeHid};
+use crate::backend::{write_report_delivered, NativeHid, WriteStallPolicy};
 use crate::flight::FlightRecorder;
 use hidapi::{HidApi, HidError};
 use quadcortex::commands::{self, OutboundMessage};
@@ -360,8 +360,9 @@ impl WriteProgress {
 fn terminal_write_failure(
     result: &Result<usize, HidError>,
     expected_bytes: usize,
+    policy: WriteStallPolicy,
 ) -> Option<String> {
-    if write_report_delivered(result, expected_bytes) {
+    if write_report_delivered(result, expected_bytes, policy) {
         return None;
     }
     Some(match result {
@@ -378,6 +379,7 @@ fn run_hid_writer<F>(
     stopping: Arc<AtomicBool>,
     terminal_error: Arc<Mutex<Option<String>>>,
     progress: Arc<WriteProgress>,
+    write_stall_policy: WriteStallPolicy,
     mut write_report: F,
 ) where
     F: FnMut(&[u8]) -> Result<usize, HidError>,
@@ -426,7 +428,7 @@ fn run_hid_writer<F>(
             let started = Instant::now();
             let write_result = write_report(&report);
             let completed = matches!(&write_result, Ok(written) if *written == report.len());
-            let failure = terminal_write_failure(&write_result, report.len());
+            let failure = terminal_write_failure(&write_result, report.len(), write_stall_policy);
             let expected_stall = !completed && failure.is_none();
             if let Some(guard) = &message.guard {
                 let outcome = if failure.is_some() {
@@ -512,6 +514,7 @@ impl HidIo {
         connection: u64,
     ) -> Result<Self, UsbError> {
         let device = Arc::new(device);
+        let write_stall_policy = device.write_stall_policy();
         let stopping = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::sync_channel(HID_READ_QUEUE_CAPACITY);
         let reader_device = Arc::clone(&device);
@@ -613,6 +616,7 @@ impl HidIo {
                     writer_stopping,
                     writer_terminal_write_error,
                     writer_progress,
+                    write_stall_policy,
                     |report| writer_device.write(report),
                 );
             }) {
@@ -1763,10 +1767,26 @@ mod tests {
         let completed = Ok(129);
         let short_write = Ok(128);
 
-        assert!(write_report_delivered(&accepted_stall, 129));
-        assert!(write_report_delivered(&completed, 129));
-        assert!(!write_report_delivered(&short_write, 129));
-        assert!(!write_report_delivered(&disconnected, 129));
+        assert!(write_report_delivered(
+            &accepted_stall,
+            129,
+            WriteStallPolicy::WindowsQcError31
+        ));
+        assert!(write_report_delivered(
+            &completed,
+            129,
+            WriteStallPolicy::WindowsQcError31
+        ));
+        assert!(!write_report_delivered(
+            &short_write,
+            129,
+            WriteStallPolicy::WindowsQcError31
+        ));
+        assert!(!write_report_delivered(
+            &disconnected,
+            129,
+            WriteStallPolicy::WindowsQcError31
+        ));
     }
 
     #[cfg(windows)]
@@ -1780,7 +1800,11 @@ mod tests {
                 let accepted_stall = Err(HidError::IoError {
                     error: std::io::Error::from_raw_os_error(31),
                 });
-                assert!(write_report_delivered(&accepted_stall, report.len()));
+                assert!(write_report_delivered(
+                    &accepted_stall,
+                    report.len(),
+                    WriteStallPolicy::WindowsQcError31
+                ));
             }
         }
     }
@@ -1838,6 +1862,7 @@ mod tests {
                     stopping,
                     terminal_write_error,
                     progress,
+                    WriteStallPolicy::Strict,
                     move |report| {
                         writes.fetch_add(1, Ordering::SeqCst);
                         Ok(report.len() - 1)
@@ -1876,6 +1901,55 @@ mod tests {
         drop(read_sender);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn measured_qc_epipe_stall_keeps_native_error_then_later_failure_terminal() {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(HidWriteMessage {
+                message_type: profile::MESSAGE_TYPE_RESET_COMMS_BUFFERS,
+                reports: vec![vec![0_u8; 129], vec![1_u8; 129]],
+                guard: None,
+            })
+            .unwrap();
+        drop(sender);
+        let telemetry = Arc::new(Mutex::new(UsbTelemetry::default()));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let terminal = Arc::new(Mutex::new(None));
+        let writes = AtomicUsize::new(0);
+        super::run_hid_writer(
+            receiver,
+            Arc::clone(&telemetry),
+            Arc::clone(&stopping),
+            Arc::clone(&terminal),
+            Arc::new(super::WriteProgress::default()),
+            WriteStallPolicy::LinuxQc880aControlStatusEpipe,
+            |_| {
+                if writes.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(HidError::IoError {
+                        error: std::io::Error::from_raw_os_error(libc::EPIPE),
+                    })
+                } else {
+                    Err(HidError::IoError {
+                        error: std::io::Error::from_raw_os_error(libc::EIO),
+                    })
+                }
+            },
+        );
+        assert_eq!(writes.load(Ordering::SeqCst), 2);
+        let counts = telemetry.lock_recover();
+        assert_eq!(counts.expected_write_stalls, 1);
+        assert!(!counts.last_hid_write_completed);
+        assert_eq!(counts.write_delivery.failed, 1);
+        assert_eq!(counts.messages_sent, 0, "a partial frame is not sent");
+        assert!(stopping.load(Ordering::Acquire));
+        assert!(terminal
+            .lock_recover()
+            .as_deref()
+            .unwrap()
+            .contains(&libc::EIO.to_string()));
+    }
+
     #[cfg(windows)]
     #[test]
     fn terminal_disconnect_is_propagated_while_error31_remains_delivered() {
@@ -1898,6 +1972,7 @@ mod tests {
             Arc::clone(&stopping),
             Arc::clone(&terminal),
             Arc::new(super::WriteProgress::default()),
+            WriteStallPolicy::WindowsQcError31,
             |_| {
                 let index = writes.fetch_add(1, Ordering::SeqCst);
                 if index == 0 {
@@ -1931,6 +2006,16 @@ mod tests {
             .contains("1167"));
     }
 
+    #[cfg(windows)]
+    fn writer_test_stall_policy() -> WriteStallPolicy {
+        WriteStallPolicy::WindowsQcError31
+    }
+
+    #[cfg(target_os = "linux")]
+    fn writer_test_stall_policy() -> WriteStallPolicy {
+        WriteStallPolicy::Strict
+    }
+
     fn writer_test_io(
         write: impl FnMut(&[u8]) -> Result<usize, HidError> + Send + 'static,
     ) -> HidIo {
@@ -1952,6 +2037,7 @@ mod tests {
                     stopping,
                     terminal,
                     progress,
+                    writer_test_stall_policy(),
                     write,
                 )
             })
@@ -2190,6 +2276,7 @@ mod tests {
             Arc::clone(&stopping),
             Arc::clone(&terminal),
             Arc::new(super::WriteProgress::default()),
+            WriteStallPolicy::Strict,
             |report| {
                 writes.fetch_add(1, Ordering::SeqCst);
                 owner.lock().unwrap().disconnect(1, false);
@@ -2349,6 +2436,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             Arc::clone(&terminal),
             Arc::new(super::WriteProgress::default()),
+            WriteStallPolicy::Strict,
             |_| {
                 writes.fetch_add(1, Ordering::SeqCst);
                 // The Windows native status-stage exception must not turn a

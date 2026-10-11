@@ -1,3 +1,4 @@
+use super::WriteStallPolicy;
 use crate::usb::UsbError;
 use hidapi::{HidApi, HidDevice, HidError};
 use std::cell::UnsafeCell;
@@ -52,6 +53,10 @@ impl SharedWindowsHid {
         // shared reference ends with the call, and the `Arc` holding `self` keeps the device alive.
         unsafe { (&*self.0.get()).write(report) }
     }
+
+    pub(crate) fn write_stall_policy(&self) -> WriteStallPolicy {
+        WriteStallPolicy::WindowsQcError31
+    }
 }
 
 /// The QC accepts an output report and then deliberately STALLs its Windows
@@ -61,10 +66,13 @@ impl SharedWindowsHid {
 pub(crate) fn write_report_delivered(
     result: &Result<usize, HidError>,
     expected_bytes: usize,
+    policy: WriteStallPolicy,
 ) -> bool {
     match result {
         Ok(written) => *written == expected_bytes,
-        Err(HidError::IoError { error }) => error.raw_os_error() == Some(31),
+        Err(HidError::IoError { error }) => {
+            policy == WriteStallPolicy::WindowsQcError31 && error.raw_os_error() == Some(31)
+        }
         Err(_) => false,
     }
 }

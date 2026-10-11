@@ -12,9 +12,11 @@ OS-specific completion policy:
 - Windows retains its `windows-native` hidapi backend, one handle with independent
   RX/TX lanes, and the measured `ERROR_GEN_FAILURE` (31) status-stage exception.
 - Linux uses hidapi's `linux-native-basic-udev` backend: udev/sysfs discovery and
-  hidraw I/O, without a link-time libudev dependency. It accepts a write only when
-  the complete report length was returned. No Windows status code or unmeasured
-  Linux error is treated as delivery.
+  hidraw I/O, without a link-time libudev dependency. Its measured Linux
+  control-status `EPIPE` exception is limited to VID/PID `152a:880a`, interface
+  5, and that interface's exact 32-byte report descriptor. Every other Linux
+  profile still requires a complete-length write; short writes and other errors
+  fail closed. Windows status codes are not reused on Linux.
 
 Both backends pin hidapi **exactly to 2.6.7**. Their private full-duplex wrappers
 have separate safety audits in `src/backend/`; re-audit both before upgrading.
@@ -26,9 +28,14 @@ one RX thread and one TX thread and exposes no other methods on that handle.
 
 Linux writes retain the report-ID byte, including zero for an unnumbered report,
 as required by the [kernel hidraw API](https://www.kernel.org/doc/html/latest/hid/hidraw.html).
-Inbound normalization continues through the shared transport runtime. Real-device
-report-layout and firmware validation remain required before claiming Linux USB
-conformance.
+Inbound normalization continues through the shared transport runtime. A native
+Linux hardware probe observed one full 129-byte type-52 `ResetCommsBuffers`
+report followed by `EPIPE`, then a type-52 reply echoing the request's fresh
+session UUID; that reply omitted the optional request ID. This demonstrates the
+specific Linux `SET_REPORT` status-stage behavior for the descriptor above. The
+shared protocol layer still requires the exact fresh session UUID before the
+handshake completes. This single exchange does not establish full startup,
+reconnect, or general Linux USB conformance.
 
 Linux device selection uses vendor/product and an advertised serial, so a
 different unit cannot inherit a reused `/dev/hidrawN` path. If no serial is
