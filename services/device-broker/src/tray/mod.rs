@@ -100,7 +100,7 @@ pub fn interactive_session() -> bool {
 pub fn interactive_session() -> bool {
     #[cfg(all(target_os = "linux", feature = "linux-tray"))]
     {
-        return linux::interactive_session();
+        linux::interactive_session()
     }
     #[cfg(not(all(target_os = "linux", feature = "linux-tray")))]
     false

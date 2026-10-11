@@ -85,7 +85,7 @@ impl PerformanceMidi {
         }
 
         let message = [
-            quadcortex::profile::MIDI_CONTROL_CHANGE_STATUS as u8,
+            quadcortex::profile::MIDI_CONTROL_CHANGE_STATUS,
             controller,
             value,
         ];
@@ -431,6 +431,28 @@ fn delivery_failure(written: usize, reason: &str) -> String {
 }
 
 #[cfg(test)]
+fn discover_sysfs_midi(target: &PhysicalUsb, sysfs_root: &Path) -> Result<Vec<String>, String> {
+    let sound = sysfs_root.join("class/sound");
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(&sound).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if is_raw_midi_name(&name)
+            && physical_usb_ancestor(&entry.path().join("device"), sysfs_root).as_ref()
+                == Ok(target)
+        {
+            matches.push(name);
+        }
+    }
+    if matches.len() > 1 {
+        return Err(
+            "Multiple ALSA raw MIDI endpoints map to the selected USB device (ambiguous)".into(),
+        );
+    }
+    Ok(matches)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
@@ -630,26 +652,4 @@ mod tests {
     }
 
     use std::os::unix::fs::symlink;
-}
-
-#[cfg(test)]
-fn discover_sysfs_midi(target: &PhysicalUsb, sysfs_root: &Path) -> Result<Vec<String>, String> {
-    let sound = sysfs_root.join("class/sound");
-    let mut matches = Vec::new();
-    for entry in fs::read_dir(&sound).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if is_raw_midi_name(&name)
-            && physical_usb_ancestor(&entry.path().join("device"), sysfs_root).as_ref()
-                == Ok(target)
-        {
-            matches.push(name);
-        }
-    }
-    if matches.len() > 1 {
-        return Err(
-            "Multiple ALSA raw MIDI endpoints map to the selected USB device (ambiguous)".into(),
-        );
-    }
-    Ok(matches)
 }
