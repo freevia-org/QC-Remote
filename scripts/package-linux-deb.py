@@ -352,7 +352,7 @@ def package(
                     [
                         "npm", "exec", "--workspace", "@qc-remote/windows", "--", "tauri", "bundle",
                         "--bundles", "deb", "--features", "tray-sidecar,custom-protocol",
-                        "--target", target, "--debug", "--ci", "--no-binary-patching",
+                        "--target", target, "--debug", "--ci",
                     ],
                     cwd=ROOT,
                     timeout=timeout,
@@ -401,7 +401,7 @@ def package(
             [
                 "npm", "run", "tauri:build", "--workspace", "@qc-remote/windows", "--",
                 "--bundles", "deb", "--features", "tray-sidecar,custom-protocol",
-                "--target", target, "--ci", "--no-binary-patching",
+                "--target", target, "--ci",
             ],
             cwd=ROOT,
             timeout=timeout,
