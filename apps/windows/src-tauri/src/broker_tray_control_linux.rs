@@ -210,7 +210,9 @@ fn reap_children(children: Arc<Mutex<Vec<Child>>>) {
         while index < children.len() {
             match children[index].try_wait() {
                 Ok(Some(_)) => {
-                    children.swap_remove(index);
+                    // try_wait already reaped this child; wait returns its
+                    // cached exit status without blocking the reaper.
+                    let _ = children.swap_remove(index).wait();
                 }
                 Ok(None) | Err(_) => index += 1,
             }
@@ -246,14 +248,11 @@ fn write_autostart_entry(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("Inspect QC Remote autostart entry: {error}")),
     }
-    atomic_write(&autostart, &target, contents.as_bytes())
+    atomic_write(autostart, &target, contents.as_bytes())
 }
 
 pub(super) fn remove_run_entry() -> Result<(), String> {
-    let autostart = match autostart_directory() {
-        Ok(path) => path,
-        Err(error) => return Err(error),
-    };
+    let autostart = autostart_directory()?;
     remove_autostart_entry(&autostart, current_uid()?)
 }
 
@@ -468,9 +467,9 @@ mod tests {
         let temporary = TestDirectory::new("qc-linux-sidecar");
         let root = &temporary.0;
         let sidecar = root.join("qc-device-broker");
-        assert_eq!(locate_resident_host(&root), None);
+        assert_eq!(locate_resident_host(root), None);
         fs::write(&sidecar, b"broker").unwrap();
-        assert_eq!(locate_resident_host(&root), Some(sidecar));
+        assert_eq!(locate_resident_host(root), Some(sidecar));
     }
 
     #[test]

@@ -123,7 +123,7 @@ const ANTIGRAVITY_STATE_RPC_PATH: &str =
 /// Every one of them answers in well under a second on a healthy machine. A
 /// wedged WMI or Appx service used to hold a blocking-pool thread, and the
 /// panel's status call with it, for as long as the service stayed wedged.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(windows)]
 const EXTERNAL_TOOL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Runs `command` to completion like [`Command::output`], but gives up after
@@ -194,7 +194,7 @@ fn run_with_timeout(command: &mut Command, timeout: Duration) -> std::io::Result
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+#[cfg_attr(not(windows), allow(dead_code))]
 #[serde(rename_all = "camelCase")]
 struct RunningAntigravityLanguageServer {
     executable_path: PathBuf,
@@ -751,7 +751,7 @@ fn where_command(executable_name: &str) -> Vec<PathBuf> {
         let Some(path) = std::env::var_os("PATH") else {
             return Vec::new();
         };
-        return where_command_in(executable_name, &path);
+        where_command_in(executable_name, &path)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -4415,7 +4415,7 @@ fn open_chatgpt_desktop_blocking() -> Result<(), String> {
     {
         let codex = codex_cli_executable()
             .ok_or_else(|| "Codex CLI is not installed for this Linux user.".to_owned())?;
-        return launch_codex_cli_in_terminal(&codex);
+        launch_codex_cli_in_terminal(&codex)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -4500,9 +4500,9 @@ pub fn open_chatgpt_configuration() -> Result<(), String> {
     {
         let mut command = Command::new("xdg-open");
         command.arg(&config_path);
-        return crate::broker_tray_control::spawn_owned(command).map_err(|error| {
+        crate::broker_tray_control::spawn_owned(command).map_err(|error| {
             format!("Could not open the shared ChatGPT and Codex MCP configuration: {error}")
-        });
+        })
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     Err("opening the MCP configuration is unsupported on this platform".to_owned())

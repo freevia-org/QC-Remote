@@ -1040,7 +1040,7 @@ fn state_file_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
         let _ = app;
         let directory = crate::broker_paths::app_local_data_dir();
         qc_native_platform::paths::prepare_directory(&directory)?;
-        return Ok(vec![directory.join(STATE_FILE_NAME)]);
+        Ok(vec![directory.join(STATE_FILE_NAME)])
     }
     #[cfg(not(target_os = "linux"))]
     {

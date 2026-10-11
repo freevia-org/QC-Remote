@@ -207,7 +207,7 @@ pub(crate) fn state_paths() -> Result<Vec<PathBuf>, String> {
     {
         let directory = crate::broker_paths::app_local_data_dir();
         qc_native_platform::paths::prepare_directory(&directory)?;
-        return Ok(vec![directory.join(STATE_FILE)]);
+        Ok(vec![directory.join(STATE_FILE)])
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -233,7 +233,7 @@ pub(crate) fn state_paths() -> Result<Vec<PathBuf>, String> {
 
 /// The candidate list, separated from the environment that resolves it so the
 /// set itself can be asserted.
-#[cfg(any(not(target_os = "linux"), test))]
+#[cfg(not(target_os = "linux"))]
 fn state_paths_from(local: Option<PathBuf>, roaming: Option<PathBuf>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(local) = local {
@@ -1340,7 +1340,7 @@ pub(crate) fn app_local_data_dir() -> Option<PathBuf> {
     {
         let directory = crate::broker_paths::app_local_data_dir();
         qc_native_platform::paths::prepare_directory(&directory).ok()?;
-        return Some(directory);
+        Some(directory)
     }
     #[cfg(not(target_os = "linux"))]
     {
