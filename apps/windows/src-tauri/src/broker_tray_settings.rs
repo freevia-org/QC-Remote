@@ -93,6 +93,29 @@ pub fn set_idle_minutes_in(dir: &Path, minutes: Option<u32>) -> Result<BrokerTra
     update_key(dir, "idleDisconnectMinutes", value)
 }
 
+/// The key the broker reads (`tray_settings::read_updater_relay_in`) to decide
+/// whether it carries the Quad Cortex's own update requests to Neural DSP.
+const UPDATER_RELAY_KEY: &str = "updaterRelayEnabled";
+
+/// "Internet for the Quad Cortex": on unless the file says `false`, so a fresh
+/// install and an install whose file predates the key both read as on. Any
+/// other value, a missing or unreadable file included, means on.
+pub fn updater_relay_enabled_in(dir: &Path) -> bool {
+    read_document(dir)
+        .get(UPDATER_RELAY_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// Switch the broker's update relay. Written under the same lock and rename as
+/// the tray keys, so neither of those is disturbed; the running broker notices
+/// within about two seconds and ends a transfer that is in progress when it is
+/// switched off. Returns the value now stored.
+pub fn set_updater_relay_enabled_in(dir: &Path, enabled: bool) -> Result<bool, String> {
+    update_key(dir, UPDATER_RELAY_KEY, Value::Bool(enabled))?;
+    Ok(updater_relay_enabled_in(dir))
+}
+
 fn update_key(dir: &Path, key: &str, value: Value) -> Result<BrokerTraySettings, String> {
     fs::create_dir_all(dir).map_err(|error| format!("Create tray settings directory: {error}"))?;
     // Lock a stable sidefile, never the replaced document. Keep it after unlock:
@@ -447,5 +470,63 @@ mod tests {
                 idle_disconnect_minutes: Some(1440)
             }
         );
+    }
+
+    #[test]
+    fn the_update_relay_reads_on_unless_the_file_says_false() {
+        let dir = Scratch::new();
+        assert!(updater_relay_enabled_in(&dir.0), "no file");
+        for bytes in ["{not json", "[]", "{}", r#"{"trayEnabled": false}"#] {
+            fs::write(dir.file(), bytes).unwrap();
+            assert!(updater_relay_enabled_in(&dir.0), "{bytes}");
+        }
+        for not_a_bool in [json!("false"), json!(0), json!(null), json!([])] {
+            fs::write(
+                dir.file(),
+                json!({"updaterRelayEnabled": not_a_bool}).to_string(),
+            )
+            .unwrap();
+            assert!(updater_relay_enabled_in(&dir.0), "{not_a_bool}");
+        }
+        fs::write(dir.file(), r#"{"updaterRelayEnabled": false}"#).unwrap();
+        assert!(!updater_relay_enabled_in(&dir.0));
+    }
+
+    #[test]
+    fn switching_the_update_relay_keeps_every_other_key_and_the_tray_defaults() {
+        let dir = Scratch::new();
+        fs::write(
+            dir.file(),
+            r#"{"trayEnabled": false, "idleDisconnectMinutes": 30, "updaterRelayExtraDomains": ["cdn.example.net"]}"#,
+        )
+        .unwrap();
+        assert!(!set_updater_relay_enabled_in(&dir.0, false).unwrap());
+        let document: Value = serde_json::from_slice(&fs::read(dir.file()).unwrap()).unwrap();
+        assert_eq!(
+            document,
+            json!({
+                "trayEnabled": false,
+                "idleDisconnectMinutes": 30,
+                "updaterRelayExtraDomains": ["cdn.example.net"],
+                "updaterRelayEnabled": false
+            })
+        );
+        assert!(set_updater_relay_enabled_in(&dir.0, true).unwrap());
+        // The tray's own setters keep the relay key, and the relay's keeps the tray's.
+        set_idle_minutes_in(&dir.0, Some(10)).unwrap();
+        set_updater_relay_enabled_in(&dir.0, false).unwrap();
+        set_tray_enabled_in(&dir.0, true).unwrap();
+        assert!(!updater_relay_enabled_in(&dir.0));
+        assert_eq!(
+            broker_tray_settings_in(&dir.0),
+            BrokerTraySettings {
+                tray_enabled: true,
+                idle_disconnect_minutes: Some(10)
+            }
+        );
+        // A fresh file gets the tray defaults, never an off switch.
+        let fresh = Scratch::new();
+        set_updater_relay_enabled_in(&fresh.0, false).unwrap();
+        assert!(broker_tray_settings_in(&fresh.0).tray_enabled);
     }
 }
