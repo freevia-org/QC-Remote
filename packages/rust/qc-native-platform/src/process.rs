@@ -414,6 +414,31 @@ mod linux {
             );
             let unrelated_pid = fixture.child.as_ref().unwrap().id();
             assert!(os_process_is_alive(unrelated_pid));
+            use std::os::unix::fs::MetadataExt;
+            let expected = fs::metadata(&unrelated).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut observed_executable = None;
+            while std::time::Instant::now() < deadline {
+                if !os_process_is_alive(unrelated_pid) {
+                    break;
+                }
+                observed_executable = fs::metadata(format!("/proc/{unrelated_pid}/exe"))
+                    .ok()
+                    .map(|metadata| (metadata.dev(), metadata.ino()));
+                if observed_executable == Some((expected.dev(), expected.ino())) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(
+                os_process_is_alive(unrelated_pid),
+                "unrelated executable exited before its procfs identity was observable"
+            );
+            assert_eq!(
+                observed_executable,
+                Some((expected.dev(), expected.ino())),
+                "procfs did not expose the unrelated executable identity before the deadline"
+            );
             let found = processes_by_image(name);
             assert!(found
                 .iter()

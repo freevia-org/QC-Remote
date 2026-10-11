@@ -470,7 +470,9 @@ fn a_control_connection_never_parks_the_icons_idle_release() {
     let minute = Duration::from_millis(600);
     test_support::set_policy_minute(&served.handle, minute);
     served.handle.set_tray_hold(Some(IdlePolicy::Minutes(1)));
-    let idle_from = Instant::now();
+    let idle_from = test_support::idle_origins(&served.handle)
+        .0
+        .expect("tray idle origin is armed");
     assert!(!test_support::idle_released(&served.handle));
     // Accepted and still authenticating: the watcher wakes and parks.
     let mut control = TcpStream::connect(("127.0.0.1", port(&scratch))).unwrap();
