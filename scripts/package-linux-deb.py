@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
-import io
 import json
 import lzma
 import os
@@ -480,7 +479,10 @@ def package(
             if len(packages) != 1:
                 raise PackageError(f"Tauri produced {len(packages)} Debian packages in {deb_dir}")
             expected_hashes = {
-                "/usr/bin/qc-remote": sha256_file(app_binary),
+                # Tauri patches the prepared app in place with bundle metadata.
+                # Verify those exact post-patch bytes in the package while
+                # retaining the untouched prebuilt input for provenance.
+                "/usr/bin/qc-remote": sha256_file(staged_app),
                 "/usr/bin/qc-device-broker": sha256_file(broker_binary),
                 PACKAGE_RULE_PATH: sha256_file(RULES),
             }
