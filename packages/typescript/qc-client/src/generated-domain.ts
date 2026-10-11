@@ -1,7 +1,7 @@
 // Generated from public contract snapshots and private maintainer specifications; do not edit by hand. The generator is kept in the private repository.
 export const QC_CONNECTION_PHASES = ["disconnected","discovering","searching","opening","handshaking","syncing","ready","degraded","needs-attention"] as const;
 export type ConnectionPhase = typeof QC_CONNECTION_PHASES[number];
-export const QC_BROKER_CONNECTION_PHASE_ALIASES = {"error":"needs-attention","connecting":"searching"} as const;
+export const QC_BROKER_CONNECTION_PHASE_ALIASES = {"error":"needs-attention","connecting":"opening"} as const;
 
 export const QC_GRID_ROWS = 4;
 export const QC_GRID_COLUMNS = 8;

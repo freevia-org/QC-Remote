@@ -15,6 +15,7 @@
 //! whose installer was interrupted.
 use crate::broker_tray_settings::{
     broker_tray_settings_in, parse_idle_minutes, set_idle_minutes_in, set_tray_enabled_in,
+    set_updater_relay_enabled_in, updater_relay_enabled_in,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -49,6 +50,9 @@ pub struct BrokerTrayStatus {
     pub idle_disconnect_minutes: Option<u32>,
     pub tray_running: bool,
     pub tray_stopping: bool,
+    /// "Internet for the Quad Cortex": the broker carries the unit's own update
+    /// requests to Neural DSP. On unless the settings file says otherwise.
+    pub updater_relay_enabled: bool,
     pub last_error: Option<String>,
 }
 
@@ -106,6 +110,7 @@ impl<E: TrayEffects> BrokerTrayControl<E> {
             idle_disconnect_minutes: settings.idle_disconnect_minutes,
             tray_running: running,
             tray_stopping: running && !settings.tray_enabled,
+            updater_relay_enabled: updater_relay_enabled_in(&self.directory),
             last_error: self
                 .last_error
                 .lock()
@@ -127,6 +132,13 @@ impl<E: TrayEffects> BrokerTrayControl<E> {
         let minutes = parse_idle_minutes(minutes)?;
         set_idle_minutes_in(&self.directory, minutes)?;
         // An idle-period edit cannot repair an earlier spawn/autostart failure.
+        Ok(self.status())
+    }
+
+    /// Only the settings file changes: the running broker re-reads it, and
+    /// nothing is launched, stopped or registered, so no tray effect runs.
+    pub fn set_updater_relay_enabled(&self, enabled: bool) -> Result<BrokerTrayStatus, String> {
+        set_updater_relay_enabled_in(&self.directory, enabled)?;
         Ok(self.status())
     }
 
@@ -623,7 +635,8 @@ mod tests {
             serde_json::to_value(control.status()).unwrap(),
             json!({
                 "trayEnabled": true, "idleDisconnectMinutes": 15,
-                "trayRunning": false, "trayStopping": false, "lastError": null
+                "trayRunning": false, "trayStopping": false,
+                "updaterRelayEnabled": true, "lastError": null
             })
         );
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
@@ -802,6 +815,29 @@ mod tests {
             None
         );
         assert!(state.events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_update_relay_switch_defaults_on_and_touches_no_tray_effect() {
+        let dir = Scratch::new();
+        let state = Arc::new(FakeState::default());
+        let control = controller(&dir.0, &state);
+        assert!(control.status().updater_relay_enabled, "a fresh install");
+        set_tray_enabled_in(&dir.0, false).unwrap();
+        assert!(
+            control.status().updater_relay_enabled,
+            "a file that predates the key"
+        );
+        let off = control.set_updater_relay_enabled(false).unwrap();
+        assert!(!off.updater_relay_enabled && !off.tray_enabled);
+        assert!(!control.status().updater_relay_enabled);
+        let on = control.set_updater_relay_enabled(true).unwrap();
+        assert!(on.updater_relay_enabled);
+        assert_eq!(on.idle_disconnect_minutes, Some(15));
+        assert!(
+            state.events.lock().unwrap().is_empty(),
+            "the relay switch must not launch, stop or register anything"
+        );
     }
 
     #[test]

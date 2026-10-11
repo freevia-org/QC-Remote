@@ -3297,11 +3297,13 @@ dependencies = [
  "quadcortex",
  "quadcortex-hid",
  "rand 0.9.5",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "signal-hook",
  "subtle",
+ "tokio",
  "uuid",
  "windows-sys 0.61.2",
 ]
@@ -3351,7 +3353,7 @@ dependencies = [
 
 [[package]]
 name = "qc-remote"
-version = "0.1.182"
+version = "0.1.183"
 dependencies = [
  "async-trait",
  "axum",

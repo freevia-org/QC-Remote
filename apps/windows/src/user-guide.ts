@@ -323,7 +323,7 @@ export const USER_GUIDE: readonly GuideSection[] = [
     blocks: [
       {
         kind: "paragraph",
-        text: "Edit > Settings… opens the Settings window. Device model sets the chassis drawn on screen. AI access level, also on the LOCAL panel header, applies to every paired assistant at once and is remembered. Show tray icon keeps MCP access available with this window closed. Release QC after last client releases the unit a set number of minutes after the last client disconnects; it needs the tray icon."
+        text: "Edit > Settings… opens the Settings window. Device model sets the chassis drawn on screen. AI access level, also on the LOCAL panel header, applies to every paired assistant at once and is remembered. Show tray icon keeps MCP access available with this window closed. Internet for the Quad Cortex, on by default, lets the unit use this computer's internet connection to reach Neural DSP's servers (neuraldsp.com addresses, plus any extra domain you add) for updates while it is connected over USB; its serial number and its own credentials go with its requests. Release QC after last client releases the unit a set number of minutes after the last client disconnects; it needs the tray icon."
       },
       {
         kind: "paragraph",
@@ -378,7 +378,7 @@ export const USER_GUIDE: readonly GuideSection[] = [
       },
       {
         kind: "note",
-        text: "The report names no serial numbers, no MAC addresses, no usernames, no file paths, and no preset or setlist names. Device info… states the same limit from the other side: hardware serial numbers and account identifiers are never read and never displayed."
+        text: "The report names no serial numbers, no MAC addresses, no usernames, no file paths, and no preset or setlist names. Device info… shows the serial number and software versions the Quad Cortex reports about itself on this computer only; they are never included in a report, and cloud account identifiers are never read or displayed."
       }
     ]
   },

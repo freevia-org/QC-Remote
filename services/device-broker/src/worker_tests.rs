@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::updater_relay::fetch::{FetchFailure, FetchRequest, FetchedHop, HttpFetcher};
 use std::collections::BTreeMap;
 
 fn wait_for_status(
@@ -291,6 +292,7 @@ pub(super) fn refresh_controller() -> (DeviceController, mpsc::Receiver<Command>
             session_owner: Arc::new(Mutex::new(owner)),
             session_clock: Instant::now(),
             commands,
+            updater_relay: Arc::new(UpdaterRelay::new()),
             touch_guard: Default::default(),
             connect_interrupt: ConnectInterrupt::default(),
             worker: Default::default(),
@@ -3423,12 +3425,87 @@ fn a_reset_resume_restarts_the_session_and_reports_why() {
         &controller.session_owner,
         &controller.session_clock,
         &state_messages,
+        &controller.updater_relay,
     );
     let status = controller.status();
     assert_eq!(status.phase, "searching");
     assert!(status.detail.contains("FACTORY_RESET"), "{}", status.detail);
     assert!(!controller.session_owner.lock_recover().is_connected());
     assert!(matches!(decoder.try_recv(), Ok(StateDecoderCommand::Reset)));
+}
+
+/// A fetcher that never answers until released: a request that stays running.
+struct StalledFetcher(Arc<AtomicBool>);
+
+impl HttpFetcher for StalledFetcher {
+    fn get(&self, _request: &FetchRequest<'_>) -> Result<FetchedHop, FetchFailure> {
+        while !self.0.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(5));
+        }
+        Err(FetchFailure::Io)
+    }
+}
+
+/// A type-61 CHECK request as the unit sends it.
+fn relay_check_frame(updater_request_id: u64) -> Vec<u8> {
+    pa::UpdaterForwardMessage {
+        action: pa::message_action::Enum::Update as i32,
+        updater_request_id,
+        request_id: None,
+        request: Some(pa::updater_forward_message::Request::Request(
+            pa::UpdaterForwardRequest {
+                r#type: pa::updater_forward_request_type::Enum::Check as i32,
+                url: "https://cloud-api.neuraldsp.com/firmware/v1/latest".into(),
+                timeout: 60_000,
+                headers: Vec::new(),
+                payload: None,
+            },
+        )),
+        response: None,
+    }
+    .encode_to_vec()
+}
+
+#[test]
+fn a_restarted_session_ends_the_update_relay_request_it_was_carrying() {
+    use crate::updater_relay::Disposition;
+    // The restart makes the reconnect due at once, so the loop's no-session
+    // branch, which used to be the only place the relay was cancelled, never
+    // runs: the old request kept streaming into the new session.
+    let release = Arc::new(AtomicBool::new(false));
+    let relay = UpdaterRelay::with_parts(
+        Arc::new(StalledFetcher(Arc::clone(&release))),
+        Arc::new(AtomicBool::new(false)),
+    );
+    assert_eq!(
+        relay.on_forward_frame(&relay_check_frame(41), Instant::now()),
+        Disposition::Started
+    );
+    assert!(relay.is_active());
+
+    let (controller, _commands) = refresh_controller();
+    let (state_messages, _decoder) = mpsc::sync_channel(4);
+    let mut connection = None;
+    let mut pending = Vec::new();
+    let mut backup = None;
+    restart_session(
+        "Quad Cortex resumed after FACTORY_RESET; resynchronizing the session",
+        &mut connection,
+        &mut pending,
+        &mut backup,
+        &controller.state,
+        &controller.latest_messages,
+        &controller.session_owner,
+        &controller.session_clock,
+        &state_messages,
+        &relay,
+    );
+    assert!(!relay.is_active(), "the old request outlived its session");
+    assert!(
+        relay.poll_outbound().is_none(),
+        "and nothing of it is left to send"
+    );
+    release.store(true, Ordering::Release);
 }
 
 #[test]
@@ -3478,6 +3555,7 @@ fn a_new_connection_epoch_clears_all_prior_transport_telemetry() {
         max_reader_lock_stall_ms: 42,
         last_message_type: Some(49),
         session_epoch: 3,
+        updater_relay: Default::default(),
     }));
 
     begin_connection_epoch(&state, "Opening native QC USB session");

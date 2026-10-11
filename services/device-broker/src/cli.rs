@@ -358,6 +358,11 @@ pub fn main(binary: Binary) {
                 DeviceController::start_disconnected()
             }
             .unwrap_or_else(|error| fail(error));
+            // No descriptor here, so the settings directory is the app's own.
+            configure_updater_relay_directory(
+                &controller,
+                binary.default_directory.map(|default| default()),
+            );
             #[cfg(target_os = "linux")]
             let _signal_watch = {
                 let shutdown = controller.shutdown_handle();
@@ -377,7 +382,7 @@ pub fn main(binary: Binary) {
                 fail(error);
             }
         }
-        Mode::VerifyLive => verify_live(),
+        Mode::VerifyLive => verify_live(binary.default_directory.map(|default| default())),
         Mode::Probe => println!(
             "{}",
             serde_json::to_string(&probe()).expect("probe result serializes")
@@ -706,10 +711,37 @@ fn install_release_with(
     false
 }
 
+/// Point the update relay of a broker that has no descriptor (`--stdio`,
+/// `--verify-live`) at the directory of the app's broker settings, the one
+/// every descriptor-backed broker reads, so the Settings switch "Internet for
+/// the Quad Cortex" and `updaterRelayExtraDomains` apply in every mode that
+/// can carry the unit's requests. Returns whether a directory was known. A
+/// build that names none (the developer build) keeps the relay's defaults:
+/// on, `neuraldsp.com` only, and no way to change them.
+fn configure_updater_relay_directory(
+    controller: &DeviceController,
+    directory: Option<PathBuf>,
+) -> bool {
+    match directory {
+        Some(directory) => {
+            controller.configure_updater_relay(directory);
+            true
+        }
+        None => {
+            eprintln!(
+                "No settings directory is known to this build; the update relay runs on its \
+                 defaults and the Settings switch cannot reach it"
+            );
+            false
+        }
+    }
+}
+
 /// `process::exit` runs no destructors, so every early exit drops the
 /// controller first: its Drop waits for the USB worker's device teardown.
-fn verify_live() {
+fn verify_live(settings_directory: Option<PathBuf>) {
     let controller = DeviceController::start().unwrap_or_else(|error| fail(error));
+    configure_updater_relay_directory(&controller, settings_directory);
     let initial = controller.wait_for_ready(Duration::from_millis(
         quadcortex::profile::READY_WAIT_TIMEOUT_MS,
     ));
@@ -1080,5 +1112,67 @@ mod tests {
         install_release(&busy, None);
         assert!(!busy.shutting_down());
         test_support::finish(&busy);
+    }
+
+    #[test]
+    fn a_broker_without_a_descriptor_reads_the_relay_switch_from_the_app_directory() {
+        // `--stdio` and `--verify-live` have no descriptor path, so nothing
+        // used to tell their update relay where the Settings switch lives and
+        // it ran on its defaults, on, whatever the user had chosen.
+        let directory =
+            std::env::temp_dir().join(format!("qc-cli-relay-switch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let controller = DeviceController::start_disconnected().unwrap();
+        assert!(
+            controller.status().updater_relay.enabled,
+            "the default is on"
+        );
+
+        // A build that names no directory changes nothing.
+        assert!(!configure_updater_relay_directory(&controller, None));
+        assert!(controller.status().updater_relay.enabled);
+
+        // The user clears the switch: the stdio broker follows it.
+        crate::tray_settings::set_updater_relay_enabled_in(&directory, false).unwrap();
+        assert!(configure_updater_relay_directory(
+            &controller,
+            Some(directory.clone())
+        ));
+        assert!(!controller.status().updater_relay.enabled);
+
+        // A settings file without the key, or no file at all, means on.
+        std::fs::write(
+            directory.join(crate::tray_settings::SETTINGS_FILE),
+            br#"{"trayEnabled": true}"#,
+        )
+        .unwrap();
+        assert!(configure_updater_relay_directory(
+            &controller,
+            Some(directory.clone())
+        ));
+        assert!(controller.status().updater_relay.enabled);
+        std::fs::remove_file(directory.join(crate::tray_settings::SETTINGS_FILE)).unwrap();
+        assert!(configure_updater_relay_directory(
+            &controller,
+            Some(directory.clone())
+        ));
+        assert!(controller.status().updater_relay.enabled);
+
+        // And the extra domains reach it too.
+        std::fs::write(
+            directory.join(crate::tray_settings::SETTINGS_FILE),
+            br#"{"updaterRelayExtraDomains": ["downloads.example.net"]}"#,
+        )
+        .unwrap();
+        assert!(configure_updater_relay_directory(
+            &controller,
+            Some(directory.clone())
+        ));
+        assert_eq!(
+            controller.status().updater_relay.allowed_domains,
+            ["neuraldsp.com", "downloads.example.net"]
+        );
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }

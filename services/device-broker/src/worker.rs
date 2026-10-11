@@ -5,6 +5,8 @@ mod preset_workflow;
 mod retention;
 mod session_identity;
 mod state_journal;
+use crate::updater_relay::pump::{RelayPump, RelaySink};
+use crate::updater_relay::{RelayStatus, UpdaterRelay};
 #[cfg(test)]
 use prost::Message as _;
 use quadcortex::commands::{self, DeviceCommand, DeviceOperation, OutboundMessage};
@@ -143,6 +145,11 @@ pub struct BrokerStatus {
     pub reader_lock_stall_events: u64,
     pub max_reader_lock_stall_ms: u64,
     pub last_message_type: Option<u16>,
+    /// The update-only HTTP relay: whether it is on, what the unit has asked
+    /// it for, what it refused, and the audit record of finished requests. A
+    /// unit that asks while the relay is off is counted here and `note` says
+    /// so. Always current; read from the relay on every status call.
+    pub updater_relay: RelayStatus,
     /// Invalidates queued host admission on connection attempts, completed
     /// transport opens, and in-session state rebuilds. Connection timestamps
     /// alone cannot distinguish an in-session rebuild.
@@ -241,6 +248,7 @@ impl Default for BrokerStatus {
             reader_lock_stall_events: 0,
             max_reader_lock_stall_ms: 0,
             last_message_type: None,
+            updater_relay: RelayStatus::default(),
             session_epoch: 0,
         }
     }
@@ -432,6 +440,9 @@ pub struct DeviceController {
     session_owner: Arc<Mutex<SessionRuntime>>,
     session_clock: Instant,
     commands: mpsc::SyncSender<Command>,
+    /// Answers the unit's type-61 update requests over this PC's internet
+    /// connection; see [`crate::updater_relay`].
+    updater_relay: Arc<UpdaterRelay>,
     /// The pointer a raw `press` mouse frame (or a hold whose touch-up could not
     /// be delivered) left down on the unit, if any. Every other screen gesture is
     /// refused while it is held, and the host never releases it by itself; see
@@ -866,6 +877,8 @@ impl DeviceController {
         let worker_raw_events = Arc::clone(&raw_events);
         let worker_owner = Arc::clone(&session_owner);
         let worker_identity_observation = Arc::clone(&identity_observation_enabled);
+        let updater_relay = Arc::new(UpdaterRelay::new());
+        let worker_updater_relay = Arc::clone(&updater_relay);
         let worker = thread::Builder::new()
             .name("qc-native-usb".into())
             .spawn(move || {
@@ -881,6 +894,7 @@ impl DeviceController {
                         state_messages,
                         connect_interrupt: worker_interrupt,
                         lease_path,
+                        updater_relay: worker_updater_relay,
                     },
                     receiver,
                     auto_connect,
@@ -903,6 +917,7 @@ impl DeviceController {
             session_owner,
             session_clock,
             commands,
+            updater_relay,
             touch_guard: Arc::new(Mutex::new(TouchGuard::default())),
             connect_interrupt,
         })
@@ -935,6 +950,10 @@ impl DeviceController {
 
     pub fn status(&self) -> BrokerStatus {
         let mut status = self.state.lock_recover().clone();
+        // Before the session-owner lock is taken, not under it: this may read
+        // the settings file, and the HID reader thread takes that lock for
+        // every report it receives.
+        let updater_relay = self.updater_relay.status();
         let owner = self.session_owner.lock_recover();
         if status.synchronized {
             if let Some(preset) = owner.current_preset() {
@@ -947,7 +966,21 @@ impl DeviceController {
         status.suspension = owner.suspension();
         status.device_suspended = status.suspension.active.is_some();
         status.retention = self.raw_events.retention.snapshot();
+        status.updater_relay = updater_relay;
         status
+    }
+
+    /// Read the update relay's switch from the broker settings in `directory`
+    /// (the app's local data directory, where the broker descriptor sits).
+    /// Without this the relay runs on its defaults and nothing can turn it
+    /// off; every broker mode that can carry the unit's requests calls it.
+    pub fn configure_updater_relay(&self, directory: std::path::PathBuf) {
+        self.updater_relay.set_settings_directory(directory);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn updater_relay(&self) -> &Arc<UpdaterRelay> {
+        &self.updater_relay
     }
 
     /// The refusal for a client request that would reach the device, while the
@@ -2410,6 +2443,17 @@ struct PendingRequest {
     reply: mpsc::Sender<Result<IncomingMessage, String>>,
 }
 
+/// The connected unit as the update relay's pump sees it.
+struct ConnectedRelaySink<'a>(&'a mut ConnectedQc);
+
+impl RelaySink for ConnectedRelaySink<'_> {
+    fn send(&mut self, message: OutboundMessage) -> Result<(), String> {
+        self.0
+            .send_command(message)
+            .map_err(|error| error.to_string())
+    }
+}
+
 /// A LocalBackup document collected on the main device loop.
 ///
 /// LocalBackup replies are an uncorrelated stream, so collection is a state
@@ -2831,6 +2875,7 @@ struct WorkerContext {
     state_messages: mpsc::SyncSender<StateDecoderCommand>,
     connect_interrupt: ConnectInterrupt,
     lease_path: std::path::PathBuf,
+    updater_relay: Arc<UpdaterRelay>,
 }
 
 fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_connect: bool) {
@@ -2845,6 +2890,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
         state_messages,
         connect_interrupt,
         lease_path,
+        updater_relay,
     } = context;
     let mut connection: Option<ConnectedQc> = None;
     let mut identity_read =
@@ -2852,6 +2898,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
     let mut auto_connect = initial_auto_connect;
     let mut pending_requests: Vec<PendingRequest> = Vec::new();
     let mut backup: Option<BackupInProgress> = None;
+    let mut relay_pump = RelayPump::new();
     let mut command_not_before = Instant::now();
     // The inbound-telemetry revision this loop has already published. A
     // connection epoch resets the session's tally to zero, which is a change
@@ -2912,6 +2959,9 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                         let _ = reply.send(ReconnectOutcome::AlreadyConnected);
                         continue;
                     }
+                    // Before the connection goes: the reconnect below can be due
+                    // at once, so the no-session branch may never get a pass.
+                    updater_relay.cancel("the device session was restarted");
                     connection.take();
                     fail_pending(&mut pending_requests, "Device session restarted");
                     fail_backup(&mut backup, "Device session restarted");
@@ -2925,6 +2975,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     let _ = reply.send(ReconnectOutcome::Restarted);
                 }
                 Command::Disconnect { reply } => {
+                    updater_relay.cancel("the device session was closed");
                     if let Some(mut connected) = connection.take() {
                         let request_id = connected.reserve_request_id();
                         connected.usb.disconnect_exact(request_id);
@@ -3193,6 +3244,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                 Command::Stop => {
                     fail_pending(&mut pending_requests, "Native broker stopped");
                     fail_backup(&mut backup, "Native broker stopped");
+                    updater_relay.cancel("the broker is stopping");
                     let _ = state_messages.send(StateDecoderCommand::Stop);
                     return;
                 }
@@ -3308,6 +3360,9 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     identity_read = session_identity::SessionIdentityRead::new(Arc::clone(
                         &identity_observation_enabled,
                     ));
+                    // Whatever the relay still holds belongs to a session that
+                    // ended; none of it may be written into this one.
+                    updater_relay.cancel("a new device session started");
                     connection = Some(connected);
                 }
                 Err(UsbError::NotAvailable) => {
@@ -3372,6 +3427,12 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                 );
             }
             let read = connected.usb.read_message(CONNECTED_IO_POLL_MS);
+            // One inbound read made: the update relay writes its next reply
+            // frame only after enough of these while inbound is waiting, so a
+            // long transfer cannot leave the unit's own traffic unread; a read
+            // that found the queue empty ends that debt (see
+            // `pump::READS_PER_FRAME`).
+            relay_pump.note_read(connected.usb.last_read_was_empty());
             // Before the match, because several of its arms tear the
             // connection down and `continue`, and the frame that could not be
             // acted on is often the reason they do.
@@ -3418,10 +3479,26 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                         let _ = state_messages.send(StateDecoderCommand::Reset);
                         fail_pending(&mut pending_requests, "QC lifecycle epoch changed");
                         fail_backup(&mut backup, "QC lifecycle epoch changed");
+                        // The device announced a rebuild of its session (the only
+                        // way the epoch moves inside a live connection, see
+                        // `SessionDriver::observe`) or the session failed: the
+                        // unit has dropped what it asked for and, as the capture
+                        // shows, asks again with a fresh id after its own timeout.
+                        // Stop streaming to it, as the pending requests and the
+                        // backup above are stopped.
+                        updater_relay.cancel("the QC lifecycle epoch changed");
                         continue;
                     }
 
                     identity_read.observe(&session, &state, &message, now_ms);
+                    // The relay only looks: the frame still goes through the
+                    // ordinary path below, so every counter and the
+                    // no-state-handler record stay exactly as they were.
+                    if message.message_type == profile::MESSAGE_TYPE_UPDATER_FORWARD {
+                        updater_relay.on_forward_frame(&message.payload, Instant::now());
+                    } else if message.message_type == profile::MESSAGE_TYPE_UPDATER {
+                        updater_relay.on_updater_state(&message.payload);
+                    }
                     if message.message_type == quadcortex::profile::MESSAGE_TYPE_LOCAL_BACKUP
                         && backup.is_some()
                     {
@@ -3474,6 +3551,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                             &session,
                             &session_clock,
                             &state_messages,
+                            &updater_relay,
                         );
                         auto_connect = true;
                         continue;
@@ -3561,6 +3639,39 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                 }
                 Some(BackupAction::Wait) | None => {}
             }
+            // The update relay's replies and its unconditional keepalive clock.
+            // The clock runs only while a request is active; a failed write
+            // ends the session as a failed backup keepalive does.
+            let relay_report = relay_pump.tick(
+                &updater_relay,
+                Instant::now(),
+                &mut ConnectedRelaySink(&mut *connected),
+            );
+            for event in updater_relay.take_events() {
+                connected.usb.record_event(event);
+            }
+            if relay_report.keepalives > 0 || relay_report.frames > 0 {
+                update_usb_telemetry(&state, connected);
+            }
+            if relay_report.keepalives > 0 {
+                session
+                    .lock_recover()
+                    .transport
+                    .defer_keepalive(session_clock.elapsed().as_millis() as u64);
+            }
+            if relay_report.write_error.is_some() {
+                connected.usb.record_incident("updater-relay-write-failure");
+                updater_relay.cancel("a write to the unit failed");
+                clear_session_caches(&state, &latest_messages);
+                fail_backup(&mut backup, "Update relay write failed");
+                session
+                    .lock_recover()
+                    .disconnect(session_clock.elapsed().as_millis() as u64, true);
+                if let Some(mut failed) = connection.take() {
+                    failed.usb.abort();
+                }
+                continue;
+            }
             let now_ms = session_clock.elapsed().as_millis() as u64;
             let was_synchronized = session.lock_recover().transport.synchronized();
             match connected.advance_lifecycle(now_ms) {
@@ -3617,8 +3728,9 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
             // with the probe itself - the session is now held open by the
             // dedicated KeepAlive below rather than proven by a correlated read.
             // A running backup owns the keepalive on its own unconditional clock,
-            // so the idle probe stands down for the whole transfer.
-            if backup.is_none() {
+            // and so does a running update relay, so the idle probe stands down
+            // for the whole transfer.
+            if backup.is_none() && !relay_pump.is_running() {
                 let keepalive = session.lock_recover().transport.take_keepalive(now_ms);
                 if let Some(keepalive) = keepalive {
                     // The QC needs its dedicated KeepAlive on the fixed cadence
@@ -3641,6 +3753,8 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                 }
             }
         } else {
+            // Whatever the relay was running belonged to a session that is gone.
+            updater_relay.cancel_if_active("no device session");
             thread::sleep(Duration::from_millis(100));
         }
         expire_pending(
@@ -3707,7 +3821,11 @@ fn restart_session(
     session: &Arc<Mutex<SessionRuntime>>,
     session_clock: &Instant,
     state_messages: &mpsc::SyncSender<StateDecoderCommand>,
+    updater_relay: &UpdaterRelay,
 ) {
+    // The reconnect is due at once, so the loop's no-session branch may never
+    // run: end the relay's request here, before the old session is dropped.
+    updater_relay.cancel("the device session was restarted");
     connection.take();
     fail_pending(pending_requests, "Device session restarted");
     fail_backup(backup, "Device session restarted");

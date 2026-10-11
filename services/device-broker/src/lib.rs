@@ -8,6 +8,7 @@ pub mod resident;
 pub mod rpc;
 pub mod tray;
 pub mod tray_settings;
+pub mod updater_relay;
 pub mod user_quit;
 pub mod worker;
 pub mod write_quarantine;

@@ -73,6 +73,32 @@ export interface NativeStateFrames<TState = unknown> {
   frames: NativeStateFrame<TState>[];
 }
 
+/**
+ * The device broker's update relay: the part of the host that carries the Quad
+ * Cortex's own update requests to Neural DSP over this computer's internet
+ * connection while the unit is connected over USB. Every field is optional
+ * because an older broker omits the whole object. `system.status` is readable
+ * by the AI apps attached to the broker, so this carries counts, the switch and
+ * the outcome word of the last request, and no host, path, query, domain list
+ * or timestamp.
+ */
+export interface UpdaterRelayDiagnostics {
+  enabled?: boolean;
+  requestsSeen?: number;
+  /** Requests the unit made while the relay was off; they were not carried. */
+  requestsWhileDisabled?: number;
+  requestsCompleted?: number;
+  requestsFailed?: number;
+  requestsRefused?: number;
+  /** Requests for a domain that is not allowed (outside neuraldsp.com and the extra domains). */
+  refusedDomainRequests?: number;
+  bytesFromServer?: number;
+  bytesToDevice?: number;
+  inFlight?: boolean;
+  /** How the latest finished request ended: "completed", "timeout", "refused:domain-not-allowed", ... */
+  lastOutcome?: string | null;
+}
+
 export interface RuntimeStatus {
   platform: string;
   gatewayAvailable: boolean;
@@ -93,6 +119,7 @@ export interface RuntimeStatus {
     messagesReceivedByType?: Record<string, number>;
     messagesSentByType?: Record<string, number>;
     lastMessageType?: number;
+    updaterRelay?: UpdaterRelayDiagnostics;
     /** Inbound frames this connection received and could not act on, keyed by
      * reason and then by message type, plus the per-type tally of the two
      * device trailer bytes nothing on the host interprets.
@@ -199,11 +226,27 @@ export interface ModelList {
   audit: ModelCatalogAudit;
 }
 
+/**
+ * The unit's version reply. `appFwVersion` is the Zenjack application firmware
+ * build (the Device Information screen's "Zenjack FW app", e.g. `d14e`), NOT
+ * the CorOS version number. The other firmware fields are what the reply
+ * carries beyond what the gateway has so far been taught to pass on; each is
+ * optional because a gateway that does not pass it on leaves it out.
+ */
 export interface DeviceIdentity {
   serial: string;
   appFwVersion?: string;
   customName?: string;
   deviceType?: number;
+  macAddress?: string;
+  linuxKernelVersion?: string;
+  ubootVersion?: string;
+  bootloaderFwVersion?: string;
+  zencoderFwApp?: string;
+  zencoderFwBootloader?: string;
+  zenwirelessFwVersion?: string;
+  /** The CorOS version number, if a gateway reports it. The version reply has no field for it. */
+  corOsVersion?: string;
 }
 
 export interface InhibitedModules {

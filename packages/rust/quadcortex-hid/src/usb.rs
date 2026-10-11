@@ -865,6 +865,9 @@ pub struct QcUsb {
     session_clock: Instant,
     _api: HidApi,
     next_sequence: u64,
+    /// Whether the latest `read_message` received no HID report: an idle poll
+    /// or the reader's idle marker. A partial frame is not an empty read.
+    last_read_was_empty: bool,
     report_layout: ReportLayout,
     flight: FlightRecorder,
     disconnected_state_sent: bool,
@@ -1021,6 +1024,13 @@ impl QcUsb {
         self.next_sequence.saturating_sub(1)
     }
 
+    /// Whether the latest read got no HID report. `Ok(None)` alone cannot
+    /// distinguish an idle poll from a report that completed only part of a
+    /// frame, so callers that track transport idle state use this signal.
+    pub fn last_read_was_empty(&self) -> bool {
+        self.last_read_was_empty
+    }
+
     fn open(
         owner: Arc<Mutex<SessionRuntime>>,
         session_clock: &Instant,
@@ -1065,6 +1075,7 @@ impl QcUsb {
             session_clock: *session_clock,
             _api: api,
             next_sequence: 1,
+            last_read_was_empty: false,
             report_layout: ReportLayout::ReportIdPrefixed,
             flight,
             disconnected_state_sent: false,
@@ -1470,14 +1481,16 @@ impl QcUsb {
         }
     }
 
-    /// Poll one Windows HID event without confusing an empty broker queue with
+    /// Poll one native HID event without confusing an empty broker queue with
     /// a successful native read. The shared transport resets its error streak
     /// only for an actual OS idle/report completion.
     fn read_message_poll(
         &mut self,
         timeout_ms: i32,
     ) -> Result<(Option<IncomingMessage>, bool), UsbError> {
+        self.last_read_was_empty = false;
         let (report, native_read_succeeded) = self.io.read(timeout_ms)?;
+        self.last_read_was_empty = report.is_none();
         let Some(report) = report else {
             return Ok((None, native_read_succeeded));
         };

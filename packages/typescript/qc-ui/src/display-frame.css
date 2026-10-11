@@ -1,0 +1,141 @@
+/*
+ * The display frame: the one place that decides how big the Quad Cortex's
+ * screen is on a host, what shape it has and how its 800x480 framebuffer is
+ * scaled onto it.
+ *
+ * Contract
+ * --------
+ * - The display is a box (`.qc-screen-bezel`) of ONE fixed physical aspect,
+ *   585.353 : 327.749 (1.786), the inner opening of the unit's screen recess in
+ *   qc-chassis-neutral.svg. The unit shows its 800x480 framebuffer on a ~16:9
+ *   panel, so its pixels are not square: each is 1.0716 times wider than tall
+ *   ((585.353 / 327.749) / (800 / 480)). Photographs of the unit measure the
+ *   lit area at 1.80 to 1.86; the vector's inner opening is the constant this
+ *   file adopts.
+ * - The box holds one fixed 800x480 canvas (`.qc-screen-fixture-root`) scaled
+ *   by ONE transform, x by `100cqw / 800px` and y by `100cqh / 480px`. Because
+ *   the box has the fixed aspect above, the ratio between the two factors is
+ *   always the 1.0716 pixel aspect and nothing else; no host adds a scale of
+ *   its own. Every pixel unit inside the
+ *   display (px, cqw, cqh, SVG user units, the fixed-size art) is stretched
+ *   together, round glyphs included, as on the device.
+ * - Text inside the canvas is sized in canvas pixels, before the transform. A
+ *   WebView's minimum-font-size clamp looks at that size, which is the unit's
+ *   own at every host width, and a non-uniform scale does not change it.
+ * - A host provides a container and may change only the box that container
+ *   offers. The two knobs it may set on its own container are
+ *   `--qc-surface-width` (hardware presentation: width of the whole unit) and
+ *   `--qc-display-max-height` (display-only presentation: tallest the display
+ *   may be). Hosts must not select display classes or display variables;
+ *   packages/typescript/qc-ui/tests/display-single-source.test.ts enforces it.
+ *
+ * Fixed-size pieces (corner radius, border, glass vignette, hit areas) are
+ * decided here, once, in canvas units or in proportion to the box, so they
+ * are the same on every host.
+ */
+
+.qc-chassis,
+.qc-display-standalone {
+  --qc-display-aspect: calc(585.353 / 327.749);
+}
+
+/* Shared by every host of a display: the box is a size container, never has
+ * padding, a border or a radius of its own (a container's cq units are 1% of
+ * its content box, so any inset here would shrink the canvas below 800px
+ * worth of cqw), and paints nothing itself. */
+:is(.qc-chassis, .qc-display-standalone) > .qc-screen-bezel {
+  position: absolute;
+  z-index: 3;
+  box-sizing: border-box;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--qc-transparent);
+  box-shadow: none;
+  aspect-ratio: var(--qc-display-aspect);
+  container-type: size;
+}
+
+/* Hardware presentation: the display on the unit's panel, exactly on the inner
+ * opening of the recess drawn in qc-chassis-neutral.svg. The numbers are that
+ * file's: the opening spans x 255.796 to 841.149 and y 81.1649 to 408.914 on a
+ * 1096.94 x 719.079 panel whose viewBox starts at y 14. */
+.qc-chassis > .qc-screen-bezel {
+  top: calc((81.1649 - 14) / 719.079 * 100%);
+  right: auto;
+  bottom: auto;
+  left: calc(255.796 / 1096.94 * 100%);
+  width: calc(585.353 / 1096.94 * 100cqi);
+  height: calc(327.749 / 1096.94 * 100cqi);
+}
+.qc-chassis:not(.is-display-only) {
+  width: var(--qc-surface-width, min(1120px, 100%));
+}
+/* The glass over the display. Sized in proportion to the box so it is the same
+ * thickness on every host: 12px at the unit's own 800px. */
+.qc-chassis > .qc-screen-bezel::after {
+  content: "";
+  position: absolute;
+  z-index: 8;
+  inset: 1%;
+  border-radius: .25cqw;
+  background: linear-gradient(155deg, var(--qc-palette-ffffff0b), var(--qc-transparent) 25% 76%, var(--qc-palette-6f8ca008));
+  box-shadow: inset 0 0 1.5cqw var(--qc-palette-000b);
+  pointer-events: none;
+}
+
+/* Display-only presentation (phones): no panel art or hardware, just the
+ * display, as wide as the container allows and no taller than
+ * --qc-display-max-height. */
+.qc-chassis.is-display-only {
+  width: min(100%, calc(var(--qc-display-max-height, 100vmax) * var(--qc-display-aspect)));
+  min-height: 0;
+  max-height: none;
+  aspect-ratio: var(--qc-display-aspect);
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: var(--qc-transparent);
+  box-shadow: none;
+}
+.qc-chassis.is-display-only::before,
+.qc-chassis.is-display-only::after,
+.qc-chassis.is-display-only > :is(.chassis-vector-viewport, .chassis-edge, .master-volume, .device-plate, .screen-nav-control, .footswitch-deck) {
+  display: none !important;
+}
+.qc-chassis.is-display-only > .qc-screen-bezel {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.qc-chassis.is-display-only > .qc-screen-bezel::after {
+  display: none;
+}
+
+/* A display with no panel around it (a window that shows one screen). */
+.qc-display-standalone {
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--qc-display-aspect);
+}
+.qc-display-standalone > .qc-screen-bezel {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* The canvas. 800x480 canvas pixels, scaled to the display box: x by its
+ * content width over 800, y by its content height over 480. `100cqw` and
+ * `100cqh` here are the box's content size: the canvas is not its own query
+ * container for its own transform. Inside the canvas the canvas is the
+ * container, so 1cqw is 8 canvas pixels and 1cqh is 4.8 everywhere. A box
+ * forced to exactly 800x480 (the corpus capture) makes this the identity. */
+.qc-screen-bezel > .qc-screen-fixture-root {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 800px;
+  height: 480px;
+  container-type: size;
+  transform: scale(calc(100cqw / 800px), calc(100cqh / 480px));
+  transform-origin: top left;
+}

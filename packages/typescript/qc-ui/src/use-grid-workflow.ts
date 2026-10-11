@@ -109,9 +109,13 @@ export function useGridWorkflow(options: GridWorkflowOptions) {
     close();
     if (!connected) return;
     const sequence = request.current;
-    try { await closeGridBlockOnDevice(gateway, () => sequence === request.current); }
+    try {
+      await closeGridBlockOnDevice(gateway, () => sequence === request.current, (screen) => {
+        notice(`The Quad Cortex is still showing ${screen === "unknown" ? "another screen" : `its ${screen.replace(/-/g, " ")} screen`}. The app does not close it; close it on the unit.`);
+      });
+    }
     catch (error) { fail(error); }
-  }, [close, connected, fail, gateway]);
+  }, [close, connected, fail, gateway, notice]);
 
   const openBlock = useCallback(async (block: GridBlock) => {
     if (!topologyComplete || snapshot.gridLayoutComplete === false) {

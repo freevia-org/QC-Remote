@@ -1,9 +1,25 @@
 /**
- * Device-screen gestures shared by every host. These are the same physical
- * paths the Quad Cortex uses; hosts project the resulting screen locally only
- * after the hardware gesture succeeds. Demo sessions project it directly.
+ * Device-screen gestures shared by every host: how the Quad Cortex's own touch
+ * screen opens and closes I/O Settings, the only device screen with no command.
+ * Observed on CorOS 4.1.0 (direct USB, 2026-10-06 and 2026-10-11): the unit
+ * opens I/O Settings for ONE drag frame that travels more than about 245 px
+ * downward on the Grid, from anywhere (shorter drags do nothing), and closes
+ * it for ONE tap on the check button. The unit's screen is read from its
+ * graphics tree (the I/O dialog's root is zenUI::CheatSheetDialog); no state
+ * event announces it.
  */
 export const QC_DEVICE_SCREEN_GESTURES = {
-  openIo: { x: 400, y: 8, toX: 400, toY: 220 },
-  done: { x: 744, y: 30 }
+  openIo: { x: 400, y: 100, toX: 400, toY: 440 },
+  done: { x: 743, y: 30 },
+  /** The kebab at the top right of the Grid: opens and closes the preset menu (10 of 10 on 4.1.0). */
+  menuButton: { x: 764, y: 22 },
+  /** A long press on the mode indicator opens Modes Configuration. */
+  modesHold: { x: 700, y: 70 },
+  /** The Settings row of the preset menu when it opens scrolled to the bottom. Audited, not re-run on the unit. */
+  settingsRow: { x: 600, y: 406 },
+  /** The Tempo row of the preset menu, which opens scrolled to the bottom (measured on 4.1.0). Its screen closes on the check button (743,30). */
+  tempoRow: { x: 610, y: 286 },
+  /** The CPU Monitor row of the same menu. The monitor is an overlay on the Grid and closes only on its own X, not the check button. */
+  cpuRow: { x: 578, y: 346 },
+  cpuClose: { x: 628, y: 32 }
 } as const;

@@ -118,6 +118,48 @@ Cortex** brings it back.
 
 ![The USB panel with the DEMO tab selected, showing the demo device status, the connection log and the Device info button.](images/02-usb-panel.png)
 
+### CorOS updates over USB (Windows)
+
+A Quad Cortex that is connected to QC Remote by USB does not use its own Wi-Fi
+for a CorOS update, so it asks its host to fetch the update for it. QC Remote
+does this: when you press **DOWNLOAD UPDATE** on the unit, the broker carries the
+unit's own update request to Neural DSP's servers over this computer's internet
+connection and hands the answer back over USB. The connection is opened by QC
+Remote's background component on the unit's behalf; the app itself makes no
+requests of its own. QC Remote only passes the Quad Cortex's own requests
+through; it forwards the unit's headers as they are (its HTTP library adds only
+a `Host` header and, when the unit sent none, a generic `Accept` header) and
+keeps no copy of them or of the answers. It
+carries no presets, captures, backups or logs, and not the unit's Cortex Cloud
+account traffic.
+
+- The switch is **Edit > Settings… > Internet for the Quad Cortex**. It is **on by
+  default**. Under it QC Remote shows what it is doing: that it is passing a
+  request through, how the last request went, that it declined the last request,
+  or how many times the unit asked while the switch was off. With it off, the
+  unit's requests get no answer (in the capture the unit asked again about once
+  a minute; what it finally does has not been observed), and turning it off ends
+  a transfer that is running.
+- The unit sends its own serial number and credentials to Neural DSP, exactly as
+  it would over Wi-Fi, and Neural DSP sees this computer's IP address. The same
+  goes for any extra domain you allow below: it receives the unit's request,
+  credentials included.
+- The USB link is slow for a download: a full CorOS image can take ten minutes
+  or more. For a faster update, use the unit's Wi-Fi (disconnect it from the
+  computer first), as the Quad Cortex manual describes. Do not run Cortex
+  Control at the same time; only one application can hold the unit.
+- Only `neuraldsp.com` (any path) and its subdomains are passed through, and
+  any extra domain you add. If the unit asks for anything on another domain (an
+  image on a content-delivery network, for example), QC Remote declines it and
+  the unit's update fails. The Settings row then says that the last request was
+  declined; the domain's name is in the background component's error output and
+  in the device flight recorder (`%LOCALAPPDATA%\QC Remote\device-flight-recorder.json`,
+  a local file), and not in the status that AI apps can read. To allow a domain, add it to `updaterRelayExtraDomains` in
+  `device-broker-tray.json` in `%LOCALAPPDATA%\org.freevia.qcremote`; the change
+  is picked up within a couple of seconds.
+- Closing QC Remote or unplugging the unit during an update stops the transfer.
+  The unit decides what that means for the update; QC Remote does not retry.
+
 ### Android
 
 1. Connect the Quad Cortex to the phone's USB port (through an OTG adapter or
@@ -180,7 +222,7 @@ The coloured light on each indicator uses the same scheme:
 The panel also lists the **Connection log** (with **Clear history**) and a
 **Device info…** button, which opens the Device Info window with the device
 name, connection state, setlist, preset, mode, scene, tempo, block count and
-whether there are unsaved changes. The app never reads or shows serial numbers.
+whether there are unsaved changes, and the Device Information screen with the serial number, name and software versions the Quad Cortex reports about itself. They are shown on this computer only and are never included in diagnostics.
 
 **REMOTE panel states:** *Not set up* (not yet paired), *Waiting for sign-in*,
 *Connecting*, *Ready* ("This host's secure outbound relay route is connected"),
@@ -310,6 +352,12 @@ presses a footswitch.
 - **Device model**: the hardware geometry and appearance of the on-screen
   chassis.
 - **AI access level**: see [Access levels](#access-levels).
+- **Internet for the Quad Cortex**: lets the Quad Cortex use this computer's
+  internet connection to reach Neural DSP's servers (neuraldsp.com addresses,
+  plus any extra domain you add) for updates while it is connected over USB (on
+  by default); its serial number and its own credentials
+  go with its requests. See [CorOS updates over
+  USB](#coros-updates-over-usb-windows).
 - **Show tray icon**: shows device status in the notification area and keeps
   MCP access available when the QC Remote window is closed. The tray menu
   shows the unit's status, the local MCP endpoint, a **Connect** or
@@ -524,6 +572,7 @@ These cover messages the apps actually show.
 | "Claude did not confirm the QC Remote extension." | Open Claude Desktop and approve the extension, or press **Pair** again. |
 | REMOTE shows "Pair again" or "Paused" | Press **Pair device** to pair again, or **Reconnect** if the host is still paired. |
 | Paired AI app shows "not yet connected" | Normal until you start a conversation in that app. |
+| The unit's DOWNLOAD UPDATE does not complete | Check **Edit > Settings… > Internet for the Quad Cortex**: it must be on, and its status line says whether QC Remote declined the last request (see [CorOS updates over USB](#coros-updates-over-usb-windows)). |
 
 To send diagnostics with a bug report, use **Help > Export Diagnostics…** or
 **Help > Report an Issue…** on Windows. The report is redacted: it names no

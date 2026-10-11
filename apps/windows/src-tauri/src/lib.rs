@@ -4090,6 +4090,16 @@ fn set_broker_tray_enabled(
     state.set_enabled(enabled)
 }
 
+/// The Settings switch "Internet for the Quad Cortex". An app setting only: it
+/// is not a Quad Cortex action and no AI tool can reach it.
+#[tauri::command]
+fn set_broker_updater_relay_enabled(
+    state: State<'_, broker_tray_control::BrokerTrayControl>,
+    enabled: bool,
+) -> Result<broker_tray_control::BrokerTrayStatus, String> {
+    state.set_updater_relay_enabled(enabled)
+}
+
 #[tauri::command]
 fn set_broker_tray_idle_minutes(
     state: State<'_, broker_tray_control::BrokerTrayControl>,
@@ -4896,6 +4906,7 @@ pub fn run() {
             broker_tray_settings,
             set_broker_tray_enabled,
             set_broker_tray_idle_minutes,
+            set_broker_updater_relay_enabled,
             enable_local_mcp,
             disable_local_mcp,
             test_local_mcp

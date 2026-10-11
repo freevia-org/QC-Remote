@@ -2304,7 +2304,7 @@ fn the_gone_recheck_waits_at_least_the_confirmation_delay() {
 #[test]
 fn a_broker_refusing_one_connection_transiently_is_not_replaced() {
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("transient-refusal");
+    let (_directory_guard, descriptor_path) = guarded_descriptor_path("transient-refusal");
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -2680,7 +2680,7 @@ fn assert_live_silent_broker_is_never_replaced(descriptor_path: &Path) {
 
 #[test]
 fn a_handshake_timeout_against_a_live_broker_never_replaces_it() {
-    let descriptor_path = test_descriptor_path("live-silent-broker");
+    let (_directory_guard, descriptor_path) = guarded_descriptor_path("live-silent-broker");
     // Backed by a live process, this test process, recorded exactly as a
     // real broker records itself.
     let _listener = publish_silent_broker(
@@ -2697,7 +2697,7 @@ fn a_handshake_timeout_against_a_live_broker_never_replaces_it() {
 /// because its process is running and its port does not refuse.
 #[test]
 fn an_expired_descriptor_for_a_live_unanswering_broker_is_never_replaced() {
-    let descriptor_path = test_descriptor_path("live-silent-expired");
+    let (_directory_guard, descriptor_path) = guarded_descriptor_path("live-silent-expired");
     let expired = device_broker_descriptor::unix_time_ms()
         - device_broker_descriptor::DEVICE_BROKER_DESCRIPTOR_STALE_AFTER.as_millis() as u64
         - 60_000;

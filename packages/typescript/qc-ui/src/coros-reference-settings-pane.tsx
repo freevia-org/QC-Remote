@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { QcHeadphonesGlyph, QcIoIcon, QcLibraryIcon, QcScreenGlyph, QcSettingsIcon, QcUiIcon, QcWifiSignalGlyph, QcDirectoryIcon, type QcScreenGlyphName } from "./theme-icons";
 import { COROS_REFERENCE_VERSION, COROS_REFERENCE_VERSION_LINE, DEVICE_NAME_FALLBACK, LINUX_KERNEL_BUILD, NEWS_QR_MODULES, THIRD_PARTY_LICENSES, UBOOT_BUILD, ZENCODER_FW_APP, ZENCODER_FW_BOOTLOADER, ZENJACK_FW_APP, ZENJACK_FW_BOOTLOADER, ZENWIRELESS_FW } from "./device-reference/coros-software-info";
 import { BACKUPS_UTC_NOTE, DEVICE_COPY, DEVICE_UPDATES_RUNNING, HOLD_TIMING_BODY, LATENCY_COMPENSATION_BODY, MASTER_VOLUME_ASSIGNMENT_BODY, NEWS_BODY, POWER_BUTTON_SENSITIVITY_BODY, SCENE_BYPASS_ALWAYS_OVERWRITE, SCENE_BYPASS_BODY, SCENE_BYPASS_NON_STOMP_OVERWRITE, SEND_REPORT_BODY, SEND_REPORT_TITLE, STOMP_BYPASS_BODY, SWAP_TEMPO_TUNER_BODY } from "./device-reference/coros-screen-text";
@@ -55,11 +56,62 @@ function StorageKindIcon({ kind }: { kind: "presets" | "captures" | "irs" }) {
   return <QcLibraryIcon kind="impulse-response" />;
 }
 
+/**
+ * What the unit reports about itself, row by row (see qcDeviceInformation).
+ * A field the unit did not report is left out and the screen says so.
+ */
 export interface CorOsDeviceInformation {
   serial?: string;
   deviceName?: string;
-  corOsVersion?: string;
   macAddress?: string;
+  /** The CorOS version number. The unit's version reply has no field for it. */
+  corOsVersion?: string;
+  linuxKernel?: string;
+  uBoot?: string;
+  zenjackApp?: string;
+  zenjackBootloader?: string;
+  zencoderApp?: string;
+  zencoderBootloader?: string;
+  zenwireless?: string;
+}
+
+const NOT_REPORTED = "Not reported by the unit";
+
+/** One row: the unit's value, or the documented reference value marked as such, or an honest "not reported". */
+function InformationRow({ label, live, reference }: { label: string; live?: string; reference?: ReactNode }) {
+  return <span>
+    <b>{label}</b>
+    <i>{live ?? (reference === undefined ? NOT_REPORTED : <>{reference} (reference)</>)}</i>
+  </span>;
+}
+
+/**
+ * The Device Information pane for a live unit: every row the unit's own screen
+ * has, each showing what the unit reported. A row the unit did not report shows
+ * the documented reference value, marked "(reference)", or says it was not
+ * reported; nothing is hidden and nothing is substituted silently.
+ */
+function LiveDeviceInformation({ information }: { information: CorOsDeviceInformation }) {
+  return <>
+    <h1>Device information</h1>
+    <div className="information-table">
+      <InformationRow label="Serial number:" live={information.serial} />
+      <InformationRow label="Device name:" live={information.deviceName} reference={DEVICE_NAME_FALLBACK} />
+      <InformationRow label="MAC address:" live={information.macAddress} />
+    </div>
+    <hr />
+    <h1>Software information</h1>
+    <div className="information-table">
+      <InformationRow label="CorOS:" live={information.corOsVersion} reference={COROS_REFERENCE_VERSION} />
+      <InformationRow label="Linux kernel:" live={information.linuxKernel} reference={LINUX_KERNEL_BUILD.join(" ")} />
+      <InformationRow label="U-Boot:" live={information.uBoot} reference={UBOOT_BUILD.join(" ")} />
+      <InformationRow label="Zenjack FW app:" live={information.zenjackApp} reference={ZENJACK_FW_APP} />
+      <InformationRow label="Zenjack FW bootloader:" live={information.zenjackBootloader} reference={ZENJACK_FW_BOOTLOADER} />
+      <InformationRow label="Zencoder FW app:" live={information.zencoderApp} reference={ZENCODER_FW_APP} />
+      <InformationRow label="Zencoder FW bootloader:" live={information.zencoderBootloader} reference={ZENCODER_FW_BOOTLOADER} />
+      <InformationRow label="Zenwireless FW:" live={information.zenwireless} reference={ZENWIRELESS_FW} />
+    </div>
+  </>;
 }
 
 /**
@@ -200,7 +252,7 @@ export function CorOsReferenceSettingsPane({ view, deviceInformation, stateUnkno
         </div>
       </>
     )}
-    {view === "settings-info" && (
+    {view === "settings-info" && !liveInformation && (
       <>
         <h1>Device information</h1>
         <div className="information-table">
@@ -264,6 +316,7 @@ export function CorOsReferenceSettingsPane({ view, deviceInformation, stateUnkno
         </div>
       </>
     )}
+    {view === "settings-info" && deviceInformation !== undefined && <LiveDeviceInformation information={deviceInformation} />}
     {["settings-device-stomp-bypass", "settings-device-swap-tempo-tuner", "settings-device-gig-view", "settings-device-latency"].includes(view) &&
       (() => {
         const pane = (

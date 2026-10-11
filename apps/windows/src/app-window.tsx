@@ -22,11 +22,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QC_BRAND } from "@qc-remote/theme";
-import { ControlAccessSelect, QcScreenGlyph, QcUiIcon, type QcScreenGlyphName } from "@qc-remote/ui";
-import { idleDisconnectHelp, idleMinutesFromInput, type AppWindowKind, type DeviceInfoState, type SettingsSetting, type SettingsState, type WorkspaceState } from "./app-window-content";
+import { ControlAccessSelect, QcDeviceInformationDisplay } from "@qc-remote/ui";
+import { idleDisconnectHelp, idleMinutesFromInput, UPDATER_RELAY_EXPLANATION, UPDATER_RELAY_LABEL, updaterRelayStatusLine, type AppWindowKind, type DeviceInfoState, type SettingsSetting, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { DEVICE_INFO_EVENTS, requestSettingsChange, requestWorkspaceSaveCopy, SETTINGS_EVENTS, subscribeWindowState, WINDOW_STATE_NO_ANSWER, WORKSPACE_EVENTS } from "./tauri-transport";
 import "./help-windows.css";
-import "./device-info-screen.css";
 
 export type { AppWindowKind } from "./app-window-content";
 
@@ -50,96 +49,15 @@ function useWindowState<State>(events: { stateRequest: string; state: string }):
 const waitingLine = (unanswered: boolean) => unanswered ? WINDOW_STATE_NO_ANSWER : WAITING;
 
 /**
- * The Support section's row glyphs, straight off REFERENCE_SETTINGS_ROW_GLYPHS
- * in coros-screen-fixtures.tsx (CorOsReferenceSettings is out of scope to
- * import - its package only exports "./src/index.ts" - so the five real,
- * identity-mapped registry names it draws Support's rows from are read here
- * by their own value instead, not invented). "info" is the row this window
- * is permanently parked on: there is no other screen behind this window for
- * the other four rows to navigate to.
+ * The Device Information screen is the shared display from @qc-remote/ui, the
+ * same frame, canvas and screen the main window draws, so it cannot drift from
+ * it, with the same data: what the unit reports about itself, row by row (a row
+ * the unit did not report says so). Done closes this native window, as it
+ * closes Settings on the unit. The live fields the device screen has no rows
+ * for sit in the accessible `<dl>` below it.
  */
-const DEVICE_INFO_NAV_ROWS: ReadonlyArray<readonly [QcScreenGlyphName, string]> = [
-  ["about", "About and Contact"],
-  ["info", "Device Information"],
-  ["report", "Send Report"],
-  ["diagnostics", "Diagnostics"],
-  ["licenses", "3rd Party Licenses"],
-];
-
-/**
- * CorOS's own Settings > Support > Device Information screen ("settings-info"
- * in CorOsReferenceSettings, packages/typescript/qc-ui/src/coros-screen-fixtures.tsx),
- * reproduced here since that component itself is not exported by
- * @qc-remote/ui and this window may not edit the package that defines it
- * (see device-info-screen.css for where its CSS actually comes from).
- *
- * The header's category selector, Edit button and every other Support row are
- * real chrome the device screen always shows, kept for that reason, but are
- * disabled: this window has no other Support panes behind it and no write path
- * to rename the device. Done is different - it closes this native window, as
- * it closes Settings on the unit. The duplicated rows stay hidden from the
- * accessibility tree; Done remains reachable, while the live fields the
- * device screen has no rows for sit in the accessible `<dl>` below it.
- *
- * Only Device name is real. Serial number and MAC address are left blank,
- * matching the device screen's own behavior (this app's own policy never
- * reads them either). CorOS/kernel/U-Boot/Zenjack/Zencoder/Zenwireless are
- * left blank for a different reason: no gateway call in this codebase reads
- * them at all, so filling them with placeholder firmware strings would be
- * presenting invented values as real ones.
- */
-function DeviceInfoScreen({ deviceName, onClose }: { deviceName: string; onClose(): void }) {
-  return (
-    <div className="device-info-panel">
-      <div className="qc-screen-fixture-root">
-        <section className="qc-screen coros-settings-official coros-settings-reference settings-info" aria-label="Device Information">
-          <header>
-            <button className="settings-section" disabled aria-hidden="true">
-              <b><QcScreenGlyph kind="contact" /></b>
-              Support
-              <i />
-            </button>
-            <button className="settings-edit" disabled aria-hidden="true">
-              <QcUiIcon kind="edit" />
-            </button>
-            <button className="settings-done" type="button" aria-label="Close Device Information" title="Done" onClick={onClose}>
-              <QcUiIcon kind="check" />
-            </button>
-          </header>
-          <main aria-hidden="true">
-            <nav>
-              {DEVICE_INFO_NAV_ROWS.map(([icon, label], index) => (
-                <button key={label} className={index === 1 ? "is-active" : ""} disabled>
-                  <b><QcScreenGlyph kind={icon} /></b>
-                  {label}
-                </button>
-              ))}
-            </nav>
-            <section className="reference-settings-detail">
-              <h1>Device information</h1>
-              <div className="information-table">
-                <span><b>Serial number:</b><i /></span>
-                <span><b>Device name:</b><i>{deviceName}</i></span>
-                <span><b>MAC address:</b><i /></span>
-              </div>
-              <hr />
-              <h1>Software information</h1>
-              <div className="information-table">
-                <span><b>CorOS:</b><i /></span>
-                <span><b>Linux kernel:</b><i /></span>
-                <span><b>U-Boot:</b><i /></span>
-                <span><b>Zenjack FW app:</b><i /></span>
-                <span><b>Zenjack FW bootloader:</b><i /></span>
-                <span><b>Zencoder FW app:</b><i /></span>
-                <span><b>Zencoder FW bootloader:</b><i /></span>
-                <span><b>Zenwireless FW:</b><i /></span>
-              </div>
-            </section>
-          </main>
-        </section>
-      </div>
-    </div>
-  );
+function DeviceInfoScreen({ device, onClose }: { device: DeviceInfoState; onClose(): void }) {
+  return <QcDeviceInformationDisplay deviceInformation={device.information ?? { deviceName: device.deviceName }} onClose={onClose} />;
 }
 
 function DeviceInfoContent() {
@@ -166,7 +84,7 @@ function DeviceInfoContent() {
     </header>
     <div className="help-window-scroll">
       {device ? <>
-        <DeviceInfoScreen deviceName={device.deviceName} onClose={close} />
+        <DeviceInfoScreen device={device} onClose={close} />
         <dl className="app-window-facts">
           <dt>Connection</dt><dd>{device.connection}</dd>
           <dt>Setlist</dt><dd>{device.setlistName}</dd>
@@ -178,7 +96,7 @@ function DeviceInfoContent() {
           <dt>State</dt><dd>{device.dirty ? "Unsaved device changes" : "Clean"}</dd>
         </dl>
       </> : <p role="status">{waitingLine(unanswered)}</p>}
-      <p>Hardware serial numbers and account identifiers are intentionally not read or displayed.</p>
+      <p>The values on the screen are the ones the Quad Cortex reports about itself. Cloud account identifiers are not read or displayed, and none of this is included in diagnostics.</p>
       <p>Software and firmware versions are not currently read from the connected device by this app.</p>
       {closeError && <p className="about-message" role="status">Could not close this window: {closeError}</p>}
     </div>
@@ -287,6 +205,7 @@ function SettingsContent() {
         <label className="setting-row"><span>AI access level<small>Read-only inspects; Performance permits buttons, volume, and tempo; Modify adds Grid, presets, and scenes; Full also permits system operations. Confirmation gates still apply.</small></span><ControlAccessSelect value={shown("control-access-mode", settings.controlAccessMode) as SettingsState["controlAccessMode"]} disabled={waiting} onChange={(mode) => change("control-access-mode", mode)} /></label>
         <label className="setting-row privacy-toggle"><span>Follow QC screen<small>When enabled, QC Remote checks the device screen adaptively while this app is visible. It pauses while hidden or disconnected.</small></span><input type="checkbox" checked={shown("follow-qc-screen", settings.followQcScreen)} disabled={waiting} aria-busy={waiting && pending?.setting === "follow-qc-screen"} onChange={(event) => change("follow-qc-screen", event.target.checked)} /></label>
         <label className="setting-row privacy-toggle"><span>Show tray icon<small>{settings.trayStopping ? "Hiding the tray icon…" : settings.trayEnabled ? settings.trayRunning ? "The broker shows its icon whenever it holds the Quad Cortex, and MCP access stays available when QC Remote is closed." : "The broker icon is on; the background MCP host is not running." : "The tray icon and its background MCP host are off."}</small></span><input type="checkbox" checked={shown("tray-enabled", settings.trayEnabled)} disabled={waiting} aria-busy={waiting && pending?.setting === "tray-enabled"} onChange={(event) => change("tray-enabled", event.target.checked)} /></label>
+        <label className="setting-row privacy-toggle"><span>{UPDATER_RELAY_LABEL}<small>{UPDATER_RELAY_EXPLANATION}</small><small role="status">{updaterRelayStatusLine(shown("updater-relay-enabled", settings.updaterRelayEnabled), settings.updaterRelay)}</small></span><input type="checkbox" checked={shown("updater-relay-enabled", settings.updaterRelayEnabled)} disabled={waiting} aria-busy={waiting && pending?.setting === "updater-relay-enabled"} onChange={(event) => change("updater-relay-enabled", event.target.checked)} /></label>
         <div className="setting-row privacy-toggle"><span><label htmlFor="idle-disconnect-enabled">Release QC after last client</label><small>{idleDisconnectHelp(settings.idleDisconnectMinutes, settings.trayEnabled)}</small></span><div className="idle-disconnect-controls">
           <input id="idle-disconnect-enabled" type="checkbox" checked={idleEnabled} disabled={waiting} aria-label="Release the QC after the last client disconnects" aria-busy={waiting && pending?.setting === "idle-disconnect-minutes"} onChange={(event) => changeIdleEnabled(event.target.checked)} />
           <input type="number" min="0" max="1440" step="1" aria-label="Minutes after the last client disconnects (0 means Immediately)" value={idleDraft} disabled={waiting || !idleEnabled} onChange={(event) => setIdleDraft(event.target.value)} onBlur={(event) => { if (event.relatedTarget?.id !== "idle-disconnect-enabled") submitIdleMinutes(event.currentTarget); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />

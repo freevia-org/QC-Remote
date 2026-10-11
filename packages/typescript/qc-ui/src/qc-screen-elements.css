@@ -57,17 +57,31 @@
  */
 @scope (.qc-screen-fixture-root) {
 
-/* Every in-screen control gets the same desktop affordance. The live Grid
- * already did this for its invisible hit targets; device pages built from
- * ordinary buttons did not, so the cursor and hover outline disappeared as
- * soon as the user left the Grid. Full-screen washes are intentionally
- * excluded: they dismiss a popover but are not visible controls. */
-.qc-screen :is(button, select, [role="button"]):not(:disabled):not(:where([role="menuitem"][aria-disabled="true"])):not(.coros-picker-dismiss):not(.coros-device-dismiss):not(.directory-context-scrim):not(.scene-menu-backdrop):not(.coros-screen-dimmer):not(.settings-menu-wash):not(.coros-lane-control-dismiss) {
+/* Every control the display draws gets the same affordance, wherever it sits in
+ * the display: the pointer cursor, and the outline that shows on keyboard
+ * focus and (on a device that can hover) under the pointer. The rules are
+ * scoped to the display root and NEVER to a screen class: they used to hang
+ * off `.qc-screen`, so a panel that did not carry that class (the parameter
+ * editor, the lane control panels, the device dialogs) silently lost both.
+ * One list of controls, so a new kind of control is added in one place;
+ * tests/interaction-styles.test.ts fails when a control is missing from it.
+ * Full-screen washes (scrim, wash, backdrop, dimmer, dismiss) are excluded:
+ * they dismiss a popover but are not visible controls.
+ *
+ * Hover is inside (hover: hover) so a touch screen never keeps a sticky hover
+ * outline after a tap; keyboard focus is shown everywhere. */
+:is(button, select, a[href], summary, [role="button"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="tab"], [role="switch"], [role="radio"], [role="checkbox"], [role="slider"], [role="link"], input[type="checkbox"], input[type="radio"], input[type="range"]):not(:disabled):not(:where([role="menuitem"][aria-disabled="true"])):not([class*="scrim"]):not([class*="wash"]):not([class*="backdrop"]):not([class*="dimmer"]):not([class*="dismiss"]) {
   cursor: pointer;
 }
-.qc-screen :is(button, select, [role="button"]):not(:disabled):not(:where([role="menuitem"][aria-disabled="true"])):not(.coros-picker-dismiss):not(.coros-device-dismiss):not(.directory-context-scrim):not(.scene-menu-backdrop):not(.coros-screen-dimmer):not(.settings-menu-wash):not(.coros-lane-control-dismiss):is(:hover, :focus-visible) {
+:is(button, select, a[href], summary, [role="button"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="tab"], [role="switch"], [role="radio"], [role="checkbox"], [role="slider"], [role="link"], input[type="checkbox"], input[type="radio"], input[type="range"]):not(:disabled):not(:where([role="menuitem"][aria-disabled="true"])):not([class*="scrim"]):not([class*="wash"]):not([class*="backdrop"]):not([class*="dimmer"]):not([class*="dismiss"]):focus-visible {
   outline: 1px solid var(--qc-palette-ffffff55);
   outline-offset: -1px;
+}
+@media (hover: hover) {
+  :is(button, select, a[href], summary, [role="button"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="option"], [role="tab"], [role="switch"], [role="radio"], [role="checkbox"], [role="slider"], [role="link"], input[type="checkbox"], input[type="radio"], input[type="range"]):not(:disabled):not(:where([role="menuitem"][aria-disabled="true"])):not([class*="scrim"]):not([class*="wash"]):not([class*="backdrop"]):not([class*="dimmer"]):not([class*="dismiss"]):hover {
+    outline: 1px solid var(--qc-palette-ffffff55);
+    outline-offset: -1px;
+  }
 }
 /* An unavailable MENU ITEM is aria-disabled rather than :disabled so that it
  * stays focusable (APG menu pattern). Only role="menuitem" is excluded from the
@@ -78,7 +92,7 @@
  * pointer and hover/focus outline unchanged. No new colour: the outline reuses
  * the token above. The exclusion is wrapped in :where() so it adds no
  * specificity: both shared rules keep exactly the specificity they had before. */
-.qc-screen [role="menuitem"][aria-disabled="true"]:focus-visible {
+[role="menuitem"][aria-disabled="true"]:focus-visible {
   outline: 1px solid var(--qc-palette-ffffff55);
   outline-offset: -1px;
 }

@@ -1751,3 +1751,29 @@
   --qc-palette-843c08: #843c08;   /* the Overdrive tile ring */
   --qc-palette-211c39: #211c39;   /* the Cab illustration's ring, one step lower again */
 }
+
+/* The shared affordance for the app's own chrome (menus, dialogs, panels): the
+ * pointer cursor on every control, the keyboard-focus outline, and an outline
+ * under the pointer on a device that can hover (never a sticky one after a
+ * touch). It is the counterpart of qc-ui's qc-screen-elements.css, which does
+ * the same inside the on-device display; the display is excluded here
+ * (@scope ... to) so the two never both apply. Everything is wrapped in
+ * :where(), so it has no specificity: any rule a host or a component already
+ * writes for a control wins, and this only fills the gaps (a control that had
+ * no cursor, or no highlight). tests/interaction-styles.test.ts keeps the
+ * control list in step with the display's. */
+@scope (:root) to (.qc-screen-fixture-root) {
+  :where(button, select, a[href], summary, [role="button"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="tab"], [role="switch"], [role="radio"], [role="checkbox"], [role="slider"], [role="link"], input[type="checkbox"], input[type="radio"], input[type="range"]):not(:disabled):not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+  :where(button, select, a[href], summary, [role="button"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="tab"], [role="switch"], [role="radio"], [role="checkbox"], [role="slider"], [role="link"], input[type="checkbox"], input[type="radio"], input[type="range"]):focus-visible {
+    outline: 2px solid var(--qc-app-info);
+    outline-offset: 2px;
+  }
+  @media (hover: hover) {
+    :where(button, select, a[href], summary, [role="button"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="tab"], [role="switch"], [role="radio"], [role="checkbox"], [role="slider"], [role="link"], input[type="checkbox"], input[type="radio"], input[type="range"]):not(:disabled):not([aria-disabled="true"]):hover {
+      outline: 1px solid var(--qc-palette-ffffff55);
+      outline-offset: -1px;
+    }
+  }
+}

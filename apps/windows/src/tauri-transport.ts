@@ -43,6 +43,11 @@ export const brokerTray = {
     if (typeof enabled !== "boolean") return Promise.reject(new Error("trayEnabled must be a boolean"));
     return callTauri<BrokerTrayStatus>("set_broker_tray_enabled", { enabled });
   },
+  /** An app setting, not a Quad Cortex action: no gateway method and no AI tool reaches it. */
+  setUpdaterRelayEnabled(enabled: unknown): Promise<BrokerTrayStatus> {
+    if (typeof enabled !== "boolean") return Promise.reject(new Error("updaterRelayEnabled must be a boolean"));
+    return callTauri<BrokerTrayStatus>("set_broker_updater_relay_enabled", { enabled });
+  },
   setIdleMinutes(value: unknown): Promise<BrokerTrayStatus> {
     // JSON turns NaN/Infinity into null. Neither malformed input nor an absent
     // event value is the user's explicit request to turn the policy off.
@@ -410,7 +415,9 @@ export const SETTINGS_EVENTS = {
   trayEnabledRequest: "request-broker-tray-enabled-change",
   trayEnabledResult: "broker-tray-enabled-change-result",
   idleMinutesRequest: "request-idle-disconnect-minutes-change",
-  idleMinutesResult: "idle-disconnect-minutes-change-result"
+  idleMinutesResult: "idle-disconnect-minutes-change-result",
+  updaterRelayRequest: "request-updater-relay-enabled-change",
+  updaterRelayResult: "updater-relay-enabled-change-result"
 } as const;
 
 /** What a Settings or Workspace window says when the main window never acknowledges its request. */
@@ -451,6 +458,7 @@ export function serveAppWindowRequests(handlers: {
   setFollowQcScreen: (enabled: unknown) => Promise<string>;
   setBrokerTrayEnabled: (enabled: unknown) => Promise<string>;
   setIdleDisconnectMinutes: (minutes: unknown) => Promise<string>;
+  setUpdaterRelayEnabled: (enabled: unknown) => Promise<string>;
   saveWorkspaceCopy: () => Promise<string>;
 }): () => void {
   if (!window.__TAURI_INTERNALS__) return () => undefined;
@@ -470,6 +478,7 @@ export function serveAppWindowRequests(handlers: {
     { request: SETTINGS_EVENTS.followQcScreenRequest, result: SETTINGS_EVENTS.followQcScreenResult, run: handlers.setFollowQcScreen },
     { request: SETTINGS_EVENTS.trayEnabledRequest, result: SETTINGS_EVENTS.trayEnabledResult, run: handlers.setBrokerTrayEnabled },
     { request: SETTINGS_EVENTS.idleMinutesRequest, result: SETTINGS_EVENTS.idleMinutesResult, run: handlers.setIdleDisconnectMinutes },
+    { request: SETTINGS_EVENTS.updaterRelayRequest, result: SETTINGS_EVENTS.updaterRelayResult, run: handlers.setUpdaterRelayEnabled },
     { request: WORKSPACE_EVENTS.saveCopyRequest, result: WORKSPACE_EVENTS.saveCopyResult, run: () => handlers.saveWorkspaceCopy() }
   ]);
   return () => { disposed = true; stopAnswering(); for (const unlisten of unlisteners) unlisten(); };
@@ -529,7 +538,8 @@ export function requestSettingsChange(setting: SettingsSetting, value: unknown):
     "control-access-mode": { request: SETTINGS_EVENTS.accessModeRequest, result: SETTINGS_EVENTS.accessModeResult },
     "follow-qc-screen": { request: SETTINGS_EVENTS.followQcScreenRequest, result: SETTINGS_EVENTS.followQcScreenResult },
     "tray-enabled": { request: SETTINGS_EVENTS.trayEnabledRequest, result: SETTINGS_EVENTS.trayEnabledResult },
-    "idle-disconnect-minutes": { request: SETTINGS_EVENTS.idleMinutesRequest, result: SETTINGS_EVENTS.idleMinutesResult }
+    "idle-disconnect-minutes": { request: SETTINGS_EVENTS.idleMinutesRequest, result: SETTINGS_EVENTS.idleMinutesResult },
+    "updater-relay-enabled": { request: SETTINGS_EVENTS.updaterRelayRequest, result: SETTINGS_EVENTS.updaterRelayResult }
   }[setting];
   return askMainWindow({ ...route, value, afterAccept: "bounded", noAnswer: SETTINGS_NO_ANSWER });
 }

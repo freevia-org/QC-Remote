@@ -11,6 +11,7 @@ import {
   type LaneControl,
   type PresetSnapshot
 } from "@qc-remote/client";
+import { samePresetAddress, trimTrailingSlashes } from "@qc-remote/core";
 import type { VirtualDeviceState, VirtualDeviceStore, VirtualGridBlock, VirtualParameterState, VirtualPreset, VirtualPresetSkippedBlock } from "./virtual-gateway.ts";
 
 /**
@@ -609,7 +610,7 @@ export async function captureSetlistForDemo(options: {
   try {
     for (const [presetIndex, entry] of entries.entries()) {
       onProgress?.(`Reading ${setlistName}: ${entry.location} · ${entry.name} (${presetIndex + 1} of ${entries.length})…`);
-      if (current.setlistKey.replace(/\/+$/, "") !== setlistKey.replace(/\/+$/, "") || current.presetPosition !== entry.position) {
+      if (trimTrailingSlashes(current.setlistKey) !== trimTrailingSlashes(setlistKey) || current.presetPosition !== entry.position) {
         current = await observedSnapshot(gateway, await gateway.recallPreset(
           setlistKey, entry.position, current.presetName, current.presetPosition,
           current.setlistKey, requirePresetIdentity(current)
@@ -627,7 +628,7 @@ export async function captureSetlistForDemo(options: {
     failure = error;
   }
   try {
-    if (current.setlistKey.replace(/\/+$/, "") !== original.setlistKey.replace(/\/+$/, "") || current.presetPosition !== original.presetPosition) {
+    if (!samePresetAddress(current, original)) {
       current = await observedSnapshot(gateway, await gateway.recallPreset(
         original.setlistKey, original.presetPosition, current.presetName, current.presetPosition,
         current.setlistKey, requirePresetIdentity(current)

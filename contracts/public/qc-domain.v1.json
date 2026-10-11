@@ -1,7 +1,7 @@
 {
   "version": 1,
   "connectionPhases": ["disconnected", "discovering", "searching", "opening", "handshaking", "syncing", "ready", "degraded", "needs-attention"],
-  "brokerConnectionPhaseAliases": {"error": "needs-attention", "connecting": "searching"},
+  "brokerConnectionPhaseAliases": {"error": "needs-attention", "connecting": "opening"},
   "categoryRulesNote": "Ordered match rules that turn a block's CorOS category string into one palette key. This is the single owner of that classification, generated identically into every consuming language, so the gateway's lamp colour and the app's Grid ink cannot drift apart. `terms` and `nameTerms` are substring tests against the category string and the model name; `words` are whole-word tests. First rule that matches wins, and an unmatched block is `utility`.",
   "categoryRules": [
     { "key": "plugin", "terms": ["plugin"], "words": [], "nameTerms": [] },

@@ -1736,11 +1736,13 @@ dependencies = [
  "quadcortex",
  "quadcortex-hid",
  "rand 0.9.5",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "signal-hook",
  "subtle",
+ "tokio",
  "uuid",
  "windows-sys 0.61.2",
 ]

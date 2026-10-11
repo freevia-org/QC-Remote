@@ -4798,6 +4798,9 @@ impl BrokerShared {
             } else {
                 let controller =
                     Arc::new(DeviceController::start_for_device(Some(id.into()), false)?);
+                if let Some(directory) = self.descriptor_path.parent() {
+                    controller.configure_updater_relay(directory.to_path_buf());
+                }
                 devices.push(Arc::clone(&controller));
                 controller
             }
@@ -6009,6 +6012,11 @@ fn serve_broker_tcp_full(
         })
         .map_err(|error| format!("Could not start the descriptor refresh thread: {error}"))?;
 
+    // The update relay's switch lives in the settings file beside the
+    // descriptor; only a broker that has a descriptor can be told to turn it off.
+    if let Some(directory) = descriptor_path.parent() {
+        controller.configure_updater_relay(directory.to_path_buf());
+    }
     let shared = Arc::new(BrokerShared {
         controller,
         devices: Mutex::new(Vec::new()),
