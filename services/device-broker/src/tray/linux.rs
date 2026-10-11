@@ -423,11 +423,11 @@ mod tests {
         shared.wanted.store(true, Ordering::Release);
         assert_eq!(tray.status(), ksni::Status::Active);
 
-        shared
-            .snapshot
+        *shared
+            .refreshed
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .stale = true;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Instant::now() - model::STALE_AFTER - std::time::Duration::from_secs(1);
         assert_eq!(tray.status(), ksni::Status::NeedsAttention);
 
         shared.wanted.store(false, Ordering::Release);
