@@ -4,7 +4,7 @@ import {
   readQcScreenFollowSetting, useAdaptiveQcScreenPolling, writeQcScreenFollowSetting,
   type QcObservedScreenKind, type QcScreenObservation, type QcScreenPollingPhase
 } from "./use-adaptive-screen-polling.ts";
-import { appScreenKind, closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, QC_UNIT_MIRROR_KINDS, type QcCloseTarget, type QcOpenTarget, type QcScreenPoll } from "./qc-unit-screens.ts";
+import { appKindAfterFollowing, appScreenKind, closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, QC_UNIT_MIRROR_KINDS, type QcCloseTarget, type QcOpenTarget, type QcScreenPoll } from "./qc-unit-screens.ts";
 import type { QcCpuTelemetry } from "./use-qc-cpu-telemetry.ts";
 import type { QcDeviceUndo } from "./use-qc-device-undo.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
@@ -27,7 +27,8 @@ export function useQcFollowSetting(storage: Pick<Storage, "getItem" | "setItem">
 
 /** The workflows the unit's screens open and close in the app. */
 export interface QcScreenFollowWorkflows {
-  grid: { close(): void };
+  /** `details` is the block editor the app has open, if any. */
+  grid: { close(): void; details?: unknown };
   preset: { closeDirectory(): void; openDirectory(): unknown };
   deviceSettings: { open: boolean; close(): void; openSettings(): unknown };
   tempo: { open: boolean; close(): void; openTempo(): unknown };
@@ -74,18 +75,29 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
   }, [follow, ready]);
   const latest = useRef(options);
   latest.current = options;
+  /** Routes the app is driving on the unit right now: what the unit shows on the way is the app's doing, not the unit's. */
+  const driving = useRef(0);
 
   const observe = useCallback((observation: QcScreenObservation) => {
     const kind = observation.kind;
     if (followed.current === kind) return;
     followed.current = kind;
     const { destination, workflows } = latest.current;
-    if (kind === "parameter-editor" || kind === "unknown") return;
-    // The app asked the unit for this screen, so the app already shows it.
-    if (destination.latch.takeUnit(kind)) return;
-    // The unit is moving the app: the app's change must not be driven back to the unit.
-    destination.latch.expectApp(kind === "grid" ? "grid" : kind);
-    workflows.grid.close();
+    if (kind === "unknown") return;
+    // A block editor the app opened (its own block tap opened the unit's) is already on screen. One opened on the unit
+    // carries no block identity the app can read, so the app shows the unit's own picture of it instead.
+    if (kind === "parameter-editor" && workflows.grid.details) return;
+    // The app asked the unit for this screen, so the app already shows it; the screens the unit passes through
+    // while the app drives it there (the menu on the way to Settings) must not pull the app back.
+    if (driving.current > 0) { destination.latch.takeUnit(kind); return; }
+    if (kind !== "parameter-editor" && destination.latch.takeUnit(kind)) return;
+    // The unit is moving the app: the app's change must not be driven back to the unit. Only a change that will
+    // happen is expected; one the app already shows would otherwise swallow the user's next real change.
+    const { view, popup } = destination;
+    const shown = appScreenKind({ view, deviceSettingsOpen: workflows.deviceSettings.open, tempoOpen: workflows.tempo.open, popup });
+    const will = appKindAfterFollowing(kind);
+    if (will !== shown) destination.latch.expectApp(will);
+    if (kind !== "parameter-editor") workflows.grid.close();
     workflows.preset.closeDirectory();
     workflows.deviceSettings.close();
     workflows.tempo.close();
@@ -105,7 +117,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     else if (kind === "midi-out") setView("midi-out");
     else if (kind === "preset-menu") setPopup("grid-menu");
     else if (kind === "scene-selector") setPopup("scene-menu");
-    else if (QC_UNIT_MIRROR_KINDS.includes(kind)) setView("unit-mirror");
+    else if (kind === "parameter-editor" || QC_UNIT_MIRROR_KINDS.includes(kind)) setView("unit-mirror");
   }, []);
 
   const { phase } = useAdaptiveQcScreenPolling({ gateway, enabled: follow && available, connected: ready, onObservation: observe });
@@ -125,16 +137,20 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     const poll = current.screenPoll ?? DEFAULT_SCREEN_POLL;
     const run = async () => {
       if (ROUTED.includes(appKind)) {
-        destination.latch.expectUnit(appKind);
-        const result = await openOnUnit(unit, poll, appKind as QcOpenTarget);
+        // Armed just before the first touch, so a screen the unit never was asked for cannot be mistaken for one it was.
+        const result = await openOnUnit(unit, poll, appKind as QcOpenTarget, () => destination.latch.expectUnit(appKind));
         if (result === "busy") notice("Close the screen open on the Quad Cortex first; the app does not drive it from another screen.");
-        else if (result === "not-shown") notice("The Quad Cortex did not show the same screen.");
+        else if (result === "not-shown") { destination.latch.cancelUnit(appKind); notice("The Quad Cortex did not show the same screen."); }
       } else if (ROUTED.includes(previous)) {
-        destination.latch.expectUnit("grid");
-        if (!await closeOnUnit(unit, poll, previous as QcCloseTarget)) notice("The Quad Cortex did not close the same screen.");
+        if (!await closeOnUnit(unit, poll, previous as QcCloseTarget, () => destination.latch.expectUnit("grid"))) {
+          destination.latch.cancelUnit("grid");
+          notice("The Quad Cortex did not close the same screen.");
+        }
       }
     };
-    void run().catch((error: unknown) => notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed."));
+    driving.current += 1;
+    void run().catch((error: unknown) => notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed."))
+      .finally(() => { driving.current -= 1; });
   }, [appKind]);
 
   return { phase, observe };

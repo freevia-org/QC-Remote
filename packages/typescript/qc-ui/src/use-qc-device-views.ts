@@ -97,7 +97,7 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
     const { destination, snapshot, session, gateway, workflows, notice, fail } = latest.current;
     if (view === "tuner" || view === "gig") {
       destination.latch.expectUnit(view);
-      if (!await workflows.performance.showDeviceView(view, true)) return;
+      if (!await workflows.performance.showDeviceView(view, true)) { destination.latch.cancelUnit(view); return; }
       if (view === "tuner") workflows.tuner.openTuner();
       destination.setView(view);
       // The Gig list is the current setlist; load it when it is missing or belongs to another setlist.
@@ -118,8 +118,8 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
       }
       try {
         // The unit has no command for this screen: it opens on a long downward drag, but only from its Grid.
-        destination.latch.expectUnit("io");
-        const shown = await openOnUnit(gateway, latest.current.screenPoll ?? DEFAULT_SCREEN_POLL, "io");
+        // Armed just before the drag is sent, so a refusal ("busy") leaves nothing behind to swallow the unit's own I/O Settings.
+        const shown = await openOnUnit(gateway, latest.current.screenPoll ?? DEFAULT_SCREEN_POLL, "io", () => destination.latch.expectUnit("io"));
         if (shown !== "shown") {
           notice(shown === "busy"
             ? "Close the screen open on the Quad Cortex before opening I/O Settings."

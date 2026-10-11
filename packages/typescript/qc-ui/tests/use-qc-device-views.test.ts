@@ -86,6 +86,8 @@ test("a refused open changes nothing in the app", async () => {
   await act(async () => { await host.views.open("gig"); await host.views.open("tuner"); });
   assert.deepEqual(host.log, ["show:gig:true", "show:tuner:true"]);
   assert.equal(host.world.view, null);
+  assert.equal(host.latch.takeUnit("gig"), false, "a refused command withdraws what it expected the unit to show");
+  assert.equal(host.latch.takeUnit("tuner"), false);
   host.renderer.unmount();
 });
 
@@ -149,6 +151,7 @@ test("the unit is only ever sent the I/O gesture from its Grid, and only the che
     await act(async () => { await busy.views.open("io"); });
     assert.deepEqual(busy.log, ["notice:Close the screen open on the Quad Cortex before opening I/O Settings."], `${unit}: no gesture over another screen`);
     assert.equal(busy.world.view, null);
+    assert.equal(busy.latch.takeUnit("io"), false, `${unit}: a refused open leaves no expectation that would swallow the unit's own I/O Settings`);
     busy.renderer.unmount();
   }
   const closed = mount({ view: "io-overview", unit: "Grid" });
