@@ -6,7 +6,7 @@ import { QC_SCENE_COUNT } from "@qc-remote/client";
 import { demoSnapshot, footswitchLeds, sceneLetter, type ControlAccessMode, type PublicRelayUsage } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_LEGAL, QC_LEGAL_DOCUMENTS, QC_VISUAL_ASSETS } from "@qc-remote/theme";
-import { ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, QC_DISABLED_CONTEXT_ACTIONS, closeQcLooperScreen, qcDeviceScreenContent, qcContextActionHandler, CorOsSceneCommand, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, parameterEditorAccent, parameterEditorControlSlots, parameterEditorPageSize, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, QcUiIcon, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, refreshGridSnapshot, serializeDemoLibrary, useAdaptiveQcScreenPolling, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting, type QcScreenObservation } from "@qc-remote/ui";
+import { ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, QC_DISABLED_CONTEXT_ACTIONS, closeQcLooperScreen, qcDeviceScreenContent, qcContextActionHandler, CorOsSceneCommand, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, parameterEditorAccent, parameterEditorControlSlots, parameterEditorPageSize, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, QcUiIcon, QuadCortexSurface, readControlAccessMode, readQcScreenFollowSetting, refreshGridSnapshot, serializeDemoLibrary, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcScreenFollow, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { androidGatewayTransport, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage } from "./native-services";
 import { useAndroidPrompts } from "./use-android-prompts";
@@ -246,36 +246,9 @@ export function App() {
   const midiOutWorkflow = usePresetMidiOutWorkflow({ gateway: activeGateway, snapshot, demo: demoActive, onSaved: reconcileWorkflowSnapshot });
   const modesWorkflow = useModesConfigurationWorkflow({ gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
   const ioEqWorkflow = useIoEqWorkflows({ gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed, snapshot });
-  const followedScreenKind = useRef<QcScreenObservation["kind"] | undefined>(undefined);
-  useEffect(() => {
-    if (!followQcScreen || !hardwareConnected) followedScreenKind.current = undefined;
-  }, [followQcScreen, hardwareConnected]);
-  useAdaptiveQcScreenPolling({
-    gateway: activeGateway,
-    enabled: native && followQcScreen && !demoActive && !corpusFixtureEnabled,
-    connected: hardwareConnected && !deviceSuspended && !deviceBulkBlocking,
-    onObservation: (observation) => {
-      if (followedScreenKind.current === observation.kind) return;
-      followedScreenKind.current = observation.kind;
-      const closeLocalOverlays = () => {
-        gridWorkflow.close();
-        presetWorkflow.closeDirectory();
-        deviceSettingsWorkflow.close();
-        tempoWorkflow.close();
-        tunerWorkflow.close();
-        setMobileScreenView(null);
-      };
-      if (observation.kind === "parameter-editor" || observation.kind === "unknown") return;
-      closeLocalOverlays();
-      if (observation.kind === "tuner") { setMobileScreenView("tuner"); void tunerWorkflow.openTuner(); }
-      else if (observation.kind === "tempo") void tempoWorkflow.openTempo();
-      else if (observation.kind === "gig") setMobileScreenView("gig");
-      else if (observation.kind === "settings") void deviceSettingsWorkflow.openSettings();
-      else if (observation.kind === "io") { setMobileScreenView("io-overview"); void ioEqWorkflow.refresh(); }
-      else if (observation.kind === "directory") void presetWorkflow.openDirectory();
-      else if (observation.kind === "cpu-monitor") setMobileScreenView("cpu-monitor");
-      else if (observation.kind === "looper") setMobileScreenView("looper-editor");
-    }
+  useQcScreenFollow({
+    gateway: activeGateway, follow: followQcScreen, available: native && !demoActive && !corpusFixtureEnabled, ready: hardwareConnected && !deviceSuspended && !deviceBulkBlocking, setView: setMobileScreenView,
+    workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow }
   });
   useEffect(() => {
     if (!sessionReady) return;
@@ -328,11 +301,9 @@ export function App() {
     reconcileFrame,
     editor,
     onStates: (states, frame) => {
-      cpuTelemetry.consume(states);
+      consumeQcDisplayStates(states, { setView: setMobileScreenView, cpu: cpuTelemetry });
       for (const state of states) {
-        if (state.kind === "gigView" && state.gigViewShown !== undefined) {
-          setMobileScreenView((current) => state.gigViewShown ? "gig" : current?.startsWith("gig") ? null : current);
-        } else if (state.kind === "gridTopology" && state.gridLayoutComplete === false
+        if (state.kind === "gridTopology" && state.gridLayoutComplete === false
             && activeSourceRef.current !== "virtual") {
           // A sparse structural echo cannot safely identify a newly added
           // block. Reconcile once through the explicit current-preset path;
