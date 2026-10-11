@@ -703,13 +703,18 @@ export const chatgptIntegrationPresentation = (
   // for is saying *which* connection the next chat will start, which is the
   // confirmation the row owed after a press of Update.
   if (status.state === "current" || status.state === "newer-installed") {
+    const reconnects = hostName === "Codex CLI"
+      ? (restartRequired || status.restartRequired
+        ? `${hostName} starts the rewritten connection in its next session`
+        : `${hostName} starts the connection in each new session`)
+      : (restartRequired || status.restartRequired
+        ? "ChatGPT starts the rewritten connection in your next chat"
+        : "ChatGPT starts the connection in each new chat");
     return pairedPresentation(
       hostName,
       status,
       ` QC Device Knowledge ${status.installedSkillVersion ?? status.availableSkillVersion} is installed.`,
-      restartRequired || status.restartRequired
-        ? `${hostName} starts the rewritten connection in its next session`
-        : `${hostName} starts the connection in each new session`
+      reconnects
     );
   }
   // A rewrite this app could not make is the one thing the start-up refresh

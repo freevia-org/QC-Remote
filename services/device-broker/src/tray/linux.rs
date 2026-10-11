@@ -325,6 +325,7 @@ fn escape_markup(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ksni::Tray;
 
     #[test]
     fn markup_from_device_status_is_not_interpreted_by_the_desktop() {

@@ -25,6 +25,7 @@ const CLIENT_ID_OVERRIDE: &str = "QC_REMOTE_LOCAL_MCP_CLIENT";
 /// when it writes a route and when it decides whether a route already on disk
 /// is one this app would write, so the writer and the reader cannot drift.
 pub(crate) const CLIENT_ID_ARGUMENT: &str = "--local-mcp-client";
+#[cfg(any(not(target_os = "linux"), test))]
 const APP_DIRECTORY: &str = "org.freevia.qcremote";
 const STATE_FILE: &str = "local-mcp.json";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -232,6 +233,7 @@ pub(crate) fn state_paths() -> Result<Vec<PathBuf>, String> {
 
 /// The candidate list, separated from the environment that resolves it so the
 /// set itself can be asserted.
+#[cfg(any(not(target_os = "linux"), test))]
 fn state_paths_from(local: Option<PathBuf>, roaming: Option<PathBuf>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(local) = local {
@@ -1322,9 +1324,8 @@ impl HeadlessHostSettings {
 
 /// What Tauri's `app_local_data_dir` resolves to for this app: the local
 /// application data folder joined with the bundle identifier. The local MCP
-/// descriptor's own first path is built the same way (see
-/// [`state_paths_from`]), and a test pins `APP_DIRECTORY` to the identifier in
-/// `tauri.conf.json`.
+/// descriptor's first Windows path uses the same identifier, and a test pins
+/// `APP_DIRECTORY` to the identifier in `tauri.conf.json`.
 ///
 /// Falls back to the OS temp directory when neither `LOCALAPPDATA` nor
 /// `USERPROFILE` resolves, the same fallback the windowed app's own Tauri
@@ -1354,6 +1355,7 @@ pub(crate) fn app_local_data_dir() -> Option<PathBuf> {
 /// parameters so the fallback chain - including the all-else-fails branch,
 /// which real env vars can't safely simulate in a parallel test run - is
 /// directly testable rather than only reasoned about in a comment.
+#[cfg(any(not(target_os = "linux"), test))]
 fn resolve_app_local_data_dir(
     local_appdata: Option<std::ffi::OsString>,
     user_profile: Option<std::ffi::OsString>,

@@ -123,6 +123,7 @@ const ANTIGRAVITY_STATE_RPC_PATH: &str =
 /// Every one of them answers in well under a second on a healthy machine. A
 /// wedged WMI or Appx service used to hold a blocking-pool thread, and the
 /// panel's status call with it, for as long as the service stayed wedged.
+#[cfg(any(target_os = "windows", test))]
 const EXTERNAL_TOOL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Runs `command` to completion like [`Command::output`], but gives up after
@@ -193,6 +194,7 @@ fn run_with_timeout(command: &mut Command, timeout: Duration) -> std::io::Result
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
 #[serde(rename_all = "camelCase")]
 struct RunningAntigravityLanguageServer {
     executable_path: PathBuf,
@@ -578,6 +580,7 @@ fn version_from_executable_path(path: &Path) -> Option<String> {
         .or_else(|| executable_version(path))
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn package_version(package_name: &str, package_prefixes: &[&str]) -> Option<String> {
     let matched_prefix = package_prefixes.iter().find(|candidate| {
         package_name
@@ -1170,6 +1173,7 @@ fn uninstall_entry_executable(
 /// run of spaces `reg.exe` pads with, because a `DisplayName` may itself
 /// contain one. Requiring the token also keeps `DisplayName` from matching
 /// `DisplayNameLocalized`.
+#[cfg(any(target_os = "windows", test))]
 fn registry_value(line: &str, name: &str) -> Option<String> {
     let rest = line.trim_start().strip_prefix(name)?.trim_start();
     let (kind, data) = rest.split_once(char::is_whitespace)?;
@@ -1178,6 +1182,7 @@ fn registry_value(line: &str, name: &str) -> Option<String> {
 
 /// The `DisplayName` of every entry in a `reg.exe query <hive> /s /v
 /// DisplayName` dump, paired with the key that carries it.
+#[cfg(any(target_os = "windows", test))]
 fn uninstall_display_names(output: &str) -> Vec<(String, String)> {
     let mut entries = Vec::new();
     let mut key: Option<&str> = None;
@@ -1198,6 +1203,7 @@ fn uninstall_display_names(output: &str) -> Vec<(String, String)> {
 }
 
 /// One entry's location values, out of a `reg.exe query <key>` dump.
+#[cfg(any(target_os = "windows", test))]
 fn uninstall_entry_from_key_dump(output: &str) -> UninstallEntry {
     let mut entry = UninstallEntry::default();
     for line in output.lines() {
@@ -1352,6 +1358,7 @@ fn uninstall_registry_installation(search: &DesktopAppSearch) -> Option<DesktopI
 
 /// The executable inside an MSIX package's install location, as
 /// `Get-AppxPackage` reports it.
+#[cfg(any(target_os = "windows", test))]
 fn msix_executable_from_install_location(
     value: &[u8],
     executable_candidates: &[&str],
@@ -1727,6 +1734,7 @@ const LM_STUDIO_SUPPORTED_VERSIONS: &[AppVersionSeries] = &[
 /// Jan. The binary on disk is lowercase `jan.exe` while its `DisplayIcon` and
 /// this candidate say `Jan.exe`; Windows compares paths case-insensitively, so
 /// one spelling resolves both, and that is why Jan was already recognised.
+#[cfg(any(target_os = "windows", test))]
 const JAN_SEARCH: DesktopAppSearch = DesktopAppSearch {
     executable_names: &["Jan.exe"],
     relative_candidates: &[r"Jan\Jan.exe"],
@@ -1784,6 +1792,7 @@ fn chatgpt_desktop_installation() -> Option<DesktopInstallation> {
     resolve_desktop_app(&CHATGPT_DESKTOP_SEARCH)
 }
 
+#[cfg(target_os = "windows")]
 fn chatgpt_msix_path() -> Option<PathBuf> {
     registered_msix_path(&CHATGPT_DESKTOP_SEARCH)
 }
@@ -1921,6 +1930,7 @@ fn running_antigravity_language_server() -> Result<RunningAntigravityLanguageSer
     Err("Automatic Antigravity refresh is available on Windows only.".to_string())
 }
 
+#[cfg(target_os = "windows")]
 fn validate_antigravity_language_server(
     server: &RunningAntigravityLanguageServer,
 ) -> Result<(), String> {

@@ -1702,11 +1702,7 @@ fn fixture_allocation_rejects_reparse_ancestor() {
 
 /// Asks the OS, not our own bookkeeping, whether a process still exists.
 fn process_is_alive(pid: u32) -> bool {
-    let output = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .output()
-        .expect("tasklist runs");
-    String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+    os_process_is_alive(pid)
 }
 
 fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
@@ -2518,13 +2514,13 @@ fn an_idle_reopen_failure_reads_as_not_connected_wherever_text_is_matched() {
     // services/device-broker/src/rpc.rs idle_reopen_error: the stable
     // signal is data.category/retryable; the text says it too.
     for message in [
-            "The Quad Cortex is not connected: device unplugged",
-            "The Quad Cortex is not connected: its session, closed for idleness, did not reopen within 35 seconds; retry",
-        ] {
-            let error = relay_device_error(message.into());
-            assert_eq!(error.code, "NOT_CONNECTED", "{message}");
-            assert!(error.retryable, "{message}");
-        }
+        "The Quad Cortex is not connected: device unplugged",
+        "The Quad Cortex is not connected: its session, closed for idleness, did not reopen within 35 seconds; retry",
+    ] {
+        let error = relay_device_error(message.into());
+        assert_eq!(error.code, "NOT_CONNECTED", "{message}");
+        assert!(error.retryable, "{message}");
+    }
 }
 
 #[test]
@@ -2792,6 +2788,7 @@ fn own_process_created_at() -> u64 {
     os_process_created_at(std::process::id()).expect("this process can read its own times")
 }
 
+#[cfg(windows)]
 fn exited_process_id() -> u32 {
     let mut child = Command::new("cmd")
         .args(["/C", "exit 0"])
@@ -2803,6 +2800,20 @@ fn exited_process_id() -> u32 {
     let pid = child.id();
     child.wait().unwrap();
     // `child` is dropped here, closing the last handle to it.
+    pid
+}
+
+#[cfg(unix)]
+fn exited_process_id() -> u32 {
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "exit 0"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn a short-lived child for the dead-process fixture");
+    let pid = child.id();
+    child.wait().unwrap();
     pid
 }
 
@@ -5316,8 +5327,19 @@ fn owned_in_sink(sink: &BrokerSpawnSink) -> Vec<HeldProcess> {
 /// A stand-in process: a sleeper this test spawns and holds the handle of.
 /// Never a broker.
 fn spawn_sleeper() -> std::process::Child {
-    Command::new("ping")
-        .args(["-n", "60", "127.0.0.1"])
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("ping");
+        command.args(["-n", "60", "127.0.0.1"]);
+        command
+    };
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("60");
+        command
+    };
+    command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -6259,6 +6281,7 @@ fn sleeper_in_sink(originals: &TestPermit) -> (u32, SpawnedBroker) {
 
 /// Whether the owned original `pid` in `domain` is observed exited, read
 /// through its own handle for up to five seconds.
+#[cfg(windows)]
 fn owned_exited(domain: &str, pid: u32) -> bool {
     wait_until(Duration::from_secs(5), || {
         TEST_OWNER.observe_owned(domain, pid) == Some(ExitObservation::Exited)

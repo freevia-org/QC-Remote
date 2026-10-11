@@ -1880,6 +1880,7 @@ fn spawn_gateway_reader_with(
 /// this keeps every window on the one, better-tested shared-broker hosting
 /// mode (`GatewayProcess::start_shared`) instead of silently degrading to
 /// the private, unshared one (`start_owned_child`) on a resolution error.
+#[cfg(any(not(target_os = "linux"), test))]
 fn resolve_descriptor_directory(
     app_local_data_dir: Result<PathBuf, impl std::fmt::Display>,
     bundle_identifier: &str,
@@ -2688,7 +2689,7 @@ impl Drop for StartSlotGuard {
 
 /// Test-only: the start slot of `descriptor_path` - the pid of the child it
 /// holds, if any, and why - without changing it.
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) fn start_slot_state(descriptor_path: &Path) -> Option<(Option<u32>, Option<String>)> {
     START_SLOTS
         .lock()
@@ -2703,7 +2704,7 @@ pub(crate) fn start_slot_state(descriptor_path: &Path) -> Option<(Option<u32>, O
 
 /// Test-only: hands the fixture that owns `descriptor_path` the original
 /// child its start slot holds, and releases the slot.
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) fn take_start_slot_child(descriptor_path: &Path) -> Option<Child> {
     let mut slots = START_SLOTS
         .lock()
@@ -2718,7 +2719,7 @@ pub(crate) fn take_start_slot_child(descriptor_path: &Path) -> Option<Child> {
 
 /// Test-only: occupy a start slot with a child the test spawned (capacity
 /// tests), and try a reservation without spawning anything.
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) fn occupy_start_slot_for_test(
     descriptor_path: &Path,
     child: Child,
@@ -2753,7 +2754,7 @@ pub(crate) fn duplicate_start_slot_child(
         })
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(crate) fn reserve_start_slot_for_test(descriptor_path: &Path) -> Result<(), String> {
     StartSlotGuard::reserve(descriptor_path).map(drop)
 }

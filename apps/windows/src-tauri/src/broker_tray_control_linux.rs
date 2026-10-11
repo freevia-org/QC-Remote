@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::serving_broker_published;
+
 const AUTOSTART_FILE: &str = "qc-remote.desktop";
 const OWNERSHIP_MARKER: &str = "X-QCRemote-Managed=org.freevia.qcremote-resident-v1";
 const STARTUP_BOUND: Duration = Duration::from_secs(3);
@@ -368,25 +370,31 @@ fn is_our_entry(contents: &[u8]) -> bool {
 }
 
 fn desktop_entry(executable: &Path, directory: &Path) -> Result<String, String> {
-    let executable = quote_desktop_argument(executable)?;
-    let directory = quote_desktop_argument(directory)?;
+    let executable = quote_desktop_argument(executable, true)?;
+    let directory = quote_desktop_argument(directory, false)?;
     Ok(format!(
         "[Desktop Entry]\nType=Application\nName=QC Remote Resident Host\nNoDisplay=true\nTerminal=false\n{OWNERSHIP_MARKER}\nExec={executable} --resident --directory {directory} --keep-user-quit\n"
     ))
 }
 
-fn quote_desktop_argument(path: &Path) -> Result<String, String> {
+fn quote_desktop_argument(path: &Path, executable: bool) -> Result<String, String> {
     let value = path
         .to_str()
         .ok_or("Autostart command path is not valid Unicode")?;
     if value.chars().any(char::is_control) {
         return Err("Autostart command path contains a control character".to_owned());
     }
+    if executable && value.contains('=') {
+        return Err("Autostart executable path contains a reserved equal sign".to_owned());
+    }
     let mut quoted = String::from("\"");
     for character in value.chars() {
         match character {
-            '\\' | '"' | '$' | '`' => {
-                quoted.push('\\');
+            // Exec is itself a quoted command inside a desktop-entry string:
+            // the key-file parser consumes one escaping layer before Exec.
+            '\\' => quoted.push_str("\\\\\\\\"),
+            '"' | '$' | '`' => {
+                quoted.push_str("\\\\");
                 quoted.push(character);
             }
             '%' => quoted.push_str("%%"),
@@ -430,19 +438,6 @@ fn atomic_write(directory: &Path, target: &Path, contents: &[u8]) -> Result<(), 
         let _ = fs::remove_file(&temporary);
     }
     result
-}
-
-fn serving_broker_published(directory: &Path) -> bool {
-    crate::device_broker_descriptor::read_descriptor(
-        &crate::device_broker_descriptor::device_broker_descriptor_path(directory),
-        crate::device_broker_descriptor::unix_time_ms(),
-    )
-    .is_some_and(|descriptor| {
-        qc_native_platform::process::os_process_is_alive(descriptor.process_id)
-            && descriptor.process_created_at.is_some()
-            && qc_native_platform::process::os_process_created_at(descriptor.process_id)
-                == descriptor.process_created_at
-    })
 }
 
 #[cfg(test)]
@@ -531,7 +526,7 @@ mod tests {
         )
         .unwrap();
         assert!(entry.contains(
-            "Exec=\"/opt/QC Remote/bin/host%%f\\\\name\\\"\\$\\`\" --resident --directory \"/home/me/.local/state/QC Remote\" --keep-user-quit"
+            "Exec=\"/opt/QC Remote/bin/host%%f\\\\\\\\name\\\\\"\\\\$\\\\`\" --resident --directory \"/home/me/.local/state/QC Remote\" --keep-user-quit"
         ));
         assert!(entry.contains(OWNERSHIP_MARKER));
         let exec_line = entry
@@ -539,7 +534,9 @@ mod tests {
             .find(|line| line.starts_with("Exec="))
             .expect("desktop entry has an Exec line");
         assert!(!exec_line.contains('\n'));
-        assert!(quote_desktop_argument(Path::new("/tmp/with\nnewline")).is_err());
+        assert!(quote_desktop_argument(Path::new("/tmp/with\nnewline"), true).is_err());
+        assert!(quote_desktop_argument(Path::new("/tmp/qc=broker"), true).is_err());
+        assert!(quote_desktop_argument(Path::new("/state/qc=broker"), false).is_ok());
     }
 
     #[test]
@@ -569,9 +566,19 @@ mod tests {
             .contains("/opt/new broker"));
 
         fs::write(&target, b"[Desktop Entry]\nName=Someone else's autostart\n").unwrap();
+        let unrelated = fs::read(&target).unwrap();
         assert!(!is_our_entry(&fs::read(&target).unwrap()));
         assert!(remove_autostart_entry(&directory, uid).is_err());
         assert!(target.exists(), "an unrelated entry is never removed");
+        assert!(write_autostart_entry(
+            &directory,
+            Path::new("/opt/qc-broker"),
+            Path::new("/state/qc"),
+            uid,
+        )
+        .is_err());
+        assert_eq!(fs::read(&target).unwrap(), unrelated);
+        fs::write(&target, first.as_bytes()).unwrap();
         write_autostart_entry(
             &directory,
             Path::new("/opt/qc-broker"),
@@ -581,5 +588,113 @@ mod tests {
         .unwrap();
         remove_autostart_entry(&directory, uid).unwrap();
         assert!(!target.exists(), "our marked entry is removed");
+    }
+
+    #[test]
+    fn gio_exec_parser_preserves_unusual_executable_and_state_paths() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+
+        let root = TestDirectory::new("qc-linux-desktop-exec-parser");
+        let executable_directory = root.0.join("bin space $cash `tick` \"quote\"");
+        fs::create_dir_all(&executable_directory).unwrap();
+        let executable = executable_directory.join("qc\\broker");
+        let capture = root.0.join("argv.bin");
+        fs::write(
+            &executable,
+            b"#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$QC_AUTOSTART_ARGV_CAPTURE.tmp\" && mv \"$QC_AUTOSTART_ARGV_CAPTURE.tmp\" \"$QC_AUTOSTART_ARGV_CAPTURE\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let directory = root
+            .0
+            .join("state space $cash `tick` \"quote\" %f = ok\\dir");
+        let desktop_path = root.0.join(AUTOSTART_FILE);
+        fs::write(
+            &desktop_path,
+            desktop_entry(&executable, &directory).unwrap(),
+        )
+        .unwrap();
+
+        let launcher = Command::new("gio")
+            .arg("launch")
+            .arg(&desktop_path)
+            .env("QC_AUTOSTART_ARGV_CAPTURE", &capture)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("GIO is installed with the Linux desktop runtime");
+        let launch_pid = launcher.id();
+        let mut owned_group = GioLaunchGroup {
+            launcher,
+            pgid: launch_pid,
+        };
+        let launcher = &mut owned_group.launcher;
+        let launch_deadline = Instant::now() + STARTUP_BOUND;
+        let status = loop {
+            if let Some(status) = launcher.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= launch_deadline {
+                panic!("GIO did not finish launching the desktop entry within the bound");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "GIO rejected the generated desktop entry");
+
+        let deadline = Instant::now() + STARTUP_BOUND;
+        while !capture.is_file() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let actual = fs::read(&capture).expect("fixture executable wrote its argv");
+        let mut expected = Vec::new();
+        for argument in [
+            "--resident",
+            "--directory",
+            directory.to_str().unwrap(),
+            "--keep-user-quit",
+        ] {
+            expected.extend_from_slice(argument.as_bytes());
+            expected.push(0);
+        }
+        assert_eq!(actual, expected, "GIO changed argument boundaries or bytes");
+    }
+
+    struct GioLaunchGroup {
+        launcher: Child,
+        pgid: u32,
+    }
+
+    impl Drop for GioLaunchGroup {
+        fn drop(&mut self) {
+            // GIO may return after spawning the target. The dedicated process
+            // group keeps both launcher and target within this test's ownership.
+            if let Ok(mut killer) = Command::new("kill")
+                .args(["-KILL", "--", &format!("-{}", self.pgid)])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while Instant::now() < deadline {
+                    if killer.try_wait().ok().flatten().is_some() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                if killer.try_wait().ok().flatten().is_none() {
+                    let _ = killer.kill();
+                    let _ = killer.wait();
+                }
+            }
+            if self.launcher.try_wait().ok().flatten().is_none() {
+                let _ = self.launcher.kill();
+                let _ = self.launcher.wait();
+            }
+        }
     }
 }

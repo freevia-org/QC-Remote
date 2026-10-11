@@ -2504,6 +2504,7 @@ fn the_manual_antigravity_example_passes_the_apps_own_route_check() {
 /// which is the state after in-app pairing, and its suggested remedy
 /// downgraded the managed native route to this node one.
 #[test]
+#[cfg(windows)]
 fn the_codex_installer_classifies_an_existing_qc_remote_entry() {
     let installer = codex_installer();
     let classifier = installer
