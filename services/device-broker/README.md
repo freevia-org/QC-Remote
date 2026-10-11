@@ -5,9 +5,10 @@ verification and backup engines. Windows and Linux link this crate into one
 resident broker/tray/MCP executable. The standalone binary in this crate also
 supports headless operation through the same authenticated loopback transport.
 
-The Linux desktop port is under validation. Historical hardware results below
-cover the headless broker; they do not yet establish the new tray, desktop or
-performance MIDI behavior on hardware.
+The Linux desktop host, resident tray/MCP broker and performance MIDI backend
+are implemented. Historical hardware results below cover the headless broker;
+they do not establish the new desktop tray or performance MIDI behavior on
+hardware.
 
 ## Native Linux desktop and resident host
 
@@ -42,6 +43,51 @@ host build: keep both executables together. Linux package metadata is in
 `apps/windows/src-tauri/tauri.linux.conf.json`; these commands do not produce
 an installer.
 
+### Build an unsigned Debian package
+
+On a native Ubuntu/Debian desktop build host with the prerequisites above,
+Node 22, Rust stable and `dpkg-deb` installed, first install the npm workspace
+dependencies with `npm ci`, then run this from the repository root:
+
+```sh
+python3 scripts/package-linux-deb.py
+```
+
+The script builds the broker for the host target, stages it under Tauri's
+required target-suffixed external-binary name, and asks Tauri to build only the
+`.deb`. It removes only the sidecar file it created, including on build or
+verification failure. It then checks that the package contains both
+executables and the scoped udev rules at
+`/usr/share/qc-remote/70-qc-remote.rules`. An existing target-suffixed sidecar
+is a hard error and is never replaced. For a bounded smoke package from an
+already-built pair, pass both executables and a new output path:
+
+```sh
+python3 scripts/package-linux-deb.py \
+  --prebuilt-app /path/to/qc-remote \
+  --broker-binary /path/to/qc-device-broker \
+  --output /path/to/new/qc-remote-preview.deb
+```
+
+That path uses a fresh temporary Cargo target directory and Tauri's debug
+bundle mode, does not compile either executable, and checks the exact package
+members and both executable SHA-256 hashes before copying the verified `.deb`
+to the new output path. The command prints the verified package path. Package
+outputs are unsigned and are not published or release-signed installers.
+
+The package ships the rules file but does not install it into `/etc`. After
+installing the package, an administrator may install the narrowly scoped rules
+and reload udev:
+
+```sh
+sudo install -m 0644 /usr/share/qc-remote/70-qc-remote.rules /etc/udev/rules.d/70-qc-remote.rules
+sudo udevadm control --reload-rules
+```
+
+Reconnect the device after reloading. The rule grants active-seat access only
+to the supported product IDs on hidraw and raw MIDI; it does not change kernel
+driver binding.
+
 Launch in a graphical user session with D-Bus and a StatusNotifierItem tray
 host. A desktop without a tray host cannot display the broker icon. The broker
 must register its icon before applying a tray idle hold. Tray preferences and
@@ -64,7 +110,12 @@ Install stable Rust and a C toolchain. From the repository root:
 cargo build --locked -p qc-device-broker
 cargo test --locked -p qc-device-broker
 cargo clippy --locked -p qc-device-broker --all-targets -- -D warnings
+python3 -m unittest scripts/test_package_linux_deb.py
 ```
+
+The Python tests exercise package-member/hash verification, exclusive sidecar
+staging and process/temp cleanup; they do not invoke Cargo, npm, a package
+manager or device I/O.
 
 The Linux backend uses hidraw. Do not install a libusb driver or detach the
 kernel's USB audio/MIDI driver. Hardware permissions are a separate step;
@@ -120,6 +171,15 @@ Relative base paths are ignored. If none is available, it uses a private
 Use an absolute, user-owned path. The broker's directory is mode `0700` and its
 credential descriptor mode `0600`. Existing unsafe ownership, symlinks or
 permissions are refused rather than repaired implicitly.
+
+If startup reports an unsafe broker or XDG autostart directory component,
+inspect the exact path named by the error and its parents with `namei -l` and
+`stat -c '%U %a %n' PATH`. Confirm each directory is owned by your account and
+is not a symlink before changing its permissions. If a named directory is
+your own and only group/world write bits are the problem, remove those bits
+from that exact directory with `chmod go-w PATH`, then retry. Do not run a
+recursive permission change or weaken the broker's ownership checks; do not
+change a shared/system-owned path.
 
 For a usual systemd login:
 

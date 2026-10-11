@@ -7,6 +7,18 @@
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/qc-remote/70-qc-remote.rules": "../../../services/device-broker/linux/70-qc-remote.rules"
+        },
+        "depends": [
+          "libsecret-1-0",
+          "gnome-keyring",
+          "zenity | kdialog"
+        ]
+      }
+    }
   }
 }
