@@ -6,7 +6,7 @@
 //! app was started from, could then supply its own `reg.exe` or
 //! `powershell.exe`, and it would run with the user's rights every time the app
 //! read the registry. These helpers name the copies Windows itself ships.
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 use std::path::{Path, PathBuf};
 
 // SAFETY: these declarations match the kernel32 signatures `UINT GetSystemDirectoryW(LPWSTR,
@@ -43,13 +43,13 @@ fn known_directory(read: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Opt
 }
 
 /// `C:\Windows\System32`, from the OS rather than the environment.
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn system32_directory() -> PathBuf {
     system_directory().unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32"))
 }
 
 /// `C:\Windows`, from the OS rather than the environment.
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn windows_directory() -> PathBuf {
     system_windows_directory().unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
 }
@@ -64,32 +64,22 @@ fn system_windows_directory() -> Option<PathBuf> {
     known_directory(GetSystemWindowsDirectoryW)
 }
 
-#[cfg(all(test, not(windows)))]
-fn system_directory() -> Option<PathBuf> {
-    None
-}
-
-#[cfg(all(test, not(windows)))]
-fn system_windows_directory() -> Option<PathBuf> {
-    None
-}
-
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn reg_exe() -> PathBuf {
     system32_directory().join("reg.exe")
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn where_exe() -> PathBuf {
     system32_directory().join("where.exe")
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn notepad_exe() -> PathBuf {
     system32_directory().join("notepad.exe")
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn powershell_exe() -> PathBuf {
     system32_directory()
         .join("WindowsPowerShell")
@@ -97,7 +87,7 @@ pub(crate) fn powershell_exe() -> PathBuf {
         .join("powershell.exe")
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn explorer_exe() -> PathBuf {
     windows_directory().join("explorer.exe")
 }
@@ -107,7 +97,7 @@ pub(crate) fn explorer_exe() -> PathBuf {
 /// `where.exe` always searches its current directory before `PATH`, so a
 /// result found there is whatever happened to be lying in that directory, not
 /// an installed program. Only absolute paths outside `searched_first` remain.
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn installed_where_results(
     results: impl IntoIterator<Item = PathBuf>,
     searched_first: &Path,
@@ -132,7 +122,7 @@ pub(crate) fn installed_where_results(
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
@@ -151,7 +141,6 @@ mod tests {
                 "{} is outside the Windows directory",
                 tool.display()
             );
-            #[cfg(windows)]
             assert!(tool.is_file(), "{} does not exist", tool.display());
         }
         assert!(system32_directory().starts_with(windows_directory()));

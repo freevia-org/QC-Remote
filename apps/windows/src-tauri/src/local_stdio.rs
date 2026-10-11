@@ -3285,6 +3285,7 @@ mod tests {
     /// C1: the headless host must look for the shared broker where a window
     /// does - Tauri's `app_local_data_dir`, the local data folder joined with
     /// the bundle identifier - or the two would elect separate brokers.
+    #[cfg(windows)]
     #[test]
     fn a_headless_host_uses_the_windows_app_local_data_directory() {
         let config: Value =
@@ -3301,6 +3302,18 @@ mod tests {
             crate::device_broker_descriptor::device_broker_descriptor_path(
                 &PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join(APP_DIRECTORY)
             )
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_headless_host_uses_the_shared_linux_state_directory() {
+        let settings = HeadlessHostSettings::for_this_user().expect("settings");
+        let expected = crate::broker_paths::app_local_data_dir();
+        assert_eq!(settings.app_local_data_dir, expected);
+        assert_eq!(
+            settings.device_broker_descriptor_path(),
+            crate::device_broker_descriptor::device_broker_descriptor_path(&expected)
         );
     }
 

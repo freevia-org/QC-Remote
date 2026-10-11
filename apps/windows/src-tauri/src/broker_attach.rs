@@ -358,11 +358,21 @@ mod tests {
             received
         });
         let failure = attach_to_device_broker(&published).expect_err("a squatter is refused");
+        #[cfg(windows)]
         assert!(
             failure.message().contains("not the published"),
             "{}",
             failure.message()
         );
+        #[cfg(target_os = "linux")]
+        assert!(
+            failure.message().contains("no longer running")
+                || failure.message().contains("owner could not be verified"),
+            "{}",
+            failure.message()
+        );
+        #[cfg(not(any(windows, target_os = "linux")))]
+        assert!(!failure.message().is_empty());
         assert!(accepting.join().unwrap().is_empty(), "the token was sent");
     }
 }

@@ -1513,7 +1513,16 @@ fn unique_fixture_directory_with_suffix(
     }
     for _ in 0..16 {
         let directory = parent.join(format!("qc-owned-{name}-{:032x}", suffix()));
-        match fs::create_dir(&directory) {
+        let mut builder = fs::DirBuilder::new();
+        // Broker subprocess fixtures validate the same owner-only descriptor
+        // directory policy as production. Apply the mode in mkdir itself so
+        // there is no interval where another process can observe 0755.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&directory) {
             Ok(()) => return directory,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => panic!("create owned fixture: {error}"),
@@ -1609,6 +1618,20 @@ fn fixture_allocation_preserves_prior_bytes_and_never_reuses_a_name() {
             b"collision evidence"
         );
     });
+}
+
+#[cfg(unix)]
+#[test]
+fn owned_linux_broker_fixture_directories_match_production_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = unique_fixture_directory("owner-mode");
+    let _cleanup = RemoveDirOnDrop::new(directory.clone());
+    assert_eq!(
+        fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o700,
+        "broker test descriptors are rejected unless their parent is owner-only"
+    );
 }
 
 #[test]
@@ -2531,7 +2554,8 @@ fn a_missing_sidecar_fails_closed_and_a_same_name_fallback_is_never_chosen_unver
     let fallback_dir = root.join("checkout");
     fs::create_dir_all(&installed).unwrap();
     fs::create_dir_all(&fallback_dir).unwrap();
-    let fallback = fallback_dir.join("qc-device-broker.exe");
+    let broker_name = native_broker_filename();
+    let fallback = fallback_dir.join(broker_name);
     // A broker-only or stale build of the same name: no marker.
     fs::write(&fallback, b"MZ broker-only build").unwrap();
     let fallbacks = [fallback.clone()];
@@ -2567,10 +2591,10 @@ fn a_missing_sidecar_fails_closed_and_a_same_name_fallback_is_never_chosen_unver
         );
     }
     // The installed sidecar always wins, and is the only release choice.
-    fs::write(installed.join("qc-device-broker.exe"), b"installed").unwrap();
+    fs::write(installed.join(broker_name), b"installed").unwrap();
     assert_eq!(
         locate_native_broker_in(Some(&installed), &fallbacks, false),
-        Some(installed.join("qc-device-broker.exe"))
+        Some(installed.join(broker_name))
     );
     fs::remove_dir_all(root).unwrap();
 }

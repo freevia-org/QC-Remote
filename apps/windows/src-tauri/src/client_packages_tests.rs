@@ -563,6 +563,7 @@ fn claude_status_detects_install_and_update_versions() {
 }
 
 #[test]
+#[cfg(windows)]
 fn claude_path_falls_back_to_the_newest_squirrel_version_directory() {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-claude-path-test-{}", std::process::id()));
@@ -582,6 +583,7 @@ fn claude_path_falls_back_to_the_newest_squirrel_version_directory() {
 }
 
 #[test]
+#[cfg(windows)]
 fn desktop_versions_cover_squirrel_and_store_package_layouts() {
     assert_eq!(
         version_from_executable_path(Path::new(
@@ -610,6 +612,7 @@ fn desktop_versions_cover_squirrel_and_store_package_layouts() {
 }
 
 #[test]
+#[cfg(windows)]
 fn claude_msix_path_uses_the_package_install_location() {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-claude-msix-test-{}", std::process::id()));
@@ -630,6 +633,7 @@ fn claude_msix_path_uses_the_package_install_location() {
 }
 
 #[test]
+#[cfg(windows)]
 fn chatgpt_msix_path_uses_the_package_install_location() {
     let directory = std::env::temp_dir().join(format!(
         "qc-remote-chatgpt-msix-test-{}",
@@ -1078,6 +1082,7 @@ fn claude_install_is_detected_from_its_manifest_before_registry_refresh() {
 }
 
 #[test]
+#[cfg(windows)]
 fn antigravity_paths_cover_per_user_and_machine_installations() {
     let local = Path::new(r"C:\Users\test\AppData\Local");
     let program_w6432 = Path::new(r"C:\Program Files");
@@ -1170,6 +1175,7 @@ fn executable_at(path: &Path) -> PathBuf {
 }
 
 #[test]
+#[cfg(windows)]
 fn an_uninstall_entry_resolves_a_quoted_install_location_and_display_icon() {
     // Both values arrive with the quotation marks inside them, which is
     // how Jan registers itself.
@@ -1349,6 +1355,7 @@ fn an_install_record_is_used_only_when_it_names_a_file_that_is_there() {
 }
 
 #[test]
+#[cfg(windows)]
 fn lm_studio_resolves_from_bionic_and_from_its_legacy_layout() {
     let directory = installation_fixture("lm-studio-layouts");
     let bionic = executable_at(&directory.join("Bionic").join("Bionic.exe"));
@@ -1405,6 +1412,7 @@ fn a_store_execution_alias_is_accepted_although_it_is_zero_length() {
 }
 
 #[test]
+#[cfg(windows)]
 fn a_default_path_answers_before_the_slower_mechanisms() {
     // Both mechanisms hold a real file at once, which is the state Bionic
     // is actually in, so the returned path alone cannot say which was
