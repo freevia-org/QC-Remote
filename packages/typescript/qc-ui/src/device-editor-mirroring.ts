@@ -1,4 +1,5 @@
 import type { GatewayTransport, GridBlock } from "@qc-remote/client";
+import { classifyQcGraphicsTree, type QcObservedScreenKind } from "./use-adaptive-screen-polling.ts";
 
 // Native 800 x 480 Grid cell centres. Browser pixels must never be forwarded:
 // their scale depends on the window and form factor.
@@ -42,14 +43,26 @@ export async function openGridBlockOnDevice(
   return true;
 }
 
-/** Close the physical parameter editor only when CorOS says it is visible. */
+/**
+ * Close the physical parameter editor only when CorOS says it is visible. When
+ * the unit shows something else over its Grid (a splitter or lane editor, a
+ * popup on the editor, a panel of a class the app does not know) no touch is
+ * sent, because the check button is proven only on the parameter editor;
+ * `onLeftOpen` then names what the unit still shows, so the app never closes
+ * its editor and says nothing while the unit keeps its own open.
+ */
 export async function closeGridBlockOnDevice(
   gateway: GatewayTransport,
-  stillCurrent: () => boolean = () => true
+  stillCurrent: () => boolean = () => true,
+  onLeftOpen?: (screen: QcObservedScreenKind) => void
 ): Promise<boolean> {
   const { tree } = await gateway.graphicsTree();
   requireGrid(tree);
-  if (!tree.includes("zenUI::ParameterEditor") || !stillCurrent()) return false;
+  if (!tree.includes("zenUI::ParameterEditor") || !stillCurrent()) {
+    const screen = classifyQcGraphicsTree(tree);
+    if (stillCurrent() && screen !== "grid") onLeftOpen?.(screen);
+    return false;
+  }
   await gateway.tapScreen(QC_PARAMETER_EDITOR_DONE.x, QC_PARAMETER_EDITOR_DONE.y);
   return true;
 }

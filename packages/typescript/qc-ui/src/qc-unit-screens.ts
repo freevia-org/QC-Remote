@@ -38,7 +38,7 @@ export const QC_UNIT_SCREENS: Readonly<Record<Exclude<QcObservedScreenKind, "unk
   directory: { app: "preset directory", open: "probe-needed", close: "probe-needed", evidence: "no recorded gesture" },
   "cpu-monitor": { app: "cpu monitor over the Grid", open: "probe-needed", close: "probe-needed", evidence: "no recorded gesture (menu row, unproven)" },
   looper: { app: "looper-editor", open: "command", close: "command", evidence: "looper open/close commands; opened by a Looper X block" },
-  "parameter-editor": { app: "block editor", open: "command", close: "command", evidence: "a block tap; mirrored through the grid workflow" },
+  "parameter-editor": { app: "block editor (unit-mirror picture when the unit opened it)", open: "gesture", close: "gesture", evidence: "app to unit: a Grid block tap, and the check tap (742,30) only on zenUI::ParameterEditor; the splitter, mixer and lane editors (SMParamsEditor, Lane*ControlEditor) are neither opened nor closed by the app. Unit to app: the tree carries no block identity the app has read, so a unit-opened editor shows as the unit's picture, which the Grid closes" },
   "scene-selector": { app: "scene menu (popup)", open: "probe-needed", close: "probe-needed", evidence: "tap the scene indicator; not recorded" },
   "route-selector": { app: "unit mirror", open: "probe-needed", close: "probe-needed", evidence: "tap a rail label; not recorded" },
   "copy-scene": { app: "unit mirror", open: "probe-needed", close: "probe-needed", evidence: "menu row; not recorded" },
@@ -78,6 +78,17 @@ export function appScreenKind(app: { view: string | null; deviceSettingsOpen: bo
   return "grid";
 }
 
+/**
+ * The screen the app will show once it has followed the unit to `kind`, in the
+ * unit's terms: the pictures of screens the app has no screen for count as one
+ * app screen, and the Preset Directory is not an app destination at all (it is
+ * a workflow flag the app screen kind does not read).
+ */
+export function appKindAfterFollowing(kind: QcObservedScreenKind): QcObservedScreenKind {
+  if (QC_UNIT_MIRROR_KINDS.includes(kind) || kind === "parameter-editor") return "message-dialog";
+  return kind === "directory" ? "grid" : kind;
+}
+
 // -------------------------------------------------------------------------------------------------- the loop guard
 
 /**
@@ -93,6 +104,8 @@ export interface QcScreenLatch {
   takeUnit(kind: QcObservedScreenKind): boolean;
   expectApp(kind: QcObservedScreenKind): void;
   takeApp(kind: QcObservedScreenKind): boolean;
+  /** Withdraw an expectation whose gesture was never sent or did not take, so it cannot swallow a later genuine change. */
+  cancelUnit(kind: QcObservedScreenKind): void;
 }
 
 export function createQcScreenLatch(now: () => number = Date.now, ttlMs = 10_000): QcScreenLatch {
@@ -107,7 +120,8 @@ export function createQcScreenLatch(now: () => number = Date.now, ttlMs = 10_000
     expectUnit: (kind) => { unit.set(kind, now() + ttlMs); },
     takeUnit: (kind) => take(unit, kind),
     expectApp: (kind) => { app.set(kind, now() + ttlMs); },
-    takeApp: (kind) => take(app, kind)
+    takeApp: (kind) => take(app, kind),
+    cancelUnit: (kind) => { unit.delete(kind); }
   };
 }
 
@@ -146,31 +160,39 @@ const { openIo, done, menuButton, modesHold, settingsRow } = QC_DEVICE_SCREEN_GE
  * (the Grid; the menu for the Settings row), because the same touch on another
  * screen could press something. "busy" means another screen is open.
  */
-export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, target: QcOpenTarget): Promise<QcOpenOnUnit> {
+export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, target: QcOpenTarget, beforeGesture?: () => void): Promise<QcOpenOnUnit> {
   const current = await unitScreen(gateway);
   if (current === target) return "shown";
+  // Called once, just before the first touch is sent and never when none is: the caller arms its loop guard here.
+  let announced = false;
+  const announce = () => { if (!announced) { announced = true; beforeGesture?.(); } };
   if (target === "io") {
     if (current !== "grid") return "busy";
+    announce();
     await gateway.swipeScreen(openIo.x, openIo.y, openIo.toX, openIo.toY);
     return await untilUnitShows(gateway, poll, (kind) => kind === "io") ? "shown" : "not-shown";
   }
   if (target === "preset-menu") {
     if (current !== "grid") return "busy";
+    announce();
     await gateway.tapScreen(menuButton.x, menuButton.y);
     return await untilUnitShows(gateway, poll, (kind) => kind === "preset-menu") ? "shown" : "not-shown";
   }
   if (target === "modes") {
     if (current !== "grid") return "busy";
+    announce();
     await gateway.longTapScreen(modesHold.x, modesHold.y);
     return await untilUnitShows(gateway, poll, (kind) => kind === "modes") ? "shown" : "not-shown";
   }
   // settings: through the preset menu
   if (current === "grid") {
+    announce();
     await gateway.tapScreen(menuButton.x, menuButton.y);
     if (!await untilUnitShows(gateway, poll, (kind) => kind === "preset-menu")) return "not-shown";
   } else if (current !== "preset-menu") {
     return "busy";
   }
+  announce();
   await gateway.tapScreen(settingsRow.x, settingsRow.y);
   if (await untilUnitShows(gateway, poll, (kind) => kind === "settings")) return "shown";
   // The row was not where it was expected: leave the menu as it was found.
@@ -184,9 +206,10 @@ export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, targ
  * nested inside it (Global EQ inside I/O, a Settings pane) may need a second
  * tap, after which a still-open dialog is reported.
  */
-export async function closeOnUnit(gateway: RouteGateway, poll: QcScreenPoll, target: QcCloseTarget): Promise<boolean> {
+export async function closeOnUnit(gateway: RouteGateway, poll: QcScreenPoll, target: QcCloseTarget, beforeGesture?: () => void): Promise<boolean> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (await unitScreen(gateway) !== target) return true;
+    if (attempt === 0) beforeGesture?.();
     if (target === "preset-menu") await gateway.tapScreen(menuButton.x, menuButton.y);
     else await gateway.tapScreen(done.x, done.y);
     if (await untilUnitShows(gateway, poll, (kind) => kind !== target)) return true;

@@ -13,7 +13,7 @@ const { createElement } = (await import("react")).default;
 const { consumeQcDisplayStates, qcGigViewTransition, useQcFollowSetting, useQcScreenFollow } = await import("../src/use-qc-screen-follow.ts");
 
 const observation = (kind: QcObservedScreenKind): QcScreenObservation => ({ kind, signature: kind, observedAt: 0 });
-type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog";
+type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard";
 
 interface Scenario {
   follow?: boolean; ready?: boolean; available?: boolean;
@@ -21,10 +21,14 @@ interface Scenario {
   view?: string | null; popup?: "grid-menu" | "scene-menu" | "mode-menu" | null; settingsOpen?: boolean; tempoOpen?: boolean;
   /** What the unit shows, and how it responds to touches. */
   unit?: Unit; unitIgnores?: boolean;
+  /** The app has a block editor open. */
+  editorOpen?: boolean;
 }
 
 function harness(initial: Scenario = {}) {
   const log: string[] = [];
+  /** Runs after each touch the unit answers: the poller seeing the screen the unit passes through. */
+  const watchers: Array<(unit: Unit) => void> = [];
   const world = { unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false };
   const state = { view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
@@ -36,13 +40,14 @@ function harness(initial: Scenario = {}) {
       if (x === 764 && y === 22) world.unit = world.unit === "Grid" ? "MainMenuPopup" : world.unit === "MainMenuPopup" ? "Grid" : world.unit;
       else if (x === 600 && y === 406 && world.unit === "MainMenuPopup") world.unit = "SettingsDialog";
       else if (x === 743 && y === 30 && world.unit !== "Grid") world.unit = "Grid";
+      for (const watch of watchers) watch(world.unit);
     },
     longTapScreen: async (x: number, y: number) => { log.push(`hold:${x},${y}`); if (!world.unitIgnores && world.unit === "Grid" && x === 700 && y === 70) world.unit = "HybridModeConfigDialog"; },
     swipeScreen: async () => { log.push("swipe"); }
   } as unknown as QcScreenFollowOptions["gateway"];
   const named = (name: string, ...methods: string[]) => Object.fromEntries(methods.map((method) => [method, () => { log.push(`${name}.${method}`); }]));
   const workflowsFor = () => ({
-    grid: named("grid", "close"),
+    grid: { ...named("grid", "close"), details: current.editorOpen ? {} : undefined },
     preset: named("preset", "closeDirectory", "openDirectory"),
     deviceSettings: { ...named("settings", "close", "openSettings"), open: state.settingsOpen },
     tempo: { ...named("tempo", "close", "openTempo"), open: state.tempoOpen },
@@ -69,7 +74,7 @@ function harness(initial: Scenario = {}) {
   act(() => { renderer = create(createElement(Probe)); });
   /** The app's screen changes by the user's hand (or the unit's), then the host re-renders. */
   const rerender = async (next: Scenario) => { current = { ...current, ...next }; Object.assign(state, { view: next.view !== undefined ? next.view : state.view, popup: next.popup !== undefined ? next.popup : state.popup, settingsOpen: next.settingsOpen ?? state.settingsOpen, tempoOpen: next.tempoOpen ?? state.tempoOpen }); await act(async () => { renderer.update(createElement(Probe)); await new Promise((resolve) => setTimeout(resolve, 150)); }); };
-  return { log, world, state, latch, rerender, get follower() { return seen.current!; }, renderer };
+  return { log, world, state, latch, watchers, rerender, get follower() { return seen.current!; }, renderer };
 }
 
 const overlaysClosed = ["grid.close", "preset.closeDirectory", "settings.close", "tempo.close", "tuner.close"];
@@ -122,8 +127,8 @@ test("a screen the unit shows is followed once, not on every observation of the 
   host.renderer.unmount();
 });
 
-test("a parameter editor or unknown screen changes nothing, but still counts as a change of kind", () => {
-  const host = harness();
+test("an unknown screen, or the editor the app itself opened, changes nothing, but still counts as a change of kind", () => {
+  const host = harness({ editorOpen: true });
   act(() => host.follower.observe(observation("tuner")));
   host.log.length = 0;
   act(() => host.follower.observe(observation("parameter-editor")));
@@ -308,3 +313,97 @@ test("every host reads and writes the follow setting through one hook; it is on 
 
 
 
+
+// ------------------------------------------------------------------------------------ the mirror audit
+
+test("a block editor opened on the unit shows in the app as the unit's picture, and closing it on the unit closes that", () => {
+  const host = harness();
+  act(() => host.follower.observe(observation("parameter-editor")));
+  assert.ok(host.log.includes("view:unit-mirror"), JSON.stringify(host.log));
+  assert.ok(!host.log.includes("grid.close"), "the app has no editor to close, so no 'Parameter editor closed' notice either");
+  assert.equal(host.state.view, "unit-mirror");
+  host.log.length = 0;
+  act(() => host.follower.observe(observation("grid")));
+  assert.equal(host.state.view, null, "the Grid on the unit clears the picture");
+  assert.ok(host.log.includes("grid.close"));
+  host.renderer.unmount();
+});
+
+test("a popup over the editor on the unit, then the editor again, leaves the app on the unit's picture without flapping", () => {
+  const host = harness({ editorOpen: true });
+  act(() => host.follower.observe(observation("parameter-editor")));
+  act(() => host.follower.observe(observation("block-menu")));
+  assert.equal(host.state.view, "unit-mirror");
+  host.log.length = 0;
+  act(() => host.follower.observe(observation("parameter-editor")));
+  assert.equal(host.state.view, "unit-mirror", "the editor the popup covered stays the unit's picture");
+  assert.ok(!host.log.includes("view:null"), "not cleared and reopened");
+  host.renderer.unmount();
+});
+
+test("loop guard: a unit screen the app already shows is not expected back, so the next real change is still sent", async () => {
+  // The unit's Grid is observed (a screen closed on the unit, or the first poll). The app already shows the Grid.
+  const host = harness({ follow: false, available: true, unit: "Grid" });
+  act(() => host.follower.observe(observation("grid")));
+  await host.rerender({ popup: "grid-menu" });
+  await host.rerender({ popup: null });
+  assert.deepEqual(host.log.filter((entry) => entry.startsWith("tap:")), ["tap:764,22", "tap:764,22"], "opening and closing the menu within seconds of the unit's Grid both reach the unit");
+  assert.equal(host.world.unit, "Grid");
+  host.renderer.unmount();
+});
+
+test("loop guard: a close that needed no touch leaves nothing that would swallow the unit's next change", async () => {
+  const host = harness({ follow: false, available: true, settingsOpen: true, unit: "Keyboard" });
+  await host.rerender({ settingsOpen: false });
+  assert.deepEqual(host.log.filter((entry) => entry.startsWith("tap:")), [], "the unit is not showing Settings: nothing to close");
+  await host.rerender({ view: "tuner" });
+  host.log.length = 0;
+  act(() => host.follower.observe(observation("grid")));
+  assert.ok(host.log.includes("view:null"), "the unit returning to its Grid still closes the app's screen");
+  host.renderer.unmount();
+});
+
+test("loop guard: an open the unit did not take is withdrawn, so the unit's own later screen is followed", async () => {
+  const host = harness({ follow: false, available: true, unitIgnores: true });
+  await host.rerender({ view: "modes" });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(host.log.includes("notice:The Quad Cortex did not show the same screen."));
+  host.log.length = 0;
+  act(() => host.follower.observe(observation("modes")));
+  assert.ok(host.log.includes("modes.refresh"), "a Modes screen the user later opens on the unit is followed, not mistaken for the app's request");
+  host.renderer.unmount();
+});
+
+test("the screen the unit passes through while the app drives it to Settings does not pull the app back", async () => {
+  const host = harness({ follow: false, available: true });
+  // The poller looks at the unit after each touch, as the adaptive poll does within 250 ms of a change.
+  host.watchers.push((unit) => {
+    if (unit === "MainMenuPopup") act(() => host.follower.observe(observation("preset-menu")));
+    if (unit === "SettingsDialog") act(() => host.follower.observe(observation("settings")));
+  });
+  await host.rerender({ settingsOpen: true });
+  assert.equal(host.world.unit, "SettingsDialog");
+  assert.ok(!host.log.includes("popup:grid-menu"), "the menu on the way is not shown in the app");
+  assert.ok(!host.log.includes("settings.close"), "the app's Settings is not closed under the user");
+  assert.ok(!host.log.some((entry) => entry.startsWith("view:")), JSON.stringify(host.log));
+  host.renderer.unmount();
+});
+
+test("the unit's Grid answer to the app's own close of Settings is not echoed back into the app", async () => {
+  const host = harness({ follow: false, available: true, settingsOpen: true, unit: "SettingsDialog" });
+  host.watchers.push((unit) => { if (unit === "Grid") act(() => host.follower.observe(observation("grid"))); });
+  await host.rerender({ settingsOpen: false });
+  assert.deepEqual(host.log.filter((entry) => entry.startsWith("tap:")), ["tap:743,30"]);
+  assert.ok(!host.log.includes("settings.close"), "the answer of the unit to the app's own tap changes nothing in the app");
+  host.renderer.unmount();
+});
+
+test("with the setting off the unit's screens, including a block editor, never move the app; the app is never tapped over an open editor", async () => {
+  const off = harness({ follow: false, available: true, unit: "ParameterEditor" });
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.deepEqual(off.log, []);
+  await off.rerender({ view: "modes" });
+  assert.deepEqual(off.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), []);
+  assert.ok(off.log.some((entry) => entry.startsWith("notice:Close the screen open on the Quad Cortex first")));
+  off.renderer.unmount();
+});
