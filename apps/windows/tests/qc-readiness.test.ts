@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { brokerPhaseDetectsDevice, normalizeBrokerConnection, qcConnectionDuringBrokerPhase } from "../src/qc-readiness.ts";
+import { brokerPhaseDetectsDevice, normalizeBrokerConnection, qcConnectionDuringBrokerPhase, qcFollowReadyInventory, qcInventoryDeviceReady } from "../src/qc-readiness.ts";
 
 // The broker's startup phases as 2badc68 ("Report responsive USB startup
 // progress") defines them: "searching" is enumeration finding nothing,
@@ -79,4 +79,84 @@ test("`connecting` is `opening` on the live phase path and on the reconnect-resu
   assert.equal(result.phase, "opening");
   assert.equal(result.demo, true);
   assert.equal(result.detail, "Quad Cortex found; opening its USB session");
+});
+
+// The inventory poll's safety net: a tray resident that never pushes
+// `device.phase` left the window on the demo, beside a tray showing the QC
+// connected, until someone clicked Reconnect.
+type Connection = Parameters<typeof qcFollowReadyInventory>[0]["connection"];
+const demoFallback: Connection = { phase: "ready", detail: "Demo device on this computer", demo: false, source: "virtual" };
+const failedConnect: Connection = { phase: "needs-attention", detail: "The Quad Cortex was released from the tray", demo: true, source: "device" };
+const liveDevice: Connection = { phase: "ready", detail: "Connected", demo: false, source: "device", lastSync: "2026-10-12T00:00:00.000Z" };
+const userDisconnected: Connection = { phase: "disconnected", detail: "Quad Cortex disconnected", demo: true, source: "device" };
+const failedDisconnect: Connection = { phase: "needs-attention", detail: "The Quad Cortex session could not be closed", demo: true, source: "device" };
+const idleWindow = { inventoryReady: true, followed: false, userDisconnected: false, connectInFlight: false, connection: demoFallback, demoCanYield: true };
+
+test("a device the broker already has ready is followed from an idle window", () => {
+  assert.deepEqual(qcFollowReadyInventory(idleWindow), { connect: true, followed: true });
+  assert.deepEqual(qcFollowReadyInventory({ ...idleWindow, connection: failedConnect }), { connect: true, followed: true });
+});
+
+test("a window already live with the device does not connect again, and spends the edge", () => {
+  assert.deepEqual(qcFollowReadyInventory({ ...idleWindow, connection: liveDevice }), { connect: false, followed: true });
+});
+
+test("a connect in flight neither fires nor spends the edge, so its miss is followed once it ends", () => {
+  const during = qcFollowReadyInventory({ ...idleWindow, connectInFlight: true });
+  assert.deepEqual(during, { connect: false, followed: false });
+  assert.deepEqual(qcFollowReadyInventory({ ...idleWindow, followed: during.followed }), { connect: true, followed: true });
+});
+
+test("a connect in flight after the edge was used stays quiet and keeps it used", () => {
+  assert.deepEqual(qcFollowReadyInventory({ ...idleWindow, followed: true, connectInFlight: true }), { connect: false, followed: true });
+});
+
+test("a Disconnect that failed is not undone while the device stays ready", () => {
+  // Pressed during sync, so no poll ever saw the window live and the edge is
+  // unspent; the close failed, so the inventory still reads ready, and
+  // "needs-attention" alone would be followed.
+  const afterFailedDisconnect = { ...idleWindow, connection: failedDisconnect, userDisconnected: true };
+  assert.deepEqual(qcFollowReadyInventory(afterFailedDisconnect), { connect: false, followed: false });
+  // The latch alone holds it: the same state without it would connect.
+  assert.equal(qcFollowReadyInventory({ ...afterFailedDisconnect, userDisconnected: false }).connect, true);
+});
+
+test("a deliberate Disconnect or Demo choice is never overridden", () => {
+  assert.equal(qcFollowReadyInventory({ ...idleWindow, connection: userDisconnected }).connect, false);
+  assert.equal(qcFollowReadyInventory({ ...idleWindow, demoCanYield: false }).connect, false);
+});
+
+test("only a connected device in the ready phase counts as ready", () => {
+  assert.equal(qcInventoryDeviceReady([{ id: "qc-1", connected: true, phase: "ready" }]), true);
+  assert.equal(qcInventoryDeviceReady([{ id: "qc-1", connected: false, phase: "ready" }]), false);
+  assert.equal(qcInventoryDeviceReady([{ id: "qc-1", connected: false, phase: "disconnected" }]), false);
+  for (const phase of ["connecting", "handshaking", "syncing", "searching", "error"]) {
+    assert.equal(qcInventoryDeviceReady([{ id: "qc-1", connected: true, phase }]), false, phase);
+  }
+  assert.equal(qcInventoryDeviceReady([{ id: "qc-1" }]), false);
+  assert.equal(qcInventoryDeviceReady([]), false);
+  assert.deepEqual(qcFollowReadyInventory({ ...idleWindow, inventoryReady: false }), { connect: false, followed: false });
+});
+
+test("the selected device decides, and several without a selection decide nothing", () => {
+  const devices = [{ id: "qc-1", connected: true, phase: "ready" }, { id: "qc-2", connected: false, phase: "disconnected" }];
+  assert.equal(qcInventoryDeviceReady(devices, "qc-1"), true);
+  assert.equal(qcInventoryDeviceReady(devices, "qc-2"), false);
+  assert.equal(qcInventoryDeviceReady(devices, "qc-gone"), false);
+  assert.equal(qcInventoryDeviceReady(devices), false);
+  assert.equal(qcInventoryDeviceReady(devices, null), false);
+});
+
+test("at most one connect per transition into ready, a refused one included", () => {
+  // Poll by poll: ready -> connect; the attempt is refused and the window is
+  // back on the demo while the device stays ready -> nothing more; the device
+  // leaves ready -> re-armed; ready again -> exactly one more connect.
+  let followed = false;
+  const poll = (inventoryReady: boolean) => {
+    const step = qcFollowReadyInventory({ ...idleWindow, inventoryReady, followed });
+    followed = step.followed;
+    return step.connect;
+  };
+  const connects = [true, true, true, false, true, true].map(poll);
+  assert.deepEqual(connects, [true, false, false, false, true, false]);
 });

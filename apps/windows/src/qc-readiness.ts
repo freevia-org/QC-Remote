@@ -141,6 +141,67 @@ export function qcShouldConnectOnDetection(connection: ConnectionState, demoCanY
   return !connection.detail.startsWith("Live synchronization");
 }
 
+/** The fields of one `broker.devices` row this decision reads. */
+export interface QcInventoryDevice { id: string; connected?: boolean; phase?: string }
+
+/**
+ * Whether the broker's device inventory shows the Quad Cortex this window
+ * would connect to already open and ready: the selected one, or the only one
+ * while nothing is selected. With several and no selection there is no device
+ * this window's connect would be known to reach, so none counts.
+ */
+export function qcInventoryDeviceReady(devices: readonly QcInventoryDevice[], selectedId?: string | null): boolean {
+  const device = selectedId ? devices.find((row) => row.id === selectedId) : devices.length === 1 ? devices[0] : undefined;
+  return device?.connected === true && device.phase === "ready";
+}
+
+export interface QcReadyInventoryStep {
+  /** Start the same connect a detected device starts. */
+  connect: boolean;
+  /** Carried to the next poll: this ready edge has been acted on. */
+  followed: boolean;
+}
+
+/**
+ * One inventory poll's decision to follow a device the broker already has
+ * ready. The `device.phase` push is the primary trigger, but a broker that
+ * never pushes it (a tray resident older than this window) left the window on
+ * the demo until someone clicked Reconnect, although the tray showed the
+ * device connected.
+ *
+ * At most one connect per transition of the inventory into ready: whatever it
+ * ends in, a refusal included, the next one waits for the device to leave
+ * ready first, so nothing here can loop. A connect already under way neither
+ * fires nor spends the edge, so a ready device it misses is followed once it
+ * ends. A live session spends the edge without connecting. A Demo choice
+ * never connects (`qcShouldConnectOnDetection`), and neither does anything
+ * after the user's Disconnect until their own Connect: `userDisconnected`
+ * carries that, because a Disconnect that failed leaves "needs-attention",
+ * which a detection may otherwise follow, with the device still open.
+ *
+ * A tray release and a recorded Quit never reach this decision, and must not:
+ * the host lets `device.reconnect` through a tray release (and clears it), so
+ * the only thing holding a released window back is that `broker.devices`
+ * itself is refused after a release or Quit, the poll throws, and no
+ * inventory is ever read as ready.
+ */
+export function qcFollowReadyInventory(state: {
+  inventoryReady: boolean;
+  followed: boolean;
+  userDisconnected: boolean;
+  connectInFlight: boolean;
+  connection: ConnectionState;
+  demoCanYield: boolean;
+}): QcReadyInventoryStep {
+  if (!state.inventoryReady) return { connect: false, followed: false };
+  if (state.followed) return { connect: false, followed: true };
+  if (state.userDisconnected || state.connectInFlight) return { connect: false, followed: false };
+  const { connection } = state;
+  if (connection.source === "device" && connection.phase === "ready") return { connect: false, followed: true };
+  const connect = qcShouldConnectOnDetection(connection, state.demoCanYield);
+  return { connect, followed: connect };
+}
+
 /**
  * Whether opening Demo Mode should close the broker's real-device session.
  *
