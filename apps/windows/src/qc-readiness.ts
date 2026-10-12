@@ -160,7 +160,29 @@ export interface QcReadyInventoryStep {
   connect: boolean;
   /** Carried to the next poll: this ready edge has been acted on. */
   followed: boolean;
+  /** Carried: re-follows spent on lost live sessions since the last give-back. */
+  refollows: number;
+  /** Carried: a live session was lost and no connect from here answered it. */
+  liveSessionLost: boolean;
+  /** Carried: when a poll first saw the current live session, or null. */
+  liveSince: number | null;
 }
+
+/**
+ * Re-follows the inventory poll may spend on lost live sessions before one is
+ * given back. One: a live-health check that keeps failing must not turn into
+ * connect, sync, fail, connect again.
+ */
+export const QC_READY_INVENTORY_REFOLLOWS = 1;
+
+/**
+ * How long the polls must see a session stay live before a spent re-follow is
+ * given back. A ready edge can last all day beside a resident broker, so a
+ * budget that only a new edge restored would leave the second loss of the day
+ * unfollowed; one that came back sooner would let a flapping health check
+ * reconnect every few seconds.
+ */
+export const QC_REFOLLOW_RESTORE_AFTER_LIVE_MS = 60_000;
 
 /**
  * One inventory poll's decision to follow a device the broker already has
@@ -169,37 +191,77 @@ export interface QcReadyInventoryStep {
  * the demo until someone clicked Reconnect, although the tray showed the
  * device connected.
  *
- * At most one connect per transition of the inventory into ready: whatever it
- * ends in, a refusal included, the next one waits for the device to leave
- * ready first, so nothing here can loop. A connect already under way neither
- * fires nor spends the edge, so a ready device it misses is followed once it
- * ends. A live session spends the edge without connecting. A Demo choice
- * never connects (`qcShouldConnectOnDetection`), and neither does anything
- * after the user's Disconnect until their own Connect: `userDisconnected`
- * carries that, because a Disconnect that failed leaves "needs-attention",
- * which a detection may otherwise follow, with the device still open.
+ * One connect per transition of the inventory into ready: whatever it ends
+ * in, a refusal included, the next one waits for the device to leave ready
+ * first. A connect already under way neither fires nor spends the edge, so a
+ * ready device it misses is followed once it ends. A live session spends the
+ * edge without connecting. A Demo choice never connects
+ * (`qcShouldConnectOnDetection`), and neither does anything after the user's
+ * Disconnect until their own Connect: `userDisconnected` carries that,
+ * because a Disconnect that failed leaves "needs-attention", which a
+ * detection may otherwise follow, with the device still open.
+ *
+ * A live session the window then loses by its own live-health check
+ * (`liveSessionLost`, set by beginLiveRecovery) is followed again on the same
+ * edge, since a broker that stays ready makes no new edge. That re-follow is
+ * capped by `QC_READY_INVENTORY_REFOLLOWS` and given back only by the
+ * inventory leaving ready, by the user's own Connect (in App), or by the polls
+ * seeing a session stay live for `QC_REFOLLOW_RESTORE_AFTER_LIVE_MS`. Any
+ * poll that finds the window not live restarts that measurement, and so does
+ * every loss App records (it clears `liveSince` beside `liveSessionLost`). A
+ * re-follow only ever fires from such a poll, so unless the user's own
+ * Connect gives the budget back sooner, two re-follows on one edge are at
+ * least that long apart on the caller's clock (`now`, which must be
+ * monotonic). An automatic connect is an unforced `device.reconnect`, which a
+ * ready broker answers without touching its session, so it cannot make the
+ * edge that re-arms it. The bound, for connects this function starts: per
+ * ready edge one edge follow plus one re-follow, and after that at most one
+ * re-follow per `QC_REFOLLOW_RESTORE_AFTER_LIVE_MS` of observed live time; a
+ * health check that fails sooner than that after every connect gets no more
+ * than those two.
+ *
+ * That bound covers this function only. The `device.phase` listener (which
+ * a re-attached gateway's fresh push can trigger) and the demo fallback's own
+ * retry in startDemoDevice connect by themselves, outside this budget, and
+ * nothing here changes them.
  *
  * A tray release and a recorded Quit never reach this decision, and must not:
  * the host lets `device.reconnect` through a tray release (and clears it), so
  * the only thing holding a released window back is that `broker.devices`
  * itself is refused after a release or Quit, the poll throws, and no
- * inventory is ever read as ready.
+ * inventory is ever read as ready. A loss recorded before a release stays
+ * pending through it and may be followed, within the same budget, once the
+ * polls resume.
  */
 export function qcFollowReadyInventory(state: {
   inventoryReady: boolean;
   followed: boolean;
+  refollows: number;
+  liveSessionLost: boolean;
+  liveSince: number | null;
+  now: number;
   userDisconnected: boolean;
   connectInFlight: boolean;
   connection: ConnectionState;
   demoCanYield: boolean;
 }): QcReadyInventoryStep {
-  if (!state.inventoryReady) return { connect: false, followed: false };
-  if (state.followed) return { connect: false, followed: true };
-  if (state.userDisconnected || state.connectInFlight) return { connect: false, followed: false };
-  const { connection } = state;
-  if (connection.source === "device" && connection.phase === "ready") return { connect: false, followed: true };
-  const connect = qcShouldConnectOnDetection(connection, state.demoCanYield);
-  return { connect, followed: connect };
+  const { connection, now } = state;
+  const live = connection.source === "device" && connection.phase === "ready";
+  // Continuity is only what the polls saw: any poll that finds the window not
+  // live, held or not, starts the measurement over.
+  const liveSince = live ? (state.liveSince ?? now) : null;
+  const refollows = liveSince !== null && now - liveSince >= QC_REFOLLOW_RESTORE_AFTER_LIVE_MS ? 0 : state.refollows;
+  const held = { connect: false, followed: state.followed, refollows, liveSessionLost: state.liveSessionLost, liveSince };
+  if (!state.inventoryReady) return { connect: false, followed: false, refollows: 0, liveSessionLost: false, liveSince: null };
+  if (state.userDisconnected || state.connectInFlight) return held;
+  // Live again, whoever connected it: the loss is answered and the edge spent.
+  if (live) return { ...held, followed: true, liveSessionLost: false };
+  if (!qcShouldConnectOnDetection(connection, state.demoCanYield)) return held;
+  if (!state.followed) return { ...held, connect: true, followed: true, liveSessionLost: false };
+  if (state.liveSessionLost && refollows < QC_READY_INVENTORY_REFOLLOWS) {
+    return { ...held, connect: true, followed: true, refollows: refollows + 1, liveSessionLost: false };
+  }
+  return held;
 }
 
 /**
