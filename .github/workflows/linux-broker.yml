@@ -126,12 +126,14 @@ jobs:
 
   linux-preview-release:
     name: Build Ubuntu preview release draft
-    if: github.event_name == 'workflow_dispatch' && inputs.build_linux_draft
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && inputs.build_linux_draft
     needs: [native-linux, linux-desktop-host]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -157,7 +159,7 @@ jobs:
           import json
           from pathlib import Path
           config = json.loads(Path("apps/windows/src-tauri/tauri.conf.json").read_text())
-          assert config["version"] == "0.1.184", config["version"]
+          assert config["version"] == "0.1.185", config["version"]
           PY
       - name: Install locked frontend dependencies
         run: npm ci
@@ -171,17 +173,37 @@ jobs:
         run: |
           mapfile -t packages < <(find apps/windows/src-tauri/target -type f -path '*/bundle/deb/*.deb' -print)
           test "${#packages[@]}" -eq 1
-          install -m 0644 "${packages[0]}" qc-remote_0.1.184_amd64.deb
-          sha256sum qc-remote_0.1.184_amd64.deb > SHA256SUMS
+          install -m 0644 "${packages[0]}" qc-remote_0.1.185_amd64.deb
+          sha256sum qc-remote_0.1.185_amd64.deb > SHA256SUMS
+      - name: Attest the freshly built Debian package and checksum manifest
+        id: attest-package
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            qc-remote_0.1.185_amd64.deb
+            SHA256SUMS
+      - name: Verify provenance and preserve the Sigstore bundle
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest-package.outputs.bundle-path }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          install -m 0644 "$ATTESTATION_BUNDLE" linux-build-provenance.sigstore.json
+          for artifact in qc-remote_0.1.185_amd64.deb SHA256SUMS; do
+            gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" \
+              --bundle linux-build-provenance.sigstore.json \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/linux-broker.yml" \
+              --source-ref refs/heads/master --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners
+          done
       - name: Create GitHub draft prerelease and upload verified package
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           release_tag="linux-preview-${GITHUB_SHA:0:12}"
           gh release create "$release_tag" \
-            qc-remote_0.1.184_amd64.deb SHA256SUMS \
+            qc-remote_0.1.185_amd64.deb SHA256SUMS linux-build-provenance.sigstore.json \
             --target "$GITHUB_SHA" --draft --prerelease \
-            --title "QC Remote 0.1.184 — Linux preview" \
+            --title "QC Remote 0.1.185 — Linux preview" \
             --notes "Ubuntu 24.04 x86_64 preview package built from source commit $GITHUB_SHA. See the repository user guide for installation and udev setup. This draft does not replace the stable Windows/Android release." \
             --repo "$GITHUB_REPOSITORY"
           release_id=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)

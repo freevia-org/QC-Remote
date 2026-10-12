@@ -81,9 +81,10 @@ directly.
   also carries a `.aab` file; that is the Android App Bundle prepared for
   Google Play, not something to install on a phone.
 - **Linux preview (Ubuntu 24.04, x86_64).** Download
-  [`qc-remote_0.1.184_amd64.deb`](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.184/qc-remote_0.1.184_amd64.deb)
-  from the [v0.1.184 prerelease](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.184),
-  then install it with `sudo apt install ./qc-remote_0.1.184_amd64.deb`. The
+  [`qc-remote_0.1.185_amd64.deb`](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.185/qc-remote_0.1.185_amd64.deb)
+  from the [v0.1.185 prerelease](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.185),
+  [verify the download](#verify-the-linux-download), then install it with
+  `sudo apt install ./qc-remote_0.1.185_amd64.deb`. The
   package includes the application, resident broker/MCP host, and a udev rule.
   Before reconnecting the Quad Cortex, follow the udev activation commands in
   the [Linux preview setup](#linux-preview) section below. If the
@@ -102,6 +103,28 @@ installed-device acceptance are not claimed for these releases.
 The Linux package is a preview and may change independently of the stable
 Windows and Android releases. Only the latest released build for each platform
 receives fixes; earlier builds are not supported ([`SECURITY.md`](../SECURITY.md)).
+
+### Verify the Linux download
+
+Linux previews from 0.1.185 include a signed GitHub build attestation, created
+in the same workflow that builds the Debian package. After downloading the
+package and `SHA256SUMS` from the release, verify the checksum and provenance
+with the [GitHub CLI](https://cli.github.com/):
+
+```sh
+sha256sum -c SHA256SUMS
+gh attestation verify qc-remote_0.1.185_amd64.deb \
+  --repo freevia-org/QC-Remote \
+  --signer-workflow freevia-org/QC-Remote/.github/workflows/linux-broker.yml \
+  --source-ref refs/heads/master \
+  --deny-self-hosted-runners
+```
+
+The attestation binds the file's digest to its repository, build workflow, and
+source commit. The release also includes `linux-build-provenance.sigstore.json`
+as a downloadable copy of that attestation. This is build provenance, not an
+embedded Debian package signature or an APT repository signing key. Version
+0.1.184 predates this verification and has checksums only.
 
 ### Linux preview
 

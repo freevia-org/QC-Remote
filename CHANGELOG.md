@@ -78,6 +78,16 @@ and are not published to a registry.
 - No change. The Android app's USB host does not answer the unit's update
   requests; whether it should is a separate decision.
 
+## Linux preview 0.1.185 — 12 October 2026
+
+- Linux release builds now generate signed GitHub build attestations for the
+  Debian package and checksum manifest, and verify them before uploading the
+  release draft. The release includes the Sigstore bundle for independent
+  verification. The user guide documents the verification command.
+- This preview updates release verification; application and broker behavior
+  is unchanged from 0.1.184. Windows and Android stable downloads remain on
+  v0.1.182.
+
 ## Linux preview 0.1.184 — 12 October 2026
 
 - Native desktop app for Ubuntu 24.04 x86_64, packaged as a Debian installer.
