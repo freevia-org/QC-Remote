@@ -188,13 +188,17 @@ fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 // The UI thread is gone, so the icon is too: drop the hold.
-                shared.registered.store(false, Ordering::Release);
-                handle.set_tray_hold(None);
-                handle.set_resident(false);
+                ui_disconnected(&shared, &handle);
                 return;
             }
         }
     }
+}
+
+fn ui_disconnected(shared: &Shared, handle: &BrokerHandle) {
+    shared.registered.store(false, Ordering::Release);
+    handle.set_tray_hold(None);
+    handle.set_resident(false);
 }
 
 fn unix_time_ms() -> u64 {
@@ -285,6 +289,23 @@ fn app_beside(broker: &Path) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use crate::resident::{DeviceReadinessProbe, RunningHost};
+
+    #[test]
+    fn lost_ui_releases_registration_and_process_residency() {
+        let handle = crate::rpc::test_support::handle();
+        handle.set_resident(true);
+        let shared = Shared {
+            snapshot: Mutex::new(Snapshot::default()),
+            wanted: AtomicBool::new(true),
+            registered: AtomicBool::new(true),
+            refreshed: Mutex::new(Instant::now()),
+        };
+
+        ui_disconnected(&shared, &handle);
+
+        assert!(!shared.registered.load(Ordering::Acquire));
+        assert!(!handle.is_resident());
+    }
 
     /// A host whose sessions are a set of ids; nothing else exists.
     struct FakeHost(Mutex<Vec<String>>);
