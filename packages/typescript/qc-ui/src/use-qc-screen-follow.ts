@@ -37,6 +37,8 @@ export interface QcScreenFollowWorkflows {
   modes: { refresh(): unknown };
   /** The app's route picker, if any is open. */
   routing?: { picker?: { row: number; side: string } };
+  /** The Copy/Swap Scene command the app has open, if any. */
+  scene?: { command?: "copy" | "swap" | null };
 }
 
 export interface QcScreenFollowOptions {
@@ -53,7 +55,17 @@ export interface QcScreenFollowOptions {
   screenPoll?: QcScreenPoll;
 }
 
-const ROUTED: readonly QcObservedScreenKind[] = ["preset-menu", "settings", "modes", "tempo", "cpu-monitor", "directory", "scene-selector", "route-selector"];
+/** The screen the app shows, in the unit's terms. */
+function appKindOf(o: Pick<QcScreenFollowOptions, "destination" | "workflows">): QcObservedScreenKind {
+  const { destination, workflows } = o;
+  return appScreenKind({
+    view: destination.view, deviceSettingsOpen: workflows.deviceSettings.open, tempoOpen: workflows.tempo.open, popup: destination.popup,
+    directoryOpen: workflows.preset.directoryOpen, directorySearchOpen: destination.directorySearchOpen, routePicker: workflows.routing?.picker,
+    sceneCommand: Boolean(workflows.scene?.command), blockMenuOpen: destination.blockMenuOpen
+  });
+}
+
+const ROUTED: readonly QcObservedScreenKind[] = ["preset-menu", "settings", "modes", "tempo", "cpu-monitor", "directory", "scene-selector", "route-selector", "midi-out", "copy-scene", "search", "block-menu"];
 
 /**
  * Keeps the app and the unit on the same screen, both ways, with one loop guard.
@@ -95,8 +107,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     if (kind !== "parameter-editor" && destination.latch.takeUnit(kind)) return;
     // The unit is moving the app: the app's change must not be driven back to the unit. Only a change that will
     // happen is expected; one the app already shows would otherwise swallow the user's next real change.
-    const { view, popup } = destination;
-    const shown = appScreenKind({ view, deviceSettingsOpen: workflows.deviceSettings.open, tempoOpen: workflows.tempo.open, popup, directoryOpen: workflows.preset.directoryOpen, routePicker: workflows.routing?.picker });
+    const shown = appKindOf(latest.current);
     const will = appKindAfterFollowing(kind);
     if (will !== shown) destination.latch.expectApp(will);
     if (kind !== "parameter-editor") workflows.grid.close();
@@ -125,7 +136,10 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
   const { phase } = useAdaptiveQcScreenPolling({ gateway, enabled: follow && available, connected: ready, onObservation: observe });
 
   // App to unit: the screen the app shows, in the unit's terms, changing by the user's hand.
-  const appKind = appScreenKind({ view: options.destination.view, deviceSettingsOpen: options.workflows.deviceSettings.open, tempoOpen: options.workflows.tempo.open, popup: options.destination.popup, directoryOpen: options.workflows.preset.directoryOpen, routePicker: options.workflows.routing?.picker });
+  const appKind = appKindOf(options);
+  /** Which rail label the first row's picker was opened from, kept for its close. */
+  const routeSide = useRef<"input" | "output">("input");
+  if (appKind === "route-selector") routeSide.current = options.workflows.routing?.picker?.side === "output" ? "output" : "input";
   const previousAppKind = useRef<QcObservedScreenKind | undefined>(undefined);
   useEffect(() => {
     const previous = previousAppKind.current;
@@ -137,14 +151,20 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     if (current.destination.latch.takeApp(appKind)) return;
     const { gateway: unit, destination, notice } = current;
     const poll = current.screenPoll ?? DEFAULT_SCREEN_POLL;
+    const detail = { swap: current.workflows.scene?.command === "swap", side: routeSide.current };
     const run = async () => {
-      if (ROUTED.includes(appKind)) {
+      if (previous === "search" && (appKind === "directory" || !ROUTED.includes(appKind))) {
+        // Leaving the search dialog; leaving the Directory with it closes that too.
+        let closed = await closeOnUnit(unit, poll, "search", () => destination.latch.expectUnit("directory"));
+        if (closed && appKind !== "directory") closed = await closeOnUnit(unit, poll, "directory", () => destination.latch.expectUnit("grid"));
+        if (!closed) notice("The Quad Cortex did not close the same screen.");
+      } else if (ROUTED.includes(appKind)) {
         // Armed just before the first touch, so a screen the unit never was asked for cannot be mistaken for one it was.
-        const result = await openOnUnit(unit, poll, appKind as QcOpenTarget, () => destination.latch.expectUnit(appKind));
+        const result = await openOnUnit(unit, poll, appKind as QcOpenTarget, () => destination.latch.expectUnit(appKind), detail);
         if (result === "busy") notice("Close the screen open on the Quad Cortex first; the app does not drive it from another screen.");
         else if (result === "not-shown") { destination.latch.cancelUnit(appKind); notice("The Quad Cortex did not show the same screen."); }
       } else if (ROUTED.includes(previous)) {
-        if (!await closeOnUnit(unit, poll, previous as QcCloseTarget, () => destination.latch.expectUnit("grid"))) {
+        if (!await closeOnUnit(unit, poll, previous as QcCloseTarget, () => destination.latch.expectUnit("grid"), detail)) {
           destination.latch.cancelUnit("grid");
           notice("The Quad Cortex did not close the same screen.");
         }

@@ -27,5 +27,22 @@ export const QC_DEVICE_SCREEN_GESTURES = {
   /** The scene indicator: opens the scene popup (an overlay beside the Grid) and, tapped again, closes it. The app never touches a scene row. */
   sceneIndicator: { x: 668, y: 23 },
   /** The first row's input rail label: opens a popup list of inputs over the Grid and, tapped again, closes it. The app never touches a row of it (a pick rewrites the routing). The output label is not measured and not routed. */
-  inputRail: { x: 30, y: 147 }
+  inputRail: { x: 30, y: 147 },
+  /** The first row's output rail label, the same pattern as the input label: opens the picker, tapped again closes it. Never a row. */
+  outputRail: { x: 772, y: 147 },
+  /** Drags that scroll the preset menu, which remembers its scroll: the first (measured) shows its top rows, the reverse restores the bottom rows every other route taps. */
+  menuScrollTop: { x: 600, y: 150, toX: 600, toY: 420 },
+  menuScrollBottom: { x: 600, y: 420, toX: 600, toY: 150 },
+  /** Rows of the menu scrolled to the top. Preset MIDI Out's dialog closes on the check (743,30); the delete button beside it is never touched. */
+  midiOutRow: { x: 580, y: 406 },
+  copySceneRow: { x: 582, y: 286 },
+  swapSceneRow: { x: 582, y: 346 },
+  /** Copy and Swap Scene share one dialog that waits for a footswitch; the app only ever taps CANCEL. */
+  copySceneCancel: { x: 400, y: 300 },
+  /** In the Directory: the search icon opens the search dialog (keyboard), whose X at the top left closes it (the check does nothing there). */
+  directorySearch: { x: 634, y: 30 },
+  searchClose: { x: 57, y: 30 },
+  /** The kebab of a block editor that is a bottom panel over the Grid opens its context menu; an empty area outside the popup closes it. The app never touches a row. */
+  blockMenuButton: { x: 30, y: 226 },
+  blockMenuDismiss: { x: 450, y: 215 }
 } as const;
