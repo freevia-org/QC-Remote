@@ -323,7 +323,11 @@ export const USER_GUIDE: readonly GuideSection[] = [
     blocks: [
       {
         kind: "paragraph",
-        text: "Edit > Settings… opens the Settings window. Device model sets the chassis drawn on screen. AI access level, also on the LOCAL panel header, applies to every paired assistant at once and is remembered. Show tray icon keeps MCP access available with this window closed. Internet for the Quad Cortex, on by default, lets the unit use this computer's internet connection to reach Neural DSP's servers (neuraldsp.com addresses, plus any extra domain you add) for updates while it is connected over USB; its serial number and its own credentials go with its requests. Release QC after last client releases the unit a set number of minutes after the last client disconnects; it needs the tray icon."
+        text: "Edit > Settings… opens the Settings window. Device model sets the chassis drawn on screen. AI access level, also on the LOCAL panel header, applies to every paired assistant at once and is remembered. Show tray icon keeps MCP access available with this window closed. Release QC after last client releases the unit a set number of minutes after the last client disconnects; it needs the tray icon."
+      },
+      {
+        kind: "paragraph",
+        text: "Internet for the Quad Cortex, on by default, lets the unit use this computer's internet connection to reach Neural DSP's servers (neuraldsp.com addresses, plus any extra domain you add) for updates while it is connected over USB; its serial number and its own credentials go with its requests."
       },
       {
         kind: "paragraph",
