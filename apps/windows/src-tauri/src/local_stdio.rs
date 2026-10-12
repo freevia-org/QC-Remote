@@ -4506,6 +4506,39 @@ mod tests {
         use std::os::windows::fs::OpenOptionsExt as _;
         let seen = std::sync::Mutex::new(StartupSeen::default());
         let held = std::sync::Mutex::new(None);
+        // Set once the cleanup under test acknowledged everything stopped.
+        let stopped = AtomicBool::new(false);
+        // The leak is what this test observes, and only until then: on every
+        // exit, a failed assertion included, the held file is released first
+        // and the directory removed after, unless that cleanup could not
+        // acknowledge the listener stopped. Reports, never panics.
+        let _release = crate::tests::RunOnDrop::new(|| {
+            drop(
+                held.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take(),
+            );
+            let directory = seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .directory
+                .clone();
+            let Some(directory) = directory else {
+                return;
+            };
+            if !stopped.load(Ordering::Acquire) {
+                eprintln!(
+                    "test cleanup: termination not acknowledged; {} is left in place",
+                    directory.display()
+                );
+                return;
+            }
+            let mut removal = crate::tests::CleanupReport::default();
+            removal.remove_dir_unless_blocked(&directory);
+            if !removal.is_clean() {
+                eprintln!("test cleanup: {removal}");
+            }
+        });
         let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
             let fixture =
                 start_hosting_fixture("hosting-cleanup-fails", cleanup, StartFault::None, &seen)
@@ -4521,6 +4554,7 @@ mod tests {
             );
             panic!("injected failure");
         });
+        stopped.store(!report.blocked, Ordering::Release);
         assert_eq!(
             report.problems.len(),
             1,
