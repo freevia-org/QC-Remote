@@ -15,6 +15,13 @@ spec.loader.exec_module(probe)
 
 
 class ProbeCleanupTests(unittest.TestCase):
+    def test_bounded_diagnostic_tail_keeps_only_recent_lines_and_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="qc-tray-log-tail-test-") as root:
+            log = pathlib.Path(root) / "sandbox.log"
+            log.write_text("old\n" + "x" * 9000 + "\nlast\n", encoding="utf-8")
+            tail = probe.bounded_log_tail(log, limit=32, lines=2)
+            self.assertEqual(tail, "x" * 27 + "\nlast")
+
     def test_descriptor_claim_and_known_publication_sidecars_are_not_vacuously_ignored(self):
         with tempfile.TemporaryDirectory(prefix="qc-tray-known-residue-test-") as root:
             state = pathlib.Path(root)
