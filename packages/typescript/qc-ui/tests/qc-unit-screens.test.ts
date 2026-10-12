@@ -143,3 +143,33 @@ test("closing on the unit: the kebab toggles the menu, the check button closes a
   assert.equal(await closeOnUnit(gone.gateway, poll, "modes"), true, "the unit already left it");
   assert.deepEqual(gone.log, []);
 });
+
+test("Settings with a busy indicator (the Updates pane) is Settings, drawn by the app and never touched; a bare busy screen stays a picture", async () => {
+  const nl = String.fromCharCode(10);
+  const tree = (...names: string[]) => ["zenUI::RootGraphicsItem", ...names.map((name) => `zenUI::${name}`)].join(nl);
+  assert.equal(classifyQcGraphicsTree(tree("SettingsDialog", "SettingsMenu", "UpdaterSettings", "RotatingBusyIndicator")), "settings");
+  assert.equal(classifyQcGraphicsTree(tree("SettingsDialog", "RotatingBusyIndicator", "MessageDialog")), "message-dialog", "a confirmation over Settings is still its own screen");
+  assert.equal(classifyQcGraphicsTree(tree("Grid", "RotatingBusyIndicator")), "busy");
+  assert.equal(classifyQcGraphicsTree(tree("RotatingBusyIndicator")), "busy");
+  const { untouchableUnitScreen } = await import("../src/qc-unit-screens.ts");
+  for (const names of [["SettingsDialog", "RotatingBusyIndicator"], ["SettingsDialog", "Keyboard"], ["SettingsDialog", "MessageDialog"], ["SettingsDialog", "UpdaterSettings", "RotatingBusyIndicator"]]) {
+    assert.ok(untouchableUnitScreen(tree(...names)), names.join("+"));
+  }
+});
+
+test("the picture of the unit draws only a frame with the unit's 800x480 shape", async () => {
+  const { isUnitFrame, pngSize } = await import("../src/qc-unit-screens.ts");
+  const header = (width: number, height: number) => {
+    const bytes = new Uint8Array(33);
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+    new DataView(bytes.buffer).setUint32(16, width);
+    new DataView(bytes.buffer).setUint32(20, height);
+    return Buffer.from(bytes).toString("base64");
+  };
+  assert.deepEqual(pngSize(header(800, 480)), { width: 800, height: 480 });
+  assert.equal(isUnitFrame(header(800, 480)), true);
+  assert.equal(isUnitFrame(header(400, 240)), true, "the same shape at another scale is the same screen");
+  assert.equal(isUnitFrame(header(800, 120)), false, "a squashed strip is not drawn");
+  assert.equal(isUnitFrame(header(800, 600)), false);
+  assert.equal(isUnitFrame("not a png"), false);
+});

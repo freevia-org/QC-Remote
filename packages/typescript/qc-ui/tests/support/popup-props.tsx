@@ -1,10 +1,15 @@
 import { createElement, type ReactNode } from "react";
 import { demoBlockDetails, demoSnapshot } from "@qc-remote/core";
 import { CorOsSceneCommand } from "../../src/scene-editor.tsx";
+import { CorOsDeviceSettings, type DeviceSettingsScreenProps } from "../../src/device-settings-screen.tsx";
 import type { QuadCortexSurfaceProps } from "../../src/quad-cortex-surface.tsx";
 
 /** The surface props that open each popup fixture (bundled into the browser page; see popup-fixtures.ts for the registry). */
 
+import "../../src/unit-mirror.css";
+
+// A real 800x480 PNG header-sized image would be large; a 1x1 pixel stretches to the same box, which is what is measured.
+const PNG_800_480 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const noop = () => undefined;
 const block = (predicate: (name: string, category: string) => boolean) => demoSnapshot.blocks.find((candidate) => candidate.column >= 0 && predicate(candidate.name, String(candidate.category ?? "")))
   ?? demoSnapshot.blocks.find((candidate) => candidate.column >= 0)!;
@@ -38,5 +43,26 @@ export const POPUP_PROPS_BY_ID: Record<string, () => Partial<QuadCortexSurfacePr
   "cab-editor-full-screen": () => ({ parameterEditor: editor((name, category) => /cab/i.test(category) || /cab/i.test(name)) }),
   "preset-directory": () => ({ presetDirectory: { open: true, loading: false, disabled: false, onClose: noop, onRefresh: noop, onRecall: noop, onSelectSetlist: noop, onNewSetlist: noop, onPresetAction: noop, onPresetBatchAction: noop, onArrangePreset: noop } as unknown as QuadCortexSurfaceProps["presetDirectory"] }),
   "expression-assignment": () => ({ expressionAssignment: { details: editor(() => true).details, address: { kind: "block" }, pedal: 1, onPedalChange: noop, selected: "bypass", onSelect: noop, pending: false, onAssign: noop, onSetRange: noop, onUnassign: noop, onClose: noop } as unknown as QuadCortexSurfaceProps["expressionAssignment"] }),
-  "lane-control-panel": () => ({ laneControlEditor: { details: editor(() => true).details, control: "inputGate", activeScene: 0, scenes, pending: false, onSceneSelect: noop, onContextAction: noop, onClose: noop } as unknown as QuadCortexSurfaceProps["laneControlEditor"] })
+  "lane-control-panel": () => ({ laneControlEditor: { details: editor(() => true).details, control: "inputGate", activeScene: 0, scenes, pending: false, onSceneSelect: noop, onContextAction: noop, onClose: noop } as unknown as QuadCortexSurfaceProps["laneControlEditor"] }),
+  "unit-mirror-picture": () => ({ screenContent: createElement("section", { className: "qc-screen coros-unit-mirror", "aria-label": "Quad Cortex screen, mirrored from the unit" }, createElement("img", { alt: "The screen the Quad Cortex is showing", src: PNG_800_480 })) }),
+  ...settingsPaneProps()
 };
+
+function settingsPaneProps(): Record<string, () => Partial<QuadCortexSurfaceProps>> {
+  const rows = { account: ["user", "backup"], system: ["wifi", "updates", "brightness", "power", "volume", "storage", "factory"], device: ["bypass", "scene-bypass", "stomp-bypass", "hold", "swap", "gig-access", "latency", "midi"], support: ["about", "info", "report", "diagnostics", "licenses"] } as const;
+  const entries: Record<string, () => Partial<QuadCortexSurfaceProps>> = {};
+  for (const [section, names] of Object.entries(rows)) {
+    for (const row of names) {
+      entries[`settings-${section}-${row}`] = () => ({
+        screenContent: createElement(CorOsDeviceSettings, {
+          onClose: noop,
+          workflow: {
+            section, accountRow: section === "account" ? row : "user", systemRow: section === "system" ? row : "wifi", deviceRow: section === "device" ? row : "bypass", supportRow: section === "support" ? row : "about",
+            setSection: noop, setAccountRow: noop, setSystemRow: noop, setDeviceRow: noop, setSupportRow: noop, loading: false, announce: noop, identity: undefined, settings: undefined, midiThru: undefined
+          } as unknown as DeviceSettingsScreenProps["workflow"]
+        })
+      });
+    }
+  }
+  return entries;
+}

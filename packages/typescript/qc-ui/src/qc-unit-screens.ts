@@ -66,7 +66,8 @@ export const QC_UPDATE_SCREEN = /download update|install update|install now|upda
  */
 export function untouchableUnitScreen(tree: string): string | undefined {
   if (QC_UPDATE_SCREEN.test(tree) || /zenUI::UpdaterSettings(?![A-Za-z0-9_])/.test(tree)) return "an update screen";
-  if (classifyQcGraphicsTree(tree) === "settings") return "Settings";
+  // Settings is view-only whatever else the tree holds (a busy indicator on the Updates pane, a keyboard, a confirmation).
+  if (classifyQcGraphicsTree(tree) === "settings" || /zenUI::(SettingsDialog|DSPDiagnosticsDialog|ZencoderDiagnosticsDialog|SOC2ARMDiagnosticsDialog)(?![A-Za-z0-9_])/.test(tree)) return "Settings";
   return undefined;
 }
 
@@ -324,4 +325,20 @@ export async function closeOnUnit(gateway: RouteGateway, poll: QcScreenPoll, tar
     if (CLOSES_ONCE.includes(target)) return false;
   }
   return false;
+}
+
+/** The pixel size of a PNG, read from its IHDR chunk; undefined when it is not one. */
+export function pngSize(base64: string): { width: number; height: number } | undefined {
+  try {
+    const head = atob(base64.slice(0, 44));
+    if (head.length < 24 || head.slice(1, 4) !== "PNG") return undefined;
+    const word = (offset: number) => ((head.charCodeAt(offset) << 24) | (head.charCodeAt(offset + 1) << 16) | (head.charCodeAt(offset + 2) << 8) | head.charCodeAt(offset + 3)) >>> 0;
+    return { width: word(16), height: word(20) };
+  } catch { return undefined; }
+}
+
+/** Only a frame with the unit's own 800x480 shape is drawn: anything else would be stretched or squashed into the display. */
+export function isUnitFrame(base64: string): boolean {
+  const size = pngSize(base64);
+  return size !== undefined && size.width * 480 === size.height * 800;
 }

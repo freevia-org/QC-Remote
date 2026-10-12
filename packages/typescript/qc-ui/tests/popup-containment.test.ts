@@ -76,7 +76,7 @@ export async function render(fixtureId, model, presentation) {
     writeFileSync(join(pages, "android.css"), readFileSync(androidStyles, "utf8"));
     const cases: Array<{ key: string; fixture: string; viewport: readonly [number, number]; url: string; selectors: string[] }> = [];
     for (const fixture of POPUP_FIXTURES) {
-      for (let model = 0; model < models; model += 1) {
+      for (let model = 0; model < (fixture.firstModelOnly ? 1 : models); model += 1) {
         for (const host of ["windows", "android"] as HostName[]) {
           const markup = await bundle.render(fixture.id, model, host === "windows" ? "hardware" : "display");
           for (const viewport of VIEWPORTS) {

@@ -58,7 +58,6 @@ const QC_SCREEN_CLASSES: ReadonlyArray<readonly [QcObservedScreenKind, readonly 
   ["gig", ["GigView"]],
   ["tuner", ["TunerDialog", "Tuner"]],
   ["tempo", ["MetronomeEditor"]],
-  ["busy", ["RotatingBusyIndicator"]],
   ["message-dialog", ["MessageDialog"]],
   ["search", ["SearchResultsDialog", "SearchDialog"]],
   ["keyboard", ["Keyboard"]],
@@ -67,6 +66,9 @@ const QC_SCREEN_CLASSES: ReadonlyArray<readonly [QcObservedScreenKind, readonly 
   ["io", ["CheatSheetDialog"]],
   ["neural-capture", ["NeuralCaptureDialog", "NCMetadataDialog", "NCModelEditor"]],
   ["settings", ["SettingsDialog", "DSPDiagnosticsDialog", "ZencoderDiagnosticsDialog", "SOC2ARMDiagnosticsDialog"]],
+  // Behind Settings: the Updates pane carries a busy indicator ("Checking for updates...") and is still Settings, which the
+  // app draws itself and never touches. Anywhere else a busy indicator is a progress screen, shown as the unit's picture.
+  ["busy", ["RotatingBusyIndicator"]],
   ["directory", ["DirectoryDialog"]],
   ["copy-scene", ["CopySceneDialog"]],
   ["scene-selector", ["SceneSelectorPopup"]],

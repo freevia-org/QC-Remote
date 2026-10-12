@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { GatewayTransport } from "@qc-remote/client";
+import { isUnitFrame } from "./qc-unit-screens.ts";
 import "./unit-mirror.css";
 
 /**
@@ -17,7 +18,7 @@ export function QcUnitScreenMirror({ gateway, intervalMs = 700 }: { gateway: Pic
     const refresh = async () => {
       try {
         const frame = await gateway.captureScreen();
-        if (!cancelled) setImage(`data:image/png;base64,${frame.pngBase64}`);
+        if (!cancelled && isUnitFrame(frame.pngBase64)) setImage(`data:image/png;base64,${frame.pngBase64}`);
       } catch { /* the next refresh tries again */ }
       if (!cancelled) timer = setTimeout(() => void refresh(), intervalMs);
     };

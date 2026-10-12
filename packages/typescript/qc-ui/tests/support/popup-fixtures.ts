@@ -13,6 +13,8 @@ export interface PopupFixture {
   propKey: string;
   selectors: string[];
   fraction?: { width?: number; height?: number; centered?: boolean; tolerance: number };
+  /** Measure at the first device model only (the Settings panes are the same whatever the chassis). */
+  firstModelOnly?: boolean;
 }
 
 export const POPUP_FIXTURES: PopupFixture[] = [
@@ -31,8 +33,15 @@ export const POPUP_FIXTURES: PopupFixture[] = [
   { id: "cab-editor-full-screen", propKey: "parameterEditor", selectors: [".coros-parameter-editor"] },
   { id: "preset-directory", propKey: "presetDirectory", selectors: [".coros-directory"] },
   { id: "expression-assignment", propKey: "expressionAssignment", selectors: [".expression-bypass-official"] },
+  { id: "unit-mirror-picture", propKey: "screenContent", selectors: [".coros-unit-mirror", ".coros-unit-mirror > img"], fraction: { width: 1, height: 1, tolerance: 0.01 } },
   { id: "lane-control-panel", propKey: "laneControlEditor", selectors: [".lane-control-panel", ".coros-lane-control-dismiss"] }
 ];
 
+const SETTINGS_PANES = { account: ["user", "backup"], system: ["wifi", "updates", "brightness", "power", "volume", "storage", "factory"], device: ["bypass", "scene-bypass", "stomp-bypass", "hold", "swap", "gig-access", "latency", "midi"], support: ["about", "info", "report", "diagnostics", "licenses"] } as const;
+/** Every pane of the unit's Settings, as the app draws it (view-only): it must fill the display's box exactly, at the unit's 800x480 shape. */
+for (const [section, rows] of Object.entries(SETTINGS_PANES)) {
+  for (const row of rows) POPUP_FIXTURES.push({ id: `settings-${section}-${row}`, propKey: "screenContent", selectors: [".coros-settings-official"], fraction: { width: 1, height: 1, tolerance: 0.01 }, firstModelOnly: true });
+}
+
 /** Surface props that hold a popup's content. Anything that opens a screen, panel or popup belongs in POPUP_FIXTURES above. */
-export const POPUP_PROPS = ["popup", "routingPicker", "addDevicePicker", "sceneCommand", "sceneEditor", "cpuMonitor", "savePreset", "parameterEditor", "presetDirectory", "expressionAssignment", "laneControlEditor"] as const;
+export const POPUP_PROPS = ["popup", "routingPicker", "addDevicePicker", "sceneCommand", "sceneEditor", "cpuMonitor", "savePreset", "parameterEditor", "presetDirectory", "expressionAssignment", "laneControlEditor", "screenContent"] as const;
