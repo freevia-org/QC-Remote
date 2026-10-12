@@ -2595,8 +2595,9 @@ mod tests {
     }
 
     /// A directory of this test's own, so a failing run cannot take another
-    /// test's descriptors with it.
-    fn scratch_directory(name: &str) -> PathBuf {
+    /// test's descriptors with it, and the guard that removes it when the
+    /// test ends or unwinds.
+    fn scratch_directory(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
         let directory = std::env::temp_dir().join(format!(
             "qc-remote-local-access-{name}-{}-{:?}",
             std::process::id(),
@@ -2604,7 +2605,10 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).expect("scratch directory");
-        directory
+        (
+            crate::tests::RemoveDirOnDrop::new(directory.clone()),
+            directory,
+        )
     }
 
     async fn error_body(response: Response) -> Value {
@@ -2793,7 +2797,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_published_listener_proves_it_holds_the_token_without_receiving_it() {
-        let directory = scratch_directory("identity-proof");
+        let (_scratch, directory) = scratch_directory("identity-proof");
         let paths = vec![directory.join(STATE_FILE_NAME)];
         let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
             ready: AtomicBool::new(true),
@@ -2846,12 +2850,11 @@ mod tests {
             .unwrap();
         assert_eq!(browser.status(), StatusCode::FORBIDDEN);
         listener.stop();
-        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]
     fn publisher_handoff_survives_delayed_cleanup_from_the_previous_owner() {
-        let directory = scratch_directory("publisher-handoff");
+        let (_scratch, directory) = scratch_directory("publisher-handoff");
         let paths = vec![directory.join(STATE_FILE_NAME)];
         let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
             ready: AtomicBool::new(false),
@@ -3502,7 +3505,7 @@ mod tests {
 
     #[test]
     fn a_host_that_worked_before_reads_as_idle_after_a_restart_not_as_never_connected() {
-        let directory = scratch_directory("client-history");
+        let (_scratch, directory) = scratch_directory("client-history");
         let path = directory.join(CLIENT_HISTORY_FILE_NAME);
         let client = &current_client_id("codex");
         let attached_at = 1_700_000_000_000_u64;
@@ -3520,7 +3523,6 @@ mod tests {
         let observing_since = attached_at + 24 * 60 * 60 * 1_000;
         let now = observing_since + NATIVE_BRIDGE_ACTIVITY_WINDOW.as_millis() as u64 + 1;
         let evidence = local_client_evidence_at(0, attached_before, observing_since, now);
-        let _ = fs::remove_dir_all(&directory);
 
         assert!(owed, "the first attach for a client id is written at once");
         assert!(attached_before, "the record did not survive the restart");
@@ -3578,7 +3580,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_client_history_degrades_to_no_history() {
-        let directory = scratch_directory("client-history-damage");
+        let (_scratch, directory) = scratch_directory("client-history-damage");
         let absent = load_attach_history(&directory.join("never-written.json"));
 
         let garbage = directory.join("garbage.json");
@@ -3597,7 +3599,6 @@ mod tests {
         )
         .expect("write future schema");
         let unknown_schema = load_attach_history(&future);
-        let _ = fs::remove_dir_all(&directory);
 
         assert!(absent.is_empty(), "a first launch has no history");
         assert!(unparsable.is_empty());
@@ -3649,7 +3650,7 @@ mod tests {
 
     #[test]
     fn a_record_written_by_earlier_releases_keeps_only_the_ids_this_build_reads() {
-        let directory = scratch_directory("client-history-upgrade");
+        let (_scratch, directory) = scratch_directory("client-history-upgrade");
         let path = directory.join(CLIENT_HISTORY_FILE_NAME);
         let live = current_client_id("claude");
         // A legacy record can contain several versions of each supported host.
@@ -3666,7 +3667,6 @@ mod tests {
         store_attach_history(&path, &carried).expect("store history");
 
         let restored = load_attach_history(&path);
-        let _ = fs::remove_dir_all(&directory);
 
         assert_eq!(
             restored.keys().collect::<Vec<_>>(),
@@ -3786,7 +3786,7 @@ mod tests {
 
     #[test]
     fn publishing_clears_an_orphaned_staged_descriptor() {
-        let directory = scratch_directory("stale");
+        let (_scratch, directory) = scratch_directory("stale");
         let orphan = directory.join(format!(".{STATE_FILE_NAME}.999999.0.tmp"));
         fs::write(&orphan, b"{\"bearerToken\":\"live-looking\"}").expect("orphan");
         let path = directory.join(STATE_FILE_NAME);
@@ -3794,7 +3794,6 @@ mod tests {
             .publish(&path)
             .expect("endpoint document");
         let remaining = orphan.exists();
-        let _ = fs::remove_dir_all(&directory);
         assert!(
             !remaining,
             "an abandoned staged descriptor still holds a live-looking credential"
@@ -3809,7 +3808,7 @@ mod tests {
         // the parent directory happened to grant - `%APPDATA%` redirected onto
         // a file server, say. What this cannot do is stop a process running as
         // *this* user; see the module comment on `owner_only_file`.
-        let directory = scratch_directory("owner-only");
+        let (_scratch, directory) = scratch_directory("owner-only");
         let path = directory.join(STATE_FILE_NAME);
         test_descriptor("token")
             .publish(&path)
@@ -3826,7 +3825,6 @@ mod tests {
         test_descriptor("token").publish(&path).expect("refresh");
         let refreshed = owner_only_file::is_owner_only(&path).expect("inspect the refreshed DACL");
 
-        let _ = fs::remove_dir_all(&directory);
         assert!(
             published,
             "the published descriptor still inherits Administrators and SYSTEM access"
@@ -3843,7 +3841,7 @@ mod tests {
 
     #[test]
     fn descriptor_publication_never_exposes_a_partial_document() {
-        let directory = scratch_directory("atomic");
+        let (_scratch, directory) = scratch_directory("atomic");
         let path = directory.join("local-mcp.json");
         let publish = |token: &str| {
             test_descriptor(token)
@@ -3884,7 +3882,6 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         let (observed, torn, refused) = reader.join().expect("reader thread");
 
-        let _ = fs::remove_dir_all(&directory);
         assert!(observed > 0, "the reader never saw the descriptor");
         // The invariant that matters: a reader that gets bytes never gets a
         // half-written document. The app publishes three copies and renames
@@ -3902,7 +3899,7 @@ mod tests {
 
     #[test]
     fn descriptor_is_additive_revision_four() {
-        let directory = scratch_directory("revision");
+        let (_scratch, directory) = scratch_directory("revision");
         let path = directory.join("local-mcp.json");
         test_descriptor("token")
             .publish(&path)
@@ -3916,7 +3913,6 @@ mod tests {
         assert_eq!(document["rpcUrl"], "http://127.0.0.1:41000/rpc");
         assert_eq!(document["instanceId"], "instance");
         assert!(document["publishedAtUnixMs"].as_u64().is_some());
-        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]
@@ -3924,7 +3920,7 @@ mod tests {
         // The whole liveness contract rests on this: a refresh that changed the
         // token, the port or the instance id would read as a restart, and a
         // reader would be right to throw away the session it had.
-        let directory = scratch_directory("refresh");
+        let (_scratch, directory) = scratch_directory("refresh");
         let path = directory.join(STATE_FILE_NAME);
         let descriptor = test_descriptor("stable-token");
         descriptor
@@ -3937,7 +3933,6 @@ mod tests {
             .expect("refresh");
         let second: Value = serde_json::from_slice(&fs::read(&path).expect("refreshed bytes"))
             .expect("refreshed document");
-        let _ = fs::remove_dir_all(&directory);
 
         assert_eq!(first["publishedAtUnixMs"], 1_700_000_000_000_u64);
         assert_eq!(second["publishedAtUnixMs"], 1_700_000_030_000_u64);
@@ -4033,7 +4028,7 @@ mod tests {
         // a valid-looking descriptor advertising a port that was dropped on the
         // next line; the other branch removed all three copies, including ones
         // a live instance had published to the shared mirror paths.
-        let directory = scratch_directory("partial");
+        let (_scratch, directory) = scratch_directory("partial");
         let mine = directory.join(STATE_FILE_NAME);
         // `create_dir_all` cannot make a directory where a file already is.
         let blocker = directory.join("blocked");
@@ -4051,7 +4046,6 @@ mod tests {
 
         let mine_remains = mine.exists();
         let other_remains = fs::read(&another_instance).expect("other bytes");
-        let _ = fs::remove_dir_all(&directory);
         assert!(error.contains("local MCP state directory"), "{error}");
         assert!(
             !mine_remains,
@@ -4065,7 +4059,7 @@ mod tests {
 
     #[test]
     fn a_complete_publication_writes_every_copy() {
-        let directory = scratch_directory("complete");
+        let (_scratch, directory) = scratch_directory("complete");
         let paths = vec![
             directory.join(STATE_FILE_NAME),
             directory.join("second").join(STATE_FILE_NAME),
@@ -4075,7 +4069,6 @@ mod tests {
         let published: Vec<bool> = paths.iter().map(|path| path.exists()).collect();
         remove_published_descriptors(&paths, "instance");
         let removed: Vec<bool> = paths.iter().map(|path| path.exists()).collect();
-        let _ = fs::remove_dir_all(&directory);
         assert_eq!(published, vec![true, true, true]);
         assert_eq!(removed, vec![false, false, false]);
     }
@@ -4085,7 +4078,7 @@ mod tests {
         // The descriptor outliving the process is what makes clients dial dead
         // ports: two were found on disk from separate app runs, because
         // `Drop` never ran and no `RunEvent::Exit` handler existed.
-        let directory = scratch_directory("lifecycle");
+        let (_scratch, directory) = scratch_directory("lifecycle");
         let paths = vec![
             directory.join(STATE_FILE_NAME),
             directory.join("mirror").join(STATE_FILE_NAME),
@@ -4102,7 +4095,6 @@ mod tests {
         listener.stop();
         let remaining: Vec<bool> = paths.iter().map(|path| path.exists()).collect();
         let refused = std::net::TcpStream::connect(&address).is_err();
-        let _ = fs::remove_dir_all(&directory);
 
         assert_eq!(published, vec![true, true]);
         assert!(
@@ -4123,7 +4115,7 @@ mod tests {
         // listener must still arbitrate races with the headless bridge and
         // direct hosts. A second publisher must not bind its own ephemeral
         // port, mint its own token, or overwrite the live descriptor.
-        let directory = scratch_directory("second-instance");
+        let (_scratch, directory) = scratch_directory("second-instance");
         let paths = vec![
             directory.join(STATE_FILE_NAME),
             directory.join("mirror").join(STATE_FILE_NAME),
@@ -4151,7 +4143,6 @@ mod tests {
         let first_still_answers =
             std::net::TcpStream::connect(format!("127.0.0.1:{}", first.port)).is_ok();
         first.stop();
-        let _ = fs::remove_dir_all(&directory);
 
         assert_eq!(
             after, published,
@@ -4186,7 +4177,7 @@ mod tests {
         // descriptor that is still inside the reader's 150s window and still
         // names a plausible pid. Refusing on either of those would keep the
         // app from ever starting again for two and a half minutes.
-        let directory = scratch_directory("owner-gone");
+        let (_scratch, directory) = scratch_directory("owner-gone");
         let path = directory.join(STATE_FILE_NAME);
         let dead_port = {
             let bound = StdTcpListener::bind("127.0.0.1:0").expect("a port to abandon");
@@ -4211,7 +4202,6 @@ mod tests {
         if let Ok(listener) = listener {
             listener.stop();
         }
-        let _ = fs::remove_dir_all(&directory);
 
         assert_eq!(outcome, None, "a dead owner blocked a fresh start");
         let (started, on_disk) = republished.expect("the fresh instance published");
@@ -4223,7 +4213,7 @@ mod tests {
 
     #[test]
     fn an_expired_or_unreadable_descriptor_is_republished() {
-        let directory = scratch_directory("expired-or-unreadable");
+        let (_scratch, directory) = scratch_directory("expired-or-unreadable");
         let expired = directory.join(STATE_FILE_NAME);
         let unreadable = directory.join("unreadable").join(STATE_FILE_NAME);
         fs::create_dir_all(unreadable.parent().expect("parent")).expect("unreadable directory");
@@ -4256,7 +4246,6 @@ mod tests {
         if let Ok(listener) = listener {
             listener.stop();
         }
-        let _ = fs::remove_dir_all(&directory);
 
         assert_eq!(refused, None, "a stale file locked a fresh start out");
         let (started, expired_now, unreadable_now) = republished.expect("the fresh instance");
@@ -4269,7 +4258,7 @@ mod tests {
         // Windows hands the ephemeral port out again, so "something is
         // listening there" is not evidence that QC Remote is. Only an answer
         // carrying the descriptor's own instance id is.
-        let directory = scratch_directory("recycled-port");
+        let (_scratch, directory) = scratch_directory("recycled-port");
         let path = directory.join(STATE_FILE_NAME);
         let stranger = StdTcpListener::bind("127.0.0.1:0").expect("a stranger's port");
         let port = stranger.local_addr().expect("stranger address").port();
@@ -4297,7 +4286,6 @@ mod tests {
             listener.stop();
         }
         let _ = accepting.join();
-        let _ = fs::remove_dir_all(&directory);
 
         assert_eq!(
             refused, None,
@@ -4309,7 +4297,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_connection_test_makes_one_read_only_call_and_names_what_it_found() {
-        let directory = scratch_directory("connection-test");
+        let (_scratch, directory) = scratch_directory("connection-test");
         let paths = vec![directory.join(STATE_FILE_NAME)];
         let adapter = Arc::new(RecordingAdapter::new(true));
         let listener =
@@ -4319,7 +4307,6 @@ mod tests {
         let outcome = probe_local_mcp(&paths, &status, unix_time_ms()).await;
         let calls = adapter.calls();
         listener.stop();
-        let _ = fs::remove_dir_all(&directory);
 
         assert_eq!(outcome.state, LocalMcpTestState::Ready);
         assert_eq!(
@@ -4336,7 +4323,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_connection_test_separates_the_faults_that_have_different_remedies() {
-        let directory = scratch_directory("connection-test-faults");
+        let (_scratch, directory) = scratch_directory("connection-test-faults");
         let paths = vec![directory.join(STATE_FILE_NAME)];
 
         let off = probe_local_mcp(
@@ -4382,7 +4369,6 @@ mod tests {
         .expect("republish");
         let gone = probe_local_mcp(&paths, &status, unix_time_ms()).await;
         let calls = adapter.calls();
-        let _ = fs::remove_dir_all(&directory);
 
         assert_eq!(off.state, LocalMcpTestState::Disabled);
         assert_eq!(nothing_published.state, LocalMcpTestState::NotPublished);
@@ -4464,7 +4450,7 @@ mod tests {
 
     #[test]
     fn local_mcp_is_on_until_this_user_turns_it_off() {
-        let directory = scratch_directory("preference");
+        let (_scratch, directory) = scratch_directory("preference");
         let path = directory.join(ENABLED_FILE_NAME);
         let fresh_install = load_enabled(&path);
         store_enabled(&path, false).expect("store off");
@@ -4473,7 +4459,6 @@ mod tests {
         let after_on = load_enabled(&path);
         fs::write(&path, b"{ this is not json").expect("corrupt preference");
         let after_corruption = load_enabled(&path);
-        let _ = fs::remove_dir_all(&directory);
 
         assert!(fresh_install, "local MCP must ship on");
         assert!(!after_off, "the off switch did not survive a reload");

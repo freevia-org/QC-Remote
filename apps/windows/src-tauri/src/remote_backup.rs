@@ -127,19 +127,24 @@ mod tests {
         })
     }
 
-    fn scratch(label: &str) -> PathBuf {
+    /// A directory of this test's own, and the guard that removes it when the
+    /// test ends or unwinds.
+    fn scratch(label: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
         let directory = std::env::temp_dir().join(format!(
             "qc-remote-backup-{label}-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
         let _ = fs::remove_dir_all(&directory);
-        directory
+        (
+            crate::tests::RemoveDirOnDrop::new(directory.clone()),
+            directory,
+        )
     }
 
     #[tokio::test]
     async fn a_remote_backup_is_saved_here_and_only_its_location_is_returned() {
-        let directory = scratch("remote");
+        let (_scratch, directory) = scratch("remote");
         let calls = AtomicUsize::new(0);
         let result = invoke_saving_backups(
             rpc::CREATE_DEVICE_BACKUP,
@@ -184,12 +189,11 @@ mod tests {
         .unwrap();
         assert_eq!(second["name"], "Tour_ 2026_10 (2).json");
         assert_eq!(fs::read(&path).unwrap(), written);
-        let _ = fs::remove_dir_all(&directory);
     }
 
     #[tokio::test]
     async fn a_bad_name_or_document_is_refused_and_nothing_is_written() {
-        let directory = scratch("refused");
+        let (_scratch, directory) = scratch("refused");
         for name in [json!(""), json!("x".repeat(65)), json!("a\nb"), Value::Null] {
             let refusal = invoke_saving_backups(
                 rpc::CREATE_DEVICE_BACKUP,
@@ -222,7 +226,6 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(refusal.code, "BACKUP_SAVE_FAILED");
-        let _ = fs::remove_dir_all(&directory);
     }
 
     #[tokio::test]

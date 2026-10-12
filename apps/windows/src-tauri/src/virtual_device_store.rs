@@ -77,13 +77,16 @@ pub fn write_virtual_device_store(text: String) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
+    /// The store path under a scratch root of this test's own, and the guard
+    /// that removes that root when the test ends or unwinds.
+    fn scratch(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
         let directory = std::env::temp_dir().join(format!(
             "qc-remote-virtual-store-{name}-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&directory);
-        directory.join("virtual-device").join("store.json")
+        let path = directory.join("virtual-device").join("store.json");
+        (crate::tests::RemoveDirOnDrop::new(directory), path)
     }
 
     #[test]
@@ -98,7 +101,7 @@ mod tests {
 
     #[test]
     fn a_missing_store_reads_as_none_and_a_write_round_trips() {
-        let path = scratch("round-trip");
+        let (_scratch, path) = scratch("round-trip");
         assert_eq!(read_store(&path).expect("read"), None);
         let text = "{\n  \"version\": 1,\n  \"session\": \"s\"\n}\n";
         write_store(&path, text).expect("write");
@@ -107,18 +110,16 @@ mod tests {
             !path.with_extension("json.tmp").exists(),
             "the staging file is renamed away"
         );
-        let _ = fs::remove_dir_all(path.parent().and_then(Path::parent).expect("scratch root"));
     }
 
     #[test]
     fn a_foreign_document_is_refused_and_leaves_the_library_intact() {
-        let path = scratch("refuse");
+        let (_scratch, path) = scratch("refuse");
         let library = "{\"version\":1}";
         write_store(&path, library).expect("write");
         assert!(write_store(&path, "not json").is_err());
         assert!(write_store(&path, "{\"version\":2}").is_err());
         assert!(write_store(&path, "[1]").is_err());
         assert_eq!(read_store(&path).expect("read").as_deref(), Some(library));
-        let _ = fs::remove_dir_all(path.parent().and_then(Path::parent).expect("scratch root"));
     }
 }
