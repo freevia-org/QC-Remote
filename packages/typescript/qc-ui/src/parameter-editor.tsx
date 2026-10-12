@@ -58,6 +58,8 @@ export interface CorOsParameterEditorProps {
   /** Open the device contextual menu on first render. Used when another
    * device screen links directly to the same native overflow menu. */
   initialMenuOpen?: boolean;
+  /** Reports the context menu opening and closing (and closing when the editor goes away), so the unit's can follow. Must be stable. */
+  onMenuOpenChange?: (open: boolean) => void;
   onClose: () => void;
 }
 
@@ -765,6 +767,9 @@ function useWrappedEditorTitle(name: string, nameCqw: number) {
 function CorOsParameterEditorContent(props: CorOsParameterEditorProps) {
   const { details, drafts, accent: categoryAccent, activeScene, scenes, bypassed, footswitch, routingNode, disabled, page, onPageChange, onDraftChange, onCommit, onCommitBatch, onToggleBypass, onSceneSelect, footswitchAssignmentPending, onFootswitchAssignmentStart, onUnassignFootswitch, onContextAction, clipboardModelId, contextActionEnabled, onClose } = props;
   const [menuOpen, setMenuOpen] = useState(Boolean(props.initialMenuOpen));
+  const onMenuOpenChange = props.onMenuOpenChange;
+  useEffect(() => { onMenuOpenChange?.(menuOpen); }, [menuOpen, onMenuOpenChange]);
+  useEffect(() => () => onMenuOpenChange?.(false), [onMenuOpenChange]);
   const [selectedEqBand, setSelectedEqBand] = useState(1);
   const [eqOutputSelected, setEqOutputSelected] = useState(false);
   const familyForTitle = parameterEditorFamily(details.category);

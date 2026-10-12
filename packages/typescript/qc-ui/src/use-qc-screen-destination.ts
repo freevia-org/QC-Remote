@@ -22,6 +22,12 @@ export interface QcScreenDestination {
   setPopup(popup: QcPopupName | null): void;
   /** The loop guard shared by everything that moves the app's screen or the unit's. */
   latch: QcScreenLatch;
+  /** The context menu of the open block editor, which the editor owns and reports here so the unit can follow it. */
+  blockMenuOpen: boolean;
+  setBlockMenuOpen(open: boolean): void;
+  /** The Directory's search field, reported the same way. */
+  directorySearchOpen: boolean;
+  setDirectorySearchOpen(open: boolean): void;
 }
 
 /**
@@ -43,7 +49,9 @@ export function useQcScreenDestination(): QcScreenDestination {
   }, []);
   const [popup, setPopup] = useState<QcPopupName | null>(null);
   const latch = useMemo(() => createQcScreenLatch(), []);
-  return { view: state.view, returnFocusTarget: state.returnFocusTarget, setView, open, popup, setPopup, latch };
+  const [blockMenuOpen, setBlockMenuOpen] = useState(false);
+  const [directorySearchOpen, setDirectorySearchOpen] = useState(false);
+  return { view: state.view, returnFocusTarget: state.returnFocusTarget, setView, open, popup, setPopup, latch, blockMenuOpen, setBlockMenuOpen, directorySearchOpen, setDirectorySearchOpen };
 }
 
 /** Grid-menu entries the device cannot honour through the semantic gateway, with the reason shown on the entry. */

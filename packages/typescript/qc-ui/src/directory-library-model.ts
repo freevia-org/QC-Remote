@@ -39,6 +39,8 @@ export interface PresetDirectoryState {
   pending?: boolean;
   disabled: boolean;
   onClose: () => void;
+  /** Reports the search field opening and closing (and closing when the Directory goes away), so the unit's can follow. Must be stable. */
+  onSearchOpenChange?: (open: boolean) => void;
   onRefresh: () => void;
   onRecall: (entry: PresetEntry) => void;
   onSelectSetlist: (setlistKey: string) => void;

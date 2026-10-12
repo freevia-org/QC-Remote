@@ -30,6 +30,9 @@ export function CorOsDirectory({ snapshot, directory }: { snapshot: PresetSnapsh
   const [uploadMode, setUploadMode] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const onSearchOpenChange = directory.onSearchOpenChange;
+  useEffect(() => { onSearchOpenChange?.(searchOpen); }, [searchOpen, onSearchOpenChange]);
+  useEffect(() => () => onSearchOpenChange?.(false), [onSearchOpenChange]);
   const [sortOpen, setSortOpen] = useState(false);
   const [sortBy, setSortBy] = useState<"Banks" | "Name" | "Date Added" | "Author" | "Preferred Instrument">("Banks");
   const [arrangeMode, setArrangeMode] = useState(false);

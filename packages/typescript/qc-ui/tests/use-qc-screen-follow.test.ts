@@ -4,7 +4,7 @@ import { register } from "node:module";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { QcStateUpdate } from "@qc-remote/core";
 import type { QcObservedScreenKind, QcScreenObservation } from "../src/use-adaptive-screen-polling.ts";
-import { createQcScreenLatch } from "../src/qc-unit-screens.ts";
+import { createQcScreenLatch, resetQcMenuScroll } from "../src/qc-unit-screens.ts";
 import type { QcScreenFollowOptions } from "../src/use-qc-screen-follow.ts";
 
 // Load the hook only after the test loader shares React with react-test-renderer.
@@ -13,7 +13,7 @@ const { createElement } = (await import("react")).default;
 const { consumeQcDisplayStates, qcGigViewTransition, useQcFollowSetting, useQcScreenFollow } = await import("../src/use-qc-screen-follow.ts");
 
 const observation = (kind: QcObservedScreenKind): QcScreenObservation => ({ kind, signature: kind, observedAt: 0 });
-type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard" | "MetronomeEditor" | "CpuLoadIndicator" | "DirectoryDialog" | "SceneSelectorPopup" | "PortSelector";
+type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard" | "MetronomeEditor" | "CpuLoadIndicator" | "DirectoryDialog" | "SceneSelectorPopup" | "PortSelector" | "MidiMatrixDialog" | "CopySceneDialog" | "SearchDialog" | "OptionsPopup";
 
 interface Scenario {
   follow?: boolean; ready?: boolean; available?: boolean;
@@ -25,35 +25,55 @@ interface Scenario {
   editorOpen?: boolean;
   directoryOpen?: boolean;
   routePicker?: { row: number; side: string };
+  blockMenuOpen?: boolean; directorySearchOpen?: boolean; sceneCommand?: "copy" | "swap" | null;
+  /** The unit shows its block editor as a bottom panel with the Grid above it. */
+  panel?: boolean;
 }
 
 function harness(initial: Scenario = {}) {
+  resetQcMenuScroll();
   const log: string[] = [];
   /** Runs after each touch the unit answers: the poller seeing the screen the unit passes through. */
   const watchers: Array<(unit: Unit) => void> = [];
-  const world = { unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false };
-  const state = { view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, directoryOpen: initial.directoryOpen ?? false, routePicker: initial.routePicker as { row: number; side: string } | undefined, tempoOpen: initial.tempoOpen ?? false };
+  const world = { unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: "bottom" as "bottom" | "top", rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", panel: initial.panel ?? false };
+  const state = { blockMenuOpen: initial.blockMenuOpen ?? false, directorySearchOpen: initial.directorySearchOpen ?? false, sceneCommand: (initial.sceneCommand ?? null) as "copy" | "swap" | null, view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, directoryOpen: initial.directoryOpen ?? false, routePicker: initial.routePicker as { row: number; side: string } | undefined, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
   const gateway = {
-    graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem${(world.unit === "CpuLoadIndicator" || world.unit === "SceneSelectorPopup" || world.unit === "PortSelector") ? "\nzenUI::Grid" : ""}${world.unit === "SettingsDialog" ? "\nzenUI::SettingsMenu\nzenUI::UpdaterSettings" : ""}\nzenUI::${world.unit}` }),
+    graphicsTree: async () => {
+      const u = world.unit;
+      const lines = ["zenUI::RootGraphicsItem"];
+      if (["CpuLoadIndicator", "SceneSelectorPopup", "PortSelector", "CopySceneDialog", "OptionsPopup"].includes(u) || (u === "ParameterEditor" && world.panel)) lines.push("zenUI::Grid");
+      if (u === "SettingsDialog") lines.push("zenUI::SettingsDialog", "zenUI::SettingsMenu", "zenUI::UpdaterSettings");
+      else if (u === "OptionsPopup") lines.push("zenUI::ParameterEditor", "zenUI::_OptionsPopup");
+      else if (u === "SearchDialog") lines.push("zenUI::SearchDialog", "zenUI::Keyboard", "zenUI::KeyboardSearch");
+      else lines.push(`zenUI::${u}`);
+      return { tree: lines.join("\n") };
+    },
     tapScreen: async (x: number, y: number) => {
       log.push(`tap:${x},${y}`);
       if (world.unitIgnores) return;
       if (x === 764 && y === 22) world.unit = world.unit === "Grid" ? "MainMenuPopup" : world.unit === "MainMenuPopup" ? "Grid" : world.unit;
-      else if (x === 600 && y === 406 && world.unit === "MainMenuPopup") world.unit = "SettingsDialog";
-      else if (x === 30 && y === 147 && world.unit === "Grid") world.unit = "PortSelector";
-      else if (x === 30 && y === 147 && world.unit === "PortSelector") world.unit = "Grid";
+      else if (x === 600 && y === 406 && world.unit === "MainMenuPopup" && world.scroll === "bottom") world.unit = "SettingsDialog";
+      else if (x === 580 && y === 406 && world.unit === "MainMenuPopup" && world.scroll === "top") world.unit = "MidiMatrixDialog";
+      else if ((x === 582 && y === 286 || x === 582 && y === 346) && world.unit === "MainMenuPopup" && world.scroll === "top") { world.scene = y === 346 ? "swap" : "copy"; world.unit = "CopySceneDialog"; }
+      else if (x === 400 && y === 300 && world.unit === "CopySceneDialog") world.unit = "Grid";
+      else if (x === 634 && y === 30 && world.unit === "DirectoryDialog") world.unit = "SearchDialog";
+      else if (x === 57 && y === 30 && world.unit === "SearchDialog") world.unit = "DirectoryDialog";
+      else if (x === 30 && y === 226 && world.unit === "ParameterEditor" && world.panel) world.unit = "OptionsPopup";
+      else if (x === 450 && y === 215 && world.unit === "OptionsPopup") world.unit = "ParameterEditor";
+      else if ((x === 30 || x === 772) && y === 147 && world.unit === "Grid") { world.rail = x === 30 ? "input" : "output"; world.unit = "PortSelector"; }
+      else if (x === (world.rail === "input" ? 30 : 772) && y === 147 && world.unit === "PortSelector") world.unit = "Grid";
       else if (x === 320 && y === 50 && world.unit === "Grid") world.unit = "DirectoryDialog";
       else if (x === 668 && y === 23 && world.unit === "Grid") world.unit = "SceneSelectorPopup";
       else if (x === 668 && y === 23 && world.unit === "SceneSelectorPopup") world.unit = "Grid";
-      else if (x === 610 && y === 286 && world.unit === "MainMenuPopup") world.unit = "MetronomeEditor";
-      else if (x === 578 && y === 346 && world.unit === "MainMenuPopup") world.unit = "CpuLoadIndicator";
+      else if (x === 610 && y === 286 && world.unit === "MainMenuPopup" && world.scroll === "bottom") world.unit = "MetronomeEditor";
+      else if (x === 578 && y === 346 && world.unit === "MainMenuPopup" && world.scroll === "bottom") world.unit = "CpuLoadIndicator";
       else if (x === 628 && y === 32 && world.unit === "CpuLoadIndicator") world.unit = "Grid";
-      else if (x === 743 && y === 30 && world.unit !== "Grid" && world.unit !== "CpuLoadIndicator" && world.unit !== "SceneSelectorPopup" && world.unit !== "PortSelector") world.unit = "Grid";
+      else if (x === 743 && y === 30 && world.unit !== "Grid" && world.unit !== "SearchDialog" && world.unit !== "OptionsPopup" && world.unit !== "CopySceneDialog" && world.unit !== "CpuLoadIndicator" && world.unit !== "SceneSelectorPopup" && world.unit !== "PortSelector") world.unit = "Grid";
       for (const watch of watchers) watch(world.unit);
     },
     longTapScreen: async (x: number, y: number) => { log.push(`hold:${x},${y}`); if (!world.unitIgnores && world.unit === "Grid" && x === 700 && y === 70) world.unit = "HybridModeConfigDialog"; },
-    swipeScreen: async () => { log.push("swipe"); }
+    swipeScreen: async (x: number, y: number, toX: number, toY: number) => { log.push(`swipe:${x},${y},${toX},${toY}`); if (!world.unitIgnores && world.unit === "MainMenuPopup" && x === 600) world.scroll = toY > y ? "top" : "bottom"; }
   } as unknown as QcScreenFollowOptions["gateway"];
   const named = (name: string, ...methods: string[]) => Object.fromEntries(methods.map((method) => [method, () => { log.push(`${name}.${method}`); }]));
   const workflowsFor = () => ({
@@ -64,9 +84,11 @@ function harness(initial: Scenario = {}) {
     tuner: named("tuner", "close", "openTuner"),
     ioEq: named("io", "refresh"),
     routing: { picker: state.routePicker },
+    scene: { command: state.sceneCommand },
     modes: named("modes", "refresh")
   }) as unknown as QcScreenFollowOptions["workflows"];
   const destination = () => ({
+    blockMenuOpen: state.blockMenuOpen, directorySearchOpen: state.directorySearchOpen, setBlockMenuOpen() {}, setDirectorySearchOpen() {},
     view: state.view as never, returnFocusTarget: undefined, popup: state.popup, latch,
     setView: ((next: unknown) => { const value = typeof next === "function" ? (next as (c: string | null) => string | null)(state.view) : next as string | null; if (value !== state.view) log.push(`view:${value}`); state.view = value; }) as never,
     setPopup: (popup: typeof state.popup) => { if (popup !== state.popup) log.push(`popup:${popup}`); state.popup = popup; },
@@ -84,7 +106,7 @@ function harness(initial: Scenario = {}) {
   let renderer!: ReactTestRenderer;
   act(() => { renderer = create(createElement(Probe)); });
   /** The app's screen changes by the user's hand (or the unit's), then the host re-renders. */
-  const rerender = async (next: Scenario) => { current = { ...current, ...next }; Object.assign(state, { view: next.view !== undefined ? next.view : state.view, popup: next.popup !== undefined ? next.popup : state.popup, settingsOpen: next.settingsOpen ?? state.settingsOpen, directoryOpen: next.directoryOpen ?? state.directoryOpen, routePicker: "routePicker" in next ? next.routePicker : state.routePicker, tempoOpen: next.tempoOpen ?? state.tempoOpen }); await act(async () => { renderer.update(createElement(Probe)); await new Promise((resolve) => setTimeout(resolve, 150)); }); };
+  const rerender = async (next: Scenario) => { current = { ...current, ...next }; Object.assign(state, { view: next.view !== undefined ? next.view : state.view, popup: next.popup !== undefined ? next.popup : state.popup, settingsOpen: next.settingsOpen ?? state.settingsOpen, directoryOpen: next.directoryOpen ?? state.directoryOpen, routePicker: "routePicker" in next ? next.routePicker : state.routePicker, blockMenuOpen: next.blockMenuOpen ?? state.blockMenuOpen, directorySearchOpen: next.directorySearchOpen ?? state.directorySearchOpen, sceneCommand: "sceneCommand" in next ? (next.sceneCommand ?? null) : state.sceneCommand, tempoOpen: next.tempoOpen ?? state.tempoOpen }); await act(async () => { renderer.update(createElement(Probe)); await new Promise((resolve) => setTimeout(resolve, 150)); }); };
   return { log, world, state, latch, watchers, rerender, get follower() { return seen.current!; }, renderer };
 }
 
@@ -523,7 +545,7 @@ test("the first row's input picker opens and closes on its rail label; no row of
   assert.deepEqual(host.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), ["tap:30,147", "tap:30,147"]);
   assert.ok(!host.log.some((entry) => entry.startsWith("view:")), "the unit's answers are not echoed into the app");
   host.renderer.unmount();
-  for (const picker of [{ row: 0, side: "output" }, { row: 1, side: "input" }, { row: 0, side: "split" }]) {
+  for (const picker of [{ row: 1, side: "input" }, { row: 1, side: "output" }, { row: 0, side: "split" }]) {
     const other = harness({ follow: false, available: true });
     await other.rerender({ routePicker: picker });
     assert.deepEqual(other.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), [], `${picker.row} ${picker.side}: unmeasured, not routed`);
@@ -540,4 +562,119 @@ test("the first row's input picker opens and closes on its rail label; no row of
   act(() => unitFirst.follower.observe(observation("grid")));
   assert.equal(unitFirst.state.view, null);
   unitFirst.renderer.unmount();
+});
+
+const touches = (host: { log: string[] }) => host.log.filter((entry) => /^(tap|hold|swipe):/.test(entry));
+const flow = (host: ReturnType<typeof harness>, answers: Array<[Unit, QcObservedScreenKind]>) => host.watchers.push((unit) => {
+  for (const [shown, kind] of answers) if (unit === shown) act(() => host.follower.observe(observation(kind)));
+  if (unit === "Grid") act(() => host.follower.observe(observation("grid")));
+});
+
+test("the output label opens and closes the same picker as the input label, from its own side, and never a row", async () => {
+  const host = harness({ follow: false, available: true });
+  flow(host, [["PortSelector", "route-selector"]]);
+  await host.rerender({ routePicker: { row: 0, side: "output" } });
+  assert.equal(host.world.unit, "PortSelector");
+  await host.rerender({ routePicker: undefined });
+  assert.equal(host.world.unit, "Grid");
+  assert.deepEqual(touches(host), ["tap:772,147", "tap:772,147"]);
+  host.renderer.unmount();
+});
+
+test("Preset MIDI Out: the menu is scrolled to its top first, the row opens it, the check closes it, and the bottom rows still work afterwards", async () => {
+  const host = harness({ follow: false, available: true });
+  flow(host, [["MidiMatrixDialog", "midi-out"]]);
+  await host.rerender({ view: "midi-out" });
+  assert.equal(host.world.unit, "MidiMatrixDialog");
+  assert.deepEqual(touches(host), ["tap:764,22", "swipe:600,150,600,420", "tap:580,406"]);
+  host.log.length = 0;
+  await host.rerender({ view: null });
+  assert.deepEqual(touches(host), ["tap:743,30"], "the check only, never the delete button beside it");
+  host.log.length = 0;
+  await host.rerender({ settingsOpen: true });
+  assert.equal(host.world.unit, "SettingsDialog", "the menu is scrolled back before the Settings row is tapped");
+  assert.deepEqual(touches(host), ["tap:764,22", "swipe:600,420,600,150", "tap:600,406"]);
+  host.renderer.unmount();
+});
+
+test("Copy Scene and Swap Scene open the one dialog from their own rows and close on CANCEL; no footswitch, nothing else", async () => {
+  for (const [command, row] of [["copy", "tap:582,286"], ["swap", "tap:582,346"]] as const) {
+    const host = harness({ follow: false, available: true });
+    flow(host, [["CopySceneDialog", "copy-scene"]]);
+    await host.rerender({ sceneCommand: command });
+    assert.equal(host.world.unit, "CopySceneDialog");
+    assert.equal(host.world.scene, command);
+    assert.deepEqual(touches(host), ["tap:764,22", "swipe:600,150,600,420", row]);
+    host.log.length = 0;
+    await host.rerender({ sceneCommand: null });
+    assert.equal(host.world.unit, "Grid");
+    assert.deepEqual(touches(host), ["tap:400,300"], "CANCEL, not the check button");
+    host.renderer.unmount();
+  }
+});
+
+test("Directory search opens from the Directory only, closes on the X at the top left, and then the Directory itself closes on the check", async () => {
+  const host = harness({ follow: false, available: true });
+  flow(host, [["DirectoryDialog", "directory"], ["SearchDialog", "search"]]);
+  await host.rerender({ directoryOpen: true, directorySearchOpen: true });
+  assert.equal(host.world.unit, "SearchDialog");
+  assert.deepEqual(touches(host), ["tap:320,50", "tap:634,30"]);
+  host.log.length = 0;
+  await host.rerender({ directorySearchOpen: false });
+  assert.equal(host.world.unit, "DirectoryDialog");
+  assert.deepEqual(touches(host), ["tap:57,30"], "the X, never the check button, which does nothing there");
+  host.log.length = 0;
+  await host.rerender({ directoryOpen: false });
+  assert.deepEqual(touches(host), ["tap:743,30"]);
+  host.log.length = 0;
+  await host.rerender({ directoryOpen: true, directorySearchOpen: true });
+  host.log.length = 0;
+  await host.rerender({ directoryOpen: false, directorySearchOpen: false });
+  assert.deepEqual(touches(host), ["tap:57,30", "tap:743,30"], "leaving the Directory with the search open closes both");
+  assert.equal(host.world.unit, "Grid");
+  host.renderer.unmount();
+  const busy = harness({ follow: false, available: true, unit: "SettingsDialog" });
+  await busy.rerender({ directoryOpen: true, directorySearchOpen: true });
+  assert.deepEqual(touches(busy), [], "never over another screen");
+  busy.renderer.unmount();
+});
+
+test("the unit's search dialog, which holds a keyboard, is the search screen and not a keyboard", async () => {
+  const { classifyQcGraphicsTree } = await import("../src/use-adaptive-screen-polling.ts");
+  const nl = String.fromCharCode(10);
+  assert.equal(classifyQcGraphicsTree(["zenUI::DirectoryDialog", "zenUI::SearchDialog", "zenUI::Keyboard", "zenUI::KeyboardSearch"].join(nl)), "search");
+  assert.equal(classifyQcGraphicsTree("zenUI::Grid" + nl + "zenUI::Keyboard"), "keyboard");
+});
+
+test("the block editor's menu opens on its kebab and closes on an empty area, only for a bottom panel, and never touches a row", async () => {
+  const host = harness({ follow: false, available: true, unit: "ParameterEditor", panel: true, editorOpen: true });
+  flow(host, [["OptionsPopup", "block-menu"], ["ParameterEditor", "parameter-editor"]]);
+  await host.rerender({ blockMenuOpen: true });
+  assert.equal(host.world.unit, "OptionsPopup");
+  assert.deepEqual(touches(host), ["tap:30,226"]);
+  assert.ok(!host.log.includes("grid.close"), "the unit's answer does not close the app's editor");
+  host.log.length = 0;
+  await host.rerender({ blockMenuOpen: false });
+  assert.equal(host.world.unit, "ParameterEditor");
+  assert.deepEqual(touches(host), ["tap:450,215"]);
+  host.renderer.unmount();
+  // A full-screen editor (the Cab editor) has no measured menu button: nothing is tapped.
+  const full = harness({ follow: false, available: true, unit: "ParameterEditor", panel: false, editorOpen: true });
+  await full.rerender({ blockMenuOpen: true });
+  assert.deepEqual(touches(full), []);
+  full.renderer.unmount();
+  // Over the Grid, not the editor: never.
+  const grid = harness({ follow: false, available: true, editorOpen: true });
+  await grid.rerender({ blockMenuOpen: true });
+  assert.deepEqual(touches(grid), []);
+  grid.renderer.unmount();
+});
+
+test("with the setting off none of these screens moves the app, and the app still drives the unit", async () => {
+  for (const unit of ["MidiMatrixDialog", "CopySceneDialog", "SearchDialog", "OptionsPopup", "PortSelector"] as const) {
+    const host = harness({ follow: false, available: true, unit });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.deepEqual(host.log, [], unit);
+    host.renderer.unmount();
+  }
 });
