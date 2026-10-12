@@ -1,8 +1,8 @@
 //! Linux StatusNotifierItem adapter for the broker's shared tray model.
 //!
-//! `ksni::TrayMethods::spawn` returns only after registration with a live
-//! StatusNotifierWatcher. Later watcher loss and recovery update the same
-//! `Shared::registered` bit that controls the device idle hold.
+//! `ksni::TrayMethods::spawn` can keep its service alive while the desktop's
+//! StatusNotifierWatcher starts. Registration state controls the device idle
+//! hold, so an unavailable watcher never creates a phantom hold.
 
 use super::model::{self, MenuAction, MenuRow, Snapshot};
 use super::state::{Notify, Shared};
@@ -12,9 +12,10 @@ use ksni::{Icon, ToolTip};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc::Sender, Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const ITEM_ID: &str = "qc-remote-device-broker";
+const STARTUP_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(30);
 static ACTIVE_HANDLE: OnceLock<Mutex<Option<ksni::blocking::Handle<LinuxTray>>>> = OnceLock::new();
 
 pub fn interactive_session() -> bool {
@@ -31,44 +32,96 @@ pub fn start(shared: Arc<Shared>, actions: Sender<MenuAction>) -> Result<Notify,
         return Err("No graphical D-Bus user session is available".into());
     }
     shared.registered.store(false, Ordering::Release);
-    let watcher_online = Arc::new(AtomicBool::new(false));
+    // ksni does not call watcher_online after an initially successful
+    // registration. Start optimistic only during spawn so an initial
+    // watcher_offline callback can distinguish ServiceUnknown from success.
+    // The shared registration bit remains false until spawn has completed.
+    let watcher_online = Arc::new(AtomicBool::new(true));
     let tray = LinuxTray {
         shared: Arc::clone(&shared),
         actions,
         watcher_online: Arc::clone(&watcher_online),
         sync_frame: 0,
     };
-    // Do not assume SNI support and do not publish an active marker if the
-    // desktop has no StatusNotifierHost. The successful spawn includes the
-    // Watcher's RegisterStatusNotifierItem acknowledgement.
+    let watcher_connection = Arc::new(
+        zbus::blocking::connection::Builder::session()
+            .map_err(|error| format!("Cannot connect to session D-Bus: {error}"))?
+            .method_timeout(Duration::from_millis(500))
+            .build()
+            .map_err(|error| format!("Cannot connect to session D-Bus: {error}"))?,
+    );
+    // With this option, ksni treats a temporarily missing watcher as offline
+    // and listens for its later appearance. Its service retries registration
+    // on that transition and already handles later watcher loss/recovery.
     let handle = tray
+        .assume_sni_available(true)
         .spawn()
         .map_err(|error| format!("StatusNotifierItem registration failed: {error}"))?;
-    watcher_online.store(true, Ordering::Release);
-    shared.registered.store(true, Ordering::Release);
+    let initially_registered = registration_is_active(
+        watcher_online.load(Ordering::Acquire),
+        true, // the watcher callback records whether the initial ACK was received
+        host_is_registered(&watcher_connection),
+    );
+    shared
+        .registered
+        .store(initially_registered, Ordering::Release);
+    let ever_registered = Arc::new(AtomicBool::new(initially_registered));
+    let retired = Arc::new(AtomicBool::new(false));
+    let started_at = Instant::now();
     *ACTIVE_HANDLE
         .get_or_init(|| Mutex::new(None))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle.clone());
     Ok(Box::new(move || {
+        if retired.load(Ordering::Acquire) {
+            return;
+        }
         let updated = handle.update(LinuxTray::advance_frame).is_some();
-        update_registration(&shared, &watcher_online, updated);
+        let host_registered =
+            watcher_online.load(Ordering::Acquire) && host_is_registered(&watcher_connection);
+        update_registration(&shared, &watcher_online, updated, host_registered);
+        if shared.registered.load(Ordering::Acquire) {
+            ever_registered.store(true, Ordering::Release);
+        }
+        if startup_registration_expired(
+            ever_registered.load(Ordering::Acquire),
+            started_at,
+            Instant::now(),
+        ) && !retired.swap(true, Ordering::AcqRel)
+        {
+            // No watcher appeared during startup. Withdraw this SNI service;
+            // when ksni drops LinuxTray its action sender disconnects, so the
+            // state loop releases residency and the hold through its existing
+            // UI-disconnected path. Once registered even once, watcher loss
+            // stays recoverable without a timeout.
+            shared.registered.store(false, Ordering::Release);
+            take_active_handle();
+            let _ = handle.shutdown();
+        }
     }))
 }
 
 pub fn remove_icon_now() {
-    let handle = ACTIVE_HANDLE.get().and_then(|active| {
-        active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-    });
+    let handle = take_active_handle();
     if let Some(handle) = handle {
         // Queue withdrawal, then let the broker's exit path continue without
         // waiting on the desktop's D-Bus loop. Process exit closes the SNI
         // connection even if the host is no longer answering.
         let _ = handle.shutdown();
     }
+}
+
+fn take_active_handle() -> Option<ksni::blocking::Handle<LinuxTray>> {
+    ACTIVE_HANDLE.get().and_then(|active| {
+        active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    })
+}
+
+fn startup_registration_expired(ever_registered: bool, started_at: Instant, now: Instant) -> bool {
+    !ever_registered && now.saturating_duration_since(started_at) >= STARTUP_REGISTRATION_TIMEOUT
 }
 
 struct LinuxTray {
@@ -279,12 +332,40 @@ fn dispatch(action: MenuAction, actions: Sender<MenuAction>) {
         });
 }
 
-fn update_registration(shared: &Shared, watcher_online: &AtomicBool, update_succeeded: bool) {
+fn host_is_registered(connection: &zbus::blocking::Connection) -> bool {
+    zbus::blocking::Proxy::new(
+        connection,
+        "org.kde.StatusNotifierWatcher",
+        "/StatusNotifierWatcher",
+        "org.kde.StatusNotifierWatcher",
+    )
+    .and_then(|proxy| proxy.get_property::<bool>("IsStatusNotifierHostRegistered"))
+    .unwrap_or(false)
+}
+
+fn registration_is_active(
+    watcher_online: bool,
+    update_succeeded: bool,
+    host_registered: bool,
+) -> bool {
+    watcher_online && update_succeeded && host_registered
+}
+
+fn update_registration(
+    shared: &Shared,
+    watcher_online: &AtomicBool,
+    update_succeeded: bool,
+    host_registered: bool,
+) {
     // ksni services this update on its D-Bus loop after attempting watcher
-    // re-registration. Do not restore the device hold merely on its online
-    // callback; restore it only after the live tray service handled an update.
+    // re-registration. The separate host property is required too. Neither a
+    // watcher-online callback nor an item update alone restores the hold.
     shared.registered.store(
-        update_succeeded && watcher_online.load(Ordering::Acquire),
+        registration_is_active(
+            watcher_online.load(Ordering::Acquire),
+            update_succeeded,
+            host_registered,
+        ),
         Ordering::Release,
     );
 }
@@ -397,19 +478,131 @@ mod tests {
         };
         let watcher_online = AtomicBool::new(false);
 
-        update_registration(&shared, &watcher_online, true);
+        update_registration(&shared, &watcher_online, true, true);
         assert!(!shared.registered.load(Ordering::Acquire));
 
         watcher_online.store(true, Ordering::Release);
-        update_registration(&shared, &watcher_online, false);
+        update_registration(&shared, &watcher_online, false, true);
         assert!(!shared.registered.load(Ordering::Acquire));
 
-        update_registration(&shared, &watcher_online, true);
+        update_registration(&shared, &watcher_online, true, true);
         assert!(shared.registered.load(Ordering::Acquire));
 
         watcher_online.store(false, Ordering::Release);
-        update_registration(&shared, &watcher_online, true);
+        update_registration(&shared, &watcher_online, true, true);
         assert!(!shared.registered.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn host_property_and_registration_ack_are_both_required_for_hold() {
+        let shared = Shared {
+            snapshot: std::sync::Mutex::new(Snapshot::default()),
+            wanted: AtomicBool::new(true),
+            registered: AtomicBool::new(false),
+            refreshed: std::sync::Mutex::new(Instant::now()),
+        };
+        let watcher_online = AtomicBool::new(true);
+
+        update_registration(&shared, &watcher_online, true, false);
+        assert!(!shared.registered.load(Ordering::Acquire));
+        assert_eq!(
+            crate::tray::hold_for(
+                shared.registered.load(Ordering::Acquire),
+                crate::tray_settings::TraySettings::default()
+            ),
+            None
+        );
+
+        update_registration(&shared, &watcher_online, false, true);
+        assert!(!shared.registered.load(Ordering::Acquire));
+        update_registration(&shared, &watcher_online, true, true);
+        assert!(shared.registered.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn missing_watcher_keeps_hold_off_until_late_registration_succeeds() {
+        let shared = Arc::new(Shared {
+            snapshot: std::sync::Mutex::new(Snapshot::default()),
+            wanted: AtomicBool::new(true),
+            registered: AtomicBool::new(false),
+            refreshed: std::sync::Mutex::new(Instant::now()),
+        });
+        let watcher_online = Arc::new(AtomicBool::new(true));
+        let (actions, _received) = std::sync::mpsc::channel();
+        let tray = LinuxTray {
+            shared: Arc::clone(&shared),
+            actions,
+            watcher_online: Arc::clone(&watcher_online),
+            sync_frame: 0,
+        };
+
+        // Initial ServiceUnknown is a recoverable offline state. The
+        // watcher callback alone must not create the device idle hold.
+        assert!(tray.watcher_offline(ksni::OfflineReason::No));
+        assert!(!shared.registered.load(Ordering::Acquire));
+        assert_eq!(
+            crate::tray::hold_for(
+                shared.registered.load(Ordering::Acquire),
+                crate::tray_settings::TraySettings::default()
+            ),
+            None
+        );
+
+        tray.watcher_online();
+        assert!(!shared.registered.load(Ordering::Acquire));
+        update_registration(&shared, &watcher_online, true, true);
+        assert!(shared.registered.load(Ordering::Acquire));
+        assert!(crate::tray::hold_for(
+            shared.registered.load(Ordering::Acquire),
+            crate::tray_settings::TraySettings::default()
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn absent_watcher_expires_startup_but_later_watcher_loss_remains_recoverable() {
+        let started_at = Instant::now();
+        let before_deadline = started_at + STARTUP_REGISTRATION_TIMEOUT - Duration::from_millis(1);
+        let after_deadline = started_at + STARTUP_REGISTRATION_TIMEOUT;
+
+        assert!(!startup_registration_expired(
+            false,
+            started_at,
+            before_deadline
+        ));
+        assert!(startup_registration_expired(
+            false,
+            started_at,
+            after_deadline
+        ));
+        assert!(!startup_registration_expired(
+            true,
+            started_at,
+            after_deadline
+        ));
+    }
+
+    #[test]
+    fn dropping_the_sni_service_disconnects_the_state_actions() {
+        let shared = Arc::new(Shared {
+            snapshot: std::sync::Mutex::new(Snapshot::default()),
+            wanted: AtomicBool::new(false),
+            registered: AtomicBool::new(false),
+            refreshed: std::sync::Mutex::new(Instant::now()),
+        });
+        let (actions, received) = std::sync::mpsc::channel();
+        let tray = LinuxTray {
+            shared,
+            actions,
+            watcher_online: Arc::new(AtomicBool::new(false)),
+            sync_frame: 0,
+        };
+
+        drop(tray);
+        assert!(matches!(
+            received.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
     }
 
     #[test]

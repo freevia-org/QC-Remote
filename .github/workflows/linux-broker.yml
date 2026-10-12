@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       build_linux_draft:
-        description: Build a draft Linux preview release from this exact commit
+        description: Build the versioned Linux release draft from this exact commit
         required: true
         default: false
         type: boolean
@@ -26,6 +26,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install isolated tray probe dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap dbus-daemon gir1.2-glib-2.0 python3-gi
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy, rustfmt
@@ -45,6 +49,10 @@ jobs:
         run: cargo clippy --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --all-targets --features qc-device-broker/linux-tray -- -D warnings
       - name: Check non-hardware executable entry point
         run: ./target/debug/qc-device-broker --self-check
+      - name: Test tray startup probe cleanup fixtures
+        run: dbus-run-session -- python3 -m unittest scripts.test_linux_tray_startup -v
+      - name: Probe disconnected tray startup lifecycle
+        run: python3 scripts/test-linux-tray-startup.py --broker target/debug/qc-device-broker --report "${RUNNER_TEMP}/tray-startup-runtime-probe.json"
       - name: Test Debian package verification and cleanup
         run: python3 -m unittest scripts.test_package_linux_deb
       - name: Test Cargo test-executable selection
@@ -130,6 +138,8 @@ jobs:
     needs: [native-linux, linux-desktop-host]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      LINUX_RELEASE_VERSION: "0.1.186"
     permissions:
       contents: write
       id-token: write
@@ -153,13 +163,20 @@ jobs:
             build-essential curl file libayatana-appindicator3-dev libdbus-1-dev \
             libgtk-3-dev libsecret-1-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev \
             libxdo-dev pkg-config python3
-      - name: Verify the source version agrees with this preview
+      - name: Verify the source version agrees with this release
         run: |
           python3 - <<'PY'
-          import json
+          import json, os, tomllib
           from pathlib import Path
-          config = json.loads(Path("apps/windows/src-tauri/tauri.conf.json").read_text())
-          assert config["version"] == "0.1.185", config["version"]
+          expected = os.environ["LINUX_RELEASE_VERSION"]
+          versions = {
+              "Tauri config": json.loads(Path("apps/windows/src-tauri/tauri.conf.json").read_text())["version"],
+              "Cargo manifest": tomllib.loads(Path("apps/windows/src-tauri/Cargo.toml").read_text())["package"]["version"],
+              "Cargo lock": next(p["version"] for p in tomllib.loads(Path("apps/windows/src-tauri/Cargo.lock").read_text())["package"] if p["name"] == "qc-remote"),
+              "npm manifest": json.loads(Path("apps/windows/package.json").read_text())["version"],
+              "npm lock": json.loads(Path("package-lock.json").read_text())["packages"]["apps/windows"]["version"],
+          }
+          assert all(version == expected for version in versions.values()), versions
           PY
       - name: Install locked frontend dependencies
         run: npm ci
@@ -173,14 +190,15 @@ jobs:
         run: |
           mapfile -t packages < <(find apps/windows/src-tauri/target -type f -path '*/bundle/deb/*.deb' -print)
           test "${#packages[@]}" -eq 1
-          install -m 0644 "${packages[0]}" qc-remote_0.1.185_amd64.deb
-          sha256sum qc-remote_0.1.185_amd64.deb > SHA256SUMS
+          deb="qc-remote_${LINUX_RELEASE_VERSION}_amd64.deb"
+          install -m 0644 "${packages[0]}" "$deb"
+          sha256sum "$deb" > SHA256SUMS
       - name: Attest the freshly built Debian package and checksum manifest
         id: attest-package
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
-            qc-remote_0.1.185_amd64.deb
+            qc-remote_${{ env.LINUX_RELEASE_VERSION }}_amd64.deb
             SHA256SUMS
       - name: Verify provenance and preserve the Sigstore bundle
         env:
@@ -188,23 +206,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           install -m 0644 "$ATTESTATION_BUNDLE" linux-build-provenance.sigstore.json
-          for artifact in qc-remote_0.1.185_amd64.deb SHA256SUMS; do
+          for artifact in "qc-remote_${LINUX_RELEASE_VERSION}_amd64.deb" SHA256SUMS; do
             gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" \
               --bundle linux-build-provenance.sigstore.json \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/linux-broker.yml" \
               --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" \
               --deny-self-hosted-runners
           done
-      - name: Create GitHub draft prerelease and upload verified package
+      - name: Create versioned GitHub draft prerelease and upload verified package
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          release_tag="linux-preview-${GITHUB_SHA:0:12}"
+          release_tag="v${LINUX_RELEASE_VERSION}"
           gh release create "$release_tag" \
-            qc-remote_0.1.185_amd64.deb SHA256SUMS linux-build-provenance.sigstore.json \
+            "qc-remote_${LINUX_RELEASE_VERSION}_amd64.deb" SHA256SUMS linux-build-provenance.sigstore.json \
             --target "$GITHUB_SHA" --draft --prerelease \
-            --title "QC Remote 0.1.185 — Linux preview" \
-            --notes "Ubuntu 24.04 x86_64 preview package built from source commit $GITHUB_SHA. See the repository user guide for installation and udev setup. This draft does not replace the stable Windows/Android release." \
+            --title "QC Remote ${LINUX_RELEASE_VERSION} — Linux" \
+            --notes "Ubuntu 24.04 x86_64 Linux package built from source commit $GITHUB_SHA. Fresh-login and physical QC acceptance are pending. This draft does not replace the stable Windows/Android release." \
             --repo "$GITHUB_REPOSITORY"
           release_id=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -f make_latest=false
