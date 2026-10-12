@@ -3653,7 +3653,11 @@ fn opening_a_transport_still_advances_the_status_epoch() {
 /// caller's controller drops before it; it is removed even when a test fails.
 fn controller_searching_for_an_absent_qc(
     tag: &str,
-) -> (crate::device_lease::testing::OwnedTestDirectory, DeviceController, String) {
+) -> (
+    crate::device_lease::testing::OwnedTestDirectory,
+    DeviceController,
+    String,
+) {
     let dir = std::env::temp_dir().join(format!("qc-absent-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     crate::device_lease::testing::create_directory(&dir).unwrap();
