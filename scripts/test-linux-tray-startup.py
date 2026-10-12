@@ -108,8 +108,10 @@ def finalize_outer_report(report_path: pathlib.Path, report: dict[str, Any], sta
         report["stagingRemoved"] = not staging.exists() and not staging.is_symlink()
         report["stagingCleanupFailure"] = "OwnedStagingRemovalFailed"
         if not report["stagingRemoved"]: report["stagingPathPreserved"] = str(staging)
+    inner_cleanup_verified = (report.get("innerCleanupVerified") is True
+                              or report.get("innerStarted") is False)
     report["cleanupVerified"] = (report.get("sandboxGroupReaped") is True
-                                  and report.get("innerCleanupVerified") is True
+                                  and inner_cleanup_verified
                                   and report["stagingRemoved"] is True)
     report["ok"] = report.get("ok") is True and report["cleanupVerified"]
     if not report["cleanupVerified"] and "failureStage" not in report:
@@ -411,6 +413,9 @@ def run_case(name: str, binary: str, base: pathlib.Path, env: dict[str, str]) ->
 
 def inner_main(binary: str, workdir: pathlib.Path, report_path: pathlib.Path,
                path_check_only: bool = False) -> int:
+    # The outer owner uses this marker to distinguish bwrap setup failure from
+    # an inner run whose resources need their own cleanup verification.
+    atomic_json(workdir / "inner-started.json", {"started": True})
     report: dict[str, Any] = {"syntheticSniFixture": True, "hardwareAccessed": False,
         "privateDbus": os.environ.get("DBUS_SESSION_BUS_ADDRESS", "").startswith("unix:"),
         "cases": [], "cleanupVerified": False}
@@ -515,12 +520,15 @@ def main() -> int:
         # overflow uid (65534), which the broker correctly rejects as a foreign
         # directory owner. Bind only read-only runtime roots through pre-opened
         # FDs; this also avoids resolving host paths after the private root exists.
+        # Create an explicit user namespace before the private network namespace:
+        # bubblewrap then has CAP_NET_ADMIN only in that child namespace to bring
+        # its loopback interface up, without sharing the runner's network stack.
         bind_sources = ["/usr", "/etc", str(temp), str(source), str(script)]
         bind_fds: list[int] = []
         for source_path in bind_sources:
             fd = os.open(source_path, getattr(os, "O_PATH", os.O_RDONLY) | os.O_CLOEXEC)
             bind_fds.append(fd)
-        argv = [bwrap, "--die-with-parent", "--unshare-pid", "--unshare-net", "--tmpfs", "/",
+        argv = [bwrap, "--die-with-parent", "--unshare-user", "--unshare-pid", "--unshare-net", "--tmpfs", "/",
                 "--dir", "/usr", "--ro-bind-fd", str(bind_fds[0]), "/usr",
                 "--dir", "/etc", "--ro-bind-fd", str(bind_fds[1]), "/etc",
                 "--symlink", "usr/bin", "/bin", "--symlink", "usr/sbin", "/sbin",
@@ -590,6 +598,12 @@ def main() -> int:
         keep_temp = not (outer_clean and report.get("innerCleanupVerified") is True)
     finally:
         if sandbox_log is not None: sandbox_log.close()
+        inner_started = (temp / "inner-started.json").is_file()
+        report["innerStarted"] = inner_started
+        # If the child private namespace has no live members and the inner entry
+        # point never began, no fixture-owned broker or watcher resources could
+        # have been created; remove only this verified run directory.
+        keep_temp = not (outer_clean and (not inner_started or report.get("innerCleanupVerified") is True))
         if report.get("ok") is not True:
             tail = bounded_log_tail(temp / "sandbox.log")
             if tail is not None: report["sandboxStderrTail"] = tail
