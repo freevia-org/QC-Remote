@@ -6706,13 +6706,13 @@ fn the_published_failure_arm_leaves_the_broker_owned_by_the_spawn_handle() {
     assert!(!directory.exists(), "the directory was removed");
 }
 
-/// The Unpublished arm with a kill that does not take effect:
-/// the production wait is bounded (`UNPUBLISHED_REAP_BOUND`), so the start
-/// fails instead of hanging; the broker, still running, is reaped by
-/// cleanup through the spawn handle.
+/// The Unpublished arm when kill fails and wait status is unknown:
+/// the real broker remains owned through the error and final cleanup reaps it.
+/// The fake-process test separately proves the bounded still-running poll
+/// without racing this broker's normal idle shutdown.
 #[cfg(windows)]
 #[test]
-fn the_unpublished_arm_is_bounded_when_the_kill_does_not_take_effect() {
+fn the_unpublished_arm_reports_unknown_wait_and_preserves_owned_cleanup() {
     let _serialize = serialize_real_broker_test();
     let started = Instant::now();
     let (report, primary, directory, live, invoke_error) = real_broker_failing_after_spawn(
@@ -6720,6 +6720,10 @@ fn the_unpublished_arm_is_bounded_when_the_kill_does_not_take_effect() {
         SpawnInjection {
             attach_outcome: AttachOverride::Unpublished,
             fail_kill: true,
+            // Keep this real-child integration deterministic: the broker's
+            // normal idle shutdown shares the five-second reap bound. The
+            // fake-process test below covers the bounded still-running case.
+            fail_wait: true,
             ..SpawnInjection::default()
         },
     );
@@ -6742,7 +6746,7 @@ fn the_unpublished_arm_is_bounded_when_the_kill_does_not_take_effect() {
         "{invoke_error}"
     );
     assert!(
-        invoke_error.contains("still running after"),
+        invoke_error.contains("exit status unknown: injected wait failure"),
         "{invoke_error}"
     );
     assert!(!report.blocked, "{report}");
