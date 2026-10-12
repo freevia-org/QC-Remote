@@ -33,7 +33,7 @@ function harness(initial: Scenario = {}) {
   const state = { view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
   const gateway = {
-    graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem${world.unit === "CpuLoadIndicator" ? "\nzenUI::Grid" : ""}\nzenUI::${world.unit}` }),
+    graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem${world.unit === "CpuLoadIndicator" ? "\nzenUI::Grid" : ""}${world.unit === "SettingsDialog" ? "\nzenUI::SettingsMenu\nzenUI::UpdaterSettings" : ""}\nzenUI::${world.unit}` }),
     tapScreen: async (x: number, y: number) => {
       log.push(`tap:${x},${y}`);
       if (world.unitIgnores) return;
@@ -448,4 +448,21 @@ test("the CPU overlay is seen with the Grid still in the tree, and followed both
   act(() => unitFirst.follower.observe(observation("grid")));
   assert.equal(unitFirst.state.view, null);
   unitFirst.renderer.unmount();
+});
+
+test("Settings opens on its Updates pane: the app's routes send only the menu, the row and the header check, never a touch in that pane", async () => {
+  const allowed = ["tap:764,22", "tap:600,406", "tap:743,30"];
+  const host = harness({ follow: false, available: true });
+  await host.rerender({ settingsOpen: true });
+  assert.equal(host.world.unit, "SettingsDialog");
+  await host.rerender({ settingsOpen: false });
+  assert.equal(host.world.unit, "Grid");
+  const touches = host.log.filter((entry) => /^(tap|hold|swipe):/.test(entry));
+  assert.deepEqual(touches, allowed);
+  host.renderer.unmount();
+  // A Settings the unit shows by itself, then the app's close: still only the header check.
+  const closing = harness({ follow: false, available: true, settingsOpen: true, unit: "SettingsDialog" });
+  await closing.rerender({ settingsOpen: false });
+  assert.deepEqual(closing.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), ["tap:743,30"]);
+  closing.renderer.unmount();
 });

@@ -3,7 +3,7 @@ import { qcDeviceInformation } from "./device-information.ts";
 import type { GatewayTransport, PresetList, PresetSnapshot } from "@qc-remote/client";
 import type { CorOsDeviceInformation } from "./coros-reference-settings-pane.tsx";
 import { closeQcLooperScreen } from "./qc-device-screen.ts";
-import { closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, QC_UPDATE_SCREEN, unitScreen, type QcScreenPoll } from "./qc-unit-screens.ts";
+import { closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, unitScreen, untouchableUnitScreen, type QcScreenPoll } from "./qc-unit-screens.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
 
 export type QcDeviceViewName = "tuner" | "gig" | "io" | "info";
@@ -173,8 +173,11 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
     }
     try {
       // A screen that can start a download or an install is shown, never touched, by the app.
-      if (QC_UPDATE_SCREEN.test((await gateway.graphicsTree()).tree)) {
-        notice("The Quad Cortex is showing an update screen. Update screens are display only in the app; use the unit.");
+      const refused = untouchableUnitScreen((await gateway.graphicsTree()).tree);
+      if (refused) {
+        notice(refused === "Settings"
+          ? "The Quad Cortex is showing Settings. Its panes, including Updates, Power Functions and Factory Reset, are display only in the app; use the unit."
+          : "The Quad Cortex is showing an update screen. Update screens are display only in the app; use the unit.");
         return;
       }
       if (kind === "long-tap") await gateway.longTapScreen(x, y);
