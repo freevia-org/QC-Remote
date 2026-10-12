@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_READY_INVENTORY_REFOLLOWS, QC_REFOLLOW_RESTORE_AFTER_LIVE_MS, qcConnectionDuringBrokerPhase, qcFollowReadyInventory, qcInventoryDeviceReady } from "../src/qc-readiness.ts";
+import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_CONNECT_STALL_MS, QC_ORPHANED_DISCOVERING_MS, QC_READY_INVENTORY_REFOLLOWS, QC_REFOLLOW_RESTORE_AFTER_LIVE_MS, qcAutomaticConnectHeld, qcConnectionDuringBrokerPhase, qcFollowReadyInventory, qcInventoryDeviceReady, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcWatchConnectStall } from "../src/qc-readiness.ts";
 
 // The broker's startup phases as 2badc68 ("Report responsive USB startup
 // progress") defines them: "searching" is enumeration finding nothing,
@@ -184,7 +184,20 @@ function windowPolls() {
     // What beginLiveRecovery records before it returns to the demo.
     loseLiveSession() { carried = { ...carried, liveSessionLost: true, liveSince: null }; },
     // What the user's own Connect clears in App's connect().
-    userConnect() { carried = { ...carried, refollows: 0, liveSessionLost: false }; }
+    userConnect() { carried = { ...carried, refollows: 0, liveSessionLost: false }; },
+    // A `device.phase` push before any poll answered (qcPhaseListenerMayFollow):
+    // the same decision as a poll that finds the device ready, at the same
+    // moment, with the user's Disconnect latch as App holds it.
+    push(connection: Connection, latched = false) {
+      const step = qcFollowReadyInventory({ ...idleWindow, ...carried, inventoryReady: true, connection, now, userDisconnected: latched });
+      carried = { followed: step.followed, refollows: step.refollows, liveSessionLost: step.liveSessionLost, liveSince: step.liveSince };
+      return step.connect;
+    },
+    // What App records for a lost session or a pending follow: beginLiveRecovery,
+    // a connect the watchdog gave up on, the demo fallback's retry (userAction
+    // false), a failed USB-tab resume (true).
+    recordLoss(userAction = false) { carried = qcRecordLiveSessionLoss(carried, userAction); },
+    get carried() { return carried; }
   };
   return app;
 }
@@ -359,4 +372,274 @@ test("a lost live session that something else brought back live is answered, not
     qcFollowReadyInventory({ ...idleWindow, followed: true, refollows: 1, liveSessionLost: true, connection: liveDevice, now: 5000 }),
     { connect: false, followed: true, refollows: 1, liveSessionLost: false, liveSince: 5000 }
   );
+});
+
+// Who decides an automatic follow. The poll, from what `broker.devices`
+// answered; a `device.phase` push only while no poll has ever answered
+// (qcPhaseListenerMayFollow), through the same bounded, latch-aware decision;
+// the demo fallback's retry never, it only records a pending follow.
+
+test("a push decides by itself only until the first inventory poll answers", () => {
+  assert.equal(qcPhaseListenerMayFollow(false), true);
+  assert.equal(qcPhaseListenerMayFollow(true), false);
+});
+
+test("a detection push (before any poll answered) follows an unspent edge exactly once", () => {
+  const app = windowPolls();
+  assert.equal(app.push(demoFallback), true);
+  for (let push = 0; push < 20; push += 1) assert.equal(app.push(demoFallback), false, `push ${push}`);
+  assert.equal(app.poll(demoFallback), false);
+});
+
+test("a detection push never undoes the user's Disconnect, a failed one included", () => {
+  for (const connection of [failedDisconnect, userDisconnected, demoFallback]) {
+    const app = windowPolls();
+    for (let push = 0; push < 10; push += 1) assert.equal(app.push(connection, true), false, `${connection.phase} push ${push}`);
+    // The latch holds it without spending anything.
+    assert.equal(app.carried.followed, false);
+  }
+  const lost = windowPolls();
+  lost.poll(liveDevice);
+  lost.recordLoss();
+  assert.equal(lost.push(demoFallback, true), false);
+  assert.equal(lost.carried.liveSessionLost, true);
+});
+
+test("pushes spend the re-follow budget the poll spends", () => {
+  const app = windowPolls();
+  app.poll(liveDevice);
+  app.recordLoss();
+  assert.equal(app.push(demoFallback), true);
+  app.poll(liveDevice);
+  app.recordLoss();
+  assert.equal(app.push(demoFallback), false);
+  assert.equal(app.poll(demoFallback), false);
+  // A push followed the loss, so the poll does not follow it again.
+  const first = windowPolls();
+  first.poll(liveDevice);
+  first.recordLoss();
+  assert.equal(first.push(demoFallback), true);
+  assert.equal(first.poll(demoFallback), false);
+});
+
+test("a push on a spent edge is followed by a poll only after one saw the device leave ready", () => {
+  const app = windowPolls();
+  assert.equal(app.poll(demoFallback), true);
+  // Spent and no loss pending: neither the push nor the poll follows.
+  assert.equal(app.push(demoFallback), false);
+  assert.equal(app.poll(demoFallback), false);
+  // A poll that reads the device not ready re-arms; the next ready one follows.
+  assert.equal(app.poll(demoFallback, false), false);
+  assert.equal(app.poll(demoFallback), true);
+});
+
+test("the demo retry is a pending follow: the next poll decides it, within the budget", () => {
+  // The edge follow failed after a push arrived during it.
+  const app = windowPolls();
+  assert.equal(app.poll(demoFallback), true);
+  app.recordLoss();
+  assert.equal(app.poll(demoFallback), true);
+  // The same again: the budget is spent, so the retry is not followed.
+  app.recordLoss();
+  assert.equal(app.poll(demoFallback), false);
+  // With the user's Disconnect latched nothing follows it either.
+  const latched = windowPolls();
+  latched.poll(liveDevice);
+  latched.recordLoss();
+  assert.equal(qcFollowReadyInventory({ ...idleWindow, ...latched.carried, userDisconnected: true }).connect, false);
+});
+
+test("a retry recorded while the polls are refused (tray release, Quit) connects nothing until a poll reads the device ready", () => {
+  const app = windowPolls();
+  app.poll(liveDevice);
+  app.recordLoss();
+  // Every poll throws: no decision is made at all, however long.
+  app.pollsRefused(10 * 60_000);
+  assert.equal(app.carried.liveSessionLost, true);
+  // Only a poll that the broker answers with the device ready may follow it.
+  assert.equal(app.poll(demoFallback, false), false);
+  assert.equal(app.carried.liveSessionLost, false);
+  assert.equal(app.poll(demoFallback), true);
+});
+
+test("a gave-up reconnect still unsettled holds every automatic follow, as a connect in flight does", () => {
+  const idle = { awaitingDetection: false, commandPending: false, demoPending: false, reconnectsOutstanding: 0 };
+  assert.equal(qcAutomaticConnectHeld(idle), false);
+  assert.equal(qcAutomaticConnectHeld({ ...idle, awaitingDetection: true }), true);
+  assert.equal(qcAutomaticConnectHeld({ ...idle, commandPending: true }), true);
+  assert.equal(qcAutomaticConnectHeld({ ...idle, demoPending: true }), true);
+  assert.equal(qcAutomaticConnectHeld({ ...idle, reconnectsOutstanding: 1 }), true);
+  // The loss the watchdog records stays pending through the overlap, for a
+  // push and a poll alike, and is followed once the request settles.
+  const app = windowPolls();
+  assert.equal(app.poll(demoFallback), true);
+  app.recordLoss();
+  const overlap = { ...idleWindow, ...app.carried, connectInFlight: qcAutomaticConnectHeld({ ...idle, reconnectsOutstanding: 1 }) };
+  for (const connection of [demoFallback, failedConnect]) {
+    const step = qcFollowReadyInventory({ ...overlap, connection });
+    assert.equal(step.connect, false, connection.phase);
+    assert.equal(step.liveSessionLost, true, connection.phase);
+  }
+  assert.equal(app.poll(failedConnect), true);
+});
+
+// A failed USB-tab resume (resumeDeviceSession) returns to the demo beside a
+// broker that may still hold the device ready, on an edge already spent.
+
+test("a failed USB-tab resume is followed once, even with the budget spent", () => {
+  const app = windowPolls();
+  app.poll(liveDevice);
+  app.recordLoss();
+  assert.equal(app.poll(demoFallback), true);
+  // Back live, then the user stepped to the demo with the device held.
+  app.poll(liveDevice);
+  app.poll(demoFallback);
+  assert.equal(app.poll(demoFallback), false);
+  // Without a record, nothing would follow it.
+  assert.equal(app.carried.liveSessionLost, false);
+  app.recordLoss(true);
+  assert.deepEqual(app.carried, { followed: true, refollows: 0, liveSessionLost: true, liveSince: null });
+  assert.equal(app.poll(demoFallback), true);
+  assert.equal(app.poll(demoFallback), false);
+});
+
+test("a failed resume never lifts the user's Disconnect latch", () => {
+  const app = windowPolls();
+  app.poll(liveDevice);
+  app.recordLoss(true);
+  assert.equal(app.push(demoFallback, true), false);
+  assert.equal(qcFollowReadyInventory({ ...idleWindow, ...app.carried, userDisconnected: true }).connect, false);
+});
+
+test("an automatic loss keeps the budget it had; only the user's choice gives it back", () => {
+  const spent = { followed: true, refollows: 1, liveSessionLost: false, liveSince: 5_000 };
+  assert.deepEqual(qcRecordLiveSessionLoss(spent), { followed: true, refollows: 1, liveSessionLost: true, liveSince: null });
+  assert.deepEqual(qcRecordLiveSessionLoss(spent, true), { followed: true, refollows: 0, liveSessionLost: true, liveSince: null });
+});
+
+// The connect watchdog (qcWatchConnectStall): a connect() whose answer never
+// comes, or a "discovering" fallback nothing owns, must not stay gray.
+
+const discovering: Connection = { phase: "discovering", detail: "Looking for a Quad Cortex…", demo: true, source: "device" };
+const returning: Connection = { phase: "discovering", detail: "The Quad Cortex was not reached; returning to the demo device…", demo: true, source: "device" };
+const handshaking: Connection = { phase: "handshaking", detail: "USB open; handshaking with the Quad Cortex…", demo: true, source: "device" };
+const demoStopped: Connection = { phase: "disconnected", detail: "Demo device stopped. Its presets stay saved on this computer.", demo: true, source: "device" };
+type StallInput = Parameters<typeof qcWatchConnectStall>[0];
+const fromDemoConnect = { attempt: 1, fromDemo: true };
+const fromIdleConnect = { attempt: 1, fromDemo: false };
+function watchdog(start: Omit<StallInput, "stall" | "now">) {
+  let stall: StallInput["stall"] = null;
+  let now = 0;
+  let state = start;
+  return {
+    set(next: Partial<Omit<StallInput, "stall" | "now">>) { state = { ...state, ...next }; },
+    tick(ms = POLL_MS) {
+      now += ms;
+      const step = qcWatchConnectStall({ ...state, stall, now });
+      stall = step.stall;
+      return step.abandon;
+    }
+  };
+}
+const ticksUntilAbandon = (dog: ReturnType<typeof watchdog>, max = 1000) => {
+  for (let tick = 1; tick <= max; tick += 1) if (dog.tick()) return tick;
+  return Infinity;
+};
+const STALL_TICKS = QC_CONNECT_STALL_MS / POLL_MS + 1;
+
+test("a connect still waiting is given up after the stall interval, not before", () => {
+  const dog = watchdog({ connection: discovering, connect: fromDemoConnect, otherWorkPending: false });
+  // The first tick starts the clock; abandonment needs the full interval after it.
+  assert.equal(ticksUntilAbandon(dog), STALL_TICKS);
+  assert.ok(QC_CONNECT_STALL_MS > 30_000 + 11_000, "longer than a full handshake plus the boot read");
+});
+
+test("a stalled connect returns to the demo only if it started from the demo", () => {
+  const fromDemo = watchdog({ connection: discovering, connect: fromDemoConnect, otherWorkPending: false });
+  for (let tick = 1; tick < STALL_TICKS; tick += 1) fromDemo.tick();
+  assert.equal(fromDemo.tick(), "return-to-demo");
+  const fromIdle = watchdog({ connection: discovering, connect: fromIdleConnect, otherWorkPending: false });
+  for (let tick = 1; tick < STALL_TICKS; tick += 1) fromIdle.tick();
+  assert.equal(fromIdle.tick(), "needs-attention");
+});
+
+test("a connect the phase listener moved on to handshaking is still the same stall", () => {
+  const dog = watchdog({ connection: discovering, connect: fromDemoConnect, otherWorkPending: false });
+  for (let tick = 0; tick < 10; tick += 1) assert.equal(dog.tick(), null);
+  dog.set({ connection: handshaking });
+  assert.equal(ticksUntilAbandon(dog), STALL_TICKS - 10);
+});
+
+test("a new attempt inside an old stall (Reset Session, menu Reconnect) gets its own full interval", () => {
+  const dog = watchdog({ connection: discovering, connect: fromDemoConnect, otherWorkPending: false });
+  for (let tick = 0; tick < STALL_TICKS - 2; tick += 1) assert.equal(dog.tick(), null);
+  dog.set({ connect: { attempt: 2, fromDemo: false } });
+  assert.equal(ticksUntilAbandon(dog), STALL_TICKS);
+});
+
+test("a connect that answers in time is never abandoned and leaves no clock behind", () => {
+  const dog = watchdog({ connection: discovering, connect: fromDemoConnect, otherWorkPending: false });
+  for (let tick = 0; tick < STALL_TICKS - 2; tick += 1) assert.equal(dog.tick(), null);
+  dog.set({ connect: null, connection: liveDevice });
+  assert.equal(dog.tick(), null);
+  dog.set({ connect: fromDemoConnect, connection: discovering });
+  assert.equal(ticksUntilAbandon(dog), STALL_TICKS);
+});
+
+test("a connect the user superseded (Stop demo, Disconnect) is never the watchdog's to end", () => {
+  // App passes `connect: null` once the waiting attempt is no longer current,
+  // even though its awaitingDetection flag may still be set.
+  for (const connection of [demoStopped, userDisconnected, demoFallback]) {
+    const dog = watchdog({ connection, connect: null, otherWorkPending: false });
+    assert.equal(ticksUntilAbandon(dog, 500), Infinity, connection.detail);
+  }
+});
+
+test("an orphaned discovering state repeats its fallback once nothing owns it", () => {
+  // returnToDemoDevice showed it, and startDemoDevice refused while a command ran.
+  const dog = watchdog({ connection: returning, connect: null, otherWorkPending: true });
+  for (let tick = 0; tick < 100; tick += 1) assert.equal(dog.tick(), null, `pending ${tick}`);
+  dog.set({ otherWorkPending: false });
+  assert.equal(ticksUntilAbandon(dog), QC_ORPHANED_DISCOVERING_MS / POLL_MS + 1);
+  // Refused again: retried no sooner than another full interval.
+  let tick = 0;
+  let abandon: ReturnType<typeof dog.tick> = null;
+  while (!abandon) { tick += 1; abandon = dog.tick(); }
+  assert.equal(tick, QC_ORPHANED_DISCOVERING_MS / POLL_MS + 1);
+  assert.equal(abandon, "retry-fallback");
+});
+
+test("a fallback after a long connect gets its own interval, not the connect's", () => {
+  const dog = watchdog({ connection: discovering, connect: fromDemoConnect, otherWorkPending: false });
+  for (let tick = 0; tick < STALL_TICKS - 2; tick += 1) dog.tick();
+  // The connect failed from the demo: returnToDemoDevice, with the demo's open
+  // not yet visible as pending in this render.
+  dog.set({ connect: null, connection: returning });
+  assert.equal(dog.tick(), null);
+  assert.equal(ticksUntilAbandon(dog), QC_ORPHANED_DISCOVERING_MS / POLL_MS);
+});
+
+test("the watchdog leaves every other state alone, a user's Disconnect included", () => {
+  for (const connection of [demoFallback, liveDevice, failedConnect, failedDisconnect, userDisconnected, demoStopped, handshaking]) {
+    const dog = watchdog({ connection, connect: null, otherWorkPending: false });
+    assert.equal(ticksUntilAbandon(dog, 500), Infinity, `${connection.source} ${connection.phase}`);
+  }
+});
+
+test("a connect given up by the watchdog is followed once more within the budget, then held", () => {
+  // The watchdog itself never connects; App records the abandoned connect as
+  // a lost session and the bounded follow decides once the request settled.
+  const app = windowPolls();
+  assert.equal(app.poll(demoFallback), true);
+  app.recordLoss();
+  assert.equal(app.poll(failedConnect), true);
+  for (let cycle = 0; cycle < 20; cycle += 1) {
+    app.recordLoss();
+    assert.equal(app.poll(cycle % 2 ? demoFallback : failedConnect), false, `cycle ${cycle}`);
+    assert.equal(app.push(demoFallback), false, `cycle ${cycle} push`);
+  }
+  // A Disconnect after an abandoned connect is still never undone.
+  app.userConnect();
+  app.recordLoss();
+  assert.equal(app.push(demoFallback, true), false);
 });
