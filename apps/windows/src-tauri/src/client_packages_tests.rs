@@ -360,6 +360,7 @@ fn the_bundled_bridge_passes_a_node_syntax_check() {
     let bridge = archive_text(&mut archive, "server/index.cjs");
     let directory =
         std::env::temp_dir().join(format!("qc-remote-bridge-syntax-{}", std::process::id()));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("syntax check directory");
     let file = directory.join("index.cjs");
     fs::write(&file, bridge).expect("bridge copy");
@@ -368,8 +369,6 @@ fn the_bundled_bridge_passes_a_node_syntax_check() {
         .arg(&file)
         .output()
         .expect("node is required to verify the bundled bridge");
-    let _ = fs::remove_file(&file);
-    let _ = fs::remove_dir(&directory);
     assert!(
         checked.status.success(),
         "node --check rejected the bundled bridge: {}",
@@ -493,6 +492,7 @@ fn device_knowledge_skill_install_is_versioned_and_backs_up_modifications() {
 
     let directory =
         std::env::temp_dir().join(format!("qc-remote-tone-skill-test-{}", std::process::id()));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let skill = directory
         .join("codex")
         .join("skills")
@@ -567,6 +567,7 @@ fn claude_status_detects_install_and_update_versions() {
 fn claude_path_falls_back_to_the_newest_squirrel_version_directory() {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-claude-path-test-{}", std::process::id()));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let old = directory.join("AnthropicClaude").join("app-1.9.0");
     let current = directory.join("AnthropicClaude").join("app-1.10.0");
     fs::create_dir_all(&old).expect("old Claude directory");
@@ -620,6 +621,7 @@ fn package_version_extracts_only_known_package_families() {
 fn claude_msix_path_uses_the_package_install_location() {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-claude-msix-test-{}", std::process::id()));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let app = directory.join("app");
     fs::create_dir_all(&app).expect("Claude MSIX app directory");
     fs::write(app.join("claude.exe"), b"Claude").expect("Claude MSIX executable");
@@ -643,6 +645,7 @@ fn chatgpt_msix_path_uses_the_package_install_location() {
         "qc-remote-chatgpt-msix-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let app = directory.join("app");
     fs::create_dir_all(&app).expect("ChatGPT MSIX app directory");
     fs::write(app.join("ChatGPT.exe"), b"ChatGPT").expect("ChatGPT MSIX executable");
@@ -685,6 +688,7 @@ fn chatgpt_package_detection_accepts_supported_package_families() {
         "qc-remote-chatgpt-package-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(directory.join("OpenAI.Codex_test-family")).expect("Codex package fixture");
     assert!(package_directory_contains(
         &directory,
@@ -795,6 +799,7 @@ fn chatgpt_install_preserves_unrelated_codex_configuration() {
         "qc-remote-chatgpt-config-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("ChatGPT config directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -870,6 +875,7 @@ fn repeated_chatgpt_pairing_never_loses_the_original_configuration() {
         "qc-remote-chatgpt-backup-history-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("ChatGPT config directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -916,6 +922,7 @@ fn chatgpt_install_keeps_the_live_config_when_staging_fails() {
         "qc-remote-chatgpt-config-failure-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("ChatGPT config directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -945,6 +952,7 @@ fn chatgpt_remove_preserves_unrelated_codex_configuration() {
         "qc-remote-chatgpt-remove-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("ChatGPT config directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -982,6 +990,7 @@ fn claude_registry_version_comes_from_the_qc_remote_manifest() {
         "qc-remote-claude-registry-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("test directory");
     let registry = directory.join("extensions-installations.json");
     fs::write(
@@ -1005,6 +1014,7 @@ fn claude_registry_paths_cover_classic_and_store_installations() {
         "qc-remote-claude-registry-paths-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let roaming = directory.join("Roaming");
     let local = directory.join("Local");
     let store = local.join("Packages").join("Claude_pzs8sxrjxfjjc");
@@ -1034,6 +1044,7 @@ fn claude_registry_uses_newest_install_across_classic_and_store_paths() {
         "qc-remote-claude-registry-versions-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("test directory");
     let classic = directory.join("classic.json");
     let store = directory.join("store.json");
@@ -1064,6 +1075,7 @@ fn claude_install_is_detected_from_its_manifest_before_registry_refresh() {
         "qc-remote-claude-manifest-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let extension = directory
         .join("Claude Extensions")
         .join("local.mcpb.freevia.qc-remote");
@@ -1149,6 +1161,7 @@ fn antigravity_versioned_installation_chooses_the_newest_executable() {
         "qc-remote-antigravity-version-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     for version in ["2.9.0", "2.12.2"] {
         let app = directory.join(format!("app-{version}"));
         fs::create_dir_all(&app).expect("Antigravity version directory");
@@ -1162,13 +1175,14 @@ fn antigravity_versioned_installation_chooses_the_newest_executable() {
 }
 
 /// A scratch directory named after the test that owns it, so the suite can
-/// run its cases in parallel without them colliding.
-fn installation_fixture(name: &str) -> PathBuf {
+/// run its cases in parallel without them colliding, and a guard that
+/// removes it if the test fails before its own checked removal.
+fn installation_fixture(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-install-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).expect("installation fixture directory");
-    directory
+    (crate::tests::RemoveDirOnDrop::new(directory.clone()), directory)
 }
 
 fn executable_at(path: &Path) -> PathBuf {
@@ -1183,7 +1197,7 @@ fn executable_at(path: &Path) -> PathBuf {
 fn an_uninstall_entry_resolves_a_quoted_install_location_and_display_icon() {
     // Both values arrive with the quotation marks inside them, which is
     // how Jan registers itself.
-    let directory = installation_fixture("quoted-entry");
+    let (_cleanup, directory) = installation_fixture("quoted-entry");
     let installed = directory.join("Programs").join("Jan");
     let executable = executable_at(&installed.join("jan.exe"));
 
@@ -1212,7 +1226,7 @@ fn an_uninstall_entry_resolves_a_quoted_install_location_and_display_icon() {
 
 #[test]
 fn an_uninstall_entry_resolves_a_display_icon_carrying_an_icon_index() {
-    let directory = installation_fixture("icon-index");
+    let (_cleanup, directory) = installation_fixture("icon-index");
     let executable = executable_at(&directory.join("Bionic").join("Bionic.exe"));
     let icon = directory.join("Bionic").join("Bionic.ico");
     fs::write(&icon, []).expect("fixture icon");
@@ -1250,7 +1264,7 @@ fn an_uninstall_entry_resolves_a_display_icon_carrying_an_icon_index() {
 
 #[test]
 fn an_uninstall_entry_whose_paths_are_gone_is_not_an_installation() {
-    let directory = installation_fixture("stale-entry");
+    let (_cleanup, directory) = installation_fixture("stale-entry");
     let missing = directory.join("Programs").join("Jan");
     let entry = UninstallEntry {
         display_version: Some("0.8.4".into()),
@@ -1292,7 +1306,7 @@ fn a_relative_registry_path_is_never_searched() {
 
 #[test]
 fn an_install_record_is_used_only_when_it_names_a_file_that_is_there() {
-    let directory = installation_fixture("self-record");
+    let (_cleanup, directory) = installation_fixture("self-record");
     let executable = executable_at(&directory.join("Programs").join("Bionic").join("Bionic.exe"));
     let record = directory.join(LM_STUDIO_SEARCH.self_records[0].relative_path);
     fs::create_dir_all(record.parent().expect("record parent")).expect("record directory");
@@ -1361,7 +1375,7 @@ fn an_install_record_is_used_only_when_it_names_a_file_that_is_there() {
 #[test]
 #[cfg(windows)]
 fn lm_studio_resolves_from_bionic_and_from_its_legacy_layout() {
-    let directory = installation_fixture("lm-studio-layouts");
+    let (_cleanup, directory) = installation_fixture("lm-studio-layouts");
     let bionic = executable_at(&directory.join("Bionic").join("Bionic.exe"));
     assert_eq!(
         desktop_app_paths_in(std::slice::from_ref(&directory), &LM_STUDIO_SEARCH),
@@ -1392,7 +1406,7 @@ fn a_store_execution_alias_is_accepted_although_it_is_zero_length() {
     // `is_file()` is true, `metadata()` succeeds with length 0. So the
     // probe must accept an empty file, and this case fails the moment
     // anybody adds a "and is not empty" clause to it.
-    let directory = installation_fixture("store-alias");
+    let (_cleanup, directory) = installation_fixture("store-alias");
     let alias = executable_at(
         &directory
             .join("Microsoft")
@@ -1435,7 +1449,7 @@ fn a_default_path_answers_before_the_slower_mechanisms() {
         package_prefixes: &[],
         package_executables: &[],
     };
-    let directory = installation_fixture("mechanism-order");
+    let (_cleanup, directory) = installation_fixture("mechanism-order");
     let default_path = executable_at(
         &directory
             .join("Probe")
@@ -1564,6 +1578,7 @@ fn antigravity_pair_and_unpair_preserve_unrelated_mcp_servers() {
         "qc-remote-antigravity-config-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity config directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("QC Remote.exe");
@@ -1666,6 +1681,7 @@ fn antigravity_empty_config_is_available_and_pairable() {
         "qc-remote-antigravity-empty-config-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity config directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("QC Remote.exe");
@@ -1705,6 +1721,7 @@ fn antigravity_older_managed_bridge_is_an_update() {
         "qc-remote-antigravity-managed-update-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity config directory");
     let config = directory.join("mcp_config.json");
     let current = directory.join(format!(
@@ -1764,6 +1781,7 @@ fn antigravity_stable_launcher_with_older_client_is_an_update() {
         "qc-remote-antigravity-stable-launcher-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity stable launcher directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("qc-remote.exe");
@@ -1798,6 +1816,7 @@ fn antigravity_missing_current_bridge_requires_repair() {
         "qc-remote-antigravity-missing-bridge-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity config directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join(format!(
@@ -1955,6 +1974,7 @@ fn antigravity_permission_pair_and_unpair_preserve_other_settings() {
         "qc-remote-antigravity-permission-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity settings directory");
     let settings = directory.join("config.json");
     let original = json!({
@@ -2016,6 +2036,7 @@ fn antigravity_pair_removes_only_the_stale_legacy_gemini_route() {
         "qc-remote-antigravity-legacy-config-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("legacy Gemini settings directory");
     let settings = directory.join("settings.json");
     let original = json!({
@@ -2053,6 +2074,7 @@ fn managed_json_mcp_pair_update_and_unpair_preserve_other_servers() {
         "qc-remote-managed-json-mcp-test-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("managed MCP fixture directory");
     let config = directory.join("mcp.json");
     let executable = directory.join("qc-remote.exe");
@@ -2113,6 +2135,7 @@ fn unpair_removes_only_a_skill_that_is_still_ours_and_restores_the_backup() {
         "qc-remote-tone-skill-removal-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let skill = directory.join("skills").join(DEVICE_KNOWLEDGE_SKILL_NAME);
     let backups = directory.join("backups");
 
@@ -2176,6 +2199,7 @@ fn each_host_restores_its_own_skill_backup() {
         "qc-remote-skill-backup-hosts-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let hosts = [
         (CODEX_SKILL_HOST, b"the codex skill".as_slice()),
         (ANTIGRAVITY_SKILL_HOST, b"the gemini skill".as_slice()),
@@ -2218,6 +2242,7 @@ fn pairing_writes_the_route_before_it_touches_the_users_skill() {
         "qc-remote-chatgpt-pair-order-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -2272,6 +2297,7 @@ fn a_failed_skill_install_is_reported_without_losing_the_paired_route() {
         "qc-remote-skill-partial-install-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let skill = directory.join("skills").join(DEVICE_KNOWLEDGE_SKILL_NAME);
     let backups = directory.join("backups");
     fs::create_dir_all(&skill).expect("user skill directory");
@@ -2317,6 +2343,7 @@ fn a_failed_skill_install_is_reported_without_losing_the_paired_route() {
 fn pairing_leaves_another_vendors_key_order_alone() {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-json-key-order-{}", std::process::id()));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("key order fixture directory");
     let config = directory.join("mcp.json");
     let executable = directory.join("qc-remote.exe");
@@ -2358,6 +2385,7 @@ fn pairing_leaves_another_vendors_key_order_alone() {
 fn unpairing_leaves_an_empty_server_map_the_user_already_had() {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-empty-server-map-{}", std::process::id()));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("mcp.json");
     let executable = directory.join("qc-remote.exe");
@@ -2393,6 +2421,7 @@ fn the_chatgpt_route_names_itself_and_reports_its_own_version() {
         "qc-remote-chatgpt-client-id-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -2491,6 +2520,7 @@ fn the_manual_antigravity_example_passes_the_apps_own_route_check() {
         "qc-remote-antigravity-example-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("qc-remote.exe");
@@ -2530,6 +2560,7 @@ fn the_codex_installer_classifies_an_existing_qc_remote_entry() {
         "qc-remote-installer-classify-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("classifier fixture directory");
     let script = directory.join("classify.ps1");
     fs::write(
@@ -2584,6 +2615,7 @@ fn the_codex_installer_classifies_an_existing_qc_remote_entry() {
 fn a_skill_backup_copies_the_tree_and_skips_links() {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-copy-directory-{}", std::process::id()));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let source = directory.join("source");
     let nested = source.join("references").join("data");
     fs::create_dir_all(&nested).expect("nested source directory");
@@ -2656,6 +2688,7 @@ fn a_pair_refuses_rather_than_deleting_a_skill_it_cannot_back_up() {
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&directory);
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let skill = directory.join("skills").join(DEVICE_KNOWLEDGE_SKILL_NAME);
     let backups = directory.join("backups");
     fs::create_dir_all(&skill).expect("an existing skill directory");
@@ -2704,14 +2737,13 @@ fn a_pair_refuses_rather_than_deleting_a_skill_it_cannot_back_up() {
             "the managed skill is in place",
         );
     }
-
-    let _ = fs::remove_dir_all(&directory);
 }
 
 #[test]
 fn jan_pair_marks_the_server_active() {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-jan-mcp-test-{}", std::process::id()));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Jan MCP fixture directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("qc-remote.exe");
@@ -2764,6 +2796,7 @@ fn the_chatgpt_route_names_its_host_where_the_host_cannot_drop_it() {
         "qc-remote-chatgpt-identity-argument-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("config.toml");
     let executable = directory.join("qc-remote.exe");
@@ -2840,6 +2873,7 @@ fn the_lm_studio_route_names_its_host_where_the_host_cannot_drop_it() {
         "qc-remote-lm-studio-identity-argument-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("mcp.json");
     let executable = directory.join("qc-remote.exe");
@@ -2915,13 +2949,14 @@ fn the_lm_studio_route_names_its_host_where_the_host_cannot_drop_it() {
     fs::remove_dir_all(directory).expect("remove LM Studio identity fixture");
 }
 
-/// A scratch directory for one of the Bionic document tests.
-fn bionic_fixture(name: &str) -> PathBuf {
+/// A scratch directory for one of the Bionic document tests, and a guard that
+/// removes it if the test fails before its own checked removal.
+fn bionic_fixture(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-bionic-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).expect("Bionic fixture directory");
-    directory
+    (crate::tests::RemoveDirOnDrop::new(directory.clone()), directory)
 }
 
 /// A user-authored Bionic MCP server entry, unrelated to this app. Nothing
@@ -3039,6 +3074,7 @@ fn the_bionic_skill_path_prefers_the_location_bionic_documents() {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&home);
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(home.clone());
     std::fs::create_dir_all(&home).expect("temp home");
     let current = home
         .join(".lmstudio")
@@ -3088,8 +3124,6 @@ fn the_bionic_skill_path_prefers_the_location_bionic_documents() {
             legacy,
             "a skill already installed under the legacy root stays the answer once the current root appears",
         );
-
-    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// A paired row whose skill is missing or stale must offer Update, and a
@@ -3190,7 +3224,7 @@ fn the_bionic_route_is_written_where_bionic_reads_it_in_the_shape_bionic_writes(
         "the correct path is the only one Bionic reads"
     );
 
-    let directory = bionic_fixture("shape");
+    let (_cleanup, directory) = bionic_fixture("shape");
     let config = directory.join("ng-mcp.json");
     let executable = directory.join("QC Remote.exe");
     pair_bionic(&config, &executable);
@@ -3245,7 +3279,7 @@ fn the_bionic_route_is_written_where_bionic_reads_it_in_the_shape_bionic_writes(
 /// model still on them.
 #[test]
 fn a_server_the_owner_added_survives_a_pair_a_refresh_and_an_unpair() {
-    let directory = bionic_fixture("neighbours");
+    let (_cleanup, directory) = bionic_fixture("neighbours");
     let config = directory.join("ng-mcp.json");
     let executable = directory.join("QC Remote.exe");
     let theirs = their_own_bionic_server();
@@ -3333,7 +3367,7 @@ fn a_server_the_owner_added_survives_a_pair_a_refresh_and_an_unpair() {
 /// configuration.
 #[test]
 fn pairing_twice_leaves_one_qc_remote_server_rather_than_two() {
-    let directory = bionic_fixture("duplicates");
+    let (_cleanup, directory) = bionic_fixture("duplicates");
     let config = directory.join("ng-mcp.json");
     let executable = directory.join("QC Remote.exe");
     seed_bionic_document(&config, vec![their_own_bionic_server()]);
@@ -3363,7 +3397,7 @@ fn pairing_twice_leaves_one_qc_remote_server_rather_than_two() {
 /// guard leaves behind - is collapsed rather than added to.
 #[test]
 fn a_document_already_holding_two_of_our_servers_is_collapsed_to_one() {
-    let directory = bionic_fixture("collapse");
+    let (_cleanup, directory) = bionic_fixture("collapse");
     let config = directory.join("ng-mcp.json");
     let executable = directory.join("QC Remote.exe");
     let theirs = their_own_bionic_server();
@@ -3407,7 +3441,7 @@ fn a_document_already_holding_two_of_our_servers_is_collapsed_to_one() {
 /// its own freshly written route as a stranger's.
 #[test]
 fn an_id_this_app_did_not_choose_is_kept_and_the_refresh_still_recognises_the_route() {
-    let directory = bionic_fixture("identity");
+    let (_cleanup, directory) = bionic_fixture("identity");
     let config = directory.join("ng-mcp.json");
     let executable = directory.join("QC Remote.exe");
     const THEIR_ID: &str = "c41f7b02-5d18-4ee9-9a37-6f0d2e58b1c4";
@@ -3509,7 +3543,7 @@ fn a_bionic_install_and_a_legacy_install_read_different_documents() {
 /// A pre-rename install still gets the document it reads, unchanged.
 #[test]
 fn a_legacy_lm_studio_is_still_written_the_mcp_servers_document_it_reads() {
-    let directory = bionic_fixture("legacy");
+    let (_cleanup, directory) = bionic_fixture("legacy");
     let executable = directory.join("QC Remote.exe");
     let legacy = LmStudioMcpDocument {
         path: directory.join("mcp.json"),
@@ -3566,7 +3600,7 @@ fn a_legacy_lm_studio_is_still_written_the_mcp_servers_document_it_reads() {
 /// copies the live file aside before replacing it.
 #[test]
 fn a_bionic_document_this_app_cannot_account_for_is_refused_rather_than_replaced() {
-    let directory = bionic_fixture("malformed");
+    let (_cleanup, directory) = bionic_fixture("malformed");
     let executable = directory.join("QC Remote.exe");
     for (name, contents) in [
         ("not-json", "{ \"servers\": [ "),
@@ -3698,7 +3732,7 @@ fn renaming_the_row_must_not_rename_the_client_identity_pairings_are_keyed_by() 
              followed the label: {LM_STUDIO_CLIENT_ID}"
     );
 
-    let directory = installation_fixture("lm-studio-identity-outlives-the-label");
+    let (_cleanup, directory) = installation_fixture("lm-studio-identity-outlives-the-label");
     let executable = directory.join("qc-remote.exe");
 
     // A pairing exactly as a shipped build left it on disk, written out
@@ -3971,6 +4005,7 @@ fn the_jan_route_names_its_host_where_the_host_cannot_drop_it() {
         "qc-remote-jan-identity-argument-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("qc-remote.exe");
@@ -4035,6 +4070,7 @@ fn the_antigravity_route_names_its_host_where_the_host_cannot_drop_it() {
         "qc-remote-antigravity-identity-argument-{}",
         std::process::id()
     ));
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("qc-remote.exe");
@@ -4122,15 +4158,16 @@ fn the_pasted_stdio_setup_names_its_host_where_the_host_cannot_drop_it() {
         "the environment copy stays for the hosts that do propagate it"
     );
 }
-/// A scratch directory for one of the route-refresh tests.
-fn refresh_fixture(name: &str) -> PathBuf {
+/// A scratch directory for one of the route-refresh tests, and a guard that
+/// removes it if the test fails before its own checked removal.
+fn refresh_fixture(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
     let directory = std::env::temp_dir().join(format!(
         "qc-remote-route-refresh-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).expect("route refresh fixture directory");
-    directory
+    (crate::tests::RemoveDirOnDrop::new(directory.clone()), directory)
 }
 
 #[cfg(target_os = "linux")]
@@ -4170,7 +4207,7 @@ fn linux_jan_pairing_remains_unavailable_even_if_flatpak_is_installed() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_jan_uses_documented_xdg_data_location_and_custom_settings_path() {
-    let root = refresh_fixture("linux-jan-path");
+    let (_cleanup, root) = refresh_fixture("linux-jan-path");
     let config_home = root.join("config");
     let data_home = root.join("data");
     assert_eq!(
@@ -4209,7 +4246,7 @@ fn linux_jan_uses_documented_xdg_data_location_and_custom_settings_path() {
 fn linux_codex_detection_only_accepts_executable_absolute_path_entries() {
     use std::os::unix::fs::PermissionsExt;
 
-    let root = refresh_fixture("linux-path-detection");
+    let (_cleanup, root) = refresh_fixture("linux-path-detection");
     let first = root.join("first");
     let second = root.join("second");
     fs::create_dir_all(&first).expect("create first PATH fixture");
@@ -4350,7 +4387,7 @@ fn assert_a_freshly_paired_route_is_left_alone(target: &ManagedRouteTarget) {
 
 #[test]
 fn a_route_that_already_names_this_build_is_never_rewritten() {
-    let directory = refresh_fixture("current");
+    let (_cleanup, directory) = refresh_fixture("current");
     assert_a_freshly_paired_route_is_left_alone(&chatgpt_target(&directory.join("codex")));
     assert_a_freshly_paired_route_is_left_alone(&antigravity_target(
         &directory.join("antigravity"),
@@ -4363,7 +4400,7 @@ fn a_route_that_already_names_this_build_is_never_rewritten() {
 
 #[test]
 fn a_stale_route_this_app_wrote_is_brought_up_to_date_without_being_asked() {
-    let directory = refresh_fixture("stale");
+    let (_cleanup, directory) = refresh_fixture("stale");
     let target = lm_studio_target(&directory);
     seed_json_route(
         &target.config_path,
@@ -4412,7 +4449,7 @@ fn a_stale_route_this_app_wrote_is_brought_up_to_date_without_being_asked() {
 
 #[test]
 fn a_stale_chatgpt_route_is_freshened_through_its_own_toml_writer() {
-    let directory = refresh_fixture("stale-chatgpt");
+    let (_cleanup, directory) = refresh_fixture("stale-chatgpt");
     let target = chatgpt_target(&directory);
     fs::write(&target.config_path, "model = \"keep-me\"\n").expect("seed Codex configuration");
     write_codex_config(
@@ -4448,7 +4485,7 @@ fn a_stale_chatgpt_route_is_freshened_through_its_own_toml_writer() {
 
 #[test]
 fn a_stale_antigravity_route_is_freshened_through_its_own_writer() {
-    let directory = refresh_fixture("stale-antigravity");
+    let (_cleanup, directory) = refresh_fixture("stale-antigravity");
     let target = antigravity_target(&directory);
     seed_json_route(
         &target.config_path,
@@ -4477,7 +4514,7 @@ fn a_stale_antigravity_route_is_freshened_through_its_own_writer() {
 
 #[test]
 fn a_route_pointing_at_another_command_is_left_completely_alone() {
-    let directory = refresh_fixture("foreign-command");
+    let (_cleanup, directory) = refresh_fixture("foreign-command");
 
     // Ours in every other respect - our arguments, our identity, a version
     // this build is newer than - and a command that is not this app.
@@ -4521,7 +4558,7 @@ fn a_route_pointing_at_another_command_is_left_completely_alone() {
 
 #[test]
 fn a_managed_route_with_edited_arguments_is_repaired_and_other_servers_survive() {
-    let directory = refresh_fixture("customised-args");
+    let (_cleanup, directory) = refresh_fixture("customised-args");
     let target = lm_studio_target(&directory);
     let mut server = json_mcp_route_server(&target.executable_path, "lm-studio:0.1.100", false);
     server["args"] = json!([
@@ -4555,7 +4592,7 @@ fn a_managed_route_with_edited_arguments_is_repaired_and_other_servers_survive()
 
 #[test]
 fn a_managed_route_disabled_in_the_host_is_restored_by_startup_repair() {
-    let directory = refresh_fixture("disabled");
+    let (_cleanup, directory) = refresh_fixture("disabled");
     let target = lm_studio_target(&directory);
     let mut server = json_mcp_route_server(&target.executable_path, "lm-studio:0.1.100", false);
     server["disabled"] = Value::Bool(true);
@@ -4579,7 +4616,7 @@ fn a_managed_route_disabled_in_the_host_is_restored_by_startup_repair() {
 
 #[test]
 fn a_managed_route_with_a_moved_executable_path_is_repaired_at_the_same_version() {
-    let directory = refresh_fixture("moved-executable-path");
+    let (_cleanup, directory) = refresh_fixture("moved-executable-path");
     let target = lm_studio_target(&directory);
     let old_path = PathBuf::from("E:\\QC Remote\\QC Remote.exe");
     seed_json_route(
@@ -4614,7 +4651,7 @@ fn a_managed_route_with_a_moved_executable_path_is_repaired_at_the_same_version(
 
 #[test]
 fn an_unpaired_provider_is_not_paired_by_the_unattended_pass() {
-    let directory = refresh_fixture("unpaired");
+    let (_cleanup, directory) = refresh_fixture("unpaired");
 
     // A host that has never been paired has no configuration at all.
     let missing = lm_studio_target(&directory.join("missing"));
@@ -4653,7 +4690,7 @@ fn an_unpaired_provider_is_not_paired_by_the_unattended_pass() {
 
 #[test]
 fn a_route_naming_a_newer_build_than_this_one_is_not_downgraded() {
-    let directory = refresh_fixture("newer");
+    let (_cleanup, directory) = refresh_fixture("newer");
     let target = lm_studio_target(&directory);
     seed_json_route(
         &target.config_path,
@@ -4706,7 +4743,7 @@ fn the_unattended_pass_never_reaches_claude_desktop() {
 
 #[test]
 fn a_refused_rewrite_leaves_the_previous_route_working_and_is_reported_once_per_reason() {
-    let directory = refresh_fixture("refused-write");
+    let (_cleanup, directory) = refresh_fixture("refused-write");
     let target = ManagedRouteTarget {
         // A key of this pass's own, so recording an outcome here cannot
         // disturb another test's reading of the shared status record.
@@ -4773,7 +4810,7 @@ fn a_refused_rewrite_leaves_the_previous_route_working_and_is_reported_once_per_
 
 #[test]
 fn a_configuration_this_app_cannot_read_is_reported_and_left_untouched() {
-    let directory = refresh_fixture("unreadable");
+    let (_cleanup, directory) = refresh_fixture("unreadable");
     let target = lm_studio_target(&directory);
     let invalid = "{ this is not JSON";
     fs::write(&target.config_path, invalid).expect("seed an invalid configuration");
@@ -4827,7 +4864,7 @@ fn staged_leftovers(directory: &Path) -> Vec<String> {
 /// renames interleaved freely.
 #[test]
 fn concurrent_route_writers_in_one_process_never_collide() {
-    let directory = refresh_fixture("concurrent-writers");
+    let (_cleanup, directory) = refresh_fixture("concurrent-writers");
     let config = directory.join("mcp.json");
     let executable = directory.join("QC Remote.exe");
     seed_json_route(
@@ -4897,7 +4934,7 @@ fn concurrent_route_writers_in_one_process_never_collide() {
 /// nothing to freshen.
 #[test]
 fn an_unpair_in_flight_is_never_undone_by_the_start_up_refresh() {
-    let directory = refresh_fixture("unpair-during-refresh");
+    let (_cleanup, directory) = refresh_fixture("unpair-during-refresh");
     let config = lm_studio_target(&directory).config_path;
     seed_json_route(
         &config,

@@ -2288,6 +2288,7 @@ mod tests {
     #[test]
     fn the_heartbeat_is_handed_the_diagnosis_rather_than_stderr_taking_it() {
         let directory = fixture_dir("quiet");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let missing = directory.join("nothing-here.json");
 
         // The announcement runs every five seconds forever, so a reader that
@@ -2323,6 +2324,7 @@ mod tests {
     #[test]
     fn a_descriptor_that_stopped_being_refreshed_reads_the_same_at_every_clock() {
         let directory = fixture_dir("stale-key");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let stale = directory.join("stale.json");
         // Refreshed 200s ago against a 150s allowance, and nothing will
         // refresh it again.
@@ -2379,6 +2381,7 @@ mod tests {
     #[test]
     fn an_hour_of_one_abandoned_descriptor_is_not_an_hour_of_lines() {
         let directory = fixture_dir("stale-hour");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let stale = directory.join("stale.json");
         write_descriptor(&stale, 41005, 1_000_000, 4);
         let paths = [stale];
@@ -2436,6 +2439,7 @@ mod tests {
             // `fixture_dir` keys on the process id, so this is the child's own
             // directory and the child is the one that removes it.
             let directory = fixture_dir("stderr-child");
+            let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
             let live = directory.join("live.json");
             let abandoned = directory.join("abandoned.json");
             write_descriptor(&live, 41006, 1_190_000, 4);
@@ -2529,6 +2533,7 @@ mod tests {
     #[test]
     fn a_descriptor_the_app_stopped_refreshing_is_not_used() {
         let directory = fixture_dir("expired");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let expired = directory.join("expired.json");
         // Refreshed 200s ago against a 150s allowance.
         write_descriptor(&expired, 41000, 1_000_000, 4);
@@ -2542,6 +2547,7 @@ mod tests {
     #[test]
     fn a_live_older_instance_outranks_an_expired_newer_one() {
         let directory = fixture_dir("outranks");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let live = directory.join("live.json");
         let expired = directory.join("expired.json");
         write_descriptor(&live, 41001, 1_190_000, 4);
@@ -2556,6 +2562,7 @@ mod tests {
     #[test]
     fn a_release_that_never_refreshes_is_exempt_from_expiry() {
         let directory = fixture_dir("legacy");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let legacy = directory.join("legacy.json");
         // descriptorRevision 3 stamps once at startup, so age says nothing.
         write_descriptor(&legacy, 41003, 1_000, 3);
@@ -2569,6 +2576,7 @@ mod tests {
     #[test]
     fn an_absent_app_is_reported_without_naming_the_users_filesystem() {
         let directory = fixture_dir("absent");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let missing = directory.join("nothing-here.json");
 
         let error = descriptor_from_paths_at(&[missing], 1_000)
@@ -2672,6 +2680,7 @@ mod tests {
             "qc-native-local-descriptor-test-{}",
             std::process::id()
         ));
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         std::fs::create_dir_all(&directory).expect("descriptor fixture directory");
         let stale = directory.join("stale.json");
         let current = directory.join("current.json");
@@ -2698,6 +2707,7 @@ mod tests {
             "qc-native-local-descriptor-freshness-test-{}",
             std::process::id()
         ));
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         std::fs::create_dir_all(&directory).expect("descriptor fixture directory");
         let old_primary = directory.join("primary.json");
         let current_mirror = directory.join("mirror.json");
@@ -2784,6 +2794,7 @@ mod tests {
     #[test]
     fn empty_background_host_does_not_attach_and_passive_presence_honors_explicit_release() {
         let directory = fresh_fixture_dir("background-no-client");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let device = HeadlessDeviceAdapter::new(directory.join("device-broker.json"), false);
         device.release_when_unused();
         assert!(device.gateway.lock().unwrap().process.is_none());
@@ -2847,6 +2858,7 @@ mod tests {
     #[test]
     fn a_bridge_process_hosts_mcp_itself_when_no_publisher_is_live() {
         let directory = fresh_fixture_dir("headless-host");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         assert!(
             descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
@@ -2874,6 +2886,7 @@ mod tests {
     #[test]
     fn a_bridge_process_falls_back_to_relaying_when_it_loses_the_hosting_race() {
         let directory = fresh_fixture_dir("headless-race");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         let settings = test_settings(&directory, full_access());
 
@@ -2948,6 +2961,7 @@ mod tests {
     #[test]
     fn a_bridge_does_not_host_while_local_mcp_is_switched_off() {
         let directory = fresh_fixture_dir("headless-switched-off");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         local_access::store_local_mcp_enabled_in(&directory, false).expect("preference");
 
@@ -2968,6 +2982,7 @@ mod tests {
     #[test]
     fn a_headless_host_enforces_and_follows_the_persisted_access_level() {
         let directory = fresh_fixture_dir("headless-access");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         let mode = Arc::new(Mutex::new(AccessMode::ReadOnly));
         let hosted = attempt_headless_mcp_hosting(&paths, &test_settings(&directory, mode.clone()))
@@ -2999,6 +3014,7 @@ mod tests {
     #[test]
     fn switching_local_mcp_off_stops_a_running_headless_host() {
         let directory = fresh_fixture_dir("headless-switch-off-later");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         let hosted =
             attempt_headless_mcp_hosting(&paths, &test_settings(&directory, full_access()))
@@ -3234,6 +3250,7 @@ mod tests {
     #[test]
     fn a_relaying_bridge_hosts_itself_once_the_publisher_it_used_is_gone() {
         let directory = fresh_fixture_dir("headless-takeover");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         let settings = test_settings(&directory, Arc::new(Mutex::new(AccessMode::ReadOnly)));
         let first = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge A hosts");
@@ -3538,6 +3555,7 @@ mod tests {
     #[test]
     fn a_relayed_resource_read_never_makes_the_hosting_bridge_start_a_broker() {
         let directory = fresh_fixture_dir("relayed-resource-read");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         let settings = test_settings(&directory, full_access());
         let hosting = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge B hosts");
@@ -3618,6 +3636,7 @@ mod tests {
     #[test]
     fn a_resource_read_after_quit_does_not_make_the_bridge_host() {
         let directory = fresh_fixture_dir("resource-read-after-quit");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         let settings = test_settings(&directory, full_access());
         let bridge = bridge_after_quit(&paths, &settings);
@@ -3803,6 +3822,7 @@ mod tests {
     #[test]
     fn a_bridge_hosting_after_quit_answers_a_resource_read_offline() {
         let directory = fresh_fixture_dir("hosting-resource-read-after-quit");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         let settings = test_settings(&directory, full_access());
         let hosted = attempt_headless_mcp_hosting(&paths, &settings)
@@ -3864,6 +3884,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
 
         let directory = fresh_fixture_dir("passive-after-quit");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         let settings = test_settings(&directory, full_access());
         let bridge = bridge_after_quit(&paths, &settings);
@@ -3882,6 +3903,7 @@ mod tests {
         std::fs::remove_dir_all(directory).expect("remove fixture");
 
         let directory = fresh_fixture_dir("passive-through-relay");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let paths = vec![directory.join(STATE_FILE)];
         let settings = test_settings(&directory, full_access());
         let hosting = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge B hosts");
