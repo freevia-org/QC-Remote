@@ -252,7 +252,7 @@ export function App() {
   });
   useQcScreenFollow({
     gateway: activeGateway, follow: followQcScreen, available: native && !demoActive && !corpusFixtureEnabled, ready: hardwareConnected && !deviceSuspended && !deviceBulkBlocking, destination: screenDestination, notice: setNotice,
-    workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow, modes: modesWorkflow }
+    workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow, modes: modesWorkflow, routing: routingWorkflow }
   });
   useEffect(() => {
     if (!sessionReady) return;

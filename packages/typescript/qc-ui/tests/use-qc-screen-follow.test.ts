@@ -13,7 +13,7 @@ const { createElement } = (await import("react")).default;
 const { consumeQcDisplayStates, qcGigViewTransition, useQcFollowSetting, useQcScreenFollow } = await import("../src/use-qc-screen-follow.ts");
 
 const observation = (kind: QcObservedScreenKind): QcScreenObservation => ({ kind, signature: kind, observedAt: 0 });
-type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard" | "MetronomeEditor" | "CpuLoadIndicator" | "DirectoryDialog" | "SceneSelectorPopup";
+type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard" | "MetronomeEditor" | "CpuLoadIndicator" | "DirectoryDialog" | "SceneSelectorPopup" | "PortSelector";
 
 interface Scenario {
   follow?: boolean; ready?: boolean; available?: boolean;
@@ -24,6 +24,7 @@ interface Scenario {
   /** The app has a block editor open. */
   editorOpen?: boolean;
   directoryOpen?: boolean;
+  routePicker?: { row: number; side: string };
 }
 
 function harness(initial: Scenario = {}) {
@@ -31,22 +32,24 @@ function harness(initial: Scenario = {}) {
   /** Runs after each touch the unit answers: the poller seeing the screen the unit passes through. */
   const watchers: Array<(unit: Unit) => void> = [];
   const world = { unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false };
-  const state = { view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, directoryOpen: initial.directoryOpen ?? false, tempoOpen: initial.tempoOpen ?? false };
+  const state = { view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, directoryOpen: initial.directoryOpen ?? false, routePicker: initial.routePicker as { row: number; side: string } | undefined, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
   const gateway = {
-    graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem${(world.unit === "CpuLoadIndicator" || world.unit === "SceneSelectorPopup") ? "\nzenUI::Grid" : ""}${world.unit === "SettingsDialog" ? "\nzenUI::SettingsMenu\nzenUI::UpdaterSettings" : ""}\nzenUI::${world.unit}` }),
+    graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem${(world.unit === "CpuLoadIndicator" || world.unit === "SceneSelectorPopup" || world.unit === "PortSelector") ? "\nzenUI::Grid" : ""}${world.unit === "SettingsDialog" ? "\nzenUI::SettingsMenu\nzenUI::UpdaterSettings" : ""}\nzenUI::${world.unit}` }),
     tapScreen: async (x: number, y: number) => {
       log.push(`tap:${x},${y}`);
       if (world.unitIgnores) return;
       if (x === 764 && y === 22) world.unit = world.unit === "Grid" ? "MainMenuPopup" : world.unit === "MainMenuPopup" ? "Grid" : world.unit;
       else if (x === 600 && y === 406 && world.unit === "MainMenuPopup") world.unit = "SettingsDialog";
+      else if (x === 30 && y === 147 && world.unit === "Grid") world.unit = "PortSelector";
+      else if (x === 30 && y === 147 && world.unit === "PortSelector") world.unit = "Grid";
       else if (x === 320 && y === 50 && world.unit === "Grid") world.unit = "DirectoryDialog";
       else if (x === 668 && y === 23 && world.unit === "Grid") world.unit = "SceneSelectorPopup";
       else if (x === 668 && y === 23 && world.unit === "SceneSelectorPopup") world.unit = "Grid";
       else if (x === 610 && y === 286 && world.unit === "MainMenuPopup") world.unit = "MetronomeEditor";
       else if (x === 578 && y === 346 && world.unit === "MainMenuPopup") world.unit = "CpuLoadIndicator";
       else if (x === 628 && y === 32 && world.unit === "CpuLoadIndicator") world.unit = "Grid";
-      else if (x === 743 && y === 30 && world.unit !== "Grid" && world.unit !== "CpuLoadIndicator" && world.unit !== "SceneSelectorPopup") world.unit = "Grid";
+      else if (x === 743 && y === 30 && world.unit !== "Grid" && world.unit !== "CpuLoadIndicator" && world.unit !== "SceneSelectorPopup" && world.unit !== "PortSelector") world.unit = "Grid";
       for (const watch of watchers) watch(world.unit);
     },
     longTapScreen: async (x: number, y: number) => { log.push(`hold:${x},${y}`); if (!world.unitIgnores && world.unit === "Grid" && x === 700 && y === 70) world.unit = "HybridModeConfigDialog"; },
@@ -60,6 +63,7 @@ function harness(initial: Scenario = {}) {
     tempo: { ...named("tempo", "close", "openTempo"), open: state.tempoOpen },
     tuner: named("tuner", "close", "openTuner"),
     ioEq: named("io", "refresh"),
+    routing: { picker: state.routePicker },
     modes: named("modes", "refresh")
   }) as unknown as QcScreenFollowOptions["workflows"];
   const destination = () => ({
@@ -80,7 +84,7 @@ function harness(initial: Scenario = {}) {
   let renderer!: ReactTestRenderer;
   act(() => { renderer = create(createElement(Probe)); });
   /** The app's screen changes by the user's hand (or the unit's), then the host re-renders. */
-  const rerender = async (next: Scenario) => { current = { ...current, ...next }; Object.assign(state, { view: next.view !== undefined ? next.view : state.view, popup: next.popup !== undefined ? next.popup : state.popup, settingsOpen: next.settingsOpen ?? state.settingsOpen, directoryOpen: next.directoryOpen ?? state.directoryOpen, tempoOpen: next.tempoOpen ?? state.tempoOpen }); await act(async () => { renderer.update(createElement(Probe)); await new Promise((resolve) => setTimeout(resolve, 150)); }); };
+  const rerender = async (next: Scenario) => { current = { ...current, ...next }; Object.assign(state, { view: next.view !== undefined ? next.view : state.view, popup: next.popup !== undefined ? next.popup : state.popup, settingsOpen: next.settingsOpen ?? state.settingsOpen, directoryOpen: next.directoryOpen ?? state.directoryOpen, routePicker: "routePicker" in next ? next.routePicker : state.routePicker, tempoOpen: next.tempoOpen ?? state.tempoOpen }); await act(async () => { renderer.update(createElement(Probe)); await new Promise((resolve) => setTimeout(resolve, 150)); }); };
   return { log, world, state, latch, watchers, rerender, get follower() { return seen.current!; }, renderer };
 }
 
@@ -506,5 +510,34 @@ test("the scene popup opens and closes on the scene indicator and is seen with t
   assert.equal(unitFirst.state.popup, "scene-menu");
   act(() => unitFirst.follower.observe(observation("grid")));
   assert.equal(unitFirst.state.popup, null);
+  unitFirst.renderer.unmount();
+});
+
+test("the first row's input picker opens and closes on its rail label; no row of the list is ever touched, no other picker is routed", async () => {
+  const host = harness({ follow: false, available: true });
+  host.watchers.push((unit) => { if (unit === "PortSelector") act(() => host.follower.observe(observation("route-selector"))); if (unit === "Grid") act(() => host.follower.observe(observation("grid"))); });
+  await host.rerender({ routePicker: { row: 0, side: "input" } });
+  assert.equal(host.world.unit, "PortSelector");
+  await host.rerender({ routePicker: undefined });
+  assert.equal(host.world.unit, "Grid");
+  assert.deepEqual(host.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), ["tap:30,147", "tap:30,147"]);
+  assert.ok(!host.log.some((entry) => entry.startsWith("view:")), "the unit's answers are not echoed into the app");
+  host.renderer.unmount();
+  for (const picker of [{ row: 0, side: "output" }, { row: 1, side: "input" }, { row: 0, side: "split" }]) {
+    const other = harness({ follow: false, available: true });
+    await other.rerender({ routePicker: picker });
+    assert.deepEqual(other.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), [], `${picker.row} ${picker.side}: unmeasured, not routed`);
+    other.renderer.unmount();
+  }
+  const busy = harness({ follow: false, available: true, unit: "ParameterEditor" });
+  await busy.rerender({ routePicker: { row: 0, side: "input" } });
+  assert.deepEqual(busy.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), [], "only ever from the Grid");
+  busy.renderer.unmount();
+  // The unit's own picker shows in the app as its picture, and the plain Grid closes it.
+  const unitFirst = harness({ unit: "PortSelector" });
+  act(() => unitFirst.follower.observe(observation("route-selector")));
+  assert.equal(unitFirst.state.view, "unit-mirror");
+  act(() => unitFirst.follower.observe(observation("grid")));
+  assert.equal(unitFirst.state.view, null);
   unitFirst.renderer.unmount();
 });
