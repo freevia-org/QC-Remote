@@ -277,3 +277,21 @@ test("the app sends no tap while the unit shows an update screen", async () => {
   assert.deepEqual(host.log, ["notice:The Quad Cortex is showing an update screen. Update screens are display only in the app; use the unit."]);
   host.renderer.unmount();
 });
+
+test("a touch the user makes on the picture of the unit's Settings is never forwarded, whichever pane it shows", async () => {
+  for (const classes of ["SettingsDialog", "SettingsDialog" + String.fromCharCode(10) + "zenUI::UpdaterSettings", "UpdaterSettings"]) {
+    for (const kind of ["tap", "long-tap", "swipe"] as const) {
+      const host = mount();
+      host.world.unit = classes as never;
+      host.rerender();
+      await act(async () => { await host.views.forwardGesture(780, 300, 780, 300, kind); });
+      assert.equal(host.log.filter((entry) => /^(tap|long|swipe):/.test(entry)).length, 0, `${classes} ${kind}`);
+      assert.equal(host.log.filter((entry) => entry.startsWith("notice:")).length, 1);
+      host.renderer.unmount();
+    }
+  }
+  const grid = mount();
+  await act(async () => { await grid.views.forwardGesture(10, 10, 10, 10, "tap"); });
+  assert.deepEqual(grid.log, ["tap:10,10"], "other screens still forward the user's touch");
+  grid.renderer.unmount();
+});

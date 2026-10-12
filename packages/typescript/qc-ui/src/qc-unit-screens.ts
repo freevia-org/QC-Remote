@@ -58,6 +58,18 @@ export const QC_UNIT_MIRROR_KINDS: readonly QcObservedScreenKind[] = ["message-d
 /** A screen whose tap could start an update: the app refuses to send any tap while the unit shows one. */
 export const QC_UPDATE_SCREEN = /download update|install update|install now|update available|software update/i;
 
+/**
+ * Why a touch the USER makes on the app's picture of the unit must not be forwarded now, or undefined when it may be.
+ * The unit's Settings dialog opens on its Updates pane (DOWNLOAD UPDATE, SEE WHAT'S NEW) beside rows such as Power
+ * Functions and Factory Reset, none of which the app ever touches: Settings is shown natively in the app, and the
+ * only touches the app itself sends there are the menu row that opens it and the header check button that closes it.
+ */
+export function untouchableUnitScreen(tree: string): string | undefined {
+  if (QC_UPDATE_SCREEN.test(tree) || /zenUI::UpdaterSettings(?![A-Za-z0-9_])/.test(tree)) return "an update screen";
+  if (classifyQcGraphicsTree(tree) === "settings") return "Settings";
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------------------------------- the app side
 
 /** The screen the app is showing, in the unit's terms. */
