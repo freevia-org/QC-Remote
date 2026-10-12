@@ -28,6 +28,8 @@ interface Scenario {
   blockMenuOpen?: boolean; directorySearchOpen?: boolean; sceneCommand?: "copy" | "swap" | null;
   /** The unit shows its block editor as a bottom panel with the Grid above it. */
   panel?: boolean;
+  /** The unit's tree keeps a class that outranks the overlay's in the classifier. */
+  retainedMenu?: boolean;
   /** Where the unit's preset menu is really scrolled, whatever the app believes. */
   menuScroll?: "bottom" | "top";
   /** The unit ignores the menu drag. */
@@ -46,6 +48,7 @@ function harness(initial: Scenario = {}) {
       const u = world.unit;
       const lines = ["zenUI::RootGraphicsItem"];
       if (["CpuLoadIndicator", "SceneSelectorPopup", "PortSelector", "CopySceneDialog", "OptionsPopup"].includes(u) || (u === "ParameterEditor" && world.panel)) lines.push("zenUI::Grid");
+      if (initial.retainedMenu && u === "CpuLoadIndicator") lines.push("zenUI::MainMenuPopup");
       if (u === "SettingsDialog") lines.push("zenUI::SettingsDialog", "zenUI::SettingsMenu", "zenUI::UpdaterSettings");
       else if (u === "OptionsPopup") lines.push("zenUI::ParameterEditor", "zenUI::_OptionsPopup");
       else if (u === "SearchDialog") lines.push("zenUI::SearchDialog", "zenUI::Keyboard", "zenUI::KeyboardSearch");
@@ -753,4 +756,24 @@ test("one drag only moves the menu part way and a tap during the scroll is ignor
   await stuck.rerender({ tempoOpen: true });
   assert.equal(touches(stuck).filter((entry) => entry === "tap:610,286").length, 1, "one tap on the row, never a second");
   stuck.renderer.unmount();
+});
+
+test("the CPU Monitor closes on the unit by its own class, even when another class in the tree outranks it in the classifier", async () => {
+  for (const retainedMenu of [false, true]) {
+    const host = harness({ follow: false, available: true, retainedMenu });
+    await host.rerender({ popup: "grid-menu" });
+    await host.rerender({ popup: null, view: "cpu-monitor" });
+    assert.equal(host.world.unit, "CpuLoadIndicator");
+    host.log.length = 0;
+    await host.rerender({ view: null });
+    assert.deepEqual(touches(host), ["tap:628,32"], `retained menu class: ${retainedMenu}`);
+    assert.equal(host.world.unit, "Grid");
+    host.renderer.unmount();
+  }
+  // Under a dialog it is not touched.
+  const { treeShows } = await import("../src/qc-unit-screens.ts");
+  const nl = String.fromCharCode(10);
+  assert.equal(treeShows(["zenUI::Grid", "zenUI::CpuLoadIndicator", "zenUI::MessageDialog"].join(nl), "cpu-monitor"), false);
+  assert.equal(treeShows(["zenUI::Grid", "zenUI::CpuLoadIndicator"].join(nl), "cpu-monitor"), true);
+  assert.equal(treeShows("zenUI::Grid", "cpu-monitor"), false);
 });

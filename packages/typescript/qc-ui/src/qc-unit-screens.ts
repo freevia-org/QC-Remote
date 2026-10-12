@@ -172,6 +172,25 @@ export async function untilUnitShows(gateway: Pick<GatewayTransport, "graphicsTr
   return false;
 }
 
+/**
+ * Whether the unit is showing `target`. The CPU Monitor is an overlay beside the Grid, so it is read by its own
+ * class rather than by what the classifier ranks first, which a second class in the tree could change; a dialog on
+ * top of it (a confirmation, a keyboard, Settings) still makes it not the screen to touch.
+ */
+export function treeShows(tree: string, target: QcObservedScreenKind): boolean {
+  const kind = classifyQcGraphicsTree(tree);
+  if (target !== "cpu-monitor") return kind === target;
+  return /zenUI::CpuLoadIndicator(?![A-Za-z0-9_])/.test(tree) && !["message-dialog", "keyboard", "search", "settings", "busy"].includes(kind);
+}
+
+async function untilTree(gateway: Pick<GatewayTransport, "graphicsTree">, poll: QcScreenPoll, wanted: (tree: string) => boolean, timeoutMs = poll.timeoutMs): Promise<boolean> {
+  for (let waited = 0; waited <= timeoutMs; waited += poll.intervalMs) {
+    if (wanted((await gateway.graphicsTree()).tree)) return true;
+    await sleep(poll.intervalMs);
+  }
+  return false;
+}
+
 export type QcOpenOnUnit = "shown" | "busy" | "not-shown" | "no-route" | "mismatch";
 export type QcOpenTarget = "io" | "preset-menu" | "settings" | "modes" | "tempo" | "cpu-monitor" | "directory" | "scene-selector" | "route-selector" | "midi-out" | "copy-scene" | "search" | "block-menu";
 export type QcCloseTarget = QcOpenTarget;
@@ -206,8 +225,9 @@ const CLOSES_ONCE: readonly QcCloseTarget[] = ["preset-menu", "scene-selector", 
  * particular screen has no measured way (a full-screen editor's menu).
  */
 export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, target: QcOpenTarget, beforeGesture?: () => void, detail: QcRouteDetail = {}): Promise<QcOpenOnUnit> {
-  const current = await unitScreen(gateway);
-  if (current === target) return "shown";
+  const first = (await gateway.graphicsTree()).tree;
+  const current = classifyQcGraphicsTree(first);
+  if (current === target || treeShows(first, target)) return "shown";
   // Called once, just before the first touch is sent and never when none is: the caller arms its loop guard here.
   let announced = false;
   const announce = () => { if (!announced) { announced = true; beforeGesture?.(); } };
@@ -268,7 +288,7 @@ export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, targ
   const row = target === "midi-out" ? G.midiOutRow : target === "copy-scene" ? (detail.swap ? G.swapSceneRow : G.copySceneRow) : BOTTOM_ROWS[target as keyof typeof BOTTOM_ROWS];
   await tap(row);
   // One tap only: if the dialog does not appear it is not tapped for again.
-  if (await untilUnitShows(gateway, { intervalMs: poll.intervalMs, timeoutMs: poll.rowTimeoutMs ?? 3_000 }, (kind) => kind === target)) return "shown";
+  if (await untilTree(gateway, poll, (tree) => treeShows(tree, target), poll.rowTimeoutMs ?? 3_000)) return "shown";
   // The row was not where it was expected. Read what the unit shows now and send nothing more into it.
   const seen = await unitScreen(gateway);
   if (seen === "preset-menu") { await gateway.tapScreen(menuButton.x, menuButton.y); return "mismatch"; }
@@ -297,10 +317,10 @@ export async function closeOnUnit(gateway: RouteGateway, poll: QcScreenPoll, tar
     : target === "search" ? G.searchClose
     : done;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (await unitScreen(gateway) !== target) return true;
+    if (!treeShows((await gateway.graphicsTree()).tree, target)) return true;
     if (attempt === 0) beforeGesture?.();
     await gateway.tapScreen(point.x, point.y);
-    if (await untilUnitShows(gateway, poll, (kind) => kind !== target)) return true;
+    if (await untilTree(gateway, poll, (tree) => !treeShows(tree, target))) return true;
     if (CLOSES_ONCE.includes(target)) return false;
   }
   return false;
