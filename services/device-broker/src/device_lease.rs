@@ -955,6 +955,30 @@ pub(crate) mod testing {
         Ok(())
     }
 
+    /// A directory one test created for itself alone, removed whole when the
+    /// guard drops, so a failing assertion or a panic no longer leaves it in
+    /// the temp directory. Declare it before anything that holds a file,
+    /// child or thread in the directory, so those drop first. Removal is best
+    /// effort: a handle still closing (Windows) gets a few short retries,
+    /// then the directory is left and named on stderr; it never panics.
+    pub(crate) struct OwnedTestDirectory(pub(crate) PathBuf);
+
+    impl Drop for OwnedTestDirectory {
+        fn drop(&mut self) {
+            const ATTEMPTS: u32 = 5;
+            for attempt in 1..=ATTEMPTS {
+                match std::fs::remove_dir_all(&self.0) {
+                    Ok(()) => return,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                    Err(error) if attempt == ATTEMPTS => {
+                        eprintln!("left test directory {}: {error}", self.0.display());
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(50)),
+                }
+            }
+        }
+    }
+
     /// A live process that is not this one, killed on drop.
     pub(crate) struct Sleeper(std::process::Child);
     impl Sleeper {
