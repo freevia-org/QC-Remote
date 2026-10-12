@@ -1301,7 +1301,9 @@ fn readiness_while_another_thread_holds_the_lock(
     })
 }
 
-fn temp_app_data_dir(name: &str) -> PathBuf {
+/// A scratch AppData root of this test's own, and the guard that removes it
+/// when the test ends or unwinds.
+fn temp_app_data_dir(name: &str) -> (RemoveDirOnDrop, PathBuf) {
     let path = std::env::temp_dir().join(format!(
         "qc-appdata-test-{name}-{}-{}",
         std::process::id(),
@@ -1311,12 +1313,12 @@ fn temp_app_data_dir(name: &str) -> PathBuf {
             .as_nanos()
     ));
     fs::create_dir_all(&path).expect("temp AppData root");
-    path
+    (RemoveDirOnDrop::new(path.clone()), path)
 }
 
 #[test]
 fn a_single_broker_installation_is_not_reported_as_a_duplicate() {
-    let root = temp_app_data_dir("single");
+    let (_cleanup, root) = temp_app_data_dir("single");
     fs::create_dir_all(root.join("QC Remote")).unwrap();
     fs::write(root.join("QC Remote").join("qc-device-broker.exe"), b"exe").unwrap();
 
@@ -1341,8 +1343,6 @@ fn a_single_broker_installation_is_not_reported_as_a_duplicate() {
         &detect_duplicate_broker_installations(&root),
     );
     assert!(health.get("duplicateBrokerInstallations").is_none());
-
-    fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -1353,7 +1353,7 @@ fn a_leftover_qc_control_broker_alongside_the_current_one_is_detected_and_report
     // `qc-device-broker.exe` under the legacy directory has two
     // independently launchable brokers - the same hazard as a stale
     // broker process - and nothing surfaced that fact.
-    let root = temp_app_data_dir("duplicate");
+    let (_cleanup, root) = temp_app_data_dir("duplicate");
     fs::create_dir_all(root.join("QC Remote")).unwrap();
     fs::create_dir_all(root.join("QC Control")).unwrap();
     fs::write(
@@ -1398,8 +1398,6 @@ fn a_leftover_qc_control_broker_alongside_the_current_one_is_detected_and_report
         .join("QC Control")
         .join("qc-device-broker.exe")
         .is_file());
-
-    fs::remove_dir_all(&root).ok();
 }
 
 /// Hold an OS file lock for the entire real-broker fixture lifetime.
@@ -2567,6 +2565,10 @@ fn an_idle_reopen_failure_reads_as_not_connected_wherever_text_is_matched() {
 fn a_missing_sidecar_fails_closed_and_a_same_name_fallback_is_never_chosen_unverified() {
     let root =
         std::env::temp_dir().join(format!("qc-locate-broker-{:032x}", rand::random::<u128>()));
+    // On a failing run the checked removal at the end never runs, so this
+    // removes the directory; on a passing run that removal goes first and
+    // this finds the directory already gone.
+    let _cleanup = RemoveDirOnDrop::new(root.clone());
     let installed = root.join("install");
     let fallback_dir = root.join("checkout");
     fs::create_dir_all(&installed).unwrap();
@@ -2624,6 +2626,10 @@ fn the_brokers_own_process_never_elects_deletes_or_spawns_a_broker() {
     // owner and a second process.
     let directory =
         std::env::temp_dir().join(format!("qc-attach-only-{:032x}", rand::random::<u128>()));
+    // On a failing run the checked removal at the end never runs, so this
+    // removes the directory; on a passing run that removal goes first and
+    // this finds the directory already gone.
+    let _cleanup = RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).unwrap();
     let descriptor_path = directory.join("device-broker.json");
     let started = Instant::now();

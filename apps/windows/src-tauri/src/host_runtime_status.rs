@@ -93,6 +93,10 @@ mod tests {
     fn cleanup_preserves_another_owner_and_removes_its_own_record() {
         let directory =
             std::env::temp_dir().join(format!("qc-runtime-status-{:032x}", rand::random::<u128>()));
+        // On a failing run the checked removal at the end never runs, so this
+        // removes the directory; on a passing run that removal goes first and
+        // this finds the directory already gone.
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         std::fs::create_dir_all(&directory).unwrap();
         let record = Record {
             process_id: 7,
