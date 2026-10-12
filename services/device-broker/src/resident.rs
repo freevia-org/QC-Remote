@@ -156,6 +156,9 @@ const STOP_BOUND: Duration = Duration::from_secs(3);
 /// delay but never prevent process exit or an installer's stop.
 pub struct Supervisor {
     host: Mutex<Option<Box<dyn RunningHost>>>,
+    marker: Mutex<SessionMarker>,
+    #[cfg(target_os = "linux")]
+    directory: PathBuf,
     paused: AtomicBool,
     exiting: AtomicBool,
 }
@@ -166,26 +169,38 @@ impl Supervisor {
         handle: BrokerHandle,
         services: Arc<dyn ResidentHost>,
     ) -> Result<Arc<Self>, String> {
+        #[cfg(target_os = "linux")]
+        let directory = handle.directory();
         let supervisor = Arc::new(Self {
             host: Mutex::new(None),
+            marker: Mutex::new(SessionMarker::default()),
+            #[cfg(target_os = "linux")]
+            directory,
             paused: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
         });
         let running = Arc::clone(&supervisor);
+        let fallback = handle.clone();
         std::thread::Builder::new()
             .name("qc-resident-host".into())
-            .spawn(move || running.run(handle, services))
+            .spawn(move || {
+                let outcome = catch_unwind(AssertUnwindSafe(|| running.run(handle, services)));
+                if outcome.is_err() {
+                    fallback.set_tray_hold(None);
+                    fallback.set_resident(false);
+                }
+                running.set_marker(false);
+            })
             .map_err(|error| error.to_string())?;
         Ok(supervisor)
     }
 
     fn run(&self, handle: BrokerHandle, services: Arc<dyn ResidentHost>) {
         let directory = handle.directory();
-        let mut marker = SessionMarker::default();
         let mut next_attempt = Instant::now();
         while !self.exiting.load(Ordering::Acquire) {
             let resident = handle.is_resident() && !handle.shutting_down();
-            marker.set(resident);
+            self.set_marker(resident);
             let wanted = resident && !self.paused.load(Ordering::Acquire);
             {
                 // A panic while the slot was held leaves it poisoned; the
@@ -221,7 +236,23 @@ impl Supervisor {
             }
             std::thread::sleep(TICK);
         }
-        marker.set(false);
+        self.set_marker(false);
+    }
+
+    fn set_marker(&self, present: bool) {
+        // Once exit starts, an iteration which was already in flight must not
+        // recreate the marker after the exit path removes it.
+        let present = present && !self.exiting.load(Ordering::Acquire);
+        let mut marker = self
+            .marker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(windows)]
+        marker.set(present);
+        #[cfg(target_os = "linux")]
+        marker.set(present, &self.directory);
+        #[cfg(not(any(windows, target_os = "linux")))]
+        marker.set(present);
     }
 
     /// For process exit: stop the host, bounded by `within` in total, and
@@ -229,6 +260,7 @@ impl Supervisor {
     /// `broker.shuttingDown`, so the host's own connection already knows.
     pub fn stop_for_exit(&self, within: Duration) {
         self.exiting.store(true, Ordering::Release);
+        self.set_marker(false);
         self.stop_within(within);
     }
 
@@ -287,17 +319,20 @@ fn stop_quietly(running: &mut dyn RunningHost, within: Duration) {
     }
 }
 
-/// The named object `qc-remote.exe` reads to learn that the session's resident
-/// host is running (its Settings row and its "start it now" decision). The
-/// name is the one the separate `qc-remote-tray.exe` held before 0.1.178, so
-/// an old tray from another installation cannot start a second background
-/// host beside this one, and an old app still reads it as running.
+/// The object `qc-remote` reads to learn that this session's resident broker
+/// is active. Windows keeps the named object used by existing installations;
+/// Linux publishes an owner-only, process-identity-bound marker beside its
+/// persistent broker state.
 pub const SESSION_MARKER: &str = "Local\\QCRemote.DeviceBrokerTray.v1";
 
 #[derive(Default)]
 struct SessionMarker {
     #[cfg(windows)]
     handle: Option<isize>,
+    #[cfg(target_os = "linux")]
+    marker: Option<qc_native_platform::resident_marker::ResidentMarker>,
+    #[cfg(target_os = "linux")]
+    marker_failure_reported: bool,
 }
 
 impl SessionMarker {
@@ -324,12 +359,39 @@ impl SessionMarker {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    fn set(&mut self, present: bool, directory: &Path) {
+        match (present, self.marker.is_some()) {
+            (true, false) => {
+                match qc_native_platform::resident_marker::ResidentMarker::acquire(directory) {
+                    Ok(marker) => self.marker = Some(marker),
+                    Err(error) if !self.marker_failure_reported => {
+                        eprintln!("The resident session marker could not be claimed: {error}");
+                        self.marker_failure_reported = true;
+                    }
+                    Err(_) => {}
+                }
+            }
+            (false, true) => {
+                drop(self.marker.take());
+                self.marker_failure_reported = false;
+            }
+            (false, false) => self.marker_failure_reported = false,
+            _ => {}
+        }
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     fn set(&mut self, _present: bool) {}
 }
 
 impl Drop for SessionMarker {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        self.set(false);
+        #[cfg(target_os = "linux")]
+        drop(self.marker.take());
+        #[cfg(not(any(windows, target_os = "linux")))]
         self.set(false);
     }
 }
@@ -357,6 +419,7 @@ impl Drop for ElectionGuard {
 
 /// Mirrors `DEVICE_BROKER_ELECTION_LOCK_STALE_AFTER` in
 /// apps/windows/src-tauri/src/lib.rs.
+#[cfg(any(not(target_os = "linux"), test))]
 const ELECTION_LOCK_STALE_AFTER: Duration = Duration::from_secs(15);
 
 pub fn election_path(descriptor: &Path) -> PathBuf {
@@ -367,6 +430,18 @@ pub fn election_path(descriptor: &Path) -> PathBuf {
 /// spawns a broker, so a logon start can never put a second broker on the
 /// device or delete a live broker's descriptor. Never touches USB.
 pub fn elect(descriptor: &Path, budget: Duration) -> Result<Election, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let directory = descriptor
+            .parent()
+            .ok_or("Broker descriptor has no directory")?;
+        crate::platform::paths::prepare_directory(directory)?;
+        match qc_owner_only_file::read_owner_only(descriptor) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Refusing an unsafe broker descriptor: {error}")),
+        }
+    }
     elect_with(descriptor, budget, &os_liveness)
 }
 
@@ -426,20 +501,28 @@ fn elect_with(
                 // only under the sidecar's lock, so a live holder refuses and
                 // keeps both. A sidecar whose lock is already gone (what that
                 // older cleanup left behind) is aged by the sidecar itself.
-                let age = |path: &Path| {
-                    std::fs::metadata(path)
-                        .and_then(|metadata| metadata.modified())
-                        .ok()
-                        .and_then(|modified| modified.elapsed().ok())
-                };
-                let abandoned = match age(&election) {
-                    Some(age) => age > ELECTION_LOCK_STALE_AFTER,
-                    None => {
-                        !election.exists()
-                            && age(&qc_owner_only_file::claim_path(&election))
-                                .is_some_and(|age| age > ELECTION_LOCK_STALE_AFTER)
+                #[cfg(target_os = "linux")]
+                let abandoned = true;
+                #[cfg(not(target_os = "linux"))]
+                let abandoned = {
+                    let age = |path: &Path| {
+                        std::fs::metadata(path)
+                            .and_then(|metadata| metadata.modified())
+                            .ok()
+                            .and_then(|modified| modified.elapsed().ok())
+                    };
+                    match age(&election) {
+                        Some(age) => age > ELECTION_LOCK_STALE_AFTER,
+                        None => {
+                            !election.exists()
+                                && age(&qc_owner_only_file::claim_path(&election))
+                                    .is_some_and(|age| age > ELECTION_LOCK_STALE_AFTER)
+                        }
                     }
                 };
+                // Linux relies on the OS lock and inode identity alone. A
+                // process killed before publication must not keep the slot
+                // for 15 seconds while the next launch's budget expires.
                 if abandoned {
                     match qc_owner_only_file::release_if_unclaimed(&election) {
                         Ok(()) => continue,
@@ -466,9 +549,27 @@ fn elect_with(
 }
 
 fn os_liveness(pid: u32, created_at: Option<u64>) -> bool {
-    qc_windows_process::os_process_is_alive(pid)
-        && created_at
-            .is_none_or(|created| qc_windows_process::os_process_created_at(pid) == Some(created))
+    #[cfg(target_os = "linux")]
+    {
+        if !crate::platform::process::os_process_is_alive(pid) {
+            return false;
+        }
+        // An unreadable identity is unknown, never authority to reap an owner.
+        match (
+            created_at,
+            crate::platform::process::os_process_created_at(pid),
+        ) {
+            (Some(recorded), Some(current)) => recorded == current,
+            _ => true,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        crate::platform::process::os_process_is_alive(pid)
+            && created_at.is_none_or(|created| {
+                crate::platform::process::os_process_created_at(pid) == Some(created)
+            })
+    }
 }
 
 #[derive(Deserialize)]
@@ -734,6 +835,24 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_recovers_a_fresh_abandoned_election_without_waiting_for_age() {
+        let directory = scratch("linux-fresh-crash");
+        let descriptor = directory.join(DESCRIPTOR_FILE);
+        let election = election_path(&descriptor);
+        drop(qc_owner_only_file::ClaimedFile::try_claim(&election).unwrap());
+        let Election::Serve(guard) =
+            elect_with(&descriptor, Duration::from_millis(500), &|_, _| false).unwrap()
+        else {
+            panic!("a freshly abandoned OS lock must not consume the restart budget");
+        };
+        drop(guard);
+        assert!(!election.exists());
+        assert!(!qc_owner_only_file::claim_path(&election).exists());
+        std::fs::remove_dir(directory).unwrap();
+    }
+
     /// A held election lock is never cleared, however old its file.
     #[test]
     fn an_old_but_held_election_lock_is_never_overtaken() {
@@ -824,6 +943,9 @@ mod tests {
     fn supervisor_with(host: FakeHost) -> Supervisor {
         Supervisor {
             host: Mutex::new(Some(Box::new(host))),
+            marker: Mutex::new(SessionMarker::default()),
+            #[cfg(target_os = "linux")]
+            directory: PathBuf::new(),
             paused: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
         }

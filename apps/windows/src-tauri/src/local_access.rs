@@ -1035,14 +1035,43 @@ async fn refresh_until_shutdown(
 /// hosts can launch a client without `LOCALAPPDATA` while still running as the
 /// ordinary interactive user, so a copy is placed where they can reach it.
 fn state_file_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
-    let app_local_data_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| format!("Could not resolve the local access directory: {error}"))?;
-    Ok(descriptor_paths(
-        &app_local_data_dir,
-        std::env::var_os("APPDATA").map(PathBuf::from),
-    ))
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
+        let directory = crate::broker_paths::app_local_data_dir();
+        qc_native_platform::paths::prepare_directory(&directory)?;
+        Ok(vec![directory.join(STATE_FILE_NAME)])
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let app_local_data_dir = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| format!("Could not resolve the local access directory: {error}"))?;
+        Ok(descriptor_paths(
+            &app_local_data_dir,
+            std::env::var_os("APPDATA").map(PathBuf::from),
+        ))
+    }
+}
+
+/// The durable directory shared by the GUI and Linux resident/MCP processes.
+/// Linux broker descriptors and preferences must not follow Tauri's separate
+/// XDG data directory, or each host can elect and configure a different broker.
+fn app_local_data_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
+        let directory = crate::broker_paths::app_local_data_dir();
+        qc_native_platform::paths::prepare_directory(&directory)?;
+        Ok(directory)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        app.path()
+            .app_local_data_dir()
+            .map_err(|error| format!("Could not resolve the local access directory: {error}"))
+    }
 }
 
 /// The publication set, resolved from the two directories that decide it, so a
@@ -1564,11 +1593,7 @@ fn store_enabled(path: &Path, enabled: bool) -> Result<(), String> {
 }
 
 fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| format!("Could not resolve the local access directory: {error}"))?
-        .join(ENABLED_FILE_NAME))
+    Ok(app_local_data_directory(app)?.join(ENABLED_FILE_NAME))
 }
 
 /// Owns only the loopback listener and discovery document. The existing
@@ -1591,7 +1616,7 @@ pub struct LocalAccess {
 
 impl LocalAccess {
     pub(crate) fn reconcile_ownership(&self) {
-        let Ok(directory) = self.app.path().app_local_data_dir() else {
+        let Ok(directory) = app_local_data_directory(&self.app) else {
             return;
         };
         let enabled = local_mcp_enabled_in(&directory);
@@ -1641,10 +1666,7 @@ impl LocalAccess {
         if crate::external_host::stopping() {
             return Ok(());
         }
-        if self
-            .app
-            .path()
-            .app_local_data_dir()
+        if app_local_data_directory(&self.app)
             .is_ok_and(|directory| crate::external_host::delegated(&directory))
         {
             return Ok(());
@@ -2223,11 +2245,7 @@ fn local_client_attached_before(client: &str) -> bool {
 }
 
 fn attach_history_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| format!("Could not resolve the local access directory: {error}"))?
-        .join(CLIENT_HISTORY_FILE_NAME))
+    Ok(app_local_data_directory(app)?.join(CLIENT_HISTORY_FILE_NAME))
 }
 
 /// Antigravity's own bridge is an ordinary local client that names itself like

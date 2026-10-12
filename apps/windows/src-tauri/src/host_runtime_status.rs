@@ -13,7 +13,7 @@ struct Record {
 }
 pub(crate) fn publish(directory: &Path, status: Value) -> Result<(), String> {
     let pid = std::process::id();
-    let created = qc_windows_process::os_process_created_at(pid)
+    let created = qc_native_platform::process::os_process_created_at(pid)
         .ok_or("Host process identity is unavailable")?;
     let record = Record {
         process_id: pid,
@@ -51,8 +51,8 @@ pub(crate) fn read(directory: &Path) -> Option<Value> {
     valid(
         &record,
         crate::broker_paths::unix_time_ms(),
-        qc_windows_process::os_process_is_alive,
-        qc_windows_process::os_process_created_at,
+        qc_native_platform::process::os_process_is_alive,
+        qc_native_platform::process::os_process_created_at,
     )
     .then_some(record.status)
 }
@@ -67,7 +67,7 @@ fn remove_owned(directory: &Path, pid: u32, created: u64) {
     }
 }
 pub(crate) fn remove(directory: &Path) {
-    if let Some(created) = qc_windows_process::os_process_created_at(std::process::id()) {
+    if let Some(created) = qc_native_platform::process::os_process_created_at(std::process::id()) {
         remove_owned(directory, std::process::id(), created);
     }
 }

@@ -1,0 +1,188 @@
+name: Linux device broker
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      build_linux_draft:
+        description: Build a draft Linux preview release from this exact commit
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-broker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-linux:
+    name: Headless broker on native Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: linux-broker
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Build the standalone Linux broker
+        run: cargo build --locked -p qc-device-broker --bin qc-device-broker --features linux-tray
+      # These real subprocess tests start disconnected; authentication/status,
+      # election, filesystem modes, crash recovery and shutdown need no QC.
+      # --probe, --verify-live and --auto-connect are deliberately absent.
+      - name: Test shared engines and Linux native boundaries
+        run: cargo test --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --features qc-device-broker/linux-tray
+      - name: Lint Linux broker and adapters
+        run: cargo clippy --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --all-targets --features qc-device-broker/linux-tray -- -D warnings
+      - name: Check non-hardware executable entry point
+        run: ./target/debug/qc-device-broker --self-check
+      - name: Test Debian package verification and cleanup
+        run: python3 -m unittest scripts.test_package_linux_deb
+      - name: Test Cargo test-executable selection
+        run: python3 -m unittest scripts.test_select_cargo_test_executable
+
+  linux-desktop-host:
+    name: Linux Tauri host and resident tray
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Tauri, tray and Secret Service development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential curl file libayatana-appindicator3-dev libdbus-1-dev \
+            libgtk-3-dev libsecret-1-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev \
+            libxdo-dev pkg-config
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install frontend dependencies and build the Linux UI
+        run: |
+          npm ci
+          npm run build --workspace @qc-remote/windows
+      - name: Prepare Cargo-only Linux Tauri configuration
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = json.loads(Path("apps/windows/src-tauri/tauri.linux.conf.json").read_text())
+          config.setdefault("bundle", {})["externalBin"] = []
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("TAURI_CONFIG=" + json.dumps(config, separators=(",", ":")) + "\n")
+          PY
+      # The app's checked-in rust-toolchain.toml intentionally pins Windows
+      # MSVC. Explicit +stable selects this Linux runner's host toolchain.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/windows/src-tauri -> target
+          key: linux-tauri-host
+      # Cargo validates Rust host code only; packaging needs a verified,
+      # target-suffixed external broker. Avoid a placeholder that could be
+      # mistaken for a shippable sidecar.
+      - name: Format the Linux GUI workspace
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable fmt --all -- --check
+      - name: Check the GUI and Linux tray sidecar
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable check --locked --all-targets --features tray-sidecar,custom-protocol
+      - name: Link the native Linux desktop executable
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable build --locked --features tray-sidecar,custom-protocol --bin qc-remote
+      - name: Link the resident broker and MCP host
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable build --locked --features tray-sidecar,custom-protocol --bin qc-device-broker
+      - name: Capture the exact GUI library test executable
+        working-directory: apps/windows/src-tauri
+        run: |
+          set -o pipefail
+          cargo +stable test --locked --features tray-sidecar,custom-protocol \
+            --lib --no-run --message-format=json \
+            | python3 ../../../scripts/select-cargo-test-executable.py
+      - name: Test the GUI host with its in-process broker
+        working-directory: apps/windows/src-tauri
+        env:
+          QC_GATEWAY_EXECUTABLE: ${{ github.workspace }}/apps/windows/src-tauri/target/debug/qc-device-broker
+        run: cargo +stable test --locked --features tray-sidecar,custom-protocol
+      - name: Lint Linux GUI, tray and sidecar targets
+        working-directory: apps/windows/src-tauri
+        run: cargo +stable clippy --locked --all-targets --features tray-sidecar,custom-protocol -- -D warnings
+
+  linux-preview-release:
+    name: Build Ubuntu preview release draft
+    if: github.event_name == 'workflow_dispatch' && inputs.build_linux_draft
+    needs: [native-linux, linux-desktop-host]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy, rustfmt
+      - name: Install Ubuntu 24.04 Tauri and HID build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential curl file libayatana-appindicator3-dev libdbus-1-dev \
+            libgtk-3-dev libsecret-1-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev \
+            libxdo-dev pkg-config python3
+      - name: Verify the source version agrees with this preview
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          config = json.loads(Path("apps/windows/src-tauri/tauri.conf.json").read_text())
+          assert config["version"] == "0.1.184", config["version"]
+          PY
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Test Debian packager safety checks
+        run: python3 -m unittest scripts.test_package_linux_deb
+      - name: Build and verify Debian package from this source commit
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: python3 scripts/package-linux-deb.py --timeout-seconds 3600
+      - name: Name package and write checksum manifest
+        run: |
+          mapfile -t packages < <(find apps/windows/src-tauri/target -type f -path '*/bundle/deb/*.deb' -print)
+          test "${#packages[@]}" -eq 1
+          install -m 0644 "${packages[0]}" qc-remote_0.1.184_amd64.deb
+          sha256sum qc-remote_0.1.184_amd64.deb > SHA256SUMS
+      - name: Create GitHub draft prerelease and upload verified package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_tag="linux-preview-${GITHUB_SHA:0:12}"
+          gh release create "$release_tag" \
+            qc-remote_0.1.184_amd64.deb SHA256SUMS \
+            --target "$GITHUB_SHA" --draft --prerelease \
+            --title "QC Remote 0.1.184 — Linux preview" \
+            --notes "Ubuntu 24.04 x86_64 preview package built from source commit $GITHUB_SHA. See the repository user guide for installation and udev setup. This draft does not replace the stable Windows/Android release." \
+            --repo "$GITHUB_REPOSITORY"
+          release_id=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" -f make_latest=false

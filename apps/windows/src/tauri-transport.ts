@@ -678,6 +678,9 @@ export interface LocalRouteRefresh {
 
 export interface ChatGptLocalIntegrationStatus {
   chatgptInstalled: boolean;
+  /** Native host shown by this row on the current OS (Linux Codex CLI, otherwise ChatGPT). */
+  clientName?: string;
+  codexCliInstalled?: boolean;
   appVersion?: string;
   integrationInstalled: boolean;
   installedVersion?: string;

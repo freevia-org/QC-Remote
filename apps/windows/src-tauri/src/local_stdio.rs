@@ -25,6 +25,7 @@ const CLIENT_ID_OVERRIDE: &str = "QC_REMOTE_LOCAL_MCP_CLIENT";
 /// when it writes a route and when it decides whether a route already on disk
 /// is one this app would write, so the writer and the reader cannot drift.
 pub(crate) const CLIENT_ID_ARGUMENT: &str = "--local-mcp-client";
+#[cfg(any(not(target_os = "linux"), test))]
 const APP_DIRECTORY: &str = "org.freevia.qcremote";
 const STATE_FILE: &str = "local-mcp.json";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -202,27 +203,37 @@ pub(crate) fn state_paths() -> Result<Vec<PathBuf>, String> {
     if let Some(path) = std::env::var_os(STATE_OVERRIDE) {
         return Ok(vec![PathBuf::from(path)]);
     }
-    let profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
-    let local = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .or_else(|| {
-            profile
-                .as_ref()
-                .map(|path| path.join("AppData").join("Local"))
-        });
-    let roaming = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| profile.map(|path| path.join("AppData").join("Roaming")));
-    let paths = state_paths_from(local, roaming);
-    if paths.is_empty() {
-        Err("Windows user data directories are unavailable.".into())
-    } else {
-        Ok(paths)
+    #[cfg(target_os = "linux")]
+    {
+        let directory = crate::broker_paths::app_local_data_dir();
+        qc_native_platform::paths::prepare_directory(&directory)?;
+        Ok(vec![directory.join(STATE_FILE)])
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
+        let local = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                profile
+                    .as_ref()
+                    .map(|path| path.join("AppData").join("Local"))
+            });
+        let roaming = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .or_else(|| profile.map(|path| path.join("AppData").join("Roaming")));
+        let paths = state_paths_from(local, roaming);
+        if paths.is_empty() {
+            Err("Windows user data directories are unavailable.".into())
+        } else {
+            Ok(paths)
+        }
     }
 }
 
 /// The candidate list, separated from the environment that resolves it so the
 /// set itself can be asserted.
+#[cfg(not(target_os = "linux"))]
 fn state_paths_from(local: Option<PathBuf>, roaming: Option<PathBuf>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if let Some(local) = local {
@@ -1313,9 +1324,8 @@ impl HeadlessHostSettings {
 
 /// What Tauri's `app_local_data_dir` resolves to for this app: the local
 /// application data folder joined with the bundle identifier. The local MCP
-/// descriptor's own first path is built the same way (see
-/// [`state_paths_from`]), and a test pins `APP_DIRECTORY` to the identifier in
-/// `tauri.conf.json`.
+/// descriptor's first Windows path uses the same identifier, and a test pins
+/// `APP_DIRECTORY` to the identifier in `tauri.conf.json`.
 ///
 /// Falls back to the OS temp directory when neither `LOCALAPPDATA` nor
 /// `USERPROFILE` resolves, the same fallback the windowed app's own Tauri
@@ -1326,16 +1336,26 @@ impl HeadlessHostSettings {
 /// relay-only forever - the two processes on the same machine never finding
 /// each other's broker.
 pub(crate) fn app_local_data_dir() -> Option<PathBuf> {
-    resolve_app_local_data_dir(
-        std::env::var_os("LOCALAPPDATA"),
-        std::env::var_os("USERPROFILE"),
-    )
+    #[cfg(target_os = "linux")]
+    {
+        let directory = crate::broker_paths::app_local_data_dir();
+        qc_native_platform::paths::prepare_directory(&directory).ok()?;
+        Some(directory)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        resolve_app_local_data_dir(
+            std::env::var_os("LOCALAPPDATA"),
+            std::env::var_os("USERPROFILE"),
+        )
+    }
 }
 
 /// `app_local_data_dir`'s resolution, taking the two environment lookups as
 /// parameters so the fallback chain - including the all-else-fails branch,
 /// which real env vars can't safely simulate in a parallel test run - is
 /// directly testable rather than only reasoned about in a comment.
+#[cfg(any(not(target_os = "linux"), test))]
 fn resolve_app_local_data_dir(
     local_appdata: Option<std::ffi::OsString>,
     user_profile: Option<std::ffi::OsString>,
@@ -3265,6 +3285,7 @@ mod tests {
     /// C1: the headless host must look for the shared broker where a window
     /// does - Tauri's `app_local_data_dir`, the local data folder joined with
     /// the bundle identifier - or the two would elect separate brokers.
+    #[cfg(windows)]
     #[test]
     fn a_headless_host_uses_the_windows_app_local_data_directory() {
         let config: Value =
@@ -3281,6 +3302,18 @@ mod tests {
             crate::device_broker_descriptor::device_broker_descriptor_path(
                 &PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap()).join(APP_DIRECTORY)
             )
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_headless_host_uses_the_shared_linux_state_directory() {
+        let settings = HeadlessHostSettings::for_this_user().expect("settings");
+        let expected = crate::broker_paths::app_local_data_dir();
+        assert_eq!(settings.app_local_data_dir, expected);
+        assert_eq!(
+            settings.device_broker_descriptor_path(),
+            crate::device_broker_descriptor::device_broker_descriptor_path(&expected)
         );
     }
 
@@ -4485,8 +4518,19 @@ mod tests {
     }
 
     fn test_owned_sleeper() -> std::process::Child {
-        std::process::Command::new("ping")
-            .args(["-n", "60", "127.0.0.1"])
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = std::process::Command::new("ping");
+            command.args(["-n", "60", "127.0.0.1"]);
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = std::process::Command::new("/usr/bin/sleep");
+            command.arg("60");
+            command
+        };
+        command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

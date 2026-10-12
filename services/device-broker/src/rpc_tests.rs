@@ -2,9 +2,49 @@
 
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn startup_failure_releases_only_the_claim_it_published() {
+    use std::os::unix::fs::DirBuilderExt;
+    let directory =
+        std::env::temp_dir().join(format!("qc-publish-failure-{}", uuid::Uuid::new_v4()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .unwrap();
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _scratch = Scratch(directory.clone());
+    let path = directory.join("device-broker.json");
+    let fail_after_publication = || -> Result<(), String> {
+        let claim = qc_owner_only_file::ClaimedFile::try_claim(&path).unwrap();
+        let slot = Arc::new(Mutex::new(Some(claim)));
+        let _cleanup = PublicationCleanup(Arc::clone(&slot));
+        slot.lock_recover()
+            .as_mut()
+            .unwrap()
+            .write(b"complete document")
+            .unwrap();
+        assert!(qc_owner_only_file::release_if_unclaimed(&path).is_err());
+        Err("injected startup failure after publication".into())
+    };
+    let outcome = fail_after_publication();
+    assert!(outcome.is_err());
+    assert!(!path.exists());
+    assert!(!qc_owner_only_file::claim_path(&path).exists());
+    let mut successor = qc_owner_only_file::ClaimedFile::try_claim(&path).unwrap();
+    successor.write(b"successor").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"successor");
+    successor.release().unwrap();
+}
+
 #[test]
 fn reconnect_waits_only_when_the_requested_qc_is_present() {
-    let devices = vec![quadcortex_windows::usb::QcUsbDevice {
+    let devices = vec![quadcortex_hid::usb::QcUsbDevice {
         id: "qc-a".into(),
         name: "Quad Cortex".into(),
     }];
@@ -18,12 +58,12 @@ fn reconnect_waits_only_when_the_requested_qc_is_present() {
 fn a_reconnect_for_an_absent_qc_returns_searching_without_waiting_for_a_handshake() {
     // The early return needs a successful enumeration; after an error
     // `await_ready_status` deliberately falls back to the ready wait.
-    if quadcortex_windows::usb::connected_devices().is_err() {
+    if quadcortex_hid::usb::connected_devices().is_err() {
         return;
     }
     let dir = std::env::temp_dir().join(format!("qc-absent-ready-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(&dir);
+    crate::device_lease::testing::create_directory(&dir).unwrap();
     // An id that matches nothing HID can enumerate, so this test can never
     // open a real Quad Cortex, and a lease of its own so it never contends
     // with a running broker.

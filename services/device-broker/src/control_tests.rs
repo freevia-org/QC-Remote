@@ -25,7 +25,7 @@ impl Scratch {
                 .unwrap()
                 .as_nanos()
         ));
-        fs::create_dir_all(&directory).unwrap();
+        crate::device_lease::testing::create_directory(&directory).unwrap();
         Self(directory)
     }
     fn descriptor(&self) -> PathBuf {
@@ -470,7 +470,9 @@ fn a_control_connection_never_parks_the_icons_idle_release() {
     let minute = Duration::from_millis(600);
     test_support::set_policy_minute(&served.handle, minute);
     served.handle.set_tray_hold(Some(IdlePolicy::Minutes(1)));
-    let idle_from = Instant::now();
+    let idle_from = test_support::idle_origins(&served.handle)
+        .0
+        .expect("tray idle origin is armed");
     assert!(!test_support::idle_released(&served.handle));
     // Accepted and still authenticating: the watcher wakes and parks.
     let mut control = TcpStream::connect(("127.0.0.1", port(&scratch))).unwrap();
@@ -783,6 +785,24 @@ fn start_is_idempotent_while_a_broker_serves() {
     assert_eq!(outcome.report["started"], false);
     assert_eq!(outcome.report["processId"], std::process::id());
     assert_eq!(env.spawns.load(Ordering::SeqCst), 0, "nothing was started");
+    test_support::finish(&served.handle);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_control_refuses_a_symlinked_descriptor_without_authenticating() {
+    use std::os::unix::fs::symlink;
+    let live = Scratch::new("linux-live-descriptor");
+    let served = resident(&live);
+    let redirected = Scratch::new("linux-symlink-descriptor");
+    symlink(live.descriptor(), redirected.descriptor()).unwrap();
+    let env = TestEnv::new(&redirected.0).watching(&served);
+    for command in [Command::Release, Command::Connect, Command::Quit] {
+        let outcome = invoke(command, true, &env);
+        assert_eq!(outcome.exit_code, exit::REFUSED, "{}", outcome.report);
+        assert!(!served.exited.load(Ordering::Acquire));
+        assert_eq!(test_support::connection_count(&served.handle), 0);
+    }
     test_support::finish(&served.handle);
 }
 
@@ -1121,7 +1141,10 @@ fn only_the_callers_own_directory_is_accepted() {
         "9.9.9",
         &env,
     );
+    #[cfg(windows)]
     assert_eq!(outcome.exit_code, exit::OK, "{}", outcome.report);
+    #[cfg(not(windows))]
+    assert_eq!(outcome.exit_code, exit::REFUSED, "{}", outcome.report);
     struct NoDirectory;
     impl Env for NoDirectory {
         fn own_directory(&self) -> Option<PathBuf> {

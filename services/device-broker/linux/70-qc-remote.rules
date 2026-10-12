@@ -1,0 +1,7 @@
+# Quad Cortex HID control and raw MIDI. The kernel keeps its audio/MIDI drivers.
+# Active local seats receive access through systemd-logind. For an SSH-only
+# host, use the scoped group alternative documented in ../README.md instead.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="152a", ATTRS{idProduct}=="880a", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="152a", ATTRS{idProduct}=="892f", TAG+="uaccess"
+SUBSYSTEM=="sound", KERNEL=="midiC*D*", ATTRS{idVendor}=="152a", ATTRS{idProduct}=="880a", TAG+="uaccess"
+SUBSYSTEM=="sound", KERNEL=="midiC*D*", ATTRS{idVendor}=="152a", ATTRS{idProduct}=="892f", TAG+="uaccess"

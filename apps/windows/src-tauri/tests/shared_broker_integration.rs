@@ -1,8 +1,8 @@
 //! Real two-process (in fact three-process) integration test for the shared
 //! device broker (Task 5 of the shared-device-broker plan).
 //!
-//! Every assertion here is made by inspecting real OS processes with
-//! `tasklist` and by making real requests over the real wire protocol through
+//! Every assertion here is made by inspecting real OS processes with native
+//! process identity APIs and by making real requests over the real wire protocol through
 //! the app's own attach-or-elect logic, each run in its OWN process rather
 //! than in-process - that is the entire point of this file: proving
 //! convergence at the OS-process level, not merely inside one Rust process's
@@ -121,16 +121,11 @@ fn locate_harness_binary() -> PathBuf {
     prepared_executables().harness.clone()
 }
 
-/// The `tasklist`-based liveness check this repo's own `lib.rs` unit tests
-/// already use (`process_is_alive` there) - asking the OS, not our own
-/// bookkeeping, whether a process still exists. Duplicated here rather than
-/// imported: it is a private test helper of a different crate.
+/// Ask the OS whether the process is alive, rather than trusting harness
+/// bookkeeping. This uses the same fail-closed platform implementation as the
+/// app and broker.
 fn process_is_alive(pid: u32) -> bool {
-    let output = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .output()
-        .expect("tasklist runs");
-    String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+    qc_native_platform::process::os_process_is_alive(pid)
 }
 
 /// The process ids of every `--broker-serve` broker the OS reports serving
@@ -143,6 +138,7 @@ fn process_is_alive(pid: u32) -> bool {
 /// on any machine where the app was open. Every broker this test starts is
 /// given `--descriptor-path` under this test's own fresh directory, which no
 /// other process on the machine can share.
+#[cfg(windows)]
 fn brokers_serving(descriptor_path: &Path) -> Vec<u32> {
     let output = Command::new("powershell")
         .args([
@@ -167,6 +163,108 @@ fn brokers_serving(descriptor_path: &Path) -> Vec<u32> {
         .collect()
 }
 
+#[cfg(unix)]
+fn command_serves_descriptor(arguments: &[&[u8]], descriptor_path: &[u8]) -> bool {
+    arguments
+        .iter()
+        .any(|argument| *argument == b"--broker-serve")
+        && arguments
+            .windows(2)
+            .any(|pair| pair[0] == b"--descriptor-path" && pair[1] == descriptor_path)
+}
+
+#[cfg(unix)]
+fn brokers_serving(descriptor_path: &Path) -> Vec<u32> {
+    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+
+    let own_uid = fs::metadata("/proc/self")
+        .expect("read current process owner")
+        .uid();
+    let expected_path = descriptor_path.as_os_str().as_bytes();
+    let entries = fs::read_dir("/proc").expect("read Linux process table");
+    let mut pids = Vec::new();
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let process_dir = entry.path();
+        let Ok(process_metadata) = fs::metadata(&process_dir) else {
+            continue;
+        };
+        if process_metadata.uid() != own_uid {
+            continue;
+        }
+        let Some(identity) = qc_native_platform::process::os_process_created_at(pid) else {
+            continue;
+        };
+        let Ok(executable) = fs::read_link(process_dir.join("exe")) else {
+            continue;
+        };
+        if executable
+            .file_name()
+            .is_none_or(|name| name != "qc-device-broker")
+        {
+            continue;
+        }
+        let Ok(command_line) = fs::read(process_dir.join("cmdline")) else {
+            continue;
+        };
+        let arguments = command_line
+            .split(|byte| *byte == 0)
+            .filter(|argument| !argument.is_empty())
+            .collect::<Vec<_>>();
+        if command_serves_descriptor(&arguments, expected_path)
+            && qc_native_platform::process::os_process_is_alive(pid)
+            && qc_native_platform::process::os_process_created_at(pid) == Some(identity)
+        {
+            pids.push(pid);
+        }
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+#[cfg(unix)]
+#[test]
+fn broker_command_match_requires_exact_arguments_and_descriptor_path() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let expected = Path::new("/tmp/qc-test/device-broker.json");
+    let expected = expected.as_os_str().as_bytes();
+    assert!(command_serves_descriptor(
+        &[
+            b"qc-device-broker",
+            b"--broker-serve",
+            b"--descriptor-path",
+            expected
+        ],
+        expected
+    ));
+    assert!(!command_serves_descriptor(
+        &[
+            b"qc-device-broker",
+            b"--broker-serve",
+            b"--descriptor-path",
+            b"/tmp/qc-test/device-broker.json.backup"
+        ],
+        expected
+    ));
+    assert!(!command_serves_descriptor(
+        &[
+            b"qc-device-broker",
+            b"prefix--broker-serve",
+            b"--descriptor-path",
+            expected
+        ],
+        expected
+    ));
+}
+
 fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
@@ -184,6 +282,7 @@ fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
 /// closing a window ends a real QC Remote process, as opposed to this file's
 /// own `Child` handles being dropped (which the app-under-test must not rely
 /// on: a real crash runs no destructors either).
+#[cfg(windows)]
 fn kill_pid_from_outside(pid: u32) {
     let output = Command::new("taskkill")
         .args(["/F", "/PID", &pid.to_string()])
@@ -192,6 +291,31 @@ fn kill_pid_from_outside(pid: u32) {
     assert!(
         output.status.success() || !process_is_alive(pid),
         "taskkill could not end pid {pid}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+fn kill_pid_from_outside(pid: u32) {
+    use qc_native_platform::process::{os_process_created_at, os_process_is_alive};
+
+    let identity = os_process_created_at(pid).expect("owned harness process has an identity");
+    assert!(
+        os_process_is_alive(pid),
+        "owned harness pid {pid} is alive before kill"
+    );
+    assert_eq!(
+        os_process_created_at(pid),
+        Some(identity),
+        "owned harness identity is stable before kill"
+    );
+    let output = Command::new("/bin/kill")
+        .args(["-KILL", "--", &pid.to_string()])
+        .output()
+        .expect("Linux /bin/kill is available");
+    assert!(
+        output.status.success() || !os_process_is_alive(pid),
+        "SIGKILL could not end owned harness pid {pid}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -387,8 +511,36 @@ fn spike_root(name: &str) -> PathBuf {
             .unwrap()
             .as_nanos()
     ));
-    fs::create_dir_all(&root).expect("spike scratch directory");
+    create_private_test_directory(&root).expect("private spike scratch directory");
     root
+}
+
+fn create_private_test_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir(path)
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn broker_test_roots_are_private_for_the_linux_directory_guard() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = spike_root("owner-mode");
+    let result = fs::metadata(&root)
+        .map(|metadata| metadata.permissions().mode() & 0o777)
+        .expect("test root metadata");
+    fs::remove_dir(&root).expect("remove owned empty test root");
+    assert_eq!(result, 0o700, "broker descriptor roots must be private");
 }
 
 #[test]
@@ -396,12 +548,20 @@ fn an_early_harness_exit_reports_its_captured_diagnostics() {
     let root = spike_root("diagnostic-failure");
     let stdout_path = root.join("stdout.log");
     let stderr_path = root.join("stderr.log");
-    let child = Command::new("cmd")
-        .args([
+    let mut command = if cfg!(windows) {
+        let mut command = Command::new("cmd");
+        command.args([
             "/D",
             "/C",
             "echo harness diagnostic sentinel 1>&2 & exit /B 7",
-        ])
+        ]);
+        command
+    } else {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "echo 'harness diagnostic sentinel' >&2; exit 7"]);
+        command
+    };
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::from(fs::File::create(&stdout_path).unwrap()))
         .stderr(Stdio::from(fs::File::create(&stderr_path).unwrap()))
@@ -556,11 +716,14 @@ fn two_real_processes_converge_on_one_shared_broker_and_survive_host_handoff() {
     let harness_binary = locate_harness_binary();
 
     let root = env::temp_dir().join(format!(
-        "qc-shared-broker-integration-test-{}",
-        std::process::id()
+        "qc-shared-broker-integration-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("test root directory");
+    create_private_test_directory(&root).expect("private test root directory");
     // Next to `device-broker.json`, exactly the pairing
     // `device_broker_election_path` (`descriptor_path.with_extension
     // ("election")`) produces in the app itself.
@@ -644,5 +807,15 @@ fn two_real_processes_converge_on_one_shared_broker_and_survive_host_handoff() {
     assert_eq!(third.request(), "ok");
 
     third.kill();
-    let _ = fs::remove_dir_all(&root);
+    assert!(
+        wait_until(BROKER_GRACE_PERIOD_MARGIN, || !process_is_alive(
+            third_status.broker_pid
+        )),
+        "the final harness's broker must exit before the test releases its staged executable"
+    );
+    assert!(
+        !descriptor_path.exists(),
+        "reaping releases the descriptor slot"
+    );
+    fs::remove_dir_all(&root).expect("clean integration test directory");
 }

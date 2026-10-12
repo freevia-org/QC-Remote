@@ -222,6 +222,9 @@ impl LeaseTransitionGuard {
         let mut claims = Vec::with_capacity(lock_paths.len());
         for lock_path in lock_paths {
             if let Some(parent) = lock_path.parent() {
+                #[cfg(target_os = "linux")]
+                crate::platform::paths::prepare_directory(parent).map_err(std::io::Error::other)?;
+                #[cfg(not(target_os = "linux"))]
                 std::fs::create_dir_all(parent)?;
             }
             loop {
@@ -293,7 +296,10 @@ const APP_DIRECTORY: &str = "org.freevia.qcremote";
 const RECORD_NAME: &str = "device-owner.json";
 const SHARED_DIRECTORY: &str = "QC Remote";
 /// The broker whose `--stdio` instances a scan treats as device holders.
+#[cfg(not(target_os = "linux"))]
 const BROKER_IMAGE: &str = "qc-device-broker.exe";
+#[cfg(target_os = "linux")]
+const BROKER_IMAGE: &str = "qc-device-broker";
 
 /// `QC_DEVICE_LEASE_PATH` overrides, for tests and unusual installs.
 pub fn default_path() -> PathBuf {
@@ -328,6 +334,15 @@ pub struct Locations {
 
 impl Locations {
     pub fn from_environment() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self {
+                primary: crate::platform::paths::default_directory().join(RECORD_NAME),
+                mirrors: Vec::new(),
+                peers: Vec::new(),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
         Self::resolve(
             std::env::var_os("PROGRAMDATA")
                 .map(PathBuf::from)
@@ -436,7 +451,7 @@ fn scan_for_stdio_owner() -> Option<LeaseRecord> {
     if std::env::var_os("QC_DEVICE_LEASE_SCAN").is_some_and(|value| value == "0") {
         return None;
     }
-    let processes: Vec<ScannedProcess> = qc_windows_process::processes_by_image(BROKER_IMAGE)
+    let processes: Vec<ScannedProcess> = crate::platform::process::processes_by_image(BROKER_IMAGE)
         .into_iter()
         .map(|process| ScannedProcess {
             pid: process.pid,
@@ -448,7 +463,7 @@ fn scan_for_stdio_owner() -> Option<LeaseRecord> {
         &processes,
         std::process::id(),
         std::env::args().any(|argument| argument == "--stdio"),
-        qc_windows_process::os_process_is_alive,
+        crate::platform::process::os_process_is_alive,
     )
 }
 
@@ -457,6 +472,7 @@ fn scan_for_stdio_owner() -> Option<LeaseRecord> {
 /// Administrators and, under the default `%ProgramData%` ACL, closed to the
 /// ordinary token of the same person. Best effort; failing leaves the mirror
 /// in the legacy directory to carry the record.
+#[cfg(not(target_os = "linux"))]
 fn prepare_shared_directory(directory: &Path) {
     if directory.is_dir() {
         return;
@@ -478,6 +494,11 @@ fn prepare_shared_directory(directory: &Path) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn prepare_shared_directory(directory: &Path) {
+    let _ = crate::platform::paths::prepare_directory(directory);
+}
+
 /// What this process is, in the words a user would recognise.
 pub fn own_role() -> String {
     let args: Vec<String> = std::env::args().collect();
@@ -497,7 +518,7 @@ fn unix_ms() -> u64 {
 fn own_record(role: &str, since_unix_ms: u64) -> LeaseRecord {
     LeaseRecord {
         process_id: std::process::id(),
-        process_created_at: qc_windows_process::os_process_created_at(std::process::id()),
+        process_created_at: crate::platform::process::os_process_created_at(std::process::id()),
         role: role.to_owned(),
         since_unix_ms,
         refreshed_unix_ms: unix_ms(),
@@ -521,7 +542,7 @@ fn is_own(record: &LeaseRecord) -> bool {
     record.process_id == std::process::id()
         && match (
             record.process_created_at,
-            qc_windows_process::os_process_created_at(record.process_id),
+            crate::platform::process::os_process_created_at(record.process_id),
         ) {
             (Some(recorded), Some(current)) => recorded == current,
             _ => true,
@@ -530,12 +551,12 @@ fn is_own(record: &LeaseRecord) -> bool {
 
 /// Whether the process a record names is still the one that wrote it.
 fn holder_is_live(record: &LeaseRecord) -> bool {
-    if !qc_windows_process::os_process_is_alive(record.process_id) {
+    if !crate::platform::process::os_process_is_alive(record.process_id) {
         return false;
     }
     match (
         record.process_created_at,
-        qc_windows_process::os_process_created_at(record.process_id),
+        crate::platform::process::os_process_created_at(record.process_id),
     ) {
         (Some(recorded), Some(current)) => recorded == current,
         _ => true,
@@ -560,10 +581,23 @@ pub fn read_live_other(path: &Path, own_pid: u32) -> Option<LeaseRecord> {
 /// is never visible half written.
 fn create_exclusive(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
+        #[cfg(target_os = "linux")]
+        crate::platform::paths::prepare_directory(parent).map_err(std::io::Error::other)?;
+        #[cfg(not(target_os = "linux"))]
         let _ = std::fs::create_dir_all(parent);
     }
     let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
+    #[cfg(target_os = "linux")]
+    let temp = path.with_extension(format!(
+        "json.{}.{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    #[cfg(not(target_os = "linux"))]
     let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    #[cfg(target_os = "linux")]
+    qc_owner_only_file::write_staged(&temp, &bytes).map_err(std::io::Error::other)?;
+    #[cfg(not(target_os = "linux"))]
     std::fs::write(&temp, &bytes)?;
     let linked = std::fs::hard_link(&temp, path);
     let _ = std::fs::remove_file(&temp);
@@ -573,10 +607,16 @@ fn create_exclusive(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
         Err(_) => {
             // A volume without hard links: fall back to an exclusive create.
             use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)?;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options
+                    .mode(0o600)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+            }
+            let mut file = options.open(path)?;
             file.write_all(&bytes)
         }
     }
@@ -585,13 +625,20 @@ fn create_exclusive(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
 /// Replaces the record with this process's own, atomically.
 fn replace_own(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    std::fs::write(&temp, &bytes)?;
-    let renamed = std::fs::rename(&temp, path);
-    if renamed.is_err() {
-        let _ = std::fs::remove_file(&temp);
+    #[cfg(target_os = "linux")]
+    {
+        qc_owner_only_file::publish_atomically(path, &bytes).map_err(std::io::Error::other)
     }
-    renamed
+    #[cfg(not(target_os = "linux"))]
+    {
+        let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        std::fs::write(&temp, &bytes)?;
+        let renamed = std::fs::rename(&temp, path);
+        if renamed.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        renamed
+    }
 }
 
 /// One process's claim on the device. Dropping it releases the claim, which is
@@ -896,6 +943,18 @@ fn wait_for_transition_test_peers(directory: &Path) {
 pub(crate) mod testing {
     use super::*;
 
+    /// Match the production Linux directory contract for explicit test leases
+    /// and descriptors. This changes only each test's own scratch directory.
+    pub(crate) fn create_directory(path: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(path)?;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+
     /// A live process that is not this one, killed on drop.
     pub(crate) struct Sleeper(std::process::Child);
     impl Sleeper {
@@ -915,7 +974,7 @@ pub(crate) mod testing {
         pub(crate) fn record(&self) -> LeaseRecord {
             LeaseRecord {
                 process_id: self.pid(),
-                process_created_at: qc_windows_process::os_process_created_at(self.pid()),
+                process_created_at: crate::platform::process::os_process_created_at(self.pid()),
                 role: "a hardware or conformance run (device broker --stdio)".into(),
                 since_unix_ms: 1,
                 refreshed_unix_ms: 1,
@@ -942,9 +1001,13 @@ mod tests {
     use super::testing::*;
     use super::*;
 
+    fn create_test_directory(path: &Path) -> std::io::Result<()> {
+        create_directory(path)
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("qc-lease-{name}-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
+        let _ = create_test_directory(&dir);
         let path = dir.join("device-owner.json");
         let _ = std::fs::remove_file(&path);
         path
@@ -1001,6 +1064,25 @@ mod tests {
     }
 
     #[test]
+    fn transition_claim_crash_child_helper() {
+        let Ok(lock_path) = std::env::var("QC_DEVICE_LEASE_TEST_TRANSITION_LOCK_PATH") else {
+            return;
+        };
+        let lock_path = PathBuf::from(lock_path);
+        let _claim = qc_owner_only_file::ClaimedFile::try_claim(&lock_path)
+            .expect("child acquires the valid transition claim");
+        let ready_path = lock_path.with_extension("ready");
+        let ready_temp = lock_path.with_extension(format!("ready-{}.tmp", std::process::id()));
+        std::fs::write(&ready_temp, std::process::id().to_string())
+            .expect("child signals that it holds the transition claim");
+        std::fs::rename(&ready_temp, &ready_path)
+            .expect("child atomically publishes its ready marker");
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    #[test]
     fn lease_release_retry_child_helper() {
         let Ok(path) = std::env::var("QC_DEVICE_LEASE_TEST_RELEASE_PATH") else {
             return;
@@ -1032,7 +1114,7 @@ mod tests {
             unix_ms()
         ));
         let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(&directory).unwrap();
+        create_test_directory(&directory).unwrap();
         let _owned_directory = TestDirectory(directory.clone());
         let path = directory.join(RECORD_NAME);
         write_record(
@@ -1115,7 +1197,7 @@ mod tests {
         // Our own record is never a reason to wait.
         let mut own = sleeper.record();
         own.process_id = std::process::id();
-        own.process_created_at = qc_windows_process::os_process_created_at(own.process_id);
+        own.process_created_at = crate::platform::process::os_process_created_at(own.process_id);
         write_record(&path, &own);
         assert!(read_live_other(&path, std::process::id()).is_none());
         let dead = LeaseRecord {
@@ -1253,8 +1335,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let program_data = base.join("ProgramData");
         let local = base.join("Local");
-        std::fs::create_dir_all(&program_data).unwrap();
-        std::fs::create_dir_all(&local).unwrap();
+        create_test_directory(&program_data).unwrap();
+        create_test_directory(&local).unwrap();
         (program_data, local)
     }
 
@@ -1265,7 +1347,7 @@ mod tests {
             .join("LocalCache")
             .join("Local")
             .join(APP_DIRECTORY);
-        std::fs::create_dir_all(&dir).unwrap();
+        create_test_directory(&dir).unwrap();
         dir.join(RECORD_NAME)
     }
 
@@ -1300,7 +1382,7 @@ mod tests {
             std::process::id(),
             unix_ms()
         ));
-        std::fs::create_dir_all(&directory).unwrap();
+        create_test_directory(&directory).unwrap();
         let _directory = TestDirectory(directory.clone());
         let path = directory.join("device-owner.json");
         let mut owner = holder(&path);
@@ -1341,7 +1423,9 @@ mod tests {
             child.child.wait().unwrap().success(),
             "the child lease process exits cleanly"
         );
-        assert!(qc_windows_process::os_process_is_alive(std::process::id()));
+        assert!(crate::platform::process::os_process_is_alive(
+            std::process::id()
+        ));
     }
 
     #[test]
@@ -1351,7 +1435,7 @@ mod tests {
             std::process::id(),
             unix_ms()
         ));
-        std::fs::create_dir_all(&directory).unwrap();
+        create_test_directory(&directory).unwrap();
         let _directory = TestDirectory(directory.clone());
         let path = directory.join("device-owner.json");
         let old = own_record("lease generation", unix_ms());
@@ -1384,7 +1468,7 @@ mod tests {
             std::process::id(),
             unix_ms()
         ));
-        std::fs::create_dir_all(&directory).unwrap();
+        create_test_directory(&directory).unwrap();
         let _directory = TestDirectory(directory.clone());
         let path = directory.join("device-owner.json");
         let mut first = holder(&path);
@@ -1404,17 +1488,86 @@ mod tests {
 
     #[test]
     fn transition_lock_reaps_a_claim_left_by_a_crashed_owner() {
-        let path = scratch("transition-crash");
+        let directory = std::env::temp_dir().join(format!(
+            "qc-lease-transition-crash-{}-{}",
+            std::process::id(),
+            unix_ms()
+        ));
+        create_test_directory(&directory).unwrap();
+        let _directory = TestDirectory(directory.clone());
+        let path = directory.join("device-owner.json");
         let lock = path.with_extension("transition");
         let claim = PathBuf::from(format!("{}.claim", lock.display()));
-        std::fs::write(&lock, b"abandoned lock document").unwrap();
-        std::fs::write(&claim, b"abandoned OS claim name").unwrap();
-        let guard = LeaseTransitionGuard::acquire(&[path], Duration::from_millis(100))
+        let ready = lock.with_extension("ready");
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "device_lease::tests::transition_claim_crash_child_helper",
+            ])
+            .env("QC_DEVICE_LEASE_TEST_TRANSITION_LOCK_PATH", &lock)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("transition claim owner child starts");
+        let mut child = ChildGuard { child };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "child signals after acquiring the valid transition claim"
+            );
+            assert!(
+                child.child.try_wait().unwrap().is_none(),
+                "transition claim owner remains alive until the parent kills it"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let claimed_pid: u32 = std::fs::read_to_string(&ready)
+            .expect("the child wrote its ready marker")
+            .parse()
+            .expect("the ready marker contains the child pid");
+        assert_eq!(claimed_pid, child.child.id());
+        assert!(
+            child.child.try_wait().unwrap().is_none(),
+            "the child still owns the claim before the live-owner check"
+        );
+        assert!(lock.exists(), "the live owner keeps its lock document");
+        assert!(claim.exists(), "the live owner keeps its claim sidecar");
+        assert!(
+            qc_owner_only_file::release_if_unclaimed(&lock).is_err(),
+            "a live child claim is never reaped"
+        );
+        assert!(lock.exists(), "the live owner keeps its lock document");
+        assert!(claim.exists(), "the live owner keeps its claim sidecar");
+
+        child
+            .child
+            .kill()
+            .expect("the parent terminates its exact owner child");
+        let status = child
+            .child
+            .wait()
+            .expect("the terminated claim owner is reaped");
+        assert!(!status.success(), "the child was forcibly terminated");
+        assert!(lock.exists(), "process death leaves the lock document");
+        assert!(claim.exists(), "process death leaves the claim sidecar");
+
+        let guard = LeaseTransitionGuard::acquire(&[path], TRANSITION_LOCK_WAIT)
             .expect("the unlocked abandoned claim is safely reaped");
         assert!(lock.exists(), "the new owner has installed its document");
         drop(guard);
         assert!(!lock.exists());
         assert!(!claim.exists());
+        assert!(
+            ready.exists(),
+            "the owned test directory still contains its marker"
+        );
+        drop(_directory);
+        assert!(
+            !directory.exists(),
+            "the test removes its owned scratch directory"
+        );
+        assert!(!ready.exists());
     }
 
     #[test]
@@ -1468,7 +1621,7 @@ mod tests {
         let (program_data, local) = two_roots("legacy");
         let sleeper = Sleeper::start();
         let legacy = local.join(APP_DIRECTORY);
-        std::fs::create_dir_all(&legacy).unwrap();
+        create_test_directory(&legacy).unwrap();
         write_record(&legacy.join(RECORD_NAME), &sleeper.record());
         let mut opener = shared_holder(&program_data, &local);
         assert!(opener.acquire().is_err());

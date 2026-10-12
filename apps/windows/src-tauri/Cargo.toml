@@ -17,7 +17,7 @@
 [package]
 name = "qc-remote"
 default-run = "qc-remote"
-version = "0.1.183"
+version = "0.1.184"
 publish = false
 description = "Unofficial modular desktop controller for Quad Cortex"
 edition = "2021"
@@ -32,7 +32,8 @@ license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
 # the broker crate is linked only with it, so the app itself builds exactly as
 # before.
 [features]
-tray-sidecar = ["dep:qc-device-broker"]
+tray-sidecar = ["dep:qc-device-broker", "qc-device-broker/linux-tray"]
+custom-protocol = ["tauri/custom-protocol"]
 
 [[bin]]
 name = "qc-device-broker"
@@ -51,9 +52,9 @@ qc-broker-framing = { path = "../../../packages/rust/qc-broker-framing" }
 qc-owner-only-file = { path = "../../../packages/rust/qc-owner-only-file" }
 # The broker half of the shipped sidecar; see [features].
 qc-device-broker = { path = "../../../services/device-broker", optional = true }
+qc-native-platform = { path = "../../../packages/rust/qc-native-platform" }
 async-trait = "0.1"
 axum = "0.8"
-keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 # The loopback MCP listener is served through hyper directly, not
 # `axum::serve`, which offers no request-head timeout. Both are already in the
 # lock file as axum's own dependencies.
@@ -66,7 +67,6 @@ dirs = "6"
 rand = "0.9"
 quadcortex = { path = "../../../packages/rust/quadcortex" }
 qc-windows-midi = { path = "../../../packages/rust/qc-windows-midi" }
-qc-windows-process = { path = "../../../packages/rust/qc-windows-process" }
 qc-relay-client = { path = "../../../packages/rust/qc-relay-client" }
 qc-remote-mcp = { path = "../../../services/rust-mcp" }
 rfd = "0.15"
@@ -90,11 +90,18 @@ zip = { version = "8.1", default-features = false }
 # report's Platform field. Already in the lock file as a transitive dependency
 # of reqwest (through hyper-util), so this adds no crate to the build.
 [target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 windows-registry = "0.6"
 # The broker owns the native tray through windows-sys. The GUI has no direct
 # tray-icon, muda or tao API dependency; Tauri owns its own window/menu graph.
 # Used (lib.rs). Exact so a plugin release cannot change how a second launch
 # hands its arguments to the running app without a reviewed manifest change.
+tauri-plugin-single-instance = "=2.4.5"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Pairing credentials stay in the desktop's Secret Service store. Do not use
+# keyring's always-present mock backend when a Linux Secret Service is absent.
+keyring = { version = "3.6", default-features = false, features = ["sync-secret-service"] }
 tauri-plugin-single-instance = "=2.4.5"
 
 [dev-dependencies]

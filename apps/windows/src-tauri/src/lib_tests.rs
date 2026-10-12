@@ -1513,13 +1513,29 @@ fn unique_fixture_directory_with_suffix(
     }
     for _ in 0..16 {
         let directory = parent.join(format!("qc-owned-{name}-{:032x}", suffix()));
-        match fs::create_dir(&directory) {
+        match create_private_fixture_directory(&directory) {
             Ok(()) => return directory,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => panic!("create owned fixture: {error}"),
         }
     }
     panic!("unique fixture allocation exhausted");
+}
+
+#[cfg(unix)]
+fn create_private_fixture_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut builder = fs::DirBuilder::new();
+    // Apply the owner-only mode during creation so no process can observe a
+    // less restrictive intermediate directory.
+    builder.mode(0o700);
+    builder.create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_fixture_directory(path: &Path) -> std::io::Result<()> {
+    fs::create_dir(path)
 }
 
 fn test_descriptor_path(name: &str) -> PathBuf {
@@ -1609,6 +1625,20 @@ fn fixture_allocation_preserves_prior_bytes_and_never_reuses_a_name() {
             b"collision evidence"
         );
     });
+}
+
+#[cfg(unix)]
+#[test]
+fn owned_linux_broker_fixture_directories_match_production_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = unique_fixture_directory("owner-mode");
+    let _cleanup = RemoveDirOnDrop::new(directory.clone());
+    assert_eq!(
+        fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o700,
+        "broker test descriptors are rejected unless their parent is owner-only"
+    );
 }
 
 #[test]
@@ -1702,11 +1732,7 @@ fn fixture_allocation_rejects_reparse_ancestor() {
 
 /// Asks the OS, not our own bookkeeping, whether a process still exists.
 fn process_is_alive(pid: u32) -> bool {
-    let output = Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-        .output()
-        .expect("tasklist runs");
-    String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+    os_process_is_alive(pid)
 }
 
 fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
@@ -2528,13 +2554,13 @@ fn an_idle_reopen_failure_reads_as_not_connected_wherever_text_is_matched() {
     // services/device-broker/src/rpc.rs idle_reopen_error: the stable
     // signal is data.category/retryable; the text says it too.
     for message in [
-            "The Quad Cortex is not connected: device unplugged",
-            "The Quad Cortex is not connected: its session, closed for idleness, did not reopen within 35 seconds; retry",
-        ] {
-            let error = relay_device_error(message.into());
-            assert_eq!(error.code, "NOT_CONNECTED", "{message}");
-            assert!(error.retryable, "{message}");
-        }
+        "The Quad Cortex is not connected: device unplugged",
+        "The Quad Cortex is not connected: its session, closed for idleness, did not reopen within 35 seconds; retry",
+    ] {
+        let error = relay_device_error(message.into());
+        assert_eq!(error.code, "NOT_CONNECTED", "{message}");
+        assert!(error.retryable, "{message}");
+    }
 }
 
 #[test]
@@ -2545,7 +2571,8 @@ fn a_missing_sidecar_fails_closed_and_a_same_name_fallback_is_never_chosen_unver
     let fallback_dir = root.join("checkout");
     fs::create_dir_all(&installed).unwrap();
     fs::create_dir_all(&fallback_dir).unwrap();
-    let fallback = fallback_dir.join("qc-device-broker.exe");
+    let broker_name = native_broker_filename();
+    let fallback = fallback_dir.join(broker_name);
     // A broker-only or stale build of the same name: no marker.
     fs::write(&fallback, b"MZ broker-only build").unwrap();
     let fallbacks = [fallback.clone()];
@@ -2581,10 +2608,10 @@ fn a_missing_sidecar_fails_closed_and_a_same_name_fallback_is_never_chosen_unver
         );
     }
     // The installed sidecar always wins, and is the only release choice.
-    fs::write(installed.join("qc-device-broker.exe"), b"installed").unwrap();
+    fs::write(installed.join(broker_name), b"installed").unwrap();
     assert_eq!(
         locate_native_broker_in(Some(&installed), &fallbacks, false),
-        Some(installed.join("qc-device-broker.exe"))
+        Some(installed.join(broker_name))
     );
     fs::remove_dir_all(root).unwrap();
 }
@@ -2802,6 +2829,7 @@ fn own_process_created_at() -> u64 {
     os_process_created_at(std::process::id()).expect("this process can read its own times")
 }
 
+#[cfg(windows)]
 fn exited_process_id() -> u32 {
     let mut child = Command::new("cmd")
         .args(["/C", "exit 0"])
@@ -2813,6 +2841,20 @@ fn exited_process_id() -> u32 {
     let pid = child.id();
     child.wait().unwrap();
     // `child` is dropped here, closing the last handle to it.
+    pid
+}
+
+#[cfg(unix)]
+fn exited_process_id() -> u32 {
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "exit 0"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn a short-lived child for the dead-process fixture");
+    let pid = child.id();
+    child.wait().unwrap();
     pid
 }
 
@@ -5324,8 +5366,19 @@ fn owned_in_sink(sink: &BrokerSpawnSink) -> Vec<HeldProcess> {
 /// A stand-in process: a sleeper this test spawns and holds the handle of.
 /// Never a broker.
 fn spawn_sleeper() -> std::process::Child {
-    Command::new("ping")
-        .args(["-n", "60", "127.0.0.1"])
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("ping");
+        command.args(["-n", "60", "127.0.0.1"]);
+        command
+    };
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("/bin/sleep");
+        command.arg("60");
+        command
+    };
+    command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -6302,6 +6355,7 @@ fn sleeper_in_sink(originals: &TestPermit) -> (u32, SpawnedBroker) {
 
 /// Whether the owned original `pid` in `domain` is observed exited, read
 /// through its own handle for up to five seconds.
+#[cfg(windows)]
 fn owned_exited(domain: &str, pid: u32) -> bool {
     wait_until(Duration::from_secs(5), || {
         TEST_OWNER.observe_owned(domain, pid) == Some(ExitObservation::Exited)

@@ -6,15 +6,19 @@ edition = "2021"
 description = "Native single-owner Quad Cortex USB broker"
 license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
 
+[features]
+default = []
+# The app's published in-process MCP sidecar opts in; headless broker builds do not need D-Bus.
+linux-tray = ["dep:ksni"]
+
 [dependencies]
 qc-broker-framing = { path = "../../packages/rust/qc-broker-framing" }
 qc-owner-only-file = { path = "../../packages/rust/qc-owner-only-file" }
+qc-native-platform = { path = "../../packages/rust/qc-native-platform" }
 base64.workspace = true
 prost.workspace = true
 quadcortex = { path = "../../packages/rust/quadcortex" }
-quadcortex-windows = { path = "../../packages/rust/quadcortex-windows" }
-qc-windows-midi = { path = "../../packages/rust/qc-windows-midi" }
-qc-windows-process = { path = "../../packages/rust/qc-windows-process" }
+quadcortex-hid = { path = "../../packages/rust/quadcortex-hid" }
 # The workspace `rand` (root Cargo.toml) stays on the same version as
 # apps/windows/src-tauri/Cargo.toml's, so the shared-broker token/instance-id
 # generation follows the same conceptual recipe as local_access.rs's loopback
@@ -30,7 +34,7 @@ rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10"
+sha2.workspace = true
 # Constant-time bearer-token comparison, the same crate and version
 # apps/windows/src-tauri's local_access.rs already uses.
 subtle = "2"
@@ -38,11 +42,8 @@ tokio = { workspace = true, features = ["rt", "time"] }
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# The broker tray and interactive-session check add features of this shared
-# workspace dependency; parent-pid lookup lives in qc-windows-process.
-# The broker's own tray icon (tray/ui.rs, tray/install_stop.rs and the
-# interactive-session check in tray/mod.rs) adds only features of this same
-# crate, so no dependency enters the lock file.
+qc-windows-midi = { path = "../../packages/rust/qc-windows-midi" }
+# Windows tray, interactive-session and installer-stop APIs.
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -54,3 +55,8 @@ windows-sys = { workspace = true, features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+signal-hook = "0.3"
+ksni = { version = "=0.3.6", optional = true, default-features = false, features = ["async-io", "blocking"] }

@@ -42,9 +42,9 @@
 //! watchdog treats "in flight" as never idle, no matter how long the request
 //! has been running.
 
-#[cfg(windows)]
-use qc_windows_process::os_parent_process_id;
-use qc_windows_process::{os_process_created_at, os_process_is_alive};
+#[cfg(any(windows, target_os = "linux"))]
+use crate::platform::process::os_parent_process_id;
+use crate::platform::process::{os_process_created_at, os_process_is_alive};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -149,17 +149,17 @@ pub fn watch(
 }
 
 /// The current process's parent id, or `None` if it cannot be determined.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub fn parent_process_id() -> Option<u32> {
     os_parent_process_id()
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn parent_process_id() -> Option<u32> {
     None
 }
 
-// Process liveness/creation-time checks are `qc_windows_process::{
+// Process liveness/creation-time checks are `crate::platform::process::{
 // os_process_is_alive, os_process_created_at}` - shared with
 // `apps/windows/src-tauri`, which needs the identical logic for its own
 // broker-liveness judgment. This module used to carry its own copy of both;

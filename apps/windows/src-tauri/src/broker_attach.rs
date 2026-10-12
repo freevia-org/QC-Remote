@@ -172,14 +172,16 @@ pub fn published_process_is_alive_with(
 // identical logic for its own parent-liveness judgment. The two copies had
 // already drifted cosmetically despite identical logic - the real risk a
 // behavioral fix landing in only one of them would realize.
-use qc_windows_process::{os_process_created_at, os_process_is_alive};
+use qc_native_platform::process::{os_process_created_at, os_process_is_alive};
 
 /// Why the token must not be sent to whatever accepted the connection, if so.
 ///
 /// The OS names the process that owns the listening socket. It must be the
 /// published broker, and that broker must still be the process it recorded.
-/// When the TCP table cannot be read, the published process being alive is
-/// the remaining evidence: a live broker still holds its own port.
+/// Windows historically uses process liveness when its TCP table cannot be
+/// read. Linux must fail closed because the procfs owner lookup is the proof
+/// that the process accepting the connection is the broker before its token
+/// is sent.
 fn listener_refusal(
     descriptor: &device_broker_descriptor::DeviceBrokerDescriptor,
     owner: Result<Option<u32>, String>,
@@ -196,6 +198,11 @@ fn listener_refusal(
             "Process {pid}, not the published QC device broker, is listening on its port"
         )),
         Ok(None) => Some("Nothing is listening on the published QC device broker port".into()),
+        #[cfg(target_os = "linux")]
+        Err(error) => Some(format!(
+            "Could not verify which process owns the shared QC device broker port: {error}"
+        )),
+        #[cfg(not(target_os = "linux"))]
         Err(_) => None,
     }
 }
@@ -239,7 +246,7 @@ pub fn attach_to_device_broker(
     // that squatter the token.
     if let Some(refusal) = listener_refusal(
         descriptor,
-        qc_windows_process::loopback_listener_owner(descriptor.port),
+        qc_native_platform::process::loopback_listener_owner(descriptor.port),
         published_broker_process_is_alive(descriptor),
     ) {
         return Err(ambiguous(refusal));
@@ -314,9 +321,22 @@ mod tests {
         assert!(listener_refusal(&published, Ok(Some(7)), true).is_some());
         assert!(listener_refusal(&published, Ok(Some(4242)), false).is_some());
         assert!(listener_refusal(&published, Ok(None), true).is_some());
-        // An unreadable table leaves the liveness check as the evidence.
+        // Windows retains its historical liveness fallback when the table
+        // cannot be read. Linux tests its stricter behavior separately.
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(listener_refusal(&published, Err("x".into()), true), None);
         assert!(listener_refusal(&published, Err("x".into()), false).is_some());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_requires_exact_kernel_listener_owner_before_sending_token() {
+        let published = descriptor();
+        assert_eq!(listener_refusal(&published, Ok(Some(4242)), true), None);
+        assert!(listener_refusal(&published, Ok(Some(7)), true).is_some());
+        assert!(
+            listener_refusal(&published, Err("owner lookup unavailable".into()), true).is_some()
+        );
     }
 
     #[test]
@@ -338,11 +358,21 @@ mod tests {
             received
         });
         let failure = attach_to_device_broker(&published).expect_err("a squatter is refused");
+        #[cfg(windows)]
         assert!(
             failure.message().contains("not the published"),
             "{}",
             failure.message()
         );
+        #[cfg(target_os = "linux")]
+        assert!(
+            failure.message().contains("no longer running")
+                || failure.message().contains("owner could not be verified"),
+            "{}",
+            failure.message()
+        );
+        #[cfg(not(any(windows, target_os = "linux")))]
+        assert!(!failure.message().is_empty());
         assert!(accepting.join().unwrap().is_empty(), "the token was sent");
     }
 }

@@ -188,6 +188,9 @@ async fn run(
                 old.stop();
             }
         } else if listener.is_none() {
+            #[cfg(target_os = "linux")]
+            let paths = publication_paths(&directory, None);
+            #[cfg(not(target_os = "linux"))]
             let paths =
                 publication_paths(&directory, std::env::var_os("APPDATA").map(PathBuf::from));
             // The existing publisher guard authenticates any GUI owner. It
@@ -356,8 +359,8 @@ mod tests {
 
     #[test]
     fn publisher_lease_is_exclusive_and_released_with_owner() {
-        let directory =
-            std::env::temp_dir().join(format!("qc-mcp-lease-{:032x}", rand::random::<u128>()));
+        let directory = crate::tests::unique_fixture_directory("mcp-lease");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let first = HostLease::try_acquire(&directory, "lease")
             .unwrap()
             .unwrap();
@@ -368,6 +371,5 @@ mod tests {
         assert!(HostLease::try_acquire(&directory, "lease")
             .unwrap()
             .is_some());
-        fs::remove_dir_all(directory).unwrap();
     }
 }

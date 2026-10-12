@@ -2,14 +2,14 @@
   "schemaVersion": 2,
   "declared": 72,
   "decodable": 72,
-  "encodedByApp": 44,
-  "handledInbound": 41,
+  "encodedByApp": 45,
+  "handledInbound": 42,
   "transportRejected": 6,
   "sentOnWire": 44,
   "receivedOnWire": 41,
   "receivedButUnhandled": 1,
   "sentButNeverReceived": 5,
-  "drivenByApp": 47,
+  "drivenByApp": 48,
   "rows": [
     {
       "number": 1,
@@ -615,8 +615,8 @@
       "number": 61,
       "name": "UpdaterForward",
       "decodable": true,
-      "encodedByApp": false,
-      "handledInbound": false,
+      "encodedByApp": true,
+      "handledInbound": true,
       "transportRejected": false,
       "sentOnWire": false,
       "receivedOnWire": false
