@@ -26,8 +26,20 @@ pub struct Shared {
     pub refreshed: Mutex<Instant>,
 }
 
-/// Wakes the UI thread to re-render from `Shared::snapshot`.
-pub type Notify = Box<dyn Fn() + Send + Sync>;
+/// Whether the UI callback remains part of this broker's tray lifecycle.
+///
+/// A UI backend can retire without dropping its action sender immediately
+/// (for example, while its D-Bus service finishes shutting down). `Retired`
+/// tells the state loop to release residency and the tray hold directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotifyStatus {
+    Alive,
+    Retired,
+}
+
+/// Wakes the UI thread to re-render from `Shared::snapshot` and reports its
+/// lifecycle.
+pub type Notify = Box<dyn Fn() -> NotifyStatus + Send + Sync>;
 
 pub fn start<U>(
     handle: BrokerHandle,
@@ -121,7 +133,10 @@ fn run(
             .refreshed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
-        notify();
+        if notify() == NotifyStatus::Retired {
+            ui_disconnected(&shared, &handle);
+            return;
+        }
         match received.recv_timeout(POLL_INTERVAL) {
             Ok(MenuAction::SetIdle(minutes)) => {
                 action_detail = tray_settings::set_idle_minutes_in(&directory, minutes)
@@ -187,7 +202,7 @@ fn run(
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // The UI thread is gone, so the icon is too: drop the hold.
+                // The UI action channel is gone, so drop the hold and residency.
                 ui_disconnected(&shared, &handle);
                 return;
             }
@@ -305,6 +320,60 @@ mod tests {
 
         assert!(!shared.registered.load(Ordering::Acquire));
         assert!(!handle.is_resident());
+    }
+
+    #[test]
+    fn retired_ui_releases_residency_while_action_sender_is_still_alive() {
+        struct FinishOnDrop(BrokerHandle);
+
+        impl Drop for FinishOnDrop {
+            fn drop(&mut self) {
+                crate::rpc::test_support::finish(&self.0);
+            }
+        }
+
+        let handle = crate::rpc::test_support::handle();
+        let _cleanup = FinishOnDrop(handle.clone());
+        handle.set_resident(true);
+        let shared = Arc::new(Shared {
+            snapshot: Mutex::new(Snapshot::default()),
+            wanted: AtomicBool::new(true),
+            registered: AtomicBool::new(true),
+            refreshed: Mutex::new(Instant::now()),
+        });
+        let (actions, received) = mpsc::channel();
+        let actions_kept_alive = actions.clone();
+        let resident_before_retirement = handle.clone();
+        let notified = Arc::new(AtomicBool::new(false));
+        let notified_once = Arc::clone(&notified);
+        let handle_with_hold = handle.clone();
+
+        run(
+            handle.clone(),
+            None,
+            shared.clone(),
+            received,
+            Box::new(move || {
+                assert!(
+                    !notified_once.swap(true, Ordering::AcqRel),
+                    "retired UI must not be notified again"
+                );
+                assert!(resident_before_retirement.is_resident());
+                assert!(crate::rpc::test_support::tray_hold(&handle_with_hold).is_some());
+                assert!(actions_kept_alive
+                    .send(MenuAction::EndLocalSession("fixture-session".into()))
+                    .is_ok());
+                NotifyStatus::Retired
+            }),
+        );
+
+        assert!(
+            !handle.is_resident(),
+            "retirement must release residency immediately"
+        );
+        assert!(!shared.registered.load(Ordering::Acquire));
+        assert_eq!(crate::rpc::test_support::tray_hold(&handle), None);
+        drop(actions);
     }
 
     /// A host whose sessions are a set of ids; nothing else exists.

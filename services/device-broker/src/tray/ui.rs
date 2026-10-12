@@ -3,7 +3,7 @@
 //! of the state thread's snapshot and forwards menu commands; it never takes a
 //! broker lock and never calls the device controller.
 use super::model::{self, IconTone, MenuAction, MenuRow, Presentation, Snapshot};
-use super::state::{Notify, Shared};
+use super::state::{Notify, NotifyStatus, Shared};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -526,6 +526,7 @@ pub fn start(shared: Arc<Shared>, actions: mpsc::Sender<MenuAction>) -> Result<N
     Ok(Box::new(move || {
         // SAFETY: posting to a window handle is safe even after it is gone.
         unsafe { PostMessageW(window as HWND, REFRESH, 0, 0) };
+        NotifyStatus::Alive
     }))
 }
 
