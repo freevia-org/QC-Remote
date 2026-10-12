@@ -79,6 +79,14 @@ def atomic_json(path: pathlib.Path, data: dict[str, Any]) -> None:
     os.replace(temp, path)
     os.chmod(path, 0o600)
 
+def bounded_log_tail(path: pathlib.Path, limit: int = 8_000, lines: int = 30) -> str | None:
+    """Read a short diagnostic tail from a probe-owned log, if available."""
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    return "\n".join(content[-lines:])[-limit:] or None
+
 def finalize_outer_report(report_path: pathlib.Path, report: dict[str, Any], staging: pathlib.Path,
                           retain_staging: bool, run_id: str) -> None:
     """Remove only our owner-verified staging tree, then publish truthful cleanup state."""
@@ -567,10 +575,6 @@ def main() -> int:
         else:
             report.setdefault("failureStage", "sandbox_report")
             report.setdefault("failureCode", "ReportMissing")
-            try:
-                lines = (temp / "sandbox.log").read_text(encoding="utf-8", errors="replace").splitlines()
-                if lines: report["sandboxLogTail"] = "\n".join(lines[-30:])[-8000:]
-            except OSError: pass
         keep_temp = not (outer_clean and report.get("innerCleanupVerified") is True)
     except ProbeFailure as error:
         report["failureStage"], report["failureCode"] = error.stage, error.code
@@ -586,6 +590,9 @@ def main() -> int:
         keep_temp = not (outer_clean and report.get("innerCleanupVerified") is True)
     finally:
         if sandbox_log is not None: sandbox_log.close()
+        if report.get("ok") is not True:
+            tail = bounded_log_tail(temp / "sandbox.log")
+            if tail is not None: report["sandboxStderrTail"] = tail
         finalize_outer_report(args.report, report, temp, keep_temp, runid)
     return 0 if report.get("ok") is True else 1
 

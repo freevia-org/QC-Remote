@@ -52,7 +52,17 @@ jobs:
       - name: Test tray startup probe cleanup fixtures
         run: dbus-run-session -- python3 -m unittest scripts.test_linux_tray_startup -v
       - name: Probe disconnected tray startup lifecycle
-        run: python3 scripts/test-linux-tray-startup.py --broker target/debug/qc-device-broker --report "${RUNNER_TEMP}/tray-startup-runtime-probe.json"
+        run: |
+          report="${RUNNER_TEMP}/tray-startup-runtime-probe.json"
+          python3 scripts/test-linux-tray-startup.py --broker target/debug/qc-device-broker --report "$report" || {
+            probe_status=$?
+            if [[ -f "$report" ]]; then
+              cat "$report"
+            else
+              echo "Tray startup probe failed before writing its report."
+            fi
+            exit "$probe_status"
+          }
       - name: Test Debian package verification and cleanup
         run: python3 -m unittest scripts.test_package_linux_deb
       - name: Test Cargo test-executable selection
