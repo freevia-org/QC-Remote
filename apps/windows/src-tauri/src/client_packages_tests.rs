@@ -1182,7 +1182,10 @@ fn installation_fixture(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) 
         std::env::temp_dir().join(format!("qc-remote-install-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).expect("installation fixture directory");
-    (crate::tests::RemoveDirOnDrop::new(directory.clone()), directory)
+    (
+        crate::tests::RemoveDirOnDrop::new(directory.clone()),
+        directory,
+    )
 }
 
 fn executable_at(path: &Path) -> PathBuf {
@@ -2956,7 +2959,10 @@ fn bionic_fixture(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
         std::env::temp_dir().join(format!("qc-remote-bionic-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).expect("Bionic fixture directory");
-    (crate::tests::RemoveDirOnDrop::new(directory.clone()), directory)
+    (
+        crate::tests::RemoveDirOnDrop::new(directory.clone()),
+        directory,
+    )
 }
 
 /// A user-authored Bionic MCP server entry, unrelated to this app. Nothing
@@ -4167,7 +4173,10 @@ fn refresh_fixture(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
     ));
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).expect("route refresh fixture directory");
-    (crate::tests::RemoveDirOnDrop::new(directory.clone()), directory)
+    (
+        crate::tests::RemoveDirOnDrop::new(directory.clone()),
+        directory,
+    )
 }
 
 #[cfg(target_os = "linux")]

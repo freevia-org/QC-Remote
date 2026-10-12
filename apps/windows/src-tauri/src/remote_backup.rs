@@ -136,7 +136,10 @@ mod tests {
             rand::random::<u64>()
         ));
         let _ = fs::remove_dir_all(&directory);
-        (crate::tests::RemoveDirOnDrop::new(directory.clone()), directory)
+        (
+            crate::tests::RemoveDirOnDrop::new(directory.clone()),
+            directory,
+        )
     }
 
     #[tokio::test]

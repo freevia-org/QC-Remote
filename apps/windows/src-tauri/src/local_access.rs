@@ -2605,7 +2605,10 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).expect("scratch directory");
-        (crate::tests::RemoveDirOnDrop::new(directory.clone()), directory)
+        (
+            crate::tests::RemoveDirOnDrop::new(directory.clone()),
+            directory,
+        )
     }
 
     async fn error_body(response: Response) -> Value {
