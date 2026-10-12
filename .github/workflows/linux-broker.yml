@@ -126,7 +126,7 @@ jobs:
 
   linux-preview-release:
     name: Build Ubuntu preview release draft
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && inputs.build_linux_draft
+    if: github.event_name == 'workflow_dispatch' && inputs.build_linux_draft
     needs: [native-linux, linux-desktop-host]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -192,7 +192,7 @@ jobs:
             gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" \
               --bundle linux-build-provenance.sigstore.json \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/linux-broker.yml" \
-              --source-ref refs/heads/master --source-digest "$GITHUB_SHA" \
+              --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" \
               --deny-self-hosted-runners
           done
       - name: Create GitHub draft prerelease and upload verified package
