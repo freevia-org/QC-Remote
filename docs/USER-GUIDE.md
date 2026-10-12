@@ -116,7 +116,6 @@ sha256sum -c SHA256SUMS
 gh attestation verify qc-remote_0.1.185_amd64.deb \
   --repo freevia-org/QC-Remote \
   --signer-workflow freevia-org/QC-Remote/.github/workflows/linux-broker.yml \
-  --source-ref refs/heads/master \
   --deny-self-hosted-runners
 ```
 
