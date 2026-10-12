@@ -163,7 +163,7 @@ export async function untilUnitShows(gateway: Pick<GatewayTransport, "graphicsTr
   return false;
 }
 
-export type QcOpenOnUnit = "shown" | "busy" | "not-shown" | "no-route";
+export type QcOpenOnUnit = "shown" | "busy" | "not-shown" | "no-route" | "mismatch";
 export type QcOpenTarget = "io" | "preset-menu" | "settings" | "modes" | "tempo" | "cpu-monitor" | "directory" | "scene-selector" | "route-selector" | "midi-out" | "copy-scene" | "search" | "block-menu";
 export type QcCloseTarget = QcOpenTarget;
 
@@ -178,13 +178,10 @@ export interface QcRouteDetail {
 const G = QC_DEVICE_SCREEN_GESTURES;
 const { openIo, done, menuButton, modesHold } = G;
 
-/**
- * The preset menu remembers its scroll. Rows at the bottom (Settings, Tempo, CPU Monitor) and rows at the top (Preset
- * MIDI Out, Copy and Swap Scene) are never both visible, so a route scrolls to the end it needs before tapping a row,
- * and this records where the app last left it. It starts at the bottom, where the unit opens it.
- */
-let menuScroll: "bottom" | "top" = "bottom";
-export function resetQcMenuScroll(): void { menuScroll = "bottom"; }
+// The preset menu remembers its scroll, and the user's finger or another client can move it at any time. Rows at the
+// bottom (Settings, Tempo, CPU Monitor) and rows at the top (Preset MIDI Out, Copy and Swap Scene) are never both
+// visible, so every route scrolls to the extreme its row lives at immediately before tapping it and never relies on
+// where it believes the menu was left.
 
 const BOTTOM_ROWS = { settings: G.settingsRow, tempo: G.tempoRow, "cpu-monitor": G.cpuRow } as const;
 
@@ -250,18 +247,19 @@ export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, targ
     return "busy";
   }
   const top = target === "midi-out" || target === "copy-scene";
-  if (top !== (menuScroll === "top")) {
-    announce();
-    const drag = top ? G.menuScrollTop : G.menuScrollBottom;
-    await gateway.swipeScreen(drag.x, drag.y, drag.toX, drag.toY);
-    menuScroll = top ? "top" : "bottom";
-  }
+  announce();
+  const drag = top ? G.menuScrollTop : G.menuScrollBottom;
+  await gateway.swipeScreen(drag.x, drag.y, drag.toX, drag.toY);
   const row = target === "midi-out" ? G.midiOutRow : target === "copy-scene" ? (detail.swap ? G.swapSceneRow : G.copySceneRow) : BOTTOM_ROWS[target as keyof typeof BOTTOM_ROWS];
   await tap(row);
   if (await shows(target)) return "shown";
-  // The row was not where it was expected: leave the menu as it was found.
-  if (await unitScreen(gateway) === "preset-menu") await gateway.tapScreen(menuButton.x, menuButton.y);
-  return "not-shown";
+  // The row was not where it was expected. Read what the unit shows now and send nothing more into it.
+  const seen = await unitScreen(gateway);
+  if (seen === "preset-menu") { await gateway.tapScreen(menuButton.x, menuButton.y); return "not-shown"; }
+  if (seen === "grid") return "not-shown";
+  // Another screen opened. Settings, which a wrong row opens, is left by its header check alone and nothing is touched inside it.
+  if (seen === "settings" && target !== "settings") await gateway.tapScreen(done.x, done.y);
+  return "mismatch";
 }
 
 /**

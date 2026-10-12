@@ -162,6 +162,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
         // Armed just before the first touch, so a screen the unit never was asked for cannot be mistaken for one it was.
         const result = await openOnUnit(unit, poll, appKind as QcOpenTarget, () => destination.latch.expectUnit(appKind), detail);
         if (result === "busy") notice("Close the screen open on the Quad Cortex first; the app does not drive it from another screen.");
+        else if (result === "mismatch") { destination.latch.cancelUnit(appKind); notice("The Quad Cortex opened a different screen than the app did, so the app stopped sending touches. Check the unit."); }
         else if (result === "not-shown") { destination.latch.cancelUnit(appKind); notice("The Quad Cortex did not show the same screen."); }
       } else if (ROUTED.includes(previous)) {
         if (!await closeOnUnit(unit, poll, previous as QcCloseTarget, () => destination.latch.expectUnit("grid"), detail)) {

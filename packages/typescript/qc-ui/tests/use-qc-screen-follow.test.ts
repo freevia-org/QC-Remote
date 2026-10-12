@@ -4,7 +4,7 @@ import { register } from "node:module";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { QcStateUpdate } from "@qc-remote/core";
 import type { QcObservedScreenKind, QcScreenObservation } from "../src/use-adaptive-screen-polling.ts";
-import { createQcScreenLatch, resetQcMenuScroll } from "../src/qc-unit-screens.ts";
+import { createQcScreenLatch } from "../src/qc-unit-screens.ts";
 import type { QcScreenFollowOptions } from "../src/use-qc-screen-follow.ts";
 
 // Load the hook only after the test loader shares React with react-test-renderer.
@@ -28,14 +28,17 @@ interface Scenario {
   blockMenuOpen?: boolean; directorySearchOpen?: boolean; sceneCommand?: "copy" | "swap" | null;
   /** The unit shows its block editor as a bottom panel with the Grid above it. */
   panel?: boolean;
+  /** Where the unit's preset menu is really scrolled, whatever the app believes. */
+  menuScroll?: "bottom" | "top";
+  /** The unit ignores the menu drag. */
+  scrollStuck?: boolean;
 }
 
 function harness(initial: Scenario = {}) {
-  resetQcMenuScroll();
   const log: string[] = [];
   /** Runs after each touch the unit answers: the poller seeing the screen the unit passes through. */
   const watchers: Array<(unit: Unit) => void> = [];
-  const world = { unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: "bottom" as "bottom" | "top", rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", panel: initial.panel ?? false };
+  const world = { unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: (initial.menuScroll ?? "bottom") as "bottom" | "top", rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", stuck: initial.scrollStuck ?? false, panel: initial.panel ?? false };
   const state = { blockMenuOpen: initial.blockMenuOpen ?? false, directorySearchOpen: initial.directorySearchOpen ?? false, sceneCommand: (initial.sceneCommand ?? null) as "copy" | "swap" | null, view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, directoryOpen: initial.directoryOpen ?? false, routePicker: initial.routePicker as { row: number; side: string } | undefined, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
   const gateway = {
@@ -53,8 +56,8 @@ function harness(initial: Scenario = {}) {
       log.push(`tap:${x},${y}`);
       if (world.unitIgnores) return;
       if (x === 764 && y === 22) world.unit = world.unit === "Grid" ? "MainMenuPopup" : world.unit === "MainMenuPopup" ? "Grid" : world.unit;
-      else if (x === 600 && y === 406 && world.unit === "MainMenuPopup" && world.scroll === "bottom") world.unit = "SettingsDialog";
-      else if (x === 580 && y === 406 && world.unit === "MainMenuPopup" && world.scroll === "top") world.unit = "MidiMatrixDialog";
+      else if (x >= 560 && x <= 610 && y === 406 && world.unit === "MainMenuPopup" && world.scroll === "bottom") world.unit = "SettingsDialog";
+      else if (x >= 560 && x <= 610 && y === 406 && world.unit === "MainMenuPopup" && world.scroll === "top") world.unit = "MidiMatrixDialog";
       else if ((x === 582 && y === 286 || x === 582 && y === 346) && world.unit === "MainMenuPopup" && world.scroll === "top") { world.scene = y === 346 ? "swap" : "copy"; world.unit = "CopySceneDialog"; }
       else if (x === 400 && y === 300 && world.unit === "CopySceneDialog") world.unit = "Grid";
       else if (x === 634 && y === 30 && world.unit === "DirectoryDialog") world.unit = "SearchDialog";
@@ -73,7 +76,7 @@ function harness(initial: Scenario = {}) {
       for (const watch of watchers) watch(world.unit);
     },
     longTapScreen: async (x: number, y: number) => { log.push(`hold:${x},${y}`); if (!world.unitIgnores && world.unit === "Grid" && x === 700 && y === 70) world.unit = "HybridModeConfigDialog"; },
-    swipeScreen: async (x: number, y: number, toX: number, toY: number) => { log.push(`swipe:${x},${y},${toX},${toY}`); if (!world.unitIgnores && world.unit === "MainMenuPopup" && x === 600) world.scroll = toY > y ? "top" : "bottom"; }
+    swipeScreen: async (x: number, y: number, toX: number, toY: number) => { log.push(`swipe:${x},${y},${toX},${toY}`); if (!world.unitIgnores && world.unit === "MainMenuPopup" && x === 600 && !world.stuck) world.scroll = toY > y ? "top" : "bottom"; }
   } as unknown as QcScreenFollowOptions["gateway"];
   const named = (name: string, ...methods: string[]) => Object.fromEntries(methods.map((method) => [method, () => { log.push(`${name}.${method}`); }]));
   const workflowsFor = () => ({
@@ -245,7 +248,7 @@ test("Gig View on the unit opens and closes the app's Gig screen without touchin
 test("the user opening the preset menu, Settings or Modes in the app drives the unit there, without following setting", async () => {
   for (const [popup, settingsOpen, view, gestures, unit] of [
     ["grid-menu", undefined, undefined, ["tap:764,22"], "MainMenuPopup"],
-    [undefined, true, undefined, ["tap:764,22", "tap:600,406"], "SettingsDialog"],
+    [undefined, true, undefined, ["tap:764,22", "swipe:600,420,600,150", "tap:600,406"], "SettingsDialog"],
     [undefined, undefined, "modes", ["hold:700,70"], "HybridModeConfigDialog"]
   ] as const) {
     const host = harness({ follow: false, available: true, ready: true });
@@ -481,7 +484,7 @@ test("the CPU overlay is seen with the Grid still in the tree, and followed both
 });
 
 test("Settings opens on its Updates pane: the app's routes send only the menu, the row and the header check, never a touch in that pane", async () => {
-  const allowed = ["tap:764,22", "tap:600,406", "tap:743,30"];
+  const allowed = ["tap:764,22", "swipe:600,420,600,150", "tap:600,406", "tap:743,30"];
   const host = harness({ follow: false, available: true });
   await host.rerender({ settingsOpen: true });
   assert.equal(host.world.unit, "SettingsDialog");
@@ -677,4 +680,53 @@ test("with the setting off none of these screens moves the app, and the app stil
     assert.deepEqual(host.log, [], unit);
     host.renderer.unmount();
   }
+});
+
+test("every menu row is tapped only after its own scroll, whatever the unit's menu was left at: no remembered scroll is trusted", async () => {
+  // The unit's menu was left at the opposite end by a finger or another client.
+  const midi = harness({ follow: false, available: true, menuScroll: "bottom" });
+  await midi.rerender({ view: "midi-out" });
+  assert.equal(midi.world.unit, "MidiMatrixDialog");
+  assert.deepEqual(touches(midi), ["tap:764,22", "swipe:600,150,600,420", "tap:580,406"]);
+  midi.renderer.unmount();
+  const settings = harness({ follow: false, available: true, menuScroll: "top" });
+  await settings.rerender({ settingsOpen: true });
+  assert.equal(settings.world.unit, "SettingsDialog");
+  assert.deepEqual(touches(settings), ["tap:764,22", "swipe:600,420,600,150", "tap:600,406"]);
+  settings.renderer.unmount();
+  // The same route twice in a row scrolls both times: nothing is remembered between them.
+  const twice = harness({ follow: false, available: true });
+  await twice.rerender({ view: "midi-out" });
+  await twice.rerender({ view: null });
+  twice.log.length = 0;
+  await twice.rerender({ view: "midi-out" });
+  assert.deepEqual(touches(twice), ["tap:764,22", "swipe:600,150,600,420", "tap:580,406"]);
+  twice.renderer.unmount();
+  for (const [scenario, row] of [[{ tempoOpen: true }, "tap:610,286"], [{ view: "cpu-monitor" }, "tap:578,346"], [{ sceneCommand: "swap" as const }, "tap:582,346"]] as const) {
+    const host = harness({ follow: false, available: true, menuScroll: "scene" in scenario || "sceneCommand" in scenario ? "bottom" : "top" });
+    await host.rerender(scenario);
+    const drag = "sceneCommand" in scenario ? "swipe:600,150,600,420" : "swipe:600,420,600,150";
+    assert.deepEqual(touches(host), ["tap:764,22", drag, row]);
+    host.renderer.unmount();
+  }
+});
+
+test("a route that finds a different screen than it expected stops: Settings is left by its header check alone and nothing inside it is touched", async () => {
+  // The drag did not take: the menu stays at the bottom, so the Preset MIDI Out row is the Settings row.
+  const host = harness({ follow: false, available: true, menuScroll: "bottom", scrollStuck: true });
+  await host.rerender({ view: "midi-out" });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(touches(host), ["tap:764,22", "swipe:600,150,600,420", "tap:580,406", "tap:743,30"]);
+  assert.equal(host.world.unit, "Grid", "the header check was the only touch in Settings");
+  assert.ok(host.log.some((entry) => entry.startsWith("notice:The Quad Cortex opened a different screen")));
+  host.log.length = 0;
+  await host.rerender({ view: null });
+  assert.deepEqual(touches(host), [], "closing the app's screen taps nothing on a unit that does not show it");
+  host.renderer.unmount();
+  // Another screen than Settings is left exactly as found.
+  const other = harness({ follow: false, available: true, menuScroll: "top", scrollStuck: true });
+  await other.rerender({ tempoOpen: true });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.deepEqual(touches(other), ["tap:764,22", "swipe:600,420,600,150", "tap:610,286", "tap:764,22"], "a menu left as found, no further touch");
+  other.renderer.unmount();
 });
