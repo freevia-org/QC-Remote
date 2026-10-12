@@ -1406,7 +1406,7 @@ fn a_leftover_qc_control_broker_alongside_the_current_one_is_detected_and_report
 /// The file remains after release; no timestamp or PID grants unlink authority.
 const REAL_BROKER_TEST_LOCK_WAIT_BUDGET: Duration = Duration::from_secs(900);
 
-struct RealBrokerTestLock {
+pub(crate) struct RealBrokerTestLock {
     _file: fs::File,
 }
 
@@ -1428,7 +1428,7 @@ fn try_real_broker_test_lock(path: &Path) -> Result<Option<RealBrokerTestLock>, 
     }
 }
 
-fn serialize_real_broker_test() -> RealBrokerTestLock {
+pub(crate) fn serialize_real_broker_test() -> RealBrokerTestLock {
     let path = std::env::temp_dir().join("qc-shared-broker-test.lock");
     let started = Instant::now();
     let deadline = started + REAL_BROKER_TEST_LOCK_WAIT_BUDGET;
@@ -5770,6 +5770,21 @@ fn guarded_descriptor_path(name: &str) -> (RemoveDirOnDrop, PathBuf) {
 /// `Drop` on success and on a panic alike, and only reports, never fails.
 fn armed_broker_descriptor_path(name: &str) -> (CleanupStack, PathBuf) {
     let descriptor_path = test_descriptor_path(name);
+    let cleanup = armed_broker_teardown(&descriptor_path);
+    (cleanup, descriptor_path)
+}
+
+/// The teardown `armed_broker_descriptor_path` arms, for a test that builds
+/// its descriptor path itself (`local_stdio`'s headless hosts). The directory
+/// holding `descriptor_path` must be the test's own: it is removed whole.
+/// Bind the stack the same way, after the real-broker lock and before every
+/// client; the lock also keeps the process units it reserves from adding to
+/// another real-broker fixture's.
+pub(crate) fn armed_broker_teardown(descriptor_path: &Path) -> CleanupStack {
+    // The spawn sink is Windows-only, so elsewhere nothing is armed and the
+    // directory stays, as it always has.
+    #[cfg(not(windows))]
+    let _ = descriptor_path;
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cleanup = CleanupStack::default();
     #[cfg(windows)]
@@ -5780,7 +5795,7 @@ fn armed_broker_descriptor_path(name: &str) -> (CleanupStack, PathBuf) {
         });
         let (spawns, _sink) = arm_spawned_broker(
             &mut cleanup,
-            &descriptor_path,
+            descriptor_path,
             Duration::from_secs(12),
             TERMINATION_ACK_BOUND,
             SpawnInjection::default(),
@@ -5789,7 +5804,7 @@ fn armed_broker_descriptor_path(name: &str) -> (CleanupStack, PathBuf) {
         // Dropped first at teardown; the broker step keeps its own sink.
         cleanup.arm("spawn sink", move |_| drop(spawns));
     }
-    (cleanup, descriptor_path)
+    cleanup
 }
 
 /// The guard cleans up on a panic, not only on success, and

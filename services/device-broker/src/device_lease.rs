@@ -1005,12 +1005,15 @@ mod tests {
         create_directory(path)
     }
 
-    fn scratch(name: &str) -> PathBuf {
+    /// A record path in a directory of this test's own, removed by the
+    /// returned guard. It is named by the process id, so every run that did
+    /// not remove it left one more behind.
+    fn scratch(name: &str) -> (TestDirectory, PathBuf) {
         let dir = std::env::temp_dir().join(format!("qc-lease-{name}-{}", std::process::id()));
         let _ = create_test_directory(&dir);
         let path = dir.join("device-owner.json");
         let _ = std::fs::remove_file(&path);
-        path
+        (TestDirectory(dir), path)
     }
 
     fn holder(path: &Path) -> LeaseHolder {
@@ -1181,7 +1184,7 @@ mod tests {
 
     #[test]
     fn a_busy_device_names_a_live_holder_and_ignores_a_dead_one() {
-        let path = scratch("holder");
+        let (_directory, path) = scratch("holder");
         assert!(busy_detail(&path).contains("not attached"));
         let sleeper = Sleeper::start();
         write_record(&path, &sleeper.record());
@@ -1214,7 +1217,7 @@ mod tests {
 
     #[test]
     fn a_second_opener_defers_to_a_live_owner_and_never_touches_its_record() {
-        let path = scratch("defer");
+        let (_directory, path) = scratch("defer");
         let sleeper = Sleeper::start();
         let owner_record = sleeper.record();
         write_record(&path, &owner_record);
@@ -1244,7 +1247,7 @@ mod tests {
 
     #[test]
     fn a_waiting_opener_takes_over_after_the_owner_dies() {
-        let path = scratch("takeover");
+        let (_directory, path) = scratch("takeover");
         let mut sleeper = Sleeper::start();
         write_record(&path, &sleeper.record());
         let mut second = holder(&path);
@@ -1265,7 +1268,7 @@ mod tests {
 
     #[test]
     fn a_stale_record_with_a_dead_pid_or_reused_pid_is_ignored_and_replaced() {
-        let path = scratch("stale");
+        let (_directory, path) = scratch("stale");
         let dead = LeaseRecord {
             process_id: u32::MAX - 1,
             process_created_at: Some(1),
@@ -1299,7 +1302,7 @@ mod tests {
 
     #[test]
     fn the_owner_refreshes_and_restores_its_record_but_removes_only_its_own() {
-        let path = scratch("owner");
+        let (_directory, path) = scratch("owner");
         let mut owner = holder(&path);
         owner.acquire().unwrap();
         let first = read_record(&path).unwrap();
@@ -1320,7 +1323,7 @@ mod tests {
 
     #[test]
     fn dropping_the_holder_is_the_owners_clean_shutdown() {
-        let path = scratch("drop");
+        let (_directory, path) = scratch("drop");
         {
             let mut owner = holder(&path);
             owner.acquire().unwrap();
@@ -1329,15 +1332,18 @@ mod tests {
         assert!(!path.exists());
     }
 
-    fn two_roots(name: &str) -> (PathBuf, PathBuf) {
+    /// Both roots under one directory of this test's own, removed whole by
+    /// the returned guard.
+    fn two_roots(name: &str) -> (TestDirectory, PathBuf, PathBuf) {
         let base =
             std::env::temp_dir().join(format!("qc-lease-roots-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let program_data = base.join("ProgramData");
         let local = base.join("Local");
+        let directory = TestDirectory(base);
         create_test_directory(&program_data).unwrap();
         create_test_directory(&local).unwrap();
-        (program_data, local)
+        (directory, program_data, local)
     }
 
     fn packaged_copy(local: &Path) -> PathBuf {
@@ -1361,7 +1367,7 @@ mod tests {
 
     #[test]
     fn transition_lock_timeout_refuses_without_reaping_a_live_claim() {
-        let path = scratch("transition-timeout");
+        let (_directory, path) = scratch("transition-timeout");
         let targets = vec![path.clone()];
         let owner = LeaseTransitionGuard::acquire(&targets, Duration::from_millis(100)).unwrap();
         assert!(LeaseTransitionGuard::acquire(&targets, Duration::from_millis(50)).is_err());
@@ -1572,7 +1578,7 @@ mod tests {
 
     #[test]
     fn locations_put_the_record_in_the_shared_directory_and_list_every_other_copy() {
-        let (program_data, local) = two_roots("resolve");
+        let (_directory, program_data, local) = two_roots("resolve");
         let record = packaged_copy(&local);
         std::fs::write(&record, b"{}").unwrap();
         let locations = Locations::resolve(Some(&program_data), Some(&local));
@@ -1596,7 +1602,7 @@ mod tests {
 
     #[test]
     fn an_owner_recorded_only_in_a_packaged_processs_cache_is_deferred_to() {
-        let (program_data, local) = two_roots("packaged");
+        let (_directory, program_data, local) = two_roots("packaged");
         let sleeper = Sleeper::start();
         write_record(&packaged_copy(&local), &sleeper.record());
         let mut opener = shared_holder(&program_data, &local);
@@ -1618,7 +1624,7 @@ mod tests {
 
     #[test]
     fn an_owner_recorded_only_in_the_legacy_directory_is_deferred_to() {
-        let (program_data, local) = two_roots("legacy");
+        let (_directory, program_data, local) = two_roots("legacy");
         let sleeper = Sleeper::start();
         let legacy = local.join(APP_DIRECTORY);
         create_test_directory(&legacy).unwrap();
@@ -1629,7 +1635,7 @@ mod tests {
 
     #[test]
     fn a_dead_pid_in_any_location_is_ignored_and_the_open_proceeds() {
-        let (program_data, local) = two_roots("dead");
+        let (_directory, program_data, local) = two_roots("dead");
         let dead = LeaseRecord {
             process_id: u32::MAX - 1,
             process_created_at: Some(1),
@@ -1646,7 +1652,7 @@ mod tests {
 
     #[test]
     fn the_owner_writes_the_shared_record_and_its_mirror_and_removes_both() {
-        let (program_data, local) = two_roots("mirror");
+        let (_directory, program_data, local) = two_roots("mirror");
         let locations = Locations::resolve(Some(&program_data), Some(&local));
         let mut owner = shared_holder(&program_data, &local);
         owner.acquire().unwrap();
@@ -1664,7 +1670,7 @@ mod tests {
 
     #[test]
     fn shared_primary_holder_also_serializes_with_a_legacy_primary_constructor() {
-        let (program_data, local) = two_roots("legacy-transition-lock");
+        let (_directory, program_data, local) = two_roots("legacy-transition-lock");
         let locations = Locations::resolve(Some(&program_data), Some(&local));
         let shared = shared_holder(&program_data, &local);
         let legacy = LeaseHolder::new(locations.mirrors[0].clone(), "older device broker".into());
@@ -1686,7 +1692,7 @@ mod tests {
 
     #[test]
     fn releasing_never_removes_a_live_other_ownerss_mirror() {
-        let (program_data, local) = two_roots("othermirror");
+        let (_directory, program_data, local) = two_roots("othermirror");
         let locations = Locations::resolve(Some(&program_data), Some(&local));
         let mut owner = shared_holder(&program_data, &local);
         owner.acquire().unwrap();

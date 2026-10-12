@@ -2805,8 +2805,12 @@ mod tests {
 
     #[test]
     fn active_background_client_retains_one_shared_participant_and_idle_drops_it() {
+        let _serialize = crate::tests::serialize_real_broker_test();
         let directory = fresh_fixture_dir("background-participant");
         let descriptor = crate::device_broker_descriptor::device_broker_descriptor_path(&directory);
+        // Bound before the adapter, so it drops after it: the broker can end
+        // through its own grace period, then the directory goes.
+        let _cleanup = crate::tests::armed_broker_teardown(&descriptor);
         let device = HeadlessDeviceAdapter::new(descriptor, false);
         device.retain_while_used();
         let pid = device
@@ -2901,8 +2905,14 @@ mod tests {
     /// which a `--local-mcp-bridge` process never runs.
     #[test]
     fn a_headless_hosts_device_calls_reach_the_shared_broker() {
+        let _serialize = crate::tests::serialize_real_broker_test();
         let directory = fresh_fixture_dir("headless-shared-broker");
         let paths = vec![directory.join(STATE_FILE)];
+        // Bound before the host, so it drops after it: the broker can end
+        // through its own grace period, then the directory goes.
+        let _cleanup = crate::tests::armed_broker_teardown(
+            &crate::device_broker_descriptor::device_broker_descriptor_path(&directory),
+        );
         let hosted =
             attempt_headless_mcp_hosting(&paths, &test_settings(&directory, full_access()))
                 .expect("the bridge hosts");
@@ -3565,13 +3575,17 @@ mod tests {
 
     /// Control (HTTP): the `list_models` tool, relayed the same way,
     /// still lets B bring a broker up, as before. The broker opens no USB
-    /// session (`test_settings`); like C1 it may outlive the test by its
-    /// grace period, so the fixture is left in place.
+    /// session (`test_settings`); like C1 it outlives the bridges by its
+    /// grace period, which the teardown waits out before the fixture goes.
     #[test]
     fn a_relayed_tool_call_still_lets_the_hosting_bridge_start_a_broker() {
+        let _serialize = crate::tests::serialize_real_broker_test();
         let directory = fresh_fixture_dir("relayed-tool-call");
         let paths = vec![directory.join(STATE_FILE)];
         let settings = test_settings(&directory, full_access());
+        // Bound before both bridges, so it drops after them.
+        let _cleanup =
+            crate::tests::armed_broker_teardown(&settings.device_broker_descriptor_path());
         let hosting = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge B hosts");
         let device = hosting.device.clone();
         let relaying = relaying_bridge(&paths, &settings, "stdio-relaying-tool-call");
