@@ -180,7 +180,7 @@ test("every root the surface draws inside the display box is the shared canvas",
   const surface = read(join(uiSource, "quad-cortex-surface.tsx"));
   assert.equal(surface.match(/className="qc-screen-bezel|className=\{`qc-screen-bezel/g)?.length, 1, "one display box");
   const roots = surface.match(/className="qc-screen-fixture-root[^"]*"/g) ?? [];
-  assert.equal(roots.length, 4, "scene editor, screen content, fixture screen and live Grid are the only display roots");
+  assert.equal(roots.length, 5, "scene editor, screen content, fixture screen, live Grid and the dialog layer (Copy/Swap Scene) are the only display roots");
   assert.doesNotMatch(surface, /className=\{[^}]*qc-screen-fixture-root/, "a root never takes a conditional class that could skip the canvas rules");
   assert.match(surface, /presentation === "display" \? " is-display-only" : ""/);
 });

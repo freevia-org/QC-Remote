@@ -133,6 +133,8 @@ export interface QcDisplaySurfaceProps {
    * I/O Settings) to the same 800x480 coordinates on the physical QC. */
   onDeviceScreenGesture?: (x: number, y: number, toX: number, toY: number, kind: "tap" | "long-tap" | "swipe") => void;
   sceneEditor?: Omit<SceneQuickEditPopoverProps, "inDeviceDisplay">;
+  /** The Copy/Swap Scene dialog. It is drawn inside the display, over whatever screen is showing, at the unit's own geometry. */
+  sceneCommand?: ReactNode;
 }
 
 export type QuadCortexSurfaceProps = QcHostSurfaceProps & QcDisplaySurfaceProps;
@@ -1071,7 +1073,7 @@ function controlByRole(controls: HardwareControl[], role: string) { return contr
 // Edit Details focus their own name input instead.
 const GRID_MENU_FOCUS_TARGETS = new Set<string>(["settings", "tempo", "modes-configuration", "preset-midi-out", "cpu-monitor"]);
 
-export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, popup, onPopupChange, screenView = "grid", screenContent, cpuMonitor, deviceInformation, presentation = "hardware", onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, sceneEditor, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
+export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, popup, onPopupChange, screenView = "grid", screenContent, cpuMonitor, deviceInformation, presentation = "hardware", onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, sceneEditor, sceneCommand, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
   const scenes = formFactor.controls.filter((control) => control.group === "scene");
   const bankUp = controlByRole(formFactor.controls, "bank:up")!;
   const bankDown = controlByRole(formFactor.controls, "bank:down")!;
@@ -1250,6 +1252,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
       <button className="coros-lane-control-dismiss" aria-label="Close lane control panel" onClick={laneControlEditor.onClose} />
       <CorOsLaneControlPanel state={laneControlEditor} />
     </>}{expressionAssignment && <CorOsExpressionAssignment assignment={expressionAssignment} />}</div>}
+      {sceneCommand && <div className="qc-screen-fixture-root is-canonical-canvas is-overlay-layer">{sceneCommand}</div>}
     </div>
     <div className="screen-nav-control"><QcUiIcon kind="up" className="nav-arrow nav-arrow-up" /><QcHardwareSwitch role={bankUp.role} label="BANK UP" compact active={Boolean(parameterEditor)} assigned={Boolean(parameterEditor)} accent={navigationLedColor} onAction={onAction} /><QcUiIcon kind="down" className="nav-arrow nav-arrow-down" /></div>
     <div className="footswitch-deck">

@@ -37,7 +37,7 @@
  * dimming, since the ghost itself is not redrawn.
  */
 
-.scene-command-overlay { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.scene-command-overlay { position: absolute; z-index: 90; inset: 0; display: grid; place-items: center; pointer-events: none; }
 .scene-command-scrim { position: absolute; inset: 0; background: var(--qc-palette-424142); opacity: .55; }
 
 .scene-command-panel {
@@ -47,8 +47,9 @@
      height is a cap rather than a fixed box because the destination list
      below is this app's own addition (see its own comment) and can run
      longer than the panel's original fixed height ever needed to. */
-  width: min(420px, 90vw);
-  max-height: min(320px, 70vh);
+  /* The overlay is drawn inside the display's 800x480 canvas, so these are the unit's own pixels. */
+  width: 420px;
+  max-height: 320px;
   display: flex;
   flex-direction: column;
   /* 5.5cqw 4cqw 3.8cqw 4cqw -> 44px 32px 30px 32px, border:0, both from the
@@ -138,16 +139,15 @@
  * centered destination panel. See SceneQuickEditPopover's own module
  * comment in scene-editor.tsx for the two judgment calls (the reserved red
  * "confirm color" slot, and the keyboard's scope cuts) this geometry backs. */
-.scene-label-dialog-overlay { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; }
-.scene-label-dialog-overlay.is-device-screen { position: absolute; z-index: 2; }
+/* Drawn inside the display only (its sole mount is the surface's scene-editor canvas); never against the window. */
+.scene-label-dialog-overlay { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; }
 .scene-label-dialog-scrim { position: absolute; inset: 0; background: var(--qc-palette-424142); opacity: .55; }
 .scene-label-dialog-panel {
   position: relative;
   container-type: inline-size;
   box-sizing: border-box;
-  width: min(800px, 96vw);
-  aspect-ratio: 800 / 480;
-  max-height: 94vh;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   border: 0;
   border-radius: 10px;
@@ -155,7 +155,7 @@
   color: var(--qc-screen-text-primary);
   font-family: var(--qc-font-device-plain);
 }
-.scene-label-dialog-overlay.is-device-screen .scene-label-dialog-panel { width: 100%; height: 100%; max-height: none; border-radius: 0; }
+.scene-label-dialog-overlay.is-device-screen .scene-label-dialog-panel { border-radius: 0; }
 
 /* Header: X (8-73px), a fixed red "apply color" button (92-157px), 7
  * selectable swatches (166-675px, 74px pitch), then Save (694-791px) - all
