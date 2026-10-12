@@ -142,7 +142,16 @@ export function createQcScreenLatch(now: () => number = Date.now, ttlMs = 10_000
 
 // ----------------------------------------------------------------------------------------------- the unit's screen
 
-export interface QcScreenPoll { intervalMs: number; timeoutMs: number }
+export interface QcScreenPoll {
+  intervalMs: number;
+  timeoutMs: number;
+  /** How long the preset menu is given to settle after each scroll drag (default 1500 ms). */
+  scrollSettleMs?: number;
+  /** The wait between the last drag and the row tap, which the unit ignores while the scroll animates (default 1000 ms). */
+  rowDelayMs?: number;
+  /** How long the expected dialog is waited for after the row tap (default 3000 ms). */
+  rowTimeoutMs?: number;
+}
 export const DEFAULT_SCREEN_POLL: QcScreenPoll = { intervalMs: 250, timeoutMs: 2_500 };
 
 type RouteGateway = Pick<GatewayTransport, "graphicsTree" | "tapScreen" | "swipeScreen" | "longTapScreen">;
@@ -247,15 +256,22 @@ export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, targ
     return "busy";
   }
   const top = target === "midi-out" || target === "copy-scene";
+  // One drag does not reach the end of the menu (it stops part way), so two are sent, each given time to settle,
+  // and the row is tapped only after a further wait: a touch during the scroll animation is ignored.
   announce();
   const drag = top ? G.menuScrollTop : G.menuScrollBottom;
-  await gateway.swipeScreen(drag.x, drag.y, drag.toX, drag.toY);
+  for (let pass = 0; pass < 2; pass += 1) {
+    await gateway.swipeScreen(drag.x, drag.y, drag.toX, drag.toY);
+    await sleep(poll.scrollSettleMs ?? 1_500);
+  }
+  await sleep(poll.rowDelayMs ?? 1_000);
   const row = target === "midi-out" ? G.midiOutRow : target === "copy-scene" ? (detail.swap ? G.swapSceneRow : G.copySceneRow) : BOTTOM_ROWS[target as keyof typeof BOTTOM_ROWS];
   await tap(row);
-  if (await shows(target)) return "shown";
+  // One tap only: if the dialog does not appear it is not tapped for again.
+  if (await untilUnitShows(gateway, { intervalMs: poll.intervalMs, timeoutMs: poll.rowTimeoutMs ?? 3_000 }, (kind) => kind === target)) return "shown";
   // The row was not where it was expected. Read what the unit shows now and send nothing more into it.
   const seen = await unitScreen(gateway);
-  if (seen === "preset-menu") { await gateway.tapScreen(menuButton.x, menuButton.y); return "not-shown"; }
+  if (seen === "preset-menu") { await gateway.tapScreen(menuButton.x, menuButton.y); return "mismatch"; }
   if (seen === "grid") return "not-shown";
   // Another screen opened. Settings, which a wrong row opens, is left by its header check alone and nothing is touched inside it.
   if (seen === "settings" && target !== "settings") await gateway.tapScreen(done.x, done.y);
