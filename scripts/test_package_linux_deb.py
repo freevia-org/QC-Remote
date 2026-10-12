@@ -271,6 +271,81 @@ class PackageSafetyTests(unittest.TestCase):
                     expected_hashes={"/usr/bin/qc-remote": hashlib.sha256(app).hexdigest()},
                 )
 
+    def test_full_package_verifies_the_exact_staged_broker_after_tauri_rebuilds_target(self) -> None:
+        for tamper_staged_package in (False, True):
+            with self.subTest(tamper_staged_package=tamper_staged_package), tempfile.TemporaryDirectory(
+                prefix="qc-deb-rebuilt-sidecar-"
+            ) as temporary:
+                root = Path(temporary)
+                app = root / "app"
+                target_dir = root / "target"
+                rules = root / "70-qc-remote.rules"
+                app.mkdir()
+                rules.write_bytes(b"scoped udev rules")
+                target = "x86_64-unknown-linux-gnu"
+                broker_path = target_dir / target / "release/qc-device-broker"
+                app_path = target_dir / target / "release/qc-remote"
+                original_broker = b"the verified broker that was staged"
+                tauri_rebuilt_broker = b"the broker Cargo rebuilt during Tauri bundling"
+                bundle_marker = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
+                patched_app = b"app-prefix" + b"__TAURI_BUNDLE_TYPE_VAR_DEB" + b"app-suffix"
+
+                def fake_run_owned(command, *, cwd, timeout, env=None):
+                    if command[:2] == ["rustc", "-vV"]:
+                        return "host: x86_64-unknown-linux-gnu\n"
+                    if command[:3] == ["npm", "run", "build"]:
+                        return ""
+                    if command[:2] == ["cargo", "build"]:
+                        broker_path.parent.mkdir(parents=True)
+                        broker_path.write_bytes(original_broker)
+                        broker_path.chmod(0o700)
+                        app_path.write_bytes(b"app-prefix" + bundle_marker + b"app-suffix")
+                        app_path.chmod(0o700)
+                        return ""
+                    if command[:3] == ["npm", "run", "tauri:build"]:
+                        sidecar_path = app / "binaries" / f"qc-device-broker-{target}"
+                        packaged_broker = sidecar_path.read_bytes()
+                        if tamper_staged_package:
+                            packaged_broker += b" altered"
+                        # Tauri recompiles the Cargo-discovered binary after
+                        # the external sidecar was staged. The Debian bundle
+                        # must still contain the exact staged external binary.
+                        broker_path.write_bytes(tauri_rebuilt_broker)
+                        deb_dir = target_dir / target / "release/bundle/deb"
+                        deb_dir.mkdir(parents=True)
+                        _fixture_deb(
+                            deb_dir / "candidate.deb",
+                            {
+                                "/usr/bin/qc-remote": patched_app,
+                                "/usr/bin/qc-device-broker": packaged_broker,
+                                package_linux_deb.PACKAGE_RULE_PATH: rules.read_bytes(),
+                            },
+                        )
+                        return ""
+                    if len(command) == 2 and command[1] == "--self-check":
+                        return ""
+                    raise AssertionError(f"unexpected package command: {command!r}")
+
+                with (
+                    patch.object(package_linux_deb, "APP", app),
+                    patch.object(package_linux_deb, "RULES", rules),
+                    patch.object(package_linux_deb, "run_owned", side_effect=fake_run_owned),
+                    patch.dict(
+                        os.environ,
+                        {"CARGO_TARGET_DIR": str(target_dir), "RUSTUP_TOOLCHAIN": "stable"},
+                    ),
+                ):
+                    if tamper_staged_package:
+                        with self.assertRaisesRegex(package_linux_deb.PackageError, "unexpected binary bytes"):
+                            package_linux_deb.package(timeout=30)
+                    else:
+                        result = package_linux_deb.package(timeout=30)
+                        self.assertTrue(result.is_file())
+                    self.assertFalse(
+                        (app / "binaries" / f"qc-device-broker-{target}").exists(),
+                        "temporary staged sidecar survived package verification",
+                    )
+
     def test_staged_sidecar_is_removed_after_package_failure(self) -> None:
         with tempfile.TemporaryDirectory(prefix="qc-deb-stage-") as temporary:
             root = Path(temporary)

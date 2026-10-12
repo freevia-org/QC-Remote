@@ -171,6 +171,15 @@ def stage_sidecar(source: Path, destination: Path) -> Iterator[Path]:
                 pass
 
 
+@contextlib.contextmanager
+def stage_sidecar_with_digest(
+    source: Path, destination: Path
+) -> Iterator[tuple[Path, str]]:
+    """Yield the staged external binary and the digest of those exact bytes."""
+    with stage_sidecar(source, destination) as staged:
+        yield staged, sha256_file(staged)
+
+
 def expected_deb_app_sha256(source: Path, destination: Path) -> str:
     """Hash Tauri 2.11.5's DEB marker image without changing the app binary.
 
@@ -555,7 +564,7 @@ def package(
         path: (path.stat().st_dev, path.stat().st_ino, path.stat().st_size, path.stat().st_mtime_ns)
         for path in deb_dir.glob("*.deb")
     } if deb_dir.is_dir() else {}
-    with stage_sidecar(broker_binary, staged):
+    with stage_sidecar_with_digest(broker_binary, staged) as (_staged, expected_broker_hash):
         package_env = {key: value for key, value in os.environ.items() if key != "TAURI_CONFIG"}
         package_env["RUSTUP_TOOLCHAIN"] = toolchain
         run_owned(
@@ -582,7 +591,11 @@ def package(
             target_dir / target / "release/qc-remote",
             target_dir / target / "release/qc-remote-expected-deb",
         ),
-        "/usr/bin/qc-device-broker": sha256_file(broker_binary),
+        # Tauri builds the Cargo-discovered broker binary while bundling, then
+        # copies the staged externalBin over that same Debian destination. The
+        # target output can therefore differ from the staged package input by
+        # verification time; pin the digest before invoking Tauri.
+        "/usr/bin/qc-device-broker": expected_broker_hash,
         PACKAGE_RULE_PATH: sha256_file(RULES),
     }
     verify_deb(packages[0], target=target, expected_hashes=expected_hashes)
