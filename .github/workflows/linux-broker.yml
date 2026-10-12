@@ -29,7 +29,7 @@ jobs:
       - name: Install isolated tray probe dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap dbus-daemon gir1.2-glib-2.0 python3-gi
+          sudo apt-get install --yes apparmor-utils bubblewrap dbus-daemon gir1.2-glib-2.0 python3-gi
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy, rustfmt
@@ -54,7 +54,7 @@ jobs:
       - name: Probe disconnected tray startup lifecycle
         run: |
           report="${RUNNER_TEMP}/tray-startup-runtime-probe.json"
-          python3 scripts/test-linux-tray-startup.py --broker target/debug/qc-device-broker --report "$report" || {
+          python3 scripts/run-linux-tray-probe.py --broker target/debug/qc-device-broker --report "$report" || {
             probe_status=$?
             if [[ -f "$report" ]]; then
               cat "$report"

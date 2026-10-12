@@ -1,4 +1,6 @@
 import importlib.util
+import argparse
+import os
 import pathlib
 import shutil
 import subprocess
@@ -12,9 +14,110 @@ spec = importlib.util.spec_from_file_location("tray_startup_probe", SCRIPT)
 probe = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = probe
 spec.loader.exec_module(probe)
+RUNNER = pathlib.Path(__file__).with_name("run-linux-tray-probe.py")
+runner_spec = importlib.util.spec_from_file_location("tray_probe_runner", RUNNER)
+runner = importlib.util.module_from_spec(runner_spec)
+runner_spec.loader.exec_module(runner)
 
 
 class ProbeCleanupTests(unittest.TestCase):
+    def test_ephemeral_apparmor_profile_unloads_and_removes_copy_when_probe_fails(self):
+        with tempfile.TemporaryDirectory(prefix="qc-tray-profile-cleanup-test-") as root:
+            root_path = pathlib.Path(root)
+            runner_temp = root_path / "runner-temp"
+            runner_temp.mkdir()
+            fake_bwrap = root_path / "bwrap-source"
+            fake_bwrap.write_bytes(b"fake bwrap")
+            commands = []
+
+            def record_command(argv, **kwargs):
+                commands.append(argv)
+                return subprocess.CompletedProcess(argv, 0)
+
+            args = argparse.Namespace(probe="probe.py", broker="broker", report="report.json")
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(runner_temp)}), \
+                 mock.patch.object(runner.shutil, "which", side_effect=lambda name: str(fake_bwrap) if name == "bwrap" else "/usr/bin/apparmor_parser"), \
+                 mock.patch.object(runner, "needs_userns_profile", return_value=True), \
+                 mock.patch.object(runner, "emit_runner_facts"), \
+                 mock.patch.object(runner.shutil, "copy2", side_effect=lambda _src, dst: pathlib.Path(dst).write_bytes(b"private copy")), \
+                 mock.patch.object(runner.subprocess, "run", side_effect=record_command), \
+                 mock.patch.object(runner, "run_owned_probe", return_value=17) as probe_call:
+                self.assertEqual(runner.run_probe(args), 17)
+
+            self.assertEqual(len(commands), 2)
+            self.assertEqual(commands[0][1], "-n")
+            self.assertEqual(commands[1][1], "-n")
+            self.assertEqual(commands[0][3], "-r")
+            self.assertEqual(commands[1][3], "-R")
+            self.assertEqual(commands[0][4], commands[1][4])
+            self.assertFalse(pathlib.Path(commands[0][4]).exists())
+            self.assertEqual(list(runner_temp.iterdir()), [])
+            self.assertEqual(probe_call.call_count, 1)
+            self.assertIn("QC_TRAY_PROBE_BWRAP", probe_call.call_args.args[1])
+
+    def test_interruption_is_forwarded_only_to_owned_probe_and_returns_signal_status(self):
+        handlers = {}
+
+        class FakeProbe:
+            pid = 4123
+            sent = []
+            complete = False
+            def poll(self): return -2 if self.complete else None
+            def send_signal(self, signum): self.sent.append(signum)
+            def wait(self, *args, **kwargs):
+                handlers[runner.signal.SIGTERM](runner.signal.SIGTERM, None)
+                self.complete = True
+                return -2
+
+        child = FakeProbe()
+        def fake_signal(signum, handler):
+            previous = handlers.get(signum, runner.signal.SIG_DFL)
+            handlers[signum] = handler
+            return previous
+
+        with mock.patch.object(runner.subprocess, "Popen", return_value=child), \
+             mock.patch.object(runner, "owned_start_ticks", return_value="owned-start"), \
+             mock.patch.object(runner.signal, "signal", side_effect=fake_signal):
+            self.assertEqual(runner.run_owned_probe(["probe"], {}), 143)
+        self.assertEqual(child.sent, [runner.signal.SIGINT])
+
+    def test_profile_unloads_and_staging_disappears_when_interrupted_during_profile_load(self):
+        with tempfile.TemporaryDirectory(prefix="qc-tray-profile-interrupt-test-") as root:
+            root_path = pathlib.Path(root)
+            runner_temp = root_path / "runner-temp"
+            runner_temp.mkdir()
+            fake_bwrap = root_path / "bwrap-source"
+            fake_bwrap.write_bytes(b"fake bwrap")
+            commands = []
+            handlers = {}
+
+            def record_command(argv, **kwargs):
+                commands.append(argv)
+                if argv[3] == "-r":
+                    handlers[runner.signal.SIGTERM](runner.signal.SIGTERM, None)
+                return subprocess.CompletedProcess(argv, 0)
+
+            def fake_signal(signum, handler):
+                previous = handlers.get(signum, runner.signal.SIG_DFL)
+                handlers[signum] = handler
+                return previous
+
+            args = argparse.Namespace(probe="probe.py", broker="broker", report="report.json")
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(runner_temp)}), \
+                 mock.patch.object(runner.shutil, "which", side_effect=lambda name: str(fake_bwrap) if name == "bwrap" else "/usr/bin/apparmor_parser"), \
+                 mock.patch.object(runner, "needs_userns_profile", return_value=True), \
+                 mock.patch.object(runner, "emit_runner_facts"), \
+                 mock.patch.object(runner.shutil, "copy2", side_effect=lambda _src, dst: pathlib.Path(dst).write_bytes(b"private copy")), \
+                 mock.patch.object(runner.subprocess, "run", side_effect=record_command), \
+                 mock.patch.object(runner.signal, "signal", side_effect=fake_signal), \
+                 mock.patch.object(runner, "run_owned_probe") as probe_call:
+                with self.assertRaises(runner.ProbeInterrupted):
+                    runner.run_probe(args)
+            probe_call.assert_not_called()
+            self.assertEqual([command[3] for command in commands], ["-r", "-R"])
+            self.assertFalse(pathlib.Path(commands[0][4]).exists())
+            self.assertEqual(list(runner_temp.iterdir()), [])
+
     def test_bounded_diagnostic_tail_keeps_only_recent_lines_and_bytes(self):
         with tempfile.TemporaryDirectory(prefix="qc-tray-log-tail-test-") as root:
             log = pathlib.Path(root) / "sandbox.log"
