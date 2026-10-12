@@ -23,7 +23,7 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 | --- | --- | --- | --- |
 | Windows 10/11, x64 | 0.1.182 | [Signed installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/QC-Remote-Windows-0.1.182-x64-setup.exe) | Microsoft Store: pending |
 | Ubuntu 24.04, x86_64 | 0.1.186 | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.186/qc-remote_0.1.186_amd64.deb) | — |
-| Android 7.0+, USB host/OTG | 0.3.36 | [Signed APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/qc-remote-0.3.36.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote): in Google Play review; link may not open until the listing is approved |
+| Android 7.0+, USB host/OTG | 0.3.36 GitHub APK; 0.3.37 (build 42) internal test | [Signed APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/qc-remote-0.3.36.apk) | [Invited Google Play test](https://play.google.com/apps/internaltest/4701527491652130240); [public listing](https://play.google.com/store/apps/details?id=org.freevia.qcremote) pending review |
 
 The Windows and Android downloads remain on the stable
 [v0.1.182 release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.182).
