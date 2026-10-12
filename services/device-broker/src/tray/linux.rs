@@ -98,9 +98,7 @@ impl LinuxTray {
     fn icon(&self) -> Icon {
         let snapshot = self.snapshot();
         let mut data = model::tone_rgba(model::icon_tone(&snapshot), self.sync_frame);
-        for pixel in data.chunks_exact_mut(4) {
-            pixel.rotate_right(1); // RGBA -> ARGB, as required by SNI.
-        }
+        rgba_to_argb(&mut data);
         Icon {
             width: model::ICON_SIZE as i32,
             height: model::ICON_SIZE as i32,
@@ -120,6 +118,14 @@ impl LinuxTray {
         } else {
             0
         };
+    }
+}
+
+fn rgba_to_argb(data: &mut [u8]) {
+    let (pixels, remainder) = data.as_chunks_mut::<4>();
+    debug_assert!(remainder.is_empty(), "RGBA icon data has whole pixels");
+    for pixel in pixels {
+        pixel.rotate_right(1); // RGBA -> ARGB, as required by SNI.
     }
 }
 
@@ -326,6 +332,13 @@ fn escape_markup(text: &str) -> String {
 mod tests {
     use super::*;
     use ksni::Tray;
+
+    #[test]
+    fn icon_pixels_are_reordered_from_rgba_to_argb_without_crossing_boundaries() {
+        let mut pixels = [1, 2, 3, 4, 10, 20, 30, 40];
+        rgba_to_argb(&mut pixels);
+        assert_eq!(pixels, [4, 1, 2, 3, 40, 10, 20, 30]);
+    }
 
     #[test]
     fn markup_from_device_status_is_not_interpreted_by_the_desktop() {

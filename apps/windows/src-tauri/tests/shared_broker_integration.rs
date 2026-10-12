@@ -511,8 +511,36 @@ fn spike_root(name: &str) -> PathBuf {
             .unwrap()
             .as_nanos()
     ));
-    fs::create_dir_all(&root).expect("spike scratch directory");
+    create_private_test_directory(&root).expect("private spike scratch directory");
     root
+}
+
+fn create_private_test_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder.create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir(path)
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn broker_test_roots_are_private_for_the_linux_directory_guard() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = spike_root("owner-mode");
+    let result = fs::metadata(&root)
+        .map(|metadata| metadata.permissions().mode() & 0o777)
+        .expect("test root metadata");
+    fs::remove_dir(&root).expect("remove owned empty test root");
+    assert_eq!(result, 0o700, "broker descriptor roots must be private");
 }
 
 #[test]
@@ -688,11 +716,14 @@ fn two_real_processes_converge_on_one_shared_broker_and_survive_host_handoff() {
     let harness_binary = locate_harness_binary();
 
     let root = env::temp_dir().join(format!(
-        "qc-shared-broker-integration-test-{}",
-        std::process::id()
+        "qc-shared-broker-integration-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).expect("test root directory");
+    create_private_test_directory(&root).expect("private test root directory");
     // Next to `device-broker.json`, exactly the pairing
     // `device_broker_election_path` (`descriptor_path.with_extension
     // ("election")`) produces in the app itself.

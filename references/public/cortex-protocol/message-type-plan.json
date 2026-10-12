@@ -27,7 +27,6 @@
     { "number": 47, "name": "Confirmation", "category": "unestablished" },
     { "number": 55, "name": "GigViewButton", "category": "unestablished" },
     { "number": 59, "name": "PresetSpeedTest", "category": "unestablished" },
-    { "number": 61, "name": "UpdaterForward", "category": "cloud" },
     { "number": 62, "name": "GainCalibration", "category": "factory" },
     { "number": 63, "name": "NeuralCapture2", "category": "unestablished" },
     { "number": 64, "name": "Serialization", "category": "factory" },
