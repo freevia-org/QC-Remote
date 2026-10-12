@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const uiSource = fileURLToPath(new URL("../../src/", import.meta.url));
+export const uiSource = fileURLToPath(new URL("../../src/", import.meta.url));
 const themeCss = fileURLToPath(new URL("../../../qc-theme/src/theme.css", import.meta.url));
-const windowsStyles = fileURLToPath(new URL("../../../../../apps/windows/src/styles.css", import.meta.url));
-const androidStyles = fileURLToPath(new URL("../../../../../apps/android/src/styles.css", import.meta.url));
+export const windowsStyles = fileURLToPath(new URL("../../../../../apps/windows/src/styles.css", import.meta.url));
+export const androidStyles = fileURLToPath(new URL("../../../../../apps/android/src/styles.css", import.meta.url));
 
 export const VIEWPORTS = [[1440, 820], [920, 640], [390, 844], [844, 390]] as const;
 export const SCREENS = ["live-grid", "settings-device", "directory-presets", "device-search"] as const;
@@ -89,7 +89,7 @@ export async function render(screen, presentation) {
 }
 
 /** What each host puts around the display: a container, and nothing else the display reads. */
-function hostBody(host: HostName, surface: string): string {
+export function hostBody(host: HostName, surface: string): string {
   return host === "windows"
     ? `<div id="root"><div class="app-shell"><div class="menu-bar"></div><div class="app-content"><main class="workspace view-fit">${surface}</main></div><div class="status-strip">status</div></div></div>`
     : `<div id="root"><main class="android-app"><header class="mobile-header"><div class="mobile-brand"><span><strong>QC Remote</strong><small>v0</small></span></div></header><section class="mobile-screen">${surface}</section><div class="quick-controls"></div><div class="mobile-status-notice">notice</div></main></div>`;
@@ -140,7 +140,7 @@ export interface DisplayMeasurement {
 type CdpMessage = { id?: number; method?: string; sessionId?: string; result?: any; error?: { message: string } };
 
 /** A tiny Chrome DevTools Protocol client: enough to open pages at a viewport size and evaluate a script in them. */
-async function withBrowser<T>(browser: string, workDirectory: string, browserArguments: string[], run: (page: (viewport: readonly [number, number], url: string, script: string) => Promise<unknown>) => Promise<T>): Promise<T> {
+export async function withBrowser<T>(browser: string, workDirectory: string, browserArguments: string[], run: (page: (viewport: readonly [number, number], url: string, script: string) => Promise<unknown>) => Promise<T>): Promise<T> {
   const profile = join(workDirectory, `profile-${Math.random().toString(36).slice(2)}`);
   mkdirSync(profile, { recursive: true });
   const child = spawn(browser, ["--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, ...browserArguments, "about:blank"], { stdio: "ignore" });

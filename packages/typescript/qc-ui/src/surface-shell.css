@@ -90,8 +90,8 @@
 .scene-indicator[aria-expanded="true"] span { box-shadow: 0 0 0 2px var(--qc-palette-35d86b); }
 .mode-readout { grid-column: 1 / -1; justify-self: end; display: flex; align-items: center; gap: .4em; color: var(--qc-palette-e7e7e7); font-size: clamp(6px, .65vw, 11px); font-weight: 700; letter-spacing: .05em; }
 .mode-readout svg { width: 1.55em; height: 1.55em; flex: 0 0 auto; }
-.scene-dropdown { position: absolute; z-index: 20; right: 10%; top: 75%; width: clamp(145px, 19vw, 270px); padding: 3%; border-radius: 6px; background: var(--qc-palette-3a3a3b); box-shadow: 0 12px 30px var(--qc-palette-000c); }
-.scene-dropdown button { width: 100%; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: .65em; padding: 4.5% 5%; border: 0; border-radius: 3px; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font-size: clamp(7px, .72vw, 12px); cursor: pointer; }
+.scene-dropdown { position: absolute; z-index: 20; right: 10%; top: 75%; width: 29cqw; padding: 3%; border-radius: 6px; background: var(--qc-palette-3a3a3b); box-shadow: 0 12px 30px var(--qc-palette-000c); }
+.scene-dropdown button { width: 100%; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: .65em; padding: 4.5% 5%; border: 0; border-radius: 3px; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font-size: 1.5cqw; cursor: pointer; }
 .scene-dropdown button:hover, .scene-dropdown button.is-active { background: var(--qc-palette-4b4b4c); }
 .scene-dropdown button span { display: grid; place-items: center; width: 1.65em; aspect-ratio: 1; border-radius: 3px; background: var(--qc-scene-badge); color: var(--qc-palette-151515); font-weight: 800; }
 /* A dropdown dismisses on any outside tap and swallows it: without this layer the tap fell through to the control under the menu (an Add-device cell). Clear, so it adds no wash the unit does not draw. */
@@ -114,7 +114,7 @@
 .coros-block.is-selected { border-color: var(--qc-palette-ededed); box-shadow: 0 0 0 1px var(--qc-palette-ededed), 0 0 0 3px var(--qc-palette-070707); }
 .coros-block.is-bypassed { opacity: .27; filter: saturate(.15); }
 .empty-slot { opacity: 1; color: var(--qc-utility-mark); border-color: var(--qc-screen); background: var(--qc-route-pill); font-size: clamp(11px, 1.3vw, 20px); }
-.block-tooltip { position: absolute; z-index: 12; left: 50%; bottom: -42%; max-width: 130px; padding: 3px 6px; border-radius: 3px; background: var(--qc-palette-303032); color: var(--qc-primary-text); font-size: clamp(5px, .47vw, 8px); white-space: nowrap; opacity: 0; pointer-events: none; transform: translateX(-50%); transition: opacity .1s; }
+.block-tooltip { position: absolute; z-index: 12; left: 50%; bottom: -42%; max-width: 130px; padding: 3px 6px; border-radius: 3px; background: var(--qc-palette-303032); color: var(--qc-primary-text); font-size: 1cqw; white-space: nowrap; opacity: 0; pointer-events: none; transform: translateX(-50%); transition: opacity .1s; }
 .coros-block:hover .block-tooltip, .coros-block:focus-visible .block-tooltip { opacity: 1; }
 
 .screen-nav-control { position: absolute; z-index: 3; top: 18%; right: 5.2%; width: 9.5%; height: 27%; display: grid; grid-template-rows: 12% 1fr 12%; place-items: center; }
@@ -662,22 +662,22 @@
 .vector-scene-dropdown { right: 4%; top: 10%; }
 .vector-mode-dropdown { right: 2.5%; top: 19%; min-width: 29%; }
 .coros-screen-menu { position: absolute; z-index: 21; right: 1.5%; top: 9%; width: 35%; max-height: 89%; overflow-y: auto; padding: .8% 0; border: 1px solid var(--qc-palette-4a4a4a); border-radius: 4px; background: var(--qc-palette-292a2a); box-shadow: 0 12px 32px var(--qc-palette-000d); }
-.coros-screen-menu button { display: flex; width: 100%; align-items: center; gap: 7%; padding: 3.2% 7%; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 600 clamp(7px, .72vw, 12px) var(--qc-font-device-plain); text-align: left; cursor: pointer; }
+.coros-screen-menu button { display: flex; width: 100%; align-items: center; gap: 7%; padding: 3.2% 7%; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font: 600 1.5cqw var(--qc-font-device-plain); text-align: left; cursor: pointer; }
 .coros-screen-menu button:hover, .coros-screen-menu button:focus-visible { outline: 0; background: var(--qc-palette-3a3b3b); color: var(--qc-primary-text); }
 .coros-screen-menu .context-menu-icon { display: grid; flex: 0 0 13%; place-items: center; color: var(--qc-screen-text-primary); font-size: 1.2em; font-weight: 800; }
 .coros-screen-menu .context-danger .context-menu-icon { color: var(--qc-palette-d4423c); }
 .coros-save-preset { position: absolute; z-index: 30; inset: 0; display: grid; grid-template-rows: 15% 15% 17% minmax(0, 1fr); padding: 2.5% 4%; background: linear-gradient(145deg, var(--qc-palette-252627), var(--qc-palette-111) 58%, var(--qc-palette-080808)); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
 .coros-save-preset header { display: grid; grid-template-columns: 24% 1fr 24%; align-items: center; gap: 3%; border-bottom: 1px solid var(--qc-palette-555); }
-.coros-save-preset header strong { text-align: center; font-size: clamp(9px, 1vw, 17px); }
-.coros-save-preset button { border: 1px solid var(--qc-palette-636566); border-radius: 4px; background: var(--qc-palette-303132); color: var(--qc-palette-f3f3f3); font: 700 clamp(7px, .7vw, 12px) var(--qc-font-device-plain); cursor: pointer; }
+.coros-save-preset header strong { text-align: center; font-size: 2cqw; }
+.coros-save-preset button { border: 1px solid var(--qc-palette-636566); border-radius: 4px; background: var(--qc-palette-303132); color: var(--qc-palette-f3f3f3); font: 700 1.5cqw var(--qc-font-device-plain); cursor: pointer; }
 .coros-save-preset button:hover, .coros-save-preset button:focus-visible { outline: 1px solid var(--qc-primary-text); background: var(--qc-palette-444); }
 .coros-save-preset button:disabled { cursor: default; opacity: .38; }
 .coros-save-preset .is-primary { border-color: var(--qc-palette-23b75b); background: var(--qc-palette-14733a); }
-.coros-save-location { display: grid; grid-template-columns: 24% 1fr auto; align-items: center; gap: 3%; font-size: clamp(7px, .72vw, 12px); }
+.coros-save-location { display: grid; grid-template-columns: 24% 1fr auto; align-items: center; gap: 3%; font-size: 1.5cqw; }
 .coros-save-location span, .coros-save-name span { color: var(--qc-palette-9c9d9e); font-size: .78em; letter-spacing: .08em; }
 .coros-save-location b { padding: 4% 18%; border-radius: 3px; background: var(--qc-palette-3ee77b); color: var(--qc-palette-07130b); font-size: 1.2em; }
 .coros-save-name { display: grid; grid-template-columns: 24% 1fr; align-items: center; gap: 3%; }
-.coros-save-name input { min-width: 0; padding: 2.5% 3%; border: 1px solid var(--qc-palette-6d6f70); border-radius: 3px; outline: 0; background: var(--qc-screen-background); color: var(--qc-primary-text); font: 700 clamp(9px, 1vw, 17px) var(--qc-font-device-plain); }
+.coros-save-name input { min-width: 0; padding: 2.5% 3%; border: 1px solid var(--qc-palette-6d6f70); border-radius: 3px; outline: 0; background: var(--qc-screen-background); color: var(--qc-primary-text); font: 700 2cqw var(--qc-font-device-plain); }
 .coros-save-name input:focus { border-color: var(--qc-palette-3ee77b); box-shadow: 0 0 0 1px var(--qc-palette-3ee77b); }
 .coros-save-keyboard { display: grid; align-content: stretch; gap: 3%; padding-top: 2%; }
 .coros-save-keyboard > div { display: flex; justify-content: center; gap: 1.2%; min-height: 0; }
@@ -689,7 +689,7 @@
 .coros-route-picker { position: absolute; z-index: 24; top: 3%; bottom: 3%; width: 31%; display: grid; grid-template-rows: 15% minmax(0, 1fr); border: 1px solid var(--qc-palette-555); border-radius: 7px; background: linear-gradient(100deg, var(--qc-palette-424344), var(--qc-palette-373839)); box-shadow: 0 5px 14px var(--qc-palette-000b); overflow: hidden; }
 .coros-route-picker.is-input { left: 7.2%; }
 .coros-route-picker.is-output { right: 7.2%; }
-.coros-route-picker > header { display: grid; grid-template-columns: 13% minmax(0, 1fr); align-items: center; gap: 4%; padding: 0 8%; color: var(--qc-palette-f5f5f5); font: 700 clamp(8px, .8vw, 13px) var(--qc-font-device-plain); text-align: left; }
+.coros-route-picker > header { display: grid; grid-template-columns: 13% minmax(0, 1fr); align-items: center; gap: 4%; padding: 0 8%; color: var(--qc-palette-f5f5f5); font: 700 1.6cqw var(--qc-font-device-plain); text-align: left; }
 .coros-route-picker svg { width: 100%; fill: none; stroke: currentColor; stroke-width: 2.1; stroke-linecap: round; stroke-linejoin: round; }
 /* The unassigned-route plate is two filled paths, the same pair the Internal
    glyph draws: a 2px plate ring and a 2px plus. It used to be a <rect> plus a
@@ -703,12 +703,12 @@
 /* The rail is .qc-scroll-rail in qc-screen-elements.css; only the thumb colour
    is this pane's own, matching the surface it sits on. */
 .coros-route-options { min-height: 0; overflow-y: auto; padding: 0 3% 3% 7%; --qc-scroll-thumb: var(--qc-palette-96999b); }
-.coros-route-group > strong { display: block; padding: 4.5% 2% 2%; color: var(--qc-palette-bfc1c2); font: 800 clamp(6px, .58vw, 9px) var(--qc-font-device-plain); letter-spacing: .02em; }
-.coros-route-options button { width: 100%; display: grid; grid-template-columns: 13% minmax(0, 1fr); align-items: center; gap: 4%; min-height: 16%; padding: 3.5% 2%; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font: 700 clamp(7px, .74vw, 12px) var(--qc-font-device-plain); cursor: pointer; }
+.coros-route-group > strong { display: block; padding: 4.5% 2% 2%; color: var(--qc-palette-bfc1c2); font: 800 1.1cqw var(--qc-font-device-plain); letter-spacing: .02em; }
+.coros-route-options button { width: 100%; display: grid; grid-template-columns: 13% minmax(0, 1fr); align-items: center; gap: 4%; min-height: 16%; padding: 3.5% 2%; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); text-align: left; font: 700 1.5cqw var(--qc-font-device-plain); cursor: pointer; }
 .coros-route-options button:hover, .coros-route-options button:focus-visible { outline: 0; background: var(--qc-palette-ffffff12); color: var(--qc-primary-text); }
 .coros-route-options button[aria-selected="true"] { background: var(--qc-palette-ffffff0a); color: var(--qc-primary-text); }
 .coros-route-options button:disabled { cursor: wait; opacity: .55; }
-.context-menu-section { margin: 2% 0 1%; padding: 3% 7%; border-top: 1px solid var(--qc-palette-4b4c4c); border-bottom: 1px solid var(--qc-palette-4b4c4c); background: var(--qc-palette-232424); color: var(--qc-palette-989a9a); font: 800 clamp(6px, .58vw, 9px) var(--qc-font-device-plain); letter-spacing: .08em; }
+.context-menu-section { margin: 2% 0 1%; padding: 3% 7%; border-top: 1px solid var(--qc-palette-4b4c4c); border-bottom: 1px solid var(--qc-palette-4b4c4c); background: var(--qc-palette-232424); color: var(--qc-palette-989a9a); font: 800 1.1cqw var(--qc-font-device-plain); letter-spacing: .08em; }
 
 .coros-directory { position: absolute; z-index: 30; inset: 0; display: grid; grid-template-rows: 12.5% minmax(0, 1fr); overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); font-family: var(--qc-font-device-plain); }
 .coros-directory button { border: 0; color: inherit; font: inherit; cursor: pointer; }

@@ -61,7 +61,7 @@ export interface QcDeviceDisplayHost {
 export interface QcDeviceDisplayModel {
   /** @internal Everything the surface draws; consumed only by QcDeviceDisplay. */
   readonly surface: QcDisplaySurfaceProps;
-  /** @internal The scene copy/swap dialog, which sits over the whole app rather than inside the display. */
+  /** @internal Nothing now: every dialog the display owns is drawn inside it. Kept so hosts keep one mount point. */
   readonly overlay: ReactNode;
   /** The ten encoder-row LEDs while a parameter editor is open, for hosts that draw the unit's switches themselves. */
   readonly hardwareLeds: readonly QcParameterEditorLed[] | undefined;
@@ -85,6 +85,8 @@ export function createQcDeviceDisplay(host: QcDeviceDisplayHost): QcDeviceDispla
   const contextAction = qcContextActionHandler({
     destination, openSave: preset.openSave, deviceSettings: workflows.deviceSettings, scene, modes: workflows.modes, tempo: workflows.tempo, notice: host.notice
   });
+  // Copy/swap is the Grid context-menu command. It is drawn inside the display, over whatever screen shows, so it keeps the unit's geometry.
+  const sceneCommand = scene.command ? <CorOsSceneCommand scenes={snapshot.scenes} sourceScene={scene.sourceScene} swap={scene.command === "swap"} pending={pending} onSelect={(destinationScene) => void scene.chooseDestination(destinationScene)} onCancel={scene.closeCommand} returnFocusTarget={scene.commandReturnTarget} /> : null;
   const surface: QcDisplaySurfaceProps = {
     snapshot,
     selectedBlockId: host.selectedBlockId,
@@ -105,6 +107,7 @@ export function createQcDeviceDisplay(host: QcDeviceDisplayHost): QcDeviceDispla
       color: scene.color, setColor: scene.setColor, colors: scene.colors, pending,
       saveLabel: () => void scene.saveLabel(), saveColor: () => void scene.saveColor(), onClose: scene.closeLabelColor
     } : undefined,
+    sceneCommand: sceneCommand ?? undefined,
     onOpenPreset: host.openPreset,
     onUndo: () => void undo.undo(),
     canUndo: undo.canUndo,
@@ -125,9 +128,7 @@ export function createQcDeviceDisplay(host: QcDeviceDisplayHost): QcDeviceDispla
     popup: destination.popup,
     onPopupChange: destination.setPopup
   };
-  // Copy/swap is the Grid context-menu command; it is a dialog over the whole app, not part of the display's canvas.
-  const overlay = scene.command ? <CorOsSceneCommand scenes={snapshot.scenes} sourceScene={scene.sourceScene} swap={scene.command === "swap"} pending={pending} onSelect={(destinationScene) => void scene.chooseDestination(destinationScene)} onCancel={scene.closeCommand} returnFocusTarget={scene.commandReturnTarget} /> : null;
-  return { surface, overlay, hardwareLeds: qcParameterEditorLeds(host.parameterEditor) };
+  return { surface, overlay: null, hardwareLeds: qcParameterEditorLeds(host.parameterEditor) };
 }
 
 /** The on-device display, drawn from an assembled model. A host adds only what it decides itself. */
@@ -135,7 +136,7 @@ export function QcDeviceDisplay({ display, ...host }: { display: QcDeviceDisplay
   return <QuadCortexSurface {...host} {...display.surface} />;
 }
 
-/** The dialogs the display owns that cover the whole app (scene copy/swap). Render once, outside the display's box. */
+/** The mount point for any dialog the display could own outside its box. There are none: scene copy/swap is drawn inside the display. */
 export function QcDeviceDisplayOverlay({ display }: { display: QcDeviceDisplayModel }) {
   return <>{display.overlay}</>;
 }
