@@ -90,7 +90,7 @@ function unit(start: string, responses: Partial<Record<string, string>> = {}) {
   } as never;
   return { state, log, gateway };
 }
-const poll = { intervalMs: 1, timeoutMs: 2 };
+const poll = { intervalMs: 1, timeoutMs: 2, scrollSettleMs: 0, rowDelayMs: 0, rowTimeoutMs: 2 };
 
 test("opening on the unit uses each proven gesture, only from the screen it was proven on", async () => {
   const menu = unit("Grid", { "tap:764,22:Grid": "MainMenuPopup" });
@@ -104,10 +104,10 @@ test("opening on the unit uses each proven gesture, only from the screen it was 
   assert.deepEqual(io.log, ["swipe:400,100,400,440"]);
   const settings = unit("Grid", { "tap:764,22:Grid": "MainMenuPopup", "tap:600,406:MainMenuPopup": "SettingsDialog" });
   assert.equal(await openOnUnit(settings.gateway, poll, "settings"), "shown");
-  assert.deepEqual(settings.log, ["tap:764,22", "swipe:600,420,600,150", "tap:600,406"], "Settings goes through the preset menu, scrolled to its bottom first");
+  assert.deepEqual(settings.log, ["tap:764,22", "swipe:600,420,600,150", "swipe:600,420,600,150", "tap:600,406"], "Settings goes through the preset menu, scrolled to its bottom first");
   const fromMenu = unit("MainMenuPopup", { "tap:600,406:MainMenuPopup": "SettingsDialog" });
   assert.equal(await openOnUnit(fromMenu.gateway, poll, "settings"), "shown");
-  assert.deepEqual(fromMenu.log, ["swipe:600,420,600,150", "tap:600,406"], "already in the menu: the scroll, then only the row");
+  assert.deepEqual(fromMenu.log, ["swipe:600,420,600,150", "swipe:600,420,600,150", "tap:600,406"], "already in the menu: the scroll, then only the row");
 });
 
 test("opening on the unit sends nothing over another screen and nothing when it is already there", async () => {
@@ -125,8 +125,8 @@ test("opening on the unit sends nothing over another screen and nothing when it 
 
 test("opening Settings leaves the unit's menu as found when the row was not where expected", async () => {
   const moved = unit("Grid", { "tap:764,22:Grid": "MainMenuPopup", "tap:764,22:MainMenuPopup": "Grid" });
-  assert.equal(await openOnUnit(moved.gateway, poll, "settings"), "not-shown");
-  assert.deepEqual(moved.log, ["tap:764,22", "swipe:600,420,600,150", "tap:600,406", "tap:764,22"], "the menu is closed again, not left open");
+  assert.equal(await openOnUnit(moved.gateway, poll, "settings"), "mismatch");
+  assert.deepEqual(moved.log, ["tap:764,22", "swipe:600,420,600,150", "swipe:600,420,600,150", "tap:600,406", "tap:764,22"], "the menu is closed again, not left open");
 });
 
 test("closing on the unit: the kebab toggles the menu, the check button closes a dialog, a nested dialog gets one more tap", async () => {
