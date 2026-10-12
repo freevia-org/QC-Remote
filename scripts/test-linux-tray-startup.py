@@ -497,7 +497,7 @@ def main() -> int:
     if not pathlib.Path(SYSTEM_PYTHON).is_file() or not os.access(SYSTEM_PYTHON, os.X_OK):
         parser.error(f"required system interpreter unavailable: {SYSTEM_PYTHON}")
     binary_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
-    bwrap = shutil.which("bwrap")
+    bwrap = os.environ.get("QC_TRAY_PROBE_BWRAP") or shutil.which("bwrap")
     runid = uuid.uuid4().hex
     temp = pathlib.Path(tempfile.mkdtemp(prefix=f"qc-tray-startup-{runid}-", dir="/var/tmp"))
     sandbox_binary = "/run/qc-tray-probe/bin/qc-device-broker"
@@ -520,9 +520,10 @@ def main() -> int:
         # overflow uid (65534), which the broker correctly rejects as a foreign
         # directory owner. Bind only read-only runtime roots through pre-opened
         # FDs; this also avoids resolving host paths after the private root exists.
-        # Create an explicit user namespace before the private network namespace:
-        # bubblewrap then has CAP_NET_ADMIN only in that child namespace to bring
-        # its loopback interface up, without sharing the runner's network stack.
+        # Explicitly create a user namespace before the private network namespace.
+        # On Ubuntu 24.04, AppArmor may still deny namespace capabilities unless
+        # the probe-only bubblewrap executable has a narrowly scoped userns rule.
+        # Loopback configuration remains entirely inside this private namespace.
         bind_sources = ["/usr", "/etc", str(temp), str(source), str(script)]
         bind_fds: list[int] = []
         for source_path in bind_sources:
