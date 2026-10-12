@@ -1400,6 +1400,8 @@ fn the_switch_is_read_from_the_settings_file_and_follows_it() {
         std::env::temp_dir().join(format!("qc-updater-relay-settings-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
+    // Removed even when an assertion fails; the relay is declared later.
+    let _directory = crate::device_lease::testing::OwnedTestDirectory(directory.clone());
     let relay = relay_with(Scripted::with(vec![]));
     relay.set_settings_directory(directory.clone());
     assert!(relay.status().enabled, "no file means the default, on");
@@ -1417,7 +1419,6 @@ fn the_switch_is_read_from_the_settings_file_and_follows_it() {
     crate::tray_settings::set_updater_relay_enabled_in(&directory, true).unwrap();
     relay.set_settings_directory(directory.clone());
     assert!(relay.status().enabled);
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
@@ -1429,6 +1430,8 @@ fn a_settings_file_that_cannot_be_read_keeps_the_last_known_switch() {
     ));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
+    // Removed even when an assertion fails; both relays are declared later.
+    let _directory = crate::device_lease::testing::OwnedTestDirectory(directory.clone());
     let file = directory.join(SETTINGS_FILE);
     let relay = relay_with(Scripted::with(vec![Ok(Hop::ok(&[b"x"]))]));
     std::fs::write(&file, br#"{"updaterRelayEnabled": false}"#).unwrap();
@@ -1479,7 +1482,6 @@ fn a_settings_file_that_cannot_be_read_keeps_the_last_known_switch() {
         Disposition::Started
     );
     drain(&second);
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
@@ -1493,10 +1495,11 @@ fn a_first_read_that_fails_leaves_the_default_on() {
     ));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(directory.join(SETTINGS_FILE)).unwrap();
+    // Removed even when the assertion fails; the relay is declared later.
+    let _directory = crate::device_lease::testing::OwnedTestDirectory(directory.clone());
     let relay = relay_with(Scripted::with(vec![]));
     relay.set_settings_directory(directory.clone());
     assert!(relay.status().enabled);
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]

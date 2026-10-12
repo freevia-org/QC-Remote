@@ -31,9 +31,12 @@ fn wait_for_status(
 /// alone, and proceed by itself once the owner is gone.
 #[test]
 fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
-    use crate::device_lease::testing::{write_record, Sleeper};
+    use crate::device_lease::testing::{write_record, OwnedTestDirectory, Sleeper};
     let dir = std::env::temp_dir().join(format!("qc-contested-{}", std::process::id()));
     crate::device_lease::testing::create_directory(&dir).unwrap();
+    // Removed even when an assertion fails. The owner process and the
+    // controller are declared later, so they are killed and stopped first.
+    let _dir = OwnedTestDirectory(dir.clone());
     let path = dir.join("device-owner.json");
     let mut owner = Sleeper::start();
     write_record(&path, &owner.record());
@@ -75,7 +78,6 @@ fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
         taken.detail
     );
     drop(controller);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -3647,12 +3649,19 @@ fn opening_a_transport_still_advances_the_status_epoch() {
 /// no unit HID can enumerate, so no hardware attached to the machine can make
 /// these tests open a device. The status is seeded with a finished connection's
 /// counters before the first retry is armed, so nothing races the seed.
+/// The lease directory comes back as a guard, first in the tuple so the
+/// caller's controller drops before it; it is removed even when a test fails.
 fn controller_searching_for_an_absent_qc(
     tag: &str,
-) -> (DeviceController, std::path::PathBuf, String) {
+) -> (
+    crate::device_lease::testing::OwnedTestDirectory,
+    DeviceController,
+    String,
+) {
     let dir = std::env::temp_dir().join(format!("qc-absent-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     crate::device_lease::testing::create_directory(&dir).unwrap();
+    let directory = crate::device_lease::testing::OwnedTestDirectory(dir.clone());
     let path = dir.join("device-owner.json");
     let controller = DeviceController::start_for_device_with_lease(
         Some("no-such-device".into()),
@@ -3675,12 +3684,12 @@ fn controller_searching_for_an_absent_qc(
     wait_for_status(&controller, "the no-device search", |status| {
         status.detail == expected
     });
-    (controller, dir, expected)
+    (directory, controller, expected)
 }
 
 #[test]
 fn a_retry_that_finds_no_qc_stays_searching_and_opens_no_connection_epoch() {
-    let (controller, dir, expected) = controller_searching_for_an_absent_qc("phase");
+    let (_dir, controller, expected) = controller_searching_for_an_absent_qc("phase");
     // Several retry cadences (RECONNECT_INTERVAL_MS is 750 ms) pass; the worker
     // enumerates on each and finds nothing, so it never publishes `connecting`
     // and never starts a connection epoch.
@@ -3700,7 +3709,6 @@ fn a_retry_that_finds_no_qc_stays_searching_and_opens_no_connection_epoch() {
         "a selected unit that is missing is never replaced by another one"
     );
     drop(controller);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Characterization of what 2badc68 changed as a side effect: with no QC
@@ -3711,7 +3719,7 @@ fn a_retry_that_finds_no_qc_stays_searching_and_opens_no_connection_epoch() {
 /// assertion to turn around.
 #[test]
 fn a_retry_that_finds_no_qc_leaves_the_previous_connections_counters_in_place() {
-    let (controller, dir, _) = controller_searching_for_an_absent_qc("counters");
+    let (_dir, controller, _) = controller_searching_for_an_absent_qc("counters");
     thread::sleep(Duration::from_millis(2_000));
     let status = controller.status();
     assert_eq!(status.phase, "searching");
@@ -3719,7 +3727,6 @@ fn a_retry_that_finds_no_qc_leaves_the_previous_connections_counters_in_place() 
     assert_eq!(status.messages_received, 98);
     assert_eq!(status.messages_sent, 76);
     drop(controller);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -500,6 +500,8 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
+        // The removal at the end runs only when every assertion passed.
+        let _directory = crate::device_lease::testing::OwnedTestDirectory(directory.clone());
         #[cfg(windows)]
         let app_name = "qc-remote.exe";
         #[cfg(not(windows))]

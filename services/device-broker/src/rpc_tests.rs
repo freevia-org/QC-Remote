@@ -64,6 +64,9 @@ fn a_reconnect_for_an_absent_qc_returns_searching_without_waiting_for_a_handshak
     let dir = std::env::temp_dir().join(format!("qc-absent-ready-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     crate::device_lease::testing::create_directory(&dir).unwrap();
+    // Removed even when an assertion fails; the controller and its lease in
+    // this directory are declared later, so they drop first.
+    let _dir = crate::device_lease::testing::OwnedTestDirectory(dir.clone());
     // An id that matches nothing HID can enumerate, so this test can never
     // open a real Quad Cortex, and a lease of its own so it never contends
     // with a running broker.
@@ -85,7 +88,6 @@ fn a_reconnect_for_an_absent_qc_returns_searching_without_waiting_for_a_handshak
     assert!(!status.connected);
     assert!(!status.synchronized);
     drop(controller);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
