@@ -35,11 +35,11 @@ export const QC_UNIT_SCREENS: Readonly<Record<Exclude<QcObservedScreenKind, "unk
   modes: { app: "modes", open: "gesture", close: "gesture", evidence: "long press (700,70) observed; close tap (743,30) observed" },
   "midi-out": { app: "midi-out", open: "probe-needed", close: "gesture", evidence: "the menu row is unproven (seventh row, needs a scroll); close tap (743,30) is the dialog's check button" },
   tempo: { app: "tempo", open: "gesture", close: "gesture", evidence: "kebab, then the Tempo row (610,286) of the bottom-scrolled menu; the check button (743,30) closes it. Measured on 4.1.0; tree reads work while it is open" },
-  directory: { app: "preset directory", open: "probe-needed", close: "probe-needed", evidence: "no recorded gesture" },
+  directory: { app: "preset directory", open: "gesture", close: "gesture", evidence: "tap the preset title area (320,50) on the Grid; the header check (743,30) closes it. Measured on 4.1.0. The directory's rows, banks and cloud button are never touched" },
   "cpu-monitor": { app: "cpu monitor over the Grid", open: "gesture", close: "gesture", evidence: "kebab, then the CPU Monitor row (578,346); an overlay beside the Grid (zenUI::CpuLoadIndicator), closed only by its own X at (628,32), never the check button. Measured on 4.1.0" },
   looper: { app: "looper-editor", open: "command", close: "command", evidence: "looper open/close commands; opened by a Looper X block" },
   "parameter-editor": { app: "block editor (unit-mirror picture when the unit opened it)", open: "gesture", close: "gesture", evidence: "app to unit: a Grid block tap, and the check tap (742,30) only on zenUI::ParameterEditor; the splitter, mixer and lane editors (SMParamsEditor, Lane*ControlEditor) are neither opened nor closed by the app. Unit to app: the tree carries no block identity the app has read, so a unit-opened editor shows as the unit's picture, which the Grid closes" },
-  "scene-selector": { app: "scene menu (popup)", open: "probe-needed", close: "probe-needed", evidence: "tap the scene indicator; not recorded" },
+  "scene-selector": { app: "scene menu (popup)", open: "gesture", close: "gesture", evidence: "tap the scene indicator (668,23); an overlay beside the Grid (zenUI::SceneSelectorPopup), closed by tapping the same indicator again. Measured on 4.1.0; no scene row is ever touched" },
   "route-selector": { app: "unit mirror", open: "probe-needed", close: "probe-needed", evidence: "tap a rail label; not recorded" },
   "copy-scene": { app: "unit mirror", open: "probe-needed", close: "probe-needed", evidence: "menu row; not recorded" },
   "device-browser": { app: "unit mirror", open: "probe-needed", close: "probe-needed", evidence: "tap an empty slot; not recorded" },
@@ -73,9 +73,10 @@ export function untouchableUnitScreen(tree: string): string | undefined {
 // ---------------------------------------------------------------------------------------------------- the app side
 
 /** The screen the app is showing, in the unit's terms. */
-export function appScreenKind(app: { view: string | null; deviceSettingsOpen: boolean; tempoOpen: boolean; popup: QcPopupName | null }): QcObservedScreenKind {
+export function appScreenKind(app: { view: string | null; deviceSettingsOpen: boolean; tempoOpen: boolean; popup: QcPopupName | null; directoryOpen?: boolean }): QcObservedScreenKind {
   if (app.tempoOpen) return "tempo";
   if (app.deviceSettingsOpen) return "settings";
+  if (app.directoryOpen) return "directory";
   const view = app.view;
   if (view === "tuner") return "tuner";
   if (view?.startsWith("gig")) return "gig";
@@ -93,12 +94,11 @@ export function appScreenKind(app: { view: string | null; deviceSettingsOpen: bo
 /**
  * The screen the app will show once it has followed the unit to `kind`, in the
  * unit's terms: the pictures of screens the app has no screen for count as one
- * app screen, and the Preset Directory is not an app destination at all (it is
- * a workflow flag the app screen kind does not read).
+ * app screen.
  */
 export function appKindAfterFollowing(kind: QcObservedScreenKind): QcObservedScreenKind {
   if (QC_UNIT_MIRROR_KINDS.includes(kind) || kind === "parameter-editor") return "message-dialog";
-  return kind === "directory" ? "grid" : kind;
+  return kind;
 }
 
 // -------------------------------------------------------------------------------------------------- the loop guard
@@ -161,10 +161,10 @@ export async function untilUnitShows(gateway: Pick<GatewayTransport, "graphicsTr
 }
 
 export type QcOpenOnUnit = "shown" | "busy" | "not-shown" | "no-route";
-export type QcOpenTarget = "io" | "preset-menu" | "settings" | "modes" | "tempo" | "cpu-monitor";
-export type QcCloseTarget = "io" | "preset-menu" | "settings" | "modes" | "tempo" | "cpu-monitor";
+export type QcOpenTarget = "io" | "preset-menu" | "settings" | "modes" | "tempo" | "cpu-monitor" | "directory" | "scene-selector";
+export type QcCloseTarget = QcOpenTarget;
 
-const { openIo, done, menuButton, modesHold, settingsRow, tempoRow, cpuRow, cpuClose } = QC_DEVICE_SCREEN_GESTURES;
+const { openIo, done, menuButton, modesHold, settingsRow, tempoRow, cpuRow, cpuClose, directoryOpen, sceneIndicator } = QC_DEVICE_SCREEN_GESTURES;
 
 /** The preset-menu rows that open a screen, and the screen each opens. */
 const MENU_ROWS = { settings: settingsRow, tempo: tempoRow, "cpu-monitor": cpuRow } as const;
@@ -192,6 +192,13 @@ export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, targ
     announce();
     await gateway.tapScreen(menuButton.x, menuButton.y);
     return await untilUnitShows(gateway, poll, (kind) => kind === "preset-menu") ? "shown" : "not-shown";
+  }
+  if (target === "directory" || target === "scene-selector") {
+    if (current !== "grid") return "busy";
+    announce();
+    const point = target === "directory" ? directoryOpen : sceneIndicator;
+    await gateway.tapScreen(point.x, point.y);
+    return await untilUnitShows(gateway, poll, (kind) => kind === target) ? "shown" : "not-shown";
   }
   if (target === "modes") {
     if (current !== "grid") return "busy";
@@ -228,9 +235,10 @@ export async function closeOnUnit(gateway: RouteGateway, poll: QcScreenPoll, tar
     if (attempt === 0) beforeGesture?.();
     if (target === "preset-menu") await gateway.tapScreen(menuButton.x, menuButton.y);
     else if (target === "cpu-monitor") await gateway.tapScreen(cpuClose.x, cpuClose.y);
+    else if (target === "scene-selector") await gateway.tapScreen(sceneIndicator.x, sceneIndicator.y);
     else await gateway.tapScreen(done.x, done.y);
     if (await untilUnitShows(gateway, poll, (kind) => kind !== target)) return true;
-    if (target === "preset-menu") return false;
+    if (target === "preset-menu" || target === "scene-selector") return false;
   }
   return false;
 }
