@@ -3,6 +3,7 @@ pub mod control;
 pub mod device_lease;
 mod generated_broker_surface;
 pub mod orphan_guard;
+pub mod platform;
 pub mod resident;
 pub mod rpc;
 pub mod tray;

@@ -5,12 +5,18 @@ on:
     branches: [master]
     paths:
       - README.md
+      - docs/USER-GUIDE.md
       - scripts/check-website-sync.mjs
+      - scripts/website-sync-contract.mjs
+      - scripts/website-sync-contract.test.mjs
       - .github/workflows/website-sync.yml
   pull_request:
     paths:
       - README.md
+      - docs/USER-GUIDE.md
       - scripts/check-website-sync.mjs
+      - scripts/website-sync-contract.mjs
+      - scripts/website-sync-contract.test.mjs
       - .github/workflows/website-sync.yml
   schedule:
     - cron: '17 6 * * *'
@@ -28,4 +34,5 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
+      - run: node --test scripts/website-sync-contract.test.mjs
       - run: node scripts/check-website-sync.mjs

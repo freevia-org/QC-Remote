@@ -8,6 +8,7 @@
 
 /// The registry values `describe_windows` formats, as read from
 /// `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion`.
+#[cfg(any(windows, test))]
 #[derive(Debug, Default, PartialEq)]
 pub struct WindowsVersionValues {
     /// `ProductName`, e.g. "Windows 10 Pro" (still "Windows 10" on Windows 11).
@@ -25,11 +26,13 @@ pub struct WindowsVersionValues {
 ///
 /// Windows 11 kept `ProductName` as "Windows 10 …" for compatibility, so the
 /// build number is the only registry value that tells the two apart.
+#[cfg(any(windows, test))]
 const FIRST_WINDOWS_11_BUILD: u32 = 22000;
 
 /// A version a person reading the issue would recognize, such as
 /// "Windows 11 Pro 24H2 (build 26100.2033)", or None when the registry named
 /// neither the product nor the build.
+#[cfg(any(windows, test))]
 pub fn describe_windows(values: &WindowsVersionValues) -> Option<String> {
     let clean = |value: &Option<String>| {
         value

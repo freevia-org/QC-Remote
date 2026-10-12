@@ -326,6 +326,7 @@ fn guard_directory(
 }
 
 /// Windows paths compare without case and without a trailing separator.
+#[cfg(windows)]
 fn same_directory(left: &Path, right: &Path) -> bool {
     let normal = |path: &Path| {
         path.to_string_lossy()
@@ -334,6 +335,11 @@ fn same_directory(left: &Path, right: &Path) -> bool {
             .to_lowercase()
     };
     normal(left) == normal(right)
+}
+
+#[cfg(not(windows))]
+fn same_directory(left: &Path, right: &Path) -> bool {
+    left == right
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +361,7 @@ fn descriptor_path(directory: &Path) -> PathBuf {
 
 fn find(directory: &Path, env: &dyn Env) -> Found {
     let path = descriptor_path(directory);
-    let read = || match fs::read(&path) {
+    let read = || match read_descriptor(&path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(_) => Some(None),
         Ok(bytes) => Some(serde_json::from_slice::<Descriptor>(&bytes).ok()),
@@ -384,6 +390,17 @@ fn find(directory: &Path, env: &dyn Env) -> Found {
         Found::Live(parsed)
     } else {
         Found::Stale(parsed, "processGoneOrRecycled")
+    }
+}
+
+fn read_descriptor(path: &Path) -> io::Result<Vec<u8>> {
+    #[cfg(target_os = "linux")]
+    {
+        qc_owner_only_file::read_owner_only(path)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        fs::read(path)
     }
 }
 
@@ -1066,13 +1083,16 @@ impl Spawned for NativeChild {
 
 impl Env for NativeEnv {
     fn own_directory(&self) -> Option<PathBuf> {
-        self.default_directory.map(|directory| directory())
+        let directory = self.default_directory.map(|directory| directory())?;
+        #[cfg(target_os = "linux")]
+        crate::platform::paths::prepare_directory(&directory).ok()?;
+        Some(directory)
     }
 
     fn alive(&self, pid: u32, created_at: Option<u64>) -> bool {
         created_at.is_some()
-            && qc_windows_process::os_process_is_alive(pid)
-            && qc_windows_process::os_process_created_at(pid) == created_at
+            && crate::platform::process::os_process_is_alive(pid)
+            && crate::platform::process::os_process_created_at(pid) == created_at
     }
 
     fn session_marker_present(&self) -> bool {

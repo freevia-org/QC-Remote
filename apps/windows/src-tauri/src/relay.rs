@@ -14,8 +14,20 @@ const ACCESS_MODE_ACCOUNT: &str = "outbound-public-relay-access-v1";
 const AUTO_APPROVE_REMOTE_ACTIONS_ACCOUNT: &str = "outbound-public-relay-auto-approve-actions-v1";
 /// The name this computer registers under, and declares when it opens a
 /// browser pairing session so the relay's confirmation page can show it.
-pub(crate) const WINDOWS_RELAY_DEVICE_NAME: &str = "QC Remote on Windows";
-const WINDOWS_RELAY_PLATFORM: &str = "windows";
+pub(crate) const RELAY_DEVICE_NAME: &str = if cfg!(target_os = "linux") {
+    "QC Remote on Linux"
+} else if cfg!(target_os = "windows") {
+    "QC Remote on Windows"
+} else {
+    "QC Remote"
+};
+const RELAY_PLATFORM: &str = if cfg!(target_os = "linux") {
+    "linux"
+} else if cfg!(target_os = "windows") {
+    "windows"
+} else {
+    "unknown"
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,7 +124,7 @@ impl RelayBridge {
 
     pub fn status(&self) -> Result<RelayStatus, String> {
         // One-line migration: remove the retired device-side approval setting
-        // from Windows Credential Manager. Confirmation belongs to the AI client.
+        // from the system credential store. Confirmation belongs to the AI client.
         let _ = clear_auto_approve_remote_actions();
         let credential = load_credentials()?;
         let needs_repair = credential
@@ -312,8 +324,7 @@ impl RelayBridge {
         &self,
         endpoint: &str,
     ) -> Result<BrowserPairingOffer, String> {
-        let session =
-            begin_host_pairing(endpoint, WINDOWS_RELAY_DEVICE_NAME, WINDOWS_RELAY_PLATFORM).await?;
+        let session = begin_host_pairing(endpoint, RELAY_DEVICE_NAME, RELAY_PLATFORM).await?;
         let offer = BrowserPairingOffer {
             pair_url: session.pair_url.clone(),
             expires_at: session.expires_at,
@@ -431,34 +442,35 @@ impl Drop for RelayBridge {
 
 fn credential_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT)
-        .map_err(|_| "Windows Credential Manager is unavailable".to_string())
+        .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
 fn legacy_credential_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(LEGACY_CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT)
-        .map_err(|_| "Windows Credential Manager is unavailable".to_string())
+        .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
 fn access_mode_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(CREDENTIAL_SERVICE, ACCESS_MODE_ACCOUNT)
-        .map_err(|_| "Windows Credential Manager is unavailable".to_string())
+        .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
 fn legacy_access_mode_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(LEGACY_CREDENTIAL_SERVICE, ACCESS_MODE_ACCOUNT)
-        .map_err(|_| "Windows Credential Manager is unavailable".to_string())
+        .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
 fn auto_approve_remote_actions_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(CREDENTIAL_SERVICE, AUTO_APPROVE_REMOTE_ACTIONS_ACCOUNT)
-        .map_err(|_| "Windows Credential Manager is unavailable".to_string())
+        .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
 fn clear_auto_approve_remote_actions() -> Result<(), String> {
     match auto_approve_remote_actions_entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(_) => Err(
-            "Could not clear the remote approval preference in Windows Credential Manager".into(),
+            "Could not clear the remote approval preference from the system credential store"
+                .into(),
         ),
     }
 }
@@ -490,7 +502,7 @@ fn store_access_mode(mode: AccessMode) -> Result<(), String> {
     let value = mode.as_str();
     access_mode_entry()?
         .set_password(value)
-        .map_err(|_| "Could not store the relay access mode in Windows Credential Manager".into())
+        .map_err(|_| "Could not store the relay access mode in the system credential store".into())
 }
 
 /// Revoke one AI app's OAuth grant with this computer's device credential:
@@ -518,12 +530,13 @@ pub(crate) fn load_credentials() -> Result<Option<Credentials>, String> {
             }),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err(
-                "Could not read the public-relay credential from Windows Credential Manager".into(),
+                "Could not read the public-relay credential from the system credential store"
+                    .into(),
             ),
         },
-        Err(_) => {
-            Err("Could not read the public-relay credential from Windows Credential Manager".into())
-        }
+        Err(_) => Err(
+            "Could not read the public-relay credential from the system credential store".into(),
+        ),
     }
 }
 
@@ -666,7 +679,7 @@ fn store_credentials(credentials: &Credentials) -> Result<(), String> {
     let encoded = serde_json::to_string(credentials)
         .map_err(|_| "Could not encode the public-relay credential")?;
     credential_entry()?.set_password(&encoded).map_err(|_| {
-        "Could not store the public-relay credential in Windows Credential Manager".into()
+        "Could not store the public-relay credential in the system credential store".into()
     })
 }
 
@@ -676,7 +689,7 @@ fn clear_credentials() -> Result<(), String> {
         Ok(()) | Err(keyring::Error::NoEntry) => {}
         Err(_) => {
             return Err(
-                "Could not remove the public-relay credential from Windows Credential Manager"
+                "Could not remove the public-relay credential from the system credential store"
                     .into(),
             );
         }
@@ -684,7 +697,7 @@ fn clear_credentials() -> Result<(), String> {
     match legacy_credential_entry()?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(_) => Err(
-            "Could not remove the legacy public-relay credential from Windows Credential Manager"
+            "Could not remove the legacy public-relay credential from the system credential store"
                 .into(),
         ),
     }
@@ -713,11 +726,8 @@ mod tests {
     #[test]
     fn a_browser_pairing_declares_this_computer_the_way_it_registers() {
         assert_eq!(
-            qc_relay_client::host_pairing_request_body(
-                WINDOWS_RELAY_DEVICE_NAME,
-                WINDOWS_RELAY_PLATFORM
-            ),
-            serde_json::json!({"label": "QC Remote on Windows", "platform": "windows"})
+            qc_relay_client::host_pairing_request_body(RELAY_DEVICE_NAME, RELAY_PLATFORM),
+            serde_json::json!({"label": RELAY_DEVICE_NAME, "platform": RELAY_PLATFORM})
         );
     }
 

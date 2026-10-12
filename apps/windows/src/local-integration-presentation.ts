@@ -651,10 +651,12 @@ export const chatgptIntegrationPresentation = (
     phase: "checking", status: "Checking…", tone: "checking",
     detail: "Checking ChatGPT and Codex.", canUnpair: false
   };
+  const hostName = status.clientName ?? "ChatGPT";
+  const hostAppName = hostName === "Codex CLI" ? "Codex CLI" : "ChatGPT Desktop";
   // The QC Remote entry lives in the shared `config.toml` under the Windows
   // profile, which outlives any uninstall of ChatGPT Desktop, so this row had
   // to stop reporting a missing app as a missing pairing.
-  if (!status.chatgptInstalled) return appAbsentPresentation("ChatGPT Desktop", "Install ChatGPT Desktop", status.integrationInstalled);
+  if (!status.chatgptInstalled) return appAbsentPresentation(hostAppName, `Install ${hostAppName}`, status.integrationInstalled);
   // `status-error` is the native layer reporting that it could not read or
   // parse config.toml, which is a failed status read like any other, so
   // Refresh stays the primary. The file is also one only the user can repair,
@@ -687,7 +689,7 @@ export const chatgptIntegrationPresentation = (
     // This app writes the QC Remote entry in the shared config.toml itself,
     // and that write is not conditional on the version already there, so the
     // repair really does land - unlike Claude's, which Claude has to accept.
-    return newerInstalledPresentation("ChatGPT", "connection", status, {
+    return newerInstalledPresentation(hostName, "connection", status, {
       act: "repair",
       sentence: "Update replaces it with this app's own and keeps every other MCP server."
     });
@@ -701,13 +703,18 @@ export const chatgptIntegrationPresentation = (
   // for is saying *which* connection the next chat will start, which is the
   // confirmation the row owed after a press of Update.
   if (status.state === "current" || status.state === "newer-installed") {
+    const reconnects = hostName === "Codex CLI"
+      ? (restartRequired || status.restartRequired
+        ? `${hostName} starts the rewritten connection in its next session`
+        : `${hostName} starts the connection in each new session`)
+      : (restartRequired || status.restartRequired
+        ? "ChatGPT starts the rewritten connection in your next chat"
+        : "ChatGPT starts the connection in each new chat");
     return pairedPresentation(
-      "ChatGPT",
+      hostName,
       status,
       ` QC Device Knowledge ${status.installedSkillVersion ?? status.availableSkillVersion} is installed.`,
-      restartRequired || status.restartRequired
-        ? "ChatGPT starts the rewritten connection in your next chat"
-        : "ChatGPT starts the connection in each new chat"
+      reconnects
     );
   }
   // A rewrite this app could not make is the one thing the start-up refresh

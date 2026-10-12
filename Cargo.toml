@@ -17,8 +17,10 @@ members = [
     "packages/rust/qc-windows-midi",
     "packages/rust/qc-owner-only-file",
     "packages/rust/qc-windows-process",
+    "packages/rust/qc-native-platform",
     "packages/rust/quadcortex-android",
     "packages/rust/quadcortex-windows",
+    "packages/rust/quadcortex-hid",
     "services/device-broker",
     "services/rust-mcp",
 ]
@@ -39,12 +41,14 @@ exclude = ["apps/windows/src-tauri"]
 [workspace.dependencies]
 async-trait = "0.1"
 base64 = "0.22"
+libc = "0.2"
 prost = "0.14"
 prost-build = "0.14"
 rand = "0.9"
 reqwest = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 tokio = "1"
 uuid = { version = "1", features = ["v4"] }

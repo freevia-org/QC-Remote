@@ -1,0 +1,24 @@
+[package]
+name = "quadcortex-hid"
+version = "0.1.0"
+publish = false
+edition = "2021"
+description = "Shared desktop HID adapter for the Quad Cortex session runtime"
+license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
+
+[dependencies]
+prost.workspace = true
+quadcortex = { path = "../quadcortex" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+# Both full-duplex adapters rely on audited private hidapi backend details.
+# Re-audit src/backend/{windows,linux}.rs before changing this exact pin.
+[target.'cfg(windows)'.dependencies]
+hidapi = { version = "=2.6.7", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+hidapi = { version = "=2.6.7", default-features = false, features = ["linux-native-basic-udev"] }
+libc.workspace = true

@@ -42,6 +42,8 @@ pub(super) const DEVICE_KNOWLEDGE_SKILL_FILES: &[BundledSkillFile] = &[
     device_knowledge_skill_file!("LICENSES/LicenseRef-QC-Remote-Reference.txt"),
     device_knowledge_skill_file!("LICENSE-MIT"),
     device_knowledge_skill_file!("LICENSE-APACHE"),
+    device_knowledge_skill_file!("legal/LICENSE-MIT"),
+    device_knowledge_skill_file!("legal/LICENSE-APACHE"),
     device_knowledge_skill_file!("CONTRIBUTING.md"),
     device_knowledge_skill_file!("TRADEMARKS.md"),
     device_knowledge_skill_file!("THIRD_PARTY-NOTICES.md"),

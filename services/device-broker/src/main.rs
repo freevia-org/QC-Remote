@@ -6,6 +6,9 @@
 fn main() {
     qc_device_broker::cli::main(qc_device_broker::cli::Binary {
         version: env!("CARGO_PKG_VERSION"),
+        #[cfg(target_os = "linux")]
+        default_directory: Some(qc_device_broker::platform::paths::default_directory),
+        #[cfg(not(target_os = "linux"))]
         default_directory: None,
         host: None,
         build_marker: None,

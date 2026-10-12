@@ -1,0 +1,19 @@
+[package]
+name = "qc-native-platform"
+version = "0.1.0"
+publish = false
+edition = "2021"
+description = "Shared native process identity and private paths for QC Remote hosts"
+license = "MIT OR Apache-2.0"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+qc-windows-process = { path = "../qc-windows-process" }
+
+[dependencies]
+qc-owner-only-file = { path = "../qc-owner-only-file" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

@@ -266,8 +266,8 @@ pub fn read(directory: &Path) -> Option<HostPresence> {
         &std::fs::read(&path).ok()?,
         unix_time_ms(),
         std::process::id(),
-        qc_windows_process::os_process_is_alive,
-        qc_windows_process::os_process_created_at,
+        crate::platform::process::os_process_is_alive,
+        crate::platform::process::os_process_created_at,
     )
 }
 

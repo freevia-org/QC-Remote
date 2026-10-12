@@ -6,6 +6,9 @@ edition = "2021"
 description = "Verified owner-only files and atomic publication for local credentials"
 license = "MIT OR Apache-2.0"
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

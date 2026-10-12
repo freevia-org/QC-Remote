@@ -35,7 +35,7 @@ use quadcortex::proto::cortex_protobuf_v2 as pa;
 use quadcortex::responses::{LibraryEntries, TempoClock as TempoClockFrame};
 use quadcortex::state::{parse_model_repo, BlockDetails, ModelCatalog, ModelList, StateUpdate};
 use quadcortex::sync::RecoverPoison;
-use quadcortex_windows::{ConnectedQc, IncomingMessage, QcUsb, UsbError};
+use quadcortex_hid::{ConnectedQc, IncomingMessage, QcUsb, UsbError};
 use retention::{
     budgeted_queue, BudgetedSender, OfferOutcome, QueueKind, RetentionCounters,
     RAW_SUBSCRIBER_QUEUE_MAX_BYTES, STATE_SUBSCRIBER_QUEUE_MAX_BYTES,
@@ -102,7 +102,7 @@ pub struct BrokerStatus {
     pub handshake_ms: Option<u128>,
     pub messages_received: u64,
     pub messages_sent: u64,
-    pub write_delivery: quadcortex_windows::WriteDeliveryCounts,
+    pub write_delivery: quadcortex_hid::WriteDeliveryCounts,
     pub messages_received_by_type: HashMap<u16, u64>,
     pub messages_sent_by_type: HashMap<u16, u64>,
     /// Inbound frames this connection received and could not act on, by
@@ -2855,7 +2855,7 @@ fn cache_latest_message(
         }
     }
     let (message_type, bytes) = (incoming.message_type, incoming.payload.len());
-    match quadcortex_windows::insert_latest_message(latest, incoming) {
+    match quadcortex_hid::insert_latest_message(latest, incoming) {
         Ok(()) => None,
         Err(rejection) => {
             eprintln!("Did not cache a {bytes}-byte QC frame of type {message_type}: {rejection}");
@@ -3276,7 +3276,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
             // used to flash an opening phase every retry even though HID had
             // already proved there was nothing to open. Hosts may now treat
             // `connecting` as evidence that a matching USB device exists.
-            let devices = quadcortex_windows::usb::connected_devices().unwrap_or_default();
+            let devices = quadcortex_hid::usb::connected_devices().unwrap_or_default();
             let selected = {
                 let mut selected = device_id.lock_recover();
                 let detected = devices
@@ -4148,11 +4148,11 @@ fn install_connection_status(
     status.active_preset_name = connection
         .latest_messages
         .get(&quadcortex::profile::MESSAGE_TYPE_RECALL_PRESET)
-        .and_then(|message| quadcortex_windows::preset_name(&message.payload));
+        .and_then(|message| quadcortex_hid::preset_name(&message.payload));
     status.active_scene = connection
         .latest_messages
         .get(&quadcortex::profile::MESSAGE_TYPE_SCENE)
-        .and_then(|message| quadcortex_windows::scene_value(&message.payload));
+        .and_then(|message| quadcortex_hid::scene_value(&message.payload));
     status.connected_at_unix_ms = Some(u128::from(quadcortex::time::unix_time_ms()));
     status.handshake_ms = Some(handshake_ms);
     status.messages_received = connection.message_counts.values().sum::<usize>() as u64;
@@ -4204,17 +4204,17 @@ fn update_message(
 ) {
     let message_type = message.message_type;
     let preset_name = if message_type == quadcortex::profile::MESSAGE_TYPE_RECALL_PRESET {
-        quadcortex_windows::preset_name(&message.payload)
+        quadcortex_hid::preset_name(&message.payload)
     } else {
         None
     };
     let active_scene = if message_type == quadcortex::profile::MESSAGE_TYPE_SCENE {
-        quadcortex_windows::scene_value(&message.payload)
+        quadcortex_hid::scene_value(&message.payload)
     } else {
         None
     };
     if retain_latest_message_payload(latest, &message) {
-        if let Err(rejection) = quadcortex_windows::insert_latest_message(latest, message) {
+        if let Err(rejection) = quadcortex_hid::insert_latest_message(latest, message) {
             eprintln!(
                 "Did not keep QC frame type {message_type} as the session's latest: {rejection}"
             );

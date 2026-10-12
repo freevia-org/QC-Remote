@@ -6,6 +6,22 @@ use super::*;
 use crate::local_access::LocalClientLiveness;
 use std::io::Read;
 
+fn create_file_symlink_for_test(source: &Path, target: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, target).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(source, target).is_ok()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (source, target);
+        false
+    }
+}
+
 #[test]
 fn chatgpt_reload_is_not_blocked_by_an_older_codex_process() {
     let configured_at = 1_000_u128;
@@ -547,6 +563,7 @@ fn claude_status_detects_install_and_update_versions() {
 }
 
 #[test]
+#[cfg(windows)]
 fn claude_path_falls_back_to_the_newest_squirrel_version_directory() {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-claude-path-test-{}", std::process::id()));
@@ -566,6 +583,7 @@ fn claude_path_falls_back_to_the_newest_squirrel_version_directory() {
 }
 
 #[test]
+#[cfg(windows)]
 fn desktop_versions_cover_squirrel_and_store_package_layouts() {
     assert_eq!(
         version_from_executable_path(Path::new(
@@ -573,6 +591,10 @@ fn desktop_versions_cover_squirrel_and_store_package_layouts() {
         )),
         Some("1.2.34".into())
     );
+}
+
+#[test]
+fn package_version_extracts_only_known_package_families() {
     assert_eq!(
         package_version(
             "Claude_1.49585.0.0_x64__pzs8sxrjxfjjc",
@@ -594,6 +616,7 @@ fn desktop_versions_cover_squirrel_and_store_package_layouts() {
 }
 
 #[test]
+#[cfg(windows)]
 fn claude_msix_path_uses_the_package_install_location() {
     let directory =
         std::env::temp_dir().join(format!("qc-remote-claude-msix-test-{}", std::process::id()));
@@ -614,6 +637,7 @@ fn claude_msix_path_uses_the_package_install_location() {
 }
 
 #[test]
+#[cfg(windows)]
 fn chatgpt_msix_path_uses_the_package_install_location() {
     let directory = std::env::temp_dir().join(format!(
         "qc-remote-chatgpt-msix-test-{}",
@@ -1062,6 +1086,7 @@ fn claude_install_is_detected_from_its_manifest_before_registry_refresh() {
 }
 
 #[test]
+#[cfg(windows)]
 fn antigravity_paths_cover_per_user_and_machine_installations() {
     let local = Path::new(r"C:\Users\test\AppData\Local");
     let program_w6432 = Path::new(r"C:\Program Files");
@@ -1154,6 +1179,7 @@ fn executable_at(path: &Path) -> PathBuf {
 }
 
 #[test]
+#[cfg(windows)]
 fn an_uninstall_entry_resolves_a_quoted_install_location_and_display_icon() {
     // Both values arrive with the quotation marks inside them, which is
     // how Jan registers itself.
@@ -1333,6 +1359,7 @@ fn an_install_record_is_used_only_when_it_names_a_file_that_is_there() {
 }
 
 #[test]
+#[cfg(windows)]
 fn lm_studio_resolves_from_bionic_and_from_its_legacy_layout() {
     let directory = installation_fixture("lm-studio-layouts");
     let bionic = executable_at(&directory.join("Bionic").join("Bionic.exe"));
@@ -1389,6 +1416,7 @@ fn a_store_execution_alias_is_accepted_although_it_is_zero_length() {
 }
 
 #[test]
+#[cfg(windows)]
 fn a_default_path_answers_before_the_slower_mechanisms() {
     // Both mechanisms hold a real file at once, which is the state Bionic
     // is actually in, so the returned path alone cannot say which was
@@ -2488,6 +2516,7 @@ fn the_manual_antigravity_example_passes_the_apps_own_route_check() {
 /// which is the state after in-app pairing, and its suggested remedy
 /// downgraded the managed native route to this node one.
 #[test]
+#[cfg(windows)]
 fn the_codex_installer_classifies_an_existing_qc_remote_entry() {
     let installer = codex_installer();
     let classifier = installer
@@ -2561,8 +2590,7 @@ fn a_skill_backup_copies_the_tree_and_skips_links() {
     fs::write(source.join("SKILL.md"), b"top level").expect("top level file");
     fs::write(nested.join("tones.json"), b"{}").expect("nested file");
     let linked =
-        std::os::windows::fs::symlink_file(source.join("SKILL.md"), source.join("SKILL.link.md"))
-            .is_ok();
+        create_file_symlink_for_test(&source.join("SKILL.md"), &source.join("SKILL.link.md"));
 
     let destination = directory.join("backup");
     copy_directory(&source, &destination).expect("copy the skill directory");
@@ -2633,8 +2661,7 @@ fn a_pair_refuses_rather_than_deleting_a_skill_it_cannot_back_up() {
     fs::create_dir_all(&skill).expect("an existing skill directory");
     fs::write(skill.join("NOTES.md"), b"the owner's own notes").expect("an owner file");
     let linked =
-        std::os::windows::fs::symlink_file(skill.join("NOTES.md"), skill.join("NOTES.link.md"))
-            .is_ok();
+        create_file_symlink_for_test(&skill.join("NOTES.md"), &skill.join("NOTES.link.md"));
 
     let result = install_device_knowledge_skill_at(&skill, &backups);
 
@@ -4104,6 +4131,99 @@ fn refresh_fixture(name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).expect("route refresh fixture directory");
     directory
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_codex_and_xdg_paths_follow_absolute_user_overrides() {
+    let home = Path::new("/home/tester");
+    assert_eq!(
+        codex_config_path_in(home, None),
+        Path::new("/home/tester/.codex/config.toml")
+    );
+    assert_eq!(
+        codex_config_path_in(home, Some(Path::new("/mnt/config/codex"))),
+        Path::new("/mnt/config/codex/config.toml")
+    );
+    assert_eq!(
+        codex_config_path_in(home, Some(Path::new("relative-codex"))),
+        Path::new("/home/tester/.codex/config.toml"),
+        "a relative CODEX_HOME must not resolve against the app working directory"
+    );
+    assert_eq!(
+        xdg_directory_from(Some(Path::new("/mnt/config")), home, ".config"),
+        Path::new("/mnt/config")
+    );
+    assert_eq!(
+        xdg_directory_from(Some(Path::new("relative")), home, ".config"),
+        Path::new("/home/tester/.config"),
+        "relative XDG paths are ignored"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_jan_pairing_remains_unavailable_even_if_flatpak_is_installed() {
+    assert!(jan_installation().is_none());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_jan_uses_documented_xdg_data_location_and_custom_settings_path() {
+    let root = refresh_fixture("linux-jan-path");
+    let config_home = root.join("config");
+    let data_home = root.join("data");
+    assert_eq!(
+        jan_data_directory_in(&config_home, &data_home),
+        data_home.join("Jan").join("data")
+    );
+
+    let jan_config = config_home.join("Jan");
+    fs::create_dir_all(&jan_config).expect("create isolated Jan config directory");
+    fs::write(
+        jan_config.join("settings.json"),
+        serde_json::to_vec(&json!({ "data_folder": root.join("custom-data") }))
+            .expect("serialize Jan data-folder setting"),
+    )
+    .expect("write isolated Jan settings");
+    assert_eq!(
+        jan_data_directory_in(&config_home, &data_home),
+        root.join("custom-data")
+    );
+
+    fs::write(
+        jan_config.join("settings.json"),
+        br#"{"data_folder":"relative-data"}"#,
+    )
+    .expect("write relative path fixture");
+    assert_eq!(
+        jan_data_directory_in(&config_home, &data_home),
+        data_home.join("Jan").join("data"),
+        "a relative data_folder must not resolve against the app working directory"
+    );
+    fs::remove_dir_all(root).expect("remove isolated Jan path fixture");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_codex_detection_only_accepts_executable_absolute_path_entries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = refresh_fixture("linux-path-detection");
+    let first = root.join("first");
+    let second = root.join("second");
+    fs::create_dir_all(&first).expect("create first PATH fixture");
+    fs::create_dir_all(&second).expect("create second PATH fixture");
+    let non_executable = first.join("codex");
+    let executable = second.join("codex");
+    fs::write(&non_executable, b"not executable").expect("write non-executable");
+    fs::write(&executable, b"executable fixture").expect("write executable");
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
+        .expect("make executable fixture searchable");
+
+    let search_path = std::env::join_paths([&first, &second]).expect("join isolated PATH");
+    assert_eq!(where_command_in("codex", &search_path), vec![executable]);
+    fs::remove_dir_all(root).expect("remove isolated PATH fixture");
 }
 
 /// The four production targets, pointed at a temporary directory instead of

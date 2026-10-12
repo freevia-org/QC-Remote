@@ -1,6 +1,6 @@
 {
   "name": "@qc-remote/windows",
-  "version": "0.1.183",
+  "version": "0.1.184",
   "license": "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference",
   "private": true,
   "type": "module",
