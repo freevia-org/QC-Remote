@@ -5,7 +5,7 @@
 //! hold, so an unavailable watcher never creates a phantom hold.
 
 use super::model::{self, MenuAction, MenuRow, Snapshot};
-use super::state::{Notify, Shared};
+use super::state::{Notify, NotifyStatus, Shared};
 use ksni::blocking::TrayMethods;
 use ksni::menu::{MenuItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{Icon, ToolTip};
@@ -74,7 +74,7 @@ pub fn start(shared: Arc<Shared>, actions: Sender<MenuAction>) -> Result<Notify,
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle.clone());
     Ok(Box::new(move || {
         if retired.load(Ordering::Acquire) {
-            return;
+            return NotifyStatus::Retired;
         }
         let updated = handle.update(LinuxTray::advance_frame).is_some();
         let host_registered =
@@ -89,15 +89,18 @@ pub fn start(shared: Arc<Shared>, actions: Sender<MenuAction>) -> Result<Notify,
             Instant::now(),
         ) && !retired.swap(true, Ordering::AcqRel)
         {
-            // No watcher appeared during startup. Withdraw this SNI service;
-            // when ksni drops LinuxTray its action sender disconnects, so the
-            // state loop releases residency and the hold through its existing
-            // UI-disconnected path. Once registered even once, watcher loss
-            // stays recoverable without a timeout.
+            // No usable StatusNotifier host appeared during startup. Withdraw
+            // the SNI service and tell the state loop to release residency
+            // immediately. The action-channel disconnect remains a fallback,
+            // but ksni may retain menu callbacks during D-Bus shutdown.
+            // Once registered even once, watcher loss stays recoverable
+            // without a timeout.
             shared.registered.store(false, Ordering::Release);
             take_active_handle();
             let _ = handle.shutdown();
+            return NotifyStatus::Retired;
         }
+        NotifyStatus::Alive
     }))
 }
 

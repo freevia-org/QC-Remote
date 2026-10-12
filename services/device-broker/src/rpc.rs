@@ -6168,6 +6168,10 @@ pub(crate) mod test_support {
         handle.0.clients.lock_recover().idle_released
     }
 
+    pub(crate) fn tray_hold(handle: &BrokerHandle) -> Option<IdlePolicy> {
+        handle.0.clients.lock_recover().tray_hold
+    }
+
     /// Stop any timer the fixture armed from acting on it later.
     pub(crate) fn finish(handle: &BrokerHandle) {
         handle.0.clients.lock_recover().shutting_down = true;
