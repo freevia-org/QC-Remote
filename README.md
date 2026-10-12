@@ -22,20 +22,17 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 | Platform | Current release | Download | Store |
 | --- | --- | --- | --- |
 | Windows 10/11, x64 | 0.1.182 | [Signed installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/QC-Remote-Windows-0.1.182-x64-setup.exe) | Microsoft Store: pending |
-| Ubuntu 24.04, x86_64 (preview) | 0.1.185 | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.185/qc-remote_0.1.185_amd64.deb) | — |
+| Ubuntu 24.04, x86_64 | 0.1.186 | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.186/qc-remote_0.1.186_amd64.deb) | — |
 | Android 7.0+, USB host/OTG | 0.3.36 | [Signed APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/qc-remote-0.3.36.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote): in Google Play review; link may not open until the listing is approved |
 
 The Windows and Android downloads remain on the stable
 [v0.1.182 release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.182).
-The Linux package is a separate preview on the
-[v0.1.185 prerelease](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.185),
-with SHA-256 checksums and a signed GitHub build attestation. Use the
-[verification instructions](docs/USER-GUIDE.md#verify-the-linux-download) to check
-which repository, workflow, and source commit built the downloaded package.
-It targets Ubuntu 24.04 on x86_64;
-other distributions are not yet claimed. See the [changelog](CHANGELOG.md) for
-version history and the [user guide](docs/USER-GUIDE.md#linux-preview) for setup.
-These are early, pre-1.0 releases; installed-device acceptance is not claimed.
+Linux 0.1.186 is the Ubuntu 24.04 x86_64 release; see its
+[release notes and checksums](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.186).
+It has signed GitHub build provenance. Runtime acceptance used Ubuntu 24.04
+x86_64 under WSL2 with Xfce and a physical Quad Cortex attached through USB/IP;
+bare-metal Linux is not covered. See the [Linux setup guide](docs/USER-GUIDE.md#linux) and
+[package verification instructions](docs/USER-GUIDE.md#verify-the-linux-download).
 
 QC Remote was developed and tested with Quad Cortex firmware (CorOS) 4.1.0. It
 does not contain, replace, or modify Quad Cortex firmware, and it does not
