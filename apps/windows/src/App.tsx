@@ -166,6 +166,14 @@ export function App() {
   // this effect's one closure always decides against current state.
   const followReadyInventory = useRef<(inventoryReady: boolean) => void>(() => undefined);
   const readyInventoryFollowed = useRef(false);
+  // The safety net's capped second chance on the same edge: a live session
+  // this window lost (beginLiveRecovery) while the broker stayed ready, the
+  // re-follows spent on such losses, and since when the polls have seen the
+  // current session live (performance.now(), which never jumps back). The
+  // budget is qcFollowReadyInventory's; the user's Connect also restores it.
+  const readyInventoryRefollows = useRef(0);
+  const liveSessionLost = useRef(false);
+  const readyInventoryLiveSince = useRef<number | null>(null);
   // From the user's Disconnect, failed or not, until their own Connect: the
   // inventory safety net must not undo it.
   const userDisconnected = useRef(false);
@@ -242,19 +250,29 @@ export function App() {
     const current = connectionRef.current;
     if (current.source !== "device" || current.demo || current.phase !== "ready") return;
     nativeStateAvailable.current = false;
+    // For the inventory poll, which follows this loss within its own budget
+    // when the broker stays ready (qcFollowReadyInventory). The phase listener
+    // and the demo fallback's retry may follow it too, outside that budget;
+    // this record does not change them. The loss also restarts the live
+    // measurement, so a drop another path heals before any poll sees it is
+    // not counted as live time.
+    liveSessionLost.current = true;
+    readyInventoryLiveSince.current = null;
     setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "live-health-failed", result: "failure", detail: cause }]);
     // An unexpected hardware loss now returns to the demo device, exactly
     // like a reconnect attempted from one that fails or comes back
     // incomplete (returnToDemoDevice): the Grid stays fully editable instead
     // of sitting in an inert "needs-attention" state the switchable gateway
-    // never actually routed to. Real hardware reconnection keeps being tried
-    // in the background by the broker-phase listener below
-    // (qcShouldConnectOnDetection allows it once the demo is the active,
-    // ready session) - the same mechanism that already follows any other
-    // failed connect, rather than the tight no-full-reconnect polling loop
-    // this path used to lean on (see the live-sync effect's now-unreachable
-    // `recovering` branch, kept only because dropping it made no code
-    // simpler and nothing else still sets a "Live synchronization…" detail).
+    // never actually routed to. Real hardware is followed again from the
+    // background by the broker-phase listener below when the broker pushes a
+    // phase (qcShouldConnectOnDetection allows it once the demo is the
+    // active, ready session), and by the inventory poll's capped re-follow
+    // when a broker that stays ready pushes nothing - the same mechanisms
+    // that already follow any other failed connect, rather than the tight
+    // no-full-reconnect polling loop this path used to lean on (see the
+    // live-sync effect's now-unreachable `recovering` branch, kept only
+    // because dropping it made no code simpler and nothing else still sets a
+    // "Live synchronization…" detail).
     returnToDemoDeviceRef.current(`the live connection was lost: ${cause}`);
   }, [setConnection]);
   const actionFailed = useCallback((error: unknown) => {
@@ -1069,7 +1087,11 @@ export function App() {
   // and keep respecting the Quit.
   const connect = async (mode: "reconnect" | "reset" = "reconnect", physicalId?: string, userAction = false) => {
     if (physicalId && (commandPending || demoPending || awaitingDetection.current || connectionRef.current.phase === "syncing")) return;
-    if (userAction) userDisconnected.current = false;
+    if (userAction) {
+      userDisconnected.current = false;
+      readyInventoryRefollows.current = 0;
+      liveSessionLost.current = false;
+    }
     const attempt = connectionAttempts.begin();
     // Tried from a working demo session: the demo's preset must not sit on
     // screen as if it were still active while the hardware is being reached,
@@ -1646,12 +1668,19 @@ export function App() {
     const step = qcFollowReadyInventory({
       inventoryReady,
       followed: readyInventoryFollowed.current,
+      refollows: readyInventoryRefollows.current,
+      liveSessionLost: liveSessionLost.current,
+      liveSince: readyInventoryLiveSince.current,
+      now: performance.now(),
       userDisconnected: userDisconnected.current,
       connectInFlight: awaitingDetection.current || commandPending || demoPending,
       connection: connectionRef.current,
       demoCanYield: demoCanYieldToDevice.current
     });
     readyInventoryFollowed.current = step.followed;
+    readyInventoryRefollows.current = step.refollows;
+    liveSessionLost.current = step.liveSessionLost;
+    readyInventoryLiveSince.current = step.liveSince;
     if (step.connect) void connectOnDetection.current();
   };
 
