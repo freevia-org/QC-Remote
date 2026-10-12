@@ -518,9 +518,7 @@ fn serve(
     election: Option<resident::ElectionGuard>,
     started_for_residence: bool,
 ) {
-    // Opt-in, so every other client of this stream keeps receiving only the
-    // frames it already knows how to handle.
-    let phase_events = args.iter().any(|argument| argument == "--phase-events");
+    let phase_events = phase_events_enabled(args, started_for_residence);
     #[cfg(target_os = "linux")]
     let signals = match crate::platform::shutdown::Pending::new() {
         Ok(signals) => signals,
@@ -635,6 +633,20 @@ fn serve(
     ) {
         fail(error);
     }
+}
+
+/// Whether this TCP broker pushes `device.phase` to its session clients.
+///
+/// Opt-in for a spawned broker, so every other client of its stream keeps
+/// receiving only the frames it already knows how to handle. A `--resident`
+/// start has no caller to opt in for its clients (the tray's start line takes
+/// no such flag), yet a window attached to it learns that the device it opened
+/// became ready only from this stream: without it the window stayed on the
+/// demo until someone clicked Reconnect. The host's gateway reader, which every
+/// client in this tree attaches through, routes or drops a `device.phase` it
+/// does not want, and a control connection never gets one.
+fn phase_events_enabled(args: &[String], started_for_residence: bool) -> bool {
+    started_for_residence || args.iter().any(|argument| argument == "--phase-events")
 }
 
 /// What a published broker records about how it was started. A `--resident`
@@ -1083,6 +1095,23 @@ mod tests {
         let spawned = crate::rpc::test_support::handle();
         note_publication(&spawned, false);
         assert!(!crate::rpc::test_support::idle_released(&spawned));
+    }
+
+    #[test]
+    fn a_resident_start_publishes_device_phases_without_the_flag() {
+        fn owned(args: &[&str]) -> Vec<String> {
+            args.iter().map(|value| value.to_string()).collect()
+        }
+        // The tray's own start line, which `mode` refuses to extend with the
+        // flag: the window attached to it must still see the device go ready.
+        let resident = owned(&["--resident", "--directory", "C:\\data"]);
+        assert!(!matches!(mode(&resident), Mode::Usage(_)));
+        assert!(phase_events_enabled(&resident, true));
+        // A spawned broker is unchanged: on only when its caller asks.
+        let opted_in = owned(&["--broker-serve", "--phase-events"]);
+        assert!(phase_events_enabled(&opted_in, false));
+        let spawned = owned(&["--broker-serve", "--descriptor-path", "x"]);
+        assert!(!phase_events_enabled(&spawned, false));
     }
 
     #[test]

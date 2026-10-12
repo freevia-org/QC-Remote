@@ -4,7 +4,6 @@ on:
   pull_request:
   push:
     branches: [master]
-    tags: [v0.1.184]
   workflow_dispatch:
     inputs:
       build_linux_draft:
@@ -48,6 +47,8 @@ jobs:
         run: ./target/debug/qc-device-broker --self-check
       - name: Test Debian package verification and cleanup
         run: python3 -m unittest scripts.test_package_linux_deb
+      - name: Test Cargo test-executable selection
+        run: python3 -m unittest scripts.test_select_cargo_test_executable
 
   linux-desktop-host:
     name: Linux Tauri host and resident tray
@@ -107,6 +108,13 @@ jobs:
       - name: Link the resident broker and MCP host
         working-directory: apps/windows/src-tauri
         run: cargo +stable build --locked --features tray-sidecar,custom-protocol --bin qc-device-broker
+      - name: Capture the exact GUI library test executable
+        working-directory: apps/windows/src-tauri
+        run: |
+          set -o pipefail
+          cargo +stable test --locked --features tray-sidecar,custom-protocol \
+            --lib --no-run --message-format=json \
+            | python3 ../../../scripts/select-cargo-test-executable.py
       - name: Test the GUI host with its in-process broker
         working-directory: apps/windows/src-tauri
         env:
@@ -118,7 +126,7 @@ jobs:
 
   linux-preview-release:
     name: Build Ubuntu preview release draft
-    if: github.ref == 'refs/tags/v0.1.184' || (github.event_name == 'workflow_dispatch' && inputs.build_linux_draft)
+    if: github.event_name == 'workflow_dispatch' && inputs.build_linux_draft
     needs: [native-linux, linux-desktop-host]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -127,7 +135,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -143,11 +151,8 @@ jobs:
             build-essential curl file libayatana-appindicator3-dev libdbus-1-dev \
             libgtk-3-dev libsecret-1-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev \
             libxdo-dev pkg-config python3
-      - name: Verify the tag and package source versions agree
+      - name: Verify the source version agrees with this preview
         run: |
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
-            test "$GITHUB_REF_NAME" = v0.1.184
-          fi
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -158,7 +163,7 @@ jobs:
         run: npm ci
       - name: Test Debian packager safety checks
         run: python3 -m unittest scripts.test_package_linux_deb
-      - name: Build and verify Debian package from this tag
+      - name: Build and verify Debian package from this source commit
         env:
           RUSTUP_TOOLCHAIN: stable
         run: python3 scripts/package-linux-deb.py --timeout-seconds 3600
@@ -172,11 +177,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ "$GITHUB_REF" == "refs/tags/v0.1.184" ]]; then
-            release_tag=v0.1.184
-          else
-            release_tag="linux-preview-${GITHUB_SHA:0:12}"
-          fi
+          release_tag="linux-preview-${GITHUB_SHA:0:12}"
           gh release create "$release_tag" \
             qc-remote_0.1.184_amd64.deb SHA256SUMS \
             --target "$GITHUB_SHA" --draft --prerelease \

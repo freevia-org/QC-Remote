@@ -105,8 +105,12 @@ mod linux {
         if !matches!(text.len(), 8 | 32) || !text.is_ascii() {
             return None;
         }
-        text.as_bytes()
-            .chunks_exact(8)
+        let (chunks, remainder) = text.as_bytes().as_chunks::<8>();
+        if !remainder.is_empty() {
+            return None;
+        }
+        chunks
+            .iter()
             .map(|chunk| {
                 let word = u32::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
                 Some(word.to_ne_bytes())
@@ -315,6 +319,7 @@ mod linux {
                     .unwrap()
                     .is_empty()
             );
+            assert!(address_bytes("0000000").is_none());
         }
 
         #[test]

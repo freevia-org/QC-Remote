@@ -12,7 +12,7 @@ import { useWindowsDeviceFrames } from "./use-windows-device-frames";
 import { useWindowsPrompts } from "./use-windows-prompts";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
 import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
-import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcConnectionIsVerified, qcShouldConnectOnDetection, qcShouldDisconnectForDemo, qcVirtualSessionIsReady, qcVisibleStatusNotice, runtimeHasSynchronizedQc, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
+import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcConnectionIsVerified, qcFollowReadyInventory, qcInventoryDeviceReady, qcShouldConnectOnDetection, qcShouldDisconnectForDemo, qcVirtualSessionIsReady, qcVisibleStatusNotice, runtimeHasSynchronizedQc, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
 import { DEFAULT_BROKER_TRAY_STATUS, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
 import appPackage from "../package.json";
@@ -162,6 +162,13 @@ export function App() {
   const [physicalQcDevices, setPhysicalQcDevices] = useState<PhysicalQcDevice[]>([]);
   const [selectedPhysicalId, setSelectedPhysicalId] = useState<string>();
   const selectedPhysicalRef = useRef<string | undefined>(undefined);
+  // Assigned every render below, beside the phase listener it backs up, so
+  // this effect's one closure always decides against current state.
+  const followReadyInventory = useRef<(inventoryReady: boolean) => void>(() => undefined);
+  const readyInventoryFollowed = useRef(false);
+  // From the user's Disconnect, failed or not, until their own Connect: the
+  // inventory safety net must not undo it.
+  const userDisconnected = useRef(false);
   useEffect(() => {
     if (!window.__TAURI_INTERNALS__) return;
     let disposed = false;
@@ -180,6 +187,7 @@ export function App() {
           selectedPhysicalRef.current = inventory.selectedDeviceId;
           setSelectedPhysicalId(inventory.selectedDeviceId);
         }
+        followReadyInventory.current(qcInventoryDeviceReady(inventory.devices, selectedPhysicalRef.current));
       } catch { /* Preserve the last inventory during broker recovery. */ }
       finally { if (!disposed) timer = window.setTimeout(() => void refresh(), 2000); }
     };
@@ -1061,6 +1069,7 @@ export function App() {
   // and keep respecting the Quit.
   const connect = async (mode: "reconnect" | "reset" = "reconnect", physicalId?: string, userAction = false) => {
     if (physicalId && (commandPending || demoPending || awaitingDetection.current || connectionRef.current.phase === "syncing")) return;
+    if (userAction) userDisconnected.current = false;
     const attempt = connectionAttempts.begin();
     // Tried from a working demo session: the demo's preset must not sit on
     // screen as if it were still active while the hardware is being reached,
@@ -1180,6 +1189,7 @@ export function App() {
       setNotice("Wait for the current device command to finish before disconnecting.");
       return;
     }
+    userDisconnected.current = true;
     const attempt = connectionAttempts.begin();
     resetCommands();
     awaitingDetection.current = false;
@@ -1631,6 +1641,19 @@ export function App() {
     // looking on its own, so follow it rather than waiting for a click.
     if (qcShouldConnectOnDetection(connectionRef.current, demoCanYieldToDevice.current)) void connectOnDetection.current();
   }), []);
+  // The inventory poll's safety net for a broker that never pushes its phase.
+  followReadyInventory.current = (inventoryReady) => {
+    const step = qcFollowReadyInventory({
+      inventoryReady,
+      followed: readyInventoryFollowed.current,
+      userDisconnected: userDisconnected.current,
+      connectInFlight: awaitingDetection.current || commandPending || demoPending,
+      connection: connectionRef.current,
+      demoCanYield: demoCanYieldToDevice.current
+    });
+    readyInventoryFollowed.current = step.followed;
+    if (step.connect) void connectOnDetection.current();
+  };
 
   useEffect(() => {
     const recovering = connection.phase === "needs-attention" && connection.detail.startsWith("Live synchronization");

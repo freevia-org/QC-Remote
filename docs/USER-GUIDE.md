@@ -85,7 +85,8 @@ directly.
   from the [v0.1.184 prerelease](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.184),
   then install it with `sudo apt install ./qc-remote_0.1.184_amd64.deb`. The
   package includes the application, resident broker/MCP host, and a udev rule.
-  After installing, reload udev rules and reconnect the Quad Cortex. If the
+  Before reconnecting the Quad Cortex, follow the udev activation commands in
+  the [Linux preview setup](#linux-preview) section below. If the
   desktop does not provide a StatusNotifier/AppIndicator tray host, the resident
   tray controls may not be visible. Other Linux distributions are not yet
   supported by this preview.
