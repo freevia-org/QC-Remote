@@ -107,7 +107,7 @@ test("opening on the unit uses each proven gesture, only from the screen it was 
   assert.deepEqual(settings.log, ["tap:764,22", "swipe:600,420,600,150", "tap:600,406"], "Settings goes through the preset menu, scrolled to its bottom first");
   const fromMenu = unit("MainMenuPopup", { "tap:600,406:MainMenuPopup": "SettingsDialog" });
   assert.equal(await openOnUnit(fromMenu.gateway, poll, "settings"), "shown");
-  assert.deepEqual(fromMenu.log, ["tap:600,406"], "already in the menu: only the row");
+  assert.deepEqual(fromMenu.log, ["swipe:600,420,600,150", "tap:600,406"], "already in the menu: the scroll, then only the row");
 });
 
 test("opening on the unit sends nothing over another screen and nothing when it is already there", async () => {
