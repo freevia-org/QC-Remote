@@ -144,6 +144,22 @@ class ProbeCleanupTests(unittest.TestCase):
             self.assertTrue(saved["cleanupVerified"])
             self.assertTrue(saved["ok"])
 
+    def test_reaped_sandbox_before_inner_start_cleans_staging_without_claiming_probe_pass(self):
+        with tempfile.TemporaryDirectory(prefix="qc-tray-preinner-cleanup-test-") as root:
+            base = pathlib.Path(root)
+            staging = pathlib.Path(tempfile.mkdtemp(prefix="qc-tray-startup-test-", dir=base))
+            report_path = base / "report.json"
+            report = {"sandboxGroupReaped": True, "innerStarted": False, "ok": False,
+                      "failureStage": "sandbox_setup", "failureCode": "BubblewrapSetupFailed"}
+            probe.finalize_outer_report(report_path, report, staging, False, "test")
+            import json
+            saved = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertFalse(staging.exists())
+            self.assertTrue(saved["stagingRemoved"])
+            self.assertTrue(saved["cleanupVerified"])
+            self.assertFalse(saved["ok"])
+            self.assertNotIn("innerCleanupVerified", saved)
+
     @unittest.skipUnless(__import__("os").environ.get("DBUS_SESSION_BUS_ADDRESS"),
                          "run under dbus-run-session to exercise the real Gio fixture")
     def test_gio_query_reads_false_host_property_from_live_synthetic_watcher(self):
