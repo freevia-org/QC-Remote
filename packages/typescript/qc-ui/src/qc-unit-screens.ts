@@ -40,9 +40,9 @@ export const QC_UNIT_SCREENS: Readonly<Record<Exclude<QcObservedScreenKind, "unk
   looper: { app: "looper-editor", open: "command", close: "command", evidence: "looper open/close commands; opened by a Looper X block" },
   "parameter-editor": { app: "block editor (unit-mirror picture when the unit opened it)", open: "gesture", close: "gesture", evidence: "app to unit: a Grid block tap, and the check tap (742,30) only on zenUI::ParameterEditor; the splitter, mixer and lane editors (SMParamsEditor, Lane*ControlEditor) are neither opened nor closed by the app. Unit to app: the tree carries no block identity the app has read, so a unit-opened editor shows as the unit's picture, which the Grid closes" },
   "scene-selector": { app: "scene menu (popup)", open: "gesture", close: "gesture", evidence: "tap the scene indicator (668,23); an overlay beside the Grid (zenUI::SceneSelectorPopup), closed by tapping the same indicator again. Measured on 4.1.0; no scene row is ever touched" },
-  "route-selector": { app: "unit mirror", open: "probe-needed", close: "probe-needed", evidence: "tap a rail label; not recorded" },
+  "route-selector": { app: "unit mirror (the first row's input picker when the app opened it)", open: "gesture", close: "gesture", evidence: "tap the first row's input label (30,147), again to close; a popup list beside the Grid (PortSelector). Measured on 4.1.0. Only that label is routed (the output label is unmeasured) and no row is ever touched: a pick rewrites the routing" },
   "copy-scene": { app: "unit mirror", open: "probe-needed", close: "probe-needed", evidence: "menu row; not recorded" },
-  "device-browser": { app: "unit mirror", open: "probe-needed", close: "probe-needed", evidence: "tap an empty slot; not recorded" },
+  "device-browser": { app: "unit mirror", open: "never", close: "never", evidence: "a drawer over the Grid opened by tapping an empty cell, closed by tapping the dimmed area at its right (measured on 4.1.0, class name not read). Display only: a model row adds a block and dirties the preset, so the app routes nothing here" },
   search: { app: "unit mirror", open: "probe-needed", close: "probe-needed", evidence: "not recorded" },
   keyboard: { app: "unit mirror", open: "probe-needed", close: "probe-needed", evidence: "not recorded" },
   "message-dialog": { app: "unit mirror (read-only)", open: "never", close: "never", evidence: "Delete, Overwrite, Reset and Restart confirmations: shown, never confirmed or dismissed by the app; only an explicit user tap on the mirror is sent" },
@@ -73,7 +73,7 @@ export function untouchableUnitScreen(tree: string): string | undefined {
 // ---------------------------------------------------------------------------------------------------- the app side
 
 /** The screen the app is showing, in the unit's terms. */
-export function appScreenKind(app: { view: string | null; deviceSettingsOpen: boolean; tempoOpen: boolean; popup: QcPopupName | null; directoryOpen?: boolean }): QcObservedScreenKind {
+export function appScreenKind(app: { view: string | null; deviceSettingsOpen: boolean; tempoOpen: boolean; popup: QcPopupName | null; directoryOpen?: boolean; routePicker?: { row: number; side: string } }): QcObservedScreenKind {
   if (app.tempoOpen) return "tempo";
   if (app.deviceSettingsOpen) return "settings";
   if (app.directoryOpen) return "directory";
@@ -86,6 +86,7 @@ export function appScreenKind(app: { view: string | null; deviceSettingsOpen: bo
   if (view === "cpu-monitor") return "cpu-monitor";
   if (view === "looper-editor") return "looper";
   if (view === "unit-mirror") return "message-dialog";
+  if (app.routePicker?.row === 0 && app.routePicker.side === "input") return "route-selector";
   if (app.popup === "grid-menu") return "preset-menu";
   if (app.popup === "scene-menu") return "scene-selector";
   return "grid";
@@ -161,10 +162,10 @@ export async function untilUnitShows(gateway: Pick<GatewayTransport, "graphicsTr
 }
 
 export type QcOpenOnUnit = "shown" | "busy" | "not-shown" | "no-route";
-export type QcOpenTarget = "io" | "preset-menu" | "settings" | "modes" | "tempo" | "cpu-monitor" | "directory" | "scene-selector";
+export type QcOpenTarget = "io" | "preset-menu" | "settings" | "modes" | "tempo" | "cpu-monitor" | "directory" | "scene-selector" | "route-selector";
 export type QcCloseTarget = QcOpenTarget;
 
-const { openIo, done, menuButton, modesHold, settingsRow, tempoRow, cpuRow, cpuClose, directoryOpen, sceneIndicator } = QC_DEVICE_SCREEN_GESTURES;
+const { openIo, done, menuButton, modesHold, settingsRow, tempoRow, cpuRow, cpuClose, directoryOpen, sceneIndicator, inputRail } = QC_DEVICE_SCREEN_GESTURES;
 
 /** The preset-menu rows that open a screen, and the screen each opens. */
 const MENU_ROWS = { settings: settingsRow, tempo: tempoRow, "cpu-monitor": cpuRow } as const;
@@ -193,10 +194,10 @@ export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, targ
     await gateway.tapScreen(menuButton.x, menuButton.y);
     return await untilUnitShows(gateway, poll, (kind) => kind === "preset-menu") ? "shown" : "not-shown";
   }
-  if (target === "directory" || target === "scene-selector") {
+  if (target === "directory" || target === "scene-selector" || target === "route-selector") {
     if (current !== "grid") return "busy";
     announce();
-    const point = target === "directory" ? directoryOpen : sceneIndicator;
+    const point = target === "directory" ? directoryOpen : target === "scene-selector" ? sceneIndicator : inputRail;
     await gateway.tapScreen(point.x, point.y);
     return await untilUnitShows(gateway, poll, (kind) => kind === target) ? "shown" : "not-shown";
   }
@@ -236,9 +237,10 @@ export async function closeOnUnit(gateway: RouteGateway, poll: QcScreenPoll, tar
     if (target === "preset-menu") await gateway.tapScreen(menuButton.x, menuButton.y);
     else if (target === "cpu-monitor") await gateway.tapScreen(cpuClose.x, cpuClose.y);
     else if (target === "scene-selector") await gateway.tapScreen(sceneIndicator.x, sceneIndicator.y);
+    else if (target === "route-selector") await gateway.tapScreen(inputRail.x, inputRail.y);
     else await gateway.tapScreen(done.x, done.y);
     if (await untilUnitShows(gateway, poll, (kind) => kind !== target)) return true;
-    if (target === "preset-menu" || target === "scene-selector") return false;
+    if (target === "preset-menu" || target === "scene-selector" || target === "route-selector") return false;
   }
   return false;
 }

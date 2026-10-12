@@ -25,5 +25,7 @@ export const QC_DEVICE_SCREEN_GESTURES = {
   /** The preset title area of the Grid: opens the Preset Directory, which the check button (743,30) closes. The app never touches the directory's rows, banks or cloud button. */
   directoryOpen: { x: 320, y: 50 },
   /** The scene indicator: opens the scene popup (an overlay beside the Grid) and, tapped again, closes it. The app never touches a scene row. */
-  sceneIndicator: { x: 668, y: 23 }
+  sceneIndicator: { x: 668, y: 23 },
+  /** The first row's input rail label: opens a popup list of inputs over the Grid and, tapped again, closes it. The app never touches a row of it (a pick rewrites the routing). The output label is not measured and not routed. */
+  inputRail: { x: 30, y: 147 }
 } as const;

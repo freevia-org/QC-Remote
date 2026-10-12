@@ -354,7 +354,7 @@ export function App() {
   const ioEqWorkflow = useIoEqWorkflows({ gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed, snapshot });
   useQcScreenFollow({
     gateway: activeGateway, follow: followQcScreen, available: !connection.demo && !corpusFixtureEnabled, ready: deviceReady, destination: screenDestination, notice: setNotice,
-    workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow, modes: modesWorkflow }
+    workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow, modes: modesWorkflow, routing: routingWorkflow }
   });
   const continuousControls = useContinuousControlWorkflow({
     controller: qcController,
