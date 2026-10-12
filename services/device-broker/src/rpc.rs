@@ -3878,12 +3878,27 @@ fn authenticate_and_serve_tcp_client(
         connection_id,
     };
     let _ = stream.set_nodelay(true);
-    if authenticate_tcp_client_then(&mut stream, bearer_token, instance_id, |role| {
-        shared.mark_client_authenticated_as(connection_id, role)
-    })
-    .is_ok()
-    {
-        serve_broker_tcp_connection(stream, shared, connection_id, phase_events);
+    // The writer is registered in the same step that counts the connection,
+    // before the reply: a shutdown committed once the client is told it is
+    // authenticated must find a writer for its `broker.shuttingDown` notice,
+    // or that client reads a bare EOF. The writer stays locked until the
+    // reply is written, so the notice can only follow it, never split it.
+    let Ok(writer) = stream.try_clone() else {
+        return;
+    };
+    let output = Arc::new(Mutex::new(writer));
+    let mut replying = None;
+    let authenticated =
+        authenticate_tcp_client_then(&mut stream, bearer_token, instance_id, |role| {
+            replying = Some(output.lock_recover());
+            shared.mark_client_authenticated_as(connection_id, role, Some(Arc::clone(&output)))
+        })
+        .is_ok();
+    drop(replying);
+    if authenticated {
+        // Tests pause here: the client has its reply, nothing serves it yet.
+        shared.test_point("tcp:authenticated");
+        serve_registered_tcp_connection(stream, output, shared, connection_id, phase_events);
     }
 }
 
@@ -3908,20 +3923,21 @@ impl Drop for DetachOnDrop<'_> {
 /// per-connection body can: one push thread and one phase thread inside a
 /// `thread::scope`, with the request loop as the scope's "main" task. Each
 /// request goes through `dispatch_broker_request`.
+#[cfg(test)]
 fn serve_broker_tcp_connection(
     stream: TcpStream,
     shared: &Arc<BrokerShared>,
     connection_id: u64,
     phase_events: bool,
 ) {
-    // This entrypoint is reached only after authentication succeeds. In
-    // production `authenticate_and_serve_tcp_client` has already marked the
-    // connection before replying, so this repeat is an idempotent no-op; it
-    // exists for callers (tests) that authenticate and serve directly. Its
-    // refusal is ignored: an already-marked connection stays marked, and a
-    // committed shutdown refuses every dispatch on its own.
+    // The entrypoint for tests that authenticate and serve directly. In
+    // production `authenticate_and_serve_tcp_client` marks the connection and
+    // registers its writer before replying, then calls
+    // `serve_registered_tcp_connection` itself. The refusal is ignored: an
+    // already-marked connection stays marked, and a committed shutdown
+    // refuses every dispatch on its own.
     let _ = shared.mark_client_authenticated(connection_id);
-    let Ok(mut input) = stream.try_clone() else {
+    let Ok(input) = stream.try_clone() else {
         return;
     };
     let output = Arc::new(Mutex::new(stream));
@@ -3933,6 +3949,19 @@ fn serve_broker_tcp_connection(
     {
         row.output = Some(Arc::clone(&output));
     }
+    serve_registered_tcp_connection(input, output, shared, connection_id, phase_events);
+}
+
+/// The body of `serve_broker_tcp_connection`, for a connection whose `output`
+/// is already registered on its row: `input` reads requests, every write
+/// goes through `output`.
+fn serve_registered_tcp_connection(
+    mut input: TcpStream,
+    output: Arc<Mutex<TcpStream>>,
+    shared: &Arc<BrokerShared>,
+    connection_id: u64,
+    phase_events: bool,
+) {
     // A control connection is nobody's session: no state frames for it.
     let control = shared.clients.lock_recover().is_control(connection_id);
     let events = Mutex::new(
@@ -5043,22 +5072,31 @@ impl BrokerShared {
     /// commits it, so a socket still authenticating when a non-forced
     /// `broker.shutdown` (which ignores such sockets) commits can never then
     /// be counted and told it is authenticated by a broker about to exit.
+    #[cfg(test)]
     fn mark_client_authenticated(self: &Arc<Self>, connection_id: u64) -> Result<(), String> {
-        self.mark_client_authenticated_as(connection_id, AuthenticatedAs::Participant)
+        self.mark_client_authenticated_as(connection_id, AuthenticatedAs::Participant, None)
     }
 
-    /// As [`Self::mark_client_authenticated`], for the role the handshake
+    /// As `mark_client_authenticated`, for the role the handshake
     /// declared. A control connection changes nothing but its own row: no
     /// idle origin is reset, no backstop recomputed, nothing is announced.
+    /// `output`, when given, becomes the connection's writer under the same
+    /// lock: once marked, a committed shutdown's `broker.shuttingDown`
+    /// broadcast finds it.
     fn mark_client_authenticated_as(
         self: &Arc<Self>,
         connection_id: u64,
         role: AuthenticatedAs,
+        output: Option<Arc<Mutex<TcpStream>>>,
     ) -> Result<(), String> {
         let has_observers = {
             let mut clients = self.clients.lock_recover();
             if clients.shutting_down {
                 return Err("Broker shutdown is already committed".into());
+            }
+            if let (Some(output), Some(row)) = (output, clients.connections.get_mut(&connection_id))
+            {
+                row.output = Some(output);
             }
             if role == AuthenticatedAs::Control || clients.is_control(connection_id) {
                 if let Some(row) = clients.connections.get_mut(&connection_id) {
@@ -8820,6 +8858,67 @@ mod tcp_tests {
             shared.disconnect_blocked_for(Some(first), &shared.controller_for(Some(first))),
             "a client that has been told it is authenticated must block another's disconnect"
         );
+        drop(client);
+        connection.join().unwrap();
+    }
+
+    /// The race behind the flaky Linux SIGTERM test: the broker used to write
+    /// the authentication reply and only then register the connection's
+    /// writer, so a shutdown broadcast in between reached nobody and the
+    /// client read a bare EOF. The connection thread is held right after its
+    /// reply, before anything serves it, and the notice is broadcast there.
+    #[test]
+    fn a_client_told_it_is_authenticated_receives_a_shutdown_notice_sent_before_it_is_served() {
+        let shared = Arc::new(broker_shared_for_test());
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let pending = accept_client(&shared.clients).unwrap();
+        let (reached_tx, reached) = mpsc::channel::<()>();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let (reached_tx, release_rx) = (Mutex::new(reached_tx), Mutex::new(release_rx));
+        TEST_POINTS.lock_recover().push((
+            shared.instance_id.clone(),
+            "tcp:authenticated",
+            Arc::new(move || {
+                let _ = reached_tx.lock_recover().send(());
+                let _ = release_rx
+                    .lock_recover()
+                    .recv_timeout(Duration::from_secs(10));
+                Ok(())
+            }),
+        ));
+
+        let serving = Arc::clone(&shared);
+        let connection = thread::spawn(move || {
+            authenticate_and_serve_tcp_client(
+                server, &serving, pending, "expected", "instance", false,
+            )
+        });
+        write_response(
+            &mut client,
+            &json!({"id":0,"method":"broker.authenticate","params":{"token":"expected"}}),
+        )
+        .unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let reply = read_frame_value(&mut client)
+            .expect("authentication reply readable")
+            .expect("authentication reply present");
+        assert!(reply.get("result").is_some(), "{reply}");
+        reached
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the connection thread reached the point after its reply");
+
+        shared.clients.lock_recover().shutting_down = true;
+        shared.notify_shutdown(u64::MAX, true);
+        let notice = read_frame_value(&mut client)
+            .expect("a client told it is authenticated must get the shutdown notice, not EOF")
+            .expect("shutdown notice present");
+        assert_eq!(notice["method"], "broker.shuttingDown", "{notice}");
+
+        drop(release);
         drop(client);
         connection.join().unwrap();
     }
