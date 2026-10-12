@@ -3100,17 +3100,6 @@
     {
       "ecosystem": "cargo",
       "name": "quinn-proto",
-      "version": "0.11.17",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/quinn-rs/quinn",
-      "licenseTextHashes": [
-        "05fa1ba3228aab8d2bf637f286d7579ed76256c1dab3fa955c2489b920ffeb35",
-        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "quinn-proto",
       "version": "0.11.18",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/quinn-rs/quinn",
@@ -5250,17 +5239,6 @@
       "ecosystem": "cargo",
       "name": "windows-strings",
       "version": "0.5.1",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/microsoft/windows-rs",
-      "licenseTextHashes": [
-        "783829b43aacb86cb8e6cedcd777210c13f2081aae94419cc7a30e112977d488",
-        "ff82c90f84945c60601e96b43246009b9bc589f3ebe1cd8a0fd39a3520d8c310"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "windows-sys",
-      "version": "0.52.0",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/microsoft/windows-rs",
       "licenseTextHashes": [
@@ -7895,7 +7873,6 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:quinn-proto@0.11.17",
         "cargo:quinn-proto@0.11.18",
         "cargo:quinn-udp@0.5.15",
         "cargo:quinn@0.11.11",
@@ -8389,7 +8366,6 @@
         "cargo:multiversion-macros@0.9.0",
         "cargo:multiversion@0.9.0",
         "cargo:multiversion_no_op@1.0.0",
-        "cargo:quinn-proto@0.11.17",
         "cargo:quinn-proto@0.11.18",
         "cargo:quinn-udp@0.5.15",
         "cargo:quinn@0.11.11",
@@ -9536,7 +9512,6 @@
         "cargo:windows-result@0.4.1",
         "cargo:windows-strings@0.4.2",
         "cargo:windows-strings@0.5.1",
-        "cargo:windows-sys@0.52.0",
         "cargo:windows-sys@0.59.0",
         "cargo:windows-sys@0.60.2",
         "cargo:windows-sys@0.61.2",
@@ -11325,7 +11300,6 @@
         "cargo:windows-result@0.4.1",
         "cargo:windows-strings@0.4.2",
         "cargo:windows-strings@0.5.1",
-        "cargo:windows-sys@0.52.0",
         "cargo:windows-sys@0.59.0",
         "cargo:windows-sys@0.60.2",
         "cargo:windows-sys@0.61.2",
