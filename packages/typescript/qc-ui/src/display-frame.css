@@ -130,6 +130,10 @@
  * container for its own transform. Inside the canvas the canvas is the
  * container, so 1cqw is 8 canvas pixels and 1cqh is 4.8 everywhere. A box
  * forced to exactly 800x480 (the corpus capture) makes this the identity. */
+/* Native selects inside the display take their text from the display, not from the host's own `select` rule (the
+ * Windows chrome sizes them 11px, the phone's 18px), so the same pane has the same text on every host. */
+.qc-screen-fixture-root :is(select, option) { font: inherit; }
+
 .qc-screen-bezel > .qc-screen-fixture-root {
   position: absolute;
   inset: 0 auto auto 0;
