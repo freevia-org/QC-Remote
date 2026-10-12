@@ -6272,7 +6272,7 @@ mod tcp_tests {
 
     #[test]
     fn a_reader_never_observes_an_empty_or_partial_descriptor_during_a_refresh() {
-        let path = scratch_descriptor_path("atomic-refresh");
+        let (_scratch, path) = guarded_scratch_descriptor_path("atomic-refresh");
         let mut claim = try_claim_descriptor_slot(&path).expect("claim");
         let mut descriptor = descriptor_fixture();
         write_descriptor(&mut claim, &descriptor).unwrap();
@@ -6325,7 +6325,7 @@ mod tcp_tests {
     #[cfg(windows)]
     #[test]
     fn device_broker_json_is_created_with_an_owner_only_dacl() {
-        let path = scratch_descriptor_path("owner-only-dacl");
+        let (_scratch, path) = guarded_scratch_descriptor_path("owner-only-dacl");
         let mut claim = try_claim_descriptor_slot(&path).expect("claim");
         let mut descriptor = descriptor_fixture();
         write_descriptor(&mut claim, &descriptor).unwrap();
@@ -6342,7 +6342,7 @@ mod tcp_tests {
 
     #[test]
     fn descriptor_shutdown_prevents_a_later_refresh_from_republishing() {
-        let path = scratch_descriptor_path("shutdown-refresh");
+        let (_scratch, path) = guarded_scratch_descriptor_path("shutdown-refresh");
         let mut claim = try_claim_descriptor_slot(&path).expect("claim");
         write_descriptor(&mut claim, &descriptor_fixture()).unwrap();
         let shared = BrokerShared {
@@ -6361,7 +6361,7 @@ mod tcp_tests {
 
     #[test]
     fn a_refused_claim_names_the_broker_that_holds_the_slot() {
-        let path = scratch_descriptor_path("refusal");
+        let (_scratch, path) = guarded_scratch_descriptor_path("refusal");
         let mut claim = try_claim_descriptor_slot(&path).expect("claim");
         write_descriptor(&mut claim, &descriptor_fixture()).unwrap();
         let message = descriptor_claim_refusal(&path);
@@ -6457,6 +6457,24 @@ mod tcp_tests {
         path
     }
 
+    /// `scratch_descriptor_path`, with its directory removed by the returned
+    /// guard. Bind the guard first, so every claim, file and client the test
+    /// opens there is closed before it runs.
+    fn guarded_scratch_descriptor_path(name: &str) -> (ScratchDirectory, PathBuf) {
+        let path = scratch_descriptor_path(name);
+        let guard = ScratchDirectory::new(&path, BrokerExit::NotServed);
+        (guard, path)
+    }
+
+    /// `guarded_scratch_descriptor_path` for a test that serves an in-process
+    /// broker there: hand the guard the broker with `served_by` as soon as it
+    /// is up, and the directory waits for that broker's own exit.
+    fn broker_scratch_descriptor_path(name: &str) -> (ScratchDirectory, PathBuf) {
+        let path = scratch_descriptor_path(name);
+        let guard = ScratchDirectory::new(&path, BrokerExit::Starting);
+        (guard, path)
+    }
+
     /// A broker test process that ends before its idle-shutdown grace
     /// elapses leaves its `.claim` sidecar behind, and Windows reuses PIDs.
     /// A later test process that derives the same scratch directory then
@@ -6509,6 +6527,83 @@ mod tcp_tests {
                     if error.kind() != std::io::ErrorKind::NotFound && !thread::panicking() {
                         panic!("could not clean up {}: {error}", dir.display());
                     }
+                }
+            }
+        }
+    }
+
+    /// Whether an in-process broker serves from a scratch directory, and so
+    /// may still hold its `.claim` and refresh its descriptor there.
+    enum BrokerExit {
+        NotServed,
+        /// Being started: until it is handed over, its exit cannot be seen.
+        Starting,
+        /// The flag the broker sets once its shutdown released the claim.
+        Served(Arc<AtomicBool>),
+    }
+
+    /// Removes one fixture call's whole directory when dropped, on success
+    /// and while a failed assertion unwinds. Best effort and never a panic: a
+    /// broker that has not exited, or a removal that keeps failing, leaves
+    /// the directory and says so on stderr. Unlike `OwnedScratch` it does not
+    /// fail a passing test over what is left.
+    struct ScratchDirectory {
+        directory: PathBuf,
+        broker: BrokerExit,
+    }
+
+    impl ScratchDirectory {
+        fn new(descriptor_path: &Path, broker: BrokerExit) -> Self {
+            let directory = descriptor_path.parent().expect("fixture directory");
+            Self {
+                directory: directory.to_path_buf(),
+                broker,
+            }
+        }
+
+        fn served_by(&mut self, serve: &TestServe) {
+            self.broker = BrokerExit::Served(Arc::clone(&serve.exited));
+        }
+
+        /// The broker's own exit: the grace period that starts once the
+        /// test's clients are gone, then its bounded worker shutdown.
+        fn broker_exited(&self) -> bool {
+            let exited = match &self.broker {
+                BrokerExit::NotServed => return true,
+                BrokerExit::Starting => return false,
+                BrokerExit::Served(exited) => exited,
+            };
+            let deadline = Instant::now()
+                + IDLE_SHUTDOWN_GRACE
+                + crate::worker::WORKER_EXIT_BUDGET
+                + Duration::from_secs(5);
+            while !exited.load(Ordering::Acquire) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            exited.load(Ordering::Acquire)
+        }
+    }
+
+    impl Drop for ScratchDirectory {
+        fn drop(&mut self) {
+            if !self.broker_exited() {
+                eprintln!(
+                    "test cleanup: its broker has not exited; {} left in place",
+                    self.directory.display()
+                );
+                return;
+            }
+            const ATTEMPTS: u32 = 5;
+            for attempt in 1..=ATTEMPTS {
+                match std::fs::remove_dir_all(&self.directory) {
+                    Ok(()) => return,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+                    Err(error) if attempt == ATTEMPTS => eprintln!(
+                        "test cleanup: could not remove {}: {error}",
+                        self.directory.display()
+                    ),
+                    // Windows sharing violations clear in milliseconds.
+                    Err(_) => thread::sleep(Duration::from_millis(50)),
                 }
             }
         }
@@ -7127,7 +7222,9 @@ mod tcp_tests {
 
     #[test]
     fn observers_receive_ownership_changes_without_polling_or_state_frames() {
-        let broker = start_broker_serve_for_test(&scratch_descriptor_path("client-changes"));
+        let (mut scratch, path) = broker_scratch_descriptor_path("client-changes");
+        let broker = start_broker_serve_for_test(&path);
+        scratch.served_by(&broker);
         let mut observer = authenticated_tcp_client(broker.port, &broker.token);
         observer_hello(&mut observer, Value::Null);
         let initial = read_notification(&mut observer, "broker.clientsChanged").unwrap();
@@ -7185,8 +7282,9 @@ mod tcp_tests {
 
     #[test]
     fn observers_are_named_but_do_not_count_as_participants_or_block_their_disconnect() {
-        let path = scratch_descriptor_path("observer-participant-count");
+        let (mut scratch, path) = broker_scratch_descriptor_path("observer-participant-count");
         let serve = start_broker_serve_for_test(&path);
+        scratch.served_by(&serve);
         let mut participant = authenticated_tcp_client(serve.port, &serve.token);
         let mut observer = authenticated_tcp_client(serve.port, &serve.token);
         assert!(observer_hello(&mut observer, json!(15))
@@ -7222,7 +7320,9 @@ mod tcp_tests {
 
     #[test]
     fn explicit_broker_disconnect_closes_the_shared_device_for_all_participants() {
-        let serve = start_broker_serve_for_test(&scratch_descriptor_path("explicit-disconnect"));
+        let (mut scratch, path) = broker_scratch_descriptor_path("explicit-disconnect");
+        let serve = start_broker_serve_for_test(&path);
+        scratch.served_by(&serve);
         let mut first = authenticated_tcp_client(serve.port, &serve.token);
         let _second = authenticated_tcp_client(serve.port, &serve.token);
         let scoped = send_request(&mut first, "device.disconnect", json!({}));
@@ -7240,8 +7340,9 @@ mod tcp_tests {
 
     #[test]
     fn hello_rejects_invalid_values_without_changing_the_connection_role() {
-        let path = scratch_descriptor_path("observer-invalid-hello");
+        let (mut scratch, path) = broker_scratch_descriptor_path("observer-invalid-hello");
         let serve = start_broker_serve_for_test(&path);
+        scratch.served_by(&serve);
         let mut client = authenticated_tcp_client(serve.port, &serve.token);
         for minutes in [json!(0), json!(1441), json!("15"), json!(1.5), json!(-1)] {
             let refused = observer_hello(&mut client, minutes);
@@ -7273,8 +7374,9 @@ mod tcp_tests {
 
     #[test]
     fn unknown_authenticate_fields_keep_the_legacy_participant_default() {
-        let path = scratch_descriptor_path("auth-extra-fields");
+        let (mut scratch, path) = broker_scratch_descriptor_path("auth-extra-fields");
         let serve = start_broker_serve_for_test(&path);
+        scratch.served_by(&serve);
         let mut client = TcpStream::connect(("127.0.0.1", serve.port)).unwrap();
         write_response(&mut client,&json!({"method":"broker.authenticate","id":0,"params":{"token":serve.token,"somethingNewer":true}})).unwrap();
         assert!(read_frame_value(&mut client)
@@ -7297,8 +7399,9 @@ mod tcp_tests {
 
     #[test]
     fn observers_stop_receiving_state_frames_and_can_become_participants_again() {
-        let path = scratch_descriptor_path("observer-state-frame");
+        let (mut scratch, path) = broker_scratch_descriptor_path("observer-state-frame");
         let serve = start_broker_serve_for_test(&path);
+        scratch.served_by(&serve);
         let mut client = authenticated_tcp_client(serve.port, &serve.token);
         assert!(observer_hello(&mut client, json!(15))
             .get("result")
@@ -7348,8 +7451,9 @@ mod tcp_tests {
 
     #[test]
     fn shutdown_refuses_participants_then_forces_and_flushes_its_response() {
-        let path = scratch_descriptor_path("observer-shutdown");
+        let (mut scratch, path) = broker_scratch_descriptor_path("observer-shutdown");
         let serve = start_broker_serve_for_test(&path);
+        scratch.served_by(&serve);
         let mut observer = authenticated_tcp_client(serve.port, &serve.token);
         assert!(observer_hello(&mut observer, json!(15))
             .get("result")
@@ -7383,8 +7487,9 @@ mod tcp_tests {
 
     #[test]
     fn shutdown_succeeds_with_only_an_observer_and_no_force() {
-        let path = scratch_descriptor_path("observer-shutdown-alone");
+        let (mut scratch, path) = broker_scratch_descriptor_path("observer-shutdown-alone");
         let serve = start_broker_serve_for_test(&path);
+        scratch.served_by(&serve);
         let mut observer = authenticated_tcp_client(serve.port, &serve.token);
         assert!(observer_hello(&mut observer, Value::Null)
             .get("result")
@@ -7397,8 +7502,9 @@ mod tcp_tests {
 
     #[test]
     fn an_observer_holds_raw_liveness_until_its_socket_closes() {
-        let path = scratch_descriptor_path("observer-raw-liveness");
+        let (mut scratch, path) = broker_scratch_descriptor_path("observer-raw-liveness");
         let serve = start_broker_serve_for_test(&path);
+        scratch.served_by(&serve);
         let mut observer = authenticated_tcp_client(serve.port, &serve.token);
         assert!(observer_hello(&mut observer, json!(15))
             .get("result")
@@ -7878,7 +7984,9 @@ mod tcp_tests {
 
     #[test]
     fn excess_unauthenticated_sockets_are_closed_on_accept() {
-        let broker = start_broker_serve_for_test(&scratch_descriptor_path("pending-cap"));
+        let (mut scratch, path) = broker_scratch_descriptor_path("pending-cap");
+        let broker = start_broker_serve_for_test(&path);
+        scratch.served_by(&broker);
         let mut raw: Vec<TcpStream> = (0..BROKER_MAX_PENDING_AUTHENTICATIONS)
             .map(|_| TcpStream::connect(("127.0.0.1", broker.port)).unwrap())
             .collect();
@@ -8195,8 +8303,9 @@ mod tcp_tests {
 
     #[test]
     fn two_tcp_clients_both_get_responses_and_both_receive_state_frame_pushes() {
-        let descriptor_path = scratch_descriptor_path("two-clients");
+        let (mut scratch, descriptor_path) = broker_scratch_descriptor_path("two-clients");
         let serve = start_broker_serve_for_test(&descriptor_path);
+        scratch.served_by(&serve);
 
         let mut client_a = authenticated_tcp_client(serve.port, &serve.token);
         let mut client_b = authenticated_tcp_client(serve.port, &serve.token);
@@ -8236,8 +8345,9 @@ mod tcp_tests {
 
     #[test]
     fn broker_exits_5s_after_last_client_disconnects_unless_a_new_one_arrives() {
-        let descriptor_path = scratch_descriptor_path("grace-period");
+        let (mut scratch, descriptor_path) = broker_scratch_descriptor_path("grace-period");
         let serve = start_broker_serve_for_test(&descriptor_path);
+        scratch.served_by(&serve);
 
         let client = authenticated_tcp_client(serve.port, &serve.token);
         drop(client);
@@ -8257,8 +8367,9 @@ mod tcp_tests {
 
     #[test]
     fn a_new_client_during_the_grace_period_cancels_the_pending_shutdown() {
-        let descriptor_path = scratch_descriptor_path("grace-period-cancel");
+        let (mut scratch, descriptor_path) = broker_scratch_descriptor_path("grace-period-cancel");
         let serve = start_broker_serve_for_test(&descriptor_path);
+        scratch.served_by(&serve);
 
         let client = authenticated_tcp_client(serve.port, &serve.token);
         drop(client);
@@ -8281,8 +8392,10 @@ mod tcp_tests {
 
     #[test]
     fn publication_and_authentication_do_not_warm_unbound_midi() {
-        let descriptor_path = scratch_descriptor_path("warm-up-after-publish");
+        let (mut scratch, descriptor_path) =
+            broker_scratch_descriptor_path("warm-up-after-publish");
         let serve = start_broker_serve_for_test(&descriptor_path);
+        scratch.served_by(&serve);
         let mut client = authenticated_tcp_client(serve.port, &serve.token);
         let status = send_request(&mut client, "system.status", json!({}));
         assert_eq!(
@@ -8325,10 +8438,12 @@ mod tcp_tests {
     /// elapse before the broker ever reached that call.
     #[test]
     fn publication_and_authentication_do_not_wait_for_auto_connect() {
-        let descriptor_path = scratch_descriptor_path("auto-connect-after-publish");
+        let (mut scratch, descriptor_path) =
+            broker_scratch_descriptor_path("auto-connect-after-publish");
         let (gate, perform_auto_connect) = gated_reconnect();
         let serve =
             start_broker_serve_for_test_with_auto_connect(&descriptor_path, perform_auto_connect);
+        scratch.served_by(&serve);
 
         let mut client = authenticated_tcp_client(serve.port, &serve.token);
         let status = send_request(&mut client, "system.status", json!({}));
@@ -8350,8 +8465,9 @@ mod tcp_tests {
     /// broker whose spawner died before attaching never exited.
     #[test]
     fn a_broker_no_client_ever_attaches_to_still_exits_after_the_grace_period() {
-        let descriptor_path = scratch_descriptor_path("never-attached");
+        let (mut scratch, descriptor_path) = broker_scratch_descriptor_path("never-attached");
         let serve = start_broker_serve_for_test(&descriptor_path);
+        scratch.served_by(&serve);
         assert!(serve.alive());
         let deadline = std::time::Instant::now() + IDLE_SHUTDOWN_GRACE + Duration::from_secs(3);
         while serve.alive() && std::time::Instant::now() < deadline {
@@ -8371,8 +8487,9 @@ mod tcp_tests {
     /// session-ending call can be kept from reaching anyone but its caller.
     #[test]
     fn the_client_count_is_answered_by_the_broker_itself() {
-        let descriptor_path = scratch_descriptor_path("client-count");
+        let (mut scratch, descriptor_path) = broker_scratch_descriptor_path("client-count");
         let serve = start_broker_serve_for_test(&descriptor_path);
+        scratch.served_by(&serve);
         let mut first = authenticated_tcp_client(serve.port, &serve.token);
         let answer = send_request(&mut first, BROKER_CLIENT_COUNT_METHOD, json!({}));
         assert_eq!(answer["result"]["clients"], json!(1), "{answer:?}");
@@ -8386,8 +8503,9 @@ mod tcp_tests {
     /// can reach `handle`.
     #[test]
     fn a_client_with_the_wrong_token_is_refused_and_disconnected() {
-        let descriptor_path = scratch_descriptor_path("wrong-token");
+        let (mut scratch, descriptor_path) = broker_scratch_descriptor_path("wrong-token");
         let serve = start_broker_serve_for_test(&descriptor_path);
+        scratch.served_by(&serve);
         let mut client = TcpStream::connect(("127.0.0.1", serve.port)).expect("connects");
         write_response(
             &mut client,
@@ -8617,8 +8735,10 @@ mod tcp_tests {
     /// client is attached by the time it's processed.
     #[test]
     fn a_disconnect_arriving_while_a_second_client_is_attached_leaves_the_session_open() {
-        let descriptor_path = scratch_descriptor_path("disconnect-second-client-race");
+        let (mut scratch, descriptor_path) =
+            broker_scratch_descriptor_path("disconnect-second-client-race");
         let serve = start_broker_serve_for_test(&descriptor_path);
+        scratch.served_by(&serve);
         let mut first = authenticated_tcp_client(serve.port, &serve.token);
         let mut second = authenticated_tcp_client(serve.port, &serve.token);
 
