@@ -21,5 +21,9 @@ export const QC_DEVICE_SCREEN_GESTURES = {
   tempoRow: { x: 610, y: 286 },
   /** The CPU Monitor row of the same menu. The monitor is an overlay on the Grid and closes only on its own X, not the check button. */
   cpuRow: { x: 578, y: 346 },
-  cpuClose: { x: 628, y: 32 }
+  cpuClose: { x: 628, y: 32 },
+  /** The preset title area of the Grid: opens the Preset Directory, which the check button (743,30) closes. The app never touches the directory's rows, banks or cloud button. */
+  directoryOpen: { x: 320, y: 50 },
+  /** The scene indicator: opens the scene popup (an overlay beside the Grid) and, tapped again, closes it. The app never touches a scene row. */
+  sceneIndicator: { x: 668, y: 23 }
 } as const;

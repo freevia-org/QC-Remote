@@ -29,7 +29,7 @@ export function useQcFollowSetting(storage: Pick<Storage, "getItem" | "setItem">
 export interface QcScreenFollowWorkflows {
   /** `details` is the block editor the app has open, if any. */
   grid: { close(): void; details?: unknown };
-  preset: { closeDirectory(): void; openDirectory(): unknown };
+  preset: { closeDirectory(): void; openDirectory(): unknown; directoryOpen?: boolean };
   deviceSettings: { open: boolean; close(): void; openSettings(): unknown };
   tempo: { open: boolean; close(): void; openTempo(): unknown };
   tuner: { close(): void; openTuner(): unknown };
@@ -51,7 +51,7 @@ export interface QcScreenFollowOptions {
   screenPoll?: QcScreenPoll;
 }
 
-const ROUTED: readonly QcObservedScreenKind[] = ["preset-menu", "settings", "modes", "tempo", "cpu-monitor"];
+const ROUTED: readonly QcObservedScreenKind[] = ["preset-menu", "settings", "modes", "tempo", "cpu-monitor", "directory", "scene-selector"];
 
 /**
  * Keeps the app and the unit on the same screen, both ways, with one loop guard.
@@ -94,7 +94,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     // The unit is moving the app: the app's change must not be driven back to the unit. Only a change that will
     // happen is expected; one the app already shows would otherwise swallow the user's next real change.
     const { view, popup } = destination;
-    const shown = appScreenKind({ view, deviceSettingsOpen: workflows.deviceSettings.open, tempoOpen: workflows.tempo.open, popup });
+    const shown = appScreenKind({ view, deviceSettingsOpen: workflows.deviceSettings.open, tempoOpen: workflows.tempo.open, popup, directoryOpen: workflows.preset.directoryOpen });
     const will = appKindAfterFollowing(kind);
     if (will !== shown) destination.latch.expectApp(will);
     if (kind !== "parameter-editor") workflows.grid.close();
@@ -123,7 +123,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
   const { phase } = useAdaptiveQcScreenPolling({ gateway, enabled: follow && available, connected: ready, onObservation: observe });
 
   // App to unit: the screen the app shows, in the unit's terms, changing by the user's hand.
-  const appKind = appScreenKind({ view: options.destination.view, deviceSettingsOpen: options.workflows.deviceSettings.open, tempoOpen: options.workflows.tempo.open, popup: options.destination.popup });
+  const appKind = appScreenKind({ view: options.destination.view, deviceSettingsOpen: options.workflows.deviceSettings.open, tempoOpen: options.workflows.tempo.open, popup: options.destination.popup, directoryOpen: options.workflows.preset.directoryOpen });
   const previousAppKind = useRef<QcObservedScreenKind | undefined>(undefined);
   useEffect(() => {
     const previous = previousAppKind.current;

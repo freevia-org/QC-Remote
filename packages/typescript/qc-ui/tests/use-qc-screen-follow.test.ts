@@ -13,7 +13,7 @@ const { createElement } = (await import("react")).default;
 const { consumeQcDisplayStates, qcGigViewTransition, useQcFollowSetting, useQcScreenFollow } = await import("../src/use-qc-screen-follow.ts");
 
 const observation = (kind: QcObservedScreenKind): QcScreenObservation => ({ kind, signature: kind, observedAt: 0 });
-type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard" | "MetronomeEditor" | "CpuLoadIndicator";
+type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard" | "MetronomeEditor" | "CpuLoadIndicator" | "DirectoryDialog" | "SceneSelectorPopup";
 
 interface Scenario {
   follow?: boolean; ready?: boolean; available?: boolean;
@@ -23,6 +23,7 @@ interface Scenario {
   unit?: Unit; unitIgnores?: boolean;
   /** The app has a block editor open. */
   editorOpen?: boolean;
+  directoryOpen?: boolean;
 }
 
 function harness(initial: Scenario = {}) {
@@ -30,19 +31,22 @@ function harness(initial: Scenario = {}) {
   /** Runs after each touch the unit answers: the poller seeing the screen the unit passes through. */
   const watchers: Array<(unit: Unit) => void> = [];
   const world = { unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false };
-  const state = { view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, tempoOpen: initial.tempoOpen ?? false };
+  const state = { view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, directoryOpen: initial.directoryOpen ?? false, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
   const gateway = {
-    graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem${world.unit === "CpuLoadIndicator" ? "\nzenUI::Grid" : ""}${world.unit === "SettingsDialog" ? "\nzenUI::SettingsMenu\nzenUI::UpdaterSettings" : ""}\nzenUI::${world.unit}` }),
+    graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem${(world.unit === "CpuLoadIndicator" || world.unit === "SceneSelectorPopup") ? "\nzenUI::Grid" : ""}${world.unit === "SettingsDialog" ? "\nzenUI::SettingsMenu\nzenUI::UpdaterSettings" : ""}\nzenUI::${world.unit}` }),
     tapScreen: async (x: number, y: number) => {
       log.push(`tap:${x},${y}`);
       if (world.unitIgnores) return;
       if (x === 764 && y === 22) world.unit = world.unit === "Grid" ? "MainMenuPopup" : world.unit === "MainMenuPopup" ? "Grid" : world.unit;
       else if (x === 600 && y === 406 && world.unit === "MainMenuPopup") world.unit = "SettingsDialog";
+      else if (x === 320 && y === 50 && world.unit === "Grid") world.unit = "DirectoryDialog";
+      else if (x === 668 && y === 23 && world.unit === "Grid") world.unit = "SceneSelectorPopup";
+      else if (x === 668 && y === 23 && world.unit === "SceneSelectorPopup") world.unit = "Grid";
       else if (x === 610 && y === 286 && world.unit === "MainMenuPopup") world.unit = "MetronomeEditor";
       else if (x === 578 && y === 346 && world.unit === "MainMenuPopup") world.unit = "CpuLoadIndicator";
       else if (x === 628 && y === 32 && world.unit === "CpuLoadIndicator") world.unit = "Grid";
-      else if (x === 743 && y === 30 && world.unit !== "Grid" && world.unit !== "CpuLoadIndicator") world.unit = "Grid";
+      else if (x === 743 && y === 30 && world.unit !== "Grid" && world.unit !== "CpuLoadIndicator" && world.unit !== "SceneSelectorPopup") world.unit = "Grid";
       for (const watch of watchers) watch(world.unit);
     },
     longTapScreen: async (x: number, y: number) => { log.push(`hold:${x},${y}`); if (!world.unitIgnores && world.unit === "Grid" && x === 700 && y === 70) world.unit = "HybridModeConfigDialog"; },
@@ -51,7 +55,7 @@ function harness(initial: Scenario = {}) {
   const named = (name: string, ...methods: string[]) => Object.fromEntries(methods.map((method) => [method, () => { log.push(`${name}.${method}`); }]));
   const workflowsFor = () => ({
     grid: { ...named("grid", "close"), details: current.editorOpen ? {} : undefined },
-    preset: named("preset", "closeDirectory", "openDirectory"),
+    preset: { ...named("preset", "closeDirectory", "openDirectory"), directoryOpen: state.directoryOpen },
     deviceSettings: { ...named("settings", "close", "openSettings"), open: state.settingsOpen },
     tempo: { ...named("tempo", "close", "openTempo"), open: state.tempoOpen },
     tuner: named("tuner", "close", "openTuner"),
@@ -76,7 +80,7 @@ function harness(initial: Scenario = {}) {
   let renderer!: ReactTestRenderer;
   act(() => { renderer = create(createElement(Probe)); });
   /** The app's screen changes by the user's hand (or the unit's), then the host re-renders. */
-  const rerender = async (next: Scenario) => { current = { ...current, ...next }; Object.assign(state, { view: next.view !== undefined ? next.view : state.view, popup: next.popup !== undefined ? next.popup : state.popup, settingsOpen: next.settingsOpen ?? state.settingsOpen, tempoOpen: next.tempoOpen ?? state.tempoOpen }); await act(async () => { renderer.update(createElement(Probe)); await new Promise((resolve) => setTimeout(resolve, 150)); }); };
+  const rerender = async (next: Scenario) => { current = { ...current, ...next }; Object.assign(state, { view: next.view !== undefined ? next.view : state.view, popup: next.popup !== undefined ? next.popup : state.popup, settingsOpen: next.settingsOpen ?? state.settingsOpen, directoryOpen: next.directoryOpen ?? state.directoryOpen, tempoOpen: next.tempoOpen ?? state.tempoOpen }); await act(async () => { renderer.update(createElement(Probe)); await new Promise((resolve) => setTimeout(resolve, 150)); }); };
   return { log, world, state, latch, watchers, rerender, get follower() { return seen.current!; }, renderer };
 }
 
@@ -465,4 +469,42 @@ test("Settings opens on its Updates pane: the app's routes send only the menu, t
   await closing.rerender({ settingsOpen: false });
   assert.deepEqual(closing.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), ["tap:743,30"]);
   closing.renderer.unmount();
+});
+
+test("the Preset Directory opens on the title area and closes on the header check; no row, bank or cloud button is ever touched", async () => {
+  const host = harness({ follow: false, available: true });
+  host.watchers.push((unit) => { if (unit === "DirectoryDialog") act(() => host.follower.observe(observation("directory"))); if (unit === "Grid") act(() => host.follower.observe(observation("grid"))); });
+  await host.rerender({ directoryOpen: true });
+  assert.equal(host.world.unit, "DirectoryDialog");
+  await host.rerender({ directoryOpen: false });
+  assert.equal(host.world.unit, "Grid");
+  assert.deepEqual(host.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), ["tap:320,50", "tap:743,30"]);
+  assert.ok(!host.log.includes("preset.closeDirectory") && !host.log.includes("preset.openDirectory"), "the unit's answers are not echoed into the app");
+  host.renderer.unmount();
+  const busy = harness({ follow: false, available: true, unit: "ParameterEditor" });
+  await busy.rerender({ directoryOpen: true });
+  assert.deepEqual(busy.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), [], "only ever from the Grid");
+  busy.renderer.unmount();
+});
+
+test("the scene popup opens and closes on the scene indicator and is seen with the Grid in the tree; no scene row is touched", async () => {
+  const { classifyQcGraphicsTree } = await import("../src/use-adaptive-screen-polling.ts");
+  const nl = String.fromCharCode(10);
+  assert.equal(classifyQcGraphicsTree("zenUI::RootGraphicsItem" + nl + "zenUI::Grid" + nl + "zenUI::SceneSelectorPopup" + nl + "zenUI::SceneTable"), "scene-selector");
+  const host = harness({ follow: false, available: true });
+  host.watchers.push((unit) => { if (unit === "SceneSelectorPopup") act(() => host.follower.observe(observation("scene-selector"))); if (unit === "Grid") act(() => host.follower.observe(observation("grid"))); });
+  await host.rerender({ popup: "scene-menu" });
+  assert.equal(host.world.unit, "SceneSelectorPopup");
+  await host.rerender({ popup: null });
+  assert.equal(host.world.unit, "Grid");
+  assert.deepEqual(host.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), ["tap:668,23", "tap:668,23"]);
+  assert.ok(!host.log.some((entry) => entry.startsWith("popup:")), "no echo");
+  host.renderer.unmount();
+  // Unit to app and back, with the setting on.
+  const unitFirst = harness({ unit: "SceneSelectorPopup" });
+  act(() => unitFirst.follower.observe(observation("scene-selector")));
+  assert.equal(unitFirst.state.popup, "scene-menu");
+  act(() => unitFirst.follower.observe(observation("grid")));
+  assert.equal(unitFirst.state.popup, null);
+  unitFirst.renderer.unmount();
 });
