@@ -44,7 +44,7 @@ QC Remote is developed by Freevia EOOD under the licences described in
 
 ## Requirements
 
-| | Windows | Linux preview | Android |
+| | Windows | Linux | Android |
 | --- | --- | --- | --- |
 | System | Windows 10 or 11, 64-bit | Ubuntu 24.04, x86_64 | Android 7.0 or newer (API level 24) |
 | Connection to the unit | USB cable to the PC | USB cable and a one-time udev rule setup | USB host (OTG) support on the phone, plus a suitable cable or adapter |
@@ -67,7 +67,7 @@ Other things to know before you start:
 
 ## Installing
 
-QC Remote is early, pre-1.0 software (Windows 0.1.x, Linux 0.1.x preview,
+QC Remote is early, pre-1.0 software (Windows 0.1.x, Linux 0.1.x,
 Android 0.3.x). Builds are published as GitHub releases; the
 [README](../README.md#download) names the current version and links each file
 directly.
@@ -80,40 +80,42 @@ directly.
   the phone. Its file name has the form `qc-remote-<version>.apk`. The release
   also carries a `.aab` file; that is the Android App Bundle prepared for
   Google Play, not something to install on a phone.
-- **Linux preview (Ubuntu 24.04, x86_64).** Download
-  [`qc-remote_0.1.185_amd64.deb`](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.185/qc-remote_0.1.185_amd64.deb)
-  from the [v0.1.185 prerelease](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.185),
+- **Linux (Ubuntu 24.04, x86_64; v0.1.186 release).** Download
+  [`qc-remote_0.1.186_amd64.deb`](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.186/qc-remote_0.1.186_amd64.deb)
+  from the [v0.1.186 release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.186),
   [verify the download](#verify-the-linux-download), then install it with
-  `sudo apt install ./qc-remote_0.1.185_amd64.deb`. The
+  `sudo apt install ./qc-remote_0.1.186_amd64.deb`. The
   package includes the application, resident broker/MCP host, and a udev rule.
   Before reconnecting the Quad Cortex, follow the udev activation commands in
-  the [Linux preview setup](#linux-preview) section below. If the
+  the [Linux setup](#linux) section below. If the
   desktop does not provide a StatusNotifier/AppIndicator tray host, the resident
   tray controls may not be visible. Other Linux distributions are not yet
-  supported by this preview.
+  supported by this release.
 
 The release page lists a SHA-256 checksum for each file. On Linux, verify a
 download with `sha256sum -c SHA256SUMS`; on Windows, run
 `Get-FileHash <file> -Algorithm SHA256` in PowerShell.
 
 The Microsoft Store listing is pending, and the Google Play listing is pending
-an internal-test upload, so its link may not open yet. Hardware and
-installed-device acceptance are not claimed for these releases.
+an internal-test upload, so its link may not open yet. The exact Linux v0.1.186
+package passed clean install/removal and all release acceptance checks. Runtime
+acceptance used Ubuntu 24.04 x86_64 under WSL2 with Xfce and a physical Quad
+Cortex attached through USB/IP; bare-metal Linux is not covered.
 
-The Linux package is a preview and may change independently of the stable
-Windows and Android releases. Only the latest released build for each platform
+The Linux package is versioned independently of the stable
+Windows and Android releases. Once released, only the latest build for each platform
 receives fixes; earlier builds are not supported ([`SECURITY.md`](../SECURITY.md)).
 
 ### Verify the Linux download
 
-Linux previews from 0.1.185 include a signed GitHub build attestation, created
-in the same workflow that builds the Debian package. After downloading the
+The v0.1.186 Linux release was built by a GitHub Actions workflow, with a signed build attestation. Its exact
+Debian package checksum and attestation have been verified. After downloading the
 package and `SHA256SUMS` from the release, verify the checksum and provenance
 with the [GitHub CLI](https://cli.github.com/):
 
 ```sh
 sha256sum -c SHA256SUMS
-gh attestation verify qc-remote_0.1.185_amd64.deb \
+gh attestation verify qc-remote_0.1.186_amd64.deb \
   --repo freevia-org/QC-Remote \
   --signer-workflow freevia-org/QC-Remote/.github/workflows/linux-broker.yml \
   --deny-self-hosted-runners
@@ -125,9 +127,9 @@ as a downloadable copy of that attestation. This is build provenance, not an
 embedded Debian package signature or an APT repository signing key. Version
 0.1.184 predates this verification and has checksums only.
 
-### Linux preview
+### Linux
 
-The Linux preview targets Ubuntu 24.04 x86_64. The GUI, tray resident, local
+The v0.1.186 Linux release targets Ubuntu 24.04 x86_64 and passed the exact-package runtime and device acceptance checks. Runtime acceptance used Ubuntu 24.04 under WSL2 with Xfce and the physical Quad Cortex attached through USB/IP; bare-metal Linux is not covered. The GUI, tray resident, local
 MCP HTTP endpoint, and stdio bridge share one broker process and one per-user
 state directory. The app uses USB HID for device control and the matching ALSA
 raw MIDI endpoint for its performance MIDI feature; it is not a USB audio
@@ -149,7 +151,7 @@ nodes. It does not rebind kernel drivers or grant access to all HID/audio
 devices. SSH-only users are not an active local seat; the broker guide documents
 the optional dedicated-group alternative. If your desktop lacks a
 StatusNotifier/AppIndicator host, the main window and MCP connections still
-work, but the tray icon may not be shown. This preview has not been qualified
+work, but the tray icon may not be shown. This release has not been qualified
 on other Linux distributions.
 
 ## Connecting your Quad Cortex

@@ -78,6 +78,32 @@ and are not published to a registry.
 - No change. The Android app's USB host does not answer the unit's update
   requests; whether it should is a separate decision.
 
+## QC Remote 0.1.186 — Linux — 12 October 2026
+
+- Ubuntu 24.04 x86_64 release with Linux tray-startup recovery for a desktop
+  StatusNotifierWatcher that registers after app startup. It supersedes the
+  v0.1.185 preview, which failed fresh-login acceptance.
+- **Verified for the exact v0.1.186 package:** SHA-256 and GitHub build
+  attestation for source commit `1ace6730bc41059c906e0a10b88dc30d9b7556b9`;
+  clean install/removal with GUI, resident broker, tray, local MCP, and secret
+  service; fresh desktop login/tray registration; and connected device status
+  and MCP session without a device-selection or mutation command.
+- Runtime acceptance used Ubuntu 24.04 x86_64 under WSL2 with Xfce and the
+  physical Quad Cortex attached through USB/IP; bare-metal Linux is not covered.
+- **Also verified on the exact package:** guarded Scene restore with clean
+  baseline and authoritative restoration, plus physical MIDI scene switching
+  with fresh device echo and guarded restoration.
+- **Also verified on the exact package:** physical USB unplug/replug at the
+  same port; the watcher observed disappearance, and after USB/IP reattachment
+  the broker established a fresh session while the original preset, scene,
+  tempo, mode, and clean state remained unchanged in the same broker process.
+- **Verified on the exact package:** owned broker crash recovery rejected the
+  prior credential and resumed with a fresh session and unchanged device state;
+  graceful shutdown returned the authenticated shutdown event and removed owned
+  runtime resources.
+- Windows and Android remain on v0.1.182; Linux 0.1.186 is independently
+  versioned and does not change those platform downloads.
+
 ## Linux preview 0.1.185 — 12 October 2026
 
 - Linux release builds now generate signed GitHub build attestations for the
