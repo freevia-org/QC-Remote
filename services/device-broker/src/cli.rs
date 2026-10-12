@@ -1152,6 +1152,9 @@ mod tests {
             std::env::temp_dir().join(format!("qc-cli-relay-switch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
+        // Removed even when an assertion fails; the controller reading the
+        // switch from it is declared later, so it drops first.
+        let _directory = crate::device_lease::testing::OwnedTestDirectory(directory.clone());
         let controller = DeviceController::start_disconnected().unwrap();
         assert!(
             controller.status().updater_relay.enabled,
@@ -1202,6 +1205,5 @@ mod tests {
             controller.status().updater_relay.allowed_domains,
             ["neuraldsp.com", "downloads.example.net"]
         );
-        let _ = std::fs::remove_dir_all(&directory);
     }
 }

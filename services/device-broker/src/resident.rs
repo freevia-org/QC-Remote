@@ -611,9 +611,13 @@ fn descriptor_is_live(descriptor: &Path, alive: &dyn Fn(u32, Option<u64>) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device_lease::testing::OwnedTestDirectory;
     use std::sync::atomic::AtomicUsize;
 
-    fn scratch(label: &str) -> PathBuf {
+    /// A directory of this test's own and the guard that removes it. Each
+    /// test still removes it itself at its end and fails if it cannot; the
+    /// guard covers a test that fails before getting there.
+    fn scratch(label: &str) -> (OwnedTestDirectory, PathBuf) {
         let directory = std::env::temp_dir().join(format!(
             "qc-resident-{label}-{}-{}",
             std::process::id(),
@@ -623,7 +627,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        directory
+        (OwnedTestDirectory(directory.clone()), directory)
     }
 
     fn descriptor_json(pid: u32, created: u64) -> String {
@@ -644,7 +648,7 @@ mod tests {
 
     #[test]
     fn a_live_broker_means_a_resident_start_exits_cleanly() {
-        let directory = scratch("live");
+        let (_scratch, directory) = scratch("live");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         std::fs::write(&descriptor, descriptor_json(42, 7)).unwrap();
         let alive = |pid: u32, created: Option<u64>| pid == 42 && created == Some(7);
@@ -665,7 +669,7 @@ mod tests {
 
     #[test]
     fn a_live_minimal_process_identity_means_a_resident_start_exits_cleanly() {
-        let directory = scratch("live-minimal");
+        let (_scratch, directory) = scratch("live-minimal");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         std::fs::write(&descriptor, minimal_descriptor_json(42, Some(7))).unwrap();
         let alive = |pid: u32, created: Option<u64>| pid == 42 && created == Some(7);
@@ -686,7 +690,7 @@ mod tests {
 
     #[test]
     fn a_dead_or_recycled_holder_is_replaced_under_the_election_lock() {
-        let directory = scratch("dead");
+        let (_scratch, directory) = scratch("dead");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         std::fs::write(&descriptor, descriptor_json(42, 7)).unwrap();
         // pid alive but a different creation time: a recycled pid.
@@ -715,7 +719,7 @@ mod tests {
     /// slot exactly as `serve_broker_tcp` does, so it never exits 1.
     #[test]
     fn a_killed_owners_stale_claim_never_blocks_the_next_resident_start() {
-        let directory = scratch("killed");
+        let (_scratch, directory) = scratch("killed");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         // Process exit closes the claim's handle but leaves both names.
         drop(qc_owner_only_file::ClaimedFile::try_claim(&descriptor).unwrap());
@@ -753,7 +757,7 @@ mod tests {
     /// A live pid in the descriptor is the same: nothing is touched.
     #[test]
     fn a_held_or_live_claim_is_never_removed_and_the_start_steps_aside() {
-        let directory = scratch("held");
+        let (_scratch, directory) = scratch("held");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let mut held = qc_owner_only_file::ClaimedFile::try_claim(&descriptor).unwrap();
         // Even a descriptor naming a dead pid cannot free a held claim.
@@ -806,7 +810,7 @@ mod tests {
     /// refuse every later claim, so every logon start exited 0 unserved.
     #[test]
     fn a_crashed_election_holder_never_blocks_the_next_resident_start() {
-        let directory = scratch("crashed-election");
+        let (_scratch, directory) = scratch("crashed-election");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let election = election_path(&descriptor);
         // Process exit closes the claim's handle but leaves both names.
@@ -838,7 +842,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_recovers_a_fresh_abandoned_election_without_waiting_for_age() {
-        let directory = scratch("linux-fresh-crash");
+        let (_scratch, directory) = scratch("linux-fresh-crash");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let election = election_path(&descriptor);
         drop(qc_owner_only_file::ClaimedFile::try_claim(&election).unwrap());
@@ -856,7 +860,7 @@ mod tests {
     /// A held election lock is never cleared, however old its file.
     #[test]
     fn an_old_but_held_election_lock_is_never_overtaken() {
-        let directory = scratch("old-held-election");
+        let (_scratch, directory) = scratch("old-held-election");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let election = election_path(&descriptor);
         let peer = qc_owner_only_file::ClaimedFile::try_claim(&election).unwrap();
@@ -872,7 +876,7 @@ mod tests {
 
     #[test]
     fn a_peer_holding_the_election_is_never_overtaken() {
-        let directory = scratch("peer");
+        let (_scratch, directory) = scratch("peer");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let peer = qc_owner_only_file::ClaimedFile::try_claim(&election_path(&descriptor)).unwrap();
         let started = Instant::now();
@@ -891,7 +895,7 @@ mod tests {
 
     #[test]
     fn two_racing_resident_starts_elect_exactly_one() {
-        let directory = scratch("race");
+        let (_scratch, directory) = scratch("race");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let served = Arc::new(AtomicUsize::new(0));
         let barrier = Arc::new(std::sync::Barrier::new(2));
