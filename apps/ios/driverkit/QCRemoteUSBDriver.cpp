@@ -247,7 +247,12 @@ kern_return_t IMPL(QCRemoteUSBUserClient, Stop) {
     return Stop(provider, SUPERDISPATCH);
 }
 
-kern_return_t IMPL(QCRemoteUSBUserClient, ExternalMethod) {
+kern_return_t QCRemoteUSBUserClient::ExternalMethod(
+    uint64_t selector,
+    IOUserClientMethodArguments *arguments,
+    const IOUserClientMethodDispatch *dispatch,
+    OSObject *target,
+    void *reference) {
     (void)dispatch;
     (void)target;
     (void)reference;

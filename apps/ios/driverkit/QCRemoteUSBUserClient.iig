@@ -15,5 +15,5 @@ public:
         IOUserClientMethodArguments *arguments,
         const IOUserClientMethodDispatch *dispatch,
         OSObject *target,
-        void *reference) override;
+        void *reference) override LOCALONLY;
 };
