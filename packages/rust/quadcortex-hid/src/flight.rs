@@ -73,10 +73,10 @@ impl FlightRecorder {
             let legacy_path = root.join("QC Control").join("device-flight-recorder.json");
             Self::open_with_fallback(Some(path), Some(legacy_path))
         }
-        // Linux diagnostics persistence is opt-in through the explicit path
-        // above. The broker's credential/runtime storage has its own secure
-        // path service; this payload-free recorder must not invent another.
-        #[cfg(target_os = "linux")]
+        // Linux and macOS diagnostics persistence is opt-in through the
+        // explicit path above. The broker's credential/runtime storage has
+        // its own secure path service; this recorder must not invent another.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         Self::open(None)
     }
 
