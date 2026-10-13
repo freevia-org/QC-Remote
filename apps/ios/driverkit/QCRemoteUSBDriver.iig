@@ -22,10 +22,10 @@ public:
     virtual kern_return_t Stop(IOService *provider) override;
     virtual kern_return_t NewUserClient(uint32_t type, IOUserClient **userClient) override;
 
-    kern_return_t ReadReport(OSData **report);
-    kern_return_t WriteReport(OSData *report, uint32_t *bytesTransferred, kern_return_t *usbStatus);
-    kern_return_t CopyDiagnostics(OSData **diagnostics);
-    void ReleaseUsbResources();
+    kern_return_t ReadReport(OSData **report) LOCALONLY;
+    kern_return_t WriteReport(OSData *report, uint32_t *bytesTransferred, kern_return_t *usbStatus) LOCALONLY;
+    kern_return_t CopyDiagnostics(OSData **diagnostics) LOCALONLY;
+    void ReleaseUsbResources() LOCALONLY;
 };
 
 struct QCRemoteUSBUserClient_IVars {
