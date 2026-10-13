@@ -179,8 +179,11 @@ export function IPhoneMidiController() {
       <div className="ios-midi-looper-settings">
         <label>Duplicate mode<select disabled={!connected || busy} defaultValue="0" onChange={(event) => void sendCc(57, Number(event.target.value))}><option value="0">Free</option><option value="1">Sync</option></select></label>
         <label>Quantize<select disabled={!connected || busy} defaultValue="0" onChange={(event) => void sendCc(58, Number(event.target.value))}><option value="0">Off</option>{Array.from({ length: 8 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1} beats</option>)}<option value="9">16 beats</option></select></label>
-        <label>Looper clock<select disabled={!connected || busy} defaultValue="0" onChange={(event) => void sendCc(59, Number(event.target.value))}><option value="0">Free</option><option value="1">Sync</option></select></label>
+        <label>MIDI clock<select disabled={!connected || busy} defaultValue="0" onChange={(event) => void sendCc(59, Number(event.target.value))}><option value="0">Stop</option><option value="1">Start</option></select></label>
         <label>Editor mode<select disabled={!connected || busy} defaultValue="0" onChange={(event) => void sendCc(60, Number(event.target.value))}><option value="0">Perform</option><option value="1">Parameters</option></select></label>
+        <label>Routing mode<select disabled={!connected || busy} defaultValue="0" onChange={(event) => void sendCc(61, Number(event.target.value))}>
+          {["Grid", "In 1", "In 2", "Ret 1", "Ret 2", "In 1/2", "Ret 1/2", "Out1", "Out2", "Out3", "Out4", "Out1/2", "Out3/4", "Multi"].map((name, index) => <option key={index} value={index}>{name}</option>)}
+        </select></label>
       </div>
       <p className="ios-midi-control-note">Looper toggle state is not read back over MIDI. Select values are sent when changed and may not reflect the QC’s current setting.</p>
     </section>
