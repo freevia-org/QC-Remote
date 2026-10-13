@@ -231,6 +231,7 @@ export function App() {
     fail: (error) => setNotice(error instanceof Error ? error.message : String(error))
   });
   const deviceWorkflowSession = {
+    commandSessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
       const attempt = connectionAttempts.capture();
@@ -240,6 +241,7 @@ export function App() {
     }
   };
   const deviceSettingsWorkflow = useDeviceSettingsWorkflow({
+    commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
     sessionKey: `${connection.source}:${snapshot.stateVersion?.session ?? ""}:${hardwareConnected}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
@@ -295,6 +297,7 @@ export function App() {
   // never had an expression-pedal control on it at all; this reaches the
   // real device-accurate assignment screen instead.
   const expressionWorkflow = useExpressionAssignment({
+    commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
     sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {

@@ -48,7 +48,7 @@ export function useTunerWorkflow(options: TunerWorkflowOptions) {
 
   const close = useCallback(() => session.apply(() => setOpen(false)), [session.apply]);
 
-  const reference = useLatestValueWriter<number>({ pending, setPending, resetKey: session.key });
+  const reference = useLatestValueWriter<number>({ pending, setPending, resetKey: session.key, commandSessionKey: session.options.commandSessionKey });
 
   const commit = useCallback((label: string, action: () => Promise<DeviceActionResult>) => {
     if (!session.current()) return;

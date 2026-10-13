@@ -39,7 +39,7 @@ export function useIoEqWorkflows(options: IoEqWorkflowOptions) {
     finally { session.apply(() => setLoading(false)); }
   }, [fail, refreshEq, refreshIo, session.apply, session.current]);
 
-  const dials = useLatestValueWriter<number>({ pending, setPending, resetKey: session.key });
+  const dials = useLatestValueWriter<number>({ pending, setPending, resetKey: session.key, commandSessionKey: session.options.commandSessionKey });
 
   const mutate = useCallback((write: () => Promise<{ detail: string }>, read: () => Promise<unknown>) => {
     // The shared guarded-mutation policy: a refused write says why, never

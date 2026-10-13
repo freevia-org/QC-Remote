@@ -1,4 +1,4 @@
-import { claimDeviceCommand, deviceCommandBusy, releaseDeviceCommand } from "./device-command-ownership.ts";
+import { claimDeviceCommand, completeDeviceCommand, deviceCommandBusy, registerDeviceCommandSession } from "./device-command-ownership.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /** One control's write slot: at most one write in flight, newest target wins. */
@@ -76,6 +76,7 @@ export interface LatestValueWriterOptions {
   setPending(pending: boolean): void;
   /** Retire queued and in-flight callbacks when their device/session changes. */
   resetKey?: unknown;
+  commandSessionKey?: unknown;
 }
 
 /**
@@ -91,7 +92,9 @@ export interface LatestValueWriterOptions {
  */
 export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
   const [, replaceMountedWriter] = useState(0);
-  const claim = useRef<{ setter: (pending: boolean) => void; token: object } | null>(null);
+  type Lease = { setter: (pending: boolean) => void; token: object };
+  const claim = useRef<Lease | null>(null);
+  const finishLease = (lease: Lease | null) => { if (lease) completeDeviceCommand(lease.setter, lease.token); };
   const generation = useRef(0);
   const resetKey = useRef(options.resetKey);
   const retiringPending = useRef(false);
@@ -106,10 +109,12 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
   const commandRunning = useRef(false);
   const pendingRef = useRef(options.pending);
   const setPendingRef = useRef(options.setPending);
+  const physicalKey = options.commandSessionKey ?? options.resetKey;
+  if (physicalKey !== undefined) registerDeviceCommandSession(options.setPending, physicalKey, options.commandSessionKey !== undefined);
   if (!Object.is(resetKey.current, options.resetKey)) {
     resetKey.current = options.resetKey;
     generation.current++;
-    if (claim.current) { releaseDeviceCommand(claim.current.setter, claim.current.token); claim.current = null; }
+    claim.current = null;
     retiringPending.current ||= activeRef.current;
     for (const queue of queues.current.values()) queue.target = undefined;
     queues.current.clear();
@@ -148,8 +153,8 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
     for (const queue of queues.current.values()) if (queue.running || queue.settling || queue.target !== undefined) return;
     activeRef.current = false;
     if (mounted.current) setActive(false);
-    if (claim.current) { releaseDeviceCommand(claim.current.setter, claim.current.token); claim.current = null; }
-    if (!deviceCommandBusy(setPendingRef.current)) setPendingRef.current(false);
+    finishLease(claim.current);
+    claim.current = null;
     for (const resolve of waiters.current.splice(0)) resolve();
   }, []);
 
@@ -165,44 +170,51 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
     runCommandsRef.current();
   }, []);
 
-  const settle = useCallback(async (key: string, queue: KeyedQueue<T>, owner: number) => {
-    if (owner !== generation.current) return;
-    const failed = queue.failed;
-    const last = queue.last;
-    queue.failed = false;
-    queue.last = undefined;
-    if (!failed && mounted.current && queue.target === undefined && queue.handlers?.settle) {
-      queue.settling = true;
-      try { await queue.handlers.settle(last); }
-      catch (error) { if (owner === generation.current) await queue.handlers.error(error); }
-      finally { queue.settling = false; }
+  const settle = useCallback(async (key: string, queue: KeyedQueue<T>, owner: number, lease: Lease | null) => {
+    try {
+      if (owner !== generation.current) return;
+      const failed = queue.failed;
+      const last = queue.last;
+      queue.failed = false;
+      queue.last = undefined;
+      if (!failed && mounted.current && queue.target === undefined && queue.handlers?.settle) {
+        queue.settling = true;
+        try { await queue.handlers.settle(last); }
+        catch (error) { if (owner === generation.current) await queue.handlers.error(error); }
+        finally { queue.settling = false; }
+      }
+      if (owner !== generation.current) return;
+      if (queue.target === undefined) setDraft(key, undefined);
+      if (!mounted.current) { queue.target = undefined; release(); return; }
+      next(key);
+    } finally {
+      if (owner !== generation.current || !mounted.current) finishLease(lease);
     }
-    if (owner !== generation.current) return;
-    if (queue.target === undefined) setDraft(key, undefined);
-    if (!mounted.current) { queue.target = undefined; release(); return; }
-    next(key);
   }, [next, release, setDraft]);
 
   runRef.current = (key: string) => {
     const queue = queues.current.get(key);
     if (!queue || queue.target === undefined || busy()) return;
     const owner = generation.current;
+    const lease = claim.current;
     void drainLatestValue(queue, {
       guard: () => owner === generation.current ? 0 : undefined,
       write: (target) => queue.handlers!.write(target),
       accept: (result, target) => {
-        if (owner !== generation.current) return;
+        if (owner !== generation.current || !mounted.current) return;
         queue.last = result;
         queue.handlers!.accept?.(result, target);
       },
       error: async (error) => {
-        if (owner !== generation.current) return;
+        if (owner !== generation.current || !mounted.current) return;
         queue.target = undefined;
         queue.failed = true;
         await queue.handlers!.error(error);
       },
-      idle: () => void settle(key, queue, owner),
-      reschedule: () => { if (owner === generation.current) runRef.current(key); }
+      idle: () => void settle(key, queue, owner, lease),
+      reschedule: () => { if (owner === generation.current && mounted.current) runRef.current(key); }
+    }).finally(() => {
+      if ((owner !== generation.current || !mounted.current) && !queue.settling) finishLease(lease);
     });
   };
 
@@ -219,11 +231,12 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
     if (mounted.current) setActive(false);
     commandRunning.current = true;
     const owner = generation.current;
+    const lease = claim.current;
     void Promise.resolve()
       .then(() => mounted.current && owner === generation.current ? command.run() : undefined)
-      .catch((error) => { if (owner === generation.current) command.error(error); })
+      .catch((error) => { if (owner === generation.current && mounted.current) command.error(error); })
       .finally(() => {
-        if (owner !== generation.current) return;
+        if (owner !== generation.current || !mounted.current) { finishLease(lease); return; }
         commandRunning.current = false;
         runCommandsRef.current();
       });
@@ -298,27 +311,21 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
   useEffect(() => {
     const replayed = !mounted.current;
     mounted.current = true;
-    if (replayed && resetKey.current !== undefined) replaceMountedWriter((version) => version + 1);
+    if (replayed) replaceMountedWriter((version) => version + 1);
     return () => {
       mounted.current = false;
+      generation.current++;
       for (const queue of queues.current.values()) queue.target = undefined;
       commands.current = [];
-      if (resetKey.current !== undefined) {
-        generation.current++;
-        if (claim.current) { releaseDeviceCommand(claim.current.setter, claim.current.token); claim.current = null; }
-        if (activeRef.current && !deviceCommandBusy(setPendingRef.current)) setPendingRef.current(false);
-        activeRef.current = false;
-        for (const resolve of [...retiredWaiters.current.splice(0), ...waiters.current.splice(0)]) resolve();
-      }
-      if (activeRef.current) {
-        const inFlight = commandRunning.current || [...queues.current.values()].some((queue) => queue.running || queue.settling);
-        if (!inFlight) {
-          activeRef.current = false;
-          if (claim.current) { releaseDeviceCommand(claim.current.setter, claim.current.token); claim.current = null; }
-          if (!deviceCommandBusy(setPendingRef.current)) setPendingRef.current(false);
-        }
-        for (const resolve of waiters.current.splice(0)) resolve();
-      }
+      const inFlight = commandRunning.current || [...queues.current.values()].some((queue) => queue.running || queue.settling);
+      // The captured finalizer owns a dispatched wire operation until it ends.
+      // Cleanup cancels callbacks and waiting work, never that physical lease.
+      if (!inFlight) finishLease(claim.current);
+      claim.current = null;
+      activeRef.current = false;
+      queues.current.clear();
+      commandRunning.current = false;
+      for (const resolve of [...retiredWaiters.current.splice(0), ...waiters.current.splice(0)]) resolve();
     };
   }, []);
 

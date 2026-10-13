@@ -338,6 +338,7 @@ export function App() {
   const deviceUndo = useQcDeviceUndo({ history: deviceHistory, snapshot, gateway: activeGateway, fail: actionFailed });
   const { undoAvailable: deviceUndoAvailable, redoAvailable: deviceRedoAvailable, undo: undoLastAction, redo: redoLastAction } = deviceUndo;
   const deviceWorkflowSession = {
+    commandSessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
       const attempt = connectionAttempts.capture();
@@ -348,6 +349,7 @@ export function App() {
   };
   const demoSession = connection.demo || connection.source === "virtual";
   const expressionWorkflow = useExpressionAssignment({
+    commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
     sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
@@ -366,6 +368,7 @@ export function App() {
     fail: actionFailed
   });
   const deviceSettingsWorkflow = useDeviceSettingsWorkflow({
+    commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
     sessionKey: `${connection.source}:${snapshot.stateVersion?.session ?? ""}:${deviceReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
