@@ -23,6 +23,7 @@ public:
     virtual kern_return_t NewUserClient(uint32_t type, IOUserClient **userClient) override;
 
     kern_return_t ReadReport(OSData **report) LOCALONLY;
+    kern_return_t AbortRead() LOCALONLY;
     kern_return_t WriteReport(OSData *report, uint32_t *bytesTransferred, kern_return_t *usbStatus) LOCALONLY;
     kern_return_t CopyDiagnostics(OSData **diagnostics) LOCALONLY;
     void ReleaseUsbResources() LOCALONLY;

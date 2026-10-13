@@ -6,7 +6,7 @@ import CoreMIDI
 import Darwin
 
 private let qcMidiTransportTypeProperty = "transportType" as CFString
-private let qcMidiTransportTypeUSB: Int32 = 1
+private let qcMidiTransportTypeUSB = "USB"
 private let qcParamErr: OSStatus = -50
 private let qcMemFullErr: OSStatus = -108
 
@@ -34,8 +34,6 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "connectUsbDriver", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "disconnectUsbDriver", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "usbDriverDiagnostics", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "writeUsbReport", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "readUsbReport", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "gatewayReadUsb", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "gatewayWriteUsb", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "driverCurrentPreset", returnType: CAPPluginReturnPromise)
@@ -347,6 +345,12 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         }
         driverQueue.async {
             do {
+                if self.driverClient.isOpen, self.protocolSession != nil {
+                    let diagnostics = (try? self.driverClient.diagnostics()) ?? [:]
+                    call.resolve(["connected": true, "synchronized": self.driverSynchronized,
+                                  "deviceId": 1, "name": "Quad Cortex USB", "diagnostics": diagnostics])
+                    return
+                }
                 try self.driverClient.open()
                 let session = try QCIosProtocolSession()
                 let now = self.monotonicMilliseconds()
@@ -394,28 +398,6 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                 call.resolve(diagnostics)
             }
             catch { call.reject("QC DriverKit diagnostics are unavailable: \(error)", "DRIVER_DIAGNOSTICS_FAILED") }
-        }
-    }
-
-    @objc public func writeUsbReport(_ call: CAPPluginCall) {
-        guard let encoded = call.getString("report"), let report = Data(base64Encoded: encoded) else {
-            call.reject("A base64 encoded QC HID output report is required.", "INVALID_REPORT")
-            return
-        }
-        driverQueue.async {
-            do { call.resolve(try self.driverClient.writeReport(report)) }
-            catch { call.reject("QC HID report write failed: \(error)", "DRIVER_WRITE_FAILED") }
-        }
-    }
-
-    @objc public func readUsbReport(_ call: CAPPluginCall) {
-        driverReadQueue.async {
-            do {
-                let report = try self.driverClient.readReport()
-                call.resolve(["report": report.base64EncodedString()])
-            } catch {
-                call.reject("QC HID report read failed: \(error)", "DRIVER_READ_FAILED")
-            }
         }
     }
 
@@ -832,9 +814,8 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         var result: [UsbMidiDevice] = []
         for index in 0..<MIDIGetNumberOfDevices() {
             let device = MIDIGetDevice(index)
-            var transport: Int32 = 0
-            guard MIDIObjectGetIntegerProperty(device, qcMidiTransportTypeProperty, &transport) == noErr,
-                  transport == qcMidiTransportTypeUSB else { continue }
+            let transport = midiString(device, key: qcMidiTransportTypeProperty)
+            guard transport.caseInsensitiveCompare(qcMidiTransportTypeUSB) == .orderedSame else { continue }
             let name = midiString(device, key: kMIDIPropertyName)
             let manufacturer = midiString(device, key: kMIDIPropertyManufacturer)
             var uniqueID: Int32 = 0
