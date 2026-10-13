@@ -16,3 +16,12 @@ export function flatPngBase64(width = 800, height = 480): string {
   const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", deflateSync(Buffer.concat(Array.from({ length: height }, () => row)))), chunk("IEND", Buffer.alloc(0))]);
   return png.toString("base64");
 }
+
+/** A real 8-bit greyscale PNG of the given grey levels, row by row, as base64. */
+export function greyPngBase64(width: number, height: number, luma: ArrayLike<number>): string {
+  const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 0;
+  const rows = Buffer.alloc((width + 1) * height);
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) rows[y * (width + 1) + 1 + x] = luma[y * width + x];
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", deflateSync(rows)), chunk("IEND", Buffer.alloc(0))]);
+  return png.toString("base64");
+}

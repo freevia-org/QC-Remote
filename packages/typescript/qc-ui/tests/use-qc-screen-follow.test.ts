@@ -6,6 +6,10 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { QcStateUpdate } from "@qc-remote/core";
 import type { QcObservedScreenKind, QcScreenObservation } from "../src/use-adaptive-screen-polling.ts";
 import { createQcScreenLatch } from "../src/qc-unit-screens.ts";
+import { titleFrame } from "./support/scene-command-frame.ts";
+
+/** The unit's real tree with its Copy/Swap Scene dialog open (the Grid underneath, its scene indicator reading A). */
+const COPY_SCENE_TREE = readFileSync(new URL("./support/copy-scene-unit-tree.txt", import.meta.url), "utf8");
 import type { QcScreenFollowOptions } from "../src/use-qc-screen-follow.ts";
 
 // Load the hook only after the test loader shares React with react-test-renderer.
@@ -42,7 +46,7 @@ function harness(initial: Scenario = {}) {
   const log: string[] = [];
   /** Runs after each touch the unit answers: the poller seeing the screen the unit passes through. */
   const watchers: Array<(unit: Unit) => void> = [];
-  const world = { treeRead: undefined as (() => Promise<{ tree: string }>) | undefined, unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: (initial.menuScroll ?? "bottom") as "bottom" | "mid" | "top", swipedAt: -1e9, rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", stuck: initial.scrollStuck ?? false, panel: initial.panel ?? false };
+  const world = { sceneLetter: "A", unreadableTitle: false, treeRead: undefined as (() => Promise<{ tree: string }>) | undefined, unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: (initial.menuScroll ?? "bottom") as "bottom" | "mid" | "top", swipedAt: -1e9, rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", stuck: initial.scrollStuck ?? false, panel: initial.panel ?? false };
   const state = { blockMenuOpen: initial.blockMenuOpen ?? false, directorySearchOpen: initial.directorySearchOpen ?? false, sceneCommand: (initial.sceneCommand ?? null) as "copy" | "swap" | null, view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, directoryOpen: initial.directoryOpen ?? false, routePicker: initial.routePicker as { row: number; side: string } | undefined, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
   const gateway = {
@@ -52,12 +56,14 @@ function harness(initial: Scenario = {}) {
       const lines = ["zenUI::RootGraphicsItem"];
       if (["CpuLoadIndicator", "SceneSelectorPopup", "PortSelector", "CopySceneDialog", "OptionsPopup"].includes(u) || (u === "ParameterEditor" && world.panel)) lines.push("zenUI::Grid");
       if (initial.retainedMenu && u === "CpuLoadIndicator") lines.push("zenUI::MainMenuPopup");
+      if (u === "CopySceneDialog") return { tree: COPY_SCENE_TREE.replace("text : 'A'", `text : '${world.sceneLetter}'`) };
       if (u === "SettingsDialog") lines.push("zenUI::SettingsDialog", "zenUI::SettingsMenu", "zenUI::UpdaterSettings");
       else if (u === "OptionsPopup") lines.push("zenUI::ParameterEditor", "zenUI::_OptionsPopup");
       else if (u === "SearchDialog") lines.push("zenUI::SearchDialog", "zenUI::Keyboard", "zenUI::KeyboardSearch");
       else lines.push(`zenUI::${u}`);
       return { tree: lines.join("\n") };
     },
+    captureScreen: async () => { log.push("capture"); return { pngBase64: "frame" }; },
     tapScreen: async (x: number, y: number) => {
       log.push(`tap:${x},${y}`);
       if (world.unitIgnores) return;
@@ -101,7 +107,11 @@ function harness(initial: Scenario = {}) {
     tuner: named("tuner", "close", "openTuner"),
     ioEq: named("io", "refresh"),
     routing: { picker: state.routePicker },
-    scene: { command: state.sceneCommand },
+    scene: {
+      command: state.sceneCommand,
+      openUnitCommand: (swap: boolean, scene: number) => { log.push(`scene.openUnitCommand:${swap ? "swap" : "copy"}:${scene}`); state.sceneCommand = swap ? "swap" : "copy"; },
+      closeCommand: () => { log.push("scene.closeCommand"); state.sceneCommand = null; }
+    },
     modes: named("modes", "refresh")
   }) as unknown as QcScreenFollowOptions["workflows"];
   const destination = () => ({
@@ -114,7 +124,8 @@ function harness(initial: Scenario = {}) {
   const options = (scenario: Scenario): QcScreenFollowOptions => ({
     sessionKey: scenario.sessionEpoch ?? 0,
     captureSessionCurrent: () => { const epoch = scenario.sessionEpoch ?? 0; return () => epoch === (current.sessionEpoch ?? 0); },
-    gateway, follow: scenario.follow ?? true, available: scenario.available ?? false, ready: scenario.ready ?? true,
+    gateway, decodeFrame: async () => world.unreadableTitle ? undefined : ({ width: 800, height: 480, luma: titleFrame(world.scene) }),
+    follow: scenario.follow ?? true, available: scenario.available ?? false, ready: scenario.ready ?? true,
     destination: destination() as never, workflows: workflowsFor(), notice: (message) => { log.push(`notice:${message}`); },
     screenPoll: { intervalMs: 1, timeoutMs: 2, scrollSettleMs: 30, rowDelayMs: 30, rowTimeoutMs: 2 }
   });
@@ -131,7 +142,7 @@ function harness(initial: Scenario = {}) {
   return { log, world, state, latch, watchers, rerender, get follower() { return seen.current!; }, renderer };
 }
 
-const overlaysClosed = ["grid.close", "preset.closeDirectory", "settings.close", "tempo.close", "tuner.close"];
+const overlaysClosed = ["grid.close", "scene.closeCommand", "preset.closeDirectory", "settings.close", "tempo.close", "tuner.close"];
 const opens: [QcObservedScreenKind, string[]][] = [
   ["tuner", ["view:tuner", "tuner.openTuner"]],
   ["tempo", ["tempo.openTempo"]],
@@ -148,7 +159,6 @@ const opens: [QcObservedScreenKind, string[]][] = [
   ["message-dialog", ["view:unit-mirror"]],
   ["keyboard", ["view:unit-mirror"]],
   ["search", ["view:unit-mirror"]],
-  ["copy-scene", ["view:unit-mirror"]],
   ["route-selector", ["view:unit-mirror"]],
   ["device-browser", ["view:unit-mirror"]],
   ["neural-capture", ["view:unit-mirror"]],
@@ -632,6 +642,85 @@ test("Copy Scene and Swap Scene open the one dialog from their own rows and clos
     assert.deepEqual(touches(host), ["tap:400,300"], "CANCEL, not the check button");
     host.renderer.unmount();
   }
+});
+
+test("the Copy/Swap Scene dialog the app opened stays the one panel: the unit's answer neither reopens nor closes it", async () => {
+  const host = harness({ follow: true, available: true });
+  flow(host, [["CopySceneDialog", "copy-scene"]]);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  host.log.length = 0;
+  await host.rerender({ sceneCommand: "swap" });
+  assert.equal(host.world.unit, "CopySceneDialog");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(!host.log.some((entry) => entry.startsWith("scene.")), `no open or close of the panel: ${JSON.stringify(host.log)}`);
+  assert.ok(!host.log.includes("capture"), "the app already knows which command it opened");
+  assert.ok(!host.log.includes("view:unit-mirror"), "no picture");
+  host.renderer.unmount();
+});
+
+test("a Copy or Swap Scene dialog the unit opened draws the same native panel, with the unit's own title, and sends no touch", async () => {
+  for (const [verb, letter, index] of [["copy", "A", 0], ["swap", "A", 0], ["swap", "C", 2], ["copy", "H", 7]] as const) {
+    const host = harness({ follow: true, available: true, unit: "CopySceneDialog" });
+    host.world.scene = verb;
+    host.world.sceneLetter = letter;
+    act(() => host.follower.observe(observation("copy-scene")));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.ok(host.log.includes(`scene.openUnitCommand:${verb}:${index}`), `${verb} ${letter}: ${JSON.stringify(host.log)}`);
+    assert.ok(!host.log.includes("view:unit-mirror"), "the native panel, not the unit's picture");
+    assert.deepEqual(touches(host), [], "the unit is only read");
+    await host.rerender({});
+    assert.deepEqual(touches(host), [], "the panel appearing does not touch the unit back");
+    assert.ok(!host.log.some((entry) => entry.startsWith("notice:")), JSON.stringify(host.log));
+    host.renderer.unmount();
+  }
+});
+
+test("CANCEL in the unit-opened panel taps the unit's CANCEL once and nothing else; a destination is never picked", async () => {
+  const host = harness({ follow: true, available: true, unit: "CopySceneDialog" });
+  flow(host, [["CopySceneDialog", "copy-scene"]]);
+  host.world.scene = "swap";
+  act(() => host.follower.observe(observation("copy-scene")));
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await host.rerender({});
+  assert.equal(host.state.sceneCommand, "swap");
+  host.log.length = 0;
+  await host.rerender({ sceneCommand: null });
+  assert.equal(host.world.unit, "Grid");
+  assert.deepEqual(touches(host), ["tap:400,300"]);
+  assert.ok(!host.log.some((entry) => entry.startsWith("notice:")), JSON.stringify(host.log));
+  host.renderer.unmount();
+});
+
+test("the unit closing its dialog (a footswitch press, or its own CANCEL) closes the panel without a touch", async () => {
+  const host = harness({ follow: true, available: true, unit: "CopySceneDialog" });
+  act(() => host.follower.observe(observation("copy-scene")));
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await host.rerender({});
+  host.log.length = 0;
+  host.world.unit = "Grid";
+  act(() => host.follower.observe(observation("grid")));
+  assert.ok(host.log.includes("scene.closeCommand"));
+  await host.rerender({});
+  assert.deepEqual(touches(host), [], "nothing is sent back to the unit");
+  assert.equal(host.state.sceneCommand, null);
+  host.renderer.unmount();
+});
+
+test("a title that cannot be read, or no capture at all, shows the unit's picture and never a guessed title", async () => {
+  const unreadable = harness({ follow: true, available: true, unit: "CopySceneDialog" });
+  unreadable.world.unreadableTitle = true;
+  act(() => unreadable.follower.observe(observation("copy-scene")));
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.ok(unreadable.log.includes("view:unit-mirror"), JSON.stringify(unreadable.log));
+  assert.ok(!unreadable.log.some((entry) => entry.startsWith("scene.openUnitCommand")));
+  assert.deepEqual(touches(unreadable), []);
+  unreadable.renderer.unmount();
+  // The dialog gone before it could be read: nothing is drawn.
+  const gone = harness({ follow: true, available: true, unit: "Grid" });
+  act(() => gone.follower.observe(observation("copy-scene")));
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.ok(!gone.log.some((entry) => entry.startsWith("scene.openUnitCommand") || entry === "view:unit-mirror"), JSON.stringify(gone.log));
+  gone.renderer.unmount();
 });
 
 test("Directory search opens from the Directory only, closes on the X at the top left, and then the Directory itself closes on the check", async () => {

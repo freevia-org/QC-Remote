@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type FocusEvent } from "react";
 import { useDialogFocusTrap } from "./qc-shared-controls";
 import { focusUserOpenedTarget } from "./user-open-focus";
 import { QcUiIcon } from "./theme-icons";
+import { SCENE_COMMAND_PROMPT } from "./device-reference/coros-screen-text";
 import "./official-scene-command.css";
 
 export interface SceneCommandOverlayProps {
@@ -13,6 +14,11 @@ export interface SceneCommandOverlayProps {
   /** false = "Copy Scene X", true = "Swap Scene X". */
   swap: boolean;
   pending: boolean;
+  /**
+   * The panel is the unit's own dialog: its title, its prompt and CANCEL, nothing else. The destination is a footswitch
+   * press on the unit, so no destination list is drawn and the app never picks or confirms one.
+   */
+  mirrorsUnit?: boolean;
   onSelect(destination: number): void;
   onCancel(): void;
   /** The data-qc-open-target focus returns to when the user dismisses the overlay; none when omitted. */
@@ -41,7 +47,7 @@ export interface SceneCommandOverlayProps {
  * matches the device screen.
  */
 export function CorOsSceneCommand(props: SceneCommandOverlayProps) {
-  const { scenes, sourceScene, swap, pending, onSelect, onCancel, returnFocusTarget } = props;
+  const { scenes, sourceScene, swap, pending, mirrorsUnit = false, onSelect, onCancel, returnFocusTarget } = props;
   const verb = swap ? "Swap" : "Copy";
   // A modal dialog by the shared rules (qc-shared-controls useDialogFocusTrap):
   // Escape cancels, unless a command is in flight and CANCEL is disabled too;
@@ -106,15 +112,15 @@ export function CorOsSceneCommand(props: SceneCommandOverlayProps) {
     const active = document.activeElement;
     if (!active || active === document.body || active === control) panel.focus();
   }, [pending]);
-  return <div className="scene-command-overlay" role="presentation">
+  return <div className={mirrorsUnit ? "scene-command-overlay is-unit-dialog" : "scene-command-overlay"} role="presentation">
     <div className="scene-command-scrim" aria-hidden="true" />
-    <section className="scene-command-panel" role="dialog" aria-modal="true" aria-labelledby="scene-command-title" tabIndex={-1} ref={dialogRef} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
+    <section className={mirrorsUnit ? "scene-command-panel is-unit-dialog" : "scene-command-panel"} role="dialog" aria-modal="true" aria-labelledby="scene-command-title" tabIndex={-1} ref={dialogRef} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
       <h1 id="scene-command-title">{verb} Scene {sceneLetter(sourceScene)}</h1>
-      <p>Press Scene destination footswitch.</p>
+      <p>{SCENE_COMMAND_PROMPT}</p>
       {/* Plain buttons in a labelled group: a listbox would promise arrow-key movement this list does not have. */}
-      <div className="scene-command-destinations qc-scroll-rail" role="group" aria-label="Destination scene">
+      {mirrorsUnit ? null : <div className="scene-command-destinations qc-scroll-rail" role="group" aria-label="Destination scene">
         {scenes.map((scene, index) => index === sourceScene ? null : <button type="button" key={scene} disabled={pending} onClick={() => onSelect(index)}><span>{sceneLetter(index)}</span>{scene}</button>)}
-      </div>
+      </div>}
       <footer><button type="button" disabled={pending} onClick={dismiss}>CANCEL</button></footer>
     </section>
   </div>;

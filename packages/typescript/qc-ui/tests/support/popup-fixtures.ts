@@ -24,8 +24,10 @@ export const POPUP_FIXTURES: PopupFixture[] = [
   { id: "input-picker", propKey: "routingPicker", selectors: [".coros-route-picker", ".coros-route-picker-dismiss"] },
   { id: "output-picker", propKey: "routingPicker", selectors: [".coros-route-picker", ".coros-route-picker-dismiss"] },
   { id: "add-device-drawer", propKey: "addDevicePicker", selectors: [".device-browser-official.is-live-picker"] },
-  { id: "copy-scene", propKey: "sceneCommand", selectors: [".scene-command-panel", ".scene-command-scrim"], fraction: { width: 0.525, centered: true, tolerance: 0.02 } },
-  { id: "swap-scene", propKey: "sceneCommand", selectors: [".scene-command-panel", ".scene-command-scrim"], fraction: { width: 0.525, centered: true, tolerance: 0.02 } },
+  // The unit's own dialog, measured on its 800x480 frame: 420x230 (52.5% x 47.9%) at (190,125), centred.
+  { id: "copy-scene", propKey: "sceneCommand", selectors: [".scene-command-panel", ".scene-command-scrim"], fraction: { width: 0.525, height: 0.479, centered: true, tolerance: 0.02 } },
+  { id: "swap-scene", propKey: "sceneCommand", selectors: [".scene-command-panel", ".scene-command-scrim"], fraction: { width: 0.525, height: 0.479, centered: true, tolerance: 0.02 } },
+  { id: "scene-destination-picker", propKey: "sceneCommand", selectors: [".scene-command-panel", ".scene-command-scrim"], fraction: { width: 0.525, centered: true, tolerance: 0.02 } },
   { id: "scene-label-editor", propKey: "sceneEditor", selectors: [".scene-label-dialog-panel"], fraction: { width: 1, height: 1, tolerance: 0.01 } },
   { id: "cpu-monitor", propKey: "cpuMonitor", selectors: [".coros-cpu-overlay"] },
   { id: "save-as", propKey: "savePreset", selectors: [".coros-save-preset"] },

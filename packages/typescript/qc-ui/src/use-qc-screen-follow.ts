@@ -5,7 +5,8 @@ import {
   readQcScreenFollowSetting, useAdaptiveQcScreenPolling, writeQcScreenFollowSetting,
   type QcObservedScreenKind, type QcScreenObservation, type QcScreenPollingPhase
 } from "./use-adaptive-screen-polling.ts";
-import { appKindAfterFollowing, appScreenKind, closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, QC_UNIT_MIRROR_KINDS, type QcCloseTarget, type QcOpenTarget, type QcScreenPoll } from "./qc-unit-screens.ts";
+import { appKindAfterFollowing, appScreenKind, closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, QC_UNIT_MIRROR_KINDS, treeShows, type QcCloseTarget, type QcOpenTarget, type QcScreenPoll } from "./qc-unit-screens.ts";
+import { decodeUnitFrame, sceneCommandVerbFromFrame, sceneIndexFromTree, type UnitFrameDecoder } from "./scene-command-reader.ts";
 import type { QcCpuTelemetry } from "./use-qc-cpu-telemetry.ts";
 import type { QcDeviceUndo } from "./use-qc-device-undo.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
@@ -38,14 +39,17 @@ export interface QcScreenFollowWorkflows {
   modes: { refresh(): unknown };
   /** The app's route picker, if any is open. */
   routing?: { picker?: { row: number; side: string } };
-  /** The Copy/Swap Scene command the app has open, if any. */
-  scene?: { command?: "copy" | "swap" | null };
+  /** The Copy/Swap Scene command the app has open, if any, and how the unit's own dialog opens and closes it. */
+  scene?: { command?: "copy" | "swap" | null; openUnitCommand?(swap: boolean, scene: number): void; closeCommand?(): void };
 }
 
 export interface QcScreenFollowOptions {
   sessionKey?: unknown;
   captureSessionCurrent?(): () => boolean;
-  gateway: Pick<GatewayTransport, "graphicsTree" | "tapScreen" | "swipeScreen" | "longTapScreen">;
+  /** `captureScreen` is read-only and only used to tell the unit's Copy Scene dialog from its Swap Scene dialog. */
+  gateway: Pick<GatewayTransport, "graphicsTree" | "tapScreen" | "swipeScreen" | "longTapScreen"> & Partial<Pick<GatewayTransport, "captureScreen">>;
+  /** Decodes a captured frame (the browser's decoder by default). */
+  decodeFrame?: UnitFrameDecoder;
   /** The user's "follow the Quad Cortex screen" setting: whether the unit's screens move the app's. */
   follow: boolean;
   /** Host gating that is not about the session: a demo device, a fixture run, a non-native build. */
@@ -102,6 +106,53 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     followed.current = undefined;
   }
 
+  /** Closes every app screen the unit's new screen replaces. */
+  const leaveAppScreens = (closeEditor: boolean) => {
+    const { destination, workflows } = latest.current;
+    if (closeEditor) workflows.grid.close();
+    workflows.scene?.closeCommand?.();
+    workflows.preset.closeDirectory();
+    workflows.deviceSettings.close();
+    workflows.tempo.close();
+    workflows.tuner.close();
+    destination.setView(null);
+    destination.setPopup(null);
+  };
+
+  /**
+   * The unit shows its Copy/Swap Scene dialog and the app did not open it: draw the native panel with the unit's own
+   * title. Copy or Swap is read from a captured frame and the source scene from the Grid's indicator; if either cannot
+   * be read (no capture, a frame mid-animation), the unit's picture is shown instead, never a guessed title.
+   */
+  const followSceneCommand = async () => {
+    const owner = latest.current.lifetime;
+    const { destination, workflows, gateway: unit, screenPoll } = latest.current;
+    const poll = screenPoll ?? DEFAULT_SCREEN_POLL;
+    const stale = () => !owner.current() || followed.current !== "copy-scene";
+    let verb: Awaited<ReturnType<typeof sceneCommandVerbFromFrame>>;
+    let source: number | undefined;
+    try {
+      for (let attempt = 0; attempt < 4 && !verb && !stale(); attempt += 1) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, poll.intervalMs));
+        const tree = (await unit.graphicsTree()).tree;
+        if (stale() || !treeShows(tree, "copy-scene")) return;
+        source = sceneIndexFromTree(tree);
+        verb = unit.captureScreen ? await sceneCommandVerbFromFrame(await unit.captureScreen(), latest.current.decodeFrame ?? decodeUnitFrame) : undefined;
+        if (!unit.captureScreen) break;
+      }
+    } catch { /* the picture below is the answer when the unit cannot be read */ }
+    if (stale()) return;
+    // The app already shows the panel (its own Copy/Swap Scene command whose expectation lapsed): leave it as it is.
+    if (appKindOf(latest.current) === "copy-scene") return;
+    const native = verb !== undefined && source !== undefined && workflows.scene?.openUnitCommand !== undefined;
+    const shown = appKindOf(latest.current);
+    const will: QcObservedScreenKind = native ? "copy-scene" : "message-dialog";
+    if (will !== shown) destination.latch.expectApp(will);
+    leaveAppScreens(true);
+    if (native) workflows.scene!.openUnitCommand!(verb === "swap", source!);
+    else destination.setView("unit-mirror");
+  };
+
   const observe = useCallback((observation: QcScreenObservation) => {
     if (!lifetime.current()) return;
     if (!latest.current.lifetime.current()) return;
@@ -120,15 +171,11 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     // The unit is moving the app: the app's change must not be driven back to the unit. Only a change that will
     // happen is expected; one the app already shows would otherwise swallow the user's next real change.
     const shown = appKindOf(latest.current);
+    // The Copy/Swap Scene dialog has no text in the unit's tree: read which one it is, then draw the panel (below).
+    if (kind === "copy-scene") { void followSceneCommand(); return; }
     const will = appKindAfterFollowing(kind);
     if (will !== shown) destination.latch.expectApp(will);
-    if (kind !== "parameter-editor") workflows.grid.close();
-    workflows.preset.closeDirectory();
-    workflows.deviceSettings.close();
-    workflows.tempo.close();
-    workflows.tuner.close();
-    destination.setView(null);
-    destination.setPopup(null);
+    leaveAppScreens(kind !== "parameter-editor");
     const { setView, setPopup } = destination;
     if (kind === "tuner") { setView("tuner"); void workflows.tuner.openTuner(); }
     else if (kind === "tempo") void workflows.tempo.openTempo();
