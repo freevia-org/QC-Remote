@@ -324,15 +324,14 @@ impl TrayEffects for NativeTrayEffects {
             if !supersede_user_quit {
                 command.arg(KEEP_USER_QUIT_FLAG);
             }
-            let mut child = command
+            command
                 .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
                 .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                // Into the same bounded broker-stderr.log the app's own
-                // `--broker-serve` children write, so a start that exits
-                // during startup leaves its reason behind.
-                .stderr(crate::broker_stderr_sink())
-                .spawn()
+                .stdout(std::process::Stdio::null());
+            // Into the same bounded broker-stderr.log the app's own
+            // `--broker-serve` children write, so a start that exits during
+            // startup leaves its reason behind.
+            let mut child = crate::spawn_with_broker_stderr(&mut command)
                 .map_err(|error| format!("Start the QC Remote background host: {error}"))?;
             // Keep the controller's lock until the host is observable, so two
             // GUI startups cannot both decide to start it. A start that finds

@@ -58,13 +58,11 @@ pub(super) fn spawn(
         .arg("--directory")
         .arg(directory)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(crate::broker_stderr_sink());
+        .stdout(Stdio::null());
     if !supersede_user_quit {
         command.arg("--keep-user-quit");
     }
-    let mut child = command
-        .spawn()
+    let mut child = crate::spawn_with_broker_stderr(&mut command)
         .map_err(|error| format!("Start the QC Remote background host: {error}"))?;
     let child_pid = child.id();
     let child_identity = qc_native_platform::process::os_process_created_at(child_pid);
