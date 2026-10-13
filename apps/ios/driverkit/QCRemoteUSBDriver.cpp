@@ -17,6 +17,7 @@ constexpr uint8_t kInterruptTransfer = 0x03;
 constexpr uint8_t kEndpointDirectionIn = 0x80;
 constexpr uint8_t kSetReport = 0x09;
 constexpr uint8_t kClassInterfaceOut = 0x21;
+constexpr kern_return_t kQcExpectedOutputStall = static_cast<kern_return_t>(0xE000404F);
 
 struct QcUsbDiagnostics {
     uint32_t version;
@@ -205,6 +206,7 @@ kern_return_t QCRemoteUSBDriver::WriteReport(OSData *report, uint32_t *bytesTran
             kReportLength, buffer, &transferred, 1'000);
         *bytesTransferred = transferred;
         if (*usbStatus == kIOReturnSuccess) status = kIOReturnSuccess;
+        else if (*usbStatus == kQcExpectedOutputStall && transferred == kReportLength) status = kIOReturnSuccess;
         else status = *usbStatus;
     }
     buffer->release();

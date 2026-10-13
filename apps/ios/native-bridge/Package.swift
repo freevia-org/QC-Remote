@@ -8,8 +8,14 @@ let package = Package(
     dependencies: [.package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", from: "8.0.0")],
     targets: [
         .target(
+            name: "QCIosDriverKitClient",
+            path: "ios/Sources/QCIosDriverKitClient",
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedFramework("IOKit")]
+        ),
+        .target(
             name: "QCIosNativeBridgePlugin",
-            dependencies: [.product(name: "Capacitor", package: "capacitor-swift-pm")],
+            dependencies: [.product(name: "Capacitor", package: "capacitor-swift-pm"), "QCIosDriverKitClient"],
             path: "ios/Sources/QCIosNativeBridgePlugin"
         )
     ]
