@@ -1,0 +1,18 @@
+{
+  "name": "@qc-remote/ios-native-bridge",
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "description": "Keychain and lifecycle bridge for the QC Remote iOS client",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    }
+  }
+}

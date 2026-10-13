@@ -1,0 +1,76 @@
+name: iOS build
+
+on:
+  pull_request:
+    paths:
+      - "apps/ios/**"
+      - "apps/android/src/**"
+      - "packages/typescript/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/ios.yml"
+  push:
+    branches: [master]
+    paths:
+      - "apps/ios/**"
+      - "apps/android/src/**"
+      - "packages/typescript/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned iOS app and iPad DriverKit extension
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust and iOS target
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Sync the Capacitor iOS project
+        run: npm run ios:sync --workspace @qc-remote/ios
+
+      - name: Build app and DriverKit extension without signing
+        run: >-
+          xcodebuild
+          -project apps/ios/ios/App/App.xcodeproj
+          -scheme App
+          -configuration Debug
+          -destination 'generic/platform=iOS'
+          -derivedDataPath "$RUNNER_TEMP/ios-derived-data"
+          CODE_SIGNING_ALLOWED=NO
+          build
+
+      - name: Upload unsigned iOS app
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: qc-remote-ios-unsigned
+          path: ${{ runner.temp }}/ios-derived-data/Build/Products/Debug-iphoneos/App.app
+          if-no-files-found: error

@@ -35,6 +35,8 @@ fork's public identity. See [`TRADEMARKS.md`](TRADEMARKS.md). They are:
 - `apps/windows/src-tauri/icons/**`
 - `apps/android/android/app/src/main/res/mipmap-*/**`
 - `apps/android/android/app/src/main/res/drawable-*/splash.png`
+- `apps/ios/ios/App/App/Assets.xcassets/AppIcon.appiconset/**`
+- `apps/ios/ios/App/App/Assets.xcassets/Splash.imageset/**`
 - the `appName`, `appWordmark`, and `companionCaption` values in
   `packages/typescript/qc-theme/src/brand.json`
 
