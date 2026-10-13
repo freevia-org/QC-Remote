@@ -145,6 +145,10 @@ export function CorOsAddDevicePicker({ picker, cellCenter }: { picker: CorOsAddD
         <button type="button" aria-label="Close device browser" onClick={onClose}><QcUiIcon kind="close" /></button>
       </header>
       <aside className="qc-scroll-rail" aria-label="Capture folders">
+        {captureFolder && <button type="button" className="capture-picker-back" onClick={() => {
+          const parent = captureFolders.find((folder) => folder.key === captureFolder)?.parentKey;
+          setCaptureFolder(parent === captureRoot?.key ? undefined : parent);
+        }}><b><QcUiIcon kind="previous" /></b><span>Back</span></button>}
         <button type="button" disabled title="Capture favorites are not published by the local device catalog."><b><QcLibraryIcon kind="heart" /></b><span>Favorites</span></button>
         <button type="button" disabled title="Recent captures are not published by the local device catalog."><b><QcLibraryIcon kind="clock" /></b><span>Recent</span></button>
         <button type="button" disabled title="Downloads require the authenticated Cortex Cloud provider."><b><QcDirectoryIcon kind="download" /></b><span>Downloads</span></button>

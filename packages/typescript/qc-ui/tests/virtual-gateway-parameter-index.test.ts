@@ -60,3 +60,36 @@ test("parameter writes reject prototype-shaped scene keys even if internal state
   await assert.rejects(gateway.setParameter(block.row, block.column, 0, 0.2, before, "__proto__" as unknown as number, block.modelId, name, identity), /scene must be a valid scene index/);
   assert.equal(({} as { polluted?: unknown }).polluted, undefined);
 });
+
+test("virtual block reset applies measured defaults to active and inactive scenes while retaining Scene mode", async () => {
+  const measuredCatalogue = { models: [{ id: 1_001, name: "Amp", category: "Guitar Amplifier", hidden: false,
+    parameters: [0, 1].map((index) => ({ index, name: `Parameter ${index}`, type: "float", minimum: 0, maximum: 1, valueScale: "linear", options: [] })) }] } as VirtualModelCatalogue;
+  const storage = createMemoryVirtualDeviceStorage();
+  const store = await VirtualDeviceStore.open({ storage, catalogue: measuredCatalogue,
+    measuredDefaults: { schema: 1, source: "device-derived compatibility data", models: {
+      "1001": { name: "Amp", category: "Guitar Amplifier", parameters: [{ index: 0, name: "Scene parameter", normalizedValue: .2 }, { index: 1, name: "Ordinary parameter", normalizedValue: .3 }] }
+    } }, newSessionId: () => "reset-test" });
+  const gateway = createVirtualGatewayTransport(store);
+  const initial = await gateway.currentSnapshot();
+  const block = initial.blocks.find((block) => block.modelId === 1_001)!;
+  assert.ok(block);
+  await store.update((state) => {
+    const target = state.current.preset.blocks.find((target) => target.modelId === 1_001)!;
+    target.parameterValues = { 0: .7, 1: .9 };
+    target.sceneValues = { 0: [.8, .6, .4, .9, .5, .7, .1, 1] };
+    target.expressions = { 0: { pedal: 2, minimum: .1, maximum: .9 } };
+  });
+  const result = await gateway.resetBlockParameters(block.row, block.column, block.modelId!, initial.presetName, initial.presetIdentity!);
+  assert.equal(result.verified, true);
+  for (const scene of [initial.activeScene, (initial.activeScene + 1) % 8]) {
+    await gateway.selectScene(scene, initial.presetName, initial.presetIdentity!);
+    const readback = await gateway.blockDetails(block.row, block.column, initial.presetName, initial.presetIdentity!);
+    assert.equal(readback.parameters.find((parameter) => parameter.index === 0)?.normalizedValue, .2);
+    assert.equal(readback.parameters.find((parameter) => parameter.index === 0)?.sceneMode, true);
+    assert.equal(readback.parameters.find((parameter) => parameter.index === 1)?.normalizedValue, .3);
+    assert.equal(readback.parameters.find((parameter) => parameter.index === 0)?.expression, 2);
+  }
+  const persisted = JSON.parse(storage.text!);
+  const stored = persisted.current.preset.blocks.find((target) => target.modelId === 1_001);
+  assert.deepEqual(stored.sceneValues[0], Array(8).fill(.2));
+});

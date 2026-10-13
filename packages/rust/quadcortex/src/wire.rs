@@ -15,6 +15,9 @@ pub enum WireError {
     /// A fixed-width or length-delimited field extends past the end of the payload.
     #[error("truncated protobuf field")]
     TruncatedField,
+    /// A field key is zero or exceeds the protobuf 29-bit field-number range.
+    #[error("invalid protobuf field tag")]
+    InvalidTag,
 }
 
 /// Message types whose `request_id` is protobuf field 1 rather than field 2.
@@ -48,9 +51,12 @@ pub fn varint_field(payload: &[u8], wanted: u32) -> Result<Option<u64>, WireErro
     let mut offset = 0;
     while offset < payload.len() {
         let tag = read_varint(payload, &mut offset)?;
-        let field = (tag >> 3) as u32;
+        let field = tag >> 3;
+        if field == 0 || field > (1 << 29) - 1 {
+            return Err(WireError::InvalidTag);
+        }
         let wire = (tag & 7) as u8;
-        if field == wanted && wire == 0 {
+        if field == u64::from(wanted) && wire == 0 {
             return Ok(Some(read_varint(payload, &mut offset)?));
         }
         skip(payload, &mut offset, wire)?;
@@ -65,6 +71,11 @@ fn read_varint(payload: &[u8], offset: &mut usize) -> Result<u64, WireError> {
             return Err(WireError::TruncatedVarint);
         };
         *offset += 1;
+        // Only bit 63 remains in the tenth octet. Reject overflow before
+        // shifting, otherwise a malformed value can alias a valid request id.
+        if shift == 63 && byte > 1 {
+            return Err(WireError::TruncatedVarint);
+        }
         value |= u64::from(byte & 0x7f) << shift;
         if byte & 0x80 == 0 {
             return Ok(value);
@@ -80,7 +91,9 @@ fn skip(payload: &[u8], offset: &mut usize, wire: u8) -> Result<(), WireError> {
             return Ok(());
         }
         1 => 8,
-        2 => read_varint(payload, offset)? as usize,
+        2 => {
+            usize::try_from(read_varint(payload, offset)?).map_err(|_| WireError::TruncatedField)?
+        }
         5 => 4,
         other => return Err(WireError::UnsupportedWire(other)),
     };
@@ -118,6 +131,32 @@ mod tests {
             Ok(Some(42))
         );
         assert_eq!(varint_field(&[0x08, 0x01], 2), Ok(None));
+    }
+
+    #[test]
+    fn rejects_overflowing_varints_without_truncating_their_high_bits() {
+        for last in [2, 0x7f, 0x80, 0xff] {
+            let mut payload = vec![0x10, 0xaa];
+            payload.extend_from_slice(&[0x80; 8]);
+            payload.push(last);
+            assert_eq!(varint_field(&payload, 2), Err(WireError::TruncatedVarint));
+            assert_eq!(request_id(13, &payload), None);
+        }
+        let mut maximum = vec![0x10];
+        maximum.extend_from_slice(&[0xff; 9]);
+        maximum.push(1);
+        assert_eq!(varint_field(&maximum, 2), Ok(Some(u64::MAX)));
+    }
+
+    #[test]
+    fn rejects_invalid_field_keys_before_narrowing() {
+        // Field 2^32 + 2 previously narrowed to field 2.
+        let oversized = [0x90, 0x80, 0x80, 0x80, 0x80, 0x01, 42];
+        assert_eq!(varint_field(&oversized, 2), Err(WireError::InvalidTag));
+        assert_eq!(
+            varint_field(&[0, 0, 0x10, 42], 2),
+            Err(WireError::InvalidTag)
+        );
     }
 
     #[test]

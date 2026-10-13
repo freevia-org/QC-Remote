@@ -43,6 +43,14 @@ export interface PresetMidiOutWorkflowOptions {
  */
 export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) {
   const { snapshot, demo = false, onSaved } = options;
+  // Modal authorization follows the physical host and preset lifetime, not
+  // unrelated telemetry objects. A monotonic version also rejects session ABA.
+  const editorContextKey = JSON.stringify([demo, snapshot.stateVersion?.session, snapshot.setlistKey, snapshot.presetPosition, snapshot.presetIdentity]);
+  const editorOwner = useRef({ key: editorContextKey, gateway: options.gateway, current: options.captureSessionCurrent?.() ?? (() => true), version: 0 });
+  if (editorOwner.current.key !== editorContextKey || editorOwner.current.gateway !== options.gateway || !editorOwner.current.current()) {
+    editorOwner.current = { key: editorContextKey, gateway: options.gateway, current: options.captureSessionCurrent?.() ?? (() => true), version: editorOwner.current.version + 1 };
+  }
+  const contextVersion = editorOwner.current.version;
   const [pending, setPending] = useState(false);
   const [outcome, setOutcome] = useState<{ current(): boolean; error: string; status: "saved" | "cleared" | null }>();
   const error = outcome?.current() ? outcome.error : "";
@@ -153,8 +161,8 @@ export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) 
   const clearError = useCallback(() => setOutcome((value) => value ? { ...value, error: "" } : value), []);
   const clearStatus = useCallback(() => setOutcome((value) => value ? { ...value, status: null } : value), []);
 
-  return useMemo(() => ({ snapshot, demo, pending, error, status, save, clearAll, clearError, clearStatus }),
-    [clearAll, clearError, clearStatus, demo, error, pending, save, snapshot, status]);
+  return useMemo(() => ({ snapshot, demo, pending, error, status, contextVersion, contextCurrent: () => editorOwner.current.version === contextVersion && editorOwner.current.current(), save, clearAll, clearError, clearStatus }),
+    [clearAll, clearError, clearStatus, contextVersion, demo, error, pending, save, snapshot, status]);
 }
 
 export type PresetMidiOutWorkflow = ReturnType<typeof usePresetMidiOutWorkflow>;

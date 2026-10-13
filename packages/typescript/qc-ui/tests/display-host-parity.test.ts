@@ -20,7 +20,7 @@ type Renderer = { render(flavour: Flavour, scenario: Scenario): Promise<string>;
 
 const workDirectory = mkdtempSync(join(tmpdir(), "qc-display-parity-"));
 const entry = fileURLToPath(new URL("./support/display-host-entry.tsx", import.meta.url));
-const { module } = await bundleModule<Renderer>(workDirectory, "parity", `export * from ${JSON.stringify(entry)};`);
+const { module } = await bundleModule<Renderer>(workDirectory, "parity", `export * from ${JSON.stringify(entry)};`).catch((error) => { rmSync(workDirectory, { recursive: true, force: true }); throw error; });
 test.after(() => rmSync(workDirectory, { recursive: true, force: true }));
 
 const SCREENS: [string, Scenario][] = [

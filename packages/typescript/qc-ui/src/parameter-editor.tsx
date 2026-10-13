@@ -27,6 +27,10 @@ const CAB_REFERENCE_VALUES = [
 
 export interface CorOsParameterEditorProps {
   details: BlockDetails;
+  /** Explicit static reference presentation; live callers must leave this unset. */
+  referenceOnly?: boolean;
+  /** Host workflow session identity, retiring local dialogs on reconnection/reload. */
+  editorContextKey?: unknown;
   /** Passive measured title decoration; absent for live state unless explicitly supplied. */
   titlePresetMark?: boolean;
   drafts: Record<number, number>;
@@ -357,13 +361,13 @@ function CorOsReferenceStandardEditor({ props, accent, parameters, menuOpen, set
     </header>
     <div className={`coros-parameter-controls${parameters.length > 5 ? " is-two-row" : ""}`}>{parameters.map((parameter) => {
       const value = drafts[parameter.index] ?? parameter.normalizedValue ?? 0;
-      const dialValue = referenceDialValue(details.name, parameter.name, value);
+      const dialValue = props.referenceOnly ? referenceDialValue(details.name, parameter.name, value) : value;
       const detents = referenceDialSteps(details.name, parameter);
       const toggle = parameterControlKind(parameter) === "switch" || parameterControlKind(parameter) === "button";
       const nextToggle = value >= .5 ? 0 : 1;
       return <label key={parameter.index} className={`${toggle ? "is-toggle " : ""}${referenceParameterClass(parameter.name)}`}>
         <strong>{parameter.name.toUpperCase()}</strong>
-        {toggle ? <button className="coros-toggle" disabled={disabled || !parameter.writable} aria-label={`${parameter.name}: ${parameterDisplay(parameter, value)}`} onClick={() => { onDraftChange(parameter, nextToggle); onCommit(parameter, nextToggle); }}><QcPillToggle index={value >= .5 ? 1 : 0} detent="var(--editor-color)" /><QcPillToggleLabels labels={parameter.options.length ? parameter.options : ["Off", "On"]} index={value >= .5 ? 1 : 0} /></button> : <><input type="range" min="0" max="1" step={parameterStep(parameter)} value={value} disabled={disabled || !parameter.writable} aria-label={`${parameter.name}: ${parameterDisplay(parameter, value)}`} onChange={(event) => onDraftChange(parameter, Number(event.target.value))} onPointerUp={(event) => onCommit(parameter, Number(event.currentTarget.value))} onKeyUp={(event) => { if (["ArrowUp", "ArrowRight", "ArrowDown", "ArrowLeft"].includes(event.key)) onCommit(parameter, Number(event.currentTarget.value)); }} /><span className="coros-dial"><QcRotaryDial value={dialValue} mode={detents ? "step" : "arc"} steps={detents} accent={accent} /></span><small>{parameterDisplay(parameter, value)}</small></>}
+        {toggle ? <button className="coros-toggle" disabled={disabled || !parameter.writable || parameter.enabled === false} aria-label={`${parameter.name}: ${parameterDisplay(parameter, value)}`} onClick={() => { onDraftChange(parameter, nextToggle); onCommit(parameter, nextToggle); }}><QcPillToggle index={value >= .5 ? 1 : 0} detent="var(--editor-color)" /><QcPillToggleLabels labels={parameter.options.length ? parameter.options : ["Off", "On"]} index={value >= .5 ? 1 : 0} /></button> : <><input type="range" min="0" max="1" step={parameterStep(parameter)} value={value} disabled={disabled || !parameter.writable || parameter.enabled === false} aria-label={`${parameter.name}: ${parameterDisplay(parameter, value)}`} onChange={(event) => onDraftChange(parameter, Number(event.target.value))} onPointerUp={(event) => onCommit(parameter, Number(event.currentTarget.value))} onKeyUp={(event) => { if (["ArrowUp", "ArrowRight", "ArrowDown", "ArrowLeft"].includes(event.key)) onCommit(parameter, Number(event.currentTarget.value)); }} /><span className="coros-dial"><QcRotaryDial value={dialValue} mode={detents ? "step" : "arc"} steps={detents} accent={accent} /></span><small>{parameterDisplay(parameter, value)}</small></>}
       </label>;
     })}</div>
     {footswitchAssignmentPending && <QcFootswitchAssignmentPrompt assignedLetter={footswitch === undefined ? undefined : sceneLetter(footswitch)} onCancel={() => onFootswitchAssignmentStart(false)} onUnassign={onUnassignFootswitch} />}
@@ -792,7 +796,7 @@ function CorOsParameterEditorContent(props: CorOsParameterEditorProps) {
   const singleRow = pageSize === 10 && family !== "synth" && !screenSlots.some((parameter, slot) => parameter && slot >= 5);
   const contextItems = parameterContextMenuItems(details, clipboardModelId);
   const runContextAction = (action: ParameterEditorContextAction) => { setMenuOpen(false); onContextAction(action); };
-  if (details.name === "212 UK C30 65 (M)" || details.name === "Parametric-8") return <CorOsReferenceSpecialEditor props={props} accent={accent} menuOpen={menuOpen} setMenuOpen={setMenuOpen} contextItems={contextItems} runContextAction={runContextAction} />;
+  if (props.referenceOnly && (details.name === "212 UK C30 65 (M)" || details.name === "Parametric-8")) return <CorOsReferenceSpecialEditor props={props} accent={accent} menuOpen={menuOpen} setMenuOpen={setMenuOpen} contextItems={contextItems} runContextAction={runContextAction} />;
   if (REFERENCE_STANDARD_EDITORS.has(details.name)) return <CorOsReferenceStandardEditor props={props} accent={accent} parameters={screenSlots.filter((parameter): parameter is BlockParameter => parameter !== undefined)} menuOpen={menuOpen} setMenuOpen={setMenuOpen} contextItems={contextItems} runContextAction={runContextAction} />;
   return <section className={`coros-parameter-editor family-${family}${fullScreen ? " is-full-screen" : ""}${tabs.length ? " has-tabs" : ""}${routingNode ? ` is-routing-node is-${routingNode}` : ""}`} style={{ "--parameter-accent": accent } as CSSProperties} aria-label={`${details.name} parameter editor`}>
     <header className="parameter-editor-header">
@@ -819,33 +823,46 @@ function CorOsParameterEditorContent(props: CorOsParameterEditorProps) {
   </section>;
 }
 
-export function CorOsParameterEditor(props: CorOsParameterEditorProps) {
+function CorOsParameterEditorSession(props: CorOsParameterEditorProps) {
   const [workflow, setWorkflow] = useState<"save" | "looper">();
   const [name, setName] = useState("");
   const [assignments, setAssignments] = useState<number[]>([]);
   const [workflowPending, setWorkflowPending] = useState(false);
   const [workflowError, setWorkflowError] = useState("");
+  const generation = useRef(0);
+  const mounted = useRef(true);
+  const busy = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current += 1; }; }, []);
+  const owns = (captured: number) => mounted.current && generation.current === captured;
   const begin = (action: ParameterEditorContextAction) => {
+    if (!mounted.current) return;
     if (action === "save-device-preset" && props.onSaveDevicePreset) {
+      generation.current += 1; busy.current = false; setWorkflowPending(false);
       setName(""); setWorkflowError(""); setWorkflow("save"); return;
     }
     if (action === "assign-looper-actions" && props.onLoadLooperAssignments) {
+      const captured = ++generation.current;
+      busy.current = true;
+      setAssignments([]);
       setWorkflowError(""); setWorkflow("looper"); setWorkflowPending(true);
-      void props.onLoadLooperAssignments().then((value) => setAssignments(value), (error) => setWorkflowError(error instanceof Error ? error.message : String(error))).finally(() => setWorkflowPending(false));
+      void props.onLoadLooperAssignments().then((value) => { if (owns(captured)) setAssignments(value); }, (error) => { if (owns(captured)) setWorkflowError(error instanceof Error ? error.message : String(error)); }).finally(() => { if (owns(captured)) { busy.current = false; setWorkflowPending(false); } });
       return;
     }
     props.onContextAction(action);
   };
-  const closeWorkflow = () => { if (!workflowPending) { setWorkflow(undefined); setWorkflowError(""); } };
+  const renderedGeneration = generation.current;
+  const closeWorkflow = () => { if (owns(renderedGeneration) && !busy.current) { generation.current += 1; setWorkflow(undefined); setWorkflowError(""); } };
   const save = async () => {
-    if (workflowPending) return;
+    if (!owns(renderedGeneration) || busy.current || !workflow) return;
+    const captured = renderedGeneration;
+    busy.current = true;
     setWorkflowPending(true); setWorkflowError("");
     try {
       if (workflow === "save") await props.onSaveDevicePreset?.(name.trim());
       else if (workflow === "looper") await props.onSaveLooperAssignments?.(assignments);
-      setWorkflow(undefined);
-    } catch (error) { setWorkflowError(error instanceof Error ? error.message : String(error)); }
-    finally { setWorkflowPending(false); }
+      if (owns(captured)) { generation.current += 1; busy.current = false; setWorkflow(undefined); setWorkflowPending(false); }
+    } catch (error) { if (owns(captured)) setWorkflowError(error instanceof Error ? error.message : String(error)); }
+    finally { if (owns(captured)) { busy.current = false; setWorkflowPending(false); } }
   };
   const nextLooperAction = (slot: number) => {
     setAssignments((current) => {
@@ -870,4 +887,13 @@ export function CorOsParameterEditor(props: CorOsParameterEditorProps) {
       {workflowError && <p className="is-error">{workflowError}</p>}
     </section>}
   </ParameterSceneModeContext.Provider>;
+}
+
+export function CorOsParameterEditor(props: CorOsParameterEditorProps) {
+  const owner = useRef({ context: props.editorContextKey, target: "", generation: 0 });
+  const target = JSON.stringify([props.details.row, props.details.column, props.details.modelId, props.details.scene, props.activeScene]);
+  if (owner.current.context !== props.editorContextKey || owner.current.target !== target) {
+    owner.current = { context: props.editorContextKey, target, generation: owner.current.generation + 1 };
+  }
+  return <CorOsParameterEditorSession key={owner.current.generation} {...props} />;
 }

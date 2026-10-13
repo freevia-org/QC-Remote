@@ -1237,6 +1237,17 @@ impl SessionRuntime {
         let mut observation = match self.state.ingest(message_type, payload) {
             Ok(observation) => observation,
             Err(error) => {
+                if let Some(update) = self.state.take_failed_preset_invalidation() {
+                    self.preset_observation = None;
+                    self.invalidate_preset_workflow(format!(
+                        "Current preset could not be retained: {error}"
+                    ));
+                    let mut states = [update];
+                    self.stamp_state_version(&mut states)?;
+                    if let Err(publish) = self.stage_state_publication(ticket, &states, None) {
+                        return Err(format!("{error}; {publish}"));
+                    }
+                }
                 if message_type == crate::profile::MESSAGE_TYPE_FILE
                     && self.state.native_preset_catalog().health().is_err()
                 {

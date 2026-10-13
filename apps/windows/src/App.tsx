@@ -311,7 +311,9 @@ export function App() {
     pollIntervalMs: 2000,
     autoStart: true
   });
+  const deviceCommandSessionKey = `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`;
   const workflows = useQcWorkflows({
+    commandSessionKey: deviceCommandSessionKey,
     controller: qcController,
     transport: qcTransport,
     gateway: activeGateway,
@@ -357,10 +359,8 @@ export function App() {
     performance: performanceWorkflow
   } = workflows;
   const { undoEntry, redoEntry, record: recordUndo, clear: clearUndo } = deviceHistory;
-  const deviceUndo = useQcDeviceUndo({ history: deviceHistory, snapshot, gateway: activeGateway, fail: actionFailed });
-  const { undoAvailable: deviceUndoAvailable, redoAvailable: deviceRedoAvailable, undo: undoLastAction, redo: redoLastAction } = deviceUndo;
   const deviceWorkflowSession = {
-    commandSessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
+    commandSessionKey: deviceCommandSessionKey,
     sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
       const attempt = connectionAttempts.capture();
@@ -369,6 +369,12 @@ export function App() {
       return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
     }
   };
+  const deviceUndo = useQcDeviceUndo({ ...deviceWorkflowSession,
+    history: deviceHistory, snapshot, gateway: activeGateway, presetLifetime: qcController.lifetime,
+    connected: sessionReady, pending: commandPending, setPending: setCommandPending,
+    notice: setNotice, fail: actionFailed, reconcile: reconcileWorkflowSnapshot
+  });
+  const { undoAvailable: deviceUndoAvailable, redoAvailable: deviceRedoAvailable, undo: undoLastAction, redo: redoLastAction } = deviceUndo;
   const demoSession = connection.demo || connection.source === "virtual";
   const expressionWorkflow = useExpressionAssignment({
     commandSessionKey: deviceWorkflowSession.commandSessionKey,
@@ -491,6 +497,7 @@ export function App() {
   const draftParameterValue = parameterWorkflow.draft;
   const applyParameterBatch = parameterWorkflow.commitBatch;
   const parameterEditorBindings = qcParameterEditorBindings({
+    editorContextKey: `${deviceCommandSessionKey}:${qcController.lifetime.version}`,
     titlePresetMark: corpusFixtureEnabled && editor.details?.name === "Simple Gate",
     snapshot,
     selectedBlockId,
@@ -2838,6 +2845,7 @@ export function App() {
 
   const display = createQcDeviceDisplay({
     captureSessionCurrent: deviceWorkflowSession.captureSessionCurrent,
+    screenGestureContextKey: deviceCommandSessionKey,
     snapshot, selectedBlockId, pending: commandPending, destination: screenDestination, views: deviceViews, cpu: cpuTelemetry, undo: deviceUndo,
     workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow, scene: sceneWorkflow, preset: presetWorkflow, routing: routingWorkflow },
     mirror: activeGateway,

@@ -3,6 +3,62 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { startRelayReportingFailure } from "./relay-start.ts";
 
+test("actual Android prompt hook cancels replacement and unmount, and refuses retained old callbacks", async (t) => {
+  const { build } = await import("esbuild");
+  const { createRequire } = await import("node:module");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  const rendererRequire = createRequire(createRequire(import.meta.url).resolve("react-test-renderer"));
+  const React = rendererRequire("react");
+  const { act, create } = rendererRequire("react-test-renderer");
+  const work = mkdtempSync(join(tmpdir(), "qc-android-prompts-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const outfile = join(work, "prompts.mjs");
+  await build({
+    entryPoints: [fileURLToPath(new URL("./use-android-prompts.tsx", import.meta.url))],
+    outfile, bundle: true, format: "esm", platform: "node", jsx: "automatic", logLevel: "error",
+    plugins: [{ name: "prompt-test-components", setup(builder) {
+      builder.onResolve({ filter: /^react(?:\/jsx(?:-dev)?-runtime)?$/ }, ({ path }) => ({ path: pathToFileURL(rendererRequire.resolve(path)).href, external: true }));
+      builder.onResolve({ filter: /^@qc-remote\/ui$/ }, () => ({ path: "ui", namespace: "prompt-test" }));
+      builder.onLoad({ filter: /.*/, namespace: "prompt-test" }, () => ({ contents: "export const QcConfirm = () => null; export const QcTextPrompt = () => null;", loader: "js" }));
+    } }]
+  });
+  const { useAndroidPrompts } = await import(pathToFileURL(outfile).href);
+  let current: ReturnType<typeof useAndroidPrompts>;
+  function Probe() { current = useAndroidPrompts(); return null; }
+  let renderer: ReturnType<typeof create>;
+  await act(async () => { renderer = create(React.createElement(Probe)); });
+  t.after(async () => { await act(async () => renderer.unmount()); });
+  let first: Promise<boolean>;
+  await act(async () => { first = current.prompts.confirm("Replace library?"); });
+  const retiredConfirm = current.overlay.props.onConfirm;
+  let second: Promise<string | null>;
+  await act(async () => { second = current.prompts.prompt("Name preset", "Initial"); });
+  assert.equal(await first!, false, "opening a text prompt cancels the older confirmation");
+  await act(async () => retiredConfirm());
+  assert.equal(current.overlay.props.title, "Name preset", "a retired dialog cannot hide or answer its successor");
+  const retiredText = current.overlay.props.onSubmit;
+  let third: Promise<boolean>;
+  await act(async () => { third = current.prompts.confirm("Current confirmation"); });
+  assert.equal(await second!, null, "opening a confirmation cancels the older text prompt");
+  await act(async () => retiredText("Old result"));
+  assert.equal(current.overlay.props.message, "Current confirmation");
+  await act(async () => current.overlay.props.onConfirm());
+  assert.equal(await third!, true);
+  assert.equal(current.overlay, null);
+  let pending: Promise<string | null>;
+  await act(async () => { pending = current.prompts.prompt("Waiting on teardown", ""); });
+  const retainedApi = current.prompts;
+  const retainedSubmit = current.overlay.props.onSubmit;
+  await act(async () => renderer.unmount());
+  assert.equal(await pending!, null, "unmount settles the outstanding dialog promise");
+  retainedSubmit("Too late");
+  assert.equal(await retainedApi.confirm("After teardown"), false);
+  assert.equal(await retainedApi.prompt("After teardown", ""), null);
+});
+
 test("the mobile control deck follows the QC layout in portrait and four-across landscape", () => {
   const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
   const performanceWorkflow = readFileSync(new URL("../../../packages/typescript/qc-ui/src/use-performance-workflow.ts", import.meta.url), "utf8");

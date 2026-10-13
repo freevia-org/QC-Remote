@@ -537,8 +537,10 @@ public class QcUsbPlugin extends Plugin {
 
     private CompletableFuture<org.json.JSONObject> relayCreateBackup(org.json.JSONObject params) throws Exception {
         RelayDeadline relayDeadline = CURRENT_RELAY_DEADLINE.get();
-        String name = params.optString("name", "");
-        if (name.trim().isEmpty()) return failedRelay("INVALID_ARGUMENT", "Backup name cannot be empty.");
+        // Validate with the shared native boundary before admitting an export
+        // or sending its uncorrelated request. Invalid names must not consume
+        // a complete device backup only to fail during final document assembly.
+        String name = QcNativeStateDecoder.validateBackupName(params.optString("name", ""));
         if (pendingBackup != null && !pendingBackup.result.isDone()) return failedRelay("BACKUP_IN_PROGRESS", "A device backup is already in progress.");
         CompletableFuture<org.json.JSONObject> result = new CompletableFuture<>();
         long startedAt = monotonicMillis();

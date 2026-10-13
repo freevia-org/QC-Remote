@@ -217,7 +217,7 @@ impl SessionRuntime {
         for stage in &plan.cleanup_stages {
             if !matches!(&stage.write,
                 PlannedWrite::HidCommand(crate::commands::DeviceCommand::SetlistPosition { setlist_key, position, is_factory })
-                if setlist_key.trim_end_matches('/') == original.setlist_key.trim_end_matches('/')
+                if setlist_key.trim_end_matches('/').eq_ignore_ascii_case(original.setlist_key.trim_end_matches('/'))
                     && *position == original.preset_position && *is_factory == original.setlist_key.starts_with("/opt/")
             ) {
                 return Err(

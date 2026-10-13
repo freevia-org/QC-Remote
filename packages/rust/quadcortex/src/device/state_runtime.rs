@@ -19,7 +19,7 @@ use crate::responses::{
 use crate::responses::{decode_tempo_clock, TempoClock};
 use crate::state::{
     decode_file_message, BlockDetails, BlockParameter, ModelCatalog, ModelList,
-    PresetFolderListing, StateDecoder, StateUpdate,
+    PresetFolderListing, StateDecodeError, StateDecoder, StateUpdate,
 };
 use prost::Message;
 use serde_json::{json, Value};
@@ -63,6 +63,7 @@ pub struct DeviceStateRuntime {
     // in the state runtime both hosts drive - is what lets either host serve
     // the read without putting a request on the wire the device ignores.
     settings_publications: std::collections::HashMap<u16, Vec<u8>>,
+    failed_preset_invalidation: Option<StateUpdate>,
 }
 
 impl DeviceStateRuntime {
@@ -83,6 +84,7 @@ impl DeviceStateRuntime {
         self.pinned_models = None;
         self.favorites = None;
         self.settings_publications.clear();
+        self.failed_preset_invalidation = None;
     }
 
     /// The dispatch half of the inbound telemetry. See
@@ -146,10 +148,25 @@ impl DeviceStateRuntime {
                 native_catalog_change,
             });
         }
-        let states = self
-            .decoder
-            .decode(message_type, payload)
-            .map_err(|error| error.to_string())?;
+        let states = match self.decoder.decode(message_type, payload) {
+            Ok(states) => states,
+            Err(error) => {
+                if matches!(error, StateDecodeError::ParameterRetentionLimit) {
+                    // The decoder discarded the preset, so its public projection must not
+                    // retain proof or operands from the last successful observation.
+                    self.snapshot.has_preset = false;
+                    self.snapshot.preset_identity = None;
+                    self.snapshot.grid_layout_complete = false;
+                    self.snapshot.blocks.clear();
+                    self.snapshot.routes.clear();
+                    self.snapshot.preset_revision = self.snapshot.preset_revision.saturating_add(1);
+                    let mut update = StateUpdate::empty("gridTopology");
+                    update.grid_layout_complete = Some(false);
+                    self.failed_preset_invalidation = Some(update);
+                }
+                return Err(error.to_string());
+            }
+        };
         for state in &states {
             self.snapshot.apply(state);
         }
@@ -173,6 +190,12 @@ impl DeviceStateRuntime {
             file_message: None,
             native_catalog_change: NativeCatalogChange::default(),
         })
+    }
+
+    /// Takes the explicit incompleteness projection of a failed Grid reduction. The owner
+    /// publishes it even though the original observation remains an error.
+    pub(crate) fn take_failed_preset_invalidation(&mut self) -> Option<StateUpdate> {
+        self.failed_preset_invalidation.take()
     }
 
     /// Installs a parsed model catalog, applies the resulting updates to the snapshot and returns

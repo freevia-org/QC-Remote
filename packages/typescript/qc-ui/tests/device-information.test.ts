@@ -59,7 +59,7 @@ export async function render(information) {
   return Buffer.concat(chunks).toString("utf8").replaceAll("<!-- -->", "");
 }
 `;
-const { module } = await bundleModule<Renderer>(workDirectory, "device-information", entry);
+const { module } = await bundleModule<Renderer>(workDirectory, "device-information", entry).catch((error) => { rmSync(workDirectory, { recursive: true, force: true }); throw error; });
 test.after(() => rmSync(workDirectory, { recursive: true, force: true }));
 
 const row = (markup: string, label: string) => markup.match(new RegExp(`<b>${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</b><i>([^<]*)</i>`))?.[1];

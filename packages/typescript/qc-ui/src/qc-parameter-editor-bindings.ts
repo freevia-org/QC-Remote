@@ -19,6 +19,7 @@ export interface QcParameterEditorBindingOptions {
   pending: boolean;
   initialMenuOpen?: boolean;
   titlePresetMark?: boolean;
+  editorContextKey?: unknown;
   notice(message: string): void;
   openExpression(): void;
 }
@@ -53,6 +54,7 @@ export function qcParameterEditorBindings(options: QcParameterEditorBindingOptio
       : officialBlockVisual(selected ?? { id: "editor", name: details.name, kind: "utility", category: details.category, row: details.row, column: details.column }).color;
 
   return {
+    editorContextKey: options.editorContextKey,
     titlePresetMark: options.titlePresetMark,
     details,
     drafts: editor.drafts,

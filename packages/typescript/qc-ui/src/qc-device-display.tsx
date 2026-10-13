@@ -25,6 +25,8 @@ import type { useSceneWorkflow } from "./use-scene-workflow";
  */
 export interface QcDeviceDisplayHost {
   captureSessionCurrent?(): () => boolean;
+  /** Transport/native session owner used to retire held display gestures. */
+  screenGestureContextKey?: string;
   snapshot: PresetSnapshot;
   selectedBlockId: string;
   /** A command is running: the scene editor and the scene command show it. */
@@ -93,6 +95,7 @@ export function createQcDeviceDisplay(host: QcDeviceDisplayHost): QcDeviceDispla
     selectedBlockId: host.selectedBlockId,
     screenView: host.fixtureScreenView ?? (cpuMonitorOpen ? undefined : destination.view) ?? undefined,
     screenContent,
+    screenGestureContextKey: host.screenGestureContextKey,
     cpuMonitor,
     deviceInformation: views.deviceInformation,
     onCloseScreen: () => void views.close(),

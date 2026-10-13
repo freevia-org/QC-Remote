@@ -30,6 +30,8 @@ export interface UseQcWorkflowsOptions {
   controller: QcController;
   transport: QcDeviceTransport;
   gateway: GatewayTransport;
+  /** The host's physical command lease key, shared with device-level workflows. */
+  commandSessionKey?: unknown;
   editor: BlockEditorSessionController;
   selectedBlockId: string;
   setSelectedBlockId: Dispatch<SetStateAction<string>>;
@@ -136,6 +138,7 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
   });
 
   const grid = useGridWorkflow({
+    clearHistory: history.clear,
     gateway,
     snapshot: controller.snapshot,
     selectedBlockId,
@@ -160,6 +163,7 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
   const parameter = useParameterWorkflow({
     controller,
     gateway,
+    commandSessionKey: options.commandSessionKey ?? options.gateway,
     snapshot: controller.snapshot,
     editor,
     // Incomplete topology disables block selection in the Grid workflow. Keep

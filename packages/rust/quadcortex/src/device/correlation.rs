@@ -245,6 +245,39 @@ mod tests {
     }
 
     #[test]
+    fn overflowing_request_id_cannot_alias_an_awaited_reply() {
+        let expected = ResponseExpectation::new(13, Some(42), 0, 1_000);
+        // The low seven bits are 42, but the tenth octet overflows u64.
+        let mut malformed = vec![0x10, 0xaa];
+        malformed.extend_from_slice(&[0x80; 8]);
+        malformed.push(2);
+        assert_eq!(
+            expected.observe(13, &malformed, 1),
+            ResponseDecision::Unrelated
+        );
+        assert_eq!(
+            expected.observe(13, &[0x10, 42], 1),
+            ResponseDecision::Matched
+        );
+        let mut maximum = vec![0x10];
+        maximum.extend_from_slice(&[0xff; 9]);
+        maximum.push(1);
+        assert!(ResponseExpectation::new(13, Some(u64::MAX), 0, 1_000).matches(13, &maximum));
+    }
+
+    #[test]
+    fn invalid_field_key_cannot_alias_an_awaited_request_id() {
+        let expected = ResponseExpectation::new(13, Some(42), 0, 1_000);
+        let oversized = [0x90, 0x80, 0x80, 0x80, 0x80, 0x01, 42];
+        assert_eq!(
+            expected.observe(13, &oversized, 1),
+            ResponseDecision::Unrelated
+        );
+        assert!(!expected.matches(13, &[0, 0, 0x10, 42]));
+        assert!(expected.matches(13, &[0x10, 42]));
+    }
+
+    #[test]
     fn correlated_expectation_honors_field_one_schema_exceptions() {
         let expected = ResponseExpectation::new(49, Some(42), 0, 1_000);
         assert!(expected.matches(49, &[0x08, 0x2a, 0x10, 0x01]));

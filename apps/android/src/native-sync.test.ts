@@ -6,6 +6,22 @@ import { pasteOwnedDemoLibrary } from "./demo-library-paste.ts";
 import { refreshOwnedNativeSnapshot } from "./native-session-refresh.ts";
 import { createBrowserPairingPoll } from "./browser-pairing-poll.ts";
 import { createControlAccessChange } from "./control-access-change.ts";
+import { openOwnedLooper } from "./open-owned-looper.ts";
+
+test("Android Grid Looper opening shows only accepted work in its original session and preset", async () => {
+  for (const outcome of ["refused", "session-replaced", "preset-replaced", "accepted"] as const) {
+    let current = true;
+    let complete!: (accepted: boolean) => void;
+    const command = new Promise<boolean>((resolve) => { complete = resolve; });
+    const shown: string[] = [];
+    const work = openOwnedLooper({ current: () => current, open: () => command, show: () => shown.push("looper-editor") });
+    if (outcome.endsWith("replaced")) current = false;
+    complete(outcome !== "refused");
+    await work;
+    assert.deepEqual(shown, outcome === "accepted" ? ["looper-editor"] : [], outcome);
+  }
+  await openOwnedLooper({ current: () => false, open: async () => { assert.fail("Retired editor must not dispatch"); return true; }, show: () => assert.fail("Retired editor must not show") });
+});
 
 test("Access-mode changes serialize before render and recover actual native access rather than optimistic rollback", async () => {
   let rejectWrite!: (error: Error) => void;

@@ -748,6 +748,7 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
   const catalogPending = presetListLoading || presetFoldersLoading;
 
   const directoryProps: PresetDirectoryState = {
+    interactionSessionKey: gateway,
     open: directoryOpen,
     list: presetList,
     loading: presetListLoading || presetFoldersLoading,
