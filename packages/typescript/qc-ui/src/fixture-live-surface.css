@@ -601,7 +601,7 @@
 .power-actions > div button:first-child { height: 5.375cqw; background: var(--qc-screen-background); }
 
 .coros-modes-configuration { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); container-type: inline-size; font-family: var(--qc-font-device-plain); }
-.coros-modes-configuration header { height: var(--qc-nav-bar-height); display: flex; align-items: center; justify-content: space-between; padding: 1% 2%; color: var(--qc-palette-9d9f9e); font-size: 2cqw; }
+.coros-modes-configuration header { height: var(--qc-nav-bar-height); display: flex; align-items: center; justify-content: space-between; padding: 1% 2%; color: var(--qc-screen-text-muted); font-size: 2cqw; }
 .coros-modes-configuration header div { height: 100%; display: flex; gap: 2cqw; }
 .coros-modes-configuration header button { width: 12.25cqw; border: 0; border-radius: 1cqw; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); font-size: 2.8cqw; }
 .coros-modes-configuration header button:first-child { width: 8.25cqw; color: var(--qc-screen-text-muted); }
