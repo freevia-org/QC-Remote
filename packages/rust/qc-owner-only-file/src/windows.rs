@@ -77,11 +77,15 @@ use windows_sys::Win32::{
         EqualSid, GetAce, GetAclInformation, GetLengthSid, GetSecurityDescriptorControl,
         GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor,
         SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TokenUser, ACCESS_ALLOWED_ACE,
-        ACL, ACL_REVISION, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        PSID, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+        ACL, ACL_REVISION, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+        SECURITY_DESCRIPTOR, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
     },
     Storage::FileSystem::{
-        CreateFileW, CREATE_NEW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ,
+        CreateDirectoryW, CreateFileW, CREATE_NEW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
     },
     System::{
         SystemServices::{ACCESS_ALLOWED_ACE_TYPE, SECURITY_DESCRIPTOR_REVISION},
@@ -102,6 +106,211 @@ pub fn write_staged(path: &Path, contents: &[u8]) -> Result<(), String> {
     write_staged_verified_by(path, contents, names_only)
 }
 
+/// Create or validate an owner-private directory. Existing paths are opened
+/// without following reparse points and are never modified or removed. Returns
+/// `true` only when this call created the directory.
+pub fn create_owner_only_directory(path: &Path) -> Result<bool, String> {
+    let user = CurrentUser::look_up()?;
+    let mut dacl = OwnerOnlyDacl::grant_full_access(user.sid())?;
+    // SAFETY: all-zero is a valid uninitialised SECURITY_DESCRIPTOR value.
+    let mut descriptor: SECURITY_DESCRIPTOR = unsafe { mem::zeroed() };
+    let descriptor_pointer = owner_only_descriptor(&mut dacl, &mut descriptor)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor_pointer,
+        bInheritHandle: 0,
+    };
+    let wide = wide_path(path);
+    // SAFETY: `wide` is NUL-terminated and `attributes` plus its descriptor/DACL
+    // remain alive for the duration of the call. CreateDirectoryW never opens
+    // or changes an existing path.
+    let created = if unsafe { CreateDirectoryW(wide.as_ptr(), &raw const attributes) } != 0 {
+        true
+    } else {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            false
+        } else {
+            return Err(format!(
+                "Could not create owner-only directory {}: {error}",
+                path.display()
+            ));
+        }
+    };
+
+    match open_and_verify_directory(path, user.sid(), created) {
+        Ok((_directory, true)) => Ok(created),
+        Ok((directory, false)) => {
+            if created {
+                delete_open_empty_directory(&directory);
+            }
+            Err(format!(
+                "Directory {} is not protected to this user",
+                path.display()
+            ))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Verify the final path component through a handle opened with
+/// `FILE_FLAG_OPEN_REPARSE_POINT`, checking both the DACL and actual owner SID.
+pub fn is_owner_only_directory(path: &Path) -> Result<bool, String> {
+    let user = CurrentUser::look_up()?;
+    match open_and_verify_directory(path, user.sid(), false) {
+        Ok((_directory, valid)) => Ok(valid),
+        Err(error) => Err(error),
+    }
+}
+
+fn open_and_verify_directory(
+    path: &Path,
+    expected_owner: PSID,
+    include_delete: bool,
+) -> Result<(File, bool), String> {
+    use std::os::windows::fs::MetadataExt as _;
+
+    let mut access = READ_CONTROL | FILE_READ_ATTRIBUTES;
+    if include_delete {
+        use windows_sys::Win32::Storage::FileSystem::DELETE;
+        access |= DELETE;
+    }
+    let wide = wide_path(path);
+    // SAFETY: `wide` is a NUL-terminated UTF-16 path. OPEN_REPARSE_POINT opens
+    // the final reparse object itself, not its target; BACKUP_SEMANTICS permits
+    // opening a directory handle.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        let error = std::io::Error::last_os_error();
+        return Err(format!(
+            "Could not inspect owner-only directory {}: {error}",
+            path.display()
+        ));
+    }
+    // SAFETY: CreateFileW returned an owned handle which File closes exactly once.
+    let directory = unsafe { File::from_raw_handle(handle.cast()) };
+    let metadata = directory
+        .metadata()
+        .map_err(|error| format!("Could not inspect directory {}: {error}", path.display()))?;
+    let attributes = metadata.file_attributes();
+    if !metadata.is_dir()
+        || attributes & FILE_ATTRIBUTE_DIRECTORY == 0
+        || attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Ok((directory, false));
+    }
+    Ok((
+        directory,
+        owner_and_dacl_are_private(handle, expected_owner)?,
+    ))
+}
+
+fn owner_and_dacl_are_private(handle: HANDLE, expected_owner: PSID) -> Result<bool, String> {
+    let mut owner: PSID = ptr::null_mut();
+    let mut dacl: *mut ACL = ptr::null_mut();
+    let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    // SAFETY: `handle` is live for the caller's duration. All out-pointers are
+    // writable locals, and the returned descriptor owns the owner/DACL buffers.
+    let status = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+            &raw mut owner,
+            ptr::null_mut(),
+            &raw mut dacl,
+            ptr::null_mut(),
+            &raw mut descriptor,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(format!(
+            "Could not verify owner-only directory security: {}",
+            std::io::Error::from_raw_os_error(status as i32)
+        ));
+    }
+    let result = if owner.is_null() {
+        Ok(false)
+    } else {
+        // SAFETY: both SIDs are valid for EqualSid: `owner` is within the live
+        // descriptor returned above; expected_owner belongs to CurrentUser.
+        let matches_owner = unsafe { EqualSid(owner, expected_owner) } != 0;
+        if matches_owner {
+            inspect_dacl(descriptor, dacl, expected_owner)
+        } else {
+            Ok(false)
+        }
+    };
+    // SAFETY: descriptor is the LocalAlloc'd value returned by GetSecurityInfo.
+    unsafe { LocalFree(descriptor) };
+    result
+}
+
+fn delete_open_empty_directory(directory: &File) {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+    };
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: `directory` owns a live handle opened with DELETE access. The
+    // disposition structure remains valid for this call. Deletion is by handle,
+    // never by a possibly replaced path, and succeeds only while the directory
+    // is empty.
+    unsafe {
+        SetFileInformationByHandle(
+            directory.as_raw_handle().cast(),
+            FileDispositionInfo,
+            (&raw const disposition).cast(),
+            mem::size_of_val(&disposition) as u32,
+        );
+    }
+}
+
+fn wide_path(path: &Path) -> Vec<u16> {
+    path.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+fn owner_only_descriptor(
+    dacl: &mut OwnerOnlyDacl,
+    descriptor: &mut SECURITY_DESCRIPTOR,
+) -> Result<PSECURITY_DESCRIPTOR, String> {
+    let descriptor_pointer: PSECURITY_DESCRIPTOR = (&raw mut *descriptor).cast();
+    // SAFETY: descriptor points to the live descriptor local, and dacl owns
+    // aligned, initialized ACL storage that outlives each caller's API call.
+    if unsafe { InitializeSecurityDescriptor(descriptor_pointer, SECURITY_DESCRIPTOR_REVISION) }
+        == 0
+    {
+        return Err(last_error("initialize a security descriptor"));
+    }
+    // SAFETY: both locals remain alive until the caller's CreateFileW or
+    // CreateDirectoryW call has copied the security descriptor.
+    if unsafe { SetSecurityDescriptorDacl(descriptor_pointer, 1, dacl.as_mut_ptr(), 0) } == 0 {
+        return Err(last_error("attach the owner-only DACL"));
+    }
+    // SAFETY: the descriptor is initialized above; this prevents inherited ACEs
+    // from widening the one-user DACL.
+    if unsafe {
+        SetSecurityDescriptorControl(descriptor_pointer, SE_DACL_PROTECTED, SE_DACL_PROTECTED)
+    } == 0
+    {
+        return Err(last_error("mark the DACL protected"));
+    }
+    Ok(descriptor_pointer)
+}
+
 /// The body of [`write_staged`], with the DACL read-back passed in.
 ///
 /// The parameter exists so a test can drive the refusal branch: the filesystem
@@ -118,32 +327,16 @@ fn write_staged_verified_by(
     // SAFETY: SECURITY_DESCRIPTOR holds only integers and raw pointers, for which all-zero
     // bytes are a valid value (null pointers). It is initialised properly just below.
     let mut descriptor: SECURITY_DESCRIPTOR = unsafe { mem::zeroed() };
-    let descriptor_pointer: PSECURITY_DESCRIPTOR = (&raw mut descriptor).cast();
-    // SAFETY: `descriptor_pointer` points at the live, writable `descriptor` local, which is a
-    // full-size SECURITY_DESCRIPTOR; the revision is the only one the API accepts.
-    if unsafe { InitializeSecurityDescriptor(descriptor_pointer, SECURITY_DESCRIPTOR_REVISION) }
-        == 0
-    {
-        return Err(last_error("initialize a security descriptor"));
-    }
+    let descriptor_pointer = owner_only_descriptor(&mut dacl, &mut descriptor)?;
     // SAFETY: `descriptor` was initialised above. `dacl` owns a DWORD-aligned buffer that holds a
     // fully initialised ACL. The descriptor keeps this pointer without copying it, so `dacl`
     // must outlive every use of `descriptor`: both are locals, `descriptor` is declared after
     // `dacl`, and its last use is the CreateFileW call below.
-    if unsafe { SetSecurityDescriptorDacl(descriptor_pointer, 1, dacl.as_mut_ptr(), 0) } == 0 {
-        return Err(last_error("attach the owner-only DACL"));
-    }
     // Without this the system merges the parent directory's inheritable ACEs
     // into the DACL supplied here, which is exactly the Administrators and
     // SYSTEM access this call exists to drop.
     // SAFETY: same initialised `descriptor`; SE_DACL_PROTECTED is a valid control bit to set
     // on an absolute security descriptor.
-    if unsafe {
-        SetSecurityDescriptorControl(descriptor_pointer, SE_DACL_PROTECTED, SE_DACL_PROTECTED)
-    } == 0
-    {
-        return Err(last_error("mark the DACL protected"));
-    }
     let attributes = SECURITY_ATTRIBUTES {
         nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor_pointer,
@@ -467,6 +660,59 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).expect("scratch directory");
         directory.join("local-mcp.json")
+    }
+
+    fn scratch_directory(name: &str) -> std::path::PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "qc-owner-only-directory-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).expect("scratch directory");
+        directory
+    }
+
+    #[test]
+    fn owner_only_directory_is_created_and_verified() {
+        let parent = scratch_directory("created");
+        let path = parent.join("private");
+        assert!(create_owner_only_directory(&path).expect("create protected directory"));
+        assert!(is_owner_only_directory(&path).expect("verify protected directory"));
+        // Existing secure directories are accepted without replacement.
+        assert!(!create_owner_only_directory(&path).expect("accept existing protected directory"));
+        fs::remove_dir_all(parent).expect("clean scratch directory");
+    }
+
+    #[test]
+    fn owner_only_directory_rejects_preexisting_insecure_directory_without_mutating_it() {
+        let parent = scratch_directory("insecure");
+        let path = parent.join("shared");
+        fs::create_dir(&path).expect("create inherited-ACL directory");
+        assert!(!is_owner_only_directory(&path).expect("inspect inherited ACL"));
+        assert!(create_owner_only_directory(&path).is_err());
+        assert!(path.is_dir(), "the existing directory must not be removed");
+        assert!(!is_owner_only_directory(&path).expect("reinspect inherited ACL"));
+        fs::remove_dir_all(parent).expect("clean scratch directory");
+    }
+
+    #[test]
+    fn owner_only_directory_rejects_reparse_point() {
+        use std::os::windows::fs::symlink_dir;
+        let parent = scratch_directory("reparse");
+        let target = parent.join("target");
+        let link = parent.join("link");
+        fs::create_dir(&target).expect("create symlink target");
+        if symlink_dir(&target, &link).is_err() {
+            // Symlink creation may be unavailable when Developer Mode or the
+            // required privilege is disabled; the other Windows cases remain.
+            fs::remove_dir_all(parent).expect("clean scratch directory");
+            return;
+        }
+        assert!(!is_owner_only_directory(&link).expect("inspect reparse point"));
+        assert!(create_owner_only_directory(&link).is_err());
+        assert!(target.is_dir(), "the reparse target must remain untouched");
+        fs::remove_dir_all(parent).expect("clean scratch directory");
     }
 
     #[test]

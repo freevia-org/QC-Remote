@@ -20,6 +20,8 @@ use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod access_policy;
+mod access_policy_store;
 mod background_host;
 mod broker_attach;
 mod broker_installations;
@@ -27,6 +29,7 @@ pub mod broker_paths;
 pub mod broker_tray_control;
 pub mod broker_tray_settings;
 mod client_packages;
+mod credential_io;
 mod device_broker_descriptor;
 mod external_host;
 mod external_links;
@@ -3868,6 +3871,18 @@ fn relay_device_error(message: String) -> DeviceError {
 
 #[async_trait::async_trait]
 impl DeviceAdapter for WindowsRelayAdapter {
+    fn effective_access_mode(&self) -> Option<qc_relay_client::AccessMode> {
+        Some(crate::access_policy_store::effective_mode(
+            &crate::broker_paths::app_local_data_dir(),
+        ))
+    }
+
+    fn remote_session_enabled(&self) -> bool {
+        crate::access_policy_store::effective_remote_enabled(
+            &crate::broker_paths::app_local_data_dir(),
+        )
+    }
+
     async fn ready(&self) -> bool {
         gateway_readiness(&self.app.state::<Mutex<Gateway>>())
     }
@@ -4059,8 +4074,8 @@ fn cancel_public_relay_browser_pairing(state: State<'_, RelayBridge>) {
 }
 
 #[tauri::command]
-fn start_public_relay(app: AppHandle, state: State<'_, RelayBridge>) -> Result<(), String> {
-    state.start(relay_adapter(&app))
+async fn start_public_relay(app: AppHandle, state: State<'_, RelayBridge>) -> Result<(), String> {
+    state.start(relay_adapter(&app)).await
 }
 
 #[tauri::command]
@@ -4127,11 +4142,11 @@ async fn enable_local_mcp(state: State<'_, LocalAccess>) -> Result<LocalAccessSt
 }
 
 #[tauri::command]
-fn set_public_relay_access_mode(
+async fn set_public_relay_access_mode(
     state: State<'_, RelayBridge>,
     mode: String,
 ) -> Result<RelayStatus, String> {
-    state.set_access_mode(&mode)?;
+    state.set_access_mode(&mode).await?;
     state.status()
 }
 
@@ -4780,15 +4795,16 @@ pub fn run() {
                 }
             }
             let handle = app.handle().clone();
-            let relay = app.state::<RelayBridge>();
-            relay.restore_access_mode();
             let adapter = relay_adapter(&handle);
             // Managed first, and unconditionally: the supervisor is what the
             // `local_mcp_*` commands and the exit handler reach for, and it has
             // to exist even when the listener refused to start or the user
             // turned local MCP off.
-            let local_access =
-                LocalAccess::new(handle.clone(), adapter.clone(), relay.access_receiver());
+            let local_access = LocalAccess::new(
+                handle.clone(),
+                adapter.clone(),
+                app.state::<RelayBridge>().access_receiver(),
+            );
             let local_access_failure = local_access.start_if_enabled().err();
             app.manage(local_access);
             external_host::start(handle.clone(), descriptor_directory.clone());
@@ -4798,15 +4814,15 @@ pub fn run() {
                 // console line is for headless and packaging runs.
                 eprintln!("QC Remote local access did not start: {error}");
             }
-            // An unpaired host is a normal first-run state. A legacy pairing
-            // is likewise deliberately held for the user to re-pair with
-            // Google from REMOTE, rather than emitting a scary startup error
-            // into the Windows console.
-            if relay.status().map(|status| status.paired).unwrap_or(false) {
-                if let Err(error) = relay.start(adapter) {
-                    eprintln!("QC Remote Cloud relay did not start: {error}");
-                }
-            }
+            // Secret Service reads run on the bounded credential worker. Do
+            // not make Tauri's setup callback wait for an unlock prompt.
+            let app_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                app_handle
+                    .state::<RelayBridge>()
+                    .initialize(relay_adapter(&app_handle))
+                    .await;
+            });
             // Deferred, detached, and once per app start. Every release makes
             // every route this app wrote name a version behind, so the app
             // brings its own up to date rather than waiting for the owner to

@@ -196,6 +196,7 @@ export function qcRelayPresentation(status?: PublicRelayStatus, pairingInProgres
   if (!status.paired) return status.needsRepair
     ? { label: "REMOTE", phase: "action-required", state: "Pair again", detail: "Remote access now uses Google sign-in. Pair this device again to continue.", primaryAction: "Pair device", action: "pair" }
     : { label: "REMOTE", phase: "action-required", state: "Not set up", detail: "Pair this device once to use it from a supported AI app away from this host.", primaryAction: "Pair device", action: "pair" };
+    if (status.remoteEnabled === false) return { label: "REMOTE", phase: "action-required", state: "Remote session disabled", detail: "This computer is paired, but its outbound remote session is disabled. Pair this device again to enable it.", primaryAction: "Pair device", action: "pair" };
   if (status.state === "connected") return { label: "REMOTE", phase: "ready", state: "Ready", detail: "This host's secure outbound relay route is connected.", primaryAction: "Connected", action: "none" };
   if (status.state === "connecting" || status.state === "reconnecting") return { label: "REMOTE", phase: "syncing", state: "Connecting", detail: "Establishing the secure outbound connection…", primaryAction: "Connecting…", action: "none" };
   if (status.state === "pairing_required") return { label: "REMOTE", phase: "action-required", state: "Pair again", detail: "Remote authorization is no longer valid. Pair again to restore access.", primaryAction: "Pair device", action: "pair" };

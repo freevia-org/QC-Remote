@@ -131,7 +131,8 @@ pub(crate) fn unlink_remote_session(session_id: &str) -> Result<RemoteMcpUnlink,
 pub(crate) fn unlink_linked_app(entry_id: &str) -> Result<RemoteMcpUnlink, String> {
     let resolved = crate::remote_grants::grant_of_entry(entry_id);
     if let Some((_, pairing)) = &resolved {
-        if !same_pairing(pairing, crate::remote_grants::current_identity().as_deref()) {
+        let current = tauri::async_runtime::block_on(crate::remote_grants::current_identity());
+        if !same_pairing(pairing, current.as_deref()) {
             crate::remote_grants::clear();
             return Ok(RemoteMcpUnlink::StaleList);
         }

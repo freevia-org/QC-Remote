@@ -225,8 +225,9 @@ fn identity_of(credentials: &Credentials) -> String {
 }
 
 /// The pairing this computer holds now, if any.
-pub(crate) fn current_identity() -> Option<String> {
+pub(crate) async fn current_identity() -> Option<String> {
     crate::relay::load_credentials()
+        .await
         .ok()
         .flatten()
         .map(|credentials| identity_of(&credentials))
@@ -236,7 +237,8 @@ pub(crate) fn current_identity() -> Option<String> {
 /// was kept meanwhile, and return the grant ids it listed.
 pub(crate) async fn fetch() -> Result<Vec<String>, String> {
     let generation = next_generation();
-    let credentials = crate::relay::load_credentials()?
+    let credentials = crate::relay::load_credentials()
+        .await?
         .ok_or_else(|| "Pair this computer with QC Remote Cloud first".to_string())?;
     let fetched = tokio::time::timeout(FETCH_TIMEOUT, qc_relay_client::connectors(&credentials))
         .await

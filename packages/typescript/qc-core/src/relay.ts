@@ -17,6 +17,8 @@ export interface PublicRelayPairing {
 
 export interface PublicRelayStatus {
   paired: boolean;
+    /** This installation's persisted outbound relay-session switch. */
+    remoteEnabled?: boolean;
   /** A previous identity system paired this host. It cannot access a Google-owned relay until paired again. */
   needsRepair?: boolean;
   state: PublicRelayState;

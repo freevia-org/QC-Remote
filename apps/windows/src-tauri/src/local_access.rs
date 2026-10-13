@@ -234,7 +234,11 @@ impl QcBackend for LocalBackend {
                 false,
             ));
         }
-        if !local_access_permits(*self.access.borrow(), rpc) {
+        let access = self
+            .adapter
+            .effective_access_mode()
+            .unwrap_or(*self.access.borrow());
+        if !local_access_permits(access, rpc) {
             return Err(backend_error(
                 "forbidden",
                 "The selected assistant access level does not permit this action",
@@ -2409,6 +2413,54 @@ mod tests {
         }
     }
 
+    struct EffectivePolicyAdapter {
+        mode: std::sync::atomic::AtomicUsize,
+        invoked: Mutex<Vec<String>>,
+    }
+
+    impl EffectivePolicyAdapter {
+        fn new(mode: AccessMode) -> Self {
+            Self {
+                mode: std::sync::atomic::AtomicUsize::new(Self::encode(mode)),
+                invoked: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn encode(mode: AccessMode) -> usize {
+            match mode {
+                AccessMode::Full => 0,
+                AccessMode::Modify => 1,
+                AccessMode::Performance => 2,
+                AccessMode::ReadOnly => 3,
+            }
+        }
+
+        fn set_mode(&self, mode: AccessMode) {
+            self.mode.store(Self::encode(mode), Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl DeviceAdapter for EffectivePolicyAdapter {
+        async fn ready(&self) -> bool {
+            true
+        }
+
+        async fn invoke(&self, method: &str, _params: Value) -> Result<Value, DeviceError> {
+            self.invoked.lock().unwrap().push(method.to_owned());
+            Ok(serde_json::json!({"accepted": true}))
+        }
+
+        fn effective_access_mode(&self) -> Option<AccessMode> {
+            Some(match self.mode.load(Ordering::SeqCst) {
+                0 => AccessMode::Full,
+                1 => AccessMode::Modify,
+                2 => AccessMode::Performance,
+                _ => AccessMode::ReadOnly,
+            })
+        }
+    }
+
     #[async_trait]
     impl DeviceAdapter for RecordingAdapter {
         async fn ready(&self) -> bool {
@@ -2581,6 +2633,58 @@ mod tests {
             AccessMode::ReadOnly,
             "device.setTempo"
         ));
+    }
+
+    #[tokio::test]
+    async fn authoritative_policy_revokes_and_relaxes_while_watch_is_stale() {
+        let adapter = Arc::new(EffectivePolicyAdapter::new(AccessMode::ReadOnly));
+        let adapter_trait: Arc<dyn DeviceAdapter> = adapter.clone();
+        let (access_tx, access_rx) = watch::channel(AccessMode::Full);
+        let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+            adapter: adapter_trait.clone(),
+            access: access_rx,
+        });
+        let router = local_router(
+            backend,
+            LocalHealth {
+                adapter: adapter_trait,
+                instance_id: Arc::from("test-instance"),
+                tool_contract_sha256: Arc::from(tool_contract_sha256()),
+                process_id: 42,
+            },
+            Arc::from("test-token"),
+            allowed_hosts(41000),
+        );
+
+        let forbidden = router
+            .clone()
+            .oneshot(rpc_request_with_params(
+                "device.setTempo",
+                Some("test-token"),
+                serde_json::json!({ "bpm": 120 }),
+            ))
+            .await
+            .expect("restricted RPC response");
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+        assert!(adapter.invoked.lock().unwrap().is_empty());
+
+        // The persisted authoritative choice relaxes while the old watch still
+        // says ReadOnly; the serving listener must not retain that stale denial.
+        adapter.set_mode(AccessMode::Full);
+        access_tx.send_replace(AccessMode::ReadOnly);
+        let allowed = router
+            .oneshot(rpc_request_with_params(
+                "device.setTempo",
+                Some("test-token"),
+                serde_json::json!({ "bpm": 120 }),
+            ))
+            .await
+            .expect("relaxed RPC response");
+        assert_eq!(allowed.status(), StatusCode::OK);
+        assert_eq!(
+            *adapter.invoked.lock().unwrap(),
+            vec!["device.setTempo".to_owned()]
+        );
     }
 
     fn test_descriptor(token: &str) -> LocalDescriptor {
