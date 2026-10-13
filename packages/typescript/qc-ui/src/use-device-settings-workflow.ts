@@ -1,9 +1,13 @@
 import { bindDeviceCommandScope, deviceCommandBusy } from "./device-command-ownership.ts";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeviceActionResult, DeviceIdentity, GeneralIntegerSetting, GeneralSettings, GeneralToggleSetting } from "@qc-remote/client";
 import { useGuardedMutation } from "./use-guarded-mutation.ts";
 import { observedGlobalBypassUpdate } from "./global-bypass-update.ts";
 import type { DeviceGatewayWorkflowOptions } from "./workflow-options";
+import { isCorOsVersion, type ObservedCorOsVersion } from "./cor-os-version.ts";
+
+/** How often a CorOS version the Device Information screen keeps showing is stamped again. */
+const SCREEN_VERSION_REFRESH_MS = 5_000;
 
 /** Section of the device's own Settings dialog - the header/left-nav pill the
  * unit itself draws (coros-screen-fixtures.tsx's CorOsOfficialSettings).
@@ -117,11 +121,29 @@ export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions
   const loading = loadingRecord?.owner === owner ? loadingRecord.value : false;
   const setLoading = useCallback((value: boolean) => { if (current()) setLoadingRecord({ owner, value }); }, [current, owner]);
   const [settingsRecord, setSettingsRecord] = useState<{ owner: typeof owner; value: GeneralSettings }>();
-  const [identityRecord, setIdentityRecord] = useState<{ owner: typeof owner; value: DeviceIdentity }>();
+  const [identityRecord, setIdentityRecord] = useState<{ owner: typeof owner; value: DeviceIdentity; at: number }>();
+  // What the unit's own Device Information screen last showed as the CorOS version (see cor-os-version.ts). Scoped to the
+  // session like the identity, so another session or unit never inherits it.
+  const [screenVersionRecord, setScreenVersionRecord] = useState<{ owner: typeof owner; value: string; at: number }>();
   const settings = settingsRecord?.owner === owner && current() ? settingsRecord.value : undefined;
   const identity = identityRecord?.owner === owner && current() ? identityRecord.value : undefined;
+  const identityReadAt = identityRecord?.owner === owner && current() ? identityRecord.at : undefined;
+  const screenCorOsVersion = useMemo<ObservedCorOsVersion | undefined>(
+    () => screenVersionRecord?.owner === owner && current() ? { value: screenVersionRecord.value, at: screenVersionRecord.at } : undefined,
+    [screenVersionRecord, owner, current]);
   const setSettings = useCallback((value: GeneralSettings) => { if (current()) setSettingsRecord({ owner, value }); }, [current, owner]);
-  const setIdentity = useCallback((value: DeviceIdentity) => { if (current()) setIdentityRecord({ owner, value }); }, [current, owner]);
+  const setIdentity = useCallback((value: DeviceIdentity) => { if (current()) setIdentityRecord({ owner, value, at: Date.now() }); }, [current, owner]);
+  /**
+   * The follower saw the CorOS version on the unit's Device Information screen. Only a dotted version number is kept. The
+   * same value seen again only refreshes when it was seen (at most every few seconds, so a screen left open does not
+   * re-render the app every poll); a different one replaces it.
+   */
+  const noteCorOsVersionFromScreen = useCallback((value: string) => {
+    if (!current() || !isCorOsVersion(value)) return;
+    const version = value.trim();
+    const at = Date.now();
+    setScreenVersionRecord((previous) => previous?.owner === owner && previous.value === version && at - previous.at < SCREEN_VERSION_REFRESH_MS ? previous : { owner, value: version, at });
+  }, [current, owner]);
   // The unit opens Settings on System with its first row, Connection, selected
   // (walked on the device from the Grid menu, twice: the Connection pane with
   // its network list). corpus settings-system.png shows Brightness selected
@@ -243,6 +265,7 @@ export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions
   return {
     open, returnFocusTarget, openSettings, close, loading, refresh, announce: notice,
     settings, identity, midiThru,
+    identityReadAt, screenCorOsVersion, noteCorOsVersionFromScreen,
     section, setSection,
     accountRow, setAccountRow,
     systemRow, setSystemRow,

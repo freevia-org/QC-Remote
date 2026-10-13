@@ -64,7 +64,7 @@ export interface CorOsDeviceInformation {
   serial?: string;
   deviceName?: string;
   macAddress?: string;
-  /** The CorOS version number, as the unit stated it in its latest update request this session. Absent until it has sent one. */
+  /** The CorOS version number, as the unit stated it in its latest update request or showed it on its own Device Information screen this session (the later of the two). Absent until it has done either. */
   corOsVersion?: string;
   linuxKernel?: string;
   uBoot?: string;

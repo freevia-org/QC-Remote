@@ -288,7 +288,7 @@ export function App() {
   const deviceViews = useQcDeviceViews({ ...deviceWorkflowSession,
     destination: screenDestination, snapshot, gateway: activeGateway, notice: setNotice, fail: workflowFailed,
     session: { demo: demoActive, hardwareReady: native && hardwareConnected && !deviceSuspended && !deviceBulkBlocking, sessionReady },
-    workflows: { performance: performanceWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, ioEq: ioEqWorkflow, preset: presetWorkflow }
+    workflows: { performance: performanceWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, ioEq: ioEqWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow }
   });
   useQcScreenFollow({ ...deviceWorkflowSession,
     gateway: activeGateway, follow: followQcScreen, available: native && !demoActive && !corpusFixtureEnabled, ready: hardwareConnected && !deviceSuspended && !deviceBulkBlocking, destination: screenDestination, notice: setNotice,

@@ -6,6 +6,7 @@ import {
   type QcObservedScreenKind, type QcScreenObservation, type QcScreenPollingPhase
 } from "./use-adaptive-screen-polling.ts";
 import { appKindAfterFollowing, appScreenKind, closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, QC_UNIT_MIRROR_KINDS, treeShows, type QcCloseTarget, type QcOpenTarget, type QcScreenPoll } from "./qc-unit-screens.ts";
+import { corOsVersionFromTree } from "./cor-os-version.ts";
 import { decodeUnitFrame, sceneCommandVerbFromFrame, sceneIndexFromTree, type UnitFrameDecoder } from "./scene-command-reader.ts";
 import type { QcCpuTelemetry } from "./use-qc-cpu-telemetry.ts";
 import type { QcDeviceUndo } from "./use-qc-device-undo.ts";
@@ -33,7 +34,8 @@ export interface QcScreenFollowWorkflows {
   /** `details` is the block editor the app has open, if any. */
   grid: { close(): void; details?: unknown };
   preset: { closeDirectory(): void; openDirectory(): unknown; directoryOpen?: boolean };
-  deviceSettings: { open: boolean; close(): void; openSettings(): unknown };
+  /** `noteCorOsVersionFromScreen` keeps the CorOS version the unit's Device Information screen shows (see cor-os-version.ts). */
+  deviceSettings: { open: boolean; close(): void; openSettings(): unknown; noteCorOsVersionFromScreen?(version: string): void };
   tempo: { open: boolean; close(): void; openTempo(): unknown };
   tuner: { close(): void; openTuner(): unknown };
   ioEq: { refresh(): unknown; followUnitSelection?(selection: IoUnitSelection | undefined): void };
@@ -89,7 +91,7 @@ const ROUTED: readonly QcObservedScreenKind[] = ["preset-menu", "settings", "mod
  * latch keeps a screen one side opened from being sent back by the other.
  * Tuner, Gig View and I/O have their own commands in useQcDeviceViews.
  */
-export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcScreenPollingPhase; observe(observation: QcScreenObservation): void } {
+export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcScreenPollingPhase; observe(observation: QcScreenObservation): void; observeTree(tree: string): void } {
   const { follow, available, ready } = options;
   const lifetime = useDeviceWorkflowSession({ ...options, connected: ready && available,
     fail: (error: unknown) => options.notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed.") });
@@ -200,7 +202,18 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     else if (kind === "parameter-editor" || QC_UNIT_MIRROR_KINDS.includes(kind)) setView("unit-mirror");
   }, [lifetime.key]);
 
-  const { phase } = useAdaptiveQcScreenPolling({ gateway, enabled: follow && available, connected: ready, onObservation: observe });
+  /**
+   * Every tree the poll reads. While the unit shows Settings > Support > Device Information the tree states the CorOS
+   * version; the app keeps it (only that one value, only as a dotted version number) so Device Information shows it, and
+   * keeps showing it after the screen closes. Reading is all this does: nothing is sent to the unit.
+   */
+  const observeTree = useCallback((tree: string) => {
+    if (!lifetime.current() || !latest.current.lifetime.current()) return;
+    const version = corOsVersionFromTree(tree);
+    if (version !== undefined) latest.current.workflows.deviceSettings.noteCorOsVersionFromScreen?.(version);
+  }, [lifetime.key]);
+
+  const { phase } = useAdaptiveQcScreenPolling({ gateway, enabled: follow && available, connected: ready, onObservation: observe, onTree: observeTree });
 
   // App to unit: the screen the app shows, in the unit's terms, changing by the user's hand.
   const appKind = appKindOf(options);
@@ -285,7 +298,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     return () => { live = false; };
   }, [appKind, lifetime.key]);
 
-  return { phase, observe };
+  return { phase, observe, observeTree };
 }
 
 /** Where Gig View's on-unit state takes the app's screen: shown opens Gig, hidden closes a Gig screen, anything else is left alone. */
