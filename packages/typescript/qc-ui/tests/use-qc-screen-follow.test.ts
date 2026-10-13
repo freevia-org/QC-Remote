@@ -17,7 +17,7 @@ register("./support/react-singleton-loader.mjs", import.meta.url);
 const { createElement } = (await import("react")).default;
 const { consumeQcDisplayStates, qcGigViewTransition, useQcFollowSetting, useQcScreenFollow } = await import("../src/use-qc-screen-follow.ts");
 
-const observation = (kind: QcObservedScreenKind): QcScreenObservation => ({ kind, signature: kind, observedAt: 0 });
+const observation = (kind: QcObservedScreenKind, ioSelection?: QcScreenObservation["ioSelection"]): QcScreenObservation => ({ kind, signature: kind + JSON.stringify(ioSelection ?? ""), observedAt: 0, ...(ioSelection ? { ioSelection } : {}) });
 type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard" | "MetronomeEditor" | "CpuLoadIndicator" | "DirectoryDialog" | "SceneSelectorPopup" | "PortSelector" | "MidiMatrixDialog" | "CopySceneDialog" | "SearchDialog" | "OptionsPopup";
 
 interface Scenario {
@@ -44,6 +44,8 @@ interface Scenario {
 
 function harness(initial: Scenario = {}) {
   const log: string[] = [];
+  /** What the unit's I/O selection was set to, in order (kept out of `log`, which other tests compare whole). */
+  const selections: unknown[] = [];
   /** Runs after each touch the unit answers: the poller seeing the screen the unit passes through. */
   const watchers: Array<(unit: Unit) => void> = [];
   const world = { captureRead: undefined as (() => Promise<{pngBase64:string}>) | undefined, sceneLetter: "A", unreadableTitle: false, treeRead: undefined as (() => Promise<{ tree: string }>) | undefined, unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: (initial.menuScroll ?? "bottom") as "bottom" | "mid" | "top", swipedAt: -1e9, rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", stuck: initial.scrollStuck ?? false, panel: initial.panel ?? false };
@@ -105,7 +107,7 @@ function harness(initial: Scenario = {}) {
     deviceSettings: { ...named("settings", "close", "openSettings"), open: state.settingsOpen },
     tempo: { ...named("tempo", "close", "openTempo"), open: state.tempoOpen },
     tuner: named("tuner", "close", "openTuner"),
-    ioEq: named("io", "refresh"),
+    ioEq: { ...named("io", "refresh"), followUnitSelection: (selection: unknown) => { selections.push(selection); } },
     routing: { picker: state.routePicker },
     scene: {
       command: state.sceneCommand,
@@ -139,7 +141,7 @@ function harness(initial: Scenario = {}) {
   const rerender = async (next: Scenario) => { current = { ...current, ...next }; Object.assign(state, { view: next.view !== undefined ? next.view : state.view, popup: next.popup !== undefined ? next.popup : state.popup, settingsOpen: next.settingsOpen ?? state.settingsOpen, directoryOpen: next.directoryOpen ?? state.directoryOpen, routePicker: "routePicker" in next ? next.routePicker : state.routePicker, blockMenuOpen: next.blockMenuOpen ?? state.blockMenuOpen, directorySearchOpen: next.directorySearchOpen ?? state.directorySearchOpen, sceneCommand: "sceneCommand" in next ? (next.sceneCommand ?? null) : state.sceneCommand, tempoOpen: next.tempoOpen ?? state.tempoOpen }); await act(async () => { renderer.update(createElement(Probe)); await new Promise((resolve) => setTimeout(resolve, 100)); });
     // The route starts when the render commits, and now takes a few settle waits of its own.
     await new Promise((resolve) => setTimeout(resolve, 400)); };
-  return { log, world, state, latch, watchers, rerender, get follower() { return seen.current!; }, renderer };
+  return { log, selections, world, state, latch, watchers, rerender, get follower() { return seen.current!; }, renderer };
 }
 
 const overlaysClosed = ["grid.close", "scene.closeCommand", "preset.closeDirectory", "settings.close", "tempo.close", "tuner.close"];
@@ -985,4 +987,22 @@ test("a retired scene-dialog capture cannot answer a later dialog in the same se
   assert.equal(host.log.filter((entry)=>entry.startsWith("scene.openUnitCommand:")).length,0,"old capture must not win while its successor reads");
   await act(async () => { second.resolve({tree:"done"}); for(let n=0;n<12;n++) await Promise.resolve(); });
   assert.deepEqual(host.log.filter((entry)=>entry.startsWith("scene.openUnitCommand:")),["scene.openUnitCommand:swap:1"]);
+});
+
+test("the unit's I/O selection is applied on every observation of the I/O screen, even while the screen kind is unchanged, and cleared when it leaves", () => {
+  const host = harness({ view: "gig" });
+  const output = { view: "output" as const, plugged: ["usb"] }, overview = { view: "overview" as const, plugged: ["usb"] };
+  act(() => host.follower.observe(observation("io", overview)));
+  assert.deepEqual(host.selections, [overview]);
+  assert.ok(host.log.includes("view:io-overview"), "the unit opening I/O opens it in the app");
+  host.log.length = 0;
+  // Same screen kind, different port: the once-per-kind latch must not swallow it.
+  act(() => host.follower.observe(observation("io", output)));
+  assert.deepEqual(host.selections, [overview, output]);
+  assert.deepEqual(host.log, [], "the app screen is not reopened for a port change");
+  act(() => host.follower.observe(observation("grid")));
+  assert.deepEqual(host.selections.at(-1), undefined, "leaving I/O clears the selection, so a reopened screen cannot show an old one");
+  act(() => host.follower.observe(observation("io", output)));
+  assert.deepEqual(host.selections.at(-1), output, "reopened on Output 1/2 after Output 3/4 earlier: the unit's selection, not the earlier one");
+  host.renderer.unmount();
 });

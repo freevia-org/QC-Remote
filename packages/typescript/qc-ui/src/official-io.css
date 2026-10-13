@@ -18,8 +18,8 @@
    only the label - is a size larger. The old fix stretched the whole heading
    with scaleX(1.14), which pulled the 24x24 chip glyph out to 27.36x24 and
    pushed the title 7px right of where the device puts it. */
-.coros-io-settings > header .io-heading small { color: var(--qc-palette-a8aaa8); font-size: 1.9375cqw; font-weight: 400; }
-.coros-io-settings > header .io-heading strong { color: var(--qc-palette-25ef59); font-size: 2.5cqw; font-weight: 400; }
+.coros-io-settings > header .io-heading small { color: var(--qc-screen-text-muted); font-size: 1.9375cqw; font-weight: 400; }
+.coros-io-settings > header .io-heading strong { color: var(--qc-screen-accent); font-size: 2.5cqw; font-weight: 400; }
 /* The header is 12% of 480, so its 41.6px content box centres the 44px chip on
    6.8 where the device draws it at 8..51. */
 .coros-io-settings > header .io-heading > i { transform: translateY(1.2px); }
@@ -27,7 +27,12 @@
    and 34..52; line-height 1.05 alone leaves 4px of leading where the unit
    leaves 8, which set every title 5px high. */
 .coros-io-settings > header .io-heading > span { row-gap: 5px; transform: translateY(1.5px); }
-.coros-io-settings > header .io-global-eq { font-size: 1.75cqw; }
+.coros-io-settings > header .io-global-eq { font-size: 2cqw; }
+/* The unit's GLOBAL EQ button carries a 6px lamp at its top right, x 675..680 and y 13..18 (the control surface's ink
+   on the button's own ground while the Global EQ is off). */
+.coros-io-settings > header .io-global-eq { position: relative; }
+.coros-io-settings > header .io-global-eq > i { position: absolute; left: 12.25cqw; top: .625cqw; width: .75cqw; height: .75cqw; border-radius: 50%; background: var(--qc-screen-surface-control); }
+.coros-io-settings > header .io-global-eq > i.is-on { background: var(--qc-screen-accent); }
 .coros-io-settings > header .io-global-eq { width: 13.625cqw; height: 5.5cqw; border-radius: 1cqw; }
 /* The I/O header's buttons are the nav bar's box wherever the unit draws it:
    44 rows under an 8-row inset, exactly as the shared navigation bar
@@ -126,13 +131,17 @@
    io-send-return and CAPTURE OUT on io-headphones - both read the same as an
    idle caption two columns over, not the lighter muted grey this used to set on
    io-send-return alone. */
-.coros-io-settings .io-ports button.is-active > .is-muted { color: var(--qc-palette-7f8380); }
+.coros-io-settings .io-ports button.is-active > .is-muted { color: var(--qc-screen-ink-dimmed); }
+/* Measured on io-output: the idle captions and the headphones mark are #848684 and the selected pair's are white. */
+.coros-io-settings .io-ports button { color: var(--qc-screen-ink-dimmed); }
+.coros-io-settings .io-ports button.is-active { color: var(--qc-screen-text-primary); }
 /* The DIN socket needed a translate while its geometry sat one column right
    and two rows low inside its own viewBox. That geometry is fixed now, so
    the artwork lands on the unit's own pixels unaided. */
 .io-ports .io-port-link { position: absolute; top: 82px; width: 28px; height: 16px; display: block; }
 .io-ports .io-port-link-output12 { left: 316px; }
-.io-ports .io-port-link-output34 { left: 478px; }
+/* The unit draws the 3/4 link 4px above the 1/2 one (its brackets inked y 138..147 against y 142..151). */
+.io-ports .io-port-link-output34 { left: 478px; top: 78px; }
 .io-ports .io-input-selectors { position: absolute; right: 1.5cqw; bottom: .5cqw; width: 17cqw; height: 6cqw; display: grid; grid-template-columns: 1fr 1fr; gap: .75cqw; }
 .io-ports .io-input-selectors button { height: 6cqw; border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-muted); font-size: 2cqw; text-align: center; }
 .io-ports .io-input-selectors button.is-active { background: var(--qc-screen-surface-control); color: var(--qc-screen-text-primary); }
@@ -144,7 +153,7 @@
    top is not the first row its artwork inks. Only the combo needs the two
    pixels, and it keeps them in its own box below. */
 .io-ports .io-headphone-label svg [data-qc-role="reference.primaryText"] { fill: currentColor !important; stroke: none; }
-.io-ports .io-headphone-label svg.is-muted { color: var(--qc-screen-text-muted); }
+.io-ports .io-headphone-label svg.is-muted { color: var(--qc-screen-ink-dimmed); }
 .io-ports .io-headphone-label svg.is-active { color: var(--qc-screen-text-primary); }
 /* The eight rules that stood here painted `port-core`, `port-hole` and a
    bordered circle for INPUT 1's own selected artwork - a second socket drawing
@@ -162,6 +171,9 @@
 .io-ports button:nth-child(10), .io-ports button:nth-child(11) { transform: translateX(-2.375cqw); }
 .io-ports button:nth-child(12) { transform: translateX(-1.875cqw); }
 .coros-io-settings .io-editor { transform: translateY(-.25cqw); }
+
+/* A reading's unit is split out as <small>; only the output pane draws it smaller and dimmer (below). */
+.coros-io-settings strong > small { font-size: inherit; color: inherit; }
 
 /* ONE COLUMN GRID FOR EVERY I/O PANE, because the unit draws one: five
    columns of 155 starting at x 8, split by 2px rules at 163, 320, 477 and
@@ -291,13 +303,16 @@
   .io-editor.is-output > section { display: grid; }
   .coros-io-settings.is-send-return .io-editor.is-output > section { background: var(--qc-route-glyph-surface); }
   .io-editor.is-output > section > span { position: relative; display: block; padding: 1.125cqw 1.25cqw; background: var(--qc-route-glyph-surface); font-size: 1.75cqw; }
-  .io-editor.is-output em { font-style: normal; letter-spacing: .02cqw; }
+  .io-editor.is-output em { font-style: normal; font-size: 1.9375cqw; color: var(--qc-screen-text-primary); }
+  /* Every reading is a white number with its unit (dB) a step smaller and in the muted ink, measured on io-output. */
+  .io-editor.is-output strong { color: var(--qc-screen-text-primary); }
+  .io-editor.is-output strong > small { color: var(--qc-screen-text-muted); font-size: 1.75cqw; }
   /* The level knob is 62px across with its right edge at x 155 and its foot
      at y 354, and the reading sits at the cell's bottom left. */
   .io-editor.is-output .io-dial-wrap { position: static; }
   .io-editor.is-output .io-dial { position: absolute; right: .625cqw; bottom: -.25cqw; }
-  .io-editor.is-output .io-dial-wrap > strong { position: absolute; left: 1.25cqw; bottom: 1.25cqw; font-weight: 400; font-size: 1.75cqw; }
-  .io-editor.is-output .io-readout strong { position: absolute; left: 1.25cqw; top: 4.5cqw; font-weight: 400; font-size: 2cqw; }
+  .io-editor.is-output .io-dial-wrap > strong { position: absolute; left: 1.625cqw; bottom: 1.625cqw; font-weight: 400; font-size: 1.9375cqw; }
+  .io-editor.is-output .io-readout strong { position: absolute; left: 1.125cqw; top: 5.375cqw; font-weight: 400; font-size: 1.9375cqw; }
   /* The meter is QcLevelMeter; this is placement only. Each readout cell puts
      its track 8 columns in and 16 rows up from the cell's own foot, which lands
      the three used across io-output, io-overview and io-send-return on the
@@ -310,8 +325,10 @@
      x 180.96 and 651.98, y 303.94 and 412.94, and their body is the
      screen's base surface, not the editor's disabled fill this used to paint. */
   .io-editor.is-output .io-switch > .qc-pill-toggle { position: absolute; left: 2cqw; top: 5.875cqw; }
-  .io-editor.is-output .io-switch label { position: absolute; left: 6.875cqw; display: flex; align-items: center; margin: 0; color: var(--qc-palette-6e736e); font-size: 2cqw; }
-  .io-editor.is-output .io-switch label:first-of-type { top: 6.125cqw; }
-  .io-editor.is-output .io-switch label:last-child { top: 9.125cqw; }
-  .io-editor.is-output .io-switch label:last-child { color: var(--qc-screen-text-primary); }
+  /* On and Off are labels in the fixtures and buttons in the live screen; both are one pair of captions, the selected one
+     white and the other the dim ink (#7b7d7b, measured on io-output). */
+  .io-editor.is-output .io-switch :is(label, button) { position: absolute; left: 6.875cqw; display: flex; align-items: center; height: auto; margin: 0; padding: 0; border: 0; background: var(--qc-transparent); color: var(--qc-io-header-mid); font: inherit; font-size: 1.75cqw; text-align: left; }
+  .io-editor.is-output .io-switch :is(label, button):first-of-type { top: 6.125cqw; }
+  .io-editor.is-output .io-switch :is(label, button):last-child { top: 9.125cqw; }
+  .io-editor.is-output .io-switch :is(label:last-child, button[aria-pressed="true"]) { color: var(--qc-screen-text-primary); }
 }

@@ -34,16 +34,20 @@ svg.qc-io-jack::after { content: none !important; }
   --qc-io-jack-disabled: var(--qc-palette-313031);
 }
 
-/* The idle and plugged inks are the registry's own: io.usb's metal layer is
+/* The idle ink is the registry's own: io.usb's metal layer is
    reference.primaryText, the white plate, and every other entry's metal is
-   reference.routeGlyphSurface, the unlit grey. Neither state restates a layer,
-   so neither has a rule here.
+   reference.routeGlyphSurface, the unlit grey. Idle restates no layer, so it
+   has no rule here.
 
-   Only active and disabled do. An SVG presentation attribute
+   Plugged, active and disabled do. An SVG presentation attribute
    beats every rule that merely inherits, so the paint has to name the layer's
    own element - the registry writes fill on each path. */
 .qc-io-jack[data-state="active"] [data-qc-role="reference.routeGlyphSurface"],
 .qc-io-jack[data-state="active"] [data-qc-role="reference.primaryText"] { fill: var(--qc-io-jack-active); }
+/* A plugged socket is white in every kind: io.usb's metal already is, the others restate it (the unit draws a plugged
+   headphones jack as the white nut, jack/taken in its tree). */
+.qc-io-jack[data-state="plugged"] [data-qc-role="reference.routeGlyphSurface"],
+.qc-io-jack[data-state="plugged"] [data-qc-role="reference.primaryText"] { fill: var(--qc-io-jack-plugged); }
 .qc-io-jack[data-state="disabled"] [data-qc-role="reference.routeGlyphSurface"],
 .qc-io-jack[data-state="disabled"] [data-qc-role="reference.primaryText"] { fill: var(--qc-io-jack-disabled); }
 

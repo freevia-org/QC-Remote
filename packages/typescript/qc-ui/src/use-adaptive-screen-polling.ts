@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { GatewayTransport } from "@qc-remote/client";
+import { ioSelectionFromTree, ioSelectionKey, type IoUnitSelection } from "./io-unit-selection.ts";
 
 export const QC_SCREEN_FOLLOW_STORAGE_KEY = "qc-remote.follow-qc-screen-v1";
 
@@ -34,6 +35,8 @@ export type QcScreenObservation = {
   kind: QcObservedScreenKind;
   signature: string;
   observedAt: number;
+  /** On the I/O screen: the port or pair the unit has selected. Its change is an observation of its own. */
+  ioSelection?: IoUnitSelection;
 };
 
 export type QcScreenPollingPhase = "off" | "paused" | "polling" | "ready" | "error";
@@ -179,13 +182,17 @@ export function useAdaptiveQcScreenPolling({
       try {
         const { tree } = await gateway.graphicsTree();
         if (cancelled) return;
-        const signature = qcGraphicsTreeStructuralSignature(tree);
+        const kind = classifyQcGraphicsTree(tree);
+        const ioSelection = kind === "io" ? ioSelectionFromTree(tree) : undefined;
+        // The structure alone cannot tell Output 1/2 from Output 3/4 (only an indicator image differs).
+        const signature = qcGraphicsTreeStructuralSignature(tree) + (ioSelection ? `
+io:${ioSelectionKey(ioSelection)}` : "");
         const changed = signature !== previousSignature;
         stablePolls = changed ? 0 : stablePolls + 1;
         consecutiveErrors = 0;
         previousSignature = signature;
         if (changed) {
-          const next = { kind: classifyQcGraphicsTree(tree), signature, observedAt: Date.now() } satisfies QcScreenObservation;
+          const next: QcScreenObservation = { kind, signature, observedAt: Date.now(), ...(ioSelection ? { ioSelection } : {}) };
           setObservation(next);
           onObservationRef.current(next);
         }

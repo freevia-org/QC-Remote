@@ -14,7 +14,6 @@
 .io-ports > button.io-port-link:disabled { opacity: .55; }
 .coros-io-settings .io-switch > .qc-pill-toggle { position: absolute; top: 5.875cqw; left: 2cqw; }
 .io-editor.is-output .io-switch { position: relative; }
-.io-editor.is-output .io-switch > .io-switch { position: static; }
 .coros-global-eq .global-eq-controls > section > .io-switch { margin-top: 1cqw; }
 .coros-global-eq .global-eq-controls > section > .io-dial-wrap { position: absolute; }
 .coros-global-eq .global-eq-controls > section .ioeq-dial-input { right: -.4375cqw; top: 0; }

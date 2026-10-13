@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { GlobalEqSettings } from "@qc-remote/client";
 import { globalEqUnavailableNotice } from "@qc-remote/core";
 import { QcIoJack } from "./qc-io-jack";
+import { IoReading } from "./io-reading";
 import { QcLevelMeter } from "./qc-level-meter";
 import { QcPillToggle } from "./qc-pill-toggle";
 import { QcRotaryDial } from "./qc-rotary-dial";
@@ -9,6 +10,7 @@ import { EQ_FILTER_TYPE_LABELS } from "./parameter-model";
 import { formatGlobalEqFrequency, globalEqQ } from "./global-eq-scale";
 import { QcEditorIcon, QcEqIcon, QcIoIcon, QcPresetStackIcon, QcScreenGlyph, QcScreenVectorGlyph, QcUiIcon } from "./theme-icons";
 import type { IoEqWorkflow } from "./use-io-eq-workflows";
+import type { IoView } from "./io-unit-selection.ts";
 import "./qc-screen-elements.css";
 import "./fixture-live-surface.css";
 import "./official-io.css";
@@ -16,7 +18,6 @@ import "./official-looper-eq.css";
 import "./io-global-eq-screens.css";
 
 type Workflow = IoEqWorkflow;
-type IoView = "overview" | "input" | "output" | "send-return" | "return" | "expression" | "midi" | "capture" | "usb" | "headphones";
 const IO_PORTS: Array<{ id: IoView; label: string; sub: string; kind?: "square" | "midi" | "input" | "combo"; paired?: boolean; sockets: string[] }> = [
   { id: "usb", label: "", sub: "USB", kind: "square", sockets: ["usb"] },
   { id: "expression", label: "EXP 2", sub: "EXP 1", paired: true, sockets: ["exp2", "exp1"] },
@@ -37,27 +38,27 @@ const activeSocketsFor = (view: IoView, inputId: number) => view === "input" ? [
 const clamp = (n: number, min = 0, max = 1) => Math.min(max, Math.max(min, n));
 const eqValue = (eq: GlobalEqSettings | undefined, index: number, fallback = 0) => eq?.parameters.find((p) => p.parameterIndex === index)?.value ?? fallback;
 
-function PortState({ socket, active, kind }: { socket: string; active: string[]; kind: string | undefined }) {
+function PortState({ socket, active, plugged, kind }: { socket: string; active: string[]; plugged: readonly string[]; kind: string | undefined }) {
   const jackKind = kind === "square" ? "usb" : kind === "midi" ? "midi" : kind === "combo" ? "combo" : kind === "input" ? "input" : "jack";
-  return <QcIoJack kind={jackKind} state={active.includes(socket) ? "active" : socket === "usb" ? "plugged" : "idle"} />;
+  return <QcIoJack kind={jackKind} state={active.includes(socket) ? "active" : plugged.includes(socket) ? "plugged" : "idle"} />;
 }
 
 function Dial({ label, value, display, min, max, disabled, onChange, steps, accent }: { label: string; value: number; display: string; min: number; max: number; disabled: boolean; onChange?(value: number): void; steps?: number; accent?: string }) {
   const position = clamp((value - min) / (max - min));
   return <span className="io-dial-wrap">
     <QcRotaryDial className={`io-dial${steps ? " is-stepped" : ""}`} value={position} mode={steps ? "step" : "arc"} steps={steps} accent={accent} />
-    <strong>{display}</strong>
+    <strong><IoReading text={display} /></strong>
     <input className="ioeq-dial-input" aria-label={label} type="range" min={min} max={max} step={steps ? (max - min) / Math.max(1, steps - 1) : (max - min) / 100} value={value} disabled={disabled} onChange={onChange ? (event) => onChange(Number(event.target.value)) : undefined} />
   </span>;
 }
 
-function PillSwitch({ label, value, disabled, onChange, options = ["On", "Off"], leftMeansTrue = true }: { label: string; value: boolean; disabled: boolean; onChange(value: boolean): void; options?: [string, string]; leftMeansTrue?: boolean }) {
+function PillSwitch({ label, value, disabled, onChange, options = ["On", "Off"], leftMeansTrue = true, as: Tag = "section" }: { label: string; value: boolean; disabled: boolean; onChange(value: boolean): void; options?: [string, string]; leftMeansTrue?: boolean; as?: "section" | "span" }) {
   const leftSelected = value === leftMeansTrue;
-  return <section className={`io-switch${disabled ? " is-disabled" : ""}`}>
+  return <Tag className={`io-switch${disabled ? " is-disabled" : ""}`}>
     <em>{label}</em><QcPillToggle index={leftSelected ? 0 : 1} />
     <button type="button" disabled={disabled} aria-pressed={leftSelected} onClick={() => onChange(leftMeansTrue)}>{options[0]}</button>
     <button type="button" disabled={disabled} aria-pressed={!leftSelected} onClick={() => onChange(!leftMeansTrue)}>{options[1]}</button>
-  </section>;
+  </Tag>;
 }
 
 function IoDialControl({ label, value, display, min, max, disabled, onChange, steps }: { label: string; value: number; display: string; min: number; max: number; disabled: boolean; onChange(value: number): void; steps?: number }) {
@@ -66,9 +67,22 @@ function IoDialControl({ label, value, display, min, max, disabled, onChange, st
 
 /** Device-layout I/O screen backed by the shared CorOS graphics and rotary/toggle controls. */
 export function CorOsIoSettingsScreen({ workflow, onGlobalEq, onClose, initialView = "overview" }: { workflow: Workflow; onGlobalEq(): void; onClose?: () => void; initialView?: IoView }) {
-  const [view, setView] = useState<IoView>(initialView);
-  const [inputId, setInputId] = useState(1);
+  // The unit's own I/O screen decides which port or pair is shown: on open (the first render already has it) and
+  // whenever it changes while open. The app's own taps are mirrored to the unit and come back as the same selection.
+  const unit = workflow.unitSelection;
+  const [view, setView] = useState<IoView>(unit?.view ?? initialView);
+  const plugged = unit?.plugged ?? ["usb"];
+  const [inputId, setInputId] = useState(unit?.inputId ?? 1);
   const [paneGeneration, setPaneGeneration] = useState(0);
+  const [followed, setFollowed] = useState(unit);
+  if (unit !== followed) {
+    setFollowed(unit);
+    if (unit?.view && (unit.view !== view || (unit.view === "input" && unit.inputId !== undefined && unit.inputId !== inputId))) {
+      setView(unit.view);
+      if (unit.inputId !== undefined) setInputId(unit.inputId);
+      setPaneGeneration((value) => value + 1);
+    }
+  }
   const { io, loading, pending } = workflow;
   const unavailable = loading || pending || !io;
   const activeSockets = activeSocketsFor(view, inputId);
@@ -79,12 +93,12 @@ export function CorOsIoSettingsScreen({ workflow, onGlobalEq, onClose, initialVi
   const setInput = (patch: Partial<NonNullable<typeof input>>) => void workflow.setInputPort(inputId, patch.levelDb ?? null, patch.impedance ?? null, patch.inputType ?? null, patch.groundLift ?? null);
   return <section className={`qc-screen coros-io-settings is-${view}`} data-qc-screen-context={paneGeneration} aria-label={`I/O Settings ${title}`}>
     <header><span className="io-heading"><i aria-hidden="true"><QcScreenVectorGlyph icon="io.header" /></i><span><small>I/O SETTINGS</small><strong>{title}</strong></span></span>
-      <button type="button" className="io-global-eq" data-qc-screen-navigation onClick={onGlobalEq}>GLOBAL EQ</button><button type="button" aria-label="Close I/O Settings" disabled={!onClose} onClick={onClose}><QcUiIcon kind="check" /></button></header>
+      <button type="button" className="io-global-eq" data-qc-screen-navigation onClick={onGlobalEq}>GLOBAL EQ<i aria-hidden="true" className={workflow.eq?.bypassed === false ? "is-on" : undefined} /></button><button type="button" aria-label="Close I/O Settings" disabled={!onClose} onClick={onClose}><QcUiIcon kind="check" /></button></header>
     <div className="io-ports">{IO_PORTS.map((port, index) => {
       const active = port.sockets.some((socket) => activeSockets.includes(socket));
       return <button type="button" key={`${port.label}-${index}`} data-qc-screen-navigation className={`${active ? "is-active" : ""} is-${port.kind ?? "jack"}${port.paired ? " is-paired" : ""}`} aria-current={active ? "page" : undefined} onClick={(event) => { const capture = port.id === "headphones" && ((event.target as HTMLElement).closest("[data-io-socket]")?.getAttribute("data-io-socket") === "capture-out" || (event.target as HTMLElement).tagName === "SMALL"); setPaneGeneration(value => value + 1); setView(capture ? "capture" : port.id); if (port.kind === "input") setInputId(port.sockets[0] === "input2" ? 2 : 1); }}>
-        <span>{port.id === "headphones" ? <QcIoIcon kind="headphones-symbol" className={view === "headphones" ? "is-active" : "is-muted"} /> : port.label}</span>
-        {port.sockets.map((socket) => <i key={socket} data-io-socket={socket}><PortState socket={socket} active={activeSockets} kind={port.kind} /></i>)}<small>{port.sub}</small>
+        <span className={port.id === "headphones" ? "io-headphone-label" : undefined}>{port.id === "headphones" ? <QcIoIcon kind="headphones-symbol" className={view === "headphones" ? "is-active" : "is-muted"} /> : port.label}</span>
+        {port.sockets.map((socket) => <i key={socket} data-io-socket={socket}><PortState socket={socket} active={activeSockets} plugged={plugged} kind={port.kind} /></i>)}<small>{port.sub}</small>
       </button>;
     })}<button type="button" className="io-port-link io-port-link-output12" aria-label="Toggle XLR 1/2 pairing" aria-pressed={Boolean(io?.xlr12Linked)} disabled={unavailable || io?.xlr12Linked === undefined} onClick={() => void workflow.setOutputPairing(!io?.xlr12Linked, null)}><QcScreenVectorGlyph icon="io.linked" /></button><button type="button" className="io-port-link io-port-link-output34" aria-label="Toggle outputs 3/4 pairing" aria-pressed={Boolean(io?.out34Linked)} disabled={unavailable || io?.out34Linked === undefined} onClick={() => void workflow.setOutputPairing(null, !io?.out34Linked)}><QcScreenVectorGlyph icon="io.linked" /></button>
       {view === "usb" && <div className="io-input-selectors" aria-label="USB dry and wet channel assignment">
@@ -100,9 +114,9 @@ export function CorOsIoSettingsScreen({ workflow, onGlobalEq, onClose, initialVi
       <div className="io-level-meter"><span>{`IN ${inputId} LEVEL`}</span><strong>—</strong><QcLevelMeter /></div></div>
       : view === "output" || view === "overview" || view === "send-return" ? <div className="io-editor is-output">{outputs.map((port) => <section key={port.outputPortId}>
         <span><em>{view === "send-return" ? `SEND ${port.outputPortId - 7}` : `OUT ${port.outputPortId === 1 ? "1/2" : port.outputPortId === 2 ? "3/4" : port.outputPortId - 3} LEVEL`}</em><Dial label={`Output ${port.outputPortId} level`} value={port.levelDb ?? 0} display={`${(port.levelDb ?? 0).toFixed(1)} dB`} min={-40} max={12} disabled={unavailable || port.levelDb === undefined} onChange={(level) => void workflow.setOutputPort(port.outputPortId, level, null, null)} /></span>
-        {view === "output" && <span className="io-switch"><PillSwitch label="GROUND LIFT" value={Boolean(port.groundLift)} disabled={unavailable || port.groundLift === undefined} onChange={(value) => void workflow.setOutputPort(port.outputPortId, null, value ? 1 : 0, null)} /></span>}
-        <span className="io-readout"><em>{view === "send-return" ? `SEND ${port.outputPortId - 7} LEVEL` : "OUT LEVEL"}</em><strong>{port.levelDb === undefined ? "—" : `${port.levelDb.toFixed(1)} dB`}</strong><QcLevelMeter /></span><span className="io-readout"><em>LIMITER</em><strong>—</strong><QcLevelMeter /></span>
-        {view === "overview" && <span />}{view !== "send-return" && <span className="io-switch"><PillSwitch label="MUTE" value={Boolean(port.muted)} disabled={unavailable || port.muted === undefined} onChange={(mute) => void workflow.setOutputPort(port.outputPortId, null, null, mute)} /></span>}
+        {view === "output" && <PillSwitch as="span" label="GROUND LIFT" value={Boolean(port.groundLift)} disabled={unavailable || port.groundLift === undefined} onChange={(value) => void workflow.setOutputPort(port.outputPortId, null, value ? 1 : 0, null)} />}
+        <span className="io-readout"><em>{view === "send-return" ? `SEND ${port.outputPortId - 7} LEVEL` : "OUT LEVEL"}</em><strong>{port.levelDb === undefined ? "—" : <IoReading text={`${port.levelDb.toFixed(1)} dB`} />}</strong><QcLevelMeter /></span><span className="io-readout"><em>LIMITER</em><strong>—</strong><QcLevelMeter /></span>
+        {view === "overview" && <span />}{view !== "send-return" && <PillSwitch as="span" label="MUTE" value={Boolean(port.muted)} disabled={unavailable || port.muted === undefined} onChange={(mute) => void workflow.setOutputPort(port.outputPortId, null, null, mute)} />}
       </section>)}</div>
       : view === "usb" ? <div className="io-editor is-usb"><IoDialControl label="USB LEVEL" value={io?.usb?.level ?? 0} display={`${(io?.usb?.level ?? 0).toFixed(2)}`} min={0} max={1} disabled={unavailable || io?.usb?.level === undefined} onChange={(level) => void workflow.setUsbPort(level, null, null)} />
         <IoDialControl label="HP SOURCE" value={(io?.usb?.headphonesSource ?? 0) * 3} display={(["NONE", "USB 1/2", "USB 3/4", "BOTH"][Math.round((io?.usb?.headphonesSource ?? 0) * 3)])} min={0} max={3} steps={4} disabled={unavailable || io?.usb?.headphonesSource === undefined} onChange={(source) => void workflow.setUsbPort(null, Math.round(source) / 3, null)} />
