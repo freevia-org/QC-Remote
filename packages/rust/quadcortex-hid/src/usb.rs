@@ -2139,7 +2139,7 @@ mod tests {
         WriteStallPolicy::WindowsQcError31
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn writer_test_stall_policy() -> WriteStallPolicy {
         WriteStallPolicy::Strict
     }
