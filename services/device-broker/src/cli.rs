@@ -335,7 +335,10 @@ pub fn main(binary: Binary) {
                 crate::platform::paths_macos::prepare_directory(directory)
                     .unwrap_or_else(|error| fail(error));
                 startup_trace("descriptor directory prepared");
-                if args.iter().any(|argument| argument == "--host-election-held") {
+                if args
+                    .iter()
+                    .any(|argument| argument == "--host-election-held")
+                {
                     startup_trace("using desktop host election");
                     None
                 } else {

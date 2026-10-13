@@ -4673,7 +4673,11 @@ mod tests {
         };
         #[cfg(unix)]
         let mut command = {
-            let mut command = std::process::Command::new("/usr/bin/sleep");
+            #[cfg(target_os = "macos")]
+            let executable = "/bin/sleep";
+            #[cfg(not(target_os = "macos"))]
+            let executable = "/usr/bin/sleep";
+            let mut command = std::process::Command::new(executable);
             command.arg("60");
             command
         };
