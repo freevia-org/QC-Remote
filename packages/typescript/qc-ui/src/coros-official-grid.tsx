@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { CpuColumnLoad, PresetSnapshot } from "@qc-remote/client";
 import { QC_TYPOGRAPHY } from "@qc-remote/theme";
-import { PRESET_TITLE_RIGHT_EDGE, presetTitlePresentation } from "./coros-ui";
+import { PRESET_TITLE_RIGHT_EDGE, presetTitlePresentation, RAIL_LABEL_FONT_SIZE, RAIL_LABEL_LINE_STEP, railLabelBaseline } from "./coros-ui";
 import { QcDeviceGlyph } from "./device-glyph";
 import { useFontFaceReady } from "./use-font-face-ready";
 import { QcModeGlyph, QcScreenHeaderGlyph, QcScreenVectorGlyph } from "./theme-icons";
@@ -76,9 +76,9 @@ export function CorOsOfficialGrid({ snapshot, children, browserChrome = false, n
     // pixels was 85% covered and none of them could reach the unit's flat ink.
     if ((label || "+") === "+") return <QcScreenVectorGlyph icon="interface.add" x={x - 12} y={y - 12} />;
     return (
-      <text x={x} y={y - (lines.length - 1) * 8.5} fill="var(--qc-palette-e6e6e6)" stroke="none" fontFamily={QC_TYPOGRAPHY.deviceRoute} fontWeight="400" fontSize="14.5">
+      <text x={x} y={railLabelBaseline(y, lines.length)} fill="var(--qc-palette-e6e6e6)" stroke="none" fontFamily={QC_TYPOGRAPHY.deviceRoute} fontWeight="400" fontSize={RAIL_LABEL_FONT_SIZE}>
         {lines.map((line, index) => (
-          <tspan key={`${line}-${index}`} x={x} dy={index ? 17 : 0}>
+          <tspan key={`${line}-${index}`} x={x} dy={index ? RAIL_LABEL_LINE_STEP : 0}>
             {line}
           </tspan>
         ))}
