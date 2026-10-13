@@ -11,6 +11,12 @@ on:
       - packages/typescript/**
       - services/device-broker/**
       - services/rust-mcp/**
+      - THIRD_PARTY-NOTICES.md
+      - legal/**
+      - LICENSE
+      - LICENSE-MIT
+      - LICENSE-APACHE
+      - LICENSES/**
       - package.json
       - package-lock.json
       - Cargo.toml
@@ -24,6 +30,12 @@ on:
       - packages/typescript/**
       - services/device-broker/**
       - services/rust-mcp/**
+      - THIRD_PARTY-NOTICES.md
+      - legal/**
+      - LICENSE
+      - LICENSE-MIT
+      - LICENSE-APACHE
+      - LICENSES/**
       - package.json
       - package-lock.json
       - Cargo.toml
