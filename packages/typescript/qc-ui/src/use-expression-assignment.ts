@@ -1,7 +1,7 @@
 import { requireModelId, requirePresetIdentity } from "@qc-remote/client";
 import { SupersededPresetOperation } from "@qc-remote/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLatestValueWriter } from "./latest-value-writer";
+import { useLatestValueWriter } from "./latest-value-writer.ts";
 import type { BlockDetails, GridBlock, LaneControl } from "@qc-remote/client";
 import type { DeviceMutationWorkflowOptions } from "./workflow-options";
 import type { ExpressionAssignmentAddress, ExpressionAssignmentState, ExpressionAssignmentTarget } from "./expression-assignment";

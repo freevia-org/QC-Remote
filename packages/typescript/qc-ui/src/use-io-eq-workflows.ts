@@ -2,7 +2,7 @@ import { useDeviceWorkflowSession } from "./use-device-workflow-session.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeviceActionResult, GlobalEqSettings, IoSettings, ModelPresetSummary, PresetSnapshot } from "@qc-remote/client";
 import { admitGlobalEqPreset, globalEqPresetsFor, type GlobalEqPresets } from "@qc-remote/core";
-import { useLatestValueWriter } from "./latest-value-writer";
+import { useLatestValueWriter } from "./latest-value-writer.ts";
 import { connectBeforeNotice, DEVICE_COMMAND_BUSY_NOTICE } from "./use-guarded-mutation.ts";
 import type { DeviceGatewayWorkflowOptions } from "./workflow-options";
 
