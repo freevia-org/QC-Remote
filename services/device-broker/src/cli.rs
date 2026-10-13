@@ -220,6 +220,7 @@ fn mode(args: &[String]) -> Mode {
                 "--broker-serve",
                 "--auto-connect",
                 "--phase-events",
+                "--host-election-held",
                 tray::NO_TRAY_FLAG,
             ],
             &["--descriptor-path"],
@@ -334,13 +335,18 @@ pub fn main(binary: Binary) {
                 crate::platform::paths_macos::prepare_directory(directory)
                     .unwrap_or_else(|error| fail(error));
                 startup_trace("descriptor directory prepared");
-                match resident::elect(&descriptor_path, RESIDENT_ELECTION_BUDGET)
-                    .unwrap_or_else(|error| fail(error))
-                {
-                    Election::AlreadyServed => return,
-                    Election::Serve(guard) => {
-                        startup_trace("election acquired");
-                        Some(guard)
+                if args.iter().any(|argument| argument == "--host-election-held") {
+                    startup_trace("using desktop host election");
+                    None
+                } else {
+                    match resident::elect(&descriptor_path, RESIDENT_ELECTION_BUDGET)
+                        .unwrap_or_else(|error| fail(error))
+                    {
+                        Election::AlreadyServed => return,
+                        Election::Serve(guard) => {
+                            startup_trace("election acquired");
+                            Some(guard)
+                        }
                     }
                 }
             };
@@ -1040,6 +1046,12 @@ mod tests {
                 "C:\\d\\device-broker.json",
                 "--phase-events",
                 "--auto-connect",
+            ],
+            vec![
+                "--broker-serve",
+                "--descriptor-path",
+                "C:\\d\\device-broker.json",
+                "--host-election-held",
             ],
             vec!["--broker-serve", "--no-tray", "--descriptor-path", "x"],
         ] {
