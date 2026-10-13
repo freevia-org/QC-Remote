@@ -22,7 +22,7 @@ use quadcortex::{
             GatewayVerification, GatewayVerificationAction, GatewayVerificationRuntime,
             PlannedWrite,
         },
-        session::DispatchOutcome,
+        session::{DispatchOutcome, SessionDriver},
         transport::{IngressTime, ReportLayout},
     },
     framing,
@@ -36,6 +36,15 @@ pub struct QcIosSession {
     pending_output: Option<Vec<u8>>,
     backup_operation: Option<OperationTicket>,
     backup_name: Option<String>,
+}
+
+fn ios_lifecycle_status(lifecycle: &SessionDriver) -> Value {
+    json!({
+        "phase": lifecycle.phase().as_str(),
+        "sessionValidated": lifecycle.session_validated(),
+        "error": lifecycle.failure().map(|failure| format!("{failure:?}")),
+        "synchronized": lifecycle.synchronization() == Some(true),
+    })
 }
 
 fn ios_workflow_write_action(
@@ -414,14 +423,7 @@ pub unsafe extern "C" fn qc_ios_push_report(
             lifecycle.tick(received_at_ms);
             let failed = lifecycle.failure().is_some();
             let synchronization = lifecycle.take_synchronization_change().filter(|_| !failed);
-            (
-                json!({
-                    "phase": lifecycle.phase().as_str(),
-                    "sessionValidated": lifecycle.session_validated(),
-                    "error": lifecycle.failure().map(|failure| format!("{failure:?}")),
-                }),
-                synchronization,
-            )
+            (ios_lifecycle_status(lifecycle), synchronization)
         };
         if let Some(synchronized) = synchronization {
             session
@@ -597,11 +599,7 @@ pub unsafe extern "C" fn qc_ios_lifecycle_dispatched(
         lifecycle.tick(now_ms);
         let failed = lifecycle.failure().is_some();
         let synchronization = lifecycle.take_synchronization_change().filter(|_| !failed);
-        let status = json!({
-            "phase": lifecycle.phase().as_str(),
-            "sessionValidated": lifecycle.session_validated(),
-            "error": lifecycle.failure().map(|failure| format!("{failure:?}")),
-        });
+        let status = ios_lifecycle_status(lifecycle);
         if let Some(synchronized) = synchronization {
             session
                 .runtime
@@ -1773,5 +1771,21 @@ mod tests {
         assert!(status["phase"].as_str().is_some());
 
         unsafe { qc_ios_session_destroy(session) };
+    }
+
+    #[test]
+    fn ios_driver_readiness_uses_the_shared_connected_phase_contract() {
+        use quadcortex::device::initialization::DeviceStartupPhase;
+
+        // qc_ios_push_report exports this enum's `as_str()` value as
+        // lifecycle.phase; keep it aligned with the Swift DriverKit gate.
+        assert_eq!(DeviceStartupPhase::Connected.as_str(), "connected");
+        assert_ne!(DeviceStartupPhase::Invalid.as_str(), "connected");
+        assert_ne!(DeviceStartupPhase::Failed.as_str(), "connected");
+
+        let lifecycle = SessionDriver::start(1, "ios-readiness-contract".into(), 0);
+        let status = ios_lifecycle_status(&lifecycle);
+        assert_eq!(status["synchronized"], false);
+        assert_eq!(status["phase"], "sessionValidating");
     }
 }

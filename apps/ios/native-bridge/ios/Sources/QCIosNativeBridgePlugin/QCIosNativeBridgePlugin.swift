@@ -463,6 +463,8 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject("Wait for the Quad Cortex to finish synchronizing before sending direct USB commands.", "DEVICE_NOT_SYNCHRONIZED")
                 return
             }
+            var persistentMutation = false
+            var reportMayHaveReachedDevice = false
             do {
                 let now = self.monotonicMilliseconds()
                 guard !self.driverWritesQuarantined else {
@@ -482,10 +484,13 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                     }
                     self.pendingDirectBackup = backup
                     do {
-                        try self.deliverPresetWorkflowAction(action, session: session)
+                        try self.deliverPresetWorkflowAction(action, session: session) {
+                            backup.requestDispatched = true
+                        }
                         backup.requestDispatched = true
                         self.scheduleDirectBackupAdvance(backup, afterMs: 100)
                     } catch {
+                        if backup.requestDispatched { self.driverWritesQuarantined = true }
                         self.pendingDirectBackup = nil
                         session.cancelBackup()
                         throw error
@@ -521,6 +526,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                 }
                 let afterSequence = self.driverStateSequence
                 var reportCount = 0
+                persistentMutation = plan["realtime"] as? Bool != true
                 for message in messages {
                     guard let type = (message["messageType"] as? NSNumber)?.uint16Value,
                           let payloadValues = message["payload"] as? [NSNumber] else {
@@ -534,6 +540,10 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                     for (index, report) in reports.enumerated() {
                         _ = try session.beginReport(ticket: delivery, index: index, nowMs: self.monotonicMilliseconds())
                         do {
+                            // A thrown USB call can still mean the host controller
+                            // accepted some or all of the report. Treat this point
+                            // as an unknown mutation outcome until state is resynced.
+                            reportMayHaveReachedDevice = true
                             let result = try self.driverClient.writeReport(report)
                             let transferred = result["bytesTransferred"] ?? 0
                             let usbStatus = result["usbStatus"] ?? -1
@@ -573,6 +583,9 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                 self.pendingGatewayWrites[verificationID] = pending
                 self.scheduleGatewayWriteVerification(verificationID, afterMs: (plan["confirmationTimeoutMs"] as? NSNumber)?.uint64Value ?? 3_000)
             } catch {
+                if persistentMutation && reportMayHaveReachedDevice {
+                    self.driverWritesQuarantined = true
+                }
                 call.reject("The Quad Cortex write could not be delivered: \(error)", "WRITE_DELIVERY_FAILED")
             }
         }
@@ -602,8 +615,10 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                     self.advancePresetWorkflow(call: call, session: session, preparationId: preparationId, generation: generation)
                 }
             case "write":
-                if action["read"] as? Bool != true { presetWorkflowMutationAttempts.insert(preparationId) }
-                try deliverPresetWorkflowAction(action, session: session)
+                let isMutation = action["read"] as? Bool != true
+                try deliverPresetWorkflowAction(action, session: session) {
+                    if isMutation { self.presetWorkflowMutationAttempts.insert(preparationId) }
+                }
                 driverQueue.asyncAfter(deadline: .now() + .milliseconds(10)) {
                     self.advancePresetWorkflow(call: call, session: session, preparationId: preparationId, generation: generation)
                 }
@@ -627,7 +642,11 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    private func deliverPresetWorkflowAction(_ action: [String: Any], session: QCIosProtocolSession) throws {
+    private func deliverPresetWorkflowAction(
+        _ action: [String: Any],
+        session: QCIosProtocolSession,
+        onReportAttempt: (() -> Void)? = nil
+    ) throws {
         guard let dispatch = action["dispatchTicket"] as? [String: Any],
               let operation = action["operationTicket"] as? [String: Any],
               let messages = action["messages"] as? [[String: Any]], !messages.isEmpty else {
@@ -648,6 +667,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             for (index, report) in reports.enumerated() {
                 _ = try session.beginReport(ticket: delivery, index: index, nowMs: monotonicMilliseconds())
                 do {
+                    onReportAttempt?()
                     let result = try driverClient.writeReport(report)
                     let transferred = result["bytesTransferred"] ?? 0
                     let usbStatus = result["usbStatus"] ?? -1
@@ -1043,8 +1063,12 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         let backupProgress = event["backupProgress"] as? [String: Any]
         if let lifecycle = event["lifecycle"] as? [String: Any] {
             let phase = lifecycle["phase"] as? String ?? "syncing"
-            let becameReady = phase == "ready" && !driverSynchronized
-            driverSynchronized = phase == "ready"
+            let connected = phase == "connected"
+                && (lifecycle["sessionValidated"] as? Bool) == true
+                && (lifecycle["synchronized"] as? Bool) == true
+                && lifecycle["error"] is NSNull
+            let becameReady = connected && !driverSynchronized
+            driverSynchronized = connected
             if becameReady { driverWritesQuarantined = false }
             if driverSynchronized, let backup = pendingDirectBackup,
                backup.waitingForRecoverySync, backup.generation == driverGeneration {
@@ -1083,6 +1107,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                 handleGatewayWriteVerificationAction(action, pending: pending, id: id)
             } catch {
                 pendingGatewayWrites.removeValue(forKey: id)
+                driverWritesQuarantined = true
                 pending.call.reject("The Quad Cortex write was sent, but its state verification failed: \(error)", "WRITE_VERIFICATION_FAILED")
             }
         }
@@ -1096,6 +1121,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             current.wakeScheduled = false
             guard let session = self.protocolSession else {
                 self.pendingGatewayWrites.removeValue(forKey: id)
+                self.driverWritesQuarantined = true
                 current.call.reject("The Quad Cortex disconnected before write verification completed.", "DRIVER_DISCONNECTED")
                 return
             }
@@ -1106,6 +1132,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                 self.handleGatewayWriteVerificationAction(action, pending: current, id: id)
             } catch {
                 self.pendingGatewayWrites.removeValue(forKey: id)
+                self.driverWritesQuarantined = true
                 current.call.reject("The Quad Cortex write was sent, but its state verification failed: \(error)", "WRITE_VERIFICATION_FAILED")
             }
         }
@@ -1125,10 +1152,12 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             pending.call.resolve(result)
         case "timedOut":
             pendingGatewayWrites.removeValue(forKey: id)
+            driverWritesQuarantined = true
             pending.call.resolve(["detail": pending.plan["detail"] ?? "QC accepted the report transport; no confirming state update arrived.",
                                   "accepted": true, "verified": false, "verification": "accepted_unverified"])
         default:
             pendingGatewayWrites.removeValue(forKey: id)
+            driverWritesQuarantined = true
             pending.call.reject("The shared QC verifier returned an unknown result.", "WRITE_VERIFICATION_FAILED")
         }
     }
@@ -1224,6 +1253,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     private func rejectPendingGatewayWrites(_ message: String) {
         let pending = Array(pendingGatewayWrites.values)
         pendingGatewayWrites.removeAll()
+        if !pending.isEmpty { driverWritesQuarantined = true }
         for write in pending { write.call.reject(message, "DRIVER_DISCONNECTED") }
     }
 }
