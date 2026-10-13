@@ -2,7 +2,46 @@ use super::WriteStallPolicy;
 use crate::usb::UsbError;
 use hidapi::{HidApi, HidDevice, HidError};
 use std::ffi::CStr;
-use std::sync::Mutex;
+use std::sync::{mpsc, Mutex, OnceLock};
+
+type HidJob = Box<dyn FnOnce() + Send + 'static>;
+static HID_THREAD: OnceLock<Result<mpsc::Sender<HidJob>, String>> = OnceLock::new();
+
+/// Run every hidapi context operation on one process-lifetime thread. hidapi's
+/// macOS backend schedules its process-global IOHIDManager on the current
+/// CFRunLoop, so moving later discovery calls between short-lived broker
+/// workers can crash inside CoreFoundation on Intel Macs.
+pub(crate) fn with_hid_thread<T>(
+    operation: impl FnOnce() -> Result<T, UsbError> + Send + 'static,
+) -> Result<T, UsbError>
+where
+    T: Send + 'static,
+{
+    let sender = HID_THREAD.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<HidJob>();
+        std::thread::Builder::new()
+            .name("qc-hidapi-macos".into())
+            .spawn(move || {
+                while let Ok(job) = receiver.recv() {
+                    job();
+                }
+            })
+            .map_err(|error| format!("Could not start the macOS HID thread: {error}"))?;
+        Ok(sender)
+    });
+    let sender = sender
+        .as_ref()
+        .map_err(|error| UsbError::Hid(error.clone()))?;
+    let (response, result) = mpsc::sync_channel(1);
+    sender
+        .send(Box::new(move || {
+            let _ = response.send(operation());
+        }))
+        .map_err(|_| UsbError::Hid("The macOS HID thread stopped".into()))?;
+    result
+        .recv()
+        .map_err(|_| UsbError::Hid("The macOS HID thread stopped before replying".into()))?
+}
 
 pub(crate) fn device_id(device: &hidapi::DeviceInfo) -> String {
     let serial = device.serial_number().filter(|serial| !serial.is_empty());
