@@ -590,6 +590,7 @@ fn serve(
         #[cfg(unix)]
         let exit_status = Arc::clone(&exit_status);
         Arc::new(move || {
+            startup_trace("exit callback entered");
             // Clients were already sent `broker.shuttingDown` and the device
             // was released; stop the host, bounded, then go.
             if let Some(supervisor) = supervisor.get() {
@@ -597,7 +598,10 @@ fn serve(
             }
             tray::remove_icon_now();
             #[cfg(unix)]
-            std::process::exit(exit_status.load(std::sync::atomic::Ordering::Acquire));
+            {
+                startup_trace("calling process exit");
+                std::process::exit(exit_status.load(std::sync::atomic::Ordering::Acquire));
+            }
             #[cfg(not(unix))]
             std::process::exit(0)
         })
