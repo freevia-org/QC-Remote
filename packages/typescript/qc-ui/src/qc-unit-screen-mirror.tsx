@@ -10,17 +10,19 @@ import "./unit-mirror.css";
  * anything by itself; a tap the user makes on this picture is forwarded to the
  * same pixel on the unit (the display forwards it), and nothing else is sent.
  */
-export function QcUnitScreenMirror({ gateway, intervalMs = 700 }: { gateway: Pick<GatewayTransport, "captureScreen">; intervalMs?: number }) {
+export function QcUnitScreenMirror({ gateway, intervalMs = 700, captureSessionCurrent }: { gateway: Pick<GatewayTransport, "captureScreen">; intervalMs?: number; captureSessionCurrent?(): () => boolean }) {
   const [image, setImage] = useState<string>();
   useEffect(() => {
     let cancelled = false;
+    const ownerCurrent = captureSessionCurrent?.() ?? (() => true);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const refresh = async () => {
+      if (cancelled || !ownerCurrent()) return;
       try {
         const frame = await gateway.captureScreen();
-        if (!cancelled && isUnitFrame(frame.pngBase64)) setImage(`data:image/png;base64,${frame.pngBase64}`);
+        if (!cancelled && ownerCurrent() && isUnitFrame(frame.pngBase64)) setImage(`data:image/png;base64,${frame.pngBase64}`);
       } catch { /* the next refresh tries again */ }
-      if (!cancelled) timer = setTimeout(() => void refresh(), intervalMs);
+      if (!cancelled && ownerCurrent()) timer = setTimeout(() => void refresh(), intervalMs);
     };
     void refresh();
     return () => { cancelled = true; clearTimeout(timer); };
