@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import test from "node:test";
 import { androidStyles, bundleModule, findBrowser, hostBody, makeWorkDirectory, uiSource, VIEWPORTS, windowsStyles, withBrowser, type HostName } from "./support/display-page.ts";
-import { POPUP_FIXTURES, POPUP_PROPS } from "./support/popup-fixtures.ts";
+import { POPUP_FIXTURES, POPUP_PROPS, type CloseControl } from "./support/popup-fixtures.ts";
 import { QC_UNIT_MIRROR_KINDS, QC_UNIT_SCREENS } from "../src/qc-unit-screens.ts";
 
 /*
@@ -23,9 +23,10 @@ const skip = !browser && !mustRun ? "no Chrome or Chromium found; set QC_BROWSER
 type Box = [number, number, number, number];
 interface Hit { label: string; inView: boolean; ok: boolean; topmost: string | null }
 interface Behind { inView: boolean; overlay: boolean; topmost: string | null }
-interface Sample { key: string; fixture: string; viewport: readonly [number, number]; bezel: Box; found: Record<string, Box[]>; fonts: number[]; hits: Hit[]; behind: Behind }
+interface Close { label: string; scrim: boolean; declared: number | null; found: boolean; inView: boolean; ok: boolean; topmost: string | null; leaks: string | null }
+interface Sample { key: string; fixture: string; viewport: readonly [number, number]; bezel: Box; found: Record<string, Box[]>; fonts: number[]; hits: Hit[]; behind: Behind; closes: Close[] }
 
-const MEASURE = (selectors: string[]) => `
+const MEASURE = (selectors: string[], declared: CloseControl[]) => `
 (async () => {
   for (let waited = 0; waited < 5000 && document.querySelector('template[id^="B:"]'); waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
   const scaleSettled = () => { const box = document.querySelector('.qc-screen-bezel'); const canvas = box.querySelector(':scope > .qc-screen-fixture-root'); return !canvas || Math.abs(new DOMMatrix(getComputedStyle(canvas).transform).a * 800 - box.getBoundingClientRect().width) < 0.01; };
@@ -49,7 +50,47 @@ const MEASURE = (selectors: string[]) => `
   const bx = bezel.left + bezel.width * 0.04, by = bezel.top + bezel.height * 0.5;
   const under = document.elementFromPoint(bx, by);
   const behind = { inView: bx >= 0 && by >= 0 && bx < innerWidth && by < innerHeight, overlay: Boolean(under && under.closest('.scene-command-overlay')), topmost: under ? (under.getAttribute('aria-label') || under.className || under.tagName) : null };
-  return { bezel: [bezel.left, bezel.top, bezel.width, bezel.height], found, fonts, hits, behind };
+  // Every app-drawn way to dismiss what is open: a control (hit at its centre) or a scrim (hit at the points it covers). The registry names
+  // the ones it expects; every other close, cancel, done or scrim element in the rendering is found by its own markup and held to the same test.
+  const name = (element) => element.getAttribute('aria-label') || element.textContent.trim() || String(element.className.baseVal ?? element.className).split(' ')[0];
+  const topName = (top) => top ? (top.getAttribute('aria-label') || String(top.className.baseVal ?? top.className).split(' ')[0] || top.tagName) : null;
+  const SCRIM = '[class*="scrim"], [class*="dimmer"], [class*="backdrop"], [class*="dismiss"], [class*="-wash"]';
+  const CLOSE = 'button[aria-label^="Close"], button[aria-label="Done"], button[aria-label="Cancel"]';
+  const screen = document.querySelector('.qc-screen-bezel');
+  const grid = (element) => Boolean(element && element.closest('.coros-vector-actions'));
+  const inside = (cx, cy) => cx >= 0 && cy >= 0 && cx < innerWidth && cy < innerHeight;
+  const measureClose = (element, declaredIndex) => {
+    const isScrim = element.matches(SCRIM);
+    const r = element.getBoundingClientRect();
+    const box = isScrim ? [Math.max(r.left, bezel.left), Math.max(r.top, bezel.top), Math.min(r.right, bezel.right), Math.min(r.bottom, bezel.bottom)] : [r.left, r.top, r.right, r.bottom];
+    const points = [];
+    if (isScrim) for (let i = 0; i < 7; i++) for (let j = 0; j < 7; j++) points.push([box[0] + (box[2] - box[0]) * (i + 0.5) / 7, box[1] + (box[3] - box[1]) * (j + 0.5) / 7]);
+    else points.push([(box[0] + box[2]) / 2, (box[1] + box[3]) / 2]);
+    const visible = points.filter(([x, y]) => inside(x, y));
+    const tops = visible.map(([x, y]) => document.elementFromPoint(x, y));
+    const reached = (top) => Boolean(top) && (top === element || element.contains(top));
+    const leaking = isScrim ? tops.find(grid) : undefined;
+    // A control is hit at its centre; a scrim only has to be what a click reaches somewhere (a panel covers part of it) and must never let one through to the Grid.
+    return { label: name(element), scrim: isScrim, declared: declaredIndex, found: true, inView: visible.length > 0,
+      ok: isScrim ? tops.some(reached) : reached(tops[0]), topmost: isScrim ? null : topName(tops[0]), leaks: leaking ? topName(leaking) : null };
+  };
+  const closes = [];
+  const seen = new Set();
+  const declared = ${JSON.stringify(declared)};
+  declared.forEach((control, index) => {
+    const matches = [...screen.querySelectorAll(control.selector)].filter((element) => control.text === undefined || element.textContent.trim() === control.text);
+    if (!matches.length) closes.push({ label: control.text ?? control.selector, scrim: Boolean(control.scrim), declared: index, found: false, inView: false, ok: false, topmost: null, leaks: null });
+    for (const element of matches) { seen.add(element); closes.push(measureClose(element, index)); }
+  });
+  for (const element of screen.querySelectorAll(CLOSE + ', ' + SCRIM + ', button')) {
+    if (seen.has(element) || element.closest('.coros-vector-actions')) continue;
+    // A scrim that draws a wash but takes no pointer input (pointer-events: none) dismisses nothing.
+    if (element.matches(SCRIM) && getComputedStyle(element).pointerEvents === 'none') continue;
+    if (!element.matches(CLOSE + ', ' + SCRIM) && !/^(cancel|done)$/i.test(element.textContent.trim())) continue;
+    seen.add(element);
+    closes.push(measureClose(element, null));
+  }
+  return { bezel: [bezel.left, bezel.top, bezel.width, bezel.height], found, fonts, hits, behind, closes };
 })()
 `;
 
@@ -59,15 +100,17 @@ test("lay out every popup in both hosts, at four window sizes, every device mode
   assert.ok(browser, "CI must provide a Chrome or Chromium (set QC_BROWSER_EXECUTABLE)");
   const work = makeWorkDirectory();
   try {
-    const { module: bundle, css } = await bundleModule<{ render(fixture: string, skin: number, presentation: string): Promise<string>; skins: number }>(work.path, "popups", `
+    const { module: bundle, css } = await bundleModule<{ render(fixture: string, skin: number, presentation: string): Promise<string>; renderScenario(host: string, scenario: object): Promise<string>; skins: number }>(work.path, "popups", `
 import { createElement } from "react";
 import { prerenderToNodeStream } from "react-dom/static";
 import { QuadCortexSurface } from ${JSON.stringify(join(uiSource, "quad-cortex-surface.tsx"))};
 import { IDLE_PLACEHOLDER_SNAPSHOT } from ${JSON.stringify(join(uiSource, "index.ts"))};
 import { POPUP_PROPS_BY_ID } from ${JSON.stringify(fileURLToPath(new URL("./support/popup-props.tsx", import.meta.url)))};
 import { formFactors, skins } from "@qc-remote/form-factors";
+import { render as renderHost } from ${JSON.stringify(fileURLToPath(new URL("./support/display-host-entry.tsx", import.meta.url)))};
 import "@qc-remote/theme/theme.css";
 
+export const renderScenario = (host, scenario) => renderHost(host, scenario);
 export const modelCount = formFactors.length * skins.length;
 export const fixtureIds = Object.keys(POPUP_PROPS_BY_ID);
 export async function render(fixtureId, model, presentation) {
@@ -82,30 +125,31 @@ export async function render(fixtureId, model, presentation) {
   return Buffer.concat(chunks).toString("utf8");
 }
 `);
-    assert.deepEqual([...(bundle as unknown as { fixtureIds: string[] }).fixtureIds].sort(), POPUP_FIXTURES.map((fixture) => fixture.id).sort(), "every registered popup has props, and every set of props is registered");
+    assert.deepEqual([...(bundle as unknown as { fixtureIds: string[] }).fixtureIds].sort(), POPUP_FIXTURES.filter((fixture) => !fixture.scenario).map((fixture) => fixture.id).sort(), "every registered popup has props, and every set of props is registered");
     const models = (bundle as unknown as { modelCount: number }).modelCount;
     const pages = join(work.path, "pages");
     mkdirSync(pages, { recursive: true });
     writeFileSync(join(pages, "display.css"), css);
     writeFileSync(join(pages, "windows.css"), readFileSync(windowsStyles, "utf8"));
     writeFileSync(join(pages, "android.css"), readFileSync(androidStyles, "utf8"));
-    const cases: Array<{ key: string; fixture: string; viewport: readonly [number, number]; url: string; selectors: string[] }> = [];
+    const cases: Array<{ key: string; fixture: string; viewport: readonly [number, number]; url: string; selectors: string[]; declared: CloseControl[] }> = [];
     for (const fixture of POPUP_FIXTURES) {
       for (let model = 0; model < (fixture.firstModelOnly ? 1 : models); model += 1) {
         for (const host of ["windows", "android"] as HostName[]) {
-          const markup = await bundle.render(fixture.id, model, host === "windows" ? "hardware" : "display");
+          const presentation = host === "windows" ? "hardware" : "display";
+          const markup = fixture.scenario ? await bundle.renderScenario(host, { ...fixture.scenario, presentation }) : await bundle.render(fixture.id, model, presentation);
           for (const viewport of VIEWPORTS) {
             const key = `${fixture.id}/${host}/model${model}/${viewport[0]}x${viewport[1]}`;
             const file = join(pages, `${key.replace(/\//g, "_")}.html`);
             writeFileSync(file, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="display.css"><link rel="stylesheet" href="${host}.css"></head><body>${hostBody(host, markup)}</body></html>`);
-            cases.push({ key, fixture: fixture.id, viewport, url: pathToFileURL(file).href, selectors: fixture.selectors });
+            cases.push({ key, fixture: fixture.id, viewport, url: pathToFileURL(file).href, selectors: fixture.selectors, declared: fixture.closeControls ?? [] });
           }
         }
       }
     }
     samples = await withBrowser(browser, work.path, [], async (page) => {
       const results: Sample[] = [];
-      for (const entry of cases) results.push({ key: entry.key, fixture: entry.fixture, viewport: entry.viewport, ...(await page(entry.viewport, entry.url, MEASURE(entry.selectors)) as Pick<Sample, "bezel" | "found" | "fonts" | "hits" | "behind">) });
+      for (const entry of cases) results.push({ key: entry.key, fixture: entry.fixture, viewport: entry.viewport, ...(await page(entry.viewport, entry.url, MEASURE(entry.selectors, entry.declared)) as Pick<Sample, "bezel" | "found" | "fonts" | "hits" | "behind" | "closes">) });
       return results;
     });
   } finally {
@@ -136,6 +180,7 @@ test("every popup element lies inside the display's box", { skip }, () => {
   for (const sample of samples) {
     const [bx, by, bw, bh] = sample.bezel;
     const fixture = POPUP_FIXTURES.find((entry) => entry.id === sample.fixture)!;
+    if (fixture.closeOnly) continue;
     const primary = fixture.selectors[0];
     if (!sample.found[primary]?.length) failures.push(`${sample.key}: ${primary} was not drawn`);
     for (const [selector, boxes] of Object.entries(sample.found)) {
@@ -165,9 +210,47 @@ test("the CPU Monitor's close control is what a click reaches: no Grid control s
   assert.deepEqual(failures.slice(0, 10), [], `${failures.length} layouts bury the close control under the Grid`);
 });
 
+test("every control that closes or cancels a popup, dialog, overlay or screen is what a click reaches at its centre, and no scrim lets a click through to the Grid", { skip }, () => {
+  const failures: string[] = [];
+  const perFixture = new Map<string, { checked: number; layouts: number }>();
+  for (const sample of samples) {
+    const fixture = POPUP_FIXTURES.find((entry) => entry.id === sample.fixture)!;
+    const tally = perFixture.get(fixture.id) ?? { checked: 0, layouts: 0 };
+    perFixture.set(fixture.id, tally);
+    tally.layouts += 1;
+    let inViewHere = false;
+    for (const close of sample.closes) {
+      if (close.declared !== null && !close.found) { failures.push(`${sample.key}: the registry names ${close.scrim ? "the scrim" : "the control"} ${JSON.stringify(close.label)} but it was not drawn`); continue; }
+      // A narrow window can scroll the display out of view, where nothing can be hit at all.
+      if (!close.inView) continue;
+      inViewHere = true;
+      if (!close.ok) failures.push(`${sample.key}: a click on ${close.scrim ? "the scrim" : "the control"} ${JSON.stringify(close.label)} reaches ${close.topmost === null ? "something else" : JSON.stringify(close.topmost)} instead`);
+      if (close.leaks) failures.push(`${sample.key}: a click on the scrim ${JSON.stringify(close.label)} reaches the Grid control ${JSON.stringify(close.leaks)} behind it`);
+    }
+    if (inViewHere) tally.checked += 1;
+    if (!fixture.closedBy && !sample.closes.length) failures.push(`${sample.key}: nothing in the rendering closes or cancels it; name why in closedBy, or draw one`);
+  }
+  for (const [id, { checked, layouts }] of perFixture) {
+    if (POPUP_FIXTURES.find((entry) => entry.id === id)!.closedBy) continue;
+    assert.ok(checked >= layouts / 2, `${id}: its close controls were in view in ${checked} of ${layouts} layouts`);
+  }
+  // One line per distinct control, not per layout: the layout is in the first failure's key.
+  const distinct = new Map<string, string>();
+  for (const failure of failures) distinct.set(failure.replace(/^[^:]*\/(windows|android)\/model\d+\/\d+x\d+: /, ""), failure);
+  assert.deepEqual([...distinct.values()].slice(0, 30), [], `${failures.length} close or cancel controls are buried in ${distinct.size} distinct ways`);
+});
+
+test("every popup names how it is closed: its controls and scrims in the registry, or the unit that closes it", () => {
+  for (const fixture of POPUP_FIXTURES) {
+    const named = fixture.closeControls?.length ?? 0;
+    assert.ok(named > 0 || fixture.closedBy, `${fixture.id} lists no close control and gives no closedBy reason`);
+    assert.ok(!(named > 0 && fixture.closedBy), `${fixture.id} lists close controls and also says it is closed by something else`);
+  }
+});
+
 test("every popup keeps the same proportions of the display at every window size, device model and host", { skip }, () => {
   const failures: string[] = [];
-  for (const fixture of POPUP_FIXTURES) {
+  for (const fixture of POPUP_FIXTURES.filter((entry) => !entry.closeOnly)) {
     const rows = samples.filter((sample) => sample.fixture === fixture.id);
     const fractions = (sample: Sample) => fixture.selectors.map((selector) => (sample.found[selector] ?? []).map(([x, y, w, h]) => [(x - sample.bezel[0]) / sample.bezel[2], (y - sample.bezel[1]) / sample.bezel[3], w / sample.bezel[2], h / sample.bezel[3]]));
     const base = fractions(rows[0]);
@@ -186,7 +269,7 @@ test("every popup keeps the same proportions of the display at every window size
 
 test("the text in every popup scales with the display, not with the window", { skip }, () => {
   const failures: string[] = [];
-  for (const fixture of POPUP_FIXTURES) {
+  for (const fixture of POPUP_FIXTURES.filter((entry) => !entry.closeOnly)) {
     const rows = samples.filter((sample) => sample.fixture === fixture.id);
     // The display's canvas is 800 px wide whatever its size on screen, so a size in canvas pixels is the proportion.
     const sizes = (sample: Sample) => sample.fonts;

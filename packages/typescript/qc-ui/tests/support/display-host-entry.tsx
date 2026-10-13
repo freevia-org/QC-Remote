@@ -1,7 +1,7 @@
 // Bundled by esbuild (never loaded by node directly): two fake hosts that hand the shared display
 // their own adapters, then render it to static markup. Everything a real host provides to the
 // display is provided here; the two hosts differ only in the values a real host would differ in.
-import { createElement } from "react";
+import { createElement, Fragment } from "react";
 import { prerenderToNodeStream } from "react-dom/static";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import "@qc-remote/theme/theme.css";
@@ -84,7 +84,8 @@ function useDisplay(flavour: Flavour, scenario: Scenario) {
 
 function Host({ flavour, scenario }: { flavour: Flavour; scenario: Scenario }) {
   const display = useDisplay(flavour, scenario);
-  return createElement("div", null,
+  // A fragment, as the real hosts mount the display: a wrapper element between the host's container and the display would break the host's child selectors.
+  return createElement(Fragment, null,
     createElement(QcDeviceDisplay, { display, formFactor, skin, presentation: scenario.presentation, onAction() {} }),
     createElement(QcDeviceDisplayOverlay, { display }));
 }
