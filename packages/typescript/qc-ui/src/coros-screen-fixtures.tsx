@@ -42,6 +42,7 @@ import "./official-looper-eq.css";
 import "./official-io.css";
 import "./official-gig.css";
 import "./official-modes.css";
+import { ModesCycleTrack, ModesResetToDefaults } from "./modes-configuration-screen";
 import "./official-settings-device.css";
 import "./official-tuner.css";
 import "./settings-system-panes.css";
@@ -3168,6 +3169,7 @@ function CorOsModesConfiguration({ onClose }: { onClose: () => void }) {
   const modes = ["PRESET", "SCENE", "STOMP"] as const;
   return (
     <section className="coros-modes-configuration" aria-label="Modes Configuration">
+      <ModesCycleTrack />
       <header>
         <span>Modes configuration</span>
         <div>
@@ -3186,8 +3188,6 @@ function CorOsModesConfiguration({ onClose }: { onClose: () => void }) {
       </p>
       <div className="modes-cycle">
         <span>CYCLE</span>
-        <i />
-        <i />
         <div>
           {modes.map((mode) => (
             <button key={mode}>
@@ -3199,6 +3199,7 @@ function CorOsModesConfiguration({ onClose }: { onClose: () => void }) {
           ))}
         </div>
       </div>
+      <ModesResetToDefaults />
     </section>
   );
 }

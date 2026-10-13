@@ -1,5 +1,11 @@
 @scope (.qc-screen-fixture-root) {
-  .coros-modes-configuration .modes-information-glyph { width: 8.25cqw; height: 100%; display: grid; place-items: center; border-radius: 1cqw; background: var(--qc-screen-surface-control); color: var(--qc-screen-text-muted); }
+  /* The track is a picture over the whole 800 x 480 display (a 2px #292c29 line, see ModesCycleTrack); the tiles and header sit above it. */
+  .coros-modes-configuration .modes-cycle-track { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .coros-modes-configuration .modes-cycle-line { fill: none; stroke: var(--qc-screen-surface-control); stroke-width: 2; }
+  .coros-modes-configuration .modes-cycle-arrow { fill: var(--qc-screen-surface-control); stroke: none; }
+  /* View only: the unit's Reset to Defaults link, at x 24, ink y 440..454 in the unit's own muted text colour. It takes no pointer at all. */
+  .coros-modes-configuration .modes-reset-to-defaults { position: absolute; left: 3cqw; top: 54.5cqw; font-size: 2.03cqw; line-height: 2.5cqw; color: var(--qc-screen-text-muted); text-decoration: underline; pointer-events: none; user-select: none; }
+  .coros-modes-configuration .modes-information-glyph { width: 8.25cqw; height: 100%; display: grid; place-items: center; border-radius: 1cqw; color: var(--qc-screen-text-muted); }
   .coros-modes-configuration .modes-information-glyph svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; fill: var(--qc-palette-aeb1af); stroke: var(--qc-screen-surface-control); stroke-width: 2; stroke-linecap: round; }
   .coros-modes-configuration .modes-workflow-a11y,
   .coros-modes-configuration .modes-refresh-a11y { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; clip-path: inset(50%); }

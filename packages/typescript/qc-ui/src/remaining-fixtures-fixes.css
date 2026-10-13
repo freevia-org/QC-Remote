@@ -54,18 +54,19 @@
 .coros-modes-configuration:not(.modes-official){background:var(--qc-screen-surface-base)}
 .coros-modes-configuration:not(.modes-official) header{padding-right:1%;font-size:2.25cqw}
 .coros-modes-configuration:not(.modes-official) header div{gap:2.25cqw}
+.coros-modes-configuration:not(.modes-official) header div>:first-child{position:relative;background:var(--qc-palette-181c18)}
+.coros-modes-configuration:not(.modes-official) header div>:first-child::after{content:"";position:absolute;left:calc(100% + 1cqw);top:1.375cqw;width:.25cqw;height:2.75cqw;background:var(--qc-palette-181c18)}
 .coros-modes-configuration:not(.modes-official) header button:first-child svg{--qc-screen-glyph-size:24px;width:24px;height:24px;fill:var(--qc-palette-aeb1af);stroke:var(--qc-screen-surface-control);stroke-width:2;stroke-linecap:round}
 .coros-modes-configuration:not(.modes-official) header button:last-child svg{display:block;--qc-screen-glyph-size:24px;width:24px;height:24px;margin:auto}
-.coros-modes-configuration:not(.modes-official)>p{margin-top:3%}
-.coros-modes-configuration:not(.modes-official) .modes-cycle>span{background:var(--qc-screen-surface-base)}
-.coros-modes-configuration:not(.modes-official) .modes-cycle>i:first-of-type::before,.coros-modes-configuration:not(.modes-official) .modes-cycle>i:first-of-type::after{content:"";position:absolute;top:3.875cqw;width:0;height:0;border-top:1.125cqw solid var(--qc-transparent);border-bottom:1.125cqw solid var(--qc-transparent)}
-.coros-modes-configuration:not(.modes-official) .modes-cycle>i:first-of-type::before{left:-1.5cqw;border-right:1.5cqw solid var(--qc-palette-29302b)}
-.coros-modes-configuration:not(.modes-official) .modes-cycle>i:first-of-type::after{right:-1.5cqw;border-left:1.5cqw solid var(--qc-palette-29302b)}
-.coros-modes-configuration:not(.modes-official) .modes-cycle>div{left:15.125%;right:15.125%}
+.coros-modes-configuration:not(.modes-official)>p{margin-top:2.75cqw;font-size:2.025cqw;line-height:2.625cqw}
+.coros-modes-configuration:not(.modes-official) .modes-cycle{position:absolute;inset:0;height:auto;margin:0;pointer-events:none}
+.coros-modes-configuration:not(.modes-official) .modes-cycle>span{left:0;right:0;top:18.75cqw;padding:0;text-align:center;font-size:1.75cqw;line-height:2cqw;background:none;color:var(--qc-screen-surface-control)}
+.coros-modes-configuration:not(.modes-official) .modes-cycle>div{left:15.125cqw;right:auto;top:24.25cqw;width:69.75cqw;grid-template-columns:repeat(3,21.25cqw);gap:3cqw;pointer-events:auto}
 .coros-modes-configuration:not(.modes-official) .modes-cycle button{background:var(--qc-screen-surface-control);font-size:2.25cqw;font-weight:400}
 .coros-modes-configuration:not(.modes-official) .modes-cycle button b{width:3cqw;height:3cqw;display:grid;place-items:center}
 .coros-modes-configuration.modes-official .modes-cycle button b svg{width:26px;height:26px}.coros-modes-configuration.modes-official .modes-cycle button b svg.qc-mode-glyph-preset{width:24px;height:24px}
-.coros-modes-configuration:not(.modes-official) .modes-cycle button b svg{width:26px;height:26px;transform:translate(-1px,-3px)}.coros-modes-configuration:not(.modes-official) .modes-cycle button b svg.qc-mode-glyph-scene{transform:translate(-1px,-2px)}.coros-modes-configuration:not(.modes-official) .modes-cycle button b svg.qc-mode-glyph-preset{width:24px;height:24px;transform:translate(0,-2px)}
+.coros-modes-configuration:not(.modes-official) .modes-cycle button b svg{width:26px;height:26px;transform:translate(-1px,0)}
+.coros-modes-configuration:not(.modes-official) .modes-cycle button>span:only-of-type{position:relative;left:1px;top:-1px}.coros-modes-configuration:not(.modes-official) .modes-cycle button b svg.qc-mode-glyph-preset{width:24px;height:24px;transform:none}
 .coros-midi-out,.coros-midi-out *{font-family:var(--qc-font-device-plain)!important}
 .coros-save-as,.coros-save-as *{font-family:var(--qc-font-device-plain)!important}
 .coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel{inset:0 0 0 50%;box-shadow:none}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav{grid-template-rows:repeat(8,9.75cqw)}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav button i{width:7.5cqw;height:7.5cqw}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>nav button svg{width:40px;height:40px}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header{height:12.5%;padding-left:5.7%;background:var(--qc-palette-101310)}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header strong{font-size:2.25cqw;color:var(--qc-palette-969a96)}.coros-browser-fixture.is-physical-plugin-list .browser-fixture-panel>main>header button{width:8.25cqw;height:5.5cqw;align-self:center;margin-right:1cqw;border-radius:1cqw;background:var(--qc-screen-surface-raised);font-size:3cqw}

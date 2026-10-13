@@ -18,6 +18,27 @@ function ModeGlyphs({ mode }: { mode: number }) {
   return <>{glyph(parts[0])}{glyph(parts[1])}</>;
 }
 
+/**
+ * The track the unit draws round the cycle: a 2px #292c29 line at y 159 and y 235 (the lower line runs behind the tiles at their
+ * mid-height), closed by a half ellipse (36 x 38, outermost point at x 39 and 759) at each end, with the top line broken from x 366 to 432 for the CYCLE label.
+ * An arrowhead sits on each end's outermost point: the left one points down (x 29.5..48.5, y 190..206), the right one points up
+ * (x 749.5..768.5, y 190..206). Laid over the whole 800 x 480 display so it is placed in the unit's own coordinates.
+ */
+export function ModesCycleTrack() {
+  return <svg className="modes-cycle-track" viewBox="0 0 800 480" aria-hidden="true" focusable="false">
+    <path className="modes-cycle-line" d="M366 159H75A36 38 0 0 0 75 235H723A36 38 0 0 0 723 159H432" />
+    <path className="modes-cycle-arrow" d="M29.5 190H48.5L39 206ZM749.5 206H768.5L759 190Z" />
+  </svg>;
+}
+
+/**
+ * The unit's underlined "Reset to Defaults" link, drawn so the screen reads as the unit's does. It is a picture, never a control:
+ * it resets the whole cycle, so the app neither handles a press on it nor sends the unit a tap there (view only).
+ */
+export function ModesResetToDefaults() {
+  return <span className="modes-reset-to-defaults" aria-hidden="true">Reset to Defaults</span>;
+}
+
 export function ModesConfigurationScreen({ workflow, onClose, returnFocusTarget }: { workflow: ModesConfigurationWorkflow; onClose(): void; returnFocusTarget?: "grid-menu" }) {
   const { slots, loading, pending, refresh, commit } = workflow;
   const [selected, setSelected] = useState<number | null>(null);
@@ -53,6 +74,7 @@ export function ModesConfigurationScreen({ workflow, onClose, returnFocusTarget 
     }
   };
   return <section className="coros-modes-configuration" aria-label="Modes Configuration" data-qc-open-target="modes-configuration" tabIndex={-1} onKeyDown={(event) => escapeUserOpenedTarget(event, onClose, returnFocusTarget)}>
+    <ModesCycleTrack />
     <header>
       <span>Modes configuration</span>
       <div>
@@ -64,7 +86,7 @@ export function ModesConfigurationScreen({ workflow, onClose, returnFocusTarget 
     </header>
     <p>{MODES_CONFIGURATION_INSTRUCTION_LINES[0]}<br />{MODES_CONFIGURATION_INSTRUCTION_LINES[1]}</p>
     <div className="modes-cycle">
-      <span>CYCLE</span><i /><i />
+      <span>CYCLE</span>
       <div aria-label="Modes in cycle">
         {(slots ?? []).map((mode, index) => <button type="button" key={`${mode}-${index}`} disabled={disabled} aria-pressed={selected === index} aria-label={`${QC_MODE_CYCLES[mode] ?? `Unknown mode ${mode}`}, cycle position ${index + 1}. Select another mode to combine.`}
           draggable={!disabled} onClick={() => { if (hold.consumeFired()) return; activate(index); }}
@@ -87,6 +109,7 @@ export function ModesConfigurationScreen({ workflow, onClose, returnFocusTarget 
         </button>)}
       </div>
     </div>
+    <ModesResetToDefaults />
     <span className="modes-workflow-a11y" aria-live="polite">{loading ? "Reading Modes Configuration." : announcement || (slots ? `Current mode order: ${slots.map((slot) => QC_MODE_CYCLES[slot]).join(", ")}.` : "Modes Configuration unavailable.")}</span>
     <button type="button" className="modes-refresh-a11y" disabled={loading || pending} aria-label="Refresh Modes Configuration" onClick={() => void refresh()}>Refresh Modes Configuration</button>
   </section>;
