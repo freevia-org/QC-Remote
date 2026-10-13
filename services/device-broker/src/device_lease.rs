@@ -337,7 +337,7 @@ pub struct Locations {
 
 impl Locations {
     pub fn from_environment() -> Self {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         {
             Self {
                 primary: crate::platform::paths::default_directory().join(RECORD_NAME),
@@ -982,7 +982,7 @@ pub(crate) mod testing {
     /// and descriptors. This changes only each test's own scratch directory.
     pub(crate) fn create_directory(path: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(path)?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
