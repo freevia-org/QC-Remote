@@ -7,6 +7,35 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote 0.1.187 — Linux — 14 October 2026
+
+- Remote and local MCP enforce the shared access policy at request admission;
+  missing or unreadable policy state fails closed. Credential operations are
+  serialized off the UI thread, with pairing transitions guarded against stale
+  reads and late activation.
+- Linux device leases fail closed when replacement cannot be verified, and
+  malformed or unreadable existing claims are preserved. The tray/resident
+  lifecycle also retires cleanly when the desktop SNI host is unusable.
+- Device Information can show the CorOS version observed from the unit's update
+  request; until one is observed, the documented reference version remains
+  identified as such.
+- I/O selection, Tempo controls, and Scene navigation better follow observed
+  device state, with session-safe delayed actions. Native preset metadata
+  retention is bounded.
+- Exact source `5f41591cd514244eeed665e41dd79a50fd6bb037`; package SHA-256
+  `519a3c01c3c96c4d1c18973c48ee65c18d6e6dea87fcb4ddcea370763903c345`.
+  Workflow provenance and exact-package install/removal and installed-desktop
+  checks passed on Ubuntu 24.04 WSL2/Xfce.
+- On Ubuntu 24.04 WSL2/Xfce with a physical Quad Cortex over USB/IP, the exact
+  package passed fresh-login resident/tray startup, native GUI launch, HTTP and
+  stdio MCP, guarded HID/MIDI scene control with restoration, USB/IP disconnect
+  and explicit reselection/reconnect, managed broker restart with old-credential
+  rejection and new-credential authentication, and graceful shutdown cleanup.
+  Recovery checks used explicit device reselection/reconnect and a managed broker
+  restart; automatic recovery is not claimed. MIDI scene B and restoration to
+  scene A were observed. Bare-metal Linux has not been tested. Windows and Android
+  releases are unchanged.
+
 ## Unreleased
 
 ### Both apps
