@@ -532,6 +532,22 @@ impl NativeLibraryCatalog {
         if folder_key(source).is_none() {
             return Ok(false);
         }
+        // Keyless rows are still decoded ProductData allocations in the staged
+        // source, even though project() returns None. Bound their cardinality
+        // before allocating the projection or cloning the source.
+        if self
+            .staged_usage
+            .get(&kind)
+            .map_or(0, |usage| usage.records)
+            .saturating_add(source.files.len())
+            > MAX_LIBRARY_RECORDS
+        {
+            let error = format!(
+                "Native library exceeded its capacity of {MAX_LIBRARY_RECORDS} staged records"
+            );
+            self.fail_capacity(kind, &error);
+            return Err(error);
+        }
         let entries = match bounded_folder_text(source).and_then(|()| {
             source
                 .files
@@ -567,7 +583,9 @@ impl NativeLibraryCatalog {
         let usage = self.staged_usage.get(&kind).copied().unwrap_or_default();
         let next = StagedUsage {
             folders: usage.folders + 1,
-            records: usage.records + entries.iter().flatten().count(),
+            // Count all wire rows, including keyless/unprojectable rows: the staged
+            // source retains them, and encoded byte size does not bound their heap size.
+            records: usage.records + source.files.len(),
             // The staged copy keeps both the wire folder and its projection.
             bytes: usage.bytes
                 + source.encoded_len()
@@ -1983,6 +2001,59 @@ mod tests {
         assert!(catalog.publish_staged(kind).is_err());
     }
 
+    #[test]
+    fn keyless_startup_rows_cannot_bypass_the_retained_record_budget() {
+        for kind in [LibraryKind::Capture, LibraryKind::Ir] {
+            let mut catalog = NativeLibraryCatalog::default();
+            let small_wire_large_heap = message(
+                kind,
+                0,
+                kind.root_key(),
+                vec![pa::ProductData::default(); 100_000],
+            );
+            assert!(small_wire_large_heap.encoded_len() < crate::profile::MAX_FRAME_BYTES);
+            let error = catalog.stage_or_apply(&small_wire_large_heap).unwrap_err();
+            assert!(error.contains("staged records"), "{error}");
+            assert_released(&catalog, kind, "staged records");
+
+            // Multiple individually small messages used to charge zero records,
+            // retaining every decoded keyless row until the encoded-byte budget.
+            catalog.clear();
+            let keyless = message(
+                kind,
+                0,
+                kind.root_key(),
+                vec![pa::ProductData::default(); MAX_LIBRARY_RECORDS / 4],
+            );
+            for _ in 0..4 {
+                assert!(catalog.stage_or_apply(&keyless).unwrap());
+            }
+            assert_eq!(catalog.staged_usage[&kind].records, MAX_LIBRARY_RECORDS);
+            assert!(catalog.staged_usage[&kind].bytes < MAX_LIBRARY_BYTES);
+            let error = catalog.stage_or_apply(&keyless).unwrap_err();
+            assert!(error.contains("staged records"), "{error}");
+            assert_released(&catalog, kind, "staged records");
+            assert!(catalog.publish_staged(kind).is_err());
+
+            // Reset recovers normal lazy-load publication with keyless rows
+            // ignored, while real product metadata and identity remain intact.
+            catalog.clear();
+            let valid = message(
+                kind,
+                0,
+                kind.root_key(),
+                vec![pa::ProductData::default(), record("current")],
+            );
+            assert!(catalog.stage_or_apply(&valid).unwrap());
+            assert!(catalog.folder(kind, kind.root_key()).unwrap().is_none());
+            assert_eq!(catalog.staged_usage[&kind].records, 2);
+            assert!(catalog.publish_staged(kind).unwrap());
+            let entries = rows(&catalog, kind, kind.root_key());
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].key, "current");
+            assert_eq!(entries[0].name, "Name current");
+        }
+    }
     #[test]
     fn oversized_strings_are_refused_and_the_byte_budget_bounds_large_rows() {
         let kind = LibraryKind::Ir;
