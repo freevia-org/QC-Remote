@@ -1,0 +1,18 @@
+[package]
+name = "quadcortex-ios-ffi"
+version = "0.1.0"
+publish = false
+edition = "2021"
+license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
+description = "C ABI bridge from iOS hosts to the shared Quad Cortex protocol runtime"
+
+[workspace]
+resolver = "2"
+
+[lib]
+name = "quadcortex_ios_ffi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+quadcortex = { path = "../../../../packages/rust/quadcortex" }
+serde_json = "1"

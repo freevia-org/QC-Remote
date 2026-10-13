@@ -11,6 +11,7 @@
   },
   "workspaces": [
     "apps/android",
+    "apps/ios",
     "apps/windows",
     "packages/typescript/*",
     "services/qc-remote-cloud"
@@ -21,6 +22,8 @@
     "test": "npm run test --workspaces --if-present",
     "build:windows": "npm run build --workspace @qc-remote/windows",
     "build:android:web": "npm run build --workspace @qc-remote/android",
+    "build:ios:web": "npm run build --workspace @qc-remote/ios",
+    "ios:sync": "npm run ios:sync --workspace @qc-remote/ios",
     "cloud:check": "npm run check --workspace @qc-remote/cloud",
     "contracts:check": "node services/device-broker/scripts/generate-broker-tray-surface.mjs --check && node --experimental-strip-types --test scripts/verify-contract-snapshots.test.mjs",
     "legal:notices": "node scripts/verify-third-party-notices.mjs --write",

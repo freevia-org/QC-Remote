@@ -1,0 +1,14 @@
+{
+  "appId": "org.freevia.qcremote",
+  "appName": "QC Remote",
+  "webDir": "dist",
+  "backgroundColor": "#08090b",
+  "ios": {
+    "scheme": "qcremote"
+  },
+  "plugins": {
+    "StatusBar": {
+      "style": "DARK"
+    }
+  }
+}

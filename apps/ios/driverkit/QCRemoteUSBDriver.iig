@@ -1,0 +1,45 @@
+#include <DriverKit/IOService.iig>
+#include <DriverKit/IOUserClient.iig>
+#include <DriverKit/OSData.iig>
+#include <USBDriverKit/IOUSBHostDevice.iig>
+#include <USBDriverKit/IOUSBHostInterface.iig>
+#include <USBDriverKit/IOUSBHostPipe.iig>
+
+struct QCRemoteUSBDriver_IVars {
+    IOUSBHostDevice *device = nullptr;
+    IOUSBHostInterface *hidInterface = nullptr;
+    IOUSBHostPipe *inputPipe = nullptr;
+    uint8_t interfaceNumber = 0;
+    uint8_t inputEndpointAddress = 0;
+    uint16_t inputPacketSize = 0;
+    bool deviceOpened = false;
+    bool interfaceOpened = false;
+};
+
+class QCRemoteUSBDriver : public IOService {
+public:
+    virtual kern_return_t Start(IOService *provider) override;
+    virtual void Stop(IOService *provider) override;
+    virtual kern_return_t NewUserClient(uint32_t type, IOUserClient **userClient) override;
+
+    kern_return_t ReadReport(OSData **report);
+    kern_return_t WriteReport(OSData *report, uint32_t *bytesTransferred, kern_return_t *usbStatus);
+    kern_return_t CopyDiagnostics(OSData **diagnostics);
+    void ReleaseUsbResources();
+};
+
+struct QCRemoteUSBUserClient_IVars {
+    QCRemoteUSBDriver *driver = nullptr;
+};
+
+class QCRemoteUSBUserClient : public IOUserClient {
+public:
+    virtual kern_return_t Start(IOService *provider) override;
+    virtual void Stop(IOService *provider) override;
+    virtual kern_return_t ExternalMethod(
+        uint64_t selector,
+        IOUserClientMethodArguments *arguments,
+        const IOUserClientMethodDispatch *dispatch,
+        OSObject *target,
+        void *reference) override;
+};
