@@ -21,7 +21,8 @@ const mustRun = Boolean(process.env.CI) || process.env.QC_REQUIRE_BROWSER === "1
 const skip = !browser && !mustRun ? "no Chrome or Chromium found; set QC_BROWSER_EXECUTABLE to run the popup containment check" : false;
 
 type Box = [number, number, number, number];
-interface Sample { key: string; fixture: string; viewport: readonly [number, number]; bezel: Box; found: Record<string, Box[]>; fonts: number[] }
+interface Hit { label: string; inView: boolean; ok: boolean; topmost: string | null }
+interface Sample { key: string; fixture: string; viewport: readonly [number, number]; bezel: Box; found: Record<string, Box[]>; fonts: number[]; hits: Hit[] }
 
 const MEASURE = (selectors: string[]) => `
 (async () => {
@@ -35,7 +36,15 @@ const MEASURE = (selectors: string[]) => `
   for (const selector of ${JSON.stringify(selectors)}) found[selector] = [...document.querySelectorAll(selector)].map((element) => { const r = element.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; });
   const fonts = [];
   for (const element of document.querySelectorAll(${JSON.stringify(selectors[0])})) for (const node of [element, ...element.querySelectorAll('*')]) if ([...node.childNodes].some((child) => child.nodeType === 3 && child.textContent.trim())) fonts.push(parseFloat(getComputedStyle(node).fontSize));
-  return { bezel: [bezel.left, bezel.top, bezel.width, bezel.height], found, fonts };
+  // A control in a popup must be what the pointer reaches at its own centre: a Grid control stacked above it takes the click instead.
+  const hits = [];
+  for (const element of document.querySelectorAll(${JSON.stringify(selectors[0])} + ' button')) {
+    const r = element.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const top = document.elementFromPoint(cx, cy);
+    hits.push({ inView: cx >= 0 && cy >= 0 && cx < innerWidth && cy < innerHeight, label: element.getAttribute('aria-label') || element.textContent.trim(), ok: Boolean(top) && (top === element || element.contains(top)), topmost: top ? (top.getAttribute('aria-label') || top.className || top.tagName) : null });
+  }
+  return { bezel: [bezel.left, bezel.top, bezel.width, bezel.height], found, fonts, hits };
 })()
 `;
 
@@ -91,7 +100,7 @@ export async function render(fixtureId, model, presentation) {
     }
     samples = await withBrowser(browser, work.path, [], async (page) => {
       const results: Sample[] = [];
-      for (const entry of cases) results.push({ key: entry.key, fixture: entry.fixture, viewport: entry.viewport, ...(await page(entry.viewport, entry.url, MEASURE(entry.selectors)) as Pick<Sample, "bezel" | "found" | "fonts">) });
+      for (const entry of cases) results.push({ key: entry.key, fixture: entry.fixture, viewport: entry.viewport, ...(await page(entry.viewport, entry.url, MEASURE(entry.selectors)) as Pick<Sample, "bezel" | "found" | "fonts" | "hits">) });
       return results;
     });
   } finally {
@@ -133,6 +142,22 @@ test("every popup element lies inside the display's box", { skip }, () => {
     }
   }
   assert.deepEqual(failures.slice(0, 20), [], `${failures.length} popup boxes escape the display`);
+});
+
+test("the CPU Monitor's close control is what a click reaches: no Grid control sits above it", { skip }, () => {
+  const cpu = samples.filter((sample) => sample.fixture === "cpu-monitor");
+  assert.ok(cpu.length >= 2 * VIEWPORTS.length, "the CPU Monitor was laid out in both hosts at every window size");
+  const failures: string[] = [];
+  let checked = 0;
+  for (const sample of cpu) {
+    const close = sample.hits.find((hit) => hit.label === "Close CPU Monitor");
+    if (!close) failures.push(`${sample.key}: the close control was not drawn`);
+    // A narrow window can scroll the display out of view, where nothing can be hit at all.
+    else if (!close.inView) continue;
+    else if (checked++ >= 0 && !close.ok) failures.push(`${sample.key}: a click on the close control reaches "${close.topmost}" instead`);
+  }
+  assert.ok(checked >= cpu.length / 2, `the close control was in view in ${checked} of ${cpu.length} layouts`);
+  assert.deepEqual(failures.slice(0, 10), [], `${failures.length} layouts bury the close control under the Grid`);
 });
 
 test("every popup keeps the same proportions of the display at every window size, device model and host", { skip }, () => {

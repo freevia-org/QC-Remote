@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { QcStateUpdate } from "@qc-remote/core";
@@ -780,6 +781,25 @@ test("the CPU Monitor closes on the unit by its own class, even when another cla
   assert.equal(treeShows(["zenUI::Grid", "zenUI::CpuLoadIndicator", "zenUI::MessageDialog"].join(nl), "cpu-monitor"), false);
   assert.equal(treeShows(["zenUI::Grid", "zenUI::CpuLoadIndicator"].join(nl), "cpu-monitor"), true);
   assert.equal(treeShows("zenUI::Grid", "cpu-monitor"), false);
+});
+
+test("the CPU Monitor closes with the X on the unit's real tree (Grid, NavigationBar and CpuLoadIndicator together)", async () => {
+  // Read from a Quad Cortex on 4.1.0 with the overlay open: tests/support/cpu-monitor-unit-tree.txt.
+  const real = readFileSync(new URL("./support/cpu-monitor-unit-tree.txt", import.meta.url), "utf8");
+  assert.ok(/zenUI::Grid(?![A-Za-z0-9_])/.test(real) && /zenUI::NavigationBar(?![A-Za-z0-9_])/.test(real) && /zenUI::CpuLoadIndicator(?![A-Za-z0-9_])/.test(real));
+  for (const follow of [false, true]) {
+    const host = harness({ follow, available: true, unit: "CpuLoadIndicator" });
+    host.world.treeRead = async () => ({ tree: host.world.unit === "CpuLoadIndicator" ? real : "zenUI::RootGraphicsItem" + String.fromCharCode(10) + "zenUI::Grid" });
+    if (follow) host.watchers.push((unit) => { if (unit === "CpuLoadIndicator") act(() => host.follower.observe(observation("cpu-monitor"))); if (unit === "Grid") act(() => host.follower.observe(observation("grid"))); });
+    // The app shows the overlay the unit already shows: nothing is sent to open it.
+    await host.rerender({ view: "cpu-monitor" });
+    assert.deepEqual(touches(host), [], `follow ${follow}: an overlay already open is not opened again`);
+    await host.rerender({ view: null });
+    assert.deepEqual(touches(host), ["tap:628,32"], `follow ${follow}: one tap on the X, never the check button`);
+    assert.equal(host.world.unit, "Grid");
+    assert.ok(!host.log.some((entry) => entry.startsWith("notice:")), "nothing was reported");
+    host.renderer.unmount();
+  }
 });
 
 function deferredFollowTree() {
