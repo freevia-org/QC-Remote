@@ -161,8 +161,13 @@
    washing the real colour, so both are authored pre-wash. The slots are the
    canvas's only rx=15 rects - the focused port is drawn again above the wash by
    the focus layer, which is why this cannot simply recolour the shared role. */
-.coros-vector-screen:has(.coros-screen-dimmer) > .coros-vector-canvas { --qc-grid-white-ink: var(--qc-screen-ink-pre-menu-wash); }
-.coros-vector-screen:has(.coros-screen-dimmer) > .coros-vector-canvas rect[rx="15"] { fill: var(--qc-grid-route-slot-pre-menu-wash); }
+/* The Copy/Swap Scene dialog lays the same wash (its scrim is a sibling of this
+   scope's root, not a child of the screen), and the unit shows the same 66,69,66
+   slots and 132,134,132 white behind it. */
+.coros-vector-screen:has(.coros-screen-dimmer) > .coros-vector-canvas,
+:scope:has(~ .is-overlay-layer .scene-command-scrim) .coros-vector-screen > .coros-vector-canvas { --qc-grid-white-ink: var(--qc-screen-ink-pre-menu-wash); }
+.coros-vector-screen:has(.coros-screen-dimmer) > .coros-vector-canvas rect[rx="15"],
+:scope:has(~ .is-overlay-layer .scene-command-scrim) .coros-vector-screen > .coros-vector-canvas rect[rx="15"] { fill: var(--qc-grid-route-slot-pre-menu-wash); }
 .coros-vector-screen:has(.coros-route-picker) > .coros-vector-canvas { --qc-grid-white-ink: var(--qc-screen-ink-pre-port-wash); }
 .coros-vector-screen:has(.coros-route-picker) > .coros-vector-canvas rect[rx="15"] { fill: var(--qc-grid-route-slot-pre-port-wash); }
 .coros-reference-parameter-editor { position: absolute; z-index: 32; left: 0; right: 0; top: 40.83%; bottom: 0; display: grid; grid-template-rows: 21.1% 37.7%; align-content: start; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); box-shadow: 0 -24.5cqw 0 var(--qc-palette-00000078); container-type: inline-size; font-family: var(--qc-font-device-plain); }
