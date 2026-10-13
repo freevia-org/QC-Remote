@@ -80,6 +80,8 @@ jobs:
           mkdir -p src-tauri/binaries
           cp src-tauri/target/${{ matrix.target }}/release/qc-device-broker src-tauri/binaries/qc-device-broker-${{ matrix.target }}
         working-directory: apps/windows
+        env:
+          TAURI_CONFIG: '{"bundle":{"externalBin":[]},"build":{"frontendDist":"../"}}'
       - name: Build the macOS app and broker
         run: npm run tauri:build:mac
         working-directory: apps/windows
