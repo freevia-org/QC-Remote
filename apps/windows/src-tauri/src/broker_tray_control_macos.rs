@@ -219,7 +219,7 @@ pub(super) fn set_run_entry(executable: &Path, directory: &Path) -> Result<(), S
     let path = launch_agent_path()?;
     ensure_launch_agent_directory(path.parent().expect("LaunchAgent has parent"))?;
     let contents = launch_agent(executable, directory)?;
-    match fs::symlink_metadata(&path) {
+    let existing_contents = match fs::symlink_metadata(&path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink()
                 || !metadata.is_file()
@@ -238,10 +238,11 @@ pub(super) fn set_run_entry(executable: &Path, directory: &Path) -> Result<(), S
                     path.display()
                 ));
             }
+            Some(existing)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(format!("Inspect QC Remote LaunchAgent: {error}")),
-    }
+    };
     qc_owner_only_file::publish_atomically(&path, contents.as_bytes())
         .map_err(|error| format!("Write QC Remote LaunchAgent: {error}"))?;
 
@@ -252,19 +253,88 @@ pub(super) fn set_run_entry(executable: &Path, directory: &Path) -> Result<(), S
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success());
-    if !loaded {
-        let status = Command::new("/bin/launchctl")
-            .args(["bootstrap", &domain])
-            .arg(&path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|error| format!("Register QC Remote at login: {error}"))?;
-        if !status.success() {
-            return Err(format!(
-                "Register QC Remote at login failed with launchctl status {status}"
-            ));
+    let changed = existing_contents.as_deref() != Some(contents.as_str());
+    let resident_running =
+        is_running(directory) || super::serving_broker_published(directory);
+    register_launch_agent(
+        &path,
+        &domain,
+        loaded,
+        changed,
+        resident_running,
+        |arguments| {
+            let status = Command::new("/bin/launchctl")
+                .args(arguments)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(|error| error.to_string())?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("launchctl status {status}"))
+            }
+        },
+        || spawn(executable, directory, false),
+    )
+}
+
+/// Registers the atomically published LaunchAgent plist. If the live broker
+/// depends on the currently loaded definition, refresh is deferred until the
+/// next GUI login so bootout cannot stop that broker. The injected runner keeps
+/// reload ordering and failures testable without invoking launchctl.
+fn register_launch_agent(
+    path: &Path,
+    domain: &str,
+    loaded: bool,
+    changed: bool,
+    resident_running: bool,
+    mut launchctl: impl FnMut(&[std::ffi::OsString]) -> Result<(), String>,
+    recover_resident: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let mut run = |arguments: Vec<std::ffi::OsString>, action: &str| {
+        launchctl(&arguments).map_err(|error| format!("{action} QC Remote at login: {error}"))
+    };
+    let mut booted_out = false;
+    if loaded {
+        if !changed {
+            return Ok(());
         }
+        // `bootout` terminates a running launchd-owned job. Keep the resident
+        // broker alive. The on-disk plist is already updated atomically, and
+        // launchd reads it again when the next GUI login domain is created.
+        if resident_running {
+            return Ok(());
+        }
+        run(
+            vec![
+                std::ffi::OsString::from("bootout"),
+                std::ffi::OsString::from(format!("{domain}/{LABEL}")),
+            ],
+            "Refresh",
+        )?;
+        booted_out = true;
+    }
+    let result = run(
+        [
+            std::ffi::OsString::from("bootstrap"),
+            std::ffi::OsString::from(domain),
+            path.as_os_str().to_owned(),
+        ]
+        .into_iter()
+        .collect(),
+        "Register",
+    );
+    if let Err(error) = result {
+        if booted_out {
+            return match recover_resident() {
+                Ok(()) => Err(error),
+                Err(recovery_error) => Err(format!(
+                    "{error}; the previous resident broker was stopped and recovery failed: {recovery_error}"
+                )),
+            };
+        }
+        return Err(error);
     }
     Ok(())
 }
@@ -368,9 +438,157 @@ fn xml_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{launch_agent, LABEL, OWNERSHIP};
+    use super::{launch_agent, register_launch_agent, LABEL, OWNERSHIP};
+    use std::ffi::OsString;
     use plist::Value;
     use std::path::Path;
+
+    fn rendered_calls(calls: &[Vec<OsString>]) -> Vec<Vec<String>> {
+        calls
+            .iter()
+            .map(|arguments| {
+                arguments
+                    .iter()
+                    .map(|argument| argument.to_string_lossy().into_owned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_changed_loaded_launch_agent_is_booted_out_before_the_new_plist_is_bootstrapped() {
+        let mut calls = Vec::new();
+        register_launch_agent(
+            Path::new("/Users/example/Library/LaunchAgents/org.freevia.qcremote.resident.plist"),
+            "gui/501",
+            true,
+            true,
+            false,
+            |arguments| {
+                calls.push(arguments.to_vec());
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .expect("managed LaunchAgent refreshes");
+
+        assert_eq!(
+            rendered_calls(&calls),
+            vec![
+                vec!["bootout".to_owned(), "gui/501/org.freevia.qcremote.resident".to_owned()],
+                vec![
+                    "bootstrap".to_owned(),
+                    "gui/501".to_owned(),
+                    "/Users/example/Library/LaunchAgents/org.freevia.qcremote.resident.plist".to_owned()
+                ]
+            ]
+        );
+    }
+
+    #[test]
+    fn unchanged_loaded_launch_agent_is_left_registered() {
+        let mut calls = Vec::new();
+        register_launch_agent(
+            Path::new("/tmp/agent.plist"),
+            "gui/501",
+            true,
+            false,
+            true,
+            |arguments| {
+                calls.push(arguments.to_vec());
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .expect("unchanged LaunchAgent remains loaded");
+
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn changed_loaded_launch_agent_is_not_booted_out_while_its_resident_broker_is_running() {
+        let mut calls = Vec::new();
+        register_launch_agent(
+            Path::new("/tmp/agent.plist"),
+            "gui/501",
+            true,
+            true,
+            true,
+            |arguments| {
+                calls.push(arguments.to_vec());
+                Ok(())
+            },
+            || panic!("recovery must not run when a running resident is preserved"),
+        )
+        .expect("the live resident broker is preserved");
+
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn failed_launch_agent_bootout_does_not_bootstrap_a_second_registration() {
+        let mut calls = Vec::new();
+        let result = register_launch_agent(
+            Path::new("/tmp/agent.plist"),
+            "gui/501",
+            true,
+            true,
+            false,
+            |arguments| {
+                calls.push(arguments.to_vec());
+                Err("launchctl status 1".into())
+            },
+            || panic!("recovery must not run when bootout fails"),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            rendered_calls(&calls),
+            vec![vec![
+                "bootout".to_owned(),
+                "gui/501/org.freevia.qcremote.resident".to_owned()
+            ]]
+        );
+    }
+
+    #[test]
+    fn failed_bootstrap_after_bootout_restarts_the_resident_broker() {
+        let mut calls = Vec::new();
+        let mut recovered = false;
+        let result = register_launch_agent(
+            Path::new("/tmp/agent.plist"),
+            "gui/501",
+            true,
+            true,
+            false,
+            |arguments| {
+                calls.push(arguments.to_vec());
+                if calls.len() == 1 {
+                    Ok(())
+                } else {
+                    Err("launchctl status 5".into())
+                }
+            },
+            || {
+                recovered = true;
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(recovered);
+        assert_eq!(
+            rendered_calls(&calls),
+            vec![
+                vec!["bootout".to_owned(), "gui/501/org.freevia.qcremote.resident".to_owned()],
+                vec![
+                    "bootstrap".to_owned(),
+                    "gui/501".to_owned(),
+                    "/tmp/agent.plist".to_owned()
+                ]
+            ]
+        );
+    }
 
     #[test]
     fn launch_agent_is_valid_and_keeps_the_broker_arguments_as_distinct_values() {

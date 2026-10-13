@@ -2,6 +2,18 @@
 
 use super::*;
 
+#[test]
+fn macos_main_window_close_keeps_it_only_when_background_mode_is_enabled() {
+    assert_eq!(
+        macos_main_window_close_action(true),
+        MacosMainWindowCloseAction::Hide
+    );
+    assert_eq!(
+        macos_main_window_close_action(false),
+        MacosMainWindowCloseAction::Exit
+    );
+}
+
 fn write_broker_descriptor_fixture(
     file: &mut std::fs::File,
     descriptor: &device_broker_descriptor::DeviceBrokerDescriptor,

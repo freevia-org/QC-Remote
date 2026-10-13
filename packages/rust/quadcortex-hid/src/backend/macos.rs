@@ -50,8 +50,11 @@ pub(crate) fn device_id(device: &hidapi::DeviceInfo) -> String {
 
 /// macOS hidapi calls are serialized through a mutex. In particular, this
 /// avoids relying on undocumented concurrent access to the CoreHID handle.
-/// Reads use the same bounded timeout as other platforms, so commands can
-/// wait at most one read interval to acquire the handle.
+/// `read_timeout` bounds the time spent waiting for input once it owns the
+/// mutex; it does not bound time waiting to acquire the mutex. A write holds
+/// the same mutex during synchronous `IOHIDDeviceSetReport`, which has no
+/// timeout, so reads or writes queued behind a stalled native write may wait
+/// longer than one read interval.
 pub(crate) struct SharedMacosHid(Mutex<HidDevice>);
 
 impl SharedMacosHid {
