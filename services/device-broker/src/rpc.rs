@@ -2838,12 +2838,6 @@ fn refresh_descriptor_while_claimed<T>(
 /// (not a Cortex Control frame); BELIEVED, no measurement in the repository.
 const IDLE_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
-fn broker_lifecycle_trace(stage: &str) {
-    if std::env::var_os("QC_DEVICE_BROKER_START_TRACE").is_some() {
-        eprintln!("broker lifecycle: {stage}");
-    }
-}
-
 /// How long a request waits for the device session a resident broker closed
 /// for idleness to come back: the established ready-wait budget, the same one
 /// a client already gives a freshly started broker's handshake.
@@ -5063,9 +5057,7 @@ impl BrokerShared {
     }
 
     fn finish_shutdown(&self) -> crate::worker::WorkerShutdownReport {
-        broker_lifecycle_trace("finish shutdown entered");
         self.disconnect_devices();
-        broker_lifecycle_trace("device disconnects completed");
         // `on_idle_shutdown` exits the process. Let the USB workers return
         // first, so a teardown a disconnect left in flight (an ack that timed
         // out inside the HID writer join) reaches the device before the
@@ -5080,7 +5072,6 @@ impl BrokerShared {
             controllers.iter().map(Arc::as_ref),
             crate::worker::WORKER_EXIT_BUDGET,
         );
-        broker_lifecycle_trace("device workers joined");
         if !report.all_verified() {
             eprintln!("QC device broker shutdown: {}", report.summary());
         }
@@ -5093,7 +5084,6 @@ impl BrokerShared {
                 );
             }
         }
-        broker_lifecycle_trace("descriptor claim released");
         (self.on_idle_shutdown)();
         report
     }
@@ -5639,19 +5629,11 @@ impl BrokerShared {
     fn arm_idle_shutdown(self: &Arc<Self>) {
         let shared = Arc::clone(self);
         let grace = self.idle_grace();
-        broker_lifecycle_trace("idle shutdown armed");
         let spawned = thread::Builder::new()
             .name("qc-broker-tcp-grace".into())
             .spawn(move || {
                 thread::sleep(grace);
                 let mut clients = shared.clients.lock_recover();
-                broker_lifecycle_trace(&format!(
-                    "idle timer fired: count={}, resident={}, shutting_down={}, reopens={}",
-                    clients.count,
-                    clients.resident,
-                    clients.shutting_down,
-                    clients.reopens_in_flight
-                ));
                 // An icon policy past the grace owns the reap; dropping it
                 // re-arms this grace (`set_tray_hold`).
                 if clients.shutting_down || clients.tray_holds_past_grace() {
@@ -5682,7 +5664,6 @@ impl BrokerShared {
                 // connection counted before this point is missed by it.
                 clients.shutting_down = true;
                 drop(clients);
-                broker_lifecycle_trace("idle timer committed shutdown");
                 shared.finish_shutdown();
             });
         if let Err(error) = spawned {

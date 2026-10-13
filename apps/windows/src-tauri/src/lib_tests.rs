@@ -1762,19 +1762,6 @@ fn wait_for_broker_child_exit(child: &mut std::process::Child, timeout: Duration
     false
 }
 
-fn print_broker_stderr_tail_on_failure() {
-    if let Ok(stderr) = fs::read(broker_stderr_path()) {
-        let stderr_text = String::from_utf8_lossy(&stderr);
-        let trace = stderr_text
-            .lines()
-            .filter(|line| line.starts_with("broker startup:") || line.starts_with("broker lifecycle:"))
-            .rev()
-            .take(40)
-            .collect::<Vec<_>>();
-        eprintln!("broker lifecycle trace: {}", trace.into_iter().rev().collect::<Vec<_>>().join(" | "));
-    }
-}
-
 #[test]
 fn a_second_gateway_process_attaches_to_the_first_instead_of_spawning_a_new_broker() {
     let _serialize = serialize_real_broker_test();
@@ -1827,9 +1814,6 @@ fn a_second_gateway_process_attaches_to_the_first_instead_of_spawning_a_new_brok
     // Nobody kills the broker, not even the process that spawned it: with
     // its last client gone it exits on its own after its 5 s grace.
     let exited = wait_for_broker_child_exit(&mut broker_child, Duration::from_secs(12));
-    if !exited {
-        print_broker_stderr_tail_on_failure();
-    }
     assert!(
         exited,
         "with every client gone, the broker ends through its own grace period"
@@ -2536,9 +2520,6 @@ fn a_hosting_process_dropped_after_a_transport_failure_leaves_the_shared_broker_
     drop(recovered);
     drop(other);
     let exited_on_its_own = wait_for_broker_child_exit(&mut broker_child, Duration::from_secs(12));
-    if !exited_on_its_own {
-        print_broker_stderr_tail_on_failure();
-    }
     // Armed only once the broker is seen gone: otherwise the directory is
     // left to the broker that may still be using it.
     let _directory_guard =
@@ -3894,7 +3875,7 @@ fn a_tool_call_racing_a_failing_tool_call_still_recovers_the_broker() {
         adapter.gateway_attached(),
         "a tool call still brings the broker connection back"
     );
-    let published = device_broker_descriptor::read_descriptor(
+    device_broker_descriptor::read_descriptor(
         &descriptor_path,
         device_broker_descriptor::unix_time_ms(),
     )
@@ -3904,9 +3885,6 @@ fn a_tool_call_racing_a_failing_tool_call_still_recovers_the_broker() {
         .expect("the adapter owns the recovered broker child");
     adapter.stop();
     let exited = wait_for_broker_child_exit(&mut broker_child, Duration::from_secs(12));
-    if !exited {
-        print_broker_stderr_tail_on_failure();
-    }
     assert!(
         exited,
         "with every client gone, the broker ends through its own grace period"

@@ -1764,8 +1764,6 @@ fn native_broker_command() -> Result<Command, String> {
     // reach this spawn path must not put icons on a developer's taskbar.
     #[cfg(test)]
     command.env("QC_DEVICE_BROKER_NO_TRAY", "1");
-    #[cfg(test)]
-    command.env("QC_DEVICE_BROKER_START_TRACE", "1");
     Ok(command)
 }
 
