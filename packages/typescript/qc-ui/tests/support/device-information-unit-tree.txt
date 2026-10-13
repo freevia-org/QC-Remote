@@ -1,0 +1,36 @@
+zenUI::RootGraphicsItem
+  zenUI::GraphicsItem
+    zenUI::Grid
+      zenUI::Chain
+  zenUI::SettingsDialog
+    zenUI::SettingsMenu
+      zenUI::ComboBoxWithSelector
+      zenUI::Table
+        zenUI::TableCell
+          zenUI::GraphicsItem
+            text : 'Device Information'
+    zenUI::DeviceInformation
+      zenUI::GraphicsItem
+        text : 'Software information'
+      zenUI::GraphicsItem
+        text : 'Serial number:'
+      zenUI::GraphicsItem
+        text : 'XXXXXXXX'
+      zenUI::GraphicsItem
+        text : 'MAC address:'
+      zenUI::GraphicsItem
+        text : 'XX:XX:XX:XX:XX:XX'
+      zenUI::GraphicsItem
+        text : 'CorOS:'
+      zenUI::GraphicsItem
+        text : '4.1.0'
+      zenUI::GraphicsItem
+        text : 'Linux kernel:'
+      zenUI::GraphicsItem
+        text : 'Linux XXXXXXXX'
+      zenUI::GraphicsItem
+        text : 'Zenjack FW app:'
+      zenUI::GraphicsItem
+        text : 'XXXX'
+    zenUI::Button
+      zenUI::PushButton

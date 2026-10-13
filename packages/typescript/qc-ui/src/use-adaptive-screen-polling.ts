@@ -137,15 +137,20 @@ export function useAdaptiveQcScreenPolling({
   gateway,
   enabled,
   connected,
-  onObservation
+  onObservation,
+  onTree
 }: {
   gateway: Pick<GatewayTransport, "graphicsTree">;
   enabled: boolean;
   connected: boolean;
   onObservation: (observation: QcScreenObservation) => void;
+  /** Every tree a poll reads, changed or not: text on a screen can change while its structure does not. */
+  onTree?: (tree: string) => void;
 }): { phase: QcScreenPollingPhase; observation?: QcScreenObservation } {
   const onObservationRef = useRef(onObservation);
   onObservationRef.current = onObservation;
+  const onTreeRef = useRef(onTree);
+  onTreeRef.current = onTree;
   const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   const [phase, setPhase] = useState<QcScreenPollingPhase>(enabled ? "paused" : "off");
   const [observation, setObservation] = useState<QcScreenObservation>();
@@ -182,6 +187,7 @@ export function useAdaptiveQcScreenPolling({
       try {
         const { tree } = await gateway.graphicsTree();
         if (cancelled) return;
+        onTreeRef.current?.(tree);
         const kind = classifyQcGraphicsTree(tree);
         const ioSelection = kind === "io" ? ioSelectionFromTree(tree) : undefined;
         // The structure alone cannot tell Output 1/2 from Output 3/4 (only an indicator image differs).
