@@ -35,8 +35,5 @@
 .coros-settings-official.settings-midi .settings-section { grid-template-columns: 5.25cqw 1fr 2cqw; }
 .coros-settings-official.settings-account .settings-account-detail > * { transform: translateY(-.5cqw); }
 .coros-settings-official.settings-account .settings-account-detail > header { height: 4.875cqw; }
-.coros-midi-out > header > span { transform: translateY(-1px); }
-.coros-midi-out > header .midi-trash { width: 8.25cqw; transform: translateX(-.375cqw); background: var(--qc-editor-disabled-accent); }
-.coros-midi-out > header button > .qc-ui-icon-check { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; }
 
 }
