@@ -6225,6 +6225,36 @@ pub(crate) mod test_support {
         pub(crate) exited: Arc<AtomicBool>,
     }
 
+    /// A broker the test did not shut down (a resident one is never reaped
+    /// while it runs) would otherwise hold its descriptor claim, which
+    /// Windows will not let anyone delete, and refresh its descriptor for
+    /// the rest of the run, so its scratch directory could never be removed.
+    /// Dropped at the end of the test, or while a failed assertion unwinds,
+    /// it commits its shutdown, so no timer or refresh acts later, and
+    /// releases the claim and descriptor as its own exit would. A broker that
+    /// already exited is left as it is. `finish` only flips the shared
+    /// `shutting_down` flag; it does not join the connection's own threads,
+    /// so they can outlive this drop by a moment and still write into the
+    /// scratch directory — `remove_test_directory`'s retries, not this drop,
+    /// are what the directory's removal actually waits on.
+    impl Drop for Served {
+        fn drop(&mut self) {
+            if self.exited.load(Ordering::Acquire) {
+                return;
+            }
+            finish(&self.handle);
+            let claim = self.handle.0.descriptor_claim.lock_recover().take();
+            if let Some(claim) = claim {
+                if let Err(error) = claim.release() {
+                    eprintln!(
+                        "test cleanup: could not release {}: {error}",
+                        self.handle.0.descriptor_path.display()
+                    );
+                }
+            }
+        }
+    }
+
     pub(crate) fn serve(
         descriptor_path: &Path,
         configure: impl FnOnce(&BrokerHandle) + Send + 'static,
@@ -6635,18 +6665,12 @@ mod tcp_tests {
                 );
                 return;
             }
-            const ATTEMPTS: u32 = 5;
-            for attempt in 1..=ATTEMPTS {
-                match std::fs::remove_dir_all(&self.directory) {
-                    Ok(()) => return,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => return,
-                    Err(error) if attempt == ATTEMPTS => eprintln!(
-                        "test cleanup: could not remove {}: {error}",
-                        self.directory.display()
-                    ),
-                    // Windows sharing violations clear in milliseconds.
-                    Err(_) => thread::sleep(Duration::from_millis(50)),
-                }
+            let removed = crate::device_lease::testing::remove_test_directory(&self.directory);
+            if let Err(error) = removed {
+                eprintln!(
+                    "test cleanup: could not remove {}: {error}",
+                    self.directory.display()
+                );
             }
         }
     }

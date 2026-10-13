@@ -33,9 +33,16 @@ impl Scratch {
     }
 }
 
+/// Declared before the test's broker (`Served`), so that broker releases its
+/// claim on the directory first; a removal that still fails is only reported.
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        if let Err(error) = crate::device_lease::testing::remove_test_directory(&self.0) {
+            eprintln!(
+                "test cleanup: could not remove {}: {error}",
+                self.0.display()
+            );
+        }
     }
 }
 
