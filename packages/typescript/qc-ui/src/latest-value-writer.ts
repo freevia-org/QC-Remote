@@ -1,3 +1,4 @@
+import { claimDeviceCommand, deviceCommandBusy, releaseDeviceCommand } from "./device-command-ownership.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /** One control's write slot: at most one write in flight, newest target wins. */
@@ -73,6 +74,8 @@ export interface LatestValueWriterOptions {
    * or a discrete command queued behind it is running. */
   pending: boolean;
   setPending(pending: boolean): void;
+  /** Retire queued and in-flight callbacks when their device/session changes. */
+  resetKey?: unknown;
 }
 
 /**
@@ -87,6 +90,12 @@ export interface LatestValueWriterOptions {
  * flight: callers expose `pending && !active` to their screens.
  */
 export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
+  const [, replaceMountedWriter] = useState(0);
+  const claim = useRef<{ setter: (pending: boolean) => void; token: object } | null>(null);
+  const generation = useRef(0);
+  const resetKey = useRef(options.resetKey);
+  const retiringPending = useRef(false);
+  const retiredWaiters = useRef<Array<() => void>>([]);
   const queues = useRef(new Map<string, KeyedQueue<T>>());
   const [drafts, setDrafts] = useState<ReadonlyMap<string, T>>(() => new Map());
   const [active, setActive] = useState(false);
@@ -97,7 +106,19 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
   const commandRunning = useRef(false);
   const pendingRef = useRef(options.pending);
   const setPendingRef = useRef(options.setPending);
-  pendingRef.current = options.pending;
+  if (!Object.is(resetKey.current, options.resetKey)) {
+    resetKey.current = options.resetKey;
+    generation.current++;
+    if (claim.current) { releaseDeviceCommand(claim.current.setter, claim.current.token); claim.current = null; }
+    retiringPending.current ||= activeRef.current;
+    for (const queue of queues.current.values()) queue.target = undefined;
+    queues.current.clear();
+    commands.current = [];
+    commandRunning.current = false;
+    activeRef.current = false;
+    retiredWaiters.current.push(...waiters.current.splice(0));
+  }
+  pendingRef.current = retiringPending.current ? false : options.pending;
   setPendingRef.current = options.setPending;
 
   const setDraft = useCallback((key: string, value: T | undefined) => {
@@ -127,7 +148,8 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
     for (const queue of queues.current.values()) if (queue.running || queue.settling || queue.target !== undefined) return;
     activeRef.current = false;
     if (mounted.current) setActive(false);
-    setPendingRef.current(false);
+    if (claim.current) { releaseDeviceCommand(claim.current.setter, claim.current.token); claim.current = null; }
+    if (!deviceCommandBusy(setPendingRef.current)) setPendingRef.current(false);
     for (const resolve of waiters.current.splice(0)) resolve();
   }, []);
 
@@ -143,7 +165,8 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
     runCommandsRef.current();
   }, []);
 
-  const settle = useCallback(async (key: string, queue: KeyedQueue<T>) => {
+  const settle = useCallback(async (key: string, queue: KeyedQueue<T>, owner: number) => {
+    if (owner !== generation.current) return;
     const failed = queue.failed;
     const last = queue.last;
     queue.failed = false;
@@ -151,9 +174,10 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
     if (!failed && mounted.current && queue.target === undefined && queue.handlers?.settle) {
       queue.settling = true;
       try { await queue.handlers.settle(last); }
-      catch (error) { await queue.handlers.error(error); }
+      catch (error) { if (owner === generation.current) await queue.handlers.error(error); }
       finally { queue.settling = false; }
     }
+    if (owner !== generation.current) return;
     if (queue.target === undefined) setDraft(key, undefined);
     if (!mounted.current) { queue.target = undefined; release(); return; }
     next(key);
@@ -162,20 +186,23 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
   runRef.current = (key: string) => {
     const queue = queues.current.get(key);
     if (!queue || queue.target === undefined || busy()) return;
+    const owner = generation.current;
     void drainLatestValue(queue, {
-      guard: () => 0,
+      guard: () => owner === generation.current ? 0 : undefined,
       write: (target) => queue.handlers!.write(target),
       accept: (result, target) => {
+        if (owner !== generation.current) return;
         queue.last = result;
         queue.handlers!.accept?.(result, target);
       },
       error: async (error) => {
+        if (owner !== generation.current) return;
         queue.target = undefined;
         queue.failed = true;
         await queue.handlers!.error(error);
       },
-      idle: () => void settle(key, queue),
-      reschedule: () => runRef.current(key)
+      idle: () => void settle(key, queue, owner),
+      reschedule: () => { if (owner === generation.current) runRef.current(key); }
     });
   };
 
@@ -191,10 +218,12 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
     }
     if (mounted.current) setActive(false);
     commandRunning.current = true;
+    const owner = generation.current;
     void Promise.resolve()
-      .then(() => mounted.current ? command.run() : undefined)
-      .catch(command.error)
+      .then(() => mounted.current && owner === generation.current ? command.run() : undefined)
+      .catch((error) => { if (owner === generation.current) command.error(error); })
       .finally(() => {
+        if (owner !== generation.current) return;
         commandRunning.current = false;
         runCommandsRef.current();
       });
@@ -202,9 +231,16 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
 
   /** Queue `value` for `key`. Returns false, writing nothing, while another
    * device command owns the app-wide pending flag. */
+  const renderGeneration = generation.current;
   const submit = useCallback(<R>(key: string, value: T, handlers: LatestValueWrite<T, R>): boolean => {
+    if (!mounted.current || renderGeneration !== generation.current) return false;
     if (!activeRef.current && pendingRef.current) return false;
     if (commandRunning.current) return false;
+    if (!activeRef.current) {
+      const held = { setter: setPendingRef.current, token: {} };
+      if (!claimDeviceCommand(held.setter, held.token)) return false;
+      claim.current = held;
+    }
     let queue = queues.current.get(key);
     if (!queue) {
       queue = { running: false, settling: false, failed: false };
@@ -220,13 +256,18 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
     }
     runRef.current(key);
     return true;
-  }, [setDraft]);
+  }, [options.resetKey, renderGeneration, setDraft]);
 
   /** Admit a discrete mutation behind this writer's pending range updates.
    * Concurrent mutations accepted during the same drag are serialized. A
    * different app command still owns the shared pending flag and is refused. */
   const runCommand = useCallback((run: () => Promise<void>, error: (error: unknown) => void): boolean => {
-    if (!mounted.current || (!activeRef.current && pendingRef.current)) return false;
+    if (!mounted.current || renderGeneration !== generation.current || (!activeRef.current && pendingRef.current)) return false;
+    if (!activeRef.current) {
+      const held = { setter: setPendingRef.current, token: {} };
+      if (!claimDeviceCommand(held.setter, held.token)) return false;
+      claim.current = held;
+    }
     commands.current.push({ run, error });
     if (!activeRef.current) {
       activeRef.current = true;
@@ -234,7 +275,7 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
     }
     runCommandsRef.current();
     return true;
-  }, []);
+  }, [options.resetKey, renderGeneration]);
 
   /** Resolves once every submitted value has been written and settled. */
   const whenIdle = useCallback(() => activeRef.current
@@ -244,16 +285,37 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
   const isActive = useCallback(() => activeRef.current, []);
 
   useEffect(() => {
+    if (!retiringPending.current) return;
+    retiringPending.current = false;
+    const currentDrafts = new Map<string, T>();
+    for (const [key, queue] of queues.current) if (queue.target !== undefined) currentDrafts.set(key, queue.target);
+    setDrafts(currentDrafts);
+    setActive(activeRef.current && hasValueWork());
+    if (!activeRef.current && !deviceCommandBusy(setPendingRef.current)) setPendingRef.current(false);
+    for (const resolve of retiredWaiters.current.splice(0)) resolve();
+  }, [hasValueWork, options.resetKey]);
+
+  useEffect(() => {
+    const replayed = !mounted.current;
     mounted.current = true;
+    if (replayed && resetKey.current !== undefined) replaceMountedWriter((version) => version + 1);
     return () => {
       mounted.current = false;
       for (const queue of queues.current.values()) queue.target = undefined;
       commands.current = [];
+      if (resetKey.current !== undefined) {
+        generation.current++;
+        if (claim.current) { releaseDeviceCommand(claim.current.setter, claim.current.token); claim.current = null; }
+        if (activeRef.current && !deviceCommandBusy(setPendingRef.current)) setPendingRef.current(false);
+        activeRef.current = false;
+        for (const resolve of [...retiredWaiters.current.splice(0), ...waiters.current.splice(0)]) resolve();
+      }
       if (activeRef.current) {
         const inFlight = commandRunning.current || [...queues.current.values()].some((queue) => queue.running || queue.settling);
         if (!inFlight) {
           activeRef.current = false;
-          setPendingRef.current(false);
+          if (claim.current) { releaseDeviceCommand(claim.current.setter, claim.current.token); claim.current = null; }
+          if (!deviceCommandBusy(setPendingRef.current)) setPendingRef.current(false);
         }
         for (const resolve of waiters.current.splice(0)) resolve();
       }

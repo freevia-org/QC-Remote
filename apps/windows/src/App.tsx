@@ -359,9 +359,25 @@ export function App() {
   const { undoEntry, redoEntry, record: recordUndo, clear: clearUndo } = deviceHistory;
   const deviceUndo = useQcDeviceUndo({ history: deviceHistory, snapshot, gateway: activeGateway, fail: actionFailed });
   const { undoAvailable: deviceUndoAvailable, redoAvailable: deviceRedoAvailable, undo: undoLastAction, redo: redoLastAction } = deviceUndo;
+  const deviceWorkflowSession = {
+    sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
+    captureSessionCurrent: () => {
+      const attempt = connectionAttempts.capture();
+      const source = demoDeviceSession.source;
+      const stream = nativeStateStream.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+    }
+  };
   const demoSession = connection.demo || connection.source === "virtual";
   const expressionWorkflow = useExpressionAssignment({
     gateway: activeGateway,
+    sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
+    captureSessionCurrent: () => {
+      const attempt = connectionAttempts.capture();
+      const source = demoDeviceSession.source;
+      const stream = nativeStateStream.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+    },
     snapshot,
     connected: sessionReady,
     pending: commandPending,
@@ -373,13 +389,20 @@ export function App() {
   });
   const deviceSettingsWorkflow = useDeviceSettingsWorkflow({
     gateway: activeGateway,
+    sessionKey: `${connection.source}:${snapshot.stateVersion?.session ?? ""}:${deviceReady}:${nativeStateStream.current ?? ""}`,
+    captureSessionCurrent: () => {
+      const attempt = connectionAttempts.capture();
+      const source = demoDeviceSession.source;
+      const stream = nativeStateStream.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+    },
     connected: sessionReady,
     pending: commandPending,
     setPending: setCommandPending,
     notice: setNotice,
     fail: actionFailed
   });
-  const tempoWorkflow = useTempoWorkflow({
+  const tempoWorkflow = useTempoWorkflow({ ...deviceWorkflowSession,
     gateway: activeGateway,
     connected: sessionReady,
     pending: commandPending,
@@ -387,12 +410,19 @@ export function App() {
     notice: setNotice,
     fail: actionFailed
   });
-  const tunerWorkflow = useTunerWorkflow({ gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed });
-  const looperWorkflow = useLooperXWorkflow({ gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed });
-  const midiOutWorkflow = usePresetMidiOutWorkflow({ gateway: activeGateway, snapshot, demo: connection.demo || connection.source === "virtual", onSaved: reconcileWorkflowSnapshot });
-  const modesWorkflow = useModesConfigurationWorkflow({ gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed });
-  const ioEqWorkflow = useIoEqWorkflows({ gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed, snapshot });
-  useQcScreenFollow({
+  const tunerWorkflow = useTunerWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed });
+  const looperWorkflow = useLooperXWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed });
+  const midiOutWorkflow = usePresetMidiOutWorkflow({ gateway: activeGateway, snapshot, demo: connection.demo || connection.source === "virtual", onSaved: reconcileWorkflowSnapshot,
+    captureSessionCurrent: () => {
+      const attempt = connectionAttempts.capture();
+      const source = demoDeviceSession.source;
+      const stream = nativeStateStream.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+    }
+  });
+  const modesWorkflow = useModesConfigurationWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed });
+  const ioEqWorkflow = useIoEqWorkflows({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed, snapshot });
+  useQcScreenFollow({ ...deviceWorkflowSession,
     gateway: activeGateway, follow: followQcScreen, available: !connection.demo && !corpusFixtureEnabled, ready: deviceReady, destination: screenDestination, notice: setNotice,
     workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow, modes: modesWorkflow, routing: routingWorkflow, scene: sceneWorkflow }
   });
@@ -975,7 +1005,7 @@ export function App() {
     if (block) void performanceWorkflow.toggleBlockBypass(block);
   }, [performanceWorkflow, selectedBlockId, snapshot.blocks]);
   const pressFootswitch = performanceWorkflow.pressFootswitch;
-  const deviceViews = useQcDeviceViews({
+  const deviceViews = useQcDeviceViews({ ...deviceWorkflowSession,
     destination: screenDestination, snapshot, gateway: activeGateway, notice: setNotice, fail: actionFailed,
     session: { demo: demoSession, hardwareReady: deviceReady, sessionReady },
     workflows: { performance: performanceWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, ioEq: ioEqWorkflow, preset: presetWorkflow }
@@ -2804,6 +2834,7 @@ export function App() {
   };
 
   const display = createQcDeviceDisplay({
+    captureSessionCurrent: deviceWorkflowSession.captureSessionCurrent,
     snapshot, selectedBlockId, pending: commandPending, destination: screenDestination, views: deviceViews, cpu: cpuTelemetry, undo: deviceUndo,
     workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow, scene: sceneWorkflow, preset: presetWorkflow, routing: routingWorkflow },
     mirror: activeGateway,

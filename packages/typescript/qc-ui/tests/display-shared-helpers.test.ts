@@ -68,3 +68,29 @@ test("controls without a verified action explain themselves in one wording on ev
   assert.deepEqual(demo.notices, ["Demo switch: pedal:x. Hardware was not changed."]);
   demo.renderer.unmount();
 });
+
+test("the assembled Looper screen receives the host session probe before opening its editor", async () => {
+  const { createQcDeviceDisplay } = await import("../src/qc-device-display.tsx");
+  const log: string[] = [];
+  let current = true;
+  let resolve!: (accepted: boolean) => void;
+  const command = new Promise<boolean>((done) => { resolve = done; });
+  const host = {
+    captureSessionCurrent: () => () => current,
+    snapshot: { blocks: [{ modelId: 27_000, name: "Looper X" }], scenes: [], activeScene: 0 },
+    destination: { view: "looper-editor", setView: () => log.push("view"), setPopup() {}, latch: {} },
+    workflows: {
+      deviceSettings: { open: false }, tempo: { open: false }, looper: { run: async () => command },
+      grid: { openBlock: async () => log.push("editor") }, scene: {}, preset: {}, routing: {}
+    },
+    views: {}, cpu: { monitor: () => null }, undo: {},
+    setParameterMenuInitiallyOpen: () => log.push("menu"), notice: () => log.push("notice")
+  } as unknown as Parameters<typeof createQcDeviceDisplay>[0];
+  const display = createQcDeviceDisplay(host);
+  const screen = display.surface.screenContent as { props: { onParameters(): Promise<void> } };
+  const pending = screen.props.onParameters();
+  current = false;
+  resolve(true);
+  await pending;
+  assert.deepEqual(log, [], "the production display passes its probe to the delayed Looper action");
+});

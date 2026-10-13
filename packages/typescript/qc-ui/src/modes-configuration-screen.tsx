@@ -1,6 +1,8 @@
 import { closeUserOpenedTarget, escapeUserOpenedTarget } from "./user-open-focus";
-import { useCallback, useState } from "react";
-import type { GatewayTransport } from "@qc-remote/client";
+import { useState } from "react";
+import type { ModesConfigurationWorkflow } from "./use-modes-configuration-workflow.ts";
+export { useModesConfigurationWorkflow } from "./use-modes-configuration-workflow.ts";
+export type { ModesConfigurationWorkflow, ModesConfigurationWorkflowOptions } from "./use-modes-configuration-workflow.ts";
 import { mergeModeSlots, QC_MODE_CYCLES, splitModeSlot } from "./device-workflow-model";
 import { QcModeGlyph, QcScreenGlyph, QcUiIcon } from "./theme-icons";
 import { MODES_CONFIGURATION_INSTRUCTION_LINES } from "./device-reference/device-settings-text";
@@ -8,40 +10,6 @@ import { useHoldGesture } from "./use-hold-gesture";
 import "./modes-configuration-screen.css";
 import "./fixture-live-surface.css";
 import "./remaining-fixtures-fixes.css";
-
-export interface ModesConfigurationWorkflowOptions {
-  gateway: GatewayTransport; connected: boolean; pending: boolean; setPending(value: boolean): void;
-  notice(message: string): void; fail(error: unknown): void;
-}
-export function useModesConfigurationWorkflow(options: ModesConfigurationWorkflowOptions) {
-  const { gateway, connected, pending, setPending, notice, fail } = options;
-  const [slots, setSlots] = useState<number[]>();
-  const [loading, setLoading] = useState(false);
-  const refresh = useCallback(async () => {
-    if (!connected) { notice("Connect the Quad Cortex to read Modes Configuration."); return; }
-    setLoading(true);
-    try { setSlots([...(await gateway.modeCycle()).slots]); }
-    catch (error) { fail(error); }
-    finally { setLoading(false); }
-  }, [connected, fail, gateway, notice]);
-  const commit = useCallback(async (next: number[]) => {
-    if (!connected || pending) { notice(!connected ? "Connect the Quad Cortex before changing Modes Configuration." : "A device command is already in progress."); return; }
-    if (next.length < 1 || next.length > 3 || new Set(next).size !== next.length || next.some((slot) => !Number.isInteger(slot) || slot < 0 || slot > 8)) {
-      notice("Modes Configuration must contain one to three unique modes."); return;
-    }
-    setPending(true);
-    try {
-      const result = await gateway.setModeCycle(next);
-      const readback = await gateway.modeCycle();
-      if (readback.slots.length !== next.length || readback.slots.some((slot, i) => slot !== next[i])) throw new Error("Modes Configuration readback did not match the requested order.");
-      setSlots([...readback.slots]);
-      notice(result.detail || "Modes Configuration updated and verified.");
-    } catch (error) { fail(error); }
-    finally { setPending(false); }
-  }, [connected, fail, gateway, notice, pending, setPending]);
-  return { slots, loading, pending, refresh, commit };
-}
-export type ModesConfigurationWorkflow = ReturnType<typeof useModesConfigurationWorkflow>;
 
 function ModeGlyphs({ mode }: { mode: number }) {
   const glyph = (value: number) => <QcModeGlyph mode={(["PRESET", "SCENE", "STOMP"] as const)[value] ?? "PRESET"} />;

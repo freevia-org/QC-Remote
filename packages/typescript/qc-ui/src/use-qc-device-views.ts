@@ -5,11 +5,14 @@ import type { CorOsDeviceInformation } from "./coros-reference-settings-pane.tsx
 import { closeQcLooperScreen } from "./qc-device-screen.ts";
 import { closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, unitScreen, untouchableUnitScreen, type QcScreenPoll } from "./qc-unit-screens.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
+import { useDeviceWorkflowSession } from "./use-device-workflow-session.ts";
 
 export type QcDeviceViewName = "tuner" | "gig" | "io" | "info";
 export type QcDeviceGesture = "tap" | "long-tap" | "swipe";
 
 export interface QcDeviceViewsOptions {
+  sessionKey?: unknown;
+  captureSessionCurrent?(): () => boolean;
   destination: Pick<QcScreenDestination, "view" | "setView" | "latch">;
   snapshot: Pick<PresetSnapshot, "setlistKey" | "deviceName">;
   session: {
@@ -26,7 +29,7 @@ export interface QcDeviceViewsOptions {
   workflows: {
     performance: { showDeviceView(view: "tuner" | "gig", visible?: boolean): Promise<boolean> };
     tuner: { openTuner(): unknown };
-    looper: { run(command: string, value?: number | null): Promise<void> };
+    looper: { run(command: string, value?: number | null): Promise<void | boolean> };
     ioEq: { refresh(): Promise<unknown> };
     preset: { presetList?: Pick<PresetList, "setlistKey">; loadDirectory(...args: [boolean, string, boolean]): unknown };
   };
@@ -60,12 +63,15 @@ const isIoView = (view: string | null | undefined) => Boolean(view?.startsWith("
  * the demo device is projected locally by that command, never sent to hardware.
  */
 export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
-  const [deviceInformation, setDeviceInformation] = useState<CorOsDeviceInformation>();
-  const latest = useRef(options);
-  latest.current = options;
+  const [deviceInformation, setDeviceInformation] = useState<{ key: unknown; value: CorOsDeviceInformation }>();
+  const lifetime = useDeviceWorkflowSession({ ...options, connected: options.session.sessionReady });
+  const latest = useRef({ ...lifetime.options, lifetime });
+  latest.current = { ...lifetime.options, lifetime };
 
   const close = useCallback(async () => {
-    const { destination, session, workflows, notice, fail } = latest.current;
+    if (!lifetime.current()) return;
+    const { destination, session, gateway, screenPoll, workflows, notice, fail, lifetime: owner } = latest.current;
+    if (!owner.current()) return;
     const view = destination.view;
     if (isIoView(view)) {
       if (session.demo) {
@@ -76,28 +82,31 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
       if (session.hardwareReady) {
         try {
           // The unit has no command for this screen: it closes on a tap of its check button, and only if it is showing it.
-          const closed = await closeOnUnit(latest.current.gateway, latest.current.screenPoll ?? DEFAULT_SCREEN_POLL, "io");
+          const closed = await closeOnUnit(gateway, screenPoll ?? DEFAULT_SCREEN_POLL, "io");
           if (!closed) { notice("The Quad Cortex did not close I/O Settings."); return; }
         } catch (error) {
           fail(error);
           return;
         }
       }
-      destination.setView(null);
+      owner.apply(() => destination.setView(null));
       return;
     }
-    if (view === "looper-editor") { await closeQcLooperScreen({ looper: workflows.looper, setView: destination.setView }); return; }
+    if (view === "looper-editor") { await closeQcLooperScreen({ looper: workflows.looper, setView: (next) => owner.apply(() => destination.setView(next)), captureSessionCurrent: () => owner.current }); return; }
     const owned = isGigView(view) ? "gig" : isTunerView(view) ? "tuner" : undefined;
     if (!owned) { destination.setView(null); return; }
     // With nothing to tell (the unit is gone) the app's own view must still be able to close.
-    if (await workflows.performance.showDeviceView(owned, false) || (!session.demo && !session.hardwareReady)) destination.setView(null);
-  }, []);
+    if (await workflows.performance.showDeviceView(owned, false) || (!session.demo && !session.hardwareReady)) owner.apply(() => destination.setView(null));
+  }, [lifetime.key]);
 
   const open = useCallback(async (view: QcDeviceViewName) => {
-    const { destination, snapshot, session, gateway, workflows, notice, fail } = latest.current;
+    if (!lifetime.current()) return;
+    const { destination, snapshot, session, gateway, screenPoll, workflows, notice, fail, lifetime: owner } = latest.current;
+    if (!owner.current()) return;
     if (view === "tuner" || view === "gig") {
       destination.latch.expectUnit(view);
-      if (!await workflows.performance.showDeviceView(view, true)) { destination.latch.cancelUnit(view); return; }
+      if (!await workflows.performance.showDeviceView(view, true)) { owner.apply(() => destination.latch.cancelUnit(view)); return; }
+      if (!owner.current()) return;
       if (view === "tuner") workflows.tuner.openTuner();
       destination.setView(view);
       // The Gig list is the current setlist; load it when it is missing or belongs to another setlist.
@@ -119,15 +128,16 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
       try {
         // The unit has no command for this screen: it opens on a long downward drag, but only from its Grid.
         // Armed just before the drag is sent, so a refusal ("busy") leaves nothing behind to swallow the unit's own I/O Settings.
-        const shown = await openOnUnit(gateway, latest.current.screenPoll ?? DEFAULT_SCREEN_POLL, "io", () => destination.latch.expectUnit("io"));
+        const shown = await openOnUnit(gateway, screenPoll ?? DEFAULT_SCREEN_POLL, "io", () => owner.apply(() => destination.latch.expectUnit("io")));
         if (shown !== "shown") {
           notice(shown === "busy"
             ? "Close the screen open on the Quad Cortex before opening I/O Settings."
             : "The Quad Cortex did not show I/O Settings.");
           return;
         }
+        if (!owner.current()) return;
         await workflows.ioEq.refresh();
-        destination.setView("io-overview");
+        owner.apply(() => destination.setView("io-overview"));
         notice("I/O Settings opened.");
       } catch (error) {
         fail(error);
@@ -140,32 +150,38 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
     }
     destination.setView("settings-info");
     try {
-      setDeviceInformation(qcDeviceInformation(await gateway.identity(), snapshot.deviceName));
+      const identity=await gateway.identity();
+      owner.apply(() => setDeviceInformation({ key: owner.key, value: qcDeviceInformation(identity, snapshot.deviceName) }));
     } catch (error) {
       fail(error);
     }
-  }, []);
+  }, [lifetime.key]);
 
   // Keep the unit's identity at hand once a session answers, so every window that shows it (the app's own
   // Device Information screen and the Windows Device Info window) has the real values without being asked.
   const sessionReady = options.session.sessionReady;
   useEffect(() => {
+    setDeviceInformation(undefined);
     if (!sessionReady) return;
     let current = true;
-    latest.current.gateway.identity()
-      .then((identity) => { if (current) setDeviceInformation(qcDeviceInformation(identity, latest.current.snapshot.deviceName)); })
+    const { gateway, snapshot } = lifetime.options;
+    gateway.identity()
+      .then((identity) => { if (current) lifetime.apply(() => setDeviceInformation({ key: lifetime.key, value: qcDeviceInformation(identity, snapshot.deviceName) })); })
       .catch(() => undefined);
     return () => { current = false; };
-  }, [sessionReady]);
+  }, [sessionReady, lifetime.key]);
 
   const toggle = useCallback(async (view: "tuner" | "gig" | "io") => {
+    if (!lifetime.current()) return;
     const current = latest.current.destination.view;
     if (view === "gig" ? isGigView(current) : view === "tuner" ? isTunerView(current) : isIoView(current)) await close();
     else await open(view);
-  }, [close, open]);
+  }, [close, open, lifetime.key]);
 
   const forwardGesture = useCallback(async (x: number, y: number, toX: number, toY: number, kind: QcDeviceGesture) => {
-    const { session, gateway, notice, fail } = latest.current;
+    if (!lifetime.current()) return;
+    const { session, gateway, notice, fail, lifetime: owner } = latest.current;
+    if (!owner.current()) return;
     if (session.demo) return;
     if (!session.hardwareReady) {
       notice("The Quad Cortex disconnected before the screen gesture could be sent.");
@@ -186,7 +202,8 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
     } catch (error) {
       fail(error);
     }
-  }, []);
+  }, [lifetime.key]);
 
-  return useMemo(() => ({ deviceInformation, open, close, toggle, forwardGesture }), [deviceInformation, open, close, toggle, forwardGesture]);
+  const currentInformation = deviceInformation?.key === lifetime.key ? deviceInformation.value : undefined;
+  return useMemo(() => ({ deviceInformation: currentInformation, open, close, toggle, forwardGesture }), [currentInformation, open, close, toggle, forwardGesture]);
 }

@@ -2,6 +2,133 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { OwnedAttemptLatch } from "./owned-attempt-latch.ts";
+import { pasteOwnedDemoLibrary } from "./demo-library-paste.ts";
+import { refreshOwnedNativeSnapshot } from "./native-session-refresh.ts";
+import { createBrowserPairingPoll } from "./browser-pairing-poll.ts";
+import { createControlAccessChange } from "./control-access-change.ts";
+
+test("Access-mode changes serialize before render and recover actual native access rather than optimistic rollback", async () => {
+  let rejectWrite!: (error: Error) => void;
+  const write = new Promise<{ accessMode: "full" }>((_resolve, reject) => { rejectWrite = reject; });
+  const events: string[] = [];
+  const change = createControlAccessChange({
+    write: (mode) => { events.push(`write:${mode}`); return write; },
+    read: async () => ({ accessMode: "full" as const }),
+    observed: (mode) => events.push(`observed:${mode}`),
+    uncertain: () => events.push("uncertain"),
+    pending: (value) => events.push(`pending:${value}`),
+    failed: () => events.push("failed")
+  });
+  const first = change("read-only");
+  await change("modify");
+  rejectWrite(new Error("write failed"));
+  await first;
+  assert.deepEqual(events, ["pending:true", "write:read-only", "uncertain", "observed:full", "failed", "pending:false"]);
+});
+
+test("Unconfirmed access-mode changes never invent a safe mode when recovery also fails", async () => {
+  const events: string[] = [];
+  const change = createControlAccessChange({
+    write: async () => { throw new Error("native result unavailable"); },
+    read: async () => { throw new Error("status unavailable"); },
+    observed: (mode) => events.push(mode),
+    uncertain: () => events.push("uncertain"),
+    pending: () => undefined,
+    failed: () => undefined
+  });
+  await change("read-only");
+  assert.deepEqual(events, ["uncertain"]);
+});
+
+test("Browser pairing owns one in-flight redemption and drops a disposed result", async () => {
+  let complete!: (result: { state: "paired" }) => void;
+  const pending = new Promise<{ state: "paired" }>((resolve) => { complete = resolve; });
+  let reads = 0;
+  let paired = 0;
+  const owner = createBrowserPairingPoll({
+    read: () => { reads++; return pending; },
+    async paired() { paired++; },
+    failed() { assert.fail("Successful native pairing must not fail"); }
+  });
+  const work = owner.poll();
+  await owner.poll();
+  assert.equal(reads, 1);
+  owner.dispose();
+  complete({ state: "paired" });
+  await work;
+  assert.equal(paired, 0);
+  await owner.poll();
+  assert.equal(reads, 1);
+  const active = createBrowserPairingPoll({ read: async () => ({ state: "paired" }), async paired() { paired++; }, failed() { assert.fail("Pairing failed"); } });
+  await active.poll();
+  assert.equal(paired, 1);
+});
+
+test("Native refresh discards a snapshot when the USB session or preset changed during the read", async () => {
+  let current = true;
+  let resolve!: (snapshot: string) => void;
+  const pending = new Promise<string>((done) => { resolve = done; });
+  const applied: string[] = [];
+  const work = refreshOwnedNativeSnapshot({ current: () => current, read: () => pending, apply: (snapshot) => { applied.push(snapshot); } });
+  current = false;
+  resolve("old-hardware");
+  await work;
+  assert.equal(applied.length, 0);
+  await refreshOwnedNativeSnapshot({ current: () => true, read: async () => "current-hardware", apply: (snapshot) => { applied.push(snapshot); } });
+  assert.deepEqual(applied, ["current-hardware"]);
+});
+
+test("Demo library paste abandons work when its session changes across an asynchronous boundary", async (t) => {
+  for (const boundary of ["clipboard", "confirmation", "replacement", "snapshot"] as const) {
+    await t.test(boundary, async () => {
+      let active = true;
+      let release!: () => void;
+      let entered!: () => void;
+      const paused = new Promise<void>((resolve) => { release = resolve; });
+      const reached = new Promise<void>((resolve) => { entered = resolve; });
+      const calls: string[] = [];
+      const step = async (name: typeof boundary) => {
+        calls.push(name);
+        if (name === boundary) { entered(); await paused; }
+      };
+      const work = pasteOwnedDemoLibrary({
+        current: () => active,
+        async readLibrary() { await step("clipboard"); return { library: "demo-only", confirmation: "Replace?" }; },
+        async confirm() { await step("confirmation"); return true; },
+        async replaceLibrary(library) { assert.equal(library, "demo-only"); await step("replacement"); },
+        async readSnapshot() { await step("snapshot"); return "demo-snapshot"; },
+        applied() { calls.push("applied"); }
+      });
+      await reached;
+      active = false;
+      release();
+      await work;
+      const stages = ["clipboard", "confirmation", "replacement", "snapshot"];
+      assert.deepEqual(calls, stages.slice(0, stages.indexOf(boundary) + 1));
+    });
+  }
+});
+
+test("Demo library paste reconciles its captured virtual snapshot only after accepted replacement", async () => {
+  const calls: string[] = [];
+  await pasteOwnedDemoLibrary({
+    current: () => true,
+    async readLibrary() { return { library: "demo-only", confirmation: "Replace?" }; },
+    async confirm(message) { assert.equal(message, "Replace?"); return true; },
+    async replaceLibrary(library) { calls.push(`replace:${library}`); },
+    async readSnapshot() { calls.push("read-demo"); return "demo-snapshot"; },
+    applied(snapshot) { calls.push(`apply:${snapshot}`); }
+  });
+  assert.deepEqual(calls, ["replace:demo-only", "read-demo", "apply:demo-snapshot"]);
+  await pasteOwnedDemoLibrary({
+    current: () => true,
+    async readLibrary() { return { library: "demo-only", confirmation: "Replace?" }; },
+    async confirm() { return false; },
+    async replaceLibrary() { assert.fail("Cancelled paste must not replace the library"); },
+    async readSnapshot() { assert.fail("Cancelled paste must not read a snapshot"); },
+    applied() { assert.fail("Cancelled paste must not reconcile"); }
+  });
+});
 
 const generatedRelayProfileSource = readFileSync(new URL("../android/app/src/main/java/org/freevia/qcremote/GeneratedRelayProfile.java", import.meta.url), "utf8");
 const completionSource = readFileSync(new URL("../android/app/src/main/java/org/freevia/qcremote/QcGatewayCompletion.java", import.meta.url), "utf8");
@@ -476,7 +603,7 @@ test("Android pairing applies shared owner policy during guarded credential adop
   // pairing path consults it with whether a pairing already exists, so an
   // empty legacy account is refused rather than treated as a match.
   assert.match(relayPluginSource, /store\.adoptIfCurrent\(heldSnapshot, endpoint, credential, deviceId, arriving\)/);
-  assert.match(relayCredentialStoreSource, /String adoptIfCurrent\([^\n]*\) throws Exception \{\s*synchronized \(MUTATION_LOCK\) \{\s*Snapshot held=snapshot\(\);\s*if \(!sameIdentity\(held,expected\)\) return "PAIRING_SUPERSEDED";\s*String refusal=GeneratedRelayProfile\.pairingOwnerRefusal\(held\.paired\(\),held\.owner,owner,held\.rejected\);\s*if \(refusal != null\) return refusal;\s*save\(endpoint,credential,deviceId,owner\);/);
+  assert.match(relayCredentialStoreSource, /String adoptIfCurrent\([^\n]*\) throws Exception \{\s*synchronized \(MUTATION_LOCK\) \{\s*if \(hasPendingRevocation\(\)\) return "PAIRING_REVOCATION_PENDING";\s*Snapshot held=snapshot\(\);\s*if \(!sameIdentity\(held,expected\)\) return "PAIRING_SUPERSEDED";\s*if \(hasUnacknowledgedReplacement\(\)\) return "PAIRING_REPLACEMENT_PENDING";\s*String refusal=GeneratedRelayProfile\.pairingOwnerRefusal\(held\.paired\(\),held\.owner,owner,held\.rejected\);\s*if \(refusal != null\) return refusal;\s*save\(endpoint,credential,deviceId,owner\);/);
   assert.match(generatedRelayProfileSource, /PAIRING_OWNER_CHANGED/);
   assert.match(generatedRelayProfileSource, /PAIRING_OWNER_UNKNOWN/);
   assert.match(relayPluginSource, /backfillOwnerEmail\(\);/);
@@ -523,7 +650,7 @@ test("Android sticky relay restart reopens a missing WebSocket despite persisted
 
 test("Android browser pairing keeps the receiver capability native and never asks the person to copy a code", () => {
   assert.match(relayPluginSource, /@PluginMethod public void beginBrowserPairing/);
-  assert.match(relayPluginSource, /@PluginMethod public void pollBrowserPairing/);
+  assert.match(relayPluginSource, /@PluginMethod public (?:synchronized )?void pollBrowserPairing/);
   assert.match(relayPluginSource, /private volatile BrowserPairing browserPairing/);
   assert.match(relayPluginSource, /receiverSecret/);
   assert.match(relayPluginSource, /Intent\.ACTION_VIEW/);
@@ -1246,7 +1373,7 @@ test("Android deadline expiry and later mutation admission share one atomic quar
   assert.match(deadline, /void cancelForShutdown\(\)[\s\S]*expire\(\);[\s\S]*current\.completeExceptionally/);
   assert.match(javaSource, /submitRelayTask\(commandIo, relayDeadline, \(\) -> \{[\s\S]*CURRENT_RELAY_DEADLINE\.set\(relayDeadline\)[\s\S]*relayInvoke\(method, deferredParams, deferredExpected\)/);
   for (const method of ["relayDisconnect", "relayReconnect", "issueBackupRequest", "executeRelayPlan", "relayGatewayReadOnCurrentSession", "relayMidi"])
-    assert.match(javaSource, new RegExp(`${method}[\\s\\S]{0,2200}submitRelayTask\\(`), `${method} must retain its relay task until its executor runnable retires`);
+    assert.match(javaSource, new RegExp(`${method}[\\s\\S]{0,3500}submitRelayTask\\(`), `${method} must retain its relay task until its executor runnable retires`);
   assert.match(javaSource, /private boolean beginRelayRead\(RelayDeadline deadline\)/);
   assert.match(javaSource, /relayGatewayReadWithRetry\(method, readParams, relayDeadline\)/);
   assert.match(javaSource, /relayGatewayReadOnCurrentSession\(method, readParams, scope, relayDeadline\)/);

@@ -47,3 +47,16 @@ test("a parameter index that is not a small integer is refused and Object.protot
   const written = await gateway.setParameter(row, column, 0, 0.25, 0.5, snapshot.activeScene, modelId, name, identity);
   assert.equal(written.accepted, true);
 });
+
+test("parameter writes reject prototype-shaped scene keys even if internal state is corrupted", async () => {
+  const store = await VirtualDeviceStore.open({ storage: createMemoryVirtualDeviceStorage(), catalogue, now: () => 0, newSessionId: () => "scene-guard" });
+  const gateway = createVirtualGatewayTransport(store);
+  const snapshot = await gateway.currentSnapshot();
+  const name = snapshot.presetName, identity = snapshot.presetIdentity!;
+  const block = snapshot.blocks.find((candidate) => candidate.parameterValues !== undefined && 0 in candidate.parameterValues);
+  assert.ok(block);
+  const before = block.parameterValues![0];
+  await store.update((state) => { state.current.preset.activeScene = "__proto__" as unknown as number; });
+  await assert.rejects(gateway.setParameter(block.row, block.column, 0, 0.2, before, "__proto__" as unknown as number, block.modelId, name, identity), /scene must be a valid scene index/);
+  assert.equal(({} as { polluted?: unknown }).polluted, undefined);
+});

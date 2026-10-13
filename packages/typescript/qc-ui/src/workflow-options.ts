@@ -12,6 +12,8 @@ export interface WorkflowPrompts {
  */
 export interface DeviceCommandOptions {
   connected: boolean;
+  sessionKey?: unknown;
+  captureSessionCurrent?(): () => boolean;
   pending: boolean;
   setPending(pending: boolean): void;
   notice(message: string): void;

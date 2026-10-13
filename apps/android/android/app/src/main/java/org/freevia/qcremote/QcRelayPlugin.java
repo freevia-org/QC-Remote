@@ -39,6 +39,7 @@ public final class QcRelayPlugin extends Plugin {
     /** Ephemeral receiver capability for browser pairing. Never enters the WebView or durable storage. */
     private volatile BrowserPairing browserPairing;
     private volatile boolean browserPairingCompleting;
+    private final java.util.concurrent.atomic.AtomicInteger browserPairingGeneration = new java.util.concurrent.atomic.AtomicInteger();
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
             relayState = intent.getStringExtra(QcRelayService.EXTRA_STATE);
@@ -157,8 +158,12 @@ public final class QcRelayPlugin extends Plugin {
     }
 
     private void beginBrowserPairingAfterPermission(PluginCall call) {
+        if (new RelayCredentialStore(getContext()).hasPendingRevocation()) {
+            retryPendingRevocation(call, () -> beginBrowserPairingAfterPermission(call)); return;
+        }
         String endpoint = normalizedEndpoint(call.getString("endpoint", ""));
         if (endpoint == null) { call.reject("A secure HTTPS relay is required.", "INVALID_PAIRING"); return; }
+        final int pairingGeneration=browserPairingGeneration.incrementAndGet();
         Request request = new Request.Builder().url(endpoint + "/v1/host/pairing-sessions")
             .post(RequestBody.create(pairingSessionBody(DEFAULT_DEVICE_NAME).toString(),
                 MediaType.get("application/json; charset=utf-8"))).build();
@@ -176,8 +181,13 @@ public final class QcRelayPlugin extends Plugin {
                     long expiresAt = payload.getLong("expiresAt");
                     if (sessionId.isEmpty() || receiverSecret.length() < GeneratedRelayProfile.MINIMUM_CREDENTIAL_LENGTH
                         || !pairUrl.startsWith(endpoint + "/pair")) throw new IllegalStateException("Relay returned an invalid pairing session.");
-                    browserPairing = new BrowserPairing(endpoint, sessionId, receiverSecret, expiresAt);
-                    browserPairingCompleting = false;
+                    synchronized (QcRelayPlugin.this) {
+                        if (pairingGeneration != browserPairingGeneration.get()) {
+                            call.reject("Browser pairing was superseded.","PAIRING_SUPERSEDED"); return;
+                        }
+                        browserPairing = new BrowserPairing(endpoint, sessionId, receiverSecret, expiresAt);
+                        browserPairingCompleting = false;
+                    }
                     Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(pairUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     try { getContext().startActivity(browser); }
                     catch (Exception error) { browserPairing = null; throw new IllegalStateException("No browser is available to sign in.", error); }
@@ -204,27 +214,34 @@ public final class QcRelayPlugin extends Plugin {
     }
 
     /** Polls only while the app owns an in-memory pairing session; no code is shown or copied. */
-    @PluginMethod public void pollBrowserPairing(PluginCall call) {
+    @PluginMethod public synchronized void pollBrowserPairing(PluginCall call) {
+        if (browserPairingCompleting) { JSObject result = new JSObject(); result.put("state", "pairing"); call.resolve(result); return; }
         BrowserPairing pending = browserPairing;
         if (pending == null) { call.reject("Start browser pairing first.", "PAIRING_REQUIRED"); return; }
         if (pending.expiresAt < System.currentTimeMillis()) {
             browserPairing = null; call.reject("The browser pairing session expired. Start it again.", "PAIRING_EXPIRED"); return;
         }
-        if (browserPairingCompleting) { JSObject result = new JSObject(); result.put("state", "pairing"); call.resolve(result); return; }
+        if (!pending.claimPoll()) { JSObject result=new JSObject(); result.put("state","pairing"); call.resolve(result); return; }
         Request request = new Request.Builder().url(pending.endpoint + "/v1/host/pairing-sessions/" + pending.sessionId)
             .header("Authorization", "Bearer " + pending.receiverSecret).get().build();
         http.newCall(request).enqueue(new Callback() {
-            @Override public void onFailure(Call ignored, IOException error) { call.reject("Could not check browser pairing.", "PAIRING_NETWORK_ERROR", error); }
+            @Override public void onFailure(Call ignored, IOException error) {
+                pending.releasePoll();
+                call.reject("Could not check browser pairing.", "PAIRING_NETWORK_ERROR", error);
+            }
             @Override public void onResponse(Call ignored, Response response) {
                 try (response) {
-                    if (response.code() == 202) { JSObject result = new JSObject(); result.put("state", "waiting"); result.put("expiresAt", pending.expiresAt); call.resolve(result); return; }
-                    if (!response.isSuccessful()) { call.reject("Browser pairing was rejected.", "PAIRING_REJECTED"); return; }
+                    synchronized (QcRelayPlugin.this) {
+                    if (browserPairing != pending) { call.reject("Browser pairing was superseded.","PAIRING_SUPERSEDED"); return; }
+                    if (response.code() == 202) { pending.releasePoll(); JSObject result = new JSObject(); result.put("state", "waiting"); result.put("expiresAt", pending.expiresAt); call.resolve(result); return; }
+                    if (!response.isSuccessful()) { pending.releasePoll(); call.reject("Browser pairing was rejected.", "PAIRING_REJECTED"); return; }
                     JSONObject payload = new JSONObject(response.body().string());
                     String pairingCode = payload.getString("pairingCode");
                     if (pairingCode.isEmpty()) throw new IllegalStateException("Relay returned an invalid browser pairing result.");
                     browserPairingCompleting = true;
                     pairWithCode(pending.endpoint, pairingCode, "QC Remote on Android", call, true);
-                } catch (Exception error) { call.reject("Could not complete browser pairing.", "PAIRING_STORAGE_ERROR", error); }
+                    }
+                } catch (Exception error) { pending.releasePoll(); call.reject("Could not complete browser pairing.", "PAIRING_STORAGE_ERROR", error); }
             }
         });
     }
@@ -238,6 +255,9 @@ public final class QcRelayPlugin extends Plugin {
     }
 
     private void beginPair(PluginCall call) {
+        if (new RelayCredentialStore(getContext()).hasPendingRevocation()) {
+            retryPendingRevocation(call, () -> beginPair(call)); return;
+        }
         String endpoint = normalizedEndpoint(call.getString("endpoint", ""));
         String pairingCode = call.getString("pairingCode", "").trim();
         String deviceName = call.getString("deviceName", "QC Remote on Android").trim();
@@ -253,6 +273,13 @@ public final class QcRelayPlugin extends Plugin {
         try {
             RelayCredentialStore pairingStore = new RelayCredentialStore(getContext());
             final RelayCredentialStore.Snapshot heldSnapshot = pairingStore.snapshot();
+            // Refuse before redeeming a code: a second replacement must not
+            // mint an orphan identity or discard its first predecessor.
+            if (pairingStore.hasUnacknowledgedReplacement()) {
+                browserPairingCompleting=false;
+                call.reject("Connect Remote to finish the pending replacement, or unpair this phone before pairing again.","PAIRING_REPLACEMENT_PENDING");
+                return;
+            }
             Request request = pairingRequest(endpoint,pairingCode,deviceName,heldSnapshot);
             if (fromBrowser) browserPairing=null; // Never redeem the same code again after an ambiguous response.
             pairingHttpClient(http).newCall(request).enqueue(new Callback() {
@@ -363,6 +390,8 @@ public final class QcRelayPlugin extends Plugin {
             .setMessage("Remote access keeps a secure connection to your Quad Cortex while " + getContext().getString(R.string.app_name) + " is in the background. "
                 + "Android requires one low-priority, ongoing notification for that connection. USB control does not use notifications.")
             .setNegativeButton("Not now", (dialog, which) -> call.reject(
+                "Notification permission is required while the remote relay is active.", "NOTIFICATION_PERMISSION_DENIED"))
+            .setOnCancelListener(dialog -> call.reject(
                 "Notification permission is required while the remote relay is active.", "NOTIFICATION_PERMISSION_DENIED"))
             .setPositiveButton("Continue", (dialog, which) -> requestPermissionForAlias("notifications", call, callback))
             .show());
@@ -486,7 +515,7 @@ public final class QcRelayPlugin extends Plugin {
         });
     }
 
-    /** Withdraw the pairing at the relay, then locally.
+    /** Clear local pairing first, retaining encrypted records until relay withdrawal is confirmed.
      *
      * Clearing only this phone's store left QC Remote Cloud honouring a
      * credential the person believes they have revoked, for ever: the relay had
@@ -494,48 +523,80 @@ public final class QcRelayPlugin extends Plugin {
      * cannot be reached, because someone who asked to unpair must never be left
      * paired by a network failure, and the reason is reported so they can retry
      * while the relay still holds it. */
-    @PluginMethod public void unpair(PluginCall call) {
+    @PluginMethod public synchronized void unpair(PluginCall call) {
         RelayCredentialStore store = new RelayCredentialStore(getContext());
-        final RelayCredentialStore.Snapshot unpairSnapshot;
-        try { unpairSnapshot=store.snapshot(); }
-        catch (Exception unavailable) { call.reject("Could not read the held pairing.","PAIRING_STORAGE_ERROR"); return; }
-        // A stored endpoint outside the relay allowlist never receives the
-        // credential, not even to revoke it; the local clear still runs.
-        String endpoint = normalizedEndpoint(store.endpoint());
-        String deviceId = store.deviceId();
-        String credential = null;
-        try { credential = store.credential(); } catch (Exception ignored) { }
+        final RelayCredentialStore.Snapshot pending;
+        try { pending=store.beginUnpair(store.snapshot()); }
+        catch (Exception unavailable) { call.reject("Could not durably unpair this phone.","PAIRING_STORAGE_ERROR"); return; }
+        browserPairingGeneration.incrementAndGet();
+        browserPairing = null; browserPairingCompleting = false; relayState = "stopped";
         getContext().startService(new Intent(getContext(), QcRelayService.class).setAction(QcRelayService.ACTION_STOP));
-        if (endpoint == null || deviceId == null || credential == null) {
-            finishUnpair(call, unpairSnapshot, null);
-            return;
+        withdrawPendingForUnpair(call,pending);
+    }
+
+    private void withdrawPendingForUnpair(PluginCall call, RelayCredentialStore.Snapshot pending) {
+        if (pending == null) { call.resolve(new JSObject()); return; }
+        String endpoint = normalizedEndpoint(pending.endpoint);
+        if (endpoint == null) {
+            // Never send a retired credential outside the native origin policy.
+            finishUnpair(call,pending,false); return;
         }
         Request request = new Request.Builder()
-            .url(endpoint + GeneratedRelayProfile.DEVICE_REVOKE_PATH + "?deviceId=" + Uri.encode(deviceId))
-            .header("Authorization", "Bearer " + credential)
+            .url(endpoint + GeneratedRelayProfile.DEVICE_REVOKE_PATH + "?deviceId=" + Uri.encode(pending.deviceId))
+            .header("Authorization", "Bearer " + pending.credential)
             .post(RequestBody.create(new byte[0], null)).build();
-        http.newCall(request).enqueue(new Callback() {
+        pairingHttpClient(http).newCall(request).enqueue(new Callback() {
             @Override public void onFailure(Call ignored, IOException error) {
-                finishUnpair(call, unpairSnapshot, "This phone was unpaired locally, but QC Remote Cloud could not be reached to withdraw the pairing. Unpair again while online.");
+                finishUnpair(call,pending,false);
             }
             @Override public void onResponse(Call ignored, Response response) {
                 try (response) {
-                    // A credential the relay no longer recognizes is already withdrawn.
                     boolean withdrawn = response.isSuccessful() || response.code() == 401 || response.code() == 403 || response.code() == 404;
-                    finishUnpair(call, unpairSnapshot, withdrawn ? null : "This phone was unpaired locally, but QC Remote Cloud did not confirm the pairing was withdrawn.");
+                    finishUnpair(call,pending,withdrawn);
                 }
             }
         });
     }
 
-    private void finishUnpair(PluginCall call, RelayCredentialStore.Snapshot expected, String warning) {
-        if (!new RelayCredentialStore(getContext()).clearIfCurrent(expected)) {
-            call.reject("Pairing changed while unpairing; the new pairing was retained.","PAIRING_SUPERSEDED"); return;
+    private void finishUnpair(PluginCall call, RelayCredentialStore.Snapshot pending, boolean withdrawn) {
+        try {
+            RelayCredentialStore store=new RelayCredentialStore(getContext());
+            boolean confirmed=withdrawn && store.completeRevocation(pending);
+            if (confirmed) { withdrawPendingForUnpair(call,store.pendingRevocation()); return; }
+            JSObject result = new JSObject();
+            if (!confirmed) result.put("warning", "This phone is unpaired locally. Its encrypted withdrawal record was retained; retry pairing while online to finish withdrawing the cloud pairing first.");
+            call.resolve(result);
+        } catch (Exception unavailable) {
+            call.reject("This phone is unpaired locally, but cloud withdrawal could not be confirmed. Retry pairing while online to finish withdrawing the cloud pairing first.","PAIRING_STORAGE_ERROR");
         }
-        browserPairing = null; browserPairingCompleting = false; relayState = "stopped";
-        JSObject result = new JSObject();
-        if (warning != null) result.put("warning", warning);
-        call.resolve(result);
+    }
+    /** A locally unpaired phone still offers Pair in the UI. Drain its bounded
+     * encrypted pending withdrawals before starting a new sign-in. */
+    private void retryPendingRevocation(PluginCall call, Runnable next) {
+        final RelayCredentialStore.Snapshot pending;
+        try { pending=new RelayCredentialStore(getContext()).pendingRevocation(); }
+        catch (Exception unavailable) { call.reject("Could not read pending cloud withdrawal.","PAIRING_STORAGE_ERROR"); return; }
+        if (pending == null) { next.run(); return; }
+        String endpoint=normalizedEndpoint(pending.endpoint);
+        if (endpoint == null) { call.reject("The pending withdrawal origin is not allowed.","INVALID_PAIRING"); return; }
+        Request request=new Request.Builder()
+            .url(endpoint + GeneratedRelayProfile.DEVICE_REVOKE_PATH + "?deviceId=" + Uri.encode(pending.deviceId))
+            .header("Authorization","Bearer " + pending.credential)
+            .post(RequestBody.create(new byte[0],null)).build();
+        pairingHttpClient(http).newCall(request).enqueue(new Callback() {
+            @Override public void onFailure(Call ignored, IOException error) {
+                call.reject("Could not withdraw the old cloud pairing. Retry pairing while online.","PAIRING_REVOCATION_PENDING");
+            }
+            @Override public void onResponse(Call ignored, Response response) {
+                try (response) {
+                    boolean withdrawn=response.isSuccessful() || response.code()==401 || response.code()==403 || response.code()==404;
+                    if (!withdrawn || !new RelayCredentialStore(getContext()).completeRevocation(pending)) {
+                        call.reject("Old cloud pairing withdrawal was not confirmed. Retry while online.","PAIRING_REVOCATION_PENDING"); return;
+                    }
+                    retryPendingRevocation(call,next);
+                } catch (Exception unavailable) { call.reject("Could not confirm pending cloud withdrawal.","PAIRING_STORAGE_ERROR"); }
+            }
+        });
     }
 
     private void startService() {
@@ -548,17 +609,22 @@ public final class QcRelayPlugin extends Plugin {
         return RelayEndpointPolicy.normalize(raw, BuildConfig.DEBUG);
     }
 
-    private static final class BrowserPairing {
+    static final class BrowserPairing {
         final String endpoint;
         final String sessionId;
         final String receiverSecret;
         final long expiresAt;
+        private final java.util.concurrent.atomic.AtomicBoolean polling = new java.util.concurrent.atomic.AtomicBoolean();
+        boolean claimPoll() { return polling.compareAndSet(false,true); }
+        void releasePoll() { polling.set(false); }
         BrowserPairing(String endpoint, String sessionId, String receiverSecret, long expiresAt) {
             this.endpoint = endpoint; this.sessionId = sessionId; this.receiverSecret = receiverSecret; this.expiresAt = expiresAt;
         }
     }
 
-    @Override protected void handleOnDestroy() {
+    @Override protected synchronized void handleOnDestroy() {
+        browserPairingGeneration.incrementAndGet(); browserPairing=null; browserPairingCompleting=false;
+        http.dispatcher().cancelAll();
         try { getContext().unregisterReceiver(statusReceiver); } catch (Exception ignored) {}
         http.dispatcher().executorService().shutdown(); super.handleOnDestroy();
     }

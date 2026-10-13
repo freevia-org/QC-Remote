@@ -180,7 +180,9 @@ test("MCP and relay access defaults to full control and enforces four tiers", ()
   assert.match(servicesSource, /publicRelay: PublicRelayPort/);
   assert.match(appSource, /publicRelay\.browserPairing!\.begin\(\)/);
   assert.match(appSource, /publicRelay\.browserPairing!\.poll\(\)/);
-  assert.match(appSource, /if \(result\.state === "paired"\)/);
+  const pairingPollSource = readFileSync(new URL("./browser-pairing-poll.ts", import.meta.url), "utf8");
+  assert.match(appSource, /createBrowserPairingPoll\(\{/);
+  assert.match(pairingPollSource, /!disposed && result\.state === "paired"/);
   assert.doesNotMatch(appSource, /result\.paired/);
   assert.doesNotMatch(appSource, /QcRelayNative\.(beginBrowserPairing|pollBrowserPairing)/);
   assert.match(servicesSource, /beginBrowserPairing\(\{ endpoint: QC_BRAND\.publicRelayEndpoint \}\)/);
