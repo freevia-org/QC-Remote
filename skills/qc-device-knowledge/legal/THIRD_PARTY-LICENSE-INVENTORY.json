@@ -306,6 +306,17 @@
     {
       "ecosystem": "cargo",
       "name": "base64",
+      "version": "0.21.7",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/marshallpierce/rust-base64",
+      "licenseTextHashes": [
+        "6a8da4c78c729176907b068222cc6e8e612b09c7345628c98cbceb22c0f06979",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "base64",
       "version": "0.22.1",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/marshallpierce/rust-base64",
@@ -404,6 +415,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "block2",
+      "version": "0.6.2",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "blocking",
       "version": "1.7.0",
       "license": "Apache-2.0 OR MIT",
@@ -422,6 +444,28 @@
       "licenseTextHashes": [
         "67047503c71f90918a89209a99aaacd9db2d28a6ab6bc6568b8506bcbab5d9d8",
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "bytemuck",
+      "version": "1.25.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/Lokathor/bytemuck",
+      "licenseTextHashes": [
+        "0e3cbff251c122b9dc79d8193e04f631640c3dbaa90faaae9a439ebf8cda96cb",
+        "943f36fd309fb5ea67a82f577433f4ed3bc877e5b00f9b874e2f8b7f72bf0bdc",
+        "dfbd1c2a36dcf9af64e31f070485c57a51961a2767ed0a48541ec065a9c3a5f1"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "byteorder-lite",
+      "version": "0.1.0",
+      "license": "Unlicense OR MIT",
+      "sourceUrl": "https://github.com/image-rs/byteorder-lite",
+      "licenseTextHashes": [
+        "154c1af2b38e25e5c18613dfe352eed29b0863cb39e494007822cdeb39150ac5"
       ]
     },
     {
@@ -665,6 +709,62 @@
       "sourceUrl": "https://github.com/thomcc/core_detect",
       "licenseTextHashes": [
         "57895cdbc8febf233f2296b27ee98593e57f974896a4216b4a9629f5bd953f1d",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "core-foundation-sys",
+      "version": "0.8.7",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/servo/core-foundation-rs",
+      "licenseTextHashes": [
+        "3bfacc197ff245b6217891d481f11cf9be791a06baa086ba1f80c80a2273e947",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "core-foundation",
+      "version": "0.10.1",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/servo/core-foundation-rs",
+      "licenseTextHashes": [
+        "3bfacc197ff245b6217891d481f11cf9be791a06baa086ba1f80c80a2273e947",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "core-foundation",
+      "version": "0.9.4",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/servo/core-foundation-rs",
+      "licenseTextHashes": [
+        "3bfacc197ff245b6217891d481f11cf9be791a06baa086ba1f80c80a2273e947",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "core-graphics-types",
+      "version": "0.2.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/servo/core-foundation-rs",
+      "licenseTextHashes": [
+        "3bfacc197ff245b6217891d481f11cf9be791a06baa086ba1f80c80a2273e947",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "core-graphics",
+      "version": "0.25.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/servo/core-foundation-rs",
+      "licenseTextHashes": [
+        "3bfacc197ff245b6217891d481f11cf9be791a06baa086ba1f80c80a2273e947",
+        "537db907352420cef04106e138b6b9a62c23c0acdb5909319deb6d4183b339d0",
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
       ]
     },
@@ -992,6 +1092,19 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "dispatch2",
+      "version": "0.3.1",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
+        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
+        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "displaydoc",
       "version": "0.2.7",
       "license": "MIT OR Apache-2.0",
@@ -1115,6 +1228,17 @@
       "licenseTextHashes": [
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
         "fdd1c2117bcf8157d1d013d0953c0a7e6e5fab73df9e36773cd77634428568eb"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "embed_plist",
+      "version": "1.2.2",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/nvzqz/embed-plist-rs",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "a29c4d8a8e7cebc9cc2da596d149a14e1f42f2cbf020d1384b8695bb25bb597d"
       ]
     },
     {
@@ -1346,6 +1470,39 @@
       "sourceUrl": "https://github.com/orlp/foldhash",
       "licenseTextHashes": [
         "b1181a40b2a7b25cf66fd01481713bc1005df082c53ef73e851e55071b102744"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "foreign-types-macros",
+      "version": "0.2.4",
+      "license": "MIT/Apache-2.0",
+      "sourceUrl": "https://github.com/sfackler/foreign-types",
+      "licenseTextHashes": [
+        "6dc0e068dcf3a5bc8e054205b85b7720e1d49265bbc64bf515d2cf79197df69a",
+        "c9067b1cc20b89f5ab1a690ef204e81cc030a636ee11d60613ea03c62e326e27"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "foreign-types-shared",
+      "version": "0.3.1",
+      "license": "MIT/Apache-2.0",
+      "sourceUrl": "https://github.com/sfackler/foreign-types",
+      "licenseTextHashes": [
+        "6dc0e068dcf3a5bc8e054205b85b7720e1d49265bbc64bf515d2cf79197df69a",
+        "c9067b1cc20b89f5ab1a690ef204e81cc030a636ee11d60613ea03c62e326e27"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "foreign-types",
+      "version": "0.5.0",
+      "license": "MIT/Apache-2.0",
+      "sourceUrl": "https://github.com/sfackler/foreign-types",
+      "licenseTextHashes": [
+        "6dc0e068dcf3a5bc8e054205b85b7720e1d49265bbc64bf515d2cf79197df69a",
+        "c9067b1cc20b89f5ab1a690ef204e81cc030a636ee11d60613ea03c62e326e27"
       ]
     },
     {
@@ -2000,6 +2157,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "image",
+      "version": "0.25.10",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/image-rs/image",
+      "licenseTextHashes": [
+        "4bf96504d6e83ce5c6fc7167f1795d9ceaa68e70ab86bc5d08ab93184262bbbe",
+        "77949ead506e84e3ff5c31f784bdc17b6c4095d4102edae05dc5557ef6c61c8c"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "indexmap",
       "version": "1.9.3",
       "license": "Apache-2.0 OR MIT",
@@ -2282,6 +2450,28 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "libappindicator-sys",
+      "version": "0.9.0",
+      "license": "Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/tauri-apps/libappindicator-rs",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
+        "d2c4a2667e88ca68ced937efa2768130e147896bcf8d9bcaaa7aeb19124a76ba"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "libappindicator",
+      "version": "0.9.0",
+      "license": "Apache-2.0 OR MIT",
+      "sourceUrl": "https://crates.io/crates/libappindicator/0.9.0",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
+        "d2c4a2667e88ca68ced937efa2768130e147896bcf8d9bcaaa7aeb19124a76ba"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "libc",
       "version": "0.2.189",
       "license": "MIT OR Apache-2.0",
@@ -2483,6 +2673,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "moxcms",
+      "version": "0.8.1",
+      "license": "BSD-3-Clause OR Apache-2.0",
+      "sourceUrl": "https://github.com/awxkee/moxcms.git",
+      "licenseTextHashes": [
+        "2aa92cada6431e75615e3fe6cb1a9082c98f777d48ae1c087c0da0e37f7b8bff",
+        "836a9c1227c6446925bee567ecfbcd4620780b4cc020c2c6019ba4b8d1295520"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "muda",
       "version": "0.19.3",
       "license": "Apache-2.0 OR MIT",
@@ -2578,6 +2779,117 @@
       "licenseTextHashes": [
         "14435fbcd271e2783f721b57b7bf4f6502c1379249a4300e0e5bb774686c2d90",
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "objc2-app-kit",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
+        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
+        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "objc2-core-foundation",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
+        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
+        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "objc2-core-graphics",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
+        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
+        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "objc2-encode",
+      "version": "4.1.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "objc2-exception-helper",
+      "version": "0.1.1",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
+        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
+        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "objc2-foundation",
+      "version": "0.3.2",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "objc2-io-surface",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
+        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
+        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "objc2-web-kit",
+      "version": "0.3.2",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
+        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
+        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "objc2",
+      "version": "0.6.4",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/madsmtm/objc2",
+      "licenseTextHashes": [
+        "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
       ]
     },
     {
@@ -2809,6 +3121,17 @@
       "ecosystem": "cargo",
       "name": "png",
       "version": "0.17.16",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/image-rs/image-png",
+      "licenseTextHashes": [
+        "80cdd90699e446abbe50d005e6c4de2a827a5f6dce34deacce04900c7a825ecf",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "png",
+      "version": "0.18.1",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/image-rs/image-png",
       "licenseTextHashes": [
@@ -3085,6 +3408,17 @@
       "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
       "licenseTextHashes": [
         "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "pxfm",
+      "version": "0.1.30",
+      "license": "BSD-3-Clause OR Apache-2.0",
+      "sourceUrl": "https://github.com/awxkee/pxfm",
+      "licenseTextHashes": [
+        "2aa92cada6431e75615e3fe6cb1a9082c98f777d48ae1c087c0da0e37f7b8bff",
+        "836a9c1227c6446925bee567ecfbcd4620780b4cc020c2c6019ba4b8d1295520"
       ]
     },
     {
@@ -3579,6 +3913,28 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "security-framework-sys",
+      "version": "2.17.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/kornelski/rust-security-framework",
+      "licenseTextHashes": [
+        "37412fff76e3ad06d95d677566b2b771ad595aada257e204eaf040ca938bcb62",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "security-framework",
+      "version": "3.7.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/kornelski/rust-security-framework",
+      "licenseTextHashes": [
+        "37412fff76e3ad06d95d677566b2b771ad595aada257e204eaf040ca938bcb62",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "selectors",
       "version": "0.38.0",
       "license": "MPL-2.0",
@@ -4012,6 +4368,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "swift-rs",
+      "version": "1.0.8",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/Brendonovich/swift-rs",
+      "licenseTextHashes": [
+        "7593ea50d2d4010bd27f36dd240008bd9161a0764fd8ef418e87a225581a3635",
+        "e88bc3fa7f782130b10f9459373525dcad8f8c89ccf8ff2350627601f63cdec7"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "syn",
       "version": "1.0.109",
       "license": "MIT OR Apache-2.0",
@@ -4082,6 +4449,28 @@
       "sourceUrl": "https://github.com/mystor/synstructure",
       "licenseTextHashes": [
         "3a036676ec8c0dba1c24b96f83595456280b7a754ddee64585dd8048ed2b087f"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "system-configuration-sys",
+      "version": "0.6.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/mullvad/system-configuration-rs",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
+        "eefdbe714980ed704315f1e083d308f0ee742b21b9d6a499eac2791f58c5b99d"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "system-configuration",
+      "version": "0.7.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/mullvad/system-configuration-rs",
+      "licenseTextHashes": [
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
+        "eefdbe714980ed704315f1e083d308f0ee742b21b9d6a499eac2791f58c5b99d"
       ]
     },
     {
@@ -4665,6 +5054,18 @@
       "sourceUrl": "https://github.com/tokio-rs/tracing",
       "licenseTextHashes": [
         "c1e08ee9a7288bf649d6a78f6079006333df4212f5fcda85be1a0a451f71852d"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "tray-icon",
+      "version": "0.24.2",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/tauri-apps/tray-icon",
+      "licenseTextHashes": [
+        "6c1e5d0ccf5e8951401cb964036ae664d52fc8d1148173b53bc54fc534f5d404",
+        "859a90323b684e4618786eb5affa0454d3a14872d433f0bb7e70e8e6f05d8ad4",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
       ]
     },
     {
@@ -7889,6 +8290,25 @@
       ]
     },
     {
+      "sha256": "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
+      "names": [
+        "https://github.com/spdx/license-list-data/blob/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/MIT.txt (SHA-256 b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5)"
+      ],
+      "components": [
+        "cargo:block2@0.6.2",
+        "cargo:dispatch2@0.3.1",
+        "cargo:objc2-app-kit@0.3.2",
+        "cargo:objc2-core-foundation@0.3.2",
+        "cargo:objc2-core-graphics@0.3.2",
+        "cargo:objc2-encode@4.1.0",
+        "cargo:objc2-exception-helper@0.1.1",
+        "cargo:objc2-foundation@0.3.2",
+        "cargo:objc2-io-surface@0.3.2",
+        "cargo:objc2-web-kit@0.3.2",
+        "cargo:objc2@0.6.4"
+      ]
+    },
+    {
       "sha256": "0a540eaff38cd9d75d284b00c8323501e5af8248b12a58aa0ddb3d88a559fad4",
       "names": [
         "LICENSE"
@@ -7904,6 +8324,15 @@
       ],
       "components": [
         "cargo:idna_adapter@1.2.2"
+      ]
+    },
+    {
+      "sha256": "0e3cbff251c122b9dc79d8193e04f631640c3dbaa90faaae9a439ebf8cda96cb",
+      "names": [
+        "LICENSE-APACHE"
+      ],
+      "components": [
+        "cargo:bytemuck@1.25.2"
       ]
     },
     {
@@ -7995,6 +8424,7 @@
       ],
       "components": [
         "cargo:aho-corasick@1.1.5",
+        "cargo:byteorder-lite@0.1.0",
         "cargo:byteorder@1.5.0",
         "cargo:csv-core@0.1.13",
         "cargo:csv@1.4.0",
@@ -8074,6 +8504,28 @@
       "components": [
         "cargo:zlib-rs@0.6.7",
         "cargo:zlib-rs@0.6.8"
+      ]
+    },
+    {
+      "sha256": "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
+      "names": [
+        "https://github.com/madsmtm/objc2/blob/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md (SHA-256 7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54)",
+        "https://github.com/madsmtm/objc2/blob/8852b424193ca41602281b3d7540d7c8ed51e49a/LICENSE.md (SHA-256 7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54)",
+        "https://github.com/madsmtm/objc2/blob/8d214f5477365ffcbcbb7de058c86ed9a518efb7/LICENSE.md (SHA-256 7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54)",
+        "https://github.com/madsmtm/objc2/blob/b4167b582b2f75f9a1be75495c41b765344fd03c/LICENSE.md (SHA-256 7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54)"
+      ],
+      "components": [
+        "cargo:block2@0.6.2",
+        "cargo:dispatch2@0.3.1",
+        "cargo:objc2-app-kit@0.3.2",
+        "cargo:objc2-core-foundation@0.3.2",
+        "cargo:objc2-core-graphics@0.3.2",
+        "cargo:objc2-encode@4.1.0",
+        "cargo:objc2-exception-helper@0.1.1",
+        "cargo:objc2-foundation@0.3.2",
+        "cargo:objc2-io-surface@0.3.2",
+        "cargo:objc2-web-kit@0.3.2",
+        "cargo:objc2@0.6.4"
       ]
     },
     {
@@ -8359,6 +8811,7 @@
       ],
       "components": [
         "cargo:basic-udev@0.1.2",
+        "cargo:embed_plist@1.2.2",
         "cargo:encoding_rs@0.8.35",
         "cargo:encoding_rs@0.8.41",
         "cargo:lru-slab@0.1.2",
@@ -8463,6 +8916,16 @@
       ],
       "components": [
         "cargo:rustls-native-certs@0.8.4"
+      ]
+    },
+    {
+      "sha256": "2aa92cada6431e75615e3fe6cb1a9082c98f777d48ae1c087c0da0e37f7b8bff",
+      "names": [
+        "LICENSE.md"
+      ],
+      "components": [
+        "cargo:moxcms@0.8.1",
+        "cargo:pxfm@0.1.30"
       ]
     },
     {
@@ -8724,6 +9187,16 @@
       ]
     },
     {
+      "sha256": "37412fff76e3ad06d95d677566b2b771ad595aada257e204eaf040ca938bcb62",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:security-framework-sys@2.17.0",
+        "cargo:security-framework@3.7.0"
+      ]
+    },
+    {
       "sha256": "381f992f70f7089ddd7c450295f7a3c5e7ee776ded8771991281a6b146c5e5b9",
       "names": [
         "LICENSE"
@@ -8769,6 +9242,11 @@
         "LICENSE-MIT"
       ],
       "components": [
+        "cargo:core-foundation-sys@0.8.7",
+        "cargo:core-foundation@0.10.1",
+        "cargo:core-foundation@0.9.4",
+        "cargo:core-graphics-types@0.2.0",
+        "cargo:core-graphics@0.25.0",
         "cargo:string_cache@0.9.0",
         "cargo:string_cache_codegen@0.6.1"
       ]
@@ -9002,6 +9480,7 @@
       "components": [
         "cargo:fdeflate@0.3.7",
         "cargo:field-offset@0.3.6",
+        "cargo:image@0.25.10",
         "cargo:miniz_oxide@0.8.9",
         "cargo:miniz_oxide@0.9.1",
         "cargo:num-conv@0.2.2",
@@ -9077,6 +9556,15 @@
       ],
       "components": [
         "cargo:bytes@1.12.1"
+      ]
+    },
+    {
+      "sha256": "537db907352420cef04106e138b6b9a62c23c0acdb5909319deb6d4183b339d0",
+      "names": [
+        "COPYRIGHT"
+      ],
+      "components": [
+        "cargo:core-graphics@0.25.0"
       ]
     },
     {
@@ -9291,6 +9779,7 @@
         "LICENSE-MIT"
       ],
       "components": [
+        "cargo:base64@0.21.7",
         "cargo:base64@0.22.1"
       ]
     },
@@ -9319,6 +9808,15 @@
       ],
       "components": [
         "cargo:jni@0.21.1"
+      ]
+    },
+    {
+      "sha256": "6c1e5d0ccf5e8951401cb964036ae664d52fc8d1148173b53bc54fc534f5d404",
+      "names": [
+        "LICENSE.spdx"
+      ],
+      "components": [
+        "cargo:tray-icon@0.24.2"
       ]
     },
     {
@@ -9351,6 +9849,9 @@
         "cargo:crc32fast@1.5.2",
         "cargo:ctor@1.0.13",
         "cargo:dpi@0.1.2",
+        "cargo:foreign-types-macros@0.2.4",
+        "cargo:foreign-types-shared@0.3.1",
+        "cargo:foreign-types@0.5.0",
         "cargo:hex@0.4.3",
         "cargo:jni-sys-macros@0.4.1",
         "cargo:jni-sys@0.3.1",
@@ -9448,6 +9949,15 @@
       ]
     },
     {
+      "sha256": "7593ea50d2d4010bd27f36dd240008bd9161a0764fd8ef418e87a225581a3635",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:swift-rs@1.0.8"
+      ]
+    },
+    {
       "sha256": "76c0e37c107dd35a99628d1c9817a685668b89d1c2a465d0d898bacd7eb94475",
       "names": [
         "COPYRIGHT"
@@ -9472,7 +9982,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:fdeflate@0.3.7"
+        "cargo:fdeflate@0.3.7",
+        "cargo:image@0.25.10"
       ]
     },
     {
@@ -9645,7 +10156,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:png@0.17.16"
+        "cargo:png@0.17.16",
+        "cargo:png@0.18.1"
       ]
     },
     {
@@ -9664,6 +10176,16 @@
       ],
       "components": [
         "cargo:webbrowser@1.2.4"
+      ]
+    },
+    {
+      "sha256": "836a9c1227c6446925bee567ecfbcd4620780b4cc020c2c6019ba4b8d1295520",
+      "names": [
+        "LICENSE-APACHE.md"
+      ],
+      "components": [
+        "cargo:moxcms@0.8.1",
+        "cargo:pxfm@0.1.30"
       ]
     },
     {
@@ -9711,7 +10233,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:muda@0.19.3"
+        "cargo:muda@0.19.3",
+        "cargo:tray-icon@0.24.2"
       ]
     },
     {
@@ -9904,11 +10427,28 @@
       ]
     },
     {
+      "sha256": "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
+      "names": [
+        "https://github.com/spdx/license-list-data/blob/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/Zlib.txt (SHA-256 bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d)"
+      ],
+      "components": [
+        "cargo:dispatch2@0.3.1",
+        "cargo:objc2-app-kit@0.3.2",
+        "cargo:objc2-core-foundation@0.3.2",
+        "cargo:objc2-core-graphics@0.3.2",
+        "cargo:objc2-exception-helper@0.1.1",
+        "cargo:objc2-io-surface@0.3.2",
+        "cargo:objc2-web-kit@0.3.2"
+      ]
+    },
+    {
       "sha256": "943f36fd309fb5ea67a82f577433f4ed3bc877e5b00f9b874e2f8b7f72bf0bdc",
       "names": [
+        "LICENSE-ZLIB",
         "LICENSE-ZLIB.md"
       ],
       "components": [
+        "cargo:bytemuck@1.25.2",
         "cargo:tinyvec@1.12.0",
         "cargo:tinyvec@1.13.3"
       ]
@@ -9926,7 +10466,8 @@
       "sha256": "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
       "names": [
         "LICENSE",
-        "LICENSE-APACHE"
+        "LICENSE-APACHE",
+        "https://github.com/tauri-apps/libappindicator-rs/blob/eafd1e3682a1247f595410266091e9684021cb6f/LICENSE-APACHE (SHA-256 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76)"
       ],
       "components": [
         "cargo:async-channel@2.5.0",
@@ -9941,6 +10482,7 @@
         "cargo:async-task@4.7.1",
         "cargo:atomic-waker@1.1.2",
         "cargo:autocfg@1.5.1",
+        "cargo:base64@0.21.7",
         "cargo:base64@0.22.1",
         "cargo:base64@0.23.1",
         "cargo:bitflags@1.3.2",
@@ -9955,6 +10497,11 @@
         "cargo:cfg-if@1.0.5",
         "cargo:cmake@0.1.58",
         "cargo:concurrent-queue@2.5.0",
+        "cargo:core-foundation-sys@0.8.7",
+        "cargo:core-foundation@0.10.1",
+        "cargo:core-foundation@0.9.4",
+        "cargo:core-graphics-types@0.2.0",
+        "cargo:core-graphics@0.25.0",
         "cargo:core_detect@1.0.0",
         "cargo:crossbeam-channel@0.5.16",
         "cargo:crossbeam-utils@0.8.22",
@@ -9992,6 +10539,8 @@
         "cargo:jni@0.21.1",
         "cargo:jobserver@0.1.35",
         "cargo:keyboard-types@0.7.0",
+        "cargo:libappindicator-sys@0.9.0",
+        "cargo:libappindicator@0.9.0",
         "cargo:linux-raw-sys@0.12.1",
         "cargo:lock_api@0.4.14",
         "cargo:log@0.4.34",
@@ -10011,6 +10560,7 @@
         "cargo:piper@0.2.5",
         "cargo:pkg-config@0.3.34",
         "cargo:png@0.17.16",
+        "cargo:png@0.18.1",
         "cargo:polling@3.11.0",
         "cargo:pollster@0.4.0",
         "cargo:prost-build@0.14.4",
@@ -10027,6 +10577,8 @@
         "cargo:rustls@0.23.45",
         "cargo:scoped-tls@1.0.1",
         "cargo:scopeguard@1.2.0",
+        "cargo:security-framework-sys@2.17.0",
+        "cargo:security-framework@3.7.0",
         "cargo:serde_with@3.22.0",
         "cargo:serde_with_macros@3.22.0",
         "cargo:servo_arc@0.4.3",
@@ -10039,10 +10591,13 @@
         "cargo:string_cache@0.9.0",
         "cargo:string_cache_codegen@0.6.1",
         "cargo:syn@1.0.109",
+        "cargo:system-configuration-sys@0.6.0",
+        "cargo:system-configuration@0.7.0",
         "cargo:system-deps@6.2.2",
         "cargo:tempfile@3.27.0",
         "cargo:tendril@0.5.1",
         "cargo:toml_datetime@0.6.3",
+        "cargo:tray-icon@0.24.2",
         "cargo:tungstenite@0.28.0",
         "cargo:unicode-segmentation@1.13.3",
         "cargo:url@2.5.8",
@@ -10194,6 +10749,15 @@
       ],
       "components": [
         "cargo:adler2@2.0.1"
+      ]
+    },
+    {
+      "sha256": "a29c4d8a8e7cebc9cc2da596d149a14e1f42f2cbf020d1384b8695bb25bb597d",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:embed_plist@1.2.2"
       ]
     },
     {
@@ -10581,6 +11145,21 @@
       ]
     },
     {
+      "sha256": "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c",
+      "names": [
+        "https://github.com/spdx/license-list-data/blob/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/Apache-2.0.txt (SHA-256 074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff)"
+      ],
+      "components": [
+        "cargo:dispatch2@0.3.1",
+        "cargo:objc2-app-kit@0.3.2",
+        "cargo:objc2-core-foundation@0.3.2",
+        "cargo:objc2-core-graphics@0.3.2",
+        "cargo:objc2-exception-helper@0.1.1",
+        "cargo:objc2-io-surface@0.3.2",
+        "cargo:objc2-web-kit@0.3.2"
+      ]
+    },
+    {
       "sha256": "c3df7fccc8e579715eba93d78aece4158a11d95de9d2103b3827fdf2a89a95a2",
       "names": [
         "LICENSE-MIT"
@@ -10682,6 +11261,17 @@
       ],
       "components": [
         "cargo:rand_core@0.10.1"
+      ]
+    },
+    {
+      "sha256": "c9067b1cc20b89f5ab1a690ef204e81cc030a636ee11d60613ea03c62e326e27",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:foreign-types-macros@0.2.4",
+        "cargo:foreign-types-shared@0.3.1",
+        "cargo:foreign-types@0.5.0"
       ]
     },
     {
@@ -10856,6 +11446,17 @@
       ]
     },
     {
+      "sha256": "d2c4a2667e88ca68ced937efa2768130e147896bcf8d9bcaaa7aeb19124a76ba",
+      "names": [
+        "LICENSE-MIT",
+        "https://github.com/tauri-apps/libappindicator-rs/blob/eafd1e3682a1247f595410266091e9684021cb6f/LICENSE-MIT (SHA-256 d2c4a2667e88ca68ced937efa2768130e147896bcf8d9bcaaa7aeb19124a76ba)"
+      ],
+      "components": [
+        "cargo:libappindicator-sys@0.9.0",
+        "cargo:libappindicator@0.9.0"
+      ]
+    },
+    {
       "sha256": "d30183ec6610abca89d6095d5f1dc56ea50248a1001cbb4549fadc3a582f6f9a",
       "names": [
         "LICENSE"
@@ -10950,6 +11551,15 @@
       ]
     },
     {
+      "sha256": "dfbd1c2a36dcf9af64e31f070485c57a51961a2767ed0a48541ec065a9c3a5f1",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:bytemuck@1.25.2"
+      ]
+    },
+    {
       "sha256": "e07664cb9e31644242c7c178258826374a0533c384de181cb87d17179a2dc077",
       "names": [
         "LICENSE-LIBM-MIT"
@@ -11019,6 +11629,15 @@
         "cargo:digest@0.10.7",
         "cargo:sha1@0.10.7",
         "cargo:sha2@0.10.9"
+      ]
+    },
+    {
+      "sha256": "e88bc3fa7f782130b10f9459373525dcad8f8c89ccf8ff2350627601f63cdec7",
+      "names": [
+        "LICENSE-APACHE"
+      ],
+      "components": [
+        "cargo:swift-rs@1.0.8"
       ]
     },
     {
@@ -11105,6 +11724,16 @@
       ],
       "components": [
         "cargo:tower-http@0.6.11"
+      ]
+    },
+    {
+      "sha256": "eefdbe714980ed704315f1e083d308f0ee742b21b9d6a499eac2791f58c5b99d",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:system-configuration-sys@0.6.0",
+        "cargo:system-configuration@0.7.0"
       ]
     },
     {

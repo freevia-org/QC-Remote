@@ -62,8 +62,12 @@ export const SOURCE_OFFER = 'legal/THIRD_PARTY-SOURCE-OFFER.md';
 export const SHIPPED_CARGO_ROOTS = [
   { manifest: 'apps/windows/src-tauri/Cargo.toml', target: 'x86_64-pc-windows-msvc', features: 'tray-sidecar' },
   { manifest: 'apps/windows/src-tauri/Cargo.toml', target: 'x86_64-unknown-linux-gnu', features: 'tray-sidecar' },
+  { manifest: 'apps/windows/src-tauri/Cargo.toml', target: 'x86_64-apple-darwin', features: 'tray-sidecar' },
+  { manifest: 'apps/windows/src-tauri/Cargo.toml', target: 'aarch64-apple-darwin', features: 'tray-sidecar' },
   { manifest: 'services/device-broker/Cargo.toml', target: 'x86_64-pc-windows-msvc' },
   { manifest: 'services/device-broker/Cargo.toml', target: 'x86_64-unknown-linux-gnu' },
+  { manifest: 'services/device-broker/Cargo.toml', target: 'x86_64-apple-darwin' },
+  { manifest: 'services/device-broker/Cargo.toml', target: 'aarch64-apple-darwin' },
   { manifest: 'packages/rust/quadcortex-android/Cargo.toml', target: 'aarch64-linux-android' },
 ];
 export const SHIPPED_NPM_ROOTS = ['apps/windows', 'apps/android'];

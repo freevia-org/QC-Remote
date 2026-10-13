@@ -254,8 +254,7 @@ pub(super) fn set_run_entry(executable: &Path, directory: &Path) -> Result<(), S
         .status()
         .is_ok_and(|status| status.success());
     let changed = existing_contents.as_deref() != Some(contents.as_str());
-    let resident_running =
-        is_running(directory) || super::serving_broker_published(directory);
+    let resident_running = is_running(directory) || super::serving_broker_published(directory);
     register_launch_agent(
         &path,
         &domain,
@@ -439,8 +438,8 @@ fn xml_escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{launch_agent, register_launch_agent, LABEL, OWNERSHIP};
-    use std::ffi::OsString;
     use plist::Value;
+    use std::ffi::OsString;
     use std::path::Path;
 
     fn rendered_calls(calls: &[Vec<OsString>]) -> Vec<Vec<String>> {
@@ -475,11 +474,15 @@ mod tests {
         assert_eq!(
             rendered_calls(&calls),
             vec![
-                vec!["bootout".to_owned(), "gui/501/org.freevia.qcremote.resident".to_owned()],
+                vec![
+                    "bootout".to_owned(),
+                    "gui/501/org.freevia.qcremote.resident".to_owned()
+                ],
                 vec![
                     "bootstrap".to_owned(),
                     "gui/501".to_owned(),
-                    "/Users/example/Library/LaunchAgents/org.freevia.qcremote.resident.plist".to_owned()
+                    "/Users/example/Library/LaunchAgents/org.freevia.qcremote.resident.plist"
+                        .to_owned()
                 ]
             ]
         );
@@ -580,7 +583,10 @@ mod tests {
         assert_eq!(
             rendered_calls(&calls),
             vec![
-                vec!["bootout".to_owned(), "gui/501/org.freevia.qcremote.resident".to_owned()],
+                vec![
+                    "bootout".to_owned(),
+                    "gui/501/org.freevia.qcremote.resident".to_owned()
+                ],
                 vec![
                     "bootstrap".to_owned(),
                     "gui/501".to_owned(),
