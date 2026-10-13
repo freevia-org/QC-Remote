@@ -58,6 +58,48 @@ pub(super) fn locate() -> Result<PathBuf, String> {
     .ok_or_else(|| "The qc-device-broker macOS sidecar is missing beside QC Remote".to_owned())
 }
 
+pub(super) fn validate_run_entry_location(executable: &Path) -> Result<(), String> {
+    validate_installed_app_location(executable, &std::env::var_os("HOME").map(PathBuf::from))
+}
+
+/// Login jobs must point at a bundle that remains available after a disk image
+/// is ejected or a downloaded app is moved. Only direct children of the two
+/// conventional Applications folders are supported; resolve firmlinks and
+/// symlinks before comparing so `/Applications` works on modern macOS too.
+fn validate_installed_app_location(
+    executable: &Path,
+    home: &Option<PathBuf>,
+) -> Result<(), String> {
+    let bundle = executable
+        .parent()
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name == std::ffi::OsStr::new("MacOS"))
+        })
+        .and_then(Path::parent)
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name == std::ffi::OsStr::new("Contents"))
+        })
+        .and_then(Path::parent)
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == std::ffi::OsStr::new("app"))
+        })
+        .and_then(|path| path.canonicalize().ok());
+    let supported_roots = std::iter::once(PathBuf::from("/Applications"))
+        .chain(home.iter().map(|home| home.join("Applications")))
+        .filter_map(|path| path.canonicalize().ok());
+    if bundle.as_ref().is_some_and(|bundle| {
+        supported_roots
+            .into_iter()
+            .any(|root| bundle.parent() == Some(root.as_path()))
+    }) {
+        return Ok(());
+    }
+    Err("QC Remote cannot enable its background login item from this location. Move QC Remote.app directly into /Applications or ~/Applications, launch it there, then turn this setting on again.".into())
+}
+
 pub(super) fn spawn(
     executable: &Path,
     directory: &Path,
@@ -216,6 +258,9 @@ fn reap_children(children: Arc<Mutex<Vec<Child>>>) {
 }
 
 pub(super) fn set_run_entry(executable: &Path, directory: &Path) -> Result<(), String> {
+    // Keep sidecar lookup and foreground use available from any valid bundle;
+    // only the persistent RunAtLoad entry requires a stable install location.
+    validate_run_entry_location(executable)?;
     let path = launch_agent_path()?;
     ensure_launch_agent_directory(path.parent().expect("LaunchAgent has parent"))?;
     let contents = launch_agent(executable, directory)?;
@@ -437,10 +482,70 @@ fn xml_escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{launch_agent, register_launch_agent, LABEL, OWNERSHIP};
+    use super::{
+        launch_agent, register_launch_agent, validate_installed_app_location, LABEL, OWNERSHIP,
+    };
     use plist::Value;
     use std::ffi::OsString;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "qc-macos-location-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn app_executable(bundle: &Path) -> PathBuf {
+        bundle.join("Contents/MacOS/QC Remote")
+    }
+
+    #[test]
+    fn login_item_accepts_only_a_direct_applications_bundle() {
+        let scratch = Scratch::new();
+        let home = scratch.0.join("home");
+        let installed = home.join("Applications/QC Remote.app");
+        std::fs::create_dir_all(installed.join("Contents/MacOS")).unwrap();
+
+        validate_installed_app_location(&app_executable(&installed), &Some(home.clone()))
+            .expect("the user's Applications folder is persistent");
+
+        let staged = home.join("Applications/Downloaded/QC Remote.app");
+        std::fs::create_dir_all(staged.join("Contents/MacOS")).unwrap();
+        let error = validate_installed_app_location(&app_executable(&staged), &Some(home))
+            .expect_err("nested staging folders are not stable install locations");
+        assert!(error.contains("Move QC Remote.app directly into /Applications or ~/Applications"));
+    }
+
+    #[test]
+    fn login_item_rejects_downloads_and_mounted_disk_images() {
+        let scratch = Scratch::new();
+        let home = scratch.0.join("home");
+        let downloads = home.join("Downloads/QC Remote.app");
+        let disk_image = scratch.0.join("Volumes/QC Remote/QC Remote.app");
+        for app in [&downloads, &disk_image] {
+            std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+            assert!(
+                validate_installed_app_location(&app_executable(app), &Some(home.clone())).is_err()
+            );
+        }
+    }
 
     fn rendered_calls(calls: &[Vec<OsString>]) -> Vec<Vec<String>> {
         calls

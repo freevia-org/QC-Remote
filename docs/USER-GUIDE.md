@@ -91,6 +91,11 @@ directly.
   desktop does not provide a StatusNotifier/AppIndicator tray host, the resident
   tray controls may not be visible. Other Linux distributions are not yet
   supported by this release.
+- **macOS builds.** Move `QC Remote.app` directly into `/Applications` or
+  `~/Applications` before enabling background login startup; foreground use
+  works elsewhere. The login item depends on the app staying at that location.
+  See the [macOS install and cleanup guide](MACOS-INSTALLATION.md) before
+  moving or removing the app.
 
 The release page lists a SHA-256 checksum for each file. On Linux, verify a
 download with `sha256sum -c SHA256SUMS`; on Windows, run
