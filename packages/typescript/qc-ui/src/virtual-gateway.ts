@@ -1459,11 +1459,15 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
         const block = requireBlock(state.current.preset, row, column, expectedModelId);
         const model = index.model(modelId);
         if (!model || model.hidden) throw new Error(`Model ${modelId} is not a selectable QC model`);
-        const changed = block.modelId !== modelId;
+        if (block.modelId === modelId) return done(`${model.name} left unchanged`, state, false);
         block.modelId = modelId;
         block.parameterValues = index.defaults(modelId);
-        if (changed) edited(state);
-        return done(`${model.name} replaced the selected device`, state, changed);
+        // Scene values and expression operands belong to the old model's
+        // parameter catalogue, not to the replacement's parameter indices.
+        delete block.sceneValues;
+        delete block.expressions;
+        edited(state);
+        return done(`${model.name} replaced the selected device`, state);
       });
     },
     createModelPreset(row, column, modelHash, name, expectedPresetName, expectedPresetIdentity) {

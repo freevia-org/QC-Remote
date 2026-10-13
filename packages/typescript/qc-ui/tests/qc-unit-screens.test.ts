@@ -5,6 +5,30 @@ import { appScreenKind, closeOnUnit, createQcScreenLatch, openOnUnit, QC_UNIT_MI
 
 const tree = (...classes: string[]) => ["zenUI::RootGraphicsItem", ...classes.map((name) => ` zenUI::${name}`)].join("\n");
 
+test("unknown overlays refuse generic navigation touches without claiming the covered dialog closed", async () => {
+  const poll = { intervalMs: 1, timeoutMs: 0 };
+  for (const overlay of ["SomeNewPopup", "SomeNewDialog", "SomeNewOverlay", "SomeNewPanel"]) {
+    const taps: number[][] = [];
+    const gateway = {
+      graphicsTree: async () => ({ tree: tree("SettingsDialog", overlay) }),
+      tapScreen: async (x: number, y: number) => { taps.push([x, y]); },
+      longTapScreen: async () => { throw new Error("Unexpected long tap"); },
+      swipeScreen: async () => { throw new Error("Unexpected swipe"); }
+    };
+    assert.equal(await closeOnUnit(gateway, poll, "settings"), false, overlay);
+    assert.equal(await openOnUnit(gateway, poll, "settings"), "busy", overlay);
+    assert.deepEqual(taps, [], overlay);
+  }
+  let reads = 0;
+  const taps: number[][] = [];
+  const changed = {
+    graphicsTree: async () => ({ tree: ++reads === 1 ? tree("SettingsDialog") : tree("SettingsDialog", "SomeNewPopup") }),
+    tapScreen: async (x: number, y: number) => { taps.push([x, y]); }
+  };
+  assert.equal(await closeOnUnit(changed as Parameters<typeof closeOnUnit>[0], poll, "settings"), false);
+  assert.deepEqual(taps, [[743, 30]], "the new popup neither proves closure nor permits a second check tap");
+});
+
 test("every screen class the unit is known to show is recognised, overlays before the screen under them", () => {
   const cases: [string[], QcObservedScreenKind][] = [
     [["GigView"], "gig"], [["TunerDialog"], "tuner"], [["Tuner"], "tuner"], [["MetronomeEditor"], "tempo"], [["RotatingBusyIndicator"], "busy"],

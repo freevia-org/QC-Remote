@@ -1,6 +1,6 @@
 import type { GatewayTransport } from "@qc-remote/client";
 import { QC_DEVICE_SCREEN_GESTURES } from "./device-screen-navigation.ts";
-import { classifyQcGraphicsTree, type QcObservedScreenKind } from "./use-adaptive-screen-polling.ts";
+import { classifyQcGraphicsTree, hasUnrecognizedQcScreenOverlay, type QcObservedScreenKind } from "./use-adaptive-screen-polling.ts";
 
 /**
  * The one description of how the app and the Quad Cortex's own screen follow
@@ -179,6 +179,7 @@ export async function untilUnitShows(gateway: Pick<GatewayTransport, "graphicsTr
  * top of it (a confirmation, a keyboard, Settings) still makes it not the screen to touch.
  */
 export function treeShows(tree: string, target: QcObservedScreenKind): boolean {
+  if (hasUnrecognizedQcScreenOverlay(tree)) return false;
   const kind = classifyQcGraphicsTree(tree);
   if (target !== "cpu-monitor") return kind === target;
   return /zenUI::CpuLoadIndicator(?![A-Za-z0-9_])/.test(tree) && !["message-dialog", "keyboard", "search", "settings", "busy"].includes(kind);
@@ -227,6 +228,7 @@ const CLOSES_ONCE: readonly QcCloseTarget[] = ["preset-menu", "scene-selector", 
  */
 export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, target: QcOpenTarget, beforeGesture?: () => void, detail: QcRouteDetail = {}): Promise<QcOpenOnUnit> {
   const first = (await gateway.graphicsTree()).tree;
+  if (hasUnrecognizedQcScreenOverlay(first)) return "busy";
   const current = classifyQcGraphicsTree(first);
   if (current === target || treeShows(first, target)) return "shown";
   // Called once, just before the first touch is sent and never when none is: the caller arms its loop guard here.
@@ -327,10 +329,12 @@ export async function closeOnUnit(gateway: RouteGateway, poll: QcScreenPoll, tar
     : target === "search" ? G.searchClose
     : done;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (!treeShows((await gateway.graphicsTree()).tree, target)) return true;
+    const tree = (await gateway.graphicsTree()).tree;
+    if (hasUnrecognizedQcScreenOverlay(tree)) return false;
+    if (!treeShows(tree, target)) return true;
     if (attempt === 0) beforeGesture?.();
     await gateway.tapScreen(point.x, point.y);
-    if (await untilTree(gateway, poll, (tree) => !treeShows(tree, target))) return true;
+    if (await untilTree(gateway, poll, (tree) => !hasUnrecognizedQcScreenOverlay(tree) && !treeShows(tree, target))) return true;
     if (CLOSES_ONCE.includes(target)) return false;
   }
   return false;

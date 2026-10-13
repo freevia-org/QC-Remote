@@ -263,3 +263,42 @@ test("a rejected Remote reconnect surfaces the plugin message and code as a noti
   assert.match(appSource, /startRelayReportingFailure\(relayWorkflow\.start, setNotice\)/, "the Reconnect action must not drop QcRelayPlugin.start rejections");
   assert.doesNotMatch(appSource, /void \(?[^;]*\brelayWorkflow\.start\(\)/);
 });
+
+
+test("Android replacement clears previous-session suspension and bulk blocking while current publications still block", async (t) => {
+  const { build } = await import("esbuild");
+  const { createRequire } = await import("node:module");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  const rendererRequire = createRequire(createRequire(import.meta.url).resolve("react-test-renderer"));
+  const React = rendererRequire("react");
+  const { act, create } = rendererRequire("react-test-renderer");
+  const work = mkdtempSync(join(tmpdir(), "qc-android-blocks-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const outfile = join(work, "blocks.mjs");
+  await build({
+    entryPoints: [fileURLToPath(new URL("./use-android-session-blocks.ts", import.meta.url))],
+    outfile, bundle: true, format: "esm", platform: "node", logLevel: "error",
+    plugins: [{ name: "test-react", setup(builder) {
+      builder.onResolve({ filter: /^react$/ }, ({ path }) => ({ path: pathToFileURL(rendererRequire.resolve(path)).href, external: true }));
+    } }]
+  });
+  const { useAndroidSessionBlocks } = await import(pathToFileURL(outfile).href);
+  let state: ReturnType<typeof useAndroidSessionBlocks>;
+  function Probe() { state = useAndroidSessionBlocks(); return null; }
+  let renderer: ReturnType<typeof create>;
+  await act(async () => { renderer = create(React.createElement(Probe)); });
+  t.after(async () => { await act(async () => renderer.unmount()); });
+  await act(async () => { state.setDeviceSuspended(true); state.setDeviceBulkBlocking(true); });
+  assert.equal(state.deviceSuspended || state.deviceBulkBlocking, true);
+  await act(async () => state.resetSessionBlocks());
+  assert.equal(state.deviceSuspended || state.deviceBulkBlocking, false, "the initial new stream needs no old-session finish event");
+  await act(async () => { state.resetSessionBlocks(); state.setDeviceBulkBlocking(true); });
+  assert.equal(state.deviceBulkBlocking, true, "a blocking publication arriving during the new handshake is preserved");
+  await act(async () => state.setDeviceBulkBlocking(false));
+  assert.equal(state.deviceBulkBlocking, false, "the current operation's terminal event restores controls");
+  await act(async () => state.setDeviceSuspended(true));
+  assert.equal(state.deviceSuspended, true, "a genuine current suspension remains effective");
+});

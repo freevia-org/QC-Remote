@@ -18,6 +18,7 @@ use crate::device::request::{
 use crate::sync::next_identity;
 pub use preparation::OwnedPresetPreparationAction;
 pub(super) use preparation::PresetPreparationEntry;
+use prost::Message as _;
 pub use result::{PersistentDelivery, PresetWorkflowResult};
 
 /// Next step of a preset workflow, together with the owner-issued evidence the host needs to carry it out.
@@ -164,15 +165,16 @@ pub(super) struct PresetWorkflowEntry {
     /// when it starts, so a push that arrived early still counts as evidence: verification
     /// is passive-first. Bounded; overflowing it only drops the buffer, which leaves the
     /// bounded directory READs to confirm.
-    early_file_observations: Vec<(
-        u64,
-        Option<crate::device::transport::IngressTime>,
-        Box<crate::proto::cortex_protobuf_v2::FileMessage>,
-    )>,
+    early_file_observation_bytes: usize,
+    early_file_observations: Vec<(u64, Option<crate::device::transport::IngressTime>, Vec<u8>)>,
 }
 
 /// Most File publications buffered for the catalog stage before it exists.
 const EARLY_FILE_OBSERVATION_LIMIT: usize = 4096;
+// Operational serialized-envelope budget, independent of the per-frame wire cap.
+// Retain bytes rather than decoded messages: repeated empty protobuf records can
+// have much larger heap footprints than their encoded representation.
+const EARLY_FILE_OBSERVATION_BYTES: usize = 32 * 1024 * 1024;
 
 impl SessionRuntime {
     /// Install a prepared shared plan with its original context and clock.
@@ -255,6 +257,7 @@ impl SessionRuntime {
             verified_snapshot: None,
             result: None,
             catalog_guard: None,
+            early_file_observation_bytes: 0,
             early_file_observations: Vec::new(),
         });
         self.next_workflow = next;
@@ -367,13 +370,21 @@ impl SessionRuntime {
             } else if entry.persistent_delivery != PersistentDelivery::NotAttempted {
                 // The native attempt began and the catalog stage has not: keep the
                 // publication for the stage to replay.
-                if entry.early_file_observations.len() >= EARLY_FILE_OBSERVATION_LIMIT {
+                let bytes = message.encoded_len();
+                let retained_bytes = entry.early_file_observation_bytes.saturating_add(bytes);
+                if entry.early_file_observations.len() >= EARLY_FILE_OBSERVATION_LIMIT
+                    || retained_bytes > EARLY_FILE_OBSERVATION_BYTES
+                {
+                    // This is only a passive optimization. Refuse retention and let the
+                    // existing bounded catalog reads establish evidence instead.
                     entry.early_file_observations.clear();
+                    entry.early_file_observation_bytes = 0;
                 } else {
+                    entry.early_file_observation_bytes = retained_bytes;
                     entry.early_file_observations.push((
                         ticket.sequence,
                         ticket.ingress,
-                        message.clone(),
+                        message.encode_to_vec(),
                     ));
                 }
             }
@@ -386,6 +397,8 @@ impl SessionRuntime {
         }
         if let Some(entry) = &mut self.preset_workflow {
             entry.runtime.invalidate(reason);
+            entry.early_file_observations.clear();
+            entry.early_file_observation_bytes = 0;
         }
     }
 
@@ -461,6 +474,8 @@ impl SessionRuntime {
             ..
         }) = &result
         {
+            entry.early_file_observations.clear();
+            entry.early_file_observation_bytes = 0;
             if entry.result.is_none() {
                 entry.result = Some(PresetWorkflowResult::capture(&entry, outcome.clone(), self));
             }
@@ -961,8 +976,15 @@ impl SessionRuntime {
                 evidence_after_ms,
                 context.deadline.expect("catalog deadline"),
             );
+            entry.early_file_observation_bytes = 0;
             for (sequence, ingress, message) in std::mem::take(&mut entry.early_file_observations) {
-                runtime.observe(sequence, ingress, &message);
+                // These bytes were encoded from an accepted message above. Decode
+                // one envelope at a time so retained decoded vectors cannot amplify.
+                if let Ok(message) =
+                    crate::proto::cortex_protobuf_v2::FileMessage::decode(message.as_slice())
+                {
+                    runtime.observe(sequence, ingress, &message);
+                }
             }
             let phase_deadline = crate::device::correlation::RequestDeadline::new(
                 now_ms,
@@ -2621,6 +2643,199 @@ mod tests {
                 .unwrap()
                 .name,
             "Replacement"
+        );
+    }
+
+    #[test]
+    fn save_early_file_envelopes_have_an_aggregate_budget_and_recover_after_drop() {
+        use crate::proto::cortex_protobuf_v2 as pa;
+        use prost::Message;
+        let mut owner = owner();
+        let mut mutation = plan();
+        mutation
+            .saved_presets
+            .push(crate::device::request::PresetMutationRecord {
+                setlist_key: mutation.setlist_key.clone(),
+                position: 2,
+                name: "Saved".into(),
+                instrument: 0,
+                allow_collision_suffix: true,
+            });
+        let context = owner.session_context().unwrap();
+        let id = owner.begin_preset_workflow(&context, mutation, 0).unwrap();
+        let operation = owner
+            .advance_preset_workflow(id, 0)
+            .unwrap()
+            .operation
+            .unwrap();
+        let delivery = prepare(&mut owner, &operation);
+        owner.begin_native_report(&delivery, 0, 2).unwrap();
+        // Empty nested records are tiny on the wire but much larger as decoded
+        // structs. The retained lane stores their exact compact encoding instead.
+        let compact = pa::FileMessage {
+            action: pa::message_action::Enum::Read as i32,
+            folder: Some(pa::file_message::Folder::Folder(pa::FolderInfo {
+                files: vec![pa::ProductData::default(); 100_000],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        assert!(compact.len() < crate::profile::MAX_FRAME_BYTES);
+        let ticket = owner
+            .capture_observation_with_ingress(
+                owner.connection,
+                Some(crate::device::transport::IngressTime {
+                    first_report_at_ms: 3,
+                    last_report_at_ms: 3,
+                }),
+            )
+            .unwrap();
+        owner
+            .observe_state(&ticket, crate::profile::MESSAGE_TYPE_FILE, &compact)
+            .unwrap();
+        let entry = owner.preset_workflow.as_mut().unwrap();
+        assert_eq!(entry.early_file_observations[0].2, compact);
+        assert_eq!(entry.early_file_observation_bytes, compact.len());
+        entry.early_file_observations.clear();
+        entry.early_file_observation_bytes = 0;
+        // A legal READ envelope is ignored by the native catalog but is accepted by
+        // the observation lane; repeated envelopes previously grew the passive buffer.
+        let message = pa::FileMessage {
+            action: pa::message_action::Enum::Read as i32,
+            folder: Some(pa::file_message::Folder::Folder(pa::FolderInfo {
+                key: Some(pa::folder_info::Key::Key("/media/p4/Presets/Test".into())),
+                files: (0..60)
+                    .map(|index| pa::ProductData {
+                        description: Some(pa::product_data::Description::Description(
+                            "x".repeat(16 * 1024),
+                        )),
+                        index: Some(pa::product_data::Index::Index(index)),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let payload = message.encode_to_vec();
+        assert!(payload.len() < crate::profile::MAX_FRAME_BYTES);
+        let accepted = EARLY_FILE_OBSERVATION_BYTES / payload.len();
+        assert!(accepted < EARLY_FILE_OBSERVATION_LIMIT);
+        for _ in 0..accepted {
+            let ticket = owner
+                .capture_observation_with_ingress(
+                    owner.connection,
+                    Some(crate::device::transport::IngressTime {
+                        first_report_at_ms: 3,
+                        last_report_at_ms: 3,
+                    }),
+                )
+                .unwrap();
+            owner
+                .observe_state(&ticket, crate::profile::MESSAGE_TYPE_FILE, &payload)
+                .unwrap();
+        }
+        let entry = owner.preset_workflow.as_ref().unwrap();
+        assert_eq!(entry.early_file_observations.len(), accepted);
+        assert_eq!(entry.early_file_observation_bytes, accepted * payload.len());
+        let ticket = owner
+            .capture_observation_with_ingress(
+                owner.connection,
+                Some(crate::device::transport::IngressTime {
+                    first_report_at_ms: 4,
+                    last_report_at_ms: 4,
+                }),
+            )
+            .unwrap();
+        owner
+            .observe_state(&ticket, crate::profile::MESSAGE_TYPE_FILE, &payload)
+            .unwrap();
+        let entry = owner.preset_workflow.as_ref().unwrap();
+        assert!(entry.early_file_observations.is_empty());
+        assert_eq!(entry.early_file_observation_bytes, 0);
+        assert!(!entry.runtime.is_terminal());
+        // A smaller fresh device confirmation can still be retained and replayed.
+        publish_folder(&mut owner, "Saved", 5, 5);
+        assert_eq!(
+            owner
+                .preset_workflow
+                .as_ref()
+                .unwrap()
+                .early_file_observations
+                .len(),
+            1
+        );
+        owner
+            .finish_native_report(&delivery, 0, ReportOutcome::Delivered, 6)
+            .unwrap();
+        owner.advance_preset_workflow(id, 6).unwrap();
+        owner.advance_preset_workflow(id, 36).unwrap();
+        assert_eq!(
+            owner
+                .preset_workflow
+                .as_ref()
+                .unwrap()
+                .early_file_observation_bytes,
+            0
+        );
+        assert!(owner
+            .preset_workflow
+            .as_ref()
+            .unwrap()
+            .early_file_observations
+            .is_empty());
+        owner.advance_preset_workflow(id, 37).unwrap();
+        assert!(owner.preset_workflow_catalog_result(id).unwrap().is_some());
+        owner.opened(38).unwrap();
+        assert_eq!(
+            owner
+                .preset_workflow
+                .as_ref()
+                .unwrap()
+                .early_file_observation_bytes,
+            0
+        );
+        let mut reset_owner = super::tests::owner();
+        let (_, reset_operation, _) = start(&mut reset_owner);
+        let reset_delivery = prepare(&mut reset_owner, &reset_operation);
+        reset_owner
+            .begin_native_report(&reset_delivery, 0, 2)
+            .unwrap();
+        let ticket = reset_owner
+            .capture_observation_with_ingress(
+                reset_owner.connection,
+                Some(crate::device::transport::IngressTime {
+                    first_report_at_ms: 3,
+                    last_report_at_ms: 3,
+                }),
+            )
+            .unwrap();
+        reset_owner
+            .observe_state(&ticket, crate::profile::MESSAGE_TYPE_FILE, &payload)
+            .unwrap();
+        assert!(
+            reset_owner
+                .preset_workflow
+                .as_ref()
+                .unwrap()
+                .early_file_observation_bytes
+                > 0
+        );
+        reset_owner.opened(4).unwrap();
+        assert!(reset_owner
+            .preset_workflow
+            .as_ref()
+            .unwrap()
+            .early_file_observations
+            .is_empty());
+        assert_eq!(
+            reset_owner
+                .preset_workflow
+                .as_ref()
+                .unwrap()
+                .early_file_observation_bytes,
+            0
         );
     }
 

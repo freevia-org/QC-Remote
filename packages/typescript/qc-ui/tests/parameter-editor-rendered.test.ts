@@ -12,7 +12,6 @@ const React = (await import("react")).default;
 const rendererRequire = createRequire(createRequire(import.meta.url).resolve("react-test-renderer"));
 const { build } = await import("esbuild");
 const work = mkdtempSync(join(tmpdir(), "qc-editor-rendered-"));
-test.after(() => rmSync(work, { recursive: true, force: true }));
 const outfile = join(work, "editors.mjs");
 let components: Record<string, any>;
 try {
@@ -21,6 +20,8 @@ await build({
 export { PresetMidiOutEditor } from ${JSON.stringify(fileURLToPath(new URL("../src/preset-midi-out-editor.tsx", import.meta.url)))};
 export { usePresetMidiOutWorkflow } from ${JSON.stringify(fileURLToPath(new URL("../src/use-preset-midi-out-workflow.ts", import.meta.url)))};
 export { CorOsDirectory } from ${JSON.stringify(fileURLToPath(new URL("../src/coros-directory.tsx", import.meta.url)))};
+export { ModesConfigurationScreen } from ${JSON.stringify(fileURLToPath(new URL("../src/modes-configuration-screen.tsx", import.meta.url)))};
+export { QcSegmentBarHit } from ${JSON.stringify(fileURLToPath(new URL("../src/qc-brightness-panel.tsx", import.meta.url)))};
 export { QuadCortexSurface } from ${JSON.stringify(fileURLToPath(new URL("../src/quad-cortex-surface.tsx", import.meta.url)))};
 export { IDLE_PLACEHOLDER_SNAPSHOT } from ${JSON.stringify(fileURLToPath(new URL("../src/device-placeholder.ts", import.meta.url)))};
 export { formFactors, skins } from "@qc-remote/form-factors";`, resolveDir: fileURLToPath(new URL("../", import.meta.url)), loader: "tsx" },
@@ -36,7 +37,29 @@ components = await import(pathToFileURL(outfile).href);
   throw error;
 }
 const { CorOsParameterEditor, PresetMidiOutEditor, usePresetMidiOutWorkflow, CorOsDirectory, QuadCortexSurface, IDLE_PLACEHOLDER_SNAPSHOT, formFactors, skins } = components;
+test.after(() => rmSync(work, { recursive: true, force: true }));
+const { QcSegmentBarHit, ModesConfigurationScreen } = components;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+test("brightness segment slider ignores keyboard clicks, accepts pointer coordinates and honors disabled handlers", (t) => {
+  const changes: number[] = [];
+  const props = { label: "Screen brightness", value: 16, max: 31, segments: 32, disabled: false, onChange: (value: number) => changes.push(value) };
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(React.createElement(QcSegmentBarHit, props)); });
+  t.after(() => act(() => renderer.unmount()));
+  const slider = () => renderer.root.findByProps({ role: "slider" });
+  const pointer = { detail: 1, clientX: 175, currentTarget: { getBoundingClientRect: () => ({ left: 100, width: 100 }) } };
+  act(() => slider().props.onClick({ ...pointer, detail: 0, clientX: 0 }));
+  assert.deepEqual(changes, [], "Enter/Space click is not a tap at the far-left coordinate");
+  act(() => slider().props.onClick(pointer));
+  assert.equal(changes.at(-1), 24);
+  act(() => slider().props.onKeyDown({ key: "ArrowRight", preventDefault() {} }));
+  assert.equal(changes.at(-1), 17);
+  changes.length = 0;
+  act(() => renderer.update(React.createElement(QcSegmentBarHit, { ...props, disabled: true })));
+  act(() => { slider().props.onClick(pointer); slider().props.onKeyDown({ key: "ArrowRight", preventDefault() {} }); });
+  assert.deepEqual(changes, []);
+});
 
 function propsFor(name: string, commits: number[]) {
   const cab = name.includes("C30");
@@ -47,6 +70,40 @@ function propsFor(name: string, commits: number[]) {
     onPageChange() {}, onDraftChange() {}, onCommit(_parameter: unknown, value: number) { commits.push(value); }, onToggleSceneMode() {}, onToggleBypass() {}, onSceneSelect() {},
     onFootswitchAssignmentStart() {}, onUnassignFootswitch() {}, onContextAction() {}, onClose() {} };
 }
+
+test("live EQ graph edits only currently writable enabled operands and bypass follows that admission", (t) => {
+  const writes: number[] = [], drafts: number[] = [];
+  const base = propsFor("Parametric-8", []);
+  const parameter = base.details.parameters[0];
+  const parameters = [
+    { ...parameter, index: 0, name: "N1 GAIN", enabled: false },
+    { ...parameter, index: 1, name: "N1 FREQ", writable: false },
+    { ...parameter, index: 2, name: "N1 BYPASS", enabled: false }
+  ];
+  const props = { ...base, details: { ...base.details, parameters }, onDraftChange: (item: { index: number }) => drafts.push(item.index), onCommit: (item: { index: number }) => writes.push(item.index) };
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(React.createElement(CorOsParameterEditor, props)); });
+  t.after(() => act(() => renderer.unmount()));
+  const event = (x: number, y: number) => ({ pointerId: 1, clientX: x, clientY: y, currentTarget: {
+    setPointerCapture() {}, hasPointerCapture: () => false,
+    closest: () => ({ getBoundingClientRect: () => ({ width: 200, height: 100 }) })
+  } });
+  const node = () => renderer.root.findByProps({ "aria-label": "Select EQ band 1" });
+  act(() => { node().props.onPointerDown(event(10, 10)); node().props.onPointerMove(event(30, 25)); node().props.onPointerUp(event(30, 25)); });
+  const bypass = renderer.root.findByProps({ "aria-label": "Bypass EQ band 1" });
+  assert.equal(bypass.props.disabled, true);
+  act(() => bypass.props.onClick());
+  assert.deepEqual([drafts, writes], [[], []]);
+  const current = { ...props, details: { ...props.details, parameters: parameters.map((item) => ({ ...item, writable: true, enabled: true })) } };
+  act(() => renderer.update(React.createElement(CorOsParameterEditor, current)));
+  act(() => { node().props.onPointerDown(event(10, 10)); node().props.onPointerMove(event(30, 25)); node().props.onPointerUp(event(30, 25)); });
+  assert.deepEqual([drafts, writes], [[1, 0], [1, 0]], "current gain and frequency remain usable");
+  act(() => node().props.onPointerDown(event(10, 10)));
+  act(() => renderer.update(React.createElement(CorOsParameterEditor, props)));
+  drafts.length = 0; writes.length = 0;
+  act(() => { node().props.onPointerMove(event(30, 25)); node().props.onPointerUp(event(30, 25)); });
+  assert.deepEqual([drafts, writes], [[], []], "a device disabling a parameter during the drag retires that operand");
+});
 
 for (const name of ["Simple Gate", "Parametric-8", "212 UK C30 65 (M)"]) {
   test(`${name} uses live values and commits through its real rendered control`, async (t) => {
@@ -219,4 +276,59 @@ test("MIDI Clear-all authorization belongs to its actual workflow host and prese
     if (oldFrame) Object.defineProperty(globalThis,"requestAnimationFrame",oldFrame); else Reflect.deleteProperty(globalThis,"requestAnimationFrame");
     if (oldCancel) Object.defineProperty(globalThis,"cancelAnimationFrame",oldCancel); else Reflect.deleteProperty(globalThis,"cancelAnimationFrame");
   }
+});
+
+test("Modes Configuration refuses unrelated drop payloads and admits only a current valid mode index", (t) => {
+  const commits: number[][] = [];
+  const workflow = { slots: [0, 1, 2], loading: false, pending: false, refresh() {}, commit(next: number[]) { commits.push(next); } };
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(React.createElement(ModesConfigurationScreen, { workflow, onClose() {} })); });
+  t.after(() => act(() => renderer.unmount()));
+  const target = () => renderer.root.findAll((node) => node.type === "button" && node.props.draggable !== undefined)[1];
+  const drop = (payload: string) => target().props.onDrop({ preventDefault() {}, dataTransfer: { getData(type: string) { assert.equal(type, "text/qc-mode-index"); return payload; } } });
+  act(() => { for (const payload of ["", "text", "-1", "1.2", "3", "100000000000000000000"]) drop(payload); });
+  assert.deepEqual(commits, [], "unrelated/file/text drops cannot silently select mode zero");
+  act(() => drop("0"));
+  assert.equal(commits.length, 1);
+  assert.equal(commits[0].length, 2);
+  assert.ok(commits[0].includes(2), "untouched third mode remains in the cycle");
+  act(() => renderer.update(React.createElement(ModesConfigurationScreen, { workflow: { ...workflow, pending: true }, onClose() {} })));
+  act(() => drop("0"));
+  assert.equal(commits.length, 1, "direct disabled drop handler cannot commit");
+});
+test("specialized Cab and IR controls refuse disabled operands and settle current speaker gestures", (t) => {
+  const drafts: number[] = [], commits: number[] = [], batches: unknown[] = [];
+  const parameter = (index: number, enabled: boolean) => ({ index, name: `Parameter ${index}`, type: "float", options: index === 1 || index === 2 ? ["A", "B"] : [],
+    steps: 101, normalizedValue: .2, writable: true, enabled, minimum: 0, maximum: 1, units: "", displayValue: ".2" });
+  let props = { ...propsFor("IR Loader", []), details: { ...propsFor("IR Loader", []).details, name: "IR Loader", category: "IR Loader",
+    parameters: [0,1,2].map((index) => parameter(index, false)) },
+    onDraftChange(item: {index:number}) { drafts.push(item.index); }, onCommit(item: {index:number}) { commits.push(item.index); },
+    onCommitBatch(changes: unknown[]) { batches.push(changes); } };
+  const view = () => React.createElement(CorOsParameterEditor, props);
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(view()); }); t.after(() => act(() => renderer.unmount()));
+  const click = (label: string) => renderer.root.findByProps({"aria-label":label}).props.onClick();
+  act(() => { click("Disable impulse"); click("Invert impulse phase"); click("Next impulse response"); });
+  assert.deepEqual(drafts, []); assert.deepEqual(commits, []);
+  act(() => { props={...props,details:{...props.details,parameters:[0,1,2].map((index) => parameter(index,true))}}; renderer.update(view()); });
+  act(() => { click("Disable impulse"); click("Invert impulse phase"); click("Next impulse response"); });
+  assert.deepEqual(commits,[0,1,2]); drafts.length=0; commits.length=0;
+  act(() => { props={...props,details:{...props.details,name:"Cab",category:"Guitar Cab",parameters:[0,1,2,3,4,5,6].map((index) => parameter(index,false))}}; renderer.update(view()); });
+  const speaker = () => renderer.root.findAll((node) => node.type === "button" && node.props.className === "cab-speaker")[0];
+  const pointer = { pointerId:1, clientX:70, clientY:35, currentTarget: {setPointerCapture(){},hasPointerCapture(){return false;},getBoundingClientRect(){return {left:0,top:0,width:100,height:100};}} };
+  act(() => { click("Disable cab microphone 1"); click("Invert microphone 1 phase"); click("Next microphone for slot 1"); speaker().props.onPointerDown(pointer); speaker().props.onPointerUp(pointer); });
+  assert.deepEqual(drafts,[]); assert.deepEqual(commits,[]); assert.deepEqual(batches,[]);
+  act(() => { props={...props,details:{...props.details,parameters:props.details.parameters.map((item) => ({...item,enabled:true}))}}; renderer.update(view()); });
+  act(() => { click("Disable cab microphone 1"); click("Invert microphone 1 phase"); click("Next microphone for slot 1"); });
+  assert.deepEqual(commits,[0,6,1]); commits.length=0;
+  act(() => { speaker().props.onPointerDown(pointer); speaker().props.onPointerCancel(pointer); });
+  assert.equal(batches.length,1,"current cancellation settles the already-previewed value, as the rotary gesture contract requires");
+  batches.length=0;
+  act(() => speaker().props.onPointerDown(pointer)); drafts.length=0;
+  act(() => { props={...props,details:{...props.details,parameters:props.details.parameters.map((item) => ({...item,enabled:false}))}}; renderer.update(view()); });
+  act(() => { speaker().props.onPointerMove(pointer); speaker().props.onPointerUp(pointer); });
+  assert.deepEqual(drafts,[]); assert.deepEqual(batches,[],"fresh disabled operands retire an active drag before its write");
+  act(() => { props={...props,details:{...props.details,parameters:props.details.parameters.map((item) => ({...item,enabled:true}))}}; renderer.update(view()); });
+  act(() => { speaker().props.onPointerDown(pointer); speaker().props.onPointerUp(pointer); });
+  assert.equal(batches.length,1,"current writable speaker remains usable");
 });

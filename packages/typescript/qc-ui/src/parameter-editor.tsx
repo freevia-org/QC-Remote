@@ -195,6 +195,10 @@ function EqResponseGraph({ bands, selectedBand, drafts, accent, disabled, onSele
   onSelectBand: (band: number) => void;
 } & ControlCallbacks) {
   const drag = useRef<{ pointerId: number; x: number; y: number; frequency?: BlockParameter; gain?: BlockParameter; frequencyValue: number; frequencyGraphValue: number; gainValue: number } | undefined>(undefined);
+  const editable = (parameter: BlockParameter | undefined) => !disabled && Boolean(parameter?.writable)
+    && parameter?.enabled !== false && parameter?.normalizedValue != null;
+  const currentOperand = (parameter: BlockParameter | undefined) => parameter && bands
+    .flatMap((band) => [band.frequency, band.gain]).find((candidate) => candidate?.index === parameter.index);
   const value = (parameter: BlockParameter | undefined, fallback: number) => parameter ? drafts[parameter.index] ?? parameter.normalizedValue ?? fallback : fallback;
   const graphFrequency = (parameter: BlockParameter | undefined, normalized: number, fallback: number) => {
     if (!parameter) return fallback;
@@ -218,16 +222,18 @@ function EqResponseGraph({ bands, selectedBand, drafts, accent, disabled, onSele
       ? parameterNormalizedValue(drag.current.frequency, 20 * Math.pow(1000, nextFrequencyGraph))
       : clamp(drag.current.frequencyValue + (event.clientX - drag.current.x) / panel.width);
     const nextGain = clamp(drag.current.gainValue - (event.clientY - drag.current.y) / (panel.height * .76));
-    if (drag.current.frequency) onDraftChange(drag.current.frequency, nextFrequency);
-    if (drag.current.gain) onDraftChange(drag.current.gain, nextGain);
+    const frequency = currentOperand(drag.current.frequency), gain = currentOperand(drag.current.gain);
+    if (editable(frequency)) onDraftChange(frequency!, nextFrequency);
+    if (editable(gain)) onDraftChange(gain!, nextGain);
   };
   const finishDrag = (event: PointerEvent<HTMLButtonElement>) => {
     if (!drag.current || drag.current.pointerId !== event.pointerId) return;
     const current = drag.current;
     drag.current = undefined;
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    if (current.frequency) onCommit(current.frequency, drafts[current.frequency.index] ?? current.frequency.normalizedValue ?? current.frequencyValue);
-    if (current.gain) onCommit(current.gain, drafts[current.gain.index] ?? current.gain.normalizedValue ?? current.gainValue);
+    const frequency = currentOperand(current.frequency), gain = currentOperand(current.gain);
+    if (editable(frequency)) onCommit(frequency!, drafts[frequency!.index] ?? frequency!.normalizedValue ?? current.frequencyValue);
+    if (editable(gain)) onCommit(gain!, drafts[gain!.index] ?? gain!.normalizedValue ?? current.gainValue);
   };
   return <div className="eq-response-panel" style={{ "--eq-accent": accent } as CSSProperties}>
     <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="EQ frequency response">
@@ -236,9 +242,10 @@ function EqResponseGraph({ bands, selectedBand, drafts, accent, disabled, onSele
       <g className="eq-axis-labels"><text x="5" y="97">20</text><text x="28" y="97">100</text><text x="52" y="97">1k</text><text x="76" y="97">10k</text><text x="95" y="97" textAnchor="end">20k</text><text x="1" y="15">+12</text><text x="1" y="53">0</text><text x="1" y="90">-12</text></g>
     </svg>
     {points.map((point) => <button key={point.band.number} className={`eq-band-node${selectedBand === point.band.number ? " is-selected" : ""}${point.bypassed ? " is-bypassed" : ""}`} style={{ left: `${point.x}%`, top: `${point.y}%` }} disabled={disabled} aria-label={`Select EQ band ${point.band.number}`} aria-pressed={selectedBand === point.band.number} onClick={() => onSelectBand(point.band.number)} onPointerDown={(event) => {
+      if (disabled) return;
       onSelectBand(point.band.number);
       event.currentTarget.setPointerCapture?.(event.pointerId);
-      drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, frequency: point.band.frequency, gain: point.band.gain, frequencyValue: value(point.band.frequency, point.x / 100), frequencyGraphValue: (point.x - 5) / 90, gainValue: value(point.band.gain, .5) };
+      drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, frequency: editable(point.band.frequency) ? point.band.frequency : undefined, gain: editable(point.band.gain) ? point.band.gain : undefined, frequencyValue: value(point.band.frequency, point.x / 100), frequencyGraphValue: (point.x - 5) / 90, gainValue: value(point.band.gain, .5) };
     }} onPointerMove={updateDrag} onPointerUp={finishDrag} onPointerCancel={finishDrag}>{point.band.number}</button>)}
   </div>;
 }
@@ -248,7 +255,7 @@ function EqBandBypassControl({ band, drafts, accent, disabled, onDraftChange, on
   const bypassed = parameter ? (drafts[parameter.index] ?? parameter.normalizedValue ?? 0) >= .5 : false;
   return <div className="coros-parameter eq-bypass-control">
     <span className="parameter-name">BYPASS {band.number}</span>
-    <button className={bypassed ? "" : "is-on"} disabled={disabled || !parameter?.writable} aria-label={`${bypassed ? "Enable" : "Bypass"} EQ band ${band.number}`} onClick={() => { if (!parameter) return; const next = bypassed ? 0 : 1; onDraftChange(parameter, next); onCommit(parameter, next); }}><QcEditorIcon kind="band-power" /></button>
+    <button className={bypassed ? "" : "is-on"} disabled={disabled || !parameter?.writable || parameter.enabled === false} aria-label={`${bypassed ? "Enable" : "Bypass"} EQ band ${band.number}`} onClick={() => { if (!parameter?.writable || parameter.enabled === false || disabled) return; const next = bypassed ? 0 : 1; onDraftChange(parameter, next); onCommit(parameter, next); }}><QcEditorIcon kind="band-power" /></button>
   </div>;
 }
 
@@ -427,12 +434,12 @@ function IrLoaderChannel({ base, allParameters, drafts, accent, disabled, onDraf
   const impulseIndex = impulse?.options.length ? Math.round(impulseValue * (impulse.options.length - 1)) : 0;
   const impulseName = impulse?.options[impulseIndex] ?? impulse?.displayValue ?? "No IR loaded";
   const commitBinary = (parameter: BlockParameter | undefined, value: number) => {
-    if (!parameter || disabled || !parameter.writable) return;
+    if (!parameter || disabled || !parameter.writable || parameter.enabled === false) return;
     onDraftChange(parameter, value);
     onCommit(parameter, value);
   };
   const selectImpulse = (offset: number) => {
-    if (!impulse || disabled || !impulse.writable || impulse.options.length < 2) return;
+    if (!impulse || disabled || !impulse.writable || impulse.enabled === false || impulse.options.length < 2) return;
     const nextIndex = (impulseIndex + offset + impulse.options.length) % impulse.options.length;
     const next = nextIndex / (impulse.options.length - 1);
     onDraftChange(impulse, next);
@@ -441,13 +448,13 @@ function IrLoaderChannel({ base, allParameters, drafts, accent, disabled, onDraf
   return <section className={`ir-loader-channel${muteValue >= .5 ? " is-bypassed" : ""}`} style={{ "--ir-accent": accent } as CSSProperties}>
     <div className="ir-loader-selector">
       <div className="ir-loader-state">
-        <button className={muteValue < .5 ? "is-active" : ""} disabled={disabled || !mute?.writable} aria-label={`${muteValue >= .5 ? "Enable" : "Disable"} impulse`} aria-pressed={muteValue < .5} onClick={() => commitBinary(mute, muteValue >= .5 ? 0 : 1)}><QcUiIcon kind="power-toggle" /></button>
-        <button className={phaseValue >= .5 ? "is-active" : ""} disabled={disabled || !phase?.writable} aria-label="Invert impulse phase" aria-pressed={phaseValue >= .5} onClick={() => commitBinary(phase, phaseValue >= .5 ? 0 : 1)}><QcUiIcon kind="phase-invert" /></button>
+        <button className={muteValue < .5 ? "is-active" : ""} disabled={disabled || !mute?.writable || mute?.enabled === false} aria-label={`${muteValue >= .5 ? "Enable" : "Disable"} impulse`} aria-pressed={muteValue < .5} onClick={() => commitBinary(mute, muteValue >= .5 ? 0 : 1)}><QcUiIcon kind="power-toggle" /></button>
+        <button className={phaseValue >= .5 ? "is-active" : ""} disabled={disabled || !phase?.writable || phase?.enabled === false} aria-label="Invert impulse phase" aria-pressed={phaseValue >= .5} onClick={() => commitBinary(phase, phaseValue >= .5 ? 0 : 1)}><QcUiIcon kind="phase-invert" /></button>
       </div>
       <div className="ir-loader-name"><small>{base === 0 ? "ROTATE TOP RIGHT SWITCH" : "IMPULSE RESPONSE"}</small><strong title={impulseName}>{impulseName}</strong></div>
       <div className="ir-loader-arrows">
-        <button disabled={disabled || !impulse?.writable || impulse.options.length < 2} aria-label="Previous impulse response" onClick={() => selectImpulse(-1)}><QcUiIcon kind="up" /></button>
-        <button disabled={disabled || !impulse?.writable || impulse.options.length < 2} aria-label="Next impulse response" onClick={() => selectImpulse(1)}><QcUiIcon kind="down" /></button>
+        <button disabled={disabled || !impulse?.writable || impulse?.enabled === false || impulse.options.length < 2} aria-label="Previous impulse response" onClick={() => selectImpulse(-1)}><QcUiIcon kind="up" /></button>
+        <button disabled={disabled || !impulse?.writable || impulse?.enabled === false || impulse.options.length < 2} aria-label="Next impulse response" onClick={() => selectImpulse(1)}><QcUiIcon kind="down" /></button>
       </div>
     </div>
     <div className="ir-loader-controls">{controls.map((parameter, slot) => <ParameterControl key={parameter.index} parameter={parameter} value={drafts[parameter.index] ?? parameter.normalizedValue ?? 0} slot={slot} accent={accent} disabled={disabled} onDraftChange={onDraftChange} onCommit={onCommit} />)}</div>
@@ -513,19 +520,21 @@ function CabChannel({ side, allParameters, drafts, accent, disabled, onDraftChan
   const microphoneName = microphone?.options[microphoneIndex] ?? microphone?.displayValue ?? "Microphone";
   const speakerDrag = useRef<{ pointerId: number; position: number; distance: number } | undefined>(undefined);
   const setBinary = (parameter: BlockParameter | undefined, value: number) => {
-    if (!parameter || disabled || !parameter.writable) return;
+    if (!parameter || disabled || !parameter.writable || parameter.enabled === false) return;
     onDraftChange(parameter, value);
     onCommit(parameter, value);
   };
   const selectMicrophone = (offset: number) => {
-    if (!microphone || disabled || !microphone.writable || microphone.options.length < 2) return;
+    if (!microphone || disabled || !microphone.writable || microphone.enabled === false || microphone.options.length < 2) return;
     const nextIndex = (microphoneIndex + offset + microphone.options.length) % microphone.options.length;
     const next = nextIndex / (microphone.options.length - 1);
     onDraftChange(microphone, next);
     onCommit(microphone, next);
   };
+  const speakerEditable = !disabled && Boolean(position?.writable && distance?.writable)
+    && position?.enabled !== false && distance?.enabled !== false;
   const updateSpeaker = (event: PointerEvent<HTMLButtonElement>) => {
-    if (!speakerDrag.current || speakerDrag.current.pointerId !== event.pointerId || !position || !distance) return;
+    if (!speakerEditable || !speakerDrag.current || speakerDrag.current.pointerId !== event.pointerId || !position || !distance) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const { position: nextPosition, distance: nextDistance } = cabMicrophoneValuesAt(side, (event.clientX - bounds.left) / bounds.width, (event.clientY - bounds.top) / bounds.height);
     speakerDrag.current.position = nextPosition;
@@ -535,9 +544,10 @@ function CabChannel({ side, allParameters, drafts, accent, disabled, onDraftChan
   };
   const finishSpeaker = (event: PointerEvent<HTMLButtonElement>) => {
     const drag = speakerDrag.current;
-    if (!drag || drag.pointerId !== event.pointerId || !position || !distance) return;
+    if (!drag || drag.pointerId !== event.pointerId) return;
     speakerDrag.current = undefined;
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (!speakerEditable || !position || !distance) return;
     if (onCommitBatch) onCommitBatch([{ parameter: position, value: drag.position }, { parameter: distance, value: drag.distance }]);
     else onCommit(position, drag.position);
   };
@@ -545,19 +555,20 @@ function CabChannel({ side, allParameters, drafts, accent, disabled, onDraftChan
     <div className="cab-channel-controls">
       {controls.map((parameter) => <ParameterControl key={parameter.index} parameter={parameter} value={drafts[parameter.index] ?? parameter.normalizedValue ?? 0} slot={allParameters.indexOf(parameter)} accent={side ? QC_COLORS.category.pitch : accent} disabled={disabled} variant="bar" onDraftChange={onDraftChange} onCommit={onCommit} />)}
     </div>
-    <button className="cab-speaker" disabled={disabled || !position?.writable || !distance?.writable} aria-label={`Microphone ${side + 1} position ${position?.displayValue ?? ""}, distance ${distance?.displayValue ?? ""}`} onPointerDown={(event) => {
+    <button className="cab-speaker" disabled={!speakerEditable} aria-label={`Microphone ${side + 1} position ${position?.displayValue ?? ""}, distance ${distance?.displayValue ?? ""}`} onPointerDown={(event) => {
+      if (!speakerEditable) return;
       event.currentTarget.setPointerCapture?.(event.pointerId);
       speakerDrag.current = { pointerId: event.pointerId, position: positionValue, distance: distanceValue };
       updateSpeaker(event);
     }} onPointerMove={updateSpeaker} onPointerUp={finishSpeaker} onPointerCancel={finishSpeaker}><QcCabMicrophoneTarget {...cabMicrophonePlacement(side, positionValue, distanceValue)} direction={side ? "left" : "right"} /></button>
     <div className="cab-channel-footer">
-      <button className={`cab-phase${phaseValue >= .5 ? " is-active" : ""}`} disabled={disabled || !phase?.writable} aria-label={`Invert microphone ${side + 1} phase`} aria-pressed={phaseValue >= .5} onClick={() => setBinary(phase, phaseValue >= .5 ? 0 : 1)}><QcUiIcon kind="phase-invert" /></button>
+      <button className={`cab-phase${phaseValue >= .5 ? " is-active" : ""}`} disabled={disabled || !phase?.writable || phase?.enabled === false} aria-label={`Invert microphone ${side + 1} phase`} aria-pressed={phaseValue >= .5} onClick={() => setBinary(phase, phaseValue >= .5 ? 0 : 1)}><QcUiIcon kind="phase-invert" /></button>
       <div className="cab-microphone-selector">
-        <button disabled={disabled || !microphone?.writable || microphone.options.length < 2} aria-label={`Previous microphone for slot ${side + 1}`} onClick={() => selectMicrophone(-1)}><QcUiIcon kind="cab-previous" /></button>
+        <button disabled={disabled || !microphone?.writable || microphone?.enabled === false || microphone.options.length < 2} aria-label={`Previous microphone for slot ${side + 1}`} onClick={() => selectMicrophone(-1)}><QcUiIcon kind="cab-previous" /></button>
         <strong title={microphoneName}>{cabMicrophoneLabel(microphoneName)}</strong>
-        <button disabled={disabled || !microphone?.writable || microphone.options.length < 2} aria-label={`Next microphone for slot ${side + 1}`} onClick={() => selectMicrophone(1)}><QcUiIcon kind="cab-next" /></button>
+        <button disabled={disabled || !microphone?.writable || microphone?.enabled === false || microphone.options.length < 2} aria-label={`Next microphone for slot ${side + 1}`} onClick={() => selectMicrophone(1)}><QcUiIcon kind="cab-next" /></button>
       </div>
-      <button className={`cab-channel-power${bypassValue < .5 ? " is-active" : ""}`} disabled={disabled || !bypass?.writable} aria-label={`${bypassValue >= .5 ? "Enable" : "Disable"} cab microphone ${side + 1}`} aria-pressed={bypassValue < .5} onClick={() => setBinary(bypass, bypassValue >= .5 ? 0 : 1)}><i /></button>
+      <button className={`cab-channel-power${bypassValue < .5 ? " is-active" : ""}`} disabled={disabled || !bypass?.writable || bypass?.enabled === false} aria-label={`${bypassValue >= .5 ? "Enable" : "Disable"} cab microphone ${side + 1}`} aria-pressed={bypassValue < .5} onClick={() => setBinary(bypass, bypassValue >= .5 ? 0 : 1)}><i /></button>
     </div>
   </section>;
 }

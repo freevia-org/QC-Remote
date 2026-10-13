@@ -429,8 +429,10 @@ export function useGridWorkflow(options: GridWorkflowOptions) {
       if (result.snapshot) reconcile(result.snapshot);
       setSelectedBlockId(`block-${row}-${column}`);
       if (replaceTarget) {
-        const previous = requireModelId(replaceTarget);
-        recordHistory({ label: `change device to ${model.name}`, execute: (current) => gateway.replaceBlock(row, column, previous, modelId, current.presetName, requirePresetIdentity(current)), redo: (current) => gateway.replaceBlock(row, column, modelId, previous, current.presetName, requirePresetIdentity(current)) });
+        // Re-selecting the old model cannot reconstruct its parameters, Scene
+        // values or expression assignments. Only the unit's native history
+        // can restore that edit, so do not offer a lossy app inverse.
+        options.clearHistory();
       } else recordHistory({ label: `add ${model.name}`, execute: (current) => gateway.removeBlock(row, column, modelId, current.presetName, requirePresetIdentity(current)), redo: (current) => gateway.addBlock(row, column, modelId, current.presetName, null, requirePresetIdentity(current)) });
       setAddPickerOpen(false);
       setReplaceTarget(undefined);
@@ -438,7 +440,7 @@ export function useGridWorkflow(options: GridWorkflowOptions) {
       notice(result.detail);
     } catch (error) { fail(error); }
     finally { setPending(false); }
-  }, [addCell, addModelId, fail, filteredModels, gateway, models, notice, onClosePanel, pending, reconcile, recordHistory, replaceTarget, setPending, setSelectedBlockId, snapshot.presetIdentity, snapshot.presetName]);
+  }, [addCell, addModelId, fail, filteredModels, gateway, models, notice, onClosePanel, options.clearHistory, pending, reconcile, recordHistory, replaceTarget, setPending, setSelectedBlockId, snapshot.presetIdentity, snapshot.presetName]);
 
   const closeAddPicker = useCallback(() => { setAddPickerOpen(false); setReplaceTarget(undefined); }, []);
 

@@ -94,8 +94,9 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     fail: (error: unknown) => options.notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed.") });
   const gateway = lifetime.options.gateway;
   const followed = useRef<QcObservedScreenKind | undefined>(undefined);
+  const observationGeneration = useRef(0);
   useEffect(() => {
-    if (!follow || !ready) followed.current = undefined;
+    if (!follow || !ready) { followed.current = undefined; observationGeneration.current += 1; }
   }, [follow, ready]);
   const latest = useRef({ ...lifetime.options, lifetime });
   latest.current = { ...lifetime.options, lifetime };
@@ -104,6 +105,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
   if (driving.current.key !== lifetime.key) {
     driving.current = { key: lifetime.key, count: 0 };
     followed.current = undefined;
+    observationGeneration.current += 1;
   }
 
   /** Closes every app screen the unit's new screen replaces. */
@@ -126,9 +128,10 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
    */
   const followSceneCommand = async () => {
     const owner = latest.current.lifetime;
+    const generation = observationGeneration.current;
     const { destination, workflows, gateway: unit, screenPoll } = latest.current;
     const poll = screenPoll ?? DEFAULT_SCREEN_POLL;
-    const stale = () => !owner.current() || followed.current !== "copy-scene";
+    const stale = () => !owner.current() || generation !== observationGeneration.current || followed.current !== "copy-scene";
     let verb: Awaited<ReturnType<typeof sceneCommandVerbFromFrame>>;
     let source: number | undefined;
     try {
@@ -159,6 +162,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     const kind = observation.kind;
     if (followed.current === kind) return;
     followed.current = kind;
+    observationGeneration.current += 1;
     const { destination, workflows } = latest.current;
     if (kind === "unknown") return;
     // A block editor the app opened (its own block tap opened the unit's) is already on screen. One opened on the unit

@@ -1,12 +1,14 @@
 import { requirePresetIdentity } from "@qc-remote/client";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeviceActionResult, GatewayTransport } from "@qc-remote/client";
-import { QC_SCENE_COLOR_ARGB, sceneLetter } from "@qc-remote/core";
+import { QC_SCENE_COLOR_ARGB, sceneLetter, type PresetLifetime } from "@qc-remote/core";
 import type { DeviceHistoryEntry } from "./use-device-history";
 import { useGuardedMutation } from "./use-guarded-mutation.ts";
 import type { DeviceMutationWorkflowOptions } from "./workflow-options";
 
 export interface SceneWorkflowOptions extends DeviceMutationWorkflowOptions {
+  /** Retires scene drafts and commands on same-address preset replacement. */
+  presetLifetime?: PresetLifetime;
   /**
    * Whether the gateway has the device's own undo history. Scene copy and swap
    * are undone through it, so without it (the demo device) no history entry is
@@ -27,6 +29,29 @@ const sceneArgb = (hex: string) => 0xff000000 + Number.parseInt(hex.slice(1), 16
 /** Shared scene copy/swap, label, and color workflow. */
 export function useSceneWorkflow(options: SceneWorkflowOptions) {
   const { gateway, snapshot, connected, pending, setPending, reconcile, recordHistory, notice, fail, onOpen, onClose } = options;
+  const [, refreshLifetime] = useState(0);
+  useEffect(() => options.presetLifetime?.subscribe(() => refreshLifetime((value) => value + 1)), [options.presetLifetime]);
+  const context = JSON.stringify([snapshot.stateVersion?.session, snapshot.setlistKey, snapshot.presetPosition,
+    options.presetLifetime?.version ?? snapshot.presetIdentity]);
+  type SceneOwner = { gateway: GatewayTransport; context: string; physicalKey: unknown; connected: boolean; current(): boolean };
+  const ownerRef = useRef<SceneOwner | undefined>(undefined);
+  const mounted = useRef(true);
+  const probe = options.captureSessionCurrent?.() ?? (() => true);
+  let owner = ownerRef.current;
+  if (!owner || owner.gateway !== gateway || owner.context !== context || owner.physicalKey !== options.commandSessionKey
+      || owner.connected !== connected || (!owner.current() && probe())) {
+    const checkpoint = options.presetLifetime?.checkpoint();
+    const replacement: SceneOwner = { gateway, context, physicalKey: options.commandSessionKey, connected, current: () => false };
+    replacement.current = () => mounted.current && ownerRef.current === replacement && probe()
+      && (!checkpoint || options.presetLifetime!.current(checkpoint));
+    ownerRef.current = replacement;
+    owner = replacement;
+  }
+  const currentOwner = owner;
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const deviceUndo = options.deviceUndo !== false;
   const [sourceScene, setSourceSceneState] = useState(snapshot.activeScene);
   const [destinationScene, setDestinationScene] = useState(1);
@@ -38,15 +63,18 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
   });
   const colors = useMemo(() => sceneColorChoices(snapshot.sceneColors?.[sourceScene]), [snapshot.sceneColors, sourceScene]);
   const setSourceScene = useCallback((scene: number) => {
+    if (!currentOwner.current()) return;
     if (!Number.isInteger(scene) || scene < 0 || scene >= snapshot.scenes.length) return;
     setSourceSceneState(scene);
     setLabel(snapshot.scenes[scene] ?? "");
     const observed = snapshot.sceneColors?.[scene];
     setColor(Math.max(0, sceneColorChoices(observed).indexOf(observed?.toLowerCase() ?? "")));
-  }, [snapshot.sceneColors, snapshot.scenes]);
+  }, [currentOwner, snapshot.sceneColors, snapshot.scenes]);
 
-  const guarded = useGuardedMutation({ connected, pending, setPending, notice, fail }, "editing scenes");
-  const unavailable = useCallback(() => !guarded.admit(), [guarded.admit]);
+  const guarded = useGuardedMutation({ connected, pending, setPending, notice, fail,
+    sessionKey: currentOwner, commandSessionKey: options.commandSessionKey,
+    captureSessionCurrent: () => currentOwner.current() }, "editing scenes");
+  const unavailable = useCallback(() => !currentOwner.current() || !guarded.admit(), [currentOwner, guarded.admit]);
 
   const open = useCallback(() => {
     if (unavailable()) return;
@@ -57,7 +85,7 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
   }, [onOpen, setSourceScene, snapshot.activeScene, snapshot.scenes.length, unavailable]);
 
   const commit = useCallback(async (labelText: string, action: () => ReturnType<GatewayTransport["undo"]>, history?: DeviceHistoryEntry | ((result: DeviceActionResult) => DeviceHistoryEntry)) => {
-    await guarded.run({
+    return guarded.run({
       progress: `${labelText}…`,
       write: action,
       settle: (result) => {
@@ -69,9 +97,9 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
   }, [guarded.run, notice, reconcile, recordHistory]);
 
   const transfer = useCallback(async (source: number, destination: number, swapMode: boolean) => {
-    if (source === destination) { notice("Choose a different destination scene."); return; }
+    if (source === destination) { notice("Choose a different destination scene."); return false; }
     const verb = swapMode ? "Swap" : "Copy";
-    await commit(`${verb}ping scenes`, () => gateway.copyScene(source, destination, swapMode, snapshot.presetName, requirePresetIdentity(snapshot)), deviceUndo ? {
+    return commit(`${verb}ping scenes`, () => gateway.copyScene(source, destination, swapMode, snapshot.presetName, requirePresetIdentity(snapshot)), deviceUndo ? {
       label: `${verb.toLocaleLowerCase()} scenes`, execute: (current) => gateway.undo(requirePresetIdentity(current)), redo: (current) => gateway.redo(requirePresetIdentity(current))
     } : undefined);
   }, [commit, deviceUndo, gateway, notice, snapshot.presetIdentity, snapshot.presetName]);
@@ -128,7 +156,16 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
   // means it is closed. This is additive - `sourceScene`/`destinationScene`/
   // `swap`/`copy` above are untouched, and still what Android's own generic
   // SceneEditor uses.
-  const [command, setCommand] = useState<"copy" | "swap" | null>(null);
+  type Command = { verb: "copy" | "swap"; owner: SceneOwner };
+  const [commandState, setCommandState] = useState<Command | null>(null);
+  const commandRef = useRef<Command | null>(null);
+  const command = commandState?.owner === currentOwner && currentOwner.current() ? commandState.verb : null;
+  const setCommand = (verb: "copy" | "swap" | null) => {
+    if (!currentOwner.current()) return;
+    const next = verb ? { verb, owner: currentOwner } : null;
+    commandRef.current = next;
+    setCommandState(next);
+  };
   // Where focus returns when the user dismisses the overlay: the Grid menu's
   // button for the Grid menu entry; none for Gig View's, whose tile has no
   // stable return target.
@@ -148,12 +185,13 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
 
   /** The unit opened its Copy/Swap Scene dialog: show the same panel. Not gated by a pending write; the unit is already there. */
   const openUnitCommand = useCallback((swapMode: boolean, scene: number) => {
+    if (!currentOwner.current()) return;
     if (!Number.isInteger(scene) || scene < 0 || scene >= snapshot.scenes.length) return;
     setSourceScene(scene);
     setCommandReturnTarget(undefined);
     setCommandMirrorsUnit(true);
     setCommand(swapMode ? "swap" : "copy");
-  }, [setSourceScene, snapshot.scenes.length]);
+  }, [currentOwner, setSourceScene, snapshot.scenes.length]);
 
   const openCommandForScene = useCallback((scene: number, swapMode: boolean) => {
     if (unavailable()) return;
@@ -164,30 +202,47 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
     setCommand(swapMode ? "swap" : "copy");
   }, [setSourceScene, snapshot.scenes.length, unavailable]);
 
-  const closeCommand = useCallback(() => setCommand(null), []);
+  const closeCommand = useCallback(() => {
+    if (commandRef.current === commandState) setCommand(null);
+  }, [commandState, currentOwner]);
 
   const chooseDestination = useCallback(async (destination: number) => {
     if (!command) return;
-    await transfer(sourceScene, destination, command === "swap");
-    setCommand(null);
-  }, [command, sourceScene, transfer]);
+    const started = commandState;
+    const succeeded = await transfer(sourceScene, destination, command === "swap");
+    if (succeeded && currentOwner.current() && commandRef.current === started) setCommand(null);
+  }, [command, commandState, currentOwner, sourceScene, transfer]);
 
   // --- Device scene label/color screen --------------------------------------
   // Gig View owns the entry point, like the physical unit. The selected tile
   // supplies the scene instead of an app-level shortcut silently assuming the
   // active one.
-  const [labelColorOpen, setLabelColorOpen] = useState(false);
+  type LabelDialog = { owner: SceneOwner };
+  const [labelColorState, setLabelColorState] = useState<LabelDialog>();
+  const labelDialogRef = useRef<LabelDialog | undefined>(undefined);
+  const labelColorOpen = labelColorState?.owner === currentOwner && currentOwner.current();
 
   const openLabelColor = useCallback((scene = snapshot.activeScene) => {
     if (unavailable()) return;
     setSourceScene(scene);
-    setLabelColorOpen(true);
-  }, [setSourceScene, snapshot.activeScene, unavailable]);
+    const dialog = { owner: currentOwner };
+    labelDialogRef.current = dialog;
+    setLabelColorState(dialog);
+  }, [currentOwner, setSourceScene, snapshot.activeScene, unavailable]);
 
-  const closeLabelColor = useCallback(() => setLabelColorOpen(false), []);
+  const closeLabelColor = useCallback(() => {
+    if (currentOwner.current() && labelDialogRef.current === labelColorState) {
+      labelDialogRef.current = undefined;
+      setLabelColorState(undefined);
+    }
+  }, [currentOwner, labelColorState]);
+  const dialogCurrent = () => currentOwner.current() && (!labelColorState || (labelColorState.owner === currentOwner && labelDialogRef.current === labelColorState));
 
   return {
-    sourceScene, setSourceScene, destinationScene, setDestinationScene, swap, setSwap, label, setLabel, color, setColor, colors, open, close: onClose, copy, saveLabel, saveColor,
+    sourceScene, setSourceScene: (scene: number) => { if (dialogCurrent()) setSourceScene(scene); },
+    destinationScene, setDestinationScene, swap, setSwap, label, setLabel: (value: string) => { if (dialogCurrent()) setLabel(value); },
+    color, setColor: (value: number) => { if (dialogCurrent()) setColor(value); }, colors, open, close: onClose, copy,
+    saveLabel: () => { if (dialogCurrent()) return saveLabel(); }, saveColor: () => { if (dialogCurrent()) return saveColor(); },
     commandReturnTarget,
     command, commandMirrorsUnit, openCommand, openUnitCommand, openCommandForScene, closeCommand, chooseDestination,
     labelColorOpen, openLabelColor, closeLabelColor

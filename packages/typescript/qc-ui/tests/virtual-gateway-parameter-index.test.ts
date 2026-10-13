@@ -93,3 +93,41 @@ test("virtual block reset applies measured defaults to active and inactive scene
   const stored = persisted.current.preset.blocks.find((target) => target.modelId === 1_001);
   assert.deepEqual(stored.sceneValues[0], Array(8).fill(.2));
 });
+
+test("virtual replacement retires the old model's parameter assignments and same-model replacement is a true no-op", async () => {
+  const models = [1001, 1002].map((id) => ({ id, name: `Amp ${id}`, category: "Guitar Amplifier", hidden: false,
+    parameters: [0, 1].map((index) => ({ index, name: `Parameter ${index}`, type: "float", minimum: 0, maximum: 1, valueScale: "linear", options: [] })) }));
+  const store = await VirtualDeviceStore.open({ storage: createMemoryVirtualDeviceStorage(), catalogue: { models } as VirtualModelCatalogue,
+    measuredDefaults: { schema: 1, source: "test defaults", models: Object.fromEntries(models.map((model) => [String(model.id), {
+      name: model.name, category: model.category, parameters: [{ index: 0, name: "Scene", normalizedValue: .2 }, { index: 1, name: "Ordinary", normalizedValue: .3 }]
+    }])) }, newSessionId: () => "replace-model" });
+  const gateway = createVirtualGatewayTransport(store);
+  const initial = await gateway.currentSnapshot();
+  const block = initial.blocks.find((candidate) => candidate.modelId === 1001)!;
+  assert.ok(block);
+  await store.update((state) => {
+    const target = state.current.preset.blocks.find((candidate) => candidate.row === block.row && candidate.column === block.column)!;
+    target.parameterValues = { 0: .7, 1: .9 };
+    target.sceneValues = { 0: Array(8).fill(.8) };
+    target.expressions = { 0: { pedal: 2, minimum: .1, maximum: .9 } };
+    state.current.dirty = false;
+  });
+  const before = structuredClone(store.state.current);
+  const unchanged = await gateway.replaceBlock(block.row, block.column, 1001, 1001, initial.presetName, initial.presetIdentity!);
+  assert.equal(unchanged.changed, false);
+  assert.match(unchanged.detail, /left unchanged/);
+  assert.deepEqual(store.state.current, before, "a same-model operation must not silently reset values or dirty state");
+  const replaced = await gateway.replaceBlock(block.row, block.column, 1002, 1001, initial.presetName, initial.presetIdentity!);
+  assert.equal(replaced.changed, true);
+  assert.equal(store.state.current.dirty, true);
+  const target = store.state.current.preset.blocks.find((candidate) => candidate.row === block.row && candidate.column === block.column)!;
+  assert.equal(target.sceneValues, undefined);
+  assert.equal(target.expressions, undefined);
+  for (const scene of [0, 7]) {
+    await gateway.selectScene(scene, initial.presetName, initial.presetIdentity!);
+    const details = await gateway.blockDetails(block.row, block.column, initial.presetName, initial.presetIdentity!);
+    assert.equal(details.modelId, 1002);
+    assert.deepEqual(details.parameters.map((parameter) => parameter.normalizedValue), [.2, .3]);
+    assert.ok(details.parameters.every((parameter) => parameter.sceneMode === false && parameter.expression === null));
+  }
+});

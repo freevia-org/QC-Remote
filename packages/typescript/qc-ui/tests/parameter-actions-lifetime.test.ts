@@ -143,3 +143,35 @@ for (const action of actions) {
     act(() => host.close());
   });
 }
+
+test("fresh disabled parameter readback refuses a linked edit before its first wire write", async () => {
+  const writes: number[] = [], failures: unknown[] = [];
+  const initial = block();
+  let enabled = false;
+  const gateway = {
+    async blockDetails() { return {...initial,parameters:initial.parameters.map((item) => ({...item,enabled}))}; },
+    async setParameter(_row: number,_column: number,index: number,value: number) {
+      writes.push(index); return {detail:"written",block:{...initial,parameters:initial.parameters.map((item) => ({...item,enabled,normalizedValue:value}))}};
+    }
+  } as unknown as GatewayTransport;
+  const snapshot = {...IDLE_PLACEHOLDER_SNAPSHOT,presetIdentity:"parameter-enabled",setlistKey:"A",presetPosition:0,activeScene:0};
+  const controller = { lifetime:new PresetLifetime(snapshot),updateInteraction(){},releaseInteraction(){},cancelInteraction(){} };
+  let workflow!: ReturnType<typeof useParameterWorkflow>;
+  function Probe() {
+    workflow=useParameterWorkflow({gateway,snapshot,connected:true,pending:false,controller,
+      editor:{details:initial,drafts:{},page:0,load(){}},setPending(){},notice(){},fail(error:unknown){failures.push(error);},recordHistory(){},reconcile(){}
+    } as unknown as ParameterWorkflowOptions);
+    return null;
+  }
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer=create(React.createElement(Probe)); });
+  try {
+    await act(async () => { await workflow.commitBatch([{parameter:initial.parameters[0],value:.7}]); });
+    assert.deepEqual(writes,[]);
+    assert.equal(failures.length,1);
+    enabled=true;
+    await act(async () => { await workflow.commitBatch([{parameter:initial.parameters[0],value:.7}]); });
+    assert.deepEqual(writes,[0],"healthy fresh read remains writable");
+    assert.equal(failures.length,1);
+  } finally { act(() => renderer.unmount()); }
+});

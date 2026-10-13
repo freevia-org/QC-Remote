@@ -70,7 +70,15 @@ export function ModesConfigurationScreen({ workflow, onClose, returnFocusTarget 
           draggable={!disabled} onClick={() => { if (hold.consumeFired()) return; activate(index); }}
           onDragStart={(event) => { cancelHold(); event.dataTransfer.setData("text/qc-mode-index", String(index)); event.dataTransfer.effectAllowed = "move"; }}
           onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }}
-          onDrop={(event) => { event.preventDefault(); const source = Number(event.dataTransfer.getData("text/qc-mode-index")); if (Number.isInteger(source)) merge(source, index); }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const sourceText = event.dataTransfer.getData("text/qc-mode-index");
+            // An unrelated drag has no mode payload; Number("") would turn
+            // it into the first mode and commit an unintended hybrid.
+            if (disabled || !/^\d+$/.test(sourceText)) return;
+            const source = Number(sourceText);
+            if (Number.isInteger(source) && source < (slots?.length ?? 0)) merge(source, index);
+          }}
           onPointerDown={() => { if (mode >= 3) hold.start(index); else cancelHold(); }}
           onPointerUp={cancelHold}
           onPointerLeave={cancelHold}

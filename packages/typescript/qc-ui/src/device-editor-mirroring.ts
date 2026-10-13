@@ -1,5 +1,5 @@
 import type { GatewayTransport, GridBlock } from "@qc-remote/client";
-import { classifyQcGraphicsTree, type QcObservedScreenKind } from "./use-adaptive-screen-polling.ts";
+import { classifyQcGraphicsTree, hasUnrecognizedQcScreenOverlay, type QcObservedScreenKind } from "./use-adaptive-screen-polling.ts";
 
 // Native 800 x 480 Grid cell centres. Browser pixels must never be forwarded:
 // their scale depends on the window and form factor.
@@ -65,7 +65,8 @@ export async function closeGridBlockOnDevice(
   // Measured on the unit: while a parameter editor (the Cab editor included) is open its tree has no zenUI::Grid at
   // all, so the Grid must not be required here; the editor itself is what is being closed.
   const screen = classifyQcGraphicsTree(tree);
-  if (screen !== "parameter-editor" || !tree.includes("zenUI::ParameterEditor") || !stillCurrent()) {
+  if (screen !== "parameter-editor" || !/zenUI::ParameterEditor(?![A-Za-z0-9_])/.test(tree)
+      || hasUnrecognizedQcScreenOverlay(tree) || !stillCurrent()) {
     if (stillCurrent() && screen !== "grid") onLeftOpen?.(screen);
     return false;
   }
