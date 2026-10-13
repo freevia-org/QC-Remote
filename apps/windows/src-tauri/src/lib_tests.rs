@@ -1778,7 +1778,7 @@ fn wait_for_broker_child_exit(child: &mut std::process::Child, timeout: Duration
 fn a_second_gateway_process_attaches_to_the_first_instead_of_spawning_a_new_broker() {
     let _serialize = serialize_real_broker_test();
     let descriptor_path = test_descriptor_path("second-attaches");
-    let mut first = GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path)
+    let first = GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path)
         .expect("the first process becomes the broker");
     let first_pid = first
         .hosted_broker_pid()
