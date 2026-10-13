@@ -10,6 +10,10 @@ use std::collections::BTreeMap;
 /// exceed it makes [`NativePresetCatalog::apply`] fail.
 pub const MAX_PRESET_FOLDERS: usize = 128;
 
+/// Aggregate retained preset folder and slot string bytes. A frame bound alone
+/// cannot bound metadata accumulated through independent slot updates.
+pub const MAX_PRESET_CATALOG_BYTES: usize = 32 * 1024 * 1024;
+
 /// Keys affected by one [`NativePresetCatalog::apply`] call.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NativeCatalogChange {
@@ -68,8 +72,13 @@ impl NativePresetCatalog {
     /// freshness or persistence; the session owner must retain those separately.
     pub fn apply(&mut self, message: &pa::FileMessage) -> Result<NativeCatalogChange, String> {
         self.health()?;
-        let result = self.apply_inner(message);
+        let result = self
+            .apply_inner(message)
+            .and_then(|change| check_retained_bytes(self.retained_bytes()).map(|()| change));
         if let Err(error) = &result {
+            // An invalid catalog cannot be used for planning. Release it rather
+            // than retaining an over-budget tree behind the sticky error.
+            self.folders.clear();
             self.invalidate(error.clone());
         }
         result
@@ -111,9 +120,49 @@ impl NativePresetCatalog {
                 let Some(target) = eligible(destination, file_type) else {
                     return Ok(change);
                 };
-                let Some(mut current) = self.folders.remove(&source_key) else {
+                let Some(current) = self.folders.get(&source_key) else {
                     return Ok(change);
                 };
+                // A new folder prefix is copied into every occupied product key.
+                // Budget that multiplication before allocating any renamed key.
+                let unchanged_bytes = self
+                    .folders
+                    .iter()
+                    .filter(|(key, _)| *key != &source_key && *key != &target.key)
+                    .map(|(_, folder)| folder_bytes(folder))
+                    .sum::<usize>();
+                let renamed_bytes = target
+                    .key
+                    .len()
+                    .saturating_mul(2)
+                    .saturating_add(target.name.len())
+                    .saturating_add(
+                        current
+                            .files
+                            .iter()
+                            .map(|file| {
+                                let metadata = file
+                                    .name
+                                    .len()
+                                    .saturating_add(file.author.as_ref().map_or(0, String::len))
+                                    .saturating_add(file.date.as_ref().map_or(0, String::len));
+                                metadata.saturating_add(if file.product_key.is_some() {
+                                    target
+                                        .key
+                                        .len()
+                                        .saturating_add(file.name.len())
+                                        .saturating_add(4)
+                                } else {
+                                    0
+                                })
+                            })
+                            .sum::<usize>(),
+                    );
+                check_retained_bytes(unchanged_bytes.saturating_add(renamed_bytes))?;
+                let mut current = self
+                    .folders
+                    .remove(&source_key)
+                    .expect("checked source folder");
                 current.key = target.key.clone();
                 current.name = target.name;
                 for file in &mut current.files {
@@ -198,6 +247,10 @@ impl NativePresetCatalog {
         Ok(())
     }
 
+    fn retained_bytes(&self) -> usize {
+        self.folders.values().map(folder_bytes).sum()
+    }
+
     fn upsert_products(&mut self, wire: &pa::FolderInfo, mut incoming: PresetFolderListing) {
         let supplied = std::mem::take(&mut incoming.files);
         let current = self.folders.entry(incoming.key.clone()).or_insert(incoming);
@@ -241,6 +294,30 @@ impl NativePresetCatalog {
     }
 }
 
+fn folder_bytes(folder: &PresetFolderListing) -> usize {
+    // The BTreeMap owns a second copy of the canonical folder key.
+    folder.key.len() * 2
+        + folder.name.len()
+        + folder
+            .files
+            .iter()
+            .map(|file| {
+                file.name.len()
+                    + file.product_key.as_ref().map_or(0, String::len)
+                    + file.author.as_ref().map_or(0, String::len)
+                    + file.date.as_ref().map_or(0, String::len)
+            })
+            .sum::<usize>()
+}
+
+fn check_retained_bytes(bytes: usize) -> Result<(), String> {
+    if bytes > MAX_PRESET_CATALOG_BYTES {
+        Err(format!("Native preset catalog exceeded its retained metadata capacity of {MAX_PRESET_CATALOG_BYTES} bytes"))
+    } else {
+        Ok(())
+    }
+}
+
 fn eligible(folder: &pa::FolderInfo, file_type: Option<i32>) -> Option<PresetFolderListing> {
     let mut listing = project_preset_folder(folder, file_type)?;
     if !PresetLibrary::is_preset_setlist_listing(&listing) {
@@ -270,6 +347,84 @@ mod tests {
     use prost::Message;
     const SOURCE: &str = "/media/p4/Presets/Source";
     const TARGET: &str = "/media/p4/Presets/Target";
+
+    #[test]
+    fn cumulative_preset_metadata_is_bounded_and_reset_recovers() {
+        let mut catalog = NativePresetCatalog::default();
+        let large = "a".repeat(512 * 1024);
+        let listing = |index: i32, author: &str| {
+            let mut row = product(index, Some(&format!("key-{index}")), "Name");
+            row.author = Some(pa::product_data::Author::Author(author.into()));
+            event(pa::message_action::Enum::Update, SOURCE, vec![row])
+        };
+        for index in 0..63 {
+            let message = listing(index, &large);
+            assert!(message.encoded_len() < crate::profile::MAX_FRAME_BYTES);
+            catalog.apply(&message).unwrap();
+        }
+        // Replacing a large slot and deleting another release their old metadata.
+        catalog.apply(&listing(0, "small")).unwrap();
+        catalog
+            .apply(&event(
+                pa::message_action::Enum::Delete,
+                SOURCE,
+                vec![product(1, Some("key-1"), "")],
+            ))
+            .unwrap();
+        catalog.apply(&listing(63, &large)).unwrap();
+        catalog.apply(&listing(64, &large)).unwrap();
+        let error = catalog.apply(&listing(65, &large)).unwrap_err();
+        assert!(error.contains("retained metadata capacity"), "{error}");
+        assert!(catalog.folders.is_empty());
+        assert!(catalog.health().is_err());
+        assert!(catalog.apply(&listing(0, "normal")).is_err());
+        catalog.clear();
+        catalog.apply(&listing(0, "normal")).unwrap();
+        assert_eq!(
+            catalog.folder(SOURCE).unwrap().files[0].author.as_deref(),
+            Some("normal")
+        );
+    }
+
+    #[test]
+    fn rename_metadata_multiplication_is_refused_before_key_rebuild() {
+        let mut catalog = NativePresetCatalog::default();
+        catalog
+            .apply(&event(
+                pa::message_action::Enum::Create,
+                SOURCE,
+                (0..256)
+                    .map(|index| product(index, Some("key"), "Name"))
+                    .collect(),
+            ))
+            .unwrap();
+        let mut rename = event(pa::message_action::Enum::Update, SOURCE, vec![]);
+        let long_key = format!("/media/p4/Presets/{}", "x".repeat(512 * 1024));
+        rename.to_folder = Some(pa::file_message::ToFolder::ToFolder(folder(
+            &long_key,
+            vec![],
+        )));
+        assert!(rename.encoded_len() < crate::profile::MAX_FRAME_BYTES);
+        let error = catalog.apply(&rename).unwrap_err();
+        assert!(error.contains("retained metadata capacity"), "{error}");
+        assert!(catalog.folders.is_empty());
+        catalog.clear();
+        catalog
+            .apply(&event(
+                pa::message_action::Enum::Create,
+                SOURCE,
+                vec![product(0, Some("key"), "Name")],
+            ))
+            .unwrap();
+        rename.to_folder = Some(pa::file_message::ToFolder::ToFolder(folder(TARGET, vec![])));
+        catalog.apply(&rename).unwrap();
+        assert_eq!(
+            catalog.folder(TARGET).unwrap().files[0]
+                .product_key
+                .as_deref(),
+            Some("/media/p4/Presets/Target/Name.pb")
+        );
+    }
 
     fn product(index: i32, key: Option<&str>, name: &str) -> pa::ProductData {
         pa::ProductData {
