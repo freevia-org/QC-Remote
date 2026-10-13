@@ -278,8 +278,15 @@ fn fail(message: impl std::fmt::Display) -> ! {
     std::process::exit(1)
 }
 
+fn startup_trace(stage: &str) {
+    if std::env::var_os("QC_DEVICE_BROKER_START_TRACE").is_some() {
+        eprintln!("broker startup: {stage}");
+    }
+}
+
 pub fn main(binary: Binary) {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    startup_trace("cli entered");
     // Reported by `--control status` as the running broker's version.
     crate::rpc::set_binary_version(binary.version);
     match mode(&args) {
@@ -309,6 +316,7 @@ pub fn main(binary: Binary) {
             run_resident(&args, directory, keep_user_quit, binary.host)
         }
         Mode::BrokerServe => {
+            startup_trace("broker-serve selected");
             let descriptor_path = args
                 .windows(2)
                 .find(|pair| pair[0] == "--descriptor-path")
@@ -325,11 +333,15 @@ pub fn main(binary: Binary) {
                 #[cfg(target_os = "macos")]
                 crate::platform::paths_macos::prepare_directory(directory)
                     .unwrap_or_else(|error| fail(error));
+                startup_trace("descriptor directory prepared");
                 match resident::elect(&descriptor_path, RESIDENT_ELECTION_BUDGET)
                     .unwrap_or_else(|error| fail(error))
                 {
                     Election::AlreadyServed => return,
-                    Election::Serve(guard) => Some(guard),
+                    Election::Serve(guard) => {
+                        startup_trace("election acquired");
+                        Some(guard)
+                    }
                 }
             };
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -527,6 +539,7 @@ fn serve(
     election: Option<resident::ElectionGuard>,
     started_for_residence: bool,
 ) {
+    startup_trace("serve entered");
     let phase_events = phase_events_enabled(args, started_for_residence);
     #[cfg(unix)]
     let signals = match crate::platform::shutdown::Pending::new() {
@@ -554,6 +567,7 @@ fn serve(
             fail(error)
         }
     };
+    startup_trace("device controller started");
     // The icon belongs to this process: it appears once this broker has won
     // the descriptor election and goes when it exits. Only an interactive
     // desktop gets one; `--stdio` and every probe never do. Without an icon
@@ -584,6 +598,7 @@ fn serve(
         #[cfg(unix)]
         let signal_watch_slot = &mut signal_watch;
         move |handle: BrokerHandle| {
+            startup_trace("published callback entered");
             // Published: a peer's election now attaches to this broker.
             drop(election);
             note_publication(&handle, started_for_residence);
@@ -632,6 +647,7 @@ fn serve(
             }
         }
     };
+    startup_trace("entering tcp server");
     if let Err(error) = crate::rpc::serve_broker_tcp_with_published_hook(
         Arc::new(controller),
         phase_events,
