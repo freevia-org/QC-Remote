@@ -122,7 +122,7 @@
 			name = "Build QC Rust Runtime";
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "\"${SRCROOT}/../../tools/build-ios-rust-ffi.sh\"";
+			shellScript = "/bin/sh \"${SRCROOT}/../../tools/build-ios-rust-ffi.sh\"";
 			showEnvVarsInLog = 0;
 		};
 	/* End PBXShellScriptBuildPhase section */
