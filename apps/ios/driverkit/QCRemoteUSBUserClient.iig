@@ -1,0 +1,19 @@
+#include <DriverKit/IOUserClient.iig>
+
+class QCRemoteUSBDriver;
+
+struct QCRemoteUSBUserClient_IVars {
+    QCRemoteUSBDriver *driver = nullptr;
+};
+
+class QCRemoteUSBUserClient : public IOUserClient {
+public:
+    virtual kern_return_t Start(IOService *provider) override;
+    virtual kern_return_t Stop(IOService *provider) override;
+    virtual kern_return_t ExternalMethod(
+        uint64_t selector,
+        IOUserClientMethodArguments *arguments,
+        const IOUserClientMethodDispatch *dispatch,
+        OSObject *target,
+        void *reference) override;
+};
