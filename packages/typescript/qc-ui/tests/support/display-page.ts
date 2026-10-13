@@ -119,7 +119,9 @@ const MEASURE_SCRIPT = `
     texts.push({ text: element.textContent.trim().slice(0, 24), fontSize: parseFloat(getComputedStyle(element).fontSize), box: [r.left, r.top, r.width, r.height] });
   }
   const svg = root.querySelector("svg.coros-vector-canvas");
-  return { innerWidth, innerHeight, bezel: box(bezel), border: [bezelStyle.borderLeftWidth, bezelStyle.paddingLeft], root: box(root), matrix: [matrix.a, matrix.b, matrix.c, matrix.d], svg: svg ? box(svg) : null, texts };
+  // The empty-slot placeholder is a 64 x 64 square on the unit's 800 x 480 frame, like an Amp block.
+  const square = root.querySelector('g[aria-label="Empty device slot"] > rect');
+  return { innerWidth, innerHeight, bezel: box(bezel), border: [bezelStyle.borderLeftWidth, bezelStyle.paddingLeft], root: box(root), matrix: [matrix.a, matrix.b, matrix.c, matrix.d], svg: svg ? box(svg) : null, square: square ? box(square) : null, texts };
 })()
 `;
 
@@ -134,6 +136,7 @@ export interface DisplayMeasurement {
   root: Box;
   matrix: [number, number, number, number];
   svg: Box | null;
+  square: Box | null;
   texts: Array<{ text: string; fontSize: number; box: Box }>;
 }
 
@@ -145,7 +148,7 @@ type CdpMessage = { id?: number; method?: string; sessionId?: string; result?: a
 
 /** A tiny Chrome DevTools Protocol client: enough to open pages at a viewport size and evaluate a script in them.
  * QC_BROWSER_HEADFUL=1 runs a visible, GPU-composited browser instead of headless software rendering, for chasing compositor-only differences. */
-export async function withBrowser<T>(browser: string, workDirectory: string, browserArguments: string[], run: (page: (viewport: readonly [number, number], url: string, script: string) => Promise<unknown>, open: OpenPage) => Promise<T>): Promise<T> {
+export async function withBrowser<T>(browser: string, workDirectory: string, browserArguments: string[], run: (page: (viewport: readonly [number, number], url: string, script: string, deviceScaleFactor?: number) => Promise<unknown>, open: OpenPage) => Promise<T>): Promise<T> {
   const profile = join(workDirectory, `profile-${Math.random().toString(36).slice(2)}`);
   mkdirSync(profile, { recursive: true });
   const child = spawn(browser, [...(process.env.QC_BROWSER_HEADFUL === "1" ? [] : ["--headless=new", "--disable-gpu"]), "--no-sandbox", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, ...browserArguments, "about:blank"], { stdio: "ignore" });
@@ -185,8 +188,8 @@ export async function withBrowser<T>(browser: string, workDirectory: string, bro
     const { targetId } = await send("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
     await send("Page.enable", {}, sessionId);
-    const page = async (viewport: readonly [number, number], url: string, script: string) => {
-      await send("Emulation.setDeviceMetricsOverride", { width: viewport[0], height: viewport[1], deviceScaleFactor: 1, mobile: false }, sessionId);
+    const page = async (viewport: readonly [number, number], url: string, script: string, deviceScaleFactor = 1) => {
+      await send("Emulation.setDeviceMetricsOverride", { width: viewport[0], height: viewport[1], deviceScaleFactor, mobile: false }, sessionId);
       const loaded = new Promise<void>((resolve) => waiters.push({ method: "Page.loadEventFired", sessionId, resolve }));
       await send("Page.navigate", { url }, sessionId);
       await loaded;
@@ -221,7 +224,7 @@ export async function withBrowser<T>(browser: string, workDirectory: string, bro
 }
 
 /** Lays every host x viewport x screen combination out in one headless Chrome, one page at a time at the stated viewport size. */
-export async function measureLayouts(browser: string, workDirectory: string, css: string, markup: Record<string, string>, browserArguments: string[] = []): Promise<DisplayMeasurement[]> {
+export async function measureLayouts(browser: string, workDirectory: string, css: string, markup: Record<string, string>, browserArguments: string[] = [], deviceScaleFactor = 1): Promise<DisplayMeasurement[]> {
   const pagesDirectory = join(workDirectory, "pages");
   mkdirSync(pagesDirectory, { recursive: true });
   writeFileSync(join(pagesDirectory, "display.css"), css);
@@ -240,7 +243,7 @@ export async function measureLayouts(browser: string, workDirectory: string, css
   }
   return withBrowser(browser, workDirectory, browserArguments, async (page) => {
     const results: DisplayMeasurement[] = [];
-    for (const { key, viewport, url } of cases) results.push({ key, ...(await page(viewport, url, MEASURE_SCRIPT) as Omit<DisplayMeasurement, "key">) });
+    for (const { key, viewport, url } of cases) results.push({ key, ...(await page(viewport, url, MEASURE_SCRIPT, deviceScaleFactor) as Omit<DisplayMeasurement, "key">) });
     return results;
   });
 }

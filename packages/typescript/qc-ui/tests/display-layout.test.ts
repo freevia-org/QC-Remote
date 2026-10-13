@@ -18,13 +18,15 @@ const browser = findBrowser();
 const mustRun = Boolean(process.env.CI) || process.env.QC_REQUIRE_BROWSER === "1";
 const skip = !browser && !mustRun ? "no Chrome or Chromium found; set QC_BROWSER_EXECUTABLE to run the display layout check" : false;
 
-/** The display's one physical aspect (the vector's inner opening) and the width:height of each 800x480 pixel it implies. */
-const ASPECT = 585.353 / 327.749;
-const PIXEL_ASPECT = ASPECT / (800 / 480);
+/** The display box is the framebuffer's own shape, so each of the unit's 800x480 pixels is square. */
+const ASPECT = 800 / 480;
 const aspectTolerance = 0.005;
+/** Device pixel ratios the hosts run at (a Windows display at 125%/150%, a phone at 2x or more). */
+const RATIOS = [1.25, 2.625];
 
 let measured: DisplayMeasurement[] = [];
 let clamped: DisplayMeasurement[] = [];
+const atRatio = new Map<number, DisplayMeasurement[]>();
 
 test("lay out the shared display in both hosts", { skip, timeout: 240_000 }, async () => {
   assert.ok(browser, "CI must provide a Chrome or Chromium (set QC_BROWSER_EXECUTABLE)");
@@ -33,6 +35,7 @@ test("lay out the shared display in both hosts", { skip, timeout: 240_000 }, asy
     const { css, markup } = await renderDisplays(work.path);
     measured = await measureLayouts(browser, work.path, css, markup);
     clamped = await measureLayouts(browser, work.path, css, markup, ["--blink-settings=minimumFontSize=8"]);
+    for (const ratio of RATIOS) atRatio.set(ratio, await measureLayouts(browser, work.path, css, markup, [], ratio));
   } finally {
     work.cleanup();
   }
@@ -40,25 +43,35 @@ test("lay out the shared display in both hosts", { skip, timeout: 240_000 }, asy
   assert.equal(clamped.length, measured.length);
 });
 
-test("the display box has the physical aspect within 0.5% at every viewport, in both hosts", { skip }, () => {
+test("the display box has the framebuffer's 800:480 aspect within 0.5% at every viewport, in both hosts", { skip }, () => {
   for (const sample of measured) {
     const [, , width, height] = sample.bezel;
     const aspect = width / height;
-    assert.ok(Math.abs(aspect / ASPECT - 1) <= aspectTolerance, `${sample.key}: display box is ${width.toFixed(2)}x${height.toFixed(2)} (${aspect.toFixed(4)}), not the physical aspect ${ASPECT.toFixed(4)}`);
+    assert.ok(Math.abs(aspect / ASPECT - 1) <= aspectTolerance, `${sample.key}: display box is ${width.toFixed(2)}x${height.toFixed(2)} (${aspect.toFixed(4)}), not the framebuffer's 800:480 (${ASPECT.toFixed(4)})`);
     assert.deepEqual(sample.border, ["0px", "0px"], `${sample.key}: the display box has no border or padding of its own`);
   }
 });
 
-test("the canvas is scaled by the fixed pixel aspect and fills the display box exactly", { skip }, () => {
+test("the canvas is scaled uniformly and fills the display box exactly", { skip }, () => {
   for (const sample of measured) {
     const [a, b, c, d] = sample.matrix;
     assert.equal(b, 0);
     assert.equal(c, 0);
     assert.ok(Math.abs(a * 800 - sample.bezel[2]) < 0.01, `${sample.key}: the canvas is 800 * ${a} wide, the display box ${sample.bezel[2]}`);
-    assert.ok(Math.abs(d * 480 - sample.bezel[3]) < 0.01, `${sample.key}: the canvas is 480 * ${d} tall, the display box ${sample.bezel[3]}`);
-    assert.ok(Math.abs(a / d / PIXEL_ASPECT - 1) < 1e-3, `${sample.key}: x scale ${a} over y scale ${d} is ${(a / d).toFixed(5)}, not the pixel aspect ${PIXEL_ASPECT.toFixed(5)}`);
+    assert.ok(Math.abs(d * 480 - sample.bezel[3]) < 0.02, `${sample.key}: the canvas is 480 * ${d} tall, the display box ${sample.bezel[3]} (layout snaps a box height to 1/64 px)`);
+    assert.ok(Math.abs(a / d - 1) < 1e-3, `${sample.key}: x scale ${a} over y scale ${d} is ${(a / d).toFixed(5)}, not 1`);
     for (let index = 0; index < 4; index += 1) assert.ok(Math.abs(sample.root[index] - sample.bezel[index]) < 0.6, `${sample.key}: the canvas covers the display box (${sample.root} vs ${sample.bezel})`);
     if (sample.svg) for (let index = 0; index < 4; index += 1) assert.ok(Math.abs(sample.svg[index] - sample.bezel[index]) < 0.6, `${sample.key}: the Grid's SVG fills the canvas`);
+  }
+});
+
+test("a square on the unit's 800x480 frame is square in both hosts at every window size and device pixel ratio", { skip }, () => {
+  const samples = [...measured, ...[...atRatio.values()].flat()].filter((sample) => sample.square);
+  assert.ok(samples.length >= 2 * VIEWPORTS.length * (1 + RATIOS.length), "the Grid's 64 x 64 empty slot is measured in every case");
+  for (const sample of samples) {
+    const [, , width, height] = sample.square!;
+    assert.ok(Math.abs(width / height - 1) <= aspectTolerance, `${sample.key}: the 64 x 64 empty slot is ${width.toFixed(2)} x ${height.toFixed(2)} px (${(width / height).toFixed(4)}), not square`);
+    assert.ok(Math.abs(width / (sample.bezel[2] * 64 / 800) - 1) < 0.005, `${sample.key}: the slot is 64/800 of the display box wide`);
   }
 });
 
