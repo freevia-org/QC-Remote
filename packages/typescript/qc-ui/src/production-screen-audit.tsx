@@ -47,7 +47,7 @@ export function CorOsProductionScreenAudit({ view, snapshot }: { view: string; s
   // The audit never reads a device, so it shows the state a fresh session has: no preset list yet.
   const globalEq: IoEqWorkflow["globalEq"] = { status: "unavailable", reason: "not-observed" };
   const ioeq = {
-    io, eq, globalEq, loading: false, pending: false, async refresh() {}, async setInputPort() {}, async setOutputPort() {}, async setUsbPort() {}, async setMidiThru() {}, async setOutputPairing() {}, async setEqBypassed() {}, async setEqBand() {}, async setEqOutput() {}, async loadEqPreset() {}
+    io, eq, globalEq, loading: false, pending: false, unitSelection: undefined, followUnitSelection() {}, async refresh() {}, async setInputPort() {}, async setOutputPort() {}, async setUsbPort() {}, async setMidiThru() {}, async setOutputPairing() {}, async setEqBypassed() {}, async setEqBand() {}, async setEqOutput() {}, async loadEqPreset() {}
   } satisfies Partial<IoEqWorkflow> as IoEqWorkflow;
   const looper = {
     status: { state: 0, loopLength: 12_672_000, freeSamples: 12_672_000, oneShot: false, halfSpeed: false, redoAvailable: false },

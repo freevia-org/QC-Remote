@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeviceActionResult, GlobalEqSettings, IoSettings, ModelPresetSummary, PresetSnapshot } from "@qc-remote/client";
 import { admitGlobalEqPreset, globalEqPresetsFor, type GlobalEqPresets } from "@qc-remote/core";
 import { useLatestValueWriter } from "./latest-value-writer.ts";
+import { ioSelectionKey, type IoUnitSelection } from "./io-unit-selection.ts";
 import { connectBeforeNotice, DEVICE_COMMAND_BUSY_NOTICE } from "./use-guarded-mutation.ts";
 import type { DeviceGatewayWorkflowOptions } from "./workflow-options";
 
@@ -26,8 +27,15 @@ export function useIoEqWorkflows(options: IoEqWorkflowOptions) {
   const [io, setIo] = useState<IoSettings>();
   const [eq, setEq] = useState<GlobalEqSettings>();
   const [loading, setLoading] = useState(false);
+  /** The port or pair the unit's own I/O screen has selected; undefined while the unit shows no I/O screen. */
+  const [unitSelection, setUnitSelection] = useState<IoUnitSelection>();
 
-  useEffect(() => { stateOwner.current = session.key; setIo(undefined); setEq(undefined); setLoading(false); }, [session.key]);
+  useEffect(() => { stateOwner.current = session.key; setIo(undefined); setEq(undefined); setLoading(false); setUnitSelection(undefined); }, [session.key]);
+
+  /** The unit's I/O screen selection, as observed (undefined when it leaves the I/O screen, so a reopened screen never shows an old one). */
+  const followUnitSelection = useCallback((selection: IoUnitSelection | undefined) => {
+    session.apply(() => setUnitSelection((previous) => ioSelectionKey(previous) === ioSelectionKey(selection) ? previous : selection));
+  }, [session.apply]);
 
   const refreshIo = useCallback(async () => { const next = await gateway.ioSettings(); session.apply(() => setIo(next)); }, [gateway, session.apply]);
   const refreshEq = useCallback(async () => { const next = await gateway.globalEq(); session.apply(() => setEq(next)); }, [gateway, session.apply]);
@@ -90,6 +98,7 @@ export function useIoEqWorkflows(options: IoEqWorkflowOptions) {
 
   return {
     io: currentState ? ioView : undefined, eq: currentState ? eqView : undefined, globalEq, loading: currentState && loading,
+    unitSelection: currentState ? unitSelection : undefined, followUnitSelection,
     // A dial stays live while its own value is being written.
     pending: pending && !dials.active,
     refresh,

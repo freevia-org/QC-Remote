@@ -12,6 +12,7 @@ import { QcDeviceTile } from "./device-tile";
 // `Lo Shelf` on the open selector's row.
 import { EQ_FILTER_TYPE_LABELS } from "./parameter-model";
 import { QcIoJack, type QcIoJackKind, type QcIoJackState } from "./qc-io-jack";
+import { IoReading } from "./io-reading";
 import { QcLevelMeter } from "./qc-level-meter";
 import { QcPillToggle } from "./qc-pill-toggle";
 import { QcRadioButton } from "./qc-radio-button";
@@ -2751,7 +2752,9 @@ function IoDial({ value, dial = 0.7672, steps, accent }: { value: string; dial?:
   return (
     <span className="io-dial-wrap">
       <QcRotaryDial className={`io-dial${steps ? " is-stepped" : ""}`} value={dial} mode={steps ? "step" : "arc"} steps={steps} accent={accent} />
-      <strong>{value}</strong>
+      <strong>
+        <IoReading text={value} />
+      </strong>
     </span>
   );
 }
@@ -2890,12 +2893,12 @@ function CorOsIoSettings({ initialView, onClose }: { initialView: IoView; onClos
               )}
               <span className="io-readout">
                 <em>{view === "send-return" ? "SEND 1 LEVEL" : "OUT LEVEL"}</em>
-                <strong>-40.0 dB</strong>
+                <strong><IoReading text="-40.0 dB" /></strong>
                 <QcLevelMeter />
               </span>
               <span className="io-readout">
                 <em>LIMITER</em>
-                <strong>0.0 dB</strong>
+                <strong><IoReading text="0.0 dB" /></strong>
                 <QcLevelMeter />
               </span>
               {view === "overview" && <span />}

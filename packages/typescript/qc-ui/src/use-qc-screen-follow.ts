@@ -11,6 +11,7 @@ import type { QcCpuTelemetry } from "./use-qc-cpu-telemetry.ts";
 import type { QcDeviceUndo } from "./use-qc-device-undo.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
 import type { GatewayTransport } from "@qc-remote/client";
+import type { IoUnitSelection } from "./io-unit-selection.ts";
 
 /**
  * The "Follow the Quad Cortex screen" setting, read and written in one place
@@ -35,7 +36,7 @@ export interface QcScreenFollowWorkflows {
   deviceSettings: { open: boolean; close(): void; openSettings(): unknown };
   tempo: { open: boolean; close(): void; openTempo(): unknown };
   tuner: { close(): void; openTuner(): unknown };
-  ioEq: { refresh(): unknown };
+  ioEq: { refresh(): unknown; followUnitSelection?(selection: IoUnitSelection | undefined): void };
   modes: { refresh(): unknown };
   /** The app's route picker, if any is open. */
   routing?: { picker?: { row: number; side: string } };
@@ -160,6 +161,9 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     if (!lifetime.current()) return;
     if (!latest.current.lifetime.current()) return;
     const kind = observation.kind;
+    // The unit's I/O selection is the unit's to name on every open and while open (the app's own taps are mirrored to the
+    // unit and come back as the same selection), so it is applied before the once-per-kind latch below; leaving I/O clears it.
+    latest.current.workflows.ioEq.followUnitSelection?.(kind === "io" ? observation.ioSelection : undefined);
     if (followed.current === kind) return;
     followed.current = kind;
     observationGeneration.current += 1;

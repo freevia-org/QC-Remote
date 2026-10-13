@@ -1,0 +1,123 @@
+zenUI::RootGraphicsItem
+  zenUI::CheatSheetDialog
+    zenUI::GraphicsItem
+      zenUI::PushButton
+        zenUI::Button
+          image: 'icons/24/done.png'
+          zenUI::PressAnimationView
+      zenUI::ParameterEditorTitle
+      zenUI::GlobalEqButton
+        text : 'GLOBAL EQ'
+        zenUI::PressAnimationView
+      zenUI::Button
+        zenUI::GraphicsItem
+          zenUI::GraphicsItem
+            image: 'icons/24/presetMenu.png'
+        zenUI::PressAnimationView
+    zenUI::SemiRoundedRect
+    zenUI::SemiRoundedRect
+    zenUI::VerticalSeparator
+    zenUI::VerticalSeparator
+    zenUI::VerticalSeparator
+    zenUI::VerticalSeparator
+    zenUI::VerticalSeparator
+    zenUI::VerticalSeparator
+    zenUI::VerticalSeparator
+    zenUI::VerticalSeparator
+    zenUI::VerticalSeparator
+    zenUI::VerticalSeparator
+    zenUI::Indicator
+      image: 'icons/cheatsheet/input/free.png'
+    zenUI::GraphicsItem
+      text : 'INPUT 1'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/input/free.png'
+    zenUI::GraphicsItem
+      text : 'INPUT 2'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/jack/free.png'
+    zenUI::GraphicsItem
+      text : 'SEND 1'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/jack/free.png'
+    zenUI::GraphicsItem
+      text : 'SEND 2'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/jack/free.png'
+    zenUI::GraphicsItem
+      text : 'RET 1'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/jack/free.png'
+    zenUI::GraphicsItem
+      text : 'RET 2'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/jack/free.png'
+    zenUI::GraphicsItem
+      text : 'OUT 3/L'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/jack/free.png'
+    zenUI::GraphicsItem
+      text : 'OUT 4/R'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/jack/taken.png'
+    zenUI::GraphicsItem
+      image: 'icons/secondLevelNavigation/headphones.png'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/jack/free.png'
+    zenUI::GraphicsItem
+      text : 'CAPTURE OUT'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/xlr/active.png'
+    zenUI::GraphicsItem
+      text : 'OUT 1/L'
+    zenUI::ParameterControl
+      zenUI::GraphicsItem
+        zenUI::GraphicsItem
+    zenUI::ParameterControl
+    zenUI::ParameterControl
+    zenUI::ParameterControl
+    zenUI::ParameterControl
+    zenUI::ParameterControl
+      zenUI::GraphicsItem
+        zenUI::GraphicsItem
+    zenUI::ParameterControl
+    zenUI::ParameterControl
+    zenUI::ParameterControl
+    zenUI::ParameterControl
+    zenUI::Indicator
+      image: 'icons/cheatsheet/xlr/active.png'
+    zenUI::GraphicsItem
+      text : 'OUT 2/R'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/midi/free.png'
+    zenUI::GraphicsItem
+      text : 'MIDI IN'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/midi/free.png'
+    zenUI::GraphicsItem
+      text : 'MIDI OUT'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/jack/free.png'
+    zenUI::GraphicsItem
+      text : 'EXP 1'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/jack/free.png'
+    zenUI::GraphicsItem
+      text : 'EXP 2'
+    zenUI::Indicator
+      image: 'icons/cheatsheet/usb/taken.png'
+    zenUI::GraphicsItem
+      text : 'USB'
+    zenUI::Button
+      image: 'icons/cheatsheet/output/disconnected.png'
+      zenUI::PressAnimationView
+    zenUI::Button
+      image: 'icons/cheatsheet/output/disconnected.png'
+      zenUI::PressAnimationView
+    zenUI::DButton
+      zenUI::PressAnimationView
+    zenUI::DButton
+      zenUI::PressAnimationView
+    zenUI::GraphicsItem
+    zenUI::GraphicsItem
+    zenUI::GraphicsItem
