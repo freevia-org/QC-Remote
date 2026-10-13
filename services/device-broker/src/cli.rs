@@ -417,11 +417,16 @@ fn stop_for_install() {
 }
 
 fn tray_allowed(args: &[String]) -> Result<(), tray::Suppressed> {
-    tray::allowed(
-        args.iter().any(|argument| argument == tray::NO_TRAY_FLAG),
-        std::env::var_os(tray::NO_TRAY_ENV),
-        tray::interactive_session(),
-    )
+    let no_tray_flag = args.iter().any(|argument| argument == tray::NO_TRAY_FLAG);
+    let no_tray_env = std::env::var_os(tray::NO_TRAY_ENV);
+    if no_tray_flag
+        || no_tray_env
+            .as_ref()
+            .is_some_and(|value| !value.is_empty() && value != "0")
+    {
+        return tray::allowed(no_tray_flag, no_tray_env, false);
+    }
+    tray::allowed(false, None, tray::interactive_session())
 }
 
 /// The last argument of a `--resident` start that is not itself a user
