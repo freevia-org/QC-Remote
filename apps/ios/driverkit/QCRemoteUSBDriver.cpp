@@ -17,7 +17,6 @@ constexpr uint8_t kInterruptTransfer = 0x03;
 constexpr uint8_t kEndpointDirectionIn = 0x80;
 constexpr uint8_t kSetReport = 0x09;
 constexpr uint8_t kClassInterfaceOut = 0x21;
-constexpr kern_return_t kQcExpectedOutputStall = kIOReturnPipeStalled;
 
 struct QcUsbDiagnostics {
     uint32_t version;
@@ -34,14 +33,14 @@ struct QcUsbWriteResult {
 };
 }
 
-kern_return_t QCRemoteUSBDriver::Start(IOService *provider) {
-    kern_return_t status = IOService::Start(provider);
+kern_return_t IMPL(QCRemoteUSBDriver, Start) {
+    kern_return_t status = Start(provider, SUPERDISPATCH);
     if (status != kIOReturnSuccess) return status;
 
     ivars->device = OSDynamicCast(IOUSBHostDevice, provider);
     if (!ivars->device) return kIOReturnBadArgument;
 
-    status = ivars->device->Open(this, 0, nullptr);
+    status = ivars->device->Open(this, 0, 0);
     if (status != kIOReturnSuccess) return status;
     ivars->deviceOpened = true;
 
@@ -76,7 +75,7 @@ kern_return_t QCRemoteUSBDriver::Start(IOService *provider) {
                     candidate = nullptr;
                     continue;
                 }
-                selectedStatus = candidate->Open(this, 0, nullptr);
+                selectedStatus = candidate->Open(this, 0, 0);
                 if (selectedStatus == kIOReturnSuccess) {
                     ivars->hidInterface = candidate;
                     ivars->interfaceOpened = true;
@@ -137,9 +136,9 @@ kern_return_t QCRemoteUSBDriver::Start(IOService *provider) {
     return kIOReturnSuccess;
 }
 
-kern_return_t QCRemoteUSBDriver::Stop(IOService *provider) {
+kern_return_t IMPL(QCRemoteUSBDriver, Stop) {
     ReleaseUsbResources();
-    return IOService::Stop(provider);
+    return Stop(provider, SUPERDISPATCH);
 }
 
 void QCRemoteUSBDriver::ReleaseUsbResources() {
@@ -202,12 +201,10 @@ kern_return_t QCRemoteUSBDriver::WriteReport(OSData *report, uint32_t *bytesTran
     if (status == kIOReturnSuccess) {
         memcpy(reinterpret_cast<void *>(segment.address), reportBytes, kReportLength);
         uint16_t transferred = 0;
-        *usbStatus = ivars->hidInterface->DeviceRequest(
-            this, kClassInterfaceOut, kSetReport, 0x0202, ivars->interfaceNumber,
+        *usbStatus = ivars->hidInterface->DeviceRequest(kClassInterfaceOut, kSetReport, 0x0202, ivars->interfaceNumber,
             kReportLength, buffer, &transferred, 1'000);
         *bytesTransferred = transferred;
         if (*usbStatus == kIOReturnSuccess) status = kIOReturnSuccess;
-        else if (*usbStatus == kQcExpectedOutputStall && transferred == kReportLength) status = kIOReturnSuccess;
         else status = *usbStatus;
     }
     buffer->release();
@@ -227,7 +224,7 @@ kern_return_t QCRemoteUSBDriver::CopyDiagnostics(OSData **diagnostics) {
     return (*diagnostics = OSData::withBytes(&value, sizeof(value))) ? kIOReturnSuccess : kIOReturnNoMemory;
 }
 
-kern_return_t QCRemoteUSBDriver::NewUserClient(uint32_t type, IOUserClient **userClient) {
+kern_return_t IMPL(QCRemoteUSBDriver, NewUserClient) {
     if (type != 0 || !userClient) return kIOReturnBadArgument;
     IOService *service = nullptr;
     kern_return_t status = Create(this, "QCRemoteUSBDriverUserClientProperties", &service);
@@ -238,24 +235,19 @@ kern_return_t QCRemoteUSBDriver::NewUserClient(uint32_t type, IOUserClient **use
     return kIOReturnNoMemory;
 }
 
-kern_return_t QCRemoteUSBUserClient::Start(IOService *provider) {
-    kern_return_t status = IOUserClient::Start(provider);
+kern_return_t IMPL(QCRemoteUSBUserClient, Start) {
+    kern_return_t status = Start(provider, SUPERDISPATCH);
     if (status != kIOReturnSuccess) return status;
     ivars->driver = OSDynamicCast(QCRemoteUSBDriver, provider);
     return ivars->driver ? kIOReturnSuccess : kIOReturnBadArgument;
 }
 
-kern_return_t QCRemoteUSBUserClient::Stop(IOService *provider) {
+kern_return_t IMPL(QCRemoteUSBUserClient, Stop) {
     ivars->driver = nullptr;
-    return IOUserClient::Stop(provider);
+    return Stop(provider, SUPERDISPATCH);
 }
 
-kern_return_t QCRemoteUSBUserClient::ExternalMethod(
-    uint64_t selector,
-    IOUserClientMethodArguments *arguments,
-    const IOUserClientMethodDispatch *dispatch,
-    OSObject *target,
-    void *reference) {
+kern_return_t IMPL(QCRemoteUSBUserClient, ExternalMethod) {
     (void)dispatch;
     (void)target;
     (void)reference;
