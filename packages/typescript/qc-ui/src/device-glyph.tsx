@@ -19,6 +19,10 @@ import { QcScreenVectorGlyph } from "./theme-icons";
  * 70-square cut out of the lit row: ring 418..487, border 421..484.
  */
 const TILE_MARGIN = 3 / 64;
+/** How far the bypass line runs on over the cable beyond the surround. Ending exactly on the surround's edge leaves a
+ * part-covered pixel there, where the black surround and the line each blend with the cable and darken the seam; the
+ * cable is the same colour as the line, so overlapping it costs nothing. */
+const LINE_OVERLAP = 2;
 
 /** The single block-tile renderer used by live and reference surfaces. */
 export function QcDeviceGlyph({ block, x, y, size = 64, selected = false, cpuLoad, cpuCore }: { block: GridBlock; x: number; y: number; size?: number; selected?: boolean; cpuLoad?: number; cpuCore?: number }) {
@@ -28,10 +32,15 @@ export function QcDeviceGlyph({ block, x, y, size = 64, selected = false, cpuLoa
   // under a 198,195,198 line.
   const bypassed = block.bypassed === true;
   const rungScale = bypassed ? QC_BYPASSED_TILE_RUNG_SCALE : undefined;
-  const bypassLine = bypassed ? <path className="official-block-bypass-line" d={`M${x - size / 2} ${y}H${x + size / 2}`} fill="none" stroke={QC_COLORS.device.bypassPath} strokeWidth="2" pointerEvents="none" aria-hidden="true" /> : null;
   // Same rounded-rect proportions as the tile, so the margin reads as one
   // shape grown by three pixels rather than a square behind a rounded tile.
   const margin = size * TILE_MARGIN;
+  // The line runs the whole width of the black surround, not just the tile: the
+  // surround is drawn over the chain cable, so a line that began at the tile's
+  // own edge left the cable cut for three pixels on each side. The unit's
+  // 198,195,198 line is unbroken from the cable before the tile to the cable
+  // after it (grid-base row 147, x 222..321 through a tile at 239..302).
+  const bypassLine = bypassed ? <path className="official-block-bypass-line" d={`M${x - size / 2 - margin - LINE_OVERLAP} ${y}H${x + size / 2 + margin + LINE_OVERLAP}`} fill="none" stroke={QC_COLORS.device.bypassPath} strokeWidth="2" pointerEvents="none" aria-hidden="true" /> : null;
   const surround = size + margin * 2;
   const tileSurround = <rect
     className="official-block-surround"
