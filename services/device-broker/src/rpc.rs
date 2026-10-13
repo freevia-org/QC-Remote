@@ -3942,6 +3942,7 @@ fn serve_broker_tcp_connection(
     );
 }
 
+#[cfg(test)]
 fn serve_broker_tcp_connection_with_output(
     stream: TcpStream,
     shared: &Arc<BrokerShared>,
