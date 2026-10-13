@@ -5,6 +5,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import test from "node:test";
 import { androidStyles, bundleModule, findBrowser, hostBody, makeWorkDirectory, uiSource, VIEWPORTS, windowsStyles, withBrowser, type HostName } from "./support/display-page.ts";
 import { POPUP_FIXTURES, POPUP_PROPS } from "./support/popup-fixtures.ts";
+import { QC_UNIT_MIRROR_KINDS, QC_UNIT_SCREENS } from "../src/qc-unit-screens.ts";
 
 /*
  * Every popup, menu, drawer, dialog and overlay the display draws must sit inside the display's box and keep
@@ -185,7 +186,40 @@ test("popups with a measured geometry match the unit's", { skip }, () => {
   assert.deepEqual(failures.slice(0, 20), [], `${failures.length} popups differ from the unit`);
 });
 
+test("the unit's captured picture, and the picture inside it, are exactly the display's box at every window size and host", { skip }, () => {
+  // Every captured-picture fallback (see the registry test below) draws this one element. Its picture once took the 20.5% first
+  // row of the shared `.qc-screen` grid for its height, so the unit's frame showed as a strip with the rest of the display black.
+  const rows = samples.filter((sample) => sample.fixture === "unit-mirror-picture");
+  assert.ok(rows.length >= 2 * VIEWPORTS.length, "the picture was laid out in both hosts at every window size");
+  const failures: string[] = [];
+  for (const sample of rows) {
+    const [bx, by, bw, bh] = sample.bezel;
+    for (const selector of [".coros-unit-mirror", ".coros-unit-mirror > img"]) {
+      const box = sample.found[selector]?.[0];
+      if (!box) { failures.push(`${sample.key}: ${selector} was not drawn`); continue; }
+      const [x, y, w, h] = box;
+      if (Math.abs(x - bx) > EPSILON || Math.abs(y - by) > EPSILON || Math.abs(w - bw) > EPSILON || Math.abs(h - bh) > EPSILON) failures.push(`${sample.key}: ${selector} is ${w.toFixed(1)}x${h.toFixed(1)} at ${(x - bx).toFixed(1)},${(y - by).toFixed(1)}; the display is ${bw.toFixed(1)}x${bh.toFixed(1)}`);
+    }
+  }
+  assert.deepEqual(failures, []);
+});
+
 // ------------------------------------------------------------------------------------------ no browser needed
+
+test("every route that falls back to the captured picture draws the one measured picture element", () => {
+  // The unit screens the app has no screen of its own for are listed once (QC_UNIT_MIRROR_KINDS); each of them, and the block editor
+  // the unit opened, follows into the "unit-mirror" view, which draws QcUnitScreenMirror and nothing else.
+  const mirrored = Object.entries(QC_UNIT_SCREENS).filter(([, entry]) => /unit mirror|unit-mirror/i.test(entry.app)).map(([kind]) => kind).sort();
+  const listed = [...QC_UNIT_MIRROR_KINDS, "parameter-editor"].sort();
+  assert.deepEqual(mirrored, listed, "a screen the table says is mirrored as a picture must be in QC_UNIT_MIRROR_KINDS, and the reverse");
+  const content = readFileSync(join(uiSource, "qc-device-screen-content.tsx"), "utf8");
+  assert.equal([...content.matchAll(/QcUnitScreenMirror/g)].length, 2, "the picture is drawn in one place");
+  const follow = readFileSync(join(uiSource, "use-qc-screen-follow.ts"), "utf8");
+  assert.match(follow, /QC_UNIT_MIRROR_KINDS\.includes\(kind\)\) setView\("unit-mirror"\)/);
+  const mirror = readFileSync(join(uiSource, "qc-unit-screen-mirror.tsx"), "utf8");
+  assert.equal([...mirror.matchAll(/<img /g)].length, 1, "one captured-picture element");
+  assert.match(mirror, /unit-mirror\.css/);
+});
 
 test("every surface prop that opens a popup has a fixture or a stated reason", () => {
   const source = readFileSync(join(uiSource, "quad-cortex-surface.tsx"), "utf8");

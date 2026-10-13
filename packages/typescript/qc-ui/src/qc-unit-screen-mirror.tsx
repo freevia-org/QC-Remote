@@ -25,7 +25,12 @@ export function QcUnitScreenMirror({ gateway, intervalMs = 700 }: { gateway: Pic
     void refresh();
     return () => { cancelled = true; clearTimeout(timer); };
   }, [gateway, intervalMs]);
+  return <QcUnitPicture src={image} />;
+}
+
+/** The picture itself: the one element every captured-picture fallback draws, so one test can measure it. */
+export function QcUnitPicture({ src }: { src?: string }) {
   return <section className="qc-screen coros-unit-mirror" aria-label="Quad Cortex screen, mirrored from the unit">
-    {image ? <img src={image} alt="The screen the Quad Cortex is showing" draggable={false} /> : null}
+    {src ? <img src={src} alt="The screen the Quad Cortex is showing" draggable={false} /> : null}
   </section>;
 }
