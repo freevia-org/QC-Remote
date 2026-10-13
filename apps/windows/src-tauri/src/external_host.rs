@@ -46,8 +46,8 @@ pub(crate) fn start(app: tauri::AppHandle, directory: PathBuf) {
                 if let Some(local) = app.try_state::<crate::local_access::LocalAccess>() {
                     local.reconcile_ownership();
                 }
-                if let Some(relay) = app.try_state::<crate::relay::RelayBridge>() {
-                    relay.reconcile_ownership(delegated, || crate::relay_adapter(&app));
+                if app.try_state::<crate::relay::RelayBridge>().is_some() {
+                    crate::relay::RelayBridge::schedule_reconcile(app.clone(), delegated);
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }

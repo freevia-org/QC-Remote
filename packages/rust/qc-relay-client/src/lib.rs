@@ -285,6 +285,19 @@ struct RosterResponse {
 pub trait DeviceAdapter: Send + Sync + 'static {
     async fn ready(&self) -> bool;
     async fn invoke(&self, method: &str, params: Value) -> Result<Value, DeviceError>;
+    /// A policy source that is authoritative for this serving adapter. Hosts
+    /// with cross-process settings should override this and read their
+    /// request-time policy here; older adapters keep the connection's watch
+    /// snapshot by leaving the default `None` in place.
+    fn effective_access_mode(&self) -> Option<AccessMode> {
+        None
+    }
+    /// Whether this paired remote session is still enabled by the serving
+    /// host. This is checked for every relay invocation; local MCP requests do
+    /// not use it. Adapters without a separate session latch remain compatible.
+    fn remote_session_enabled(&self) -> bool {
+        true
+    }
     /// `invoke` for a call the relay marked as an MCP resource read
     /// ([`qc_relay_protocol::RESOURCE_READ_ORIGIN`]). A host that can serve a
     /// read without bringing a device connection or session up overrides
@@ -1121,9 +1134,20 @@ impl Client {
                         } else {
                             self.completed_order.push_back(id.clone());
                             if self.completed_order.len() > COMPLETED_REQUEST_CACHE_SIZE { if let Some(old) = self.completed_order.pop_front() { self.completed.remove(&old); } }
-                            let result = if !generated_actions::contains(&method) {
+                            let result = if !self.adapter.remote_session_enabled() {
+                                Err(DeviceError::new(
+                                    "REMOTE_SESSION_DISABLED",
+                                    "Public relay access has been disabled on this device",
+                                    false,
+                                ))
+                            } else if !generated_actions::contains(&method) {
                                 Err(DeviceError::new("METHOD_NOT_ALLOWED", qc_relay_protocol::METHOD_NOT_ALLOWED_TEXT, false))
-                            } else if !self.access.borrow().permits(&method) {
+                            } else if !self
+                                .adapter
+                                .effective_access_mode()
+                                .unwrap_or(*self.access.borrow())
+                                .permits(&method)
+                            {
                                 Err(DeviceError::new("ACCESS_MODE_RESTRICTED", qc_relay_protocol::ACCESS_MODE_RESTRICTED_TEXT, false))
                             } else {
                                 // The device call is polled beside the
@@ -1276,7 +1300,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
     fn a_not_found_revoke_is_told_apart_from_a_confirmed_one() {
@@ -1355,6 +1379,165 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(json!({"deleted": true}))
         }
+    }
+
+    struct EffectivePolicyAdapter {
+        mode: AtomicUsize,
+        remote_enabled: AtomicBool,
+        invocations: AtomicUsize,
+    }
+
+    impl EffectivePolicyAdapter {
+        fn new(mode: AccessMode) -> Self {
+            Self {
+                mode: AtomicUsize::new(Self::encode(mode)),
+                remote_enabled: AtomicBool::new(true),
+                invocations: AtomicUsize::new(0),
+            }
+        }
+
+        fn encode(mode: AccessMode) -> usize {
+            match mode {
+                AccessMode::Full => 0,
+                AccessMode::Modify => 1,
+                AccessMode::Performance => 2,
+                AccessMode::ReadOnly => 3,
+            }
+        }
+
+        fn set_mode(&self, mode: AccessMode) {
+            self.mode.store(Self::encode(mode), Ordering::SeqCst);
+        }
+
+        fn set_remote_enabled(&self, enabled: bool) {
+            self.remote_enabled.store(enabled, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl DeviceAdapter for EffectivePolicyAdapter {
+        async fn ready(&self) -> bool {
+            true
+        }
+
+        async fn invoke(&self, _method: &str, _params: Value) -> Result<Value, DeviceError> {
+            self.invocations.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({"accepted": true}))
+        }
+
+        fn effective_access_mode(&self) -> Option<AccessMode> {
+            Some(match self.mode.load(Ordering::SeqCst) {
+                0 => AccessMode::Full,
+                1 => AccessMode::Modify,
+                2 => AccessMode::Performance,
+                _ => AccessMode::ReadOnly,
+            })
+        }
+
+        fn remote_session_enabled(&self) -> bool {
+            self.remote_enabled.load(Ordering::SeqCst)
+        }
+    }
+
+    #[tokio::test]
+    async fn authoritative_policy_revokes_and_relaxes_without_waiting_for_watch() {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        async fn result_frame<S>(relay: &mut S, id: &str) -> Value
+        where
+            S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+                + Unpin,
+        {
+            loop {
+                if let Message::Text(text) = next_frame(relay).await {
+                    let frame: Value = serde_json::from_str(&text).expect("response frame");
+                    if frame["type"] == "result" && frame["id"] == id {
+                        return frame;
+                    }
+                }
+            }
+        }
+        let (host_io, relay_io) = tokio::io::duplex(1 << 20);
+        let adapter = Arc::new(EffectivePolicyAdapter::new(AccessMode::ReadOnly));
+        let (state, _) = watch::channel(ConnectionState::Connected);
+        // Deliberately stale in both directions: Full while the policy has
+        // been restricted, then ReadOnly after the policy has been relaxed.
+        let (access_tx, access) = watch::channel(AccessMode::Full);
+        let (stop_tx, stop) = watch::channel(false);
+        let credentials: Credentials = serde_json::from_value(json!({
+            "endpoint": "https://relay.example.test",
+            "deviceCredential": "c".repeat(MINIMUM_CREDENTIAL_LENGTH),
+            "deviceId": "device"
+        }))
+        .expect("credentials");
+        let mut client = Client::new(credentials, adapter.clone(), state, access, stop);
+        let host = tokio::spawn(async move {
+            let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
+            client.connected(socket).await
+        });
+        let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
+        let invoke = |id: &str| {
+            Message::Text(
+                json!({
+                    "type": "invoke",
+                    "id": id,
+                    "action": "set_tempo",
+                    "method": "device.setTempo",
+                    "params": {}
+                })
+                .to_string()
+                .into(),
+            )
+        };
+        relay.send(invoke("restricted")).await.unwrap();
+        let restricted = result_frame(&mut relay, "restricted").await;
+        assert_eq!(restricted["ok"], false);
+        assert_eq!(restricted["error"]["code"], "ACCESS_MODE_RESTRICTED");
+        assert_eq!(adapter.invocations.load(Ordering::SeqCst), 0);
+
+        adapter.set_mode(AccessMode::Full);
+        access_tx.send_replace(AccessMode::ReadOnly);
+        relay.send(invoke("relaxed")).await.unwrap();
+        let relaxed = result_frame(&mut relay, "relaxed").await;
+        assert_eq!(relaxed["ok"], true);
+        assert_eq!(adapter.invocations.load(Ordering::SeqCst), 1);
+
+        // The connected Client still holds its original Credentials and the
+        // watch is permissive. A local unpair latch must deny new calls anyway.
+        access_tx.send_replace(AccessMode::Full);
+        adapter.set_mode(AccessMode::Full);
+        adapter.set_remote_enabled(false);
+        relay.send(invoke("unpaired")).await.unwrap();
+        let unpaired = result_frame(&mut relay, "unpaired").await;
+        assert_eq!(unpaired["ok"], false);
+        assert_eq!(unpaired["error"]["code"], "REMOTE_SESSION_DISABLED");
+        assert_eq!(adapter.invocations.load(Ordering::SeqCst), 1);
+
+        // Editing access mode must not reactivate the persisted remote latch.
+        adapter.set_mode(AccessMode::ReadOnly);
+        access_tx.send_replace(AccessMode::Full);
+        relay
+            .send(invoke("mode-change-does-not-reactivate"))
+            .await
+            .unwrap();
+        let still_disabled = result_frame(&mut relay, "mode-change-does-not-reactivate").await;
+        assert_eq!(still_disabled["ok"], false);
+        assert_eq!(still_disabled["error"]["code"], "REMOTE_SESSION_DISABLED");
+        assert_eq!(adapter.invocations.load(Ordering::SeqCst), 1);
+
+        // Only explicit successful pairing re-enables the same live adapter.
+        adapter.set_remote_enabled(true);
+        adapter.set_mode(AccessMode::Full);
+        relay.send(invoke("paired-again")).await.unwrap();
+        let paired_again = result_frame(&mut relay, "paired-again").await;
+        assert_eq!(paired_again["ok"], true);
+        assert_eq!(adapter.invocations.load(Ordering::SeqCst), 2);
+
+        stop_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), host)
+            .await
+            .expect("the host did not stop")
+            .unwrap()
+            .expect("connected loop failed");
     }
 
     #[tokio::test]

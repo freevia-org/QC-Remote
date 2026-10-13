@@ -98,6 +98,9 @@ windows-registry = "0.6"
 # hands its arguments to the running app without a reviewed manifest change.
 tauri-plugin-single-instance = "=2.4.5"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Pairing credentials stay in the desktop's Secret Service store. Do not use
 # keyring's always-present mock backend when a Linux Secret Service is absent.

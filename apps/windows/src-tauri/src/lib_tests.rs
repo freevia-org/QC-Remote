@@ -6839,6 +6839,97 @@ fn reap_start_slot(descriptor_path: &Path, owner: &TestPermit) -> bool {
         .is_empty()
 }
 
+/// The fixture directories of a test whose broker child lives in the shared
+/// production start slot. Dropped - after the assertions pass, or while a
+/// failed one unwinds - it removes each directory only once its slot is
+/// confirmed released: a child still in the slot is first ended through that
+/// same `Child` (`reap_start_slot`). A directory whose child was not observed
+/// exited, or whose slot is still reserved, is left in place and reported.
+///
+/// Bind it after the slot owner and before anything that starts a broker, so
+/// it drops after the test's `Gateway` and before the permit it reaps into.
+/// It reports and never fails or panics: a panic while already unwinding
+/// aborts the test binary.
+#[cfg(windows)]
+struct StartSlotDirectories<'a> {
+    owner: &'a TestPermit,
+    descriptor_paths: Vec<PathBuf>,
+    /// Descriptor paths whose slot child was taken and not observed exited.
+    unreleased: Vec<PathBuf>,
+}
+
+#[cfg(windows)]
+impl<'a> StartSlotDirectories<'a> {
+    fn new(owner: &'a TestPermit, descriptor_paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        Self {
+            owner,
+            descriptor_paths: descriptor_paths.into_iter().collect(),
+            unreleased: Vec::new(),
+        }
+    }
+
+    /// One more descriptor path whose directory this removes.
+    fn watch(&mut self, descriptor_path: &Path) {
+        self.descriptor_paths.push(descriptor_path.to_path_buf());
+    }
+
+    /// `reap_start_slot`, remembered: a child taken from the slot and not
+    /// observed exited keeps its directory.
+    fn reap(&mut self, descriptor_path: &Path) -> bool {
+        let held = matches!(start_slot_state(descriptor_path), Some((Some(_), _)));
+        let reaped = reap_start_slot(descriptor_path, self.owner);
+        if held && !reaped {
+            self.unreleased.push(descriptor_path.to_path_buf());
+        }
+        reaped
+    }
+
+    /// Whether the slot of `descriptor_path` is confirmed released, ending a
+    /// child still in it first.
+    fn release(&mut self, descriptor_path: &Path) -> bool {
+        match start_slot_state(descriptor_path) {
+            Some((Some(_), _)) => self.reap(descriptor_path),
+            // Reserved with no child: a start may still be filling it.
+            Some((None, _)) => false,
+            None => !self.unreleased.iter().any(|path| path == descriptor_path),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for StartSlotDirectories<'_> {
+    fn drop(&mut self) {
+        for descriptor_path in std::mem::take(&mut self.descriptor_paths) {
+            let released = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.release(&descriptor_path)
+            }));
+            let Some(directory) = descriptor_path.parent() else {
+                continue;
+            };
+            match released {
+                Ok(true) => {
+                    if let Err(problem) = remove_dir_with_retries(directory) {
+                        eprintln!("test cleanup: {problem}");
+                    }
+                }
+                Ok(false) => eprintln!(
+                    "test cleanup: the start slot of {} is not confirmed released; {} is left \
+                     in place",
+                    descriptor_path.display(),
+                    directory.display()
+                ),
+                Err(payload) => eprintln!(
+                    "test cleanup: releasing the start slot of {} panicked ({}); {} is left in \
+                     place",
+                    descriptor_path.display(),
+                    panic_text(&*payload),
+                    directory.display()
+                ),
+            }
+        }
+    }
+}
+
 /// A kill error while the broker keeps running, with no later request: the
 /// production Unpublished arm's kill fails and the
 /// broker keeps running. The returned failure carries the primary attach
@@ -6977,6 +7068,7 @@ fn a_full_start_slot_table_refuses_to_spawn_and_evicts_nothing() {
     let paths: Vec<PathBuf> = (0..MAX_START_SLOTS)
         .map(|index| test_descriptor_path(&format!("slot-capacity-{index}")))
         .collect();
+    let mut directories = StartSlotDirectories::new(&slot_owner, paths.iter().cloned());
     let mut occupied = Vec::new();
     for path in &paths {
         let child = spawn_controlled_occupant();
@@ -6992,6 +7084,7 @@ fn a_full_start_slot_table_refuses_to_spawn_and_evicts_nothing() {
     let first_duplicate = duplicate_start_slot_child(&paths[0]);
     let held_before: Vec<_> = paths.iter().map(|path| start_slot_state(path)).collect();
     let new_path = test_descriptor_path("slot-capacity-new");
+    directories.watch(&new_path);
     let (spawns, sink) = BrokerSpawnSinkGuard::install(&new_path, SpawnInjection::default());
     let adapter = local_stdio::HeadlessDeviceAdapter::over_gateway(Gateway {
         descriptor_path: Some(new_path.clone()),
@@ -7026,14 +7119,13 @@ fn a_full_start_slot_table_refuses_to_spawn_and_evicts_nothing() {
         .collect();
     let reaped: Vec<bool> = paths[1..]
         .iter()
-        .map(|path| reap_start_slot(path, &slot_owner))
+        .map(|path| directories.reap(path))
         .collect();
     let refused_reaped = TEST_OWNER
         .reap(refused_occupants.domain(), Duration::from_secs(5))
         .is_empty();
-    for path in paths.iter().chain([&new_path]) {
-        let _ = remove_dir_with_retries(path.parent().unwrap());
-    }
+    // The directories go when `directories` drops, here or on a failed
+    // assertion, each only once its slot is confirmed released.
 
     assert!(occupied.iter().all(|occupied| *occupied), "{occupied:?}");
     assert!(refused.contains("start slots are held"), "{refused}");
@@ -7100,6 +7192,7 @@ fn a_panic_right_after_spawn_and_in_cleanup_leaves_the_child_in_its_slot() {
     let _serialize = serialize_real_broker_test();
     let slot_owner = admit(&fixture_domain("slot-panic-after-spawn-owner"), 1);
     let descriptor_path = test_descriptor_path("slot-panic-after-spawn");
+    let mut directories = StartSlotDirectories::new(&slot_owner, [descriptor_path.clone()]);
     let slot_in_body: Mutex<Option<(Option<u32>, Option<String>)>> = Mutex::new(None);
     let (outcome, report) = run_with_cleanup(|cleanup| {
         cleanup.arm("panics during cleanup", |_| {
@@ -7123,8 +7216,7 @@ fn a_panic_right_after_spawn_and_in_cleanup_leaves_the_child_in_its_slot() {
         panic!("injected failure");
     });
     let slot_after = start_slot_state(&descriptor_path);
-    let reaped = reap_start_slot(&descriptor_path, &slot_owner);
-    let _ = remove_dir_with_retries(descriptor_path.parent().unwrap());
+    let reaped = directories.reap(&descriptor_path);
 
     assert!(outcome.is_err());
     assert!(
@@ -7157,6 +7249,7 @@ fn a_successful_unpublished_cleanup_needs_no_duplicate() {
     let _serialize = serialize_real_broker_test();
     let slot_owner = admit(&fixture_domain("slot-unpublished-success-owner"), 1);
     let descriptor_path = test_descriptor_path("slot-unpublished-success");
+    let mut directories = StartSlotDirectories::new(&slot_owner, [descriptor_path.clone()]);
     let (_spawns, sink) = BrokerSpawnSinkGuard::install(
         &descriptor_path,
         SpawnInjection {
@@ -7177,8 +7270,7 @@ fn a_successful_unpublished_cleanup_needs_no_duplicate() {
     adapter.stop();
     let slot = start_slot_state(&descriptor_path);
     let recorded = sink.lock().unwrap().len();
-    let left = reap_start_slot(&descriptor_path, &slot_owner);
-    let _ = remove_dir_with_retries(descriptor_path.parent().unwrap());
+    let left = directories.reap(&descriptor_path);
 
     assert!(
         error.contains("injected: the broker did not publish"),

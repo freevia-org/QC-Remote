@@ -186,10 +186,11 @@ export const QC_REFOLLOW_RESTORE_AFTER_LIVE_MS = 60_000;
 
 /**
  * One inventory poll's decision to follow a device the broker already has
- * ready. The `device.phase` push is the primary trigger, but a broker that
- * never pushes it (a tray resident older than this window) left the window on
- * the demo until someone clicked Reconnect, although the tray showed the
- * device connected.
+ * ready. It began as the safety net beside the `device.phase` push: a broker
+ * that never pushes it (a tray resident older than this window) left the
+ * window on the demo until someone clicked Reconnect, although the tray showed
+ * the device connected. It is now the one place automatic follows are decided
+ * (see "Who decides" below).
  *
  * One connect per transition of the inventory into ready: whatever it ends
  * in, a refusal included, the next one waits for the device to leave ready
@@ -220,18 +221,31 @@ export const QC_REFOLLOW_RESTORE_AFTER_LIVE_MS = 60_000;
  * health check that fails sooner than that after every connect gets no more
  * than those two.
  *
- * That bound covers this function only. The `device.phase` listener (which
- * a re-attached gateway's fresh push can trigger) and the demo fallback's own
- * retry in startDemoDevice connect by themselves, outside this budget, and
- * nothing here changes them.
+ * Who decides. The inventory poll calls this with what `broker.devices`
+ * actually answered. The demo fallback's retry never calls it: it only records
+ * a pending follow (`qcRecordLiveSessionLoss`), which the next poll that reads
+ * the device ready answers within the budget above. The `device.phase`
+ * listener calls it (as `inventoryReady: true`) only while no poll has ever
+ * answered in this window (`qcPhaseListenerMayFollow`), for a broker the poll
+ * cannot read; once one has, a push follows nothing by itself and the poll
+ * decides. So a push on an edge already spent is not followed by the push:
+ * the next poll follows it only once a poll has seen the inventory leave ready
+ * (re-arming the edge) and a later one sees it ready again, or, on the same
+ * edge, when a recorded loss is pending and the budget allows a re-follow.
  *
- * A tray release and a recorded Quit never reach this decision, and must not:
- * the host lets `device.reconnect` through a tray release (and clears it), so
- * the only thing holding a released window back is that `broker.devices`
- * itself is refused after a release or Quit, the poll throws, and no
- * inventory is ever read as ready. A loss recorded before a release stays
- * pending through it and may be followed, within the same budget, once the
- * polls resume.
+ * A tray release and a recorded Quit must never reach a decision that
+ * connects: the host lets `device.reconnect` through a tray release and
+ * clears the release on it, and a Quit record is cleared only by the user. The
+ * poll cannot reach this after either, because `broker.devices` itself is
+ * refused after a release or Quit, the poll throws, and no inventory is ever
+ * read as ready. The demo retry does not decide here. The phase listener can
+ * reach this only for a broker no poll has answered; that one residual path
+ * relies on the host retiring a released broker connection (its pushes stop
+ * with it) and on a Quit stopping the broker. The user's own Disconnect is
+ * the only one of the three this function can see, so it has a latch
+ * (`userDisconnected`). A loss recorded before a release stays pending
+ * through it and may be followed, within the same budget, once the polls
+ * resume.
  */
 export function qcFollowReadyInventory(state: {
   inventoryReady: boolean;
@@ -262,6 +276,126 @@ export function qcFollowReadyInventory(state: {
     return { ...held, connect: true, followed: true, refollows: refollows + 1, liveSessionLost: false };
   }
   return held;
+}
+
+/** The part of qcFollowReadyInventory's state the window carries between calls. */
+export type QcReadyInventoryCarried = Omit<QcReadyInventoryStep, "connect">;
+
+/**
+ * Record a session the window had, or was handed back to, and lost while the
+ * broker may still hold it ready, so the bounded follow above may answer it
+ * once. Every such loss restarts the live measurement. `userAction` is for a
+ * loss the user's own choice ran into (selecting the USB tab of a device held
+ * in the background, whose resume then failed): like their Connect, it gives
+ * the re-follow budget back. It never clears `userDisconnected`; only the
+ * user's Connect does that.
+ */
+export function qcRecordLiveSessionLoss(carried: QcReadyInventoryCarried, userAction = false): QcReadyInventoryCarried {
+  return { ...carried, liveSessionLost: true, liveSince: null, refollows: userAction ? 0 : carried.refollows };
+}
+
+/**
+ * How long one connect() may wait for the broker's `device.reconnect` answer
+ * before the window gives up on it. The broker's own handshake gives up after
+ * 30 s and the boot directory read takes about 11 s, so a connect that is
+ * still waiting after this long is not a slow device; the host's own gateway
+ * timeout is five minutes, during which the window would otherwise stay gray.
+ */
+export const QC_CONNECT_STALL_MS = 120_000;
+
+/**
+ * How long the window may show the transitional "discovering" state with
+ * nothing that owns it (no connect waiting, no command, no demo opening)
+ * before it repeats the fallback that state announced. returnToDemoDevice
+ * shows it and then hands over to startDemoDevice, which refuses while a
+ * command is pending; the refusal left the window gray for good.
+ */
+export const QC_ORPHANED_DISCOVERING_MS = 6_000;
+
+/**
+ * Whether an automatic follow must hold because a connect may already be
+ * reaching the device: a connect() waiting for its answer, a command or a demo
+ * open, or a `device.reconnect`/`device.resetSession` this window gave up on
+ * (the watchdog below) that has not settled yet. The host serializes gateway
+ * requests, so a second reconnect issued then would only wait behind the
+ * first and run the moment it ends; holding until it settles keeps every
+ * automatic follow from adding one. It does not hold the user's own Connect or
+ * Reset Session, which may still queue behind an abandoned reconnect.
+ */
+export function qcAutomaticConnectHeld(state: {
+  awaitingDetection: boolean;
+  commandPending: boolean;
+  demoPending: boolean;
+  reconnectsOutstanding: number;
+}): boolean {
+  return state.awaitingDetection || state.commandPending || state.demoPending || state.reconnectsOutstanding > 0;
+}
+
+/**
+ * Whether a `device.phase` push may decide a follow by itself. Only while no
+ * inventory poll has ever answered in this window: once one has, the poll
+ * decides from what the broker actually reports, which a tray release or a
+ * Quit stops (see qcFollowReadyInventory).
+ */
+export function qcPhaseListenerMayFollow(inventoryPollAnswered: boolean): boolean {
+  return !inventoryPollAnswered;
+}
+
+/** What a stalled connection is: a connect() still waiting, or nothing at all. */
+export type QcConnectStallKind = "connect" | "orphaned";
+export interface QcConnectStall {
+  kind: QcConnectStallKind;
+  since: number;
+  /** The waiting connect's attempt, or null for an orphaned state. */
+  attempt: number | null;
+}
+/**
+ * What the caller does when the watchdog gives up. A stalled connect that
+ * started from the demo returns to it, as that connect's own failure would;
+ * any other stalled connect ends in "needs-attention" with the stall's detail,
+ * as its own failure would. An orphaned "discovering" repeats the demo
+ * fallback it announced.
+ */
+export type QcConnectStallAction = "return-to-demo" | "needs-attention" | "retry-fallback";
+
+/**
+ * One watchdog tick over the window's connection. It never connects: on
+ * `abandon` the caller supersedes the connect still waiting (its late answer
+ * is then ignored), records the reconnect it left outstanding, and leaves
+ * reconnecting to the bounded follow above, which holds until that reconnect
+ * settles (`qcAutomaticConnectHeld`). A connect the user is waiting on counts
+ * the same as an automatic one.
+ *
+ * `connect` is the connect() waiting for its answer, and only while it is
+ * still the current attempt: one the user superseded (Stop demo, Disconnect,
+ * Demo choice, another Connect) is not this watchdog's to end, so their choice
+ * is never undone here. The clock (`now`, monotonic) restarts whenever the
+ * kind of stall or the waiting attempt changes, so a Reset Session or menu
+ * Reconnect started inside an old stall gets its own full interval, and so
+ * does a fallback that follows a long connect; and it restarts on every
+ * abandon, so each one is at least an interval apart.
+ */
+export function qcWatchConnectStall(state: {
+  connection: ConnectionState;
+  connect: { attempt: number; fromDemo: boolean } | null;
+  /** A device command or a demo open is running and owns the next step. */
+  otherWorkPending: boolean;
+  stall: QcConnectStall | null;
+  now: number;
+}): { stall: QcConnectStall | null; abandon: QcConnectStallAction | null } {
+  const { connection, connect, now } = state;
+  const kind: QcConnectStallKind | null = connect
+    ? "connect"
+    : connection.source === "device" && connection.phase === "discovering" && !state.otherWorkPending
+      ? "orphaned"
+      : null;
+  if (kind === null) return { stall: null, abandon: null };
+  const attempt = connect ? connect.attempt : null;
+  const since = state.stall?.kind === kind && state.stall.attempt === attempt ? state.stall.since : now;
+  const limit = kind === "connect" ? QC_CONNECT_STALL_MS : QC_ORPHANED_DISCOVERING_MS;
+  if (now - since < limit) return { stall: { kind, since, attempt }, abandon: null };
+  const abandon: QcConnectStallAction = !connect ? "retry-fallback" : connect.fromDemo ? "return-to-demo" : "needs-attention";
+  return { stall: null, abandon };
 }
 
 /**
