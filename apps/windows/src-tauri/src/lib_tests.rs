@@ -1748,7 +1748,8 @@ fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
 
 fn print_broker_stderr_tail_on_failure() {
     if let Ok(stderr) = fs::read(broker_stderr_path()) {
-        let trace = String::from_utf8_lossy(&stderr)
+        let stderr_text = String::from_utf8_lossy(&stderr);
+        let trace = stderr_text
             .lines()
             .filter(|line| line.starts_with("broker startup:") || line.starts_with("broker lifecycle:"))
             .rev()
