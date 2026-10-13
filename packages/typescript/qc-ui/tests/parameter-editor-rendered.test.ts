@@ -18,6 +18,7 @@ try {
 await build({
   stdin: { contents: `export { CorOsParameterEditor } from ${JSON.stringify(fileURLToPath(new URL("../src/parameter-editor.tsx", import.meta.url)))};
 export { PresetMidiOutEditor } from ${JSON.stringify(fileURLToPath(new URL("../src/preset-midi-out-editor.tsx", import.meta.url)))};
+export { useRotaryValue } from ${JSON.stringify(fileURLToPath(new URL("../src/use-rotary-gesture.ts", import.meta.url)))};
 export { usePresetMidiOutWorkflow } from ${JSON.stringify(fileURLToPath(new URL("../src/use-preset-midi-out-workflow.ts", import.meta.url)))};
 export { CorOsDirectory } from ${JSON.stringify(fileURLToPath(new URL("../src/coros-directory.tsx", import.meta.url)))};
 export { ModesConfigurationScreen } from ${JSON.stringify(fileURLToPath(new URL("../src/modes-configuration-screen.tsx", import.meta.url)))};
@@ -77,7 +78,7 @@ test("live EQ graph edits only currently writable enabled operands and bypass fo
   const parameter = base.details.parameters[0];
   const parameters = [
     { ...parameter, index: 0, name: "N1 GAIN", enabled: false },
-    { ...parameter, index: 1, name: "N1 FREQ", writable: false },
+    { ...parameter, index: 1, name: "N1 FREQ", minimum: 20, maximum: 20000, units: "Hz", writable: false },
     { ...parameter, index: 2, name: "N1 BYPASS", enabled: false }
   ];
   const props = { ...base, details: { ...base.details, parameters }, onDraftChange: (item: { index: number }) => drafts.push(item.index), onCommit: (item: { index: number }) => writes.push(item.index) };
@@ -331,4 +332,29 @@ test("specialized Cab and IR controls refuse disabled operands and settle curren
   act(() => { props={...props,details:{...props.details,parameters:props.details.parameters.map((item) => ({...item,enabled:true}))}}; renderer.update(view()); });
   act(() => { speaker().props.onPointerDown(pointer); speaker().props.onPointerUp(pointer); });
   assert.equal(batches.length,1,"current writable speaker remains usable");
+});
+test("rotary value rejects a newly disabled operand without retaining hidden drag increments", (t) => {
+  let rotary: any;
+  const drafts: number[] = [];
+  const commits: number[] = [];
+  function Harness({ enabled }: { enabled: boolean }) {
+    rotary = components.useRotaryValue({ value: .2, step: .01, quantize: (value: number) => Math.round(value * 100) / 100,
+      pixelsPerStep: 7, disabled: !enabled,
+      onDraftChange: (value: number) => { if (enabled) drafts.push(value); },
+      onCommit: (value: number) => { if (enabled) commits.push(value); } });
+    return null;
+  }
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(React.createElement(Harness, { enabled: true })); });
+  t.after(() => act(() => renderer.unmount()));
+  const target = { setPointerCapture() {}, hasPointerCapture: () => false };
+  const pointer = (y: number) => ({ pointerId: 1, clientY: y, pointerType: "touch", currentTarget: target });
+  act(() => rotary.onPointerDown(pointer(100)));
+  act(() => renderer.update(React.createElement(Harness, { enabled: false })));
+  act(() => { rotary.onPointerMove(pointer(79)); rotary.onPointerUp(pointer(79)); });
+  assert.deepEqual(drafts, [], "disabled operand rejects all three drag steps");
+  act(() => renderer.update(React.createElement(Harness, { enabled: true })));
+  act(() => { rotary.onKeyDown({ key: "ArrowRight", preventDefault() {} }); rotary.onKeyUp({ key: "ArrowRight" }); });
+  assert.equal(drafts.at(-1), .21, "one healthy step starts at the displayed .2, not a rejected hidden .23");
+  assert.equal(commits.at(-1), .21);
 });

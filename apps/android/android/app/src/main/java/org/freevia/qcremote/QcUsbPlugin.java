@@ -2325,7 +2325,7 @@ public class QcUsbPlugin extends Plugin {
                         continue;
                     }
                     long reportEpoch = stateDecoder.captureReportEpoch(nativeConnection);
-                    consumeInputReport(buffer, count, nativeConnection, reportEpoch, diagnosticEpoch, receivedAtMs);
+                    consumeInputReport(buffer, count, nativeConnection, reportEpoch, diagnosticEpoch, receivedAtMs, generation);
                 }
             } catch (Exception error) {
                 if (readerIsActive(activeConnection, generation)) {
@@ -2417,7 +2417,7 @@ public class QcUsbPlugin extends Plugin {
                     buffer.flip();
                     byte[] bytes = new byte[count];
                     buffer.get(bytes);
-                    consumeInputReport(bytes, count, nativeConnection, reportEpoch, diagnosticEpoch, receivedAtMs);
+                    consumeInputReport(bytes, count, nativeConnection, reportEpoch, diagnosticEpoch, receivedAtMs, generation);
                 }
                 buffer.clear();
                 if (!completed.queue(buffer)) {
@@ -2457,8 +2457,26 @@ public class QcUsbPlugin extends Plugin {
         }
     }
 
+    private synchronized void scheduleSuspensionResync(long readerGeneration) {
+        if (connection == null || readerGeneration != connectionGeneration.get()
+                || relayAdmissionGuard.isTerminal()) return;
+        String resync = stateDecoder.takeSuspensionResync();
+        if (resync == null) return;
+        final long intentGeneration = automaticReconnectGeneration.get();
+        if (flight != null) flight.event("suspension-resync:" + resync);
+        keepalive.execute(() -> {
+            synchronized (this) {
+                if (connection == null || readerGeneration != connectionGeneration.get()
+                        || intentGeneration != automaticReconnectGeneration.get()
+                        || relayAdmissionGuard.isTerminal()) return;
+                relayReconnect("Quad Cortex resumed after " + resync
+                    + "; resynchronizing the session", null, intentGeneration);
+            }
+        });
+    }
+
     private void consumeInputReport(byte[] buffer, int count, long nativeConnection, long reportEpoch,
-            long diagnosticEpoch, long receivedAtMs) {
+            long diagnosticEpoch, long receivedAtMs, long readerGeneration) {
         usbDiagnostics.rawReportReceived(diagnosticEpoch);
         // UsbRequest may complete with a residual one-byte read while a queued
         // ring is being cancelled for reconnect. It cannot contain the HID
@@ -2481,12 +2499,7 @@ public class QcUsbPlugin extends Plugin {
         if (decoded == null) return;
         // A suspension that ended in a reset leaves every retained device state
         // suspect: rebuild the whole session, as a session reset does.
-        String resync = stateDecoder.takeSuspensionResync();
-        if (resync != null) {
-            if (flight != null) flight.event("suspension-resync:" + resync);
-            keepalive.execute(() -> relayReconnect(
-                "Quad Cortex resumed after " + resync + "; resynchronizing the session"));
-        }
+        scheduleSuspensionResync(readerGeneration);
         if (!decoded.states.isEmpty() || decoded.tempoClock != null) statePublicationDrain.request();
         // Lifecycle and state already changed atomically in nativePushReport.
         requestLifecycleDrain();

@@ -245,7 +245,7 @@ test("reset session tears down the Android epoch and waits for a new authoritati
   assert.match(generatedGatewaySource, /case "device\.resetSession": return "RECONNECT"/);
   assert.match(javaSource, /"device\.resetSession"\.equals\(method\) \? "Communication session reset"/);
   assert.match(javaSource, /if \(reconnectInFlight != null\) return reconnectInFlight/);
-  assert.match(javaSource, /openDeviceAndHandshake\(candidate, pending, relayAdmissionGuard\.epoch\(\)\)/);
+  assert.match(javaSource, /openDeviceAndHandshake\(candidate, pending, relayAdmissionGuard\.epoch\(\), connectionIntent\)/);
   assert.match(javaSource, /private void openDeviceAndHandshake[\s\S]*synchronized \(this\)[\s\S]*claimBackupRecovery\(ready\.backupOrigin\)[\s\S]*closeConnection\(preservedOperation\)/);
   assert.match(javaSource, /closeConnection\(QcPendingOperations\.Entry<\?> preservedOperation\)\s*\{\s*closeConnection\(preservedOperation, true\);\s*\}/);
   assert.match(javaSource, /closeConnection\(\s*QcPendingOperations\.Entry<\?> preservedOperation, boolean sendDisconnectCommands\s*\)\s*\{[\s\S]*?connectionGeneration\.incrementAndGet\(\);\s*UsbRequest\[\] inputRequests/);
@@ -340,7 +340,7 @@ test("large model metadata never blocks the permanent USB reader", () => {
   assert.doesNotMatch(javaSource, /stateDecoder\.(?:systemTimeCommand|postBootInitializationStarted|startupBeginBuilding)\(/);
   assert.match(javaSource, /lifecycleDispatched\(batch, false, monotonicMillis\(\)\)/);
   assert.match(rustSessionSource, /DispatchOutcome::Failed[\s\S]{0,120}self\.fail\(SessionFailure::Dispatch\)/);
-  assert.match(javaSource, /if \(connection != null\) terminalTransportFailed\(lastError, "lifecycle-write-failed"\)/);
+  assert.match(javaSource, /if \(connection != null && generation == connectionGeneration\.get\(\)\)\s*terminalTransportFailed\(lastError, "lifecycle-write-failed"\)/);
   assert.match(javaSource, /stateDecoder\.lifecyclePoll\(monotonicMillis\(\)\)/);
   assert.match(rustAndroidSource, /frame\.message_type == quadcortex::profile::MESSAGE_TYPE_MODEL_REPO/);
   assert.doesNotMatch(javaSource, /private volatile boolean startupActive/);
