@@ -17,7 +17,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = crate::device_lease::testing::temp_directory().join(format!(
             "qc-broker-control-{label}-{}-{}",
             std::process::id(),
             SystemTime::now()
@@ -48,7 +48,7 @@ impl Drop for Scratch {
 
 #[cfg(target_os = "macos")]
 fn mac_native_directory() -> PathBuf {
-    std::env::temp_dir().join(format!(
+    crate::device_lease::testing::temp_directory().join(format!(
         "qc-broker-control-macos-native-{}",
         std::process::id()
     ))

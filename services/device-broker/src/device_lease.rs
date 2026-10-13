@@ -337,7 +337,7 @@ pub struct Locations {
 
 impl Locations {
     pub fn from_environment() -> Self {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             Self {
                 primary: crate::platform::paths::default_directory().join(RECORD_NAME),
@@ -972,6 +972,12 @@ fn wait_for_transition_test_peers(directory: &Path) {
 pub(crate) mod testing {
     use super::*;
 
+    pub(crate) fn temp_directory() -> PathBuf {
+        std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize the platform temp directory")
+    }
+
     /// Match the production Linux directory contract for explicit test leases
     /// and descriptors. This changes only each test's own scratch directory.
     pub(crate) fn create_directory(path: &Path) -> std::io::Result<()> {
@@ -1113,7 +1119,7 @@ mod tests {
     /// returned guard. It is named by the process id, so every run that did
     /// not remove it left one more behind.
     fn scratch(name: &str) -> (OwnedTestDirectory, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("qc-lease-{name}-{}", std::process::id()));
+        let dir = temp_directory().join(format!("qc-lease-{name}-{}", std::process::id()));
         let _ = create_test_directory(&dir);
         let path = dir.join("device-owner.json");
         let _ = std::fs::remove_file(&path);
@@ -1207,7 +1213,7 @@ mod tests {
 
     #[test]
     fn concurrent_processes_cannot_both_recover_the_same_stale_lease() {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = temp_directory().join(format!(
             "qc-lease-process-race-{}-{}",
             std::process::id(),
             unix_ms()
@@ -1494,8 +1500,7 @@ mod tests {
     /// Both roots under one directory of this test's own, removed whole by
     /// the returned guard.
     fn two_roots(name: &str) -> (OwnedTestDirectory, PathBuf, PathBuf) {
-        let base =
-            std::env::temp_dir().join(format!("qc-lease-roots-{name}-{}", std::process::id()));
+        let base = temp_directory().join(format!("qc-lease-roots-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let program_data = base.join("ProgramData");
         let local = base.join("Local");
@@ -1542,7 +1547,7 @@ mod tests {
 
     #[test]
     fn timed_out_last_release_is_retried_while_process_remains_alive() {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = temp_directory().join(format!(
             "qc-lease-release-retry-{}-{}",
             std::process::id(),
             unix_ms()
@@ -1595,7 +1600,7 @@ mod tests {
 
     #[test]
     fn delayed_release_job_cannot_delete_a_new_generation_from_same_process() {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = temp_directory().join(format!(
             "qc-lease-new-generation-{}-{}",
             std::process::id(),
             unix_ms()
@@ -1628,7 +1633,7 @@ mod tests {
 
     #[test]
     fn same_process_holders_share_one_generation_until_the_last_release() {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = temp_directory().join(format!(
             "qc-lease-shared-generation-{}-{}",
             std::process::id(),
             unix_ms()
@@ -1653,7 +1658,7 @@ mod tests {
 
     #[test]
     fn transition_lock_reaps_a_claim_left_by_a_crashed_owner() {
-        let directory = std::env::temp_dir().join(format!(
+        let directory = temp_directory().join(format!(
             "qc-lease-transition-crash-{}-{}",
             std::process::id(),
             unix_ms()
