@@ -5,23 +5,21 @@
  *
  * Contract
  * --------
- * - The display is a box (`.qc-screen-bezel`) of ONE fixed physical aspect,
- *   585.353 : 327.749 (1.786), the inner opening of the unit's screen recess in
- *   qc-chassis-neutral.svg. The unit shows its 800x480 framebuffer on a ~16:9
- *   panel, so its pixels are not square: each is 1.0716 times wider than tall
- *   ((585.353 / 327.749) / (800 / 480)). Photographs of the unit measure the
- *   lit area at 1.80 to 1.86; the vector's inner opening is the constant this
- *   file adopts.
+ * - The display is a box (`.qc-screen-bezel`) of exactly the framebuffer's
+ *   aspect, 800 : 480 (5 : 3). The unit's screen recess in qc-chassis-neutral.svg
+ *   is a wider opening (585.353 : 327.749, 1.786); the box is the largest 5 : 3
+ *   box that fits the opening's height, centred in it, and the strips of the
+ *   opening either side of it are black (the bezel's ::before), so the picture
+ *   is letterboxed in the opening and never stretched into it.
  * - The box holds one fixed 800x480 canvas (`.qc-screen-fixture-root`) scaled
- *   by ONE transform, x by `100cqw / 800px` and y by `100cqh / 480px`. Because
- *   the box has the fixed aspect above, the ratio between the two factors is
- *   always the 1.0716 pixel aspect and nothing else; no host adds a scale of
- *   its own. Every pixel unit inside the
- *   display (px, cqw, cqh, SVG user units, the fixed-size art) is stretched
- *   together, round glyphs included, as on the device.
+ *   by ONE uniform transform, `100cqw / 800px` in both directions (the box
+ *   has the canvas's aspect, so this is also `100cqh / 480px`). Every pixel
+ *   unit inside the display (px, cqw, cqh, SVG user units, the fixed-size art)
+ *   scales together, so a square on the 800x480 frame is a square on every
+ *   host at any window size. No host adds a scale of its own.
  * - Text inside the canvas is sized in canvas pixels, before the transform. A
  *   WebView's minimum-font-size clamp looks at that size, which is the unit's
- *   own at every host width, and a non-uniform scale does not change it.
+ *   own at every host width.
  * - A host provides a container and may change only the box that container
  *   offers. The two knobs it may set on its own container are
  *   `--qc-surface-width` (hardware presentation: width of the whole unit) and
@@ -36,7 +34,7 @@
 
 .qc-chassis,
 .qc-display-standalone {
-  --qc-display-aspect: calc(585.353 / 327.749);
+  --qc-display-aspect: calc(800 / 480);
 }
 
 /* Shared by every host of a display: the box is a size container, never has
@@ -56,17 +54,31 @@
   container-type: size;
 }
 
-/* Hardware presentation: the display on the unit's panel, exactly on the inner
- * opening of the recess drawn in qc-chassis-neutral.svg. The numbers are that
- * file's: the opening spans x 255.796 to 841.149 and y 81.1649 to 408.914 on a
- * 1096.94 x 719.079 panel whose viewBox starts at y 14. */
+/* Hardware presentation: the display on the unit's panel, in the inner opening
+ * of the recess drawn in qc-chassis-neutral.svg. The numbers are that file's:
+ * the opening spans x 255.796 to 841.149 and y 81.1649 to 408.914 on a
+ * 1096.94 x 719.079 panel whose viewBox starts at y 14. The box is as tall as
+ * the opening and as wide as 5 : 3 makes it, centred. */
 .qc-chassis > .qc-screen-bezel {
+  --qc-opening-height: 327.749;
+  --qc-opening-width: 585.353;
+  --qc-box-width: calc(var(--qc-opening-height) * 800 / 480);
   top: calc((81.1649 - 14) / 719.079 * 100%);
   right: auto;
   bottom: auto;
-  left: calc(255.796 / 1096.94 * 100%);
-  width: calc(585.353 / 1096.94 * 100cqi);
-  height: calc(327.749 / 1096.94 * 100cqi);
+  left: calc((255.796 + (var(--qc-opening-width) - var(--qc-box-width)) / 2) / 1096.94 * 100%);
+  width: calc(var(--qc-box-width) / 1096.94 * 100cqi);
+  height: calc(var(--qc-opening-height) / 1096.94 * 100cqi);
+}
+/* The rest of the opening, either side of the 5 : 3 box, is the screen's own
+ * black, so the picture is letterboxed in the recess rather than stretched to it. */
+.qc-chassis:not(.is-display-only) > .qc-screen-bezel::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0 calc((var(--qc-opening-width) / var(--qc-box-width) - 1) / 2 * -100cqw);
+  background: var(--qc-palette-000000);
+  pointer-events: none;
 }
 .qc-chassis:not(.is-display-only) {
   width: var(--qc-surface-width, min(1120px, 100%));
@@ -124,9 +136,9 @@
   height: 100%;
 }
 
-/* The canvas. 800x480 canvas pixels, scaled to the display box: x by its
- * content width over 800, y by its content height over 480. `100cqw` and
- * `100cqh` here are the box's content size: the canvas is not its own query
+/* The canvas. 800x480 canvas pixels, scaled to the display box by its content
+ * width over 800 in both directions (the box has the canvas's aspect). `100cqw`
+ * here is the box's content width: the canvas is not its own query
  * container for its own transform. Inside the canvas the canvas is the
  * container, so 1cqw is 8 canvas pixels and 1cqh is 4.8 everywhere. A box
  * forced to exactly 800x480 (the corpus capture) makes this the identity. */
@@ -140,6 +152,6 @@
   width: 800px;
   height: 480px;
   container-type: size;
-  transform: scale(calc(100cqw / 800px), calc(100cqh / 480px));
+  transform: scale(calc(100cqw / 800px));
   transform-origin: top left;
 }

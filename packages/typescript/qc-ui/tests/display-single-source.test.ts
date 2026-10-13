@@ -94,30 +94,30 @@ const rule = (rules: CssRule[], selector: string) => {
   return found;
 };
 
-/** The one physical aspect of the display: the inner opening of the screen recess in qc-chassis-neutral.svg. */
-const DISPLAY_ASPECT = 585.353 / 327.749;
-/** How much wider than tall each of the unit's 800x480 pixels is: the physical aspect over 5:3. */
-const PIXEL_ASPECT = DISPLAY_ASPECT / (800 / 480);
-
-test("the display box has one fixed physical aspect in every presentation", () => {
+test("the display box has the framebuffer's own 800:480 aspect in every presentation", () => {
   const variables = rule(frameRules, ".qc-chassis, .qc-display-standalone").declarations;
-  assert.equal(variables.get("--qc-display-aspect"), "calc(585.353 / 327.749)", "the constant is the vector's inner opening, stated once");
+  assert.equal(variables.get("--qc-display-aspect"), "calc(800 / 480)", "the constant is the framebuffer's own shape, stated once");
   assert.equal(rule(frameRules, ":is(.qc-chassis, .qc-display-standalone) > .qc-screen-bezel").declarations.get("aspect-ratio"), "var(--qc-display-aspect)");
   assert.equal(rule(frameRules, ".qc-chassis.is-display-only").declarations.get("aspect-ratio"), "var(--qc-display-aspect)");
   assert.equal(rule(frameRules, ".qc-display-standalone").declarations.get("aspect-ratio"), "var(--qc-display-aspect)");
   assert.equal(rule(frameRules, ".qc-chassis.is-display-only").declarations.get("width"), "min(100%, calc(var(--qc-display-max-height, 100vmax) * var(--qc-display-aspect)))");
-  assert.ok(Math.abs(PIXEL_ASPECT - 1.0716) < 0.0001, `the pixel aspect is ${PIXEL_ASPECT}`);
 });
 
-test("on the hardware the display is exactly the inner opening of the art's recess", () => {
+test("on the hardware the 5:3 display is centred in the art's recess, as tall as the opening, with black either side", () => {
   const svg = read(join(root, "packages/typescript/qc-theme/assets/qc-chassis-neutral.svg"));
   // The recess is drawn as two outlines; the inner one is these four straight edges.
   for (const edge of ["M255.796 84.1888V405.892", "M841.149 405.891V84.1887", "M838.125 81.1649H258.82", "M258.82 408.914H838.125"]) assert.ok(svg.includes(edge), `the art still draws the recess edge ${edge}`);
   const placed = rule(frameRules, ".qc-chassis > .qc-screen-bezel").declarations;
-  assert.equal(placed.get("left"), "calc(255.796 / 1096.94 * 100%)");
+  assert.equal(placed.get("--qc-opening-width"), "585.353");
+  assert.equal(placed.get("--qc-opening-height"), "327.749");
+  assert.equal(placed.get("--qc-box-width"), "calc(var(--qc-opening-height) * 800 / 480)", "the box is the opening's height at the framebuffer's aspect");
+  assert.equal(placed.get("left"), "calc((255.796 + (var(--qc-opening-width) - var(--qc-box-width)) / 2) / 1096.94 * 100%)");
   assert.equal(placed.get("top"), "calc((81.1649 - 14) / 719.079 * 100%)");
-  assert.equal(placed.get("width"), "calc(585.353 / 1096.94 * 100cqi)");
-  assert.equal(placed.get("height"), "calc(327.749 / 1096.94 * 100cqi)");
+  assert.equal(placed.get("width"), "calc(var(--qc-box-width) / 1096.94 * 100cqi)");
+  assert.equal(placed.get("height"), "calc(var(--qc-opening-height) / 1096.94 * 100cqi)");
+  const bars = rule(frameRules, ".qc-chassis:not(.is-display-only) > .qc-screen-bezel::before").declarations;
+  assert.equal(bars.get("inset"), "0 calc((var(--qc-opening-width) / var(--qc-box-width) - 1) / 2 * -100cqw)", "the black strips fill the rest of the opening exactly");
+  assert.equal(bars.get("background"), "var(--qc-palette-000000)");
   assert.ok(Math.abs((841.149 - 255.796) - 585.353) < 0.001 && Math.abs((408.914 - 81.1649) - 327.749) < 0.001, "the constants are the opening's own size");
 });
 
@@ -125,7 +125,7 @@ test("the canvas is a fixed 800x480 box scaled by the one documented transform",
   const canvas = rule(frameRules, ".qc-screen-bezel > .qc-screen-fixture-root").declarations;
   assert.equal(canvas.get("width"), "800px");
   assert.equal(canvas.get("height"), "480px");
-  assert.equal(canvas.get("transform"), "scale(calc(100cqw / 800px), calc(100cqh / 480px))", "x by box width / 800, y by box height / 480; the box's fixed aspect makes their ratio the pixel aspect");
+  assert.equal(canvas.get("transform"), "scale(calc(100cqw / 800px))", "one uniform factor: the box has the canvas's own aspect, so x and y scale alike");
   assert.equal(canvas.get("transform-origin"), "top left");
   assert.equal(canvas.get("container-type"), "size", "inside the canvas 1cqw is 8 canvas pixels on every host");
 });
@@ -149,11 +149,10 @@ test("nothing else in qc-ui sizes, positions or scales the display box or its ca
   assert.deepEqual(offences, [], "the display frame is owned by display-frame.css");
 });
 
-test("the canvas rule is the only scale in qc-ui that treats the two axes differently", () => {
+test("no scale in qc-ui treats the display's two axes differently", () => {
   const offences: string[] = [];
   for (const [path, rules] of uiRules) {
     for (const candidate of rules) {
-      if (path.endsWith("display-frame.css") && candidate.selector === ".qc-screen-bezel > .qc-screen-fixture-root") continue;
       if (!/qc-screen-bezel|qc-screen-fixture-root|qc-chassis|qc-display/.test(candidate.selector)) continue;
       const transform = candidate.declarations.get("transform") ?? candidate.declarations.get("scale") ?? "";
       for (const match of transform.matchAll(/scale\(((?:[^()]|\([^()]*\))*)\)/g)) {
