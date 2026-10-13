@@ -394,11 +394,11 @@ fn find(directory: &Path, env: &dyn Env) -> Found {
 }
 
 fn read_descriptor(path: &Path) -> io::Result<Vec<u8>> {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         qc_owner_only_file::read_owner_only(path)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(unix))]
     {
         fs::read(path)
     }
@@ -1061,9 +1061,22 @@ struct NativeEnv {
 /// The app writes its brokers' stderr here (apps/windows/src-tauri lib.rs
 /// `broker_stderr_path`), bounded the same way.
 fn broker_stderr_log() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|base| base.join("QC Remote").join("broker-stderr.log"))
+    #[cfg(windows)]
+    {
+        return std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|base| base.join("QC Remote").join("broker-stderr.log"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let directory = crate::platform::paths_macos::default_directory();
+        crate::platform::paths_macos::prepare_directory(&directory).ok()?;
+        return Some(directory.join("broker-stderr.log"));
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        None
+    }
 }
 const BROKER_STDERR_MAX_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -1086,6 +1099,8 @@ impl Env for NativeEnv {
         let directory = self.default_directory.map(|directory| directory())?;
         #[cfg(target_os = "linux")]
         crate::platform::paths::prepare_directory(&directory).ok()?;
+        #[cfg(target_os = "macos")]
+        crate::platform::paths_macos::prepare_directory(&directory).ok()?;
         Some(directory)
     }
 
@@ -1096,6 +1111,13 @@ impl Env for NativeEnv {
     }
 
     fn session_marker_present(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            return self.own_directory().is_some_and(|directory| {
+                qc_native_platform::resident_marker::is_running(&directory)
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
         named_mutex_exists(SESSION_MARKER)
     }
 
@@ -1227,7 +1249,7 @@ fn named_mutex_exists(name: &str) -> bool {
     true
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn named_mutex_exists(_name: &str) -> bool {
     false
 }

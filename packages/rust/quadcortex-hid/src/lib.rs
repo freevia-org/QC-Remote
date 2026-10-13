@@ -4,8 +4,8 @@
 //! framing, commands, admission, delivery and state decisions remain in
 //! `quadcortex`. Only the handle and native completion policy vary by platform.
 
-#[cfg(not(any(windows, target_os = "linux")))]
-compile_error!("quadcortex-hid supports Windows and Linux hosts");
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+compile_error!("quadcortex-hid supports Windows, Linux and macOS hosts");
 
 mod backend;
 pub mod flight;

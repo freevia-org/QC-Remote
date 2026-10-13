@@ -145,6 +145,7 @@ function WorkspaceContent() {
 }
 
 function SettingsContent() {
+  const isMacOS = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
   const [settings, unanswered] = useWindowState<SettingsState>(SETTINGS_EVENTS);
   const [message, setMessage] = useState<string>();
   // The change this window asked for. While the main window has not answered,
@@ -186,6 +187,24 @@ function SettingsContent() {
       change("idle-disconnect-minutes", idleMinutesFromInput(input.value, input.valueAsNumber));
     }
   };
+  const trayEnabled = shown("tray-enabled", settings?.trayEnabled ?? false);
+  const trayStopping = settings?.trayStopping ?? false;
+  const trayRunning = settings?.trayRunning ?? false;
+  const trayDescription = isMacOS
+    ? trayStopping
+      ? "Hiding the menu bar item while the background broker stops…"
+      : trayEnabled
+        ? trayRunning
+          ? "Connect and Disconnect are available from the menu bar. The broker and MCP access stay available when QC Remote is closed."
+          : "The menu bar item and login startup are enabled, but the broker is not running yet."
+        : "The menu bar item, background broker, and login startup are off."
+    : trayStopping
+      ? "Hiding the tray icon…"
+      : trayEnabled
+        ? trayRunning
+          ? "The broker shows its icon whenever it holds the Quad Cortex, and MCP access stays available when QC Remote is closed."
+          : "The broker icon is on; the background MCP host is not running."
+        : "The tray icon and its background MCP host are off.";
   // The main window has focus only when it is clicked, so this window, which
   // has it now, is the one that can write the clipboard.
   const copyDetail = (detail: string) => {
@@ -204,7 +223,7 @@ function SettingsContent() {
         <label className="setting-row borderless"><span>Device model<small>Hardware geometry, controls, and appearance</small></span><select value={shown("form-factor", settings.formFactorId)} disabled={waiting} aria-busy={waiting && pending?.setting === "form-factor"} onChange={(event) => change("form-factor", event.target.value)}>{settings.formFactors.map((item) => <option value={item.id} key={item.id}>{item.displayName}</option>)}</select></label>
         <label className="setting-row"><span>AI access level<small>Read-only inspects; Performance permits buttons, volume, and tempo; Modify adds Grid, presets, and scenes; Full also permits system operations. Confirmation gates still apply.</small></span><ControlAccessSelect value={shown("control-access-mode", settings.controlAccessMode) as SettingsState["controlAccessMode"]} disabled={waiting} onChange={(mode) => change("control-access-mode", mode)} /></label>
         <label className="setting-row privacy-toggle"><span>Follow QC screen<small>When enabled, QC Remote checks the device screen adaptively while this app is visible. It pauses while hidden or disconnected.</small></span><input type="checkbox" checked={shown("follow-qc-screen", settings.followQcScreen)} disabled={waiting} aria-busy={waiting && pending?.setting === "follow-qc-screen"} onChange={(event) => change("follow-qc-screen", event.target.checked)} /></label>
-        <label className="setting-row privacy-toggle"><span>Show tray icon<small>{settings.trayStopping ? "Hiding the tray icon…" : settings.trayEnabled ? settings.trayRunning ? "The broker shows its icon whenever it holds the Quad Cortex, and MCP access stays available when QC Remote is closed." : "The broker icon is on; the background MCP host is not running." : "The tray icon and its background MCP host are off."}</small></span><input type="checkbox" checked={shown("tray-enabled", settings.trayEnabled)} disabled={waiting} aria-busy={waiting && pending?.setting === "tray-enabled"} onChange={(event) => change("tray-enabled", event.target.checked)} /></label>
+        <label className="setting-row privacy-toggle"><span>{isMacOS ? "Show menu bar item and run broker in the background" : "Show tray icon"}<small>{trayDescription}</small></span><input type="checkbox" checked={trayEnabled} disabled={waiting} aria-busy={waiting && pending?.setting === "tray-enabled"} onChange={(event) => change("tray-enabled", event.target.checked)} /></label>
         <label className="setting-row privacy-toggle"><span>{UPDATER_RELAY_LABEL}<small>{UPDATER_RELAY_EXPLANATION}</small><small role="status">{updaterRelayStatusLine(shown("updater-relay-enabled", settings.updaterRelayEnabled), settings.updaterRelay)}</small></span><input type="checkbox" checked={shown("updater-relay-enabled", settings.updaterRelayEnabled)} disabled={waiting} aria-busy={waiting && pending?.setting === "updater-relay-enabled"} onChange={(event) => change("updater-relay-enabled", event.target.checked)} /></label>
         <div className="setting-row privacy-toggle"><span><label htmlFor="idle-disconnect-enabled">Release QC after last client</label><small>{idleDisconnectHelp(settings.idleDisconnectMinutes, settings.trayEnabled)}</small></span><div className="idle-disconnect-controls">
           <input id="idle-disconnect-enabled" type="checkbox" checked={idleEnabled} disabled={waiting} aria-label="Release the QC after the last client disconnects" aria-busy={waiting && pending?.setting === "idle-disconnect-minutes"} onChange={(event) => changeIdleEnabled(event.target.checked)} />

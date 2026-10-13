@@ -100,10 +100,13 @@ fn run(
         shared
             .wanted
             .store(settings.tray_enabled, Ordering::Release);
+        #[cfg(not(target_os = "macos"))]
         handle.set_tray_hold(super::hold_for(
             shared.registered.load(Ordering::Acquire),
             settings,
         ));
+        #[cfg(target_os = "macos")]
+        handle.set_tray_hold(settings.tray_enabled.then_some(settings.idle));
         // Residence follows the switch and this thread, not the shell: an
         // Explorer restart that briefly drops the icon must not end the
         // session's MCP host. The device hold above still needs the icon.

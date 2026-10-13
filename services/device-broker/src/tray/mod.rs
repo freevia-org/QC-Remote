@@ -1,11 +1,10 @@
-//! The broker's own notification icon. It lives in this process so that the
-//! broker and its icon share one lifecycle: the icon appears once the broker
-//! has won the descriptor election and disappears when it exits, and the
-//! device is held past the shipped grace only while the icon is registered.
+//! Platform tray and residency integration. Windows and Linux draw their
+//! native icons in this process; macOS draws its menu bar item in the Tauri
+//! host and uses this module for broker residence and the device hold.
 //!
-//! The platform tray backend owns only its native icon and menu. The state
-//! thread builds a snapshot from cached broker status and forwards menu
-//! commands; the broker's idle timer remains its own backstop thread.
+//! Native tray backends own only their icon and menu. The state thread builds
+//! a snapshot from cached broker status and forwards menu commands; the
+//! broker's idle timer remains its own backstop thread.
 pub mod host_status;
 pub mod install_stop;
 #[cfg(all(target_os = "linux", feature = "linux-tray"))]
@@ -102,8 +101,27 @@ pub fn interactive_session() -> bool {
     {
         linux::interactive_session()
     }
+    #[cfg(target_os = "macos")]
+    {
+        macos_interactive_session()
+    }
     #[cfg(not(all(target_os = "linux", feature = "linux-tray")))]
+    #[cfg(not(target_os = "macos"))]
     false
+}
+
+#[cfg(target_os = "macos")]
+fn macos_interactive_session() -> bool {
+    // LaunchAgents and the desktop app run in the user's GUI bootstrap domain.
+    // SSH and daemon processes do not have one, even when they share the UID.
+    let uid = unsafe { libc::geteuid() };
+    uid != 0
+        && std::process::Command::new("/bin/launchctl")
+            .args(["print", &format!("gui/{uid}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
 }
 
 /// Start the icon for a published broker. Failure to start is reported and
@@ -127,7 +145,27 @@ pub fn start(handle: BrokerHandle, host: Option<Arc<dyn ResidentHost>>) {
             eprintln!("The broker tray could not start; it runs without an icon: {error}");
         }
     }
-    #[cfg(not(any(windows, all(target_os = "linux", feature = "linux-tray"))))]
+    #[cfg(target_os = "macos")]
+    {
+        // Tauri owns the visible macOS menu bar surface. Keep the broker's
+        // action channel alive and track residence here without registering a
+        // second native icon in the broker process.
+        if let Err(error) = state::start(handle.clone(), host, |_, actions| {
+            Ok(Box::new(move || {
+                let _keep_actions_alive = &actions;
+                state::NotifyStatus::Alive
+            }) as state::Notify)
+        }) {
+            handle.set_tray_hold(None);
+            handle.set_resident(false);
+            eprintln!("The macOS resident host could not start: {error}");
+        }
+    }
+    #[cfg(not(any(
+        windows,
+        target_os = "macos",
+        all(target_os = "linux", feature = "linux-tray")
+    )))]
     {
         let _ = (handle, host);
     }

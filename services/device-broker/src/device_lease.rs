@@ -224,7 +224,10 @@ impl LeaseTransitionGuard {
             if let Some(parent) = lock_path.parent() {
                 #[cfg(target_os = "linux")]
                 crate::platform::paths::prepare_directory(parent).map_err(std::io::Error::other)?;
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(target_os = "macos")]
+                crate::platform::paths_macos::prepare_directory(parent)
+                    .map_err(std::io::Error::other)?;
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 std::fs::create_dir_all(parent)?;
             }
             loop {
@@ -296,9 +299,9 @@ const APP_DIRECTORY: &str = "org.freevia.qcremote";
 const RECORD_NAME: &str = "device-owner.json";
 const SHARED_DIRECTORY: &str = "QC Remote";
 /// The broker whose `--stdio` instances a scan treats as device holders.
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
 const BROKER_IMAGE: &str = "qc-device-broker.exe";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const BROKER_IMAGE: &str = "qc-device-broker";
 
 /// `QC_DEVICE_LEASE_PATH` overrides, for tests and unusual installs.
@@ -342,7 +345,15 @@ impl Locations {
                 peers: Vec::new(),
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        {
+            Self {
+                primary: crate::platform::paths_macos::default_directory().join(RECORD_NAME),
+                mirrors: Vec::new(),
+                peers: Vec::new(),
+            }
+        }
+        #[cfg(windows)]
         Self::resolve(
             std::env::var_os("PROGRAMDATA")
                 .map(PathBuf::from)
@@ -472,7 +483,7 @@ fn scan_for_stdio_owner() -> Option<LeaseRecord> {
 /// Administrators and, under the default `%ProgramData%` ACL, closed to the
 /// ordinary token of the same person. Best effort; failing leaves the mirror
 /// in the legacy directory to carry the record.
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
 fn prepare_shared_directory(directory: &Path) {
     if directory.is_dir() {
         return;
@@ -494,9 +505,12 @@ fn prepare_shared_directory(directory: &Path) {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn prepare_shared_directory(directory: &Path) {
+    #[cfg(target_os = "linux")]
     let _ = crate::platform::paths::prepare_directory(directory);
+    #[cfg(target_os = "macos")]
+    let _ = crate::platform::paths_macos::prepare_directory(directory);
 }
 
 /// What this process is, in the words a user would recognise.
@@ -583,21 +597,23 @@ fn create_exclusive(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         #[cfg(target_os = "linux")]
         crate::platform::paths::prepare_directory(parent).map_err(std::io::Error::other)?;
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        crate::platform::paths_macos::prepare_directory(parent).map_err(std::io::Error::other)?;
+        #[cfg(windows)]
         let _ = std::fs::create_dir_all(parent);
     }
     let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let temp = path.with_extension(format!(
         "json.{}.{}.tmp",
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
     let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     qc_owner_only_file::write_staged(&temp, &bytes).map_err(std::io::Error::other)?;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
     std::fs::write(&temp, &bytes)?;
     let linked = std::fs::hard_link(&temp, path);
     let _ = std::fs::remove_file(&temp);
@@ -609,7 +625,7 @@ fn create_exclusive(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
             use std::io::Write;
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create_new(true);
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             {
                 use std::os::unix::fs::OpenOptionsExt;
                 options
@@ -625,11 +641,11 @@ fn create_exclusive(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
 /// Replaces the record with this process's own, atomically.
 fn replace_own(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         qc_owner_only_file::publish_atomically(path, &bytes).map_err(std::io::Error::other)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
     {
         let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
         std::fs::write(&temp, &bytes)?;

@@ -1046,7 +1046,14 @@ fn state_file_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
         qc_native_platform::paths::prepare_directory(&directory)?;
         Ok(vec![directory.join(STATE_FILE_NAME)])
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        let directory = crate::broker_paths::app_local_data_dir();
+        qc_native_platform::paths_macos::prepare_directory(&directory)?;
+        Ok(vec![directory.join(STATE_FILE_NAME)])
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let app_local_data_dir = app
             .path()
@@ -1059,9 +1066,9 @@ fn state_file_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     }
 }
 
-/// The durable directory shared by the GUI and Linux resident/MCP processes.
-/// Linux broker descriptors and preferences must not follow Tauri's separate
-/// XDG data directory, or each host can elect and configure a different broker.
+/// The durable directory shared by the GUI and resident/MCP processes.
+/// Unix broker descriptors and preferences must use the broker's protected
+/// native directory, not a second app-specific location.
 fn app_local_data_directory(app: &AppHandle) -> Result<PathBuf, String> {
     #[cfg(target_os = "linux")]
     {
@@ -1070,7 +1077,14 @@ fn app_local_data_directory(app: &AppHandle) -> Result<PathBuf, String> {
         qc_native_platform::paths::prepare_directory(&directory)?;
         Ok(directory)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        let directory = crate::broker_paths::app_local_data_dir();
+        qc_native_platform::paths_macos::prepare_directory(&directory)?;
+        Ok(directory)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         app.path()
             .app_local_data_dir()

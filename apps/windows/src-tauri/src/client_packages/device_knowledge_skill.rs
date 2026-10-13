@@ -56,7 +56,14 @@ pub(super) const DEVICE_KNOWLEDGE_SKILL_FILES: &[BundledSkillFile] = &[
 /// The installed bridge as a manual configuration has to spell it out, with the
 /// user's own profile left as a placeholder.
 fn installed_bridge_path() -> String {
-    format!(r"C:\Users\<you>\AppData\Local\{BRIDGE_DIRECTORY}\{BRIDGE_FILE_NAME}")
+    #[cfg(target_os = "macos")]
+    {
+        format!("~/Library/Application Support/QC Remote/integrations/{BRIDGE_FILE_NAME}")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        format!(r"C:\Users\<you>\AppData\Local\{BRIDGE_DIRECTORY}\{BRIDGE_FILE_NAME}")
+    }
 }
 
 /// The same path escaped for a TOML or JSON string.

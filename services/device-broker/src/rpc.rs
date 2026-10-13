@@ -3930,17 +3930,35 @@ fn serve_broker_tcp_connection(
     connection_id: u64,
     phase_events: bool,
 ) {
-    // The entrypoint for tests that authenticate and serve directly. In
-    // production `authenticate_and_serve_tcp_client` marks the connection and
-    // registers its writer before replying, then calls
-    // `serve_registered_tcp_connection` itself. The refusal is ignored: an
-    // already-marked connection stays marked, and a committed shutdown
-    // refuses every dispatch on its own.
+    let Ok(output_stream) = stream.try_clone() else {
+        return;
+    };
+    serve_broker_tcp_connection_with_output(
+        stream,
+        shared,
+        connection_id,
+        phase_events,
+        Arc::new(Mutex::new(output_stream)),
+    );
+}
+
+fn serve_broker_tcp_connection_with_output(
+    stream: TcpStream,
+    shared: &Arc<BrokerShared>,
+    connection_id: u64,
+    phase_events: bool,
+    output: Arc<Mutex<TcpStream>>,
+) {
+    // This entrypoint is reached only after authentication succeeds. In
+    // production `authenticate_and_serve_tcp_client` has already marked the
+    // connection before replying, so this repeat is an idempotent no-op; it
+    // exists for callers (tests) that authenticate and serve directly. Its
+    // refusal is ignored: an already-marked connection stays marked, and a
+    // committed shutdown refuses every dispatch on its own.
     let _ = shared.mark_client_authenticated(connection_id);
     let Ok(input) = stream.try_clone() else {
         return;
     };
-    let output = Arc::new(Mutex::new(stream));
     if let Some(row) = shared
         .clients
         .lock_recover()
@@ -5089,14 +5107,28 @@ impl BrokerShared {
         role: AuthenticatedAs,
         output: Option<Arc<Mutex<TcpStream>>>,
     ) -> Result<(), String> {
+        self.mark_client_authenticated_as_with_output(connection_id, role, output)
+    }
+
+    /// Publish the authenticated socket's writer in the same critical section
+    /// as authentication. A process signal can arrive as soon as the client
+    /// receives its success reply; shutdown notices must already be able to
+    /// reach that client at that point.
+    fn mark_client_authenticated_as_with_output(
+        self: &Arc<Self>,
+        connection_id: u64,
+        role: AuthenticatedAs,
+        output: Option<Arc<Mutex<TcpStream>>>,
+    ) -> Result<(), String> {
         let has_observers = {
             let mut clients = self.clients.lock_recover();
             if clients.shutting_down {
                 return Err("Broker shutdown is already committed".into());
             }
-            if let (Some(output), Some(row)) = (output, clients.connections.get_mut(&connection_id))
-            {
-                row.output = Some(output);
+            if let Some(row) = clients.connections.get_mut(&connection_id) {
+                if let Some(output) = output {
+                    row.output = Some(output);
+                }
             }
             if role == AuthenticatedAs::Control || clients.is_control(connection_id) {
                 if let Some(row) = clients.connections.get_mut(&connection_id) {
@@ -5649,7 +5681,7 @@ impl BrokerHandle {
     /// SIGTERM/SIGINT are process lifecycle requests, not a recorded user Quit.
     /// Commit shutdown before stopping workers so no concurrent client can
     /// reopen USB. Reuse the shared bounded notification and teardown path.
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(crate) fn shutdown_from_os(&self) {
         {
             let mut clients = self.0.clients.lock_recover();

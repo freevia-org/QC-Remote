@@ -46,6 +46,35 @@ impl Drop for Scratch {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn mac_native_directory() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "qc-broker-control-macos-native-{}",
+        std::process::id()
+    ))
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_control_observes_the_mac_resident_marker() {
+    let directory = mac_native_directory();
+    let _ = fs::remove_dir_all(&directory);
+    let environment = NativeEnv {
+        default_directory: Some(mac_native_directory),
+    };
+    assert!(!environment.session_marker_present());
+    assert_eq!(
+        environment.own_directory().as_deref(),
+        Some(directory.as_path())
+    );
+    let marker = qc_native_platform::resident_marker::ResidentMarker::acquire(&directory)
+        .expect("acquire macOS resident marker");
+    assert!(environment.session_marker_present());
+    drop(marker);
+    assert!(!environment.session_marker_present());
+    fs::remove_dir_all(directory).expect("remove marker test directory");
+}
+
 type Spawner = Box<dyn Fn(&Path) -> Result<Box<dyn Spawned>, String> + Send + Sync>;
 
 struct TestEnv {

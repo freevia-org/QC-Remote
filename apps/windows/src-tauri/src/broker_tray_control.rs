@@ -3,10 +3,10 @@
 //!
 //! Since 0.1.178 the resident host is `qc-device-broker.exe` itself: the
 //! device broker, its icon and the background MCP host in one process.
-//! `trayEnabled` is the one switch for all three: on, the app
-//! starts the resident host now (`--resident`) and at Windows sign-in (the
-//! `QC Remote` Run value); off, the running process drops its icon and its
-//! host and falls back to the shipped five-second grace on its own.
+//! `trayEnabled` is the one switch for all three: on, the app starts the
+//! resident host now (`--resident`) and at login (the platform's startup
+//! registration); off, the running process drops its icon and its host and
+//! falls back to the shipped five-second grace on its own.
 //!
 //! The Run value replaces 0.1.176/0.1.177's `QC Remote Tray`, which started a
 //! separate `qc-remote-tray.exe`. Every enable rewrites the new value and
@@ -26,8 +26,13 @@ use std::sync::Mutex;
 #[cfg(target_os = "linux")]
 #[path = "broker_tray_control_linux.rs"]
 mod linux;
+#[cfg(target_os = "macos")]
+#[path = "broker_tray_control_macos.rs"]
+mod macos;
 #[cfg(target_os = "linux")]
 pub(crate) use linux::spawn_owned;
+#[cfg(target_os = "macos")]
+pub(crate) use macos::spawn_owned;
 
 const CONTROL_LOCK: &str = "device-broker-tray-control.lock";
 #[cfg(windows)]
@@ -76,7 +81,7 @@ pub trait TrayEffects: Send + Sync {
 }
 
 pub struct NativeTrayEffects {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     directory: PathBuf,
 }
 
@@ -91,12 +96,19 @@ impl BrokerTrayControl<NativeTrayEffects> {
         let effects = NativeTrayEffects {
             #[cfg(target_os = "linux")]
             directory: directory.clone(),
+            #[cfg(target_os = "macos")]
+            directory: directory.clone(),
         };
         Self {
             directory,
             effects,
             last_error: Mutex::new(None),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn quit_broker(&self) -> Result<(), String> {
+        macos::quit(&self.directory)
     }
 }
 
@@ -280,7 +292,11 @@ impl TrayEffects for NativeTrayEffects {
         {
             linux::is_running(&self.directory)
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::is_running(&self.directory)
+        }
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         {
             false
         }
@@ -302,9 +318,16 @@ impl TrayEffects for NativeTrayEffects {
         {
             linux::locate()
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(target_os = "macos")]
         {
-            Err("The QC Remote tray is supported on Windows and Linux".to_owned())
+            macos::locate()
+        }
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+        {
+            Err(
+                "The QC Remote menu bar or tray is supported on Windows, Linux, and macOS"
+                    .to_owned(),
+            )
         }
     }
 
@@ -391,10 +414,17 @@ impl TrayEffects for NativeTrayEffects {
         {
             linux::spawn(executable, directory, supersede_user_quit)
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::spawn(executable, directory, supersede_user_quit)
+        }
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         {
             let _ = (executable, directory, supersede_user_quit);
-            Err("The QC Remote tray is supported on Windows and Linux".to_owned())
+            Err(
+                "The QC Remote menu bar or tray is supported on Windows, Linux, and macOS"
+                    .to_owned(),
+            )
         }
     }
 
@@ -421,10 +451,17 @@ impl TrayEffects for NativeTrayEffects {
         {
             linux::set_run_entry(executable, directory)
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::set_run_entry(executable, directory)
+        }
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         {
             let _ = (executable, directory);
-            Err("The QC Remote tray is supported on Windows and Linux".to_owned())
+            Err(
+                "The QC Remote menu bar or tray is supported on Windows, Linux, and macOS"
+                    .to_owned(),
+            )
         }
     }
 
@@ -444,13 +481,17 @@ impl TrayEffects for NativeTrayEffects {
         {
             linux::remove_run_entry()
         }
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::remove_run_entry()
+        }
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         Ok(())
     }
 }
 
 /// A fresh descriptor naming a live broker is published in `directory`.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn serving_broker_published(directory: &Path) -> bool {
     crate::device_broker_descriptor::read_descriptor(
         &crate::device_broker_descriptor::device_broker_descriptor_path(directory),

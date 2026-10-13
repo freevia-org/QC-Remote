@@ -25,7 +25,7 @@ use crate::local_stdio::CLIENT_ID_ARGUMENT;
 mod device_knowledge_skill;
 use device_knowledge_skill::*;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::MetadataExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -214,7 +214,10 @@ const VERSION_SLOT: &str = "__QC_REMOTE_APP_VERSION__";
 /// The one canonical on-disk bridge every manual client configuration points at.
 /// The installer and both example configurations are generated from these, so
 /// there is nothing to keep in sync by hand.
+#[cfg(target_os = "windows")]
 const BRIDGE_DIRECTORY: &str = r"QC Remote\integrations";
+#[cfg(not(target_os = "windows"))]
+const BRIDGE_DIRECTORY: &str = "QC Remote/integrations";
 const BRIDGE_FILE_NAME: &str = "local-mcp-bridge.cjs";
 fn claude_manifest() -> Result<Vec<u8>, String> {
     serde_json::to_vec_pretty(&json!({
@@ -222,7 +225,7 @@ fn claude_manifest() -> Result<Vec<u8>, String> {
         "name": "qc-remote",
         "display_name": "QC Remote",
         "version": env!("CARGO_PKG_VERSION"),
-        "description": "Control a Quad Cortex through the running QC Remote Windows app.",
+        "description": "Control a Quad Cortex through the running QC Remote app.",
         "long_description": "A local-only bridge between Claude and QC Remote. QC Remote remains the sole owner of the Quad Cortex USB session and enforces its selected control access level. Claude manages tool approvals; choose Always allow after installation if you want uninterrupted control.",
         "author": { "name": "Freevia EOOD" },
         "server": {
@@ -242,7 +245,7 @@ fn claude_manifest() -> Result<Vec<u8>, String> {
         "tools_generated": true,
         "keywords": ["music", "guitar", "quad-cortex", "mcp", "local"],
         "compatibility": {
-            "platforms": ["win32"],
+            "platforms": [if cfg!(target_os = "macos") { "darwin" } else if cfg!(target_os = "linux") { "linux" } else { "win32" }],
             "runtimes": { "node": ">=18.0.0" }
         }
     }))
@@ -286,19 +289,87 @@ fn claude_desktop_extension() -> Result<Vec<u8>, String> {
 }
 
 fn client_readme() -> String {
+    #[cfg(target_os = "macos")]
+    let (skill_codex, skill_antigravity, antigravity_config, installer, installed) = (
+        "$HOME/.codex/skills",
+        "$HOME/.gemini/config/skills",
+        "$HOME/.gemini/config/mcp_config.json",
+        "codex/install.sh",
+        "~/Library/Application Support/QC Remote/integrations/local-mcp-bridge.cjs",
+    );
+    #[cfg(not(target_os = "macos"))]
+    let (skill_codex, skill_antigravity, antigravity_config, installer, installed) = (
+        "%USERPROFILE%\\.codex\\skills",
+        "%USERPROFILE%\\.gemini\\config\\skills",
+        "%USERPROFILE%\\.gemini\\config\\mcp_config.json",
+        "codex\\install.ps1",
+        "%LOCALAPPDATA%\\QC Remote\\integrations\\local-mcp-bridge.cjs",
+    );
     format!(
-        "# QC Remote local MCP clients\n\nVersion {}. Keep QC Remote open and connect the Quad Cortex before using these integrations. QC Remote remains the only USB owner.\n\n## Claude Desktop\n\nInstall the included `.mcpb` in Claude Desktop: Settings > Extensions > Advanced settings > Install Extension. The extension exposes the QC Device Knowledge skill -- Quad Cortex manual, device list, plugin and MIDI knowledge -- as MCP resources.\n\n## ChatGPT Desktop and Codex\n\nThe lowest-friction setup is inside QC Remote: open LOCAL and choose **Pair**. The app updates only the `qc-remote` entry in the MCP configuration shared by ChatGPT Desktop and Codex. It also installs the bundled `qc-device-knowledge` skill under `%USERPROFILE%\\.codex\\skills` and offers an update when the app carries a newer skill. Existing skill contents are backed up before replacement. The managed MCP route launches the native bridge built into QC Remote and follows in-place QC Remote upgrades automatically.\n\n## Google Antigravity\n\nThe lowest-friction setup is inside QC Remote: open LOCAL and choose **Pair**. QC Remote installs the bundled `qc-device-knowledge` skill under `%USERPROFILE%\\.gemini\\config\\skills` and updates only its managed MCP entry. Existing skill contents are backed up before replacement. For manual MCP setup, merge `antigravity\\mcp_config.example.json` into `%USERPROFILE%\\.gemini\\config\\mcp_config.json`.\n\n## Codex CLI manual fallback\n\nRun `codex\\install.ps1`. It installs the JavaScript bridge at `%LOCALAPPDATA%{installed}`, installs the bundled `qc-device-knowledge` skill, and registers the bridge with Codex. To configure Codex by hand, run the installer once for those files and adapt `codex\\mcp-config.example.toml`, which already points at the bridge.\n\n## VS Code\n\nRun `codex\\install.ps1` once to place the JavaScript bridge at `%LOCALAPPDATA%{installed}`, then adapt `vscode\\mcp.example.json`, which already points there.\n",
+        "# QC Remote local MCP clients\n\nVersion {}. Keep QC Remote open and connect the Quad Cortex before using these integrations. QC Remote remains the only USB owner.\n\n## Claude Desktop\n\nInstall the included `.mcpb` in Claude Desktop: Settings > Extensions > Advanced settings > Install Extension. The extension exposes the QC Device Knowledge skill as MCP resources.\n\n## ChatGPT Desktop and Codex\n\nOpen LOCAL in QC Remote and choose **Pair**. The app updates only its managed `qc-remote` MCP entry and installs the bundled skill under `{skill_codex}`. Existing skill contents are backed up before replacement. The managed route follows QC Remote upgrades automatically.\n\n## Google Antigravity\n\nOpen LOCAL in QC Remote and choose **Pair**. The app installs the bundled skill under `{skill_antigravity}` and updates its managed MCP entry. For manual setup, merge `antigravity/mcp_config.example.json` into `{antigravity_config}`.\n\n## Codex CLI manual fallback\n\nRun `{installer}`. It installs the bridge at `{installed}`, installs the bundled skill, and registers the bridge with Codex.\n\n## VS Code\n\nRun `{installer}` once to install the bridge at `{installed}`, then adapt `vscode/mcp.example.json`.\n",
         env!("CARGO_PKG_VERSION"),
-        installed = format!(r"\{BRIDGE_DIRECTORY}\{BRIDGE_FILE_NAME}")
+        skill_codex = skill_codex, skill_antigravity = skill_antigravity,
+        antigravity_config = antigravity_config, installer = installer, installed = installed
     )
 }
 
 fn codex_installer() -> String {
-    codex_installer_template()
-        .replace("{{bridgeDirectory}}", BRIDGE_DIRECTORY)
-        .replace("{{bridgeFileName}}", BRIDGE_FILE_NAME)
-        .replace("{{clientArgument}}", CLIENT_ID_ARGUMENT)
-        .replace("{{clientId}}", CODEX_CLIENT_ID)
+    #[cfg(target_os = "macos")]
+    {
+        return r##"#!/bin/sh
+set -eu
+command -v node >/dev/null 2>&1 || { echo "Node.js 18 or newer is required." >&2; exit 1; }
+bridge_source="$(cd "$(dirname "$0")/../claude/server" && pwd)/index.cjs"
+bridge_target="$HOME/Library/Application Support/QC Remote/integrations/local-mcp-bridge.cjs"
+skill_source="$(cd "$(dirname "$0")/../skills/qc-device-knowledge" && pwd)"
+skill_target="$HOME/.codex/skills/qc-device-knowledge"
+mkdir -p "$(dirname "$bridge_target")"
+cp "$bridge_source" "$bridge_target"
+mkdir -p "$(dirname "$skill_target")"
+if [ -e "$skill_target" ]; then mv "$skill_target" "$skill_target.backup.$(date -u +%Y%m%d%H%M%S)"; fi
+cp -R "$skill_source" "$skill_target"
+if ! command -v codex >/dev/null 2>&1; then
+  echo "Bridge installed at '$bridge_target'. Install Codex CLI, then configure an STDIO MCP server with command node and that path." >&2
+  exit 0
+fi
+configured_servers="$(codex mcp list --json)" || { echo "Codex could not read its existing MCP configuration." >&2; exit 1; }
+entry_action="$(printf '%s' "$configured_servers" | node -e '
+const fs = require("node:fs");
+const servers = JSON.parse(fs.readFileSync(0, "utf8"));
+if (!Array.isArray(servers)) throw new Error("Unexpected Codex MCP list format");
+const entry = servers.find((server) => server && server.name === "qc-remote");
+if (!entry) process.stdout.write("add");
+else if (Array.isArray(entry.args) && entry.args.includes("--local-mcp-bridge")) process.stdout.write("managed-native");
+else if ((Array.isArray(entry.args) && entry.args.some((arg) => String(arg).endsWith("local-mcp-bridge.cjs"))) || entry.env?.QC_REMOTE_LOCAL_MCP_CLIENT) process.stdout.write("replace");
+else process.stdout.write("foreign");
+')"
+case "$entry_action" in
+  managed-native)
+    echo "Codex is already paired with QC Remote's native bridge, which updates with the app. That entry was left unchanged."
+    exit 0
+    ;;
+  replace)
+    codex mcp remove qc-remote || { echo "Codex could not replace the previous QC Remote MCP configuration." >&2; exit 1; }
+    ;;
+  foreign)
+    echo "An MCP server named 'qc-remote' already exists and was left unchanged. Remove that entry yourself, then re-run this installer." >&2
+    exit 1
+    ;;
+  add) ;;
+  *) echo "Codex returned an unknown QC Remote MCP entry state." >&2; exit 1 ;;
+esac
+codex mcp add qc-remote -- node "$bridge_target" '{{clientArgument}}' '{{clientId}}'
+echo "QC Remote MCP was added. Restart the client, then keep QC Remote open."
+"##.replace("{{clientArgument}}", CLIENT_ID_ARGUMENT).replace("{{clientId}}", CODEX_CLIENT_ID);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        codex_installer_template()
+            .replace("{{bridgeDirectory}}", BRIDGE_DIRECTORY)
+            .replace("{{bridgeFileName}}", BRIDGE_FILE_NAME)
+            .replace("{{clientArgument}}", CLIENT_ID_ARGUMENT)
+            .replace("{{clientId}}", CODEX_CLIENT_ID)
+    }
 }
 
 fn codex_installer_template() -> &'static str {
@@ -392,12 +463,16 @@ fn local_client_archive() -> Result<Vec<u8>, String> {
     // carried twice for the same reason the managed route carries it twice -
     // Antigravity does not pass `env` to a native STDIO child, so only
     // the argument reaches the heartbeat.
+    #[cfg(target_os = "macos")]
+    let antigravity_executable = "/Applications/QC Remote.app/Contents/MacOS/QC Remote";
+    #[cfg(not(target_os = "macos"))]
+    let antigravity_executable = r"C:\Users\<you>\AppData\Local\QC Remote\qc-remote.exe";
     let antigravity_example = format!(
         "{}\n",
         serde_json::to_string_pretty(&json!({
             "mcpServers": {
                 CLAUDE_EXTENSION_NAME: {
-                    "command": r"C:\Users\<you>\AppData\Local\QC Remote\qc-remote.exe",
+                    "command": antigravity_executable,
                     "args": ["--local-mcp-bridge", CLIENT_ID_ARGUMENT, ANTIGRAVITY_CLIENT_ID],
                     "env": { LOCAL_MCP_CLIENT_ENV: ANTIGRAVITY_CLIENT_ID }
                 }
@@ -405,9 +480,14 @@ fn local_client_archive() -> Result<Vec<u8>, String> {
         }))
         .map_err(|error| format!("Could not encode the Antigravity example: {error}"))?
     );
+    let installer_path = if cfg!(target_os = "macos") {
+        "codex/install.sh"
+    } else {
+        "codex/install.ps1"
+    };
     let files: [(&str, &[u8]); 6] = [
         ("README.md", readme.as_bytes()),
-        ("codex/install.ps1", installer.as_bytes()),
+        (installer_path, installer.as_bytes()),
         ("codex/mcp-config.example.toml", codex_example.as_bytes()),
         ("claude/server/index.cjs", bridge.as_slice()),
         (
@@ -753,14 +833,43 @@ fn where_command(executable_name: &str) -> Vec<PathBuf> {
         };
         where_command_in(executable_name, &path)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let mut directories = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if let Some(home) = user_home_directory() {
+            directories.extend([
+                home.join(".local").join("bin"),
+                home.join(".npm-global").join("bin"),
+                home.join("bin"),
+            ]);
+        }
+        directories.extend([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/bin"),
+        ]);
+        let mut unique = Vec::new();
+        for directory in directories {
+            if directory.is_absolute() && !unique.contains(&directory) {
+                unique.push(directory);
+            }
+        }
+        let Ok(search_path) = std::env::join_paths(unique) else {
+            return Vec::new();
+        };
+        where_command_in(executable_name, &search_path)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = executable_name;
         Vec::new()
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn where_command_in(executable_name: &str, search_path: &std::ffi::OsStr) -> Vec<PathBuf> {
     std::env::split_paths(search_path)
         .filter(|directory| directory.is_absolute())
@@ -1608,15 +1717,131 @@ fn remember_package_registration(
 }
 
 fn resolve_desktop_app(search: &DesktopAppSearch) -> Option<DesktopInstallation> {
-    let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    let user_profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
-    resolve_desktop_app_in(
-        &installation_roots(),
-        local_app_data.as_deref(),
-        user_profile.as_deref(),
-        search,
-    )
-    .map(|(_, installation)| installation)
+    #[cfg(target_os = "macos")]
+    {
+        return macos_application_installation(search);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        let user_profile = std::env::var_os("USERPROFILE").map(PathBuf::from);
+        resolve_desktop_app_in(
+            &installation_roots(),
+            local_app_data.as_deref(),
+            user_profile.as_deref(),
+            search,
+        )
+        .map(|(_, installation)| installation)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_application_installation(search: &DesktopAppSearch) -> Option<DesktopInstallation> {
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
+    if let Some(home) = user_home_directory() {
+        roots.push(home.join("Applications"));
+    }
+    macos_application_installation_in(search, &roots)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_application_installation_in(
+    search: &DesktopAppSearch,
+    roots: &[PathBuf],
+) -> Option<DesktopInstallation> {
+    let mut names = Vec::new();
+    for display_name in search.display_names {
+        for name in [
+            Some(*display_name),
+            display_name.strip_prefix("OpenAI "),
+            display_name.strip_prefix("Google "),
+            display_name.strip_suffix(" Desktop"),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !name.is_empty() && !names.iter().any(|known| known == name) {
+                names.push(name);
+            }
+        }
+    }
+    for root in roots {
+        for name in &names {
+            let bundle = root.join(format!("{name}.app"));
+            let info_path = bundle.join("Contents").join("Info.plist");
+            let Ok(plist) = plist::Value::from_file(info_path) else {
+                continue;
+            };
+            let Some(info) = plist.as_dictionary() else {
+                continue;
+            };
+            let Some(executable) = info
+                .get("CFBundleExecutable")
+                .and_then(plist::Value::as_string)
+                .filter(|name| {
+                    !name.is_empty()
+                        && Path::new(name)
+                            .components()
+                            .all(|component| matches!(component, Component::Normal(_)))
+                })
+            else {
+                continue;
+            };
+            let executable_path = bundle.join("Contents").join("MacOS").join(executable);
+            if !executable_path.is_file() {
+                continue;
+            }
+            let version = info
+                .get("CFBundleShortVersionString")
+                .and_then(plist::Value::as_string)
+                .or_else(|| {
+                    info.get("CFBundleVersion")
+                        .and_then(plist::Value::as_string)
+                })
+                .filter(|version| version_numbers(version).is_some())
+                .map(str::to_owned);
+            return Some(DesktopInstallation {
+                executable: Some(executable_path),
+                version,
+            });
+        }
+    }
+    None
+}
+
+fn desktop_application_command(executable: &Path) -> Command {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = executable
+            .ancestors()
+            .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+            .unwrap_or(executable);
+        let mut command = Command::new("/usr/bin/open");
+        command.arg("-a").arg(bundle).arg("--args");
+        command
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Command::new(executable)
+    }
+}
+
+fn spawn_desktop_command(command: Command) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        crate::broker_tray_control::spawn_owned(command)
+    }
+    #[cfg(not(unix))]
+    {
+        let mut command = command;
+        command
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
 }
 
 const CLAUDE_DESKTOP_SEARCH: DesktopAppSearch = DesktopAppSearch {
@@ -1734,7 +1959,7 @@ const LM_STUDIO_SUPPORTED_VERSIONS: &[AppVersionSeries] = &[
 /// Jan. The binary on disk is lowercase `jan.exe` while its `DisplayIcon` and
 /// this candidate say `Jan.exe`; Windows compares paths case-insensitively, so
 /// one spelling resolves both, and that is why Jan was already recognised.
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
 const JAN_SEARCH: DesktopAppSearch = DesktopAppSearch {
     executable_names: &["Jan.exe"],
     relative_candidates: &[r"Jan\Jan.exe"],
@@ -1847,11 +2072,11 @@ fn chatgpt_desktop_installed() -> bool {
 }
 
 fn codex_cli_executable() -> Option<PathBuf> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         where_command("codex").into_iter().next()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         None
     }
@@ -1936,9 +2161,7 @@ fn validate_antigravity_language_server(
 ) -> Result<(), String> {
     let app_executable = antigravity_installation()
         .and_then(|installation| installation.executable)
-        .ok_or_else(|| {
-            "Google Antigravity is not installed for this Windows account.".to_string()
-        })?;
+        .ok_or_else(|| "Google Antigravity is not installed for this user account.".to_string())?;
     let app_directory = app_executable
         .parent()
         .ok_or_else(|| "Could not validate the Google Antigravity installation.".to_string())?;
@@ -2286,6 +2509,11 @@ fn xdg_data_home() -> Option<PathBuf> {
         &home,
         ".local/share",
     ))
+}
+
+#[cfg(target_os = "macos")]
+fn xdg_data_home() -> Option<PathBuf> {
+    user_home_directory().map(|home| home.join("Library").join("Application Support"))
 }
 
 fn codex_config_path_in(home: &Path, codex_home: Option<&Path>) -> PathBuf {
@@ -3884,9 +4112,23 @@ fn claude_extension_manifest_paths_in(user_data_roots: &[PathBuf]) -> Vec<PathBu
 }
 
 fn claude_user_data_roots() -> Vec<PathBuf> {
-    let roaming_app_data = std::env::var_os("APPDATA").map(PathBuf::from);
-    let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    claude_user_data_roots_in(roaming_app_data.as_deref(), local_app_data.as_deref())
+    #[cfg(target_os = "macos")]
+    {
+        return user_home_directory()
+            .map(|home| {
+                vec![home
+                    .join("Library")
+                    .join("Application Support")
+                    .join("Claude")]
+            })
+            .unwrap_or_default();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let roaming_app_data = std::env::var_os("APPDATA").map(PathBuf::from);
+        let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        claude_user_data_roots_in(roaming_app_data.as_deref(), local_app_data.as_deref())
+    }
 }
 
 fn installed_claude_extension_version(path: &Path) -> Result<Option<String>, String> {
@@ -4065,13 +4307,9 @@ fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
         .and_then(|installation| installation.executable)
         .or_else(claude_msix_path);
     if claude.is_none() && !claude_uri_handler_registered() {
-        return Err("Claude Desktop is not installed for this Windows account.".to_string());
+        return Err("Claude Desktop is not installed for this account.".to_string());
     }
-    let local_app_data = std::env::var_os("LOCALAPPDATA")
-        .ok_or_else(|| "Windows local application data is unavailable.".to_string())?;
-    let integration_directory = PathBuf::from(local_app_data)
-        .join("QC Remote")
-        .join("integrations");
+    let integration_directory = canonical_integration_directory()?;
     fs::create_dir_all(&integration_directory)
         .map_err(|error| format!("Could not prepare the Claude integration: {error}"))?;
     let package_path = integration_directory.join(CLAUDE_EXTENSION_FILE);
@@ -4081,16 +4319,18 @@ fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
     // Claude Desktop owns extension validation, confirmation, and replacement.
     // Passing the MCPB path invokes that supported install/update flow.
     if let Some(claude) = claude {
-        Command::new(claude).arg(&package_path).spawn()
+        let mut command = desktop_application_command(&claude);
+        command.arg(&package_path);
+        spawn_desktop_command(command)?;
     } else {
         #[cfg(windows)]
         {
             // Keep the shell fallback for future Claude packages that register
             // the protocol but expose neither a classic nor discoverable MSIX
             // binary.
-            Command::new(crate::system_tools::explorer_exe())
-                .arg(&package_path)
-                .spawn()
+            let mut command = Command::new(crate::system_tools::explorer_exe());
+            command.arg(&package_path);
+            spawn_desktop_command(command)?;
         }
         #[cfg(not(windows))]
         {
@@ -4100,7 +4340,6 @@ fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
             );
         }
     }
-    .map_err(|error| format!("Could not open the extension in Claude Desktop: {error}"))?;
 
     Ok(json!({
         "launched": true,
@@ -4127,9 +4366,7 @@ fn open_claude_desktop_blocking() -> Result<(), String> {
         .and_then(|installation| installation.executable)
         .or_else(claude_msix_path)
     {
-        return Command::new(claude)
-            .spawn()
-            .map(|_| ())
+        return spawn_desktop_command(desktop_application_command(&claude))
             .map_err(|error| format!("Could not open Claude Desktop: {error}"));
     }
     if claude_uri_handler_registered() {
@@ -4148,7 +4385,7 @@ fn open_claude_desktop_blocking() -> Result<(), String> {
             );
         }
     }
-    Err("Claude Desktop is not installed for this Windows account.".to_string())
+    Err("Claude Desktop is not installed for this user account.".to_string())
 }
 
 #[tauri::command]
@@ -4269,10 +4506,10 @@ fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
     }
     let executable_path = std::env::current_exe()
         .map_err(|error| format!("Could not resolve the QC Remote executable: {error}"))?;
-    let config_path = codex_config_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+    let config_path =
+        codex_config_path().ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let skill_path = codex_device_knowledge_skill_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let backup_root = device_knowledge_skill_backup_root(CODEX_SKILL_HOST)?;
     // Version 0.1.114 and earlier installed this PowerShell shim. The managed
     // route now launches QC Remote's native bridge directly and needs no Node.
@@ -4376,10 +4613,10 @@ pub async fn install_chatgpt_local_integration() -> Result<Value, String> {
 }
 
 fn remove_chatgpt_local_integration_blocking() -> Result<Value, String> {
-    let config_path = codex_config_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+    let config_path =
+        codex_config_path().ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let skill_path = codex_device_knowledge_skill_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let mut removed = remove_codex_route(&config_path)?;
     // The JavaScript bridge is shared by manual clients. Only the obsolete
     // PowerShell shim from the pre-native managed route can be removed here.
@@ -4417,7 +4654,7 @@ fn open_chatgpt_desktop_blocking() -> Result<(), String> {
             .ok_or_else(|| "Codex CLI is not installed for this Linux user.".to_owned())?;
         launch_codex_cli_in_terminal(&codex)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
     {
         let chatgpt = chatgpt_desktop_installation()
             .and_then(|installation| installation.executable)
@@ -4427,11 +4664,39 @@ fn open_chatgpt_desktop_blocking() -> Result<(), String> {
                 "ChatGPT Desktop or Codex is not installed for this user account.".to_string(),
             );
         };
-        Command::new(chatgpt)
-            .spawn()
-            .map(|_| ())
+        spawn_desktop_command(desktop_application_command(&chatgpt))
             .map_err(|error| format!("Could not open ChatGPT Desktop: {error}"))
     }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(chatgpt) =
+            chatgpt_desktop_installation().and_then(|installation| installation.executable)
+        {
+            return spawn_desktop_command(desktop_application_command(&chatgpt))
+                .map_err(|error| format!("Could not open ChatGPT Desktop: {error}"));
+        }
+        let codex = codex_cli_executable().ok_or_else(|| {
+            "ChatGPT Desktop or Codex CLI is not installed for this user.".to_owned()
+        })?;
+        launch_codex_cli_in_terminal(&codex)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn launch_codex_cli_in_terminal(codex: &Path) -> Result<(), String> {
+    let codex = codex
+        .to_str()
+        .ok_or("The Codex CLI path is not valid Unicode")?;
+    if codex.chars().any(char::is_control) {
+        return Err("The Codex CLI path contains unsupported control characters".into());
+    }
+    let shell_command = format!("'{}'", codex.replace('\'', "'\\''"));
+    let applescript_command = shell_command.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!("tell application \"Terminal\" to do script \"{applescript_command}\"");
+    let mut command = Command::new("/usr/bin/osascript");
+    command.arg("-e").arg(script);
+    spawn_desktop_command(command)
+        .map_err(|error| format!("Could not open Codex CLI in Terminal: {error}"))
 }
 
 #[cfg(target_os = "linux")]
@@ -4461,7 +4726,7 @@ pub async fn open_chatgpt_desktop() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(open_chatgpt_desktop_blocking)
         .await
         .map_err(|error| {
-            if cfg!(target_os = "linux") {
+            if cfg!(any(target_os = "linux", target_os = "macos")) {
                 format!("Could not launch Codex CLI: {error}")
             } else {
                 format!("Could not launch ChatGPT Desktop: {error}")
@@ -4504,7 +4769,15 @@ pub fn open_chatgpt_configuration() -> Result<(), String> {
             format!("Could not open the shared ChatGPT and Codex MCP configuration: {error}")
         })
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("/usr/bin/open");
+        command.arg(&config_path);
+        spawn_desktop_command(command).map_err(|error| {
+            format!("Could not open the shared ChatGPT and Codex MCP configuration: {error}")
+        })
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     Err("opening the MCP configuration is unsupported on this platform".to_owned())
 }
 
@@ -4590,7 +4863,7 @@ fn antigravity_local_integration_status_blocking(
                 "installed": false,
                 "availableVersion": DEVICE_KNOWLEDGE_SKILL_VERSION,
                 "state": "status-error",
-                "statusError": "The Windows user profile directory is unavailable.",
+                "statusError": "The user home directory is unavailable.",
             })
         });
     let unconfigured = ConfiguredAntigravityRoute {
@@ -4606,7 +4879,7 @@ fn antigravity_local_integration_status_blocking(
         },
         None => (
             unconfigured,
-            Some("The Windows user profile directory is unavailable.".to_string()),
+            Some("The user home directory is unavailable.".to_string()),
         ),
     };
     let mut integration = AntigravityIntegration {
@@ -4620,9 +4893,7 @@ fn antigravity_local_integration_status_blocking(
                 Ok(configured) => integration.permission_current = configured,
                 Err(error) => status_error = Some(error),
             },
-            None => {
-                status_error = Some("The Windows user profile directory is unavailable.".into())
-            }
+            None => status_error = Some("The user home directory is unavailable.".into()),
         }
     }
     if status_error.is_none() {
@@ -4631,9 +4902,7 @@ fn antigravity_local_integration_status_blocking(
                 Ok(present) => integration.legacy_route_present = present,
                 Err(error) => status_error = Some(error),
             },
-            None => {
-                status_error = Some("The Windows user profile directory is unavailable.".into())
-            }
+            None => status_error = Some("The user home directory is unavailable.".into()),
         }
     }
     let mut status = antigravity_status_document(
@@ -4674,10 +4943,8 @@ fn open_antigravity_blocking() -> Result<(), String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let mut command = Command::new(executable);
-        command
-            .spawn()
-            .map(|_| ())
+        let command = desktop_application_command(&executable);
+        spawn_desktop_command(command)
             .map_err(|error| format!("Could not open Google Antigravity: {error}"))
     }
 }
@@ -4698,17 +4965,17 @@ pub fn open_antigravity_download() -> Result<(), String> {
 
 fn install_antigravity_local_integration_blocking() -> Result<Value, String> {
     if antigravity_installation().is_none() {
-        return Err("Google Antigravity is not installed for this Windows account.".to_string());
+        return Err("Google Antigravity is not installed for this user account.".to_string());
     }
     let executable_path = antigravity_bridge_path()?;
     let config_path = antigravity_config_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let settings_path = antigravity_settings_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let legacy_settings_path = legacy_gemini_settings_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let skill_path = antigravity_device_knowledge_skill_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let backup_root = device_knowledge_skill_backup_root(ANTIGRAVITY_SKILL_HOST)?;
     // Same ordering rule as ChatGPT: every reversible configuration write lands
     // before the one step that displaces a directory the user owns.
@@ -4747,13 +5014,13 @@ async fn ensure_and_refresh_antigravity_local_integration() -> Result<Value, Str
 
 fn remove_antigravity_local_integration_blocking() -> Result<Value, String> {
     let config_path = antigravity_config_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let settings_path = antigravity_settings_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let legacy_settings_path = legacy_gemini_settings_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let skill_path = antigravity_device_knowledge_skill_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let removed_route = remove_antigravity_route(&config_path)?;
     let removed_permission = remove_antigravity_permission(&settings_path)?;
     let removed_legacy_route = remove_legacy_gemini_route(&legacy_settings_path)?;
@@ -4939,7 +5206,7 @@ fn lm_studio_status_blocking() -> Result<Value, String> {
                     "installed": false,
                     "availableVersion": DEVICE_KNOWLEDGE_SKILL_VERSION,
                     "state": "status-error",
-                    "statusError": "The Windows user profile directory is unavailable.",
+                    "statusError": "The user home directory is unavailable.",
                 })
             }),
     );
@@ -4955,13 +5222,13 @@ pub async fn lm_studio_local_integration_status() -> Result<Value, String> {
 
 fn install_lm_studio_local_integration_blocking() -> Result<Value, String> {
     let Some(installation) = lm_studio_installation() else {
-        return Err("LM Studio is not installed for this Windows account.".to_string());
+        return Err("LM Studio is not installed for this user account.".to_string());
     };
     let executable = std::env::current_exe()
         .map_err(|error| format!("Could not resolve the QC Remote executable: {error}"))?;
     let document = lm_studio_mcp_document(Some(&installation))?;
     let skill_path = bionic_device_knowledge_skill_path()
-        .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+        .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let backup_root = device_knowledge_skill_backup_root(LM_STUDIO_SKILL_HOST)?;
     // Same ordering rule as ChatGPT and Antigravity: the reversible
     // configuration write lands before the one step that displaces a directory
@@ -4991,15 +5258,15 @@ pub async fn remove_lm_studio_local_integration() -> Result<Value, String> {
         // the other behind for ever, and the removal touches nothing but this
         // app's own entry in each.
         let bionic = bionic_config_path()
-            .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+            .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
         let legacy = lm_studio_config_path()
-            .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+            .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
         let removed_bionic = remove_bionic_mcp_route(&bionic, LM_STUDIO_CONFIG_OWNER)?;
         let removed_legacy = remove_json_mcp_route(&legacy, LM_STUDIO_CONFIG_OWNER)?;
         // The skill goes back the way it came: whatever this app displaced is
         // restored, and a directory it did not install is left alone.
         let skill_path = bionic_device_knowledge_skill_path()
-            .ok_or_else(|| "The Windows user profile directory is unavailable.".to_string())?;
+            .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
         let skill = remove_device_knowledge_skill_at(
             &skill_path,
             &device_knowledge_skill_backup_root(LM_STUDIO_SKILL_HOST)?,
@@ -5030,10 +5297,8 @@ pub async fn open_lm_studio() -> Result<(), String> {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let mut command = Command::new(executable);
-            command
-                .spawn()
-                .map(|_| ())
+            let command = desktop_application_command(&executable);
+            spawn_desktop_command(command)
                 .map_err(|error| format!("Could not open LM Studio: {error}"))
         }
     })
@@ -5121,11 +5386,8 @@ pub async fn open_jan() -> Result<(), String> {
             let executable = jan_installation()
                 .and_then(|installation| installation.executable)
                 .ok_or_else(|| "Jan is not installed for this user account.".to_string())?;
-            let mut command = Command::new(executable);
-            command
-                .spawn()
-                .map(|_| ())
-                .map_err(|error| format!("Could not open Jan: {error}"))
+            let command = desktop_application_command(&executable);
+            spawn_desktop_command(command).map_err(|error| format!("Could not open Jan: {error}"))
         }
     })
     .await
@@ -5439,7 +5701,7 @@ fn managed_route_targets() -> Result<Vec<ManagedRouteTarget>, String> {
     // command the repaired routes name.
     let executable_path = std::env::current_exe()
         .map_err(|error| format!("Could not resolve the QC Remote executable: {error}"))?;
-    let profile_unavailable = || "The Windows user profile directory is unavailable.".to_string();
+    let profile_unavailable = || "The user home directory is unavailable.".to_string();
     // The same selector Pair, Unpair and the status read come through, so the
     // pass freshens the file the row is reporting on. Resolved through the
     // other one, a perfectly good Bionic route would never be seen at all.
@@ -5482,7 +5744,7 @@ fn managed_route_targets() -> Result<Vec<ManagedRouteTarget>, String> {
             provider: JAN_ROUTE,
             label: "Jan",
             config_path: jan_config_path().ok_or_else(|| {
-                "The Windows roaming application data directory is unavailable.".to_string()
+                "The roaming application data directory is unavailable.".to_string()
             })?,
             executable_path,
             client_id: JAN_CLIENT_ID,

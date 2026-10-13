@@ -240,7 +240,9 @@ async fn run(
         } else if listener.is_none() {
             #[cfg(target_os = "linux")]
             let paths = publication_paths(&directory, None);
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            let paths = publication_paths(&directory, None);
+            #[cfg(windows)]
             let paths =
                 publication_paths(&directory, std::env::var_os("APPDATA").map(PathBuf::from));
             // The existing publisher guard authenticates any GUI owner. It

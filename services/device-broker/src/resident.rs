@@ -157,7 +157,7 @@ const STOP_BOUND: Duration = Duration::from_secs(3);
 pub struct Supervisor {
     host: Mutex<Option<Box<dyn RunningHost>>>,
     marker: Mutex<SessionMarker>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     directory: PathBuf,
     paused: AtomicBool,
     exiting: AtomicBool,
@@ -169,12 +169,12 @@ impl Supervisor {
         handle: BrokerHandle,
         services: Arc<dyn ResidentHost>,
     ) -> Result<Arc<Self>, String> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let directory = handle.directory();
         let supervisor = Arc::new(Self {
             host: Mutex::new(None),
             marker: Mutex::new(SessionMarker::default()),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             directory,
             paused: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
@@ -251,7 +251,9 @@ impl Supervisor {
         marker.set(present);
         #[cfg(target_os = "linux")]
         marker.set(present, &self.directory);
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(target_os = "macos")]
+        marker.set(present, &self.directory);
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         marker.set(present);
     }
 
@@ -321,7 +323,7 @@ fn stop_quietly(running: &mut dyn RunningHost, within: Duration) {
 
 /// The object `qc-remote` reads to learn that this session's resident broker
 /// is active. Windows keeps the named object used by existing installations;
-/// Linux publishes an owner-only, process-identity-bound marker beside its
+/// Linux and macOS publish an owner-only, process-identity-bound marker beside
 /// persistent broker state.
 pub const SESSION_MARKER: &str = "Local\\QCRemote.DeviceBrokerTray.v1";
 
@@ -329,9 +331,9 @@ pub const SESSION_MARKER: &str = "Local\\QCRemote.DeviceBrokerTray.v1";
 struct SessionMarker {
     #[cfg(windows)]
     handle: Option<isize>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     marker: Option<qc_native_platform::resident_marker::ResidentMarker>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     marker_failure_reported: bool,
 }
 
@@ -359,7 +361,7 @@ impl SessionMarker {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn set(&mut self, present: bool, directory: &Path) {
         match (present, self.marker.is_some()) {
             (true, false) => {
@@ -381,7 +383,7 @@ impl SessionMarker {
         }
     }
 
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     fn set(&mut self, _present: bool) {}
 }
 
@@ -389,9 +391,9 @@ impl Drop for SessionMarker {
     fn drop(&mut self) {
         #[cfg(windows)]
         self.set(false);
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         drop(self.marker.take());
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         self.set(false);
     }
 }
@@ -563,7 +565,21 @@ fn os_liveness(pid: u32, created_at: Option<u64>) -> bool {
             _ => true,
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        if !crate::platform::process::os_process_is_alive(pid) {
+            return false;
+        }
+        // An unreadable identity is unknown, never authority to reap an owner.
+        match (
+            created_at,
+            crate::platform::process::os_process_created_at(pid),
+        ) {
+            (Some(recorded), Some(current)) => recorded == current,
+            _ => true,
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         crate::platform::process::os_process_is_alive(pid)
             && created_at.is_none_or(|created| {
@@ -948,7 +964,7 @@ mod tests {
         Supervisor {
             host: Mutex::new(Some(Box::new(host))),
             marker: Mutex::new(SessionMarker::default()),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             directory: PathBuf::new(),
             paused: AtomicBool::new(false),
             exiting: AtomicBool::new(false),

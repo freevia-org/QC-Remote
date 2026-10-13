@@ -1,0 +1,429 @@
+//! macOS resident broker launch and per-user LaunchAgent registration.
+//! The broker's owner-only resident marker remains the authority for status.
+
+use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const LABEL: &str = "org.freevia.qcremote.resident";
+const OWNERSHIP: &str = "QC Remote managed LaunchAgent v1";
+const STARTUP_BOUND: Duration = Duration::from_secs(3);
+const REAPER_POLL: Duration = Duration::from_millis(100);
+static CHILD_REAPER: OnceLock<Result<Arc<Mutex<Vec<Child>>>, String>> = OnceLock::new();
+
+pub(super) fn quit(directory: &Path) -> Result<(), String> {
+    let executable = locate()?;
+    let output = Command::new(&executable)
+        .args(["--control", "quit", "--confirm", "--directory"])
+        .arg(directory)
+        .output()
+        .map_err(|error| format!("Ask the QC Remote broker to quit: {error}"))?;
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!(
+            "The QC Remote broker returned an unreadable quit result ({error}); stderr: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    })?;
+    match report["exitCode"].as_i64() {
+        Some(0 | 3) => Ok(()),
+        Some(code) => Err(report["detail"].as_str().map_or_else(
+            || format!("The QC Remote broker refused to quit (exit code {code})"),
+            |detail| format!("The QC Remote broker refused to quit: {detail}"),
+        )),
+        None => Err("The QC Remote broker returned no quit status".into()),
+    }
+}
+
+pub(super) fn is_running(directory: &Path) -> bool {
+    qc_native_platform::resident_marker::is_running(directory)
+}
+
+pub(super) fn locate() -> Result<PathBuf, String> {
+    let app = std::env::current_exe()
+        .map_err(|error| format!("Locate the running QC Remote application: {error}"))?;
+    let directory = app
+        .parent()
+        .ok_or("The QC Remote executable has no parent directory")?;
+    let target = format!("{}-apple-darwin", std::env::consts::ARCH);
+    [
+        directory.join(format!("qc-device-broker-{target}")),
+        directory.join("qc-device-broker"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+    .ok_or_else(|| "The qc-device-broker macOS sidecar is missing beside QC Remote".to_owned())
+}
+
+pub(super) fn spawn(
+    executable: &Path,
+    directory: &Path,
+    supersede_user_quit: bool,
+) -> Result<(), String> {
+    let reaper = reaper_children()?;
+    let mut command = Command::new(executable);
+    command
+        .arg("--resident")
+        .arg("--directory")
+        .arg(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(crate::broker_stderr_sink());
+    if !supersede_user_quit {
+        command.arg("--keep-user-quit");
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Start the QC Remote background host: {error}"))?;
+    let child_identity = qc_native_platform::process::os_process_created_at(child.id());
+    let deadline = Instant::now() + STARTUP_BOUND;
+    let mut clean_exit = None;
+    loop {
+        if is_running(directory) {
+            send_to_reaper(reaper, child);
+            return Ok(());
+        }
+        if clean_exit.is_none() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    clean_exit = Some(status);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return stop_unpublished_child(
+                        child,
+                        child_identity,
+                        directory,
+                        reaper,
+                        format!("Check QC Remote background host startup: {error}"),
+                    );
+                }
+            }
+        }
+        if let Some(status) = clean_exit {
+            if !status.success() {
+                return Err(format!(
+                    "The QC Remote background host exited during startup ({status})"
+                ));
+            }
+            if !supersede_user_quit
+                && crate::device_broker_descriptor::read_user_quit(
+                    &crate::device_broker_descriptor::device_broker_descriptor_path(directory),
+                )
+                .is_some()
+            {
+                return Err(
+                    "The QC Remote background host was not started: QC Remote was quit, and only Connect or reopening QC Remote starts it again".to_owned(),
+                );
+            }
+        }
+        if Instant::now() >= deadline {
+            if is_running(directory) {
+                send_to_reaper(reaper, child);
+                return Ok(());
+            }
+            let published = super::serving_broker_published(directory);
+            return stop_unpublished_child(
+                child,
+                child_identity,
+                directory,
+                reaper,
+                if published {
+                    "The broker serves, but did not become a resident background host within 3 seconds".into()
+                } else {
+                    "The QC Remote background host did not become resident within 3 seconds".into()
+                },
+            );
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn stop_unpublished_child(
+    mut child: Child,
+    child_identity: Option<u64>,
+    directory: &Path,
+    reaper: &Arc<Mutex<Vec<Child>>>,
+    error: String,
+) -> Result<(), String> {
+    if is_running(directory) || super::serving_broker_published(directory) {
+        send_to_reaper(reaper, child);
+        return Err(error);
+    }
+    let exact_child = child_identity.is_some_and(|identity| {
+        qc_native_platform::process::os_process_is_alive(child.id())
+            && qc_native_platform::process::os_process_created_at(child.id()) == Some(identity)
+    });
+    if exact_child {
+        let _ = child.kill();
+    }
+    send_to_reaper(reaper, child);
+    Err(error)
+}
+
+/// Transfers ownership to a process-wide waiter so short-lived GUI launchers
+/// do not leave zombies and long-lived helpers remain accounted for.
+pub(crate) fn spawn_owned(mut command: Command) -> Result<(), String> {
+    let reaper = reaper_children()?;
+    let child = command
+        .spawn()
+        .map_err(|error| format!("Could not start desktop helper: {error}"))?;
+    send_to_reaper(reaper, child);
+    Ok(())
+}
+
+fn send_to_reaper(reaper: &Arc<Mutex<Vec<Child>>>, child: Child) {
+    reaper
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(child);
+}
+
+fn reaper_children() -> Result<&'static Arc<Mutex<Vec<Child>>>, String> {
+    CHILD_REAPER
+        .get_or_init(|| {
+            let children = Arc::new(Mutex::new(Vec::<Child>::new()));
+            let reaper_children = Arc::clone(&children);
+            thread::Builder::new()
+                .name("qc-broker-child-reaper".to_owned())
+                .spawn(move || reap_children(reaper_children))
+                .map(|_| children)
+                .map_err(|error| format!("Start QC Remote child reaper: {error}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+fn reap_children(children: Arc<Mutex<Vec<Child>>>) {
+    loop {
+        thread::sleep(REAPER_POLL);
+        let mut children = children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut index = 0;
+        while index < children.len() {
+            match children[index].try_wait() {
+                Ok(Some(_)) => {
+                    let _ = children.swap_remove(index).wait();
+                }
+                Ok(None) | Err(_) => index += 1,
+            }
+        }
+    }
+}
+
+pub(super) fn set_run_entry(executable: &Path, directory: &Path) -> Result<(), String> {
+    let path = launch_agent_path()?;
+    ensure_launch_agent_directory(path.parent().expect("LaunchAgent has parent"))?;
+    let contents = launch_agent(executable, directory)?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || metadata.uid() != unsafe { libc::geteuid() }
+            {
+                return Err(format!(
+                    "Refusing to replace an unrelated LaunchAgent: {}",
+                    path.display()
+                ));
+            }
+            let existing = fs::read_to_string(&path)
+                .map_err(|error| format!("Read existing QC Remote LaunchAgent: {error}"))?;
+            if !existing.contains(OWNERSHIP) {
+                return Err(format!(
+                    "Refusing to replace an unrelated LaunchAgent: {}",
+                    path.display()
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Inspect QC Remote LaunchAgent: {error}")),
+    }
+    qc_owner_only_file::publish_atomically(&path, contents.as_bytes())
+        .map_err(|error| format!("Write QC Remote LaunchAgent: {error}"))?;
+
+    let domain = gui_domain()?;
+    let loaded = Command::new("/bin/launchctl")
+        .args(["print", &format!("{domain}/{LABEL}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !loaded {
+        let status = Command::new("/bin/launchctl")
+            .args(["bootstrap", &domain])
+            .arg(&path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| format!("Register QC Remote at login: {error}"))?;
+        if !status.success() {
+            return Err(format!(
+                "Register QC Remote at login failed with launchctl status {status}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn remove_run_entry() -> Result<(), String> {
+    let path = launch_agent_path()?;
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Inspect QC Remote LaunchAgent: {error}")),
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+    {
+        return Err(format!(
+            "Refusing to remove an unrelated LaunchAgent: {}",
+            path.display()
+        ));
+    }
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("Read QC Remote LaunchAgent: {error}"))?;
+    if !contents.contains(OWNERSHIP) {
+        return Err(format!(
+            "Refusing to remove an unrelated LaunchAgent: {}",
+            path.display()
+        ));
+    }
+    // Removing the file prevents registration at the next login. Do not
+    // `bootout` the current job: that would terminate a resident broker the
+    // settings contract explicitly leaves running until its idle grace ends.
+    fs::remove_file(&path).map_err(|error| format!("Remove QC Remote LaunchAgent: {error}"))
+}
+
+fn launch_agent_path() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or("No absolute HOME is available for the macOS LaunchAgent")?;
+    Ok(home
+        .join("Library/LaunchAgents")
+        .join(format!("{LABEL}.plist")))
+}
+
+fn ensure_launch_agent_directory(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|error| format!("Create LaunchAgents directory: {error}"))?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("Inspect LaunchAgents directory: {error}"))?;
+    if !metadata.is_dir()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o022 != 0
+    {
+        return Err(format!("Unsafe LaunchAgents directory: {}", path.display()));
+    }
+    Ok(())
+}
+
+fn gui_domain() -> Result<String, String> {
+    let uid = unsafe { libc::geteuid() };
+    if uid == 0 {
+        return Err("QC Remote cannot register a LaunchAgent as root".into());
+    }
+    Ok(format!("gui/{uid}"))
+}
+
+fn launch_agent(executable: &Path, directory: &Path) -> Result<String, String> {
+    let executable = executable
+        .to_str()
+        .ok_or("Broker executable path is not valid Unicode")?;
+    let directory = directory
+        .to_str()
+        .ok_or("Broker directory path is not valid Unicode")?;
+    let mut arguments = vec![
+        executable,
+        "--resident",
+        "--directory",
+        directory,
+        "--keep-user-quit",
+    ];
+    let mut xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<!-- {OWNERSHIP} -->\n<plist version=\"1.0\"><dict><key>Label</key><string>{LABEL}</string><key>LimitLoadToSessionType</key><string>Aqua</string><key>RunAtLoad</key><true/><key>ProgramArguments</key><array>"
+    );
+    for argument in arguments.drain(..) {
+        xml.push_str("<string>");
+        xml.push_str(&xml_escape(argument));
+        xml.push_str("</string>");
+    }
+    xml.push_str("</array></dict></plist>\n");
+    Ok(xml)
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{launch_agent, LABEL, OWNERSHIP};
+    use plist::Value;
+    use std::path::Path;
+
+    #[test]
+    fn launch_agent_is_valid_and_keeps_the_broker_arguments_as_distinct_values() {
+        let executable = Path::new("/Applications/QC & Remote.app/Contents/MacOS/qc-device-broker");
+        let directory = Path::new("/Users/example/Library/Application Support/QC <Remote>");
+        let xml = launch_agent(executable, directory).expect("valid macOS paths");
+        let value = Value::from_reader(xml.as_bytes()).expect("valid LaunchAgent plist");
+        let dictionary = value.as_dictionary().expect("LaunchAgent dictionary");
+
+        assert_eq!(
+            dictionary.get("Label").and_then(Value::as_string),
+            Some(LABEL)
+        );
+        assert_eq!(
+            dictionary
+                .get("LimitLoadToSessionType")
+                .and_then(Value::as_string),
+            Some("Aqua")
+        );
+        assert_eq!(
+            dictionary.get("RunAtLoad").and_then(Value::as_boolean),
+            Some(true)
+        );
+        let arguments = dictionary
+            .get("ProgramArguments")
+            .and_then(Value::as_array)
+            .expect("LaunchAgent argument array");
+        let arguments: Vec<_> = arguments
+            .iter()
+            .map(|argument| argument.as_string().expect("string argument"))
+            .collect();
+        assert_eq!(
+            arguments,
+            [
+                executable.to_str().unwrap(),
+                "--resident",
+                "--directory",
+                directory.to_str().unwrap(),
+                "--keep-user-quit",
+            ]
+        );
+        assert!(xml.contains(OWNERSHIP));
+    }
+
+    #[test]
+    fn launch_agent_refuses_non_unicode_paths() {
+        #[cfg(unix)]
+        {
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
+
+            let executable = Path::new(OsStr::from_bytes(b"/tmp/qc-\xff"));
+            assert!(launch_agent(executable, Path::new("/tmp/qc-remote")).is_err());
+        }
+    }
+}
