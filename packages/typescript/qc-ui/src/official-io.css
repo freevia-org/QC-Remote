@@ -244,7 +244,7 @@
 .io-editor.is-analog > section:nth-child(2) .io-dial { right: -.0625cqw; }
 .io-meter-grid > span { padding-left: 1.125cqw; }
 .io-meter-grid b { position: relative; top: .375cqw; font-size: 2cqw; }
-.io-meter-grid i { position: absolute; right: 2cqw; top: 1.5cqw; width: 2.75cqw; height: 2.75cqw; display: grid; place-items: center; margin: 0; border-radius: 50%; background: var(--qc-screen-surface-base); color: var(--qc-screen-surface-control); font-size: 1.5cqw; }
+.io-meter-grid i { position: absolute; right: 2cqw; top: 1.5cqw; width: 2.75cqw; height: 2.75cqw; display: grid; place-items: center; margin: 0; border-radius: 50%; color: var(--qc-screen-surface-control); font-size: 1.5cqw; }
 .io-meter-grid small { position: relative; top: .25cqw; display: flex; justify-content: space-between; margin: 1cqw 1.5cqw 0 0; font-size: 1.75cqw; white-space: nowrap; }
 .io-meter-grid i > svg { width: 100%; height: 100%; }
 .io-meter-grid i > svg circle { fill: var(--qc-screen-surface-base); stroke: none; }

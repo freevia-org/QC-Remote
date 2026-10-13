@@ -1,6 +1,6 @@
 @scope (.qc-screen-fixture-root) {
 .empty-slot-official, .empty-slot-official * { box-sizing: border-box; font-family: var(--qc-font-device-plain); }
-.qc-screen.empty-slot-official { position: absolute; inset: 0; display: grid; grid-template-columns: 50% 50%; grid-template-rows: 100%; overflow: hidden; background: var(--qc-palette-111511); color: var(--qc-screen-text-primary); container-type: inline-size; }
+.qc-screen.empty-slot-official { position: absolute; inset: 0; grid-template-columns: 50% 50%; grid-template-rows: 100%; overflow: hidden; background: var(--qc-palette-111511); color: var(--qc-screen-text-primary); container-type: inline-size; }
 /* The device puts the Grid on the left and the category list on the
    right; the markup declares them the other way round. */
 .empty-slot-official > .empty-slot-grid { grid-column: 1; }

@@ -181,7 +181,7 @@
 .directory-nested-official > header .directory-official-category { width: 18.75cqw; }
 .directory-nested-official > header button:last-child { margin-left: 1.25cqw; }
 .directory-nested-official > main nav { position: relative; }
-.directory-nested-official > main nav::after { content: ""; position: absolute; left: 2.125cqw; top: 7.5cqw; width: 1.25cqw; height: 33.75cqw; border-left: 2px solid var(--qc-palette-59605a); border-bottom: 2px solid var(--qc-palette-59605a); border-radius: 0 0 0 1cqw; pointer-events: none; }
+.directory-nested-official > main nav::after { content: ""; position: absolute; left: 2.125cqw; top: 7.5cqw; width: 1.25cqw; height: 33.75cqw; border-left: 2px solid var(--qc-palette-59605a); pointer-events: none; }
 .directory-nested-official nav .directory-nested-root { background: var(--qc-screen-surface-raised); color: var(--qc-screen-accent); }
 .directory-nested-official nav .directory-nested-root span { line-height: 1.35; }
 .directory-nested-official nav .directory-nested-root small { display: block; color: var(--qc-screen-text-muted); }

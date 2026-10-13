@@ -22,7 +22,7 @@
    (its art carries a 1px left margin inside a 26px box, so the box starts at
    335) and STOMP's ink 377..399. A 16px gap and the row's own fractional top
    put every one of them on a half pixel, where crispEdges snaps the art. */
-.coros-settings-official.settings-system .settings-system-detail > footer { display: flex; align-items: flex-start; gap: 15px; height: 3cqw; margin-left: 1cqw; transform: translateY(.875cqw); }
+.coros-settings-official.settings-system .settings-system-detail > footer { display: flex; align-items: flex-start; gap: 15px; height: 3cqw; margin-left: 1cqw; }
 .coros-settings-official.settings-system .settings-system-detail > footer > button > svg { width: 26px; height: 26px; display: block; }
 .coros-settings-official.settings-system .settings-system-detail > footer > button > svg.qc-mode-glyph-preset { width: 24px; height: 24px; }
 .coros-settings-official.settings-system .settings-system-detail > footer > button.is-faint { opacity: .18; }
