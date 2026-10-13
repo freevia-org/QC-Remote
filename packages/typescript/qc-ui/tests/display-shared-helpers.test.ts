@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { register } from "node:module";
+import { createRequire, register } from "node:module";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { CONNECTING_PLACEHOLDER_SNAPSHOT, IDLE_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, isConnectingPlaceholder } from "../src/device-placeholder.ts";
 import { qcParameterEditorLeds } from "../src/qc-parameter-editor-leds.ts";
@@ -67,4 +71,47 @@ test("controls without a verified action explain themselves in one wording on ev
   demo.handler({ kind: "switch", role: "pedal:x", phase: "release" } as never);
   assert.deepEqual(demo.notices, ["Demo switch: pedal:x. Hardware was not changed."]);
   demo.renderer.unmount();
+});
+
+test("the assembled Looper screen receives the host session probe before opening its editor", async (t) => {
+  // Node cannot load TSX directly. Bundle the actual production assembly,
+  // retaining the same React instance as the hook tests and renderer.
+  const { build } = await import("esbuild");
+  const work = mkdtempSync(join(tmpdir(), "qc-looper-display-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const outfile = join(work, "display.mjs");
+  const source = fileURLToPath(new URL("../src/qc-device-display.tsx", import.meta.url));
+  const rendererRequire = createRequire(createRequire(import.meta.url).resolve("react-test-renderer"));
+  await build({
+    stdin: { contents: `export { createQcDeviceDisplay } from ${JSON.stringify(source)};`, resolveDir: fileURLToPath(new URL("../", import.meta.url)), loader: "tsx" },
+    outfile, bundle: true, format: "esm", platform: "node", jsx: "automatic", logLevel: "error",
+    loader: { ".ttf": "dataurl", ".svg": "dataurl", ".png": "dataurl", ".woff2": "dataurl" },
+    banner: { js: `import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(${JSON.stringify(import.meta.url)});` },
+    plugins: [{ name: "renderer-react", setup(builder) {
+      builder.onResolve({ filter: /^react(?:\/jsx(?:-dev)?-runtime)?$/ }, ({ path }) => ({ path: pathToFileURL(rendererRequire.resolve(path)).href, external: true }));
+    } }]
+  });
+  const { createQcDeviceDisplay } = await import(pathToFileURL(outfile).href) as Pick<typeof import("../src/qc-device-display.tsx"), "createQcDeviceDisplay">;
+  const log: string[] = [];
+  let current = true;
+  let resolve!: (accepted: boolean) => void;
+  const command = new Promise<boolean>((done) => { resolve = done; });
+  const host = {
+    captureSessionCurrent: () => () => current,
+    snapshot: { blocks: [{ modelId: 27_000, name: "Looper X" }], scenes: [], activeScene: 0 },
+    destination: { view: "looper-editor", setView: () => log.push("view"), setPopup() {}, latch: {} },
+    workflows: {
+      deviceSettings: { open: false }, tempo: { open: false }, looper: { run: async () => command },
+      grid: { openBlock: async () => log.push("editor") }, scene: {}, preset: {}, routing: {}
+    },
+    views: {}, cpu: { monitor: () => null }, undo: {},
+    setParameterMenuInitiallyOpen: () => log.push("menu"), notice: () => log.push("notice")
+  } as unknown as Parameters<typeof createQcDeviceDisplay>[0];
+  const display = createQcDeviceDisplay(host);
+  const screen = display.surface.screenContent as { props: { onParameters(): Promise<void> } };
+  const pending = screen.props.onParameters();
+  current = false;
+  resolve(true);
+  await pending;
+  assert.deepEqual(log, [], "the production display passes its probe to the delayed Looper action");
 });

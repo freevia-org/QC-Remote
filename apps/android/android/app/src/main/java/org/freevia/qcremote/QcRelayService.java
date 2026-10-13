@@ -36,6 +36,8 @@ public final class QcRelayService extends Service {
     private final AtomicInteger generation = new AtomicInteger();
     private final QcRelayInvocationAdmission invocationAdmission =
         new QcRelayInvocationAdmission(MAX_IN_FLIGHT_INVOKES);
+    private final QcRelayInvocationOwner<java.util.concurrent.CompletableFuture<JSONObject>> invocations =
+        new QcRelayInvocationOwner<>();
     private OkHttpClient http;
     private WebSocket socket;
     private RelayCredentialStore.Snapshot socketIdentity;
@@ -153,7 +155,7 @@ public final class QcRelayService extends Service {
         final String previousDeviceId;
         try { previousDeviceId=store.previousDeviceId(); }
         catch (Exception unavailable) { updateState(RelayState.STOPPED); return; }
-        if (previousDeviceId != null) wsEndpoint += "&" + GeneratedRelayProfile.REPLACEMENT_ACK_QUERY_PARAMETER + "=1";
+        wsEndpoint = relaySocketUrl(permitted, deviceId, previousDeviceId);
         Request request = new Request.Builder().url(wsEndpoint)
             .header("Authorization", "Bearer " + credential)
             .header("Sec-WebSocket-Protocol", RelayProtocol.VERSION)
@@ -174,12 +176,18 @@ public final class QcRelayService extends Service {
             + GeneratedRelayProfile.DEVICE_CONNECT_PATH + "?deviceId=" + encodedId;
     }
 
-    static boolean connectResponseMatches(RelayCredentialStore.Snapshot held,Response response) {
+    static String relaySocketUrl(String endpoint, String deviceId, String previousDeviceId) {
+        String url = relaySocketUrl(endpoint, deviceId);
+        return previousDeviceId == null ? url
+            : url + "&" + GeneratedRelayProfile.REPLACEMENT_ACK_QUERY_PARAMETER + "=1";
+    }
+
+    static boolean connectResponseMatches(RelayCredentialStore.Snapshot held,Response response, String previousDeviceId) {
         if (response == null) return false;
         String origin=QcRelayPlugin.normalizedEndpoint(held.endpoint);
         if (origin == null) return false;
-        okhttp3.HttpUrl expected=okhttp3.HttpUrl.get(origin).newBuilder()
-            .encodedPath(GeneratedRelayProfile.DEVICE_CONNECT_PATH).addQueryParameter("deviceId",held.deviceId).build();
+        okhttp3.HttpUrl expected=new Request.Builder()
+            .url(relaySocketUrl(origin,held.deviceId,previousDeviceId)).build().url();
         return expected.equals(response.request().url());
     }
 
@@ -191,6 +199,17 @@ public final class QcRelayService extends Service {
     static boolean replacementAckMatches(JSONObject frame,String previousDeviceId) {
         return previousDeviceId != null && GeneratedRelayProfile.REPLACEMENT_ACK_FRAME_TYPE.equals(frame.opt("type"))
             && previousDeviceId.equals(frame.opt("previousDeviceId")) && Boolean.FALSE.equals(frame.opt("previousCredentialAccepted"));
+    }
+
+    /** OkHttp does not answer a server Close automatically. Retain rejection
+     * evidence before an eventual transport failure loses the peer close code. */
+    static void handlePeerClosing(WebSocket webSocket, int code, boolean current,
+            Runnable stopReadiness, Runnable rejectPairing, Runnable reconnecting) {
+        webSocket.close(code == 1005 ? 1000 : code, "relay closed");
+        if (!current) return;
+        stopReadiness.run();
+        if (GeneratedRelayProfile.pairingRejectionClose(code)) rejectPairing.run();
+        else reconnecting.run();
     }
 
     private final class Listener extends WebSocketListener {
@@ -219,7 +238,7 @@ public final class QcRelayService extends Service {
             synchronized (QcRelayService.this) {
             if (expectedGeneration != generation.get()) { webSocket.close(1000, "superseded"); return; }
             if (!RelayProtocol.VERSION.equals(response.header("Sec-WebSocket-Protocol"))) { webSocket.close(1002,"unexpected relay protocol"); return; }
-            if (!connectResponseMatches(held, response)) { webSocket.close(1000,"unexpected relay response origin"); return; }
+            if (!connectResponseMatches(held, response, previousDeviceId)) { webSocket.close(1000,"unexpected relay response origin"); return; }
             if (!new RelayCredentialStore(QcRelayService.this).markRejected(held,false)) {
                 webSocket.close(1000,"superseded pairing"); return;
             }
@@ -281,17 +300,23 @@ public final class QcRelayService extends Service {
 
         private void dispatch(WebSocket webSocket, String id, String method,
                 JSONObject params, JSONObject expected, long deadlineMs) {
+            final java.util.concurrent.CompletableFuture<JSONObject> invocation;
+            synchronized (QcRelayService.this) {
+            // Linearize admission and ownership registration against stop/unpair.
+            if (expectedGeneration != generation.get() || webSocket != socket) return;
             if (!invocationAdmission.tryAcquire()) {
                 sendError(webSocket, id, "BUSY",
                     "The Android device host is at its bounded in-flight request limit.", true);
                 return;
             }
-            final java.util.concurrent.CompletableFuture<JSONObject> invocation;
             try { invocation = QcUsbPlugin.invokeFromRelay(method, params, expected); }
             catch (RuntimeException error) {
                 invocationAdmission.release();
                 sendError(webSocket, id, "DEVICE_ERROR", "The device request could not be admitted.");
                 return;
+            }
+            invocations.track(invocation, () -> QcUsbPlugin.expireRelayInvocation(invocation));
+            QcUsbPlugin.relayInvocationRetirement(invocation).whenComplete((ignored, failure) -> invocations.retire(invocation));
             }
             AtomicBoolean responseSent = new AtomicBoolean();
             final java.util.concurrent.ScheduledFuture<?> deadline;
@@ -375,17 +400,27 @@ public final class QcRelayService extends Service {
             return RelayProtocol.result(id, result);
         }
 
+        @Override public void onClosing(WebSocket webSocket, int code, String reason) {
+            synchronized (QcRelayService.this) {
+                handlePeerClosing(webSocket,code,isCurrentListener(),
+                    () -> stopReadinessUpdates(webSocket),
+                    () -> recordRejection(),
+                    () -> updateState(RelayState.RECONNECTING));
+            }
+        }
+
         @Override public void onClosed(WebSocket webSocket, int code, String reason) {
             android.util.Log.w("QcRelayService", "Relay WebSocket closed (code " + code + ").");
             stopReadinessUpdates(webSocket);
-            if (GeneratedRelayProfile.pairingRejectionClose(code)) { recordRejection(); return; }
+            if (GeneratedRelayProfile.pairingRejectionClose(code) && recordRejection()) return;
             reconnect(expectedGeneration);
         }
         @Override public void onFailure(WebSocket webSocket, Throwable error, Response response) {
             android.util.Log.w("QcRelayService", "Relay WebSocket failed"
                 + (response == null ? "." : " with HTTP " + response.code() + "."), error);
             stopReadinessUpdates(webSocket);
-            if (response != null && connectResponseMatches(held,response) && GeneratedRelayProfile.pairingRejectionHttp(response.code())) { recordRejection(); return; }
+            if (response != null && connectResponseMatches(held,response,previousDeviceId)
+                && GeneratedRelayProfile.pairingRejectionHttp(response.code()) && recordRejection()) return;
             reconnect(expectedGeneration);
         }
     }
@@ -452,6 +487,10 @@ public final class QcRelayService extends Service {
 
     private synchronized void stopRelay() {
         generation.incrementAndGet();
+        // A stopped socket must not leave queued writes authorized after unpair.
+        // Already-admitted writes expire through the same unknown-outcome and
+        // quarantine path as deadlines; their owned slots wait for retirement.
+        invocations.expireAll();
         if (retry != null) retry.cancel(false);
         if (readiness != null) readiness.cancel(false);
         readiness = null;

@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from "react";
+import { useDeviceWorkflowSession } from "./use-device-workflow-session.ts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeviceActionResult, GlobalEqSettings, IoSettings, ModelPresetSummary, PresetSnapshot } from "@qc-remote/client";
 import { admitGlobalEqPreset, globalEqPresetsFor, type GlobalEqPresets } from "@qc-remote/core";
-import { useLatestValueWriter } from "./latest-value-writer";
+import { useLatestValueWriter } from "./latest-value-writer.ts";
 import { connectBeforeNotice, DEVICE_COMMAND_BUSY_NOTICE } from "./use-guarded-mutation.ts";
 import type { DeviceGatewayWorkflowOptions } from "./workflow-options";
 
@@ -18,26 +19,33 @@ const IO_EQ_ACTION = "changing I/O or Global EQ settings";
  * a drag's steps coalesce to one write in flight, the last step is always
  * written, and the dragged value is shown only until that read lands. */
 export function useIoEqWorkflows(options: IoEqWorkflowOptions) {
-  const { gateway, connected, pending, setPending, notice, fail, snapshot } = options;
+  const session = useDeviceWorkflowSession(options);
+  const { gateway, connected, pending, setPending, notice, fail, snapshot } = session.options;
+  const stateOwner = useRef(session.key);
+  const currentState = stateOwner.current === session.key;
   const [io, setIo] = useState<IoSettings>();
   const [eq, setEq] = useState<GlobalEqSettings>();
   const [loading, setLoading] = useState(false);
 
-  const refreshIo = useCallback(async () => setIo(await gateway.ioSettings()), [gateway]);
-  const refreshEq = useCallback(async () => setEq(await gateway.globalEq()), [gateway]);
+  useEffect(() => { stateOwner.current = session.key; setIo(undefined); setEq(undefined); setLoading(false); }, [session.key]);
+
+  const refreshIo = useCallback(async () => { const next = await gateway.ioSettings(); session.apply(() => setIo(next)); }, [gateway, session.apply]);
+  const refreshEq = useCallback(async () => { const next = await gateway.globalEq(); session.apply(() => setEq(next)); }, [gateway, session.apply]);
   const refresh = useCallback(async () => {
+    if (!session.current()) return;
     setLoading(true);
     try { await Promise.all([refreshIo(), refreshEq()]); }
     catch (error) { fail(error); }
-    finally { setLoading(false); }
-  }, [fail, refreshEq, refreshIo]);
+    finally { session.apply(() => setLoading(false)); }
+  }, [fail, refreshEq, refreshIo, session.apply, session.current]);
 
-  const dials = useLatestValueWriter<number>({ pending, setPending });
+  const dials = useLatestValueWriter<number>({ pending, setPending, resetKey: session.key, commandSessionKey: session.options.commandSessionKey });
 
   const mutate = useCallback((write: () => Promise<{ detail: string }>, read: () => Promise<unknown>) => {
     // The shared guarded-mutation policy: a refused write says why, never
     // nothing at all. Admission itself belongs to the dial writer, so a switch
     // pressed mid-drag queues behind the drag's last value.
+    if (!session.current()) return;
     if (!connected) { notice(connectBeforeNotice(IO_EQ_ACTION)); return; }
     const accepted = dials.runCommand(async () => {
       try {
@@ -47,13 +55,14 @@ export function useIoEqWorkflows(options: IoEqWorkflowOptions) {
       } catch (error) { fail(error); }
     }, fail);
     if (!accepted) notice(DEVICE_COMMAND_BUSY_NOTICE);
-  }, [connected, dials.runCommand, fail, notice]);
+  }, [connected, dials.runCommand, fail, notice, session.current]);
 
   const ioWrite = (write: () => Promise<{ detail: string }>) => mutate(write, refreshIo);
   const eqWrite = (write: () => Promise<{ detail: string }>) => mutate(write, refreshEq);
 
   /** One dial step. `key` names the field; the newest value per field wins. */
   const dial = (key: string, value: number, write: () => Promise<DeviceActionResult>, read: () => Promise<unknown>) => {
+    if (!session.current()) return;
     if (!connected) { notice(connectBeforeNotice(IO_EQ_ACTION)); return; }
     const accepted = dials.submit(key, value, {
       write: () => write(),
@@ -80,7 +89,7 @@ export function useIoEqWorkflows(options: IoEqWorkflowOptions) {
   );
 
   return {
-    io: ioView, eq: eqView, globalEq, loading,
+    io: currentState ? ioView : undefined, eq: currentState ? eqView : undefined, globalEq, loading: currentState && loading,
     // A dial stays live while its own value is being written.
     pending: pending && !dials.active,
     refresh,

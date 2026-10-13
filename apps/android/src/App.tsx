@@ -12,6 +12,10 @@ import { androidGatewayTransport, androidUsbRuntimeDiagnostics, createAndroidQcT
 import { useAndroidPrompts } from "./use-android-prompts";
 import { OwnedAttemptLatch } from "./owned-attempt-latch.ts";
 import { startRelayReportingFailure } from "./relay-start.ts";
+import { pasteOwnedDemoLibrary } from "./demo-library-paste.ts";
+import { refreshOwnedNativeSnapshot } from "./native-session-refresh.ts";
+import { createBrowserPairingPoll } from "./browser-pairing-poll.ts";
+import { createControlAccessChange } from "./control-access-change.ts";
 import appPackage from "../package.json";
 import { qcStreamRestartClearsBulkOperation } from "@qc-remote/ui";
 
@@ -63,6 +67,7 @@ export function App() {
   const sessionReady = demoActive || (hardwareConnected && !deviceSuspended && !deviceBulkBlocking);
   const [demoPending, setDemoPending] = useState(false);
   const demoStartInFlight = useRef(false);
+  const demoPasteInFlight = useRef(false);
   // Automatic fallback Demo yields to a newly detected QC. A Demo session the
   // user deliberately selected stays active until they select USB.
   const demoCanYieldToDevice = useRef(true);
@@ -84,7 +89,10 @@ export function App() {
   const { follow: followQcScreen, setFollow: setFollowQcScreen } = useQcFollowSetting(window.localStorage);
   const [screenDimmed, setScreenDimmed] = useState(false);
   const [controlAccessMode, setControlAccessMode] = useState<ControlAccessMode>(storedControlAccessMode);
+  const [controlAccessModeVerified, setControlAccessModeVerified] = useState(!native);
+  const [controlAccessChangePending, setControlAccessChangePending] = useState(false);
   const relayWorkflow = usePublicRelayWorkflow({ relay: publicRelay, enabled: native, autoStart: hardwareConnected, pollIntervalMs: 2_000, subscribe: subscribeRelayState });
+  const refreshRelayStatus = relayWorkflow.refresh;
   const relayPaired = relayWorkflow.status?.paired ?? false;
   const [relayUsage, setRelayUsage] = useState<PublicRelayUsage>();
   const [browserRelayPairing, setBrowserRelayPairing] = useState<{ expiresAt: number }>();
@@ -222,15 +230,33 @@ export function App() {
     notice: setNotice,
     fail: (error) => setNotice(error instanceof Error ? error.message : String(error))
   });
+  const deviceWorkflowSession = {
+    commandSessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
+    sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
+    captureSessionCurrent: () => {
+      const attempt = connectionAttempts.capture();
+      const source = demoDeviceSession.source;
+      const stream = nativeStateStream.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+    }
+  };
   const deviceSettingsWorkflow = useDeviceSettingsWorkflow({
+    commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
+    sessionKey: `${connection.source}:${snapshot.stateVersion?.session ?? ""}:${hardwareConnected}:${nativeStateStream.current ?? ""}`,
+    captureSessionCurrent: () => {
+      const attempt = connectionAttempts.capture();
+      const source = demoDeviceSession.source;
+      const stream = nativeStateStream.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+    },
     connected: corpusFixtureEnabled || sessionReady,
     pending: devicePending,
     setPending: setDevicePending,
     notice: setNotice,
     fail: (error) => setNotice(error instanceof Error ? error.message : String(error))
   });
-  const tempoWorkflow = useTempoWorkflow({
+  const tempoWorkflow = useTempoWorkflow({ ...deviceWorkflowSession,
     gateway: activeGateway,
     connected: corpusFixtureEnabled || sessionReady,
     pending: devicePending,
@@ -239,18 +265,25 @@ export function App() {
     fail: (error) => setNotice(error instanceof Error ? error.message : String(error))
   });
   const workflowFailed = (error: unknown) => setNotice(error instanceof Error ? error.message : String(error));
-  const tunerWorkflow = useTunerWorkflow({ gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
-  const looperWorkflow = useLooperXWorkflow({ gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
-  const midiOutWorkflow = usePresetMidiOutWorkflow({ gateway: activeGateway, snapshot, demo: demoActive, onSaved: reconcileWorkflowSnapshot });
-  const modesWorkflow = useModesConfigurationWorkflow({ gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
-  const ioEqWorkflow = useIoEqWorkflows({ gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed, snapshot });
+  const tunerWorkflow = useTunerWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
+  const looperWorkflow = useLooperXWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
+  const midiOutWorkflow = usePresetMidiOutWorkflow({ gateway: activeGateway, snapshot, demo: demoActive, onSaved: reconcileWorkflowSnapshot,
+    captureSessionCurrent: () => {
+      const attempt = connectionAttempts.capture();
+      const source = demoDeviceSession.source;
+      const stream = nativeStateStream.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+    }
+  });
+  const modesWorkflow = useModesConfigurationWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
+  const ioEqWorkflow = useIoEqWorkflows({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed, snapshot });
   const deviceUndo = useQcDeviceUndo({ history: deviceHistory, snapshot, gateway: activeGateway, fail: workflowFailed });
-  const deviceViews = useQcDeviceViews({
+  const deviceViews = useQcDeviceViews({ ...deviceWorkflowSession,
     destination: screenDestination, snapshot, gateway: activeGateway, notice: setNotice, fail: workflowFailed,
     session: { demo: demoActive, hardwareReady: native && hardwareConnected && !deviceSuspended && !deviceBulkBlocking, sessionReady },
     workflows: { performance: performanceWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, ioEq: ioEqWorkflow, preset: presetWorkflow }
   });
-  useQcScreenFollow({
+  useQcScreenFollow({ ...deviceWorkflowSession,
     gateway: activeGateway, follow: followQcScreen, available: native && !demoActive && !corpusFixtureEnabled, ready: hardwareConnected && !deviceSuspended && !deviceBulkBlocking, destination: screenDestination, notice: setNotice,
     workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow, modes: modesWorkflow, routing: routingWorkflow, scene: sceneWorkflow }
   });
@@ -264,7 +297,15 @@ export function App() {
   // never had an expression-pedal control on it at all; this reaches the
   // real device-accurate assignment screen instead.
   const expressionWorkflow = useExpressionAssignment({
+    commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
+    sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
+    captureSessionCurrent: () => {
+      const attempt = connectionAttempts.capture();
+      const source = demoDeviceSession.source;
+      const stream = nativeStateStream.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+    },
     snapshot,
     connected: sessionReady,
     pending: devicePending,
@@ -329,7 +370,15 @@ export function App() {
           setDeviceSuspended(state.suspended);
           setNotice(state.suspended ? `Quad Cortex temporarily suspended control${state.suspendReason ? ` (${state.suspendReason.replaceAll("_", " ").toLowerCase()})` : ""}.` : "Quad Cortex control resumed.");
         } else if (state.kind === "refresh" && state.refreshRequired) {
-          void androidGatewayTransport.currentSnapshot().then(setSnapshot).catch(() => undefined);
+          const attempt = connectionAttempts.capture();
+          const lifetime = qcController.lifetime.checkpoint();
+          const stream = nativeStateStream.current;
+          void refreshOwnedNativeSnapshot({
+            current: () => attempt.current() && activeSourceRef.current === "device"
+              && nativeStateStream.current === stream && qcController.lifetime.current(lifetime),
+            read: () => androidGatewayTransport.currentSnapshot(),
+            apply: (incoming) => { qcController.acceptSnapshot(incoming); }
+          }).catch(() => undefined);
         } else if (state.kind === "catalog" && state.catalogRefresh) {
           setCatalogRevision((revision) => revision + 1);
           setNotice("The Quad Cortex model catalog changed. Add Device will reload it when opened.");
@@ -526,8 +575,9 @@ export function App() {
   useEffect(() => {
     if (!relayWorkflow.status) return;
     setControlAccessMode(relayWorkflow.status.accessMode);
+    setControlAccessModeVerified(true);
     writeControlAccessMode(window.localStorage, relayWorkflow.status.accessMode);
-  }, [relayWorkflow.status?.accessMode]);
+  }, [relayWorkflow.status]);
 
   const refreshRelayUsage = useCallback(async () => {
     if (!native || !relayWorkflow.status?.paired) { setRelayUsage(undefined); return; }
@@ -536,30 +586,22 @@ export function App() {
 
   useEffect(() => {
     if (!native || !browserRelayPairing) return;
-    let disposed = false;
-    let polling = false;
-    const poll = async () => {
-      if (polling || disposed) return;
-      polling = true;
-      try {
-        const result = await publicRelay.browserPairing!.poll();
-        if (disposed) return;
-        if (result.state === "paired") {
-          setBrowserRelayPairing(undefined);
-          await relayWorkflow.refresh();
-          setNotice("Phone paired. The secure remote relay is connecting in the background.");
-        }
-      } catch (error) {
-        if (!disposed) {
-          setBrowserRelayPairing(undefined);
-          setNotice(error instanceof Error ? error.message : "Browser pairing could not be completed.");
-        }
-      } finally { polling = false; }
-    };
-    void poll();
-    const timer = window.setInterval(() => void poll(), 1_500);
-    return () => { disposed = true; window.clearInterval(timer); };
-  }, [setNotice, browserRelayPairing, native, relayWorkflow]);
+    const owner = createBrowserPairingPoll({
+      read: () => publicRelay.browserPairing!.poll(),
+      async paired() {
+        setBrowserRelayPairing(undefined);
+        await refreshRelayStatus();
+        setNotice("Phone paired. The secure remote relay is connecting in the background.");
+      },
+      failed(error) {
+        setBrowserRelayPairing(undefined);
+        setNotice(error instanceof Error ? error.message : "Browser pairing could not be completed.");
+      }
+    });
+    void owner.poll();
+    const timer = window.setInterval(() => void owner.poll(), 1_500);
+    return () => { owner.dispose(); window.clearInterval(timer); };
+  }, [setNotice, browserRelayPairing, native, refreshRelayStatus]);
 
   const openBlockEditor: typeof gridWorkflow.openBlock = async (block) => {
     setParameterMenuInitiallyOpen(false);
@@ -720,21 +762,39 @@ export function App() {
   };
 
   const pasteDemoLibrary = async () => {
-    const store = virtualDeviceStoreOf(demoDeviceSession.virtual);
+    if (demoPasteInFlight.current) return;
+    const transport = demoDeviceSession.virtual;
+    const store = virtualDeviceStoreOf(transport);
     if (!store || demoDeviceSession.source !== "virtual") { setNotice("Start the demo device before pasting a library."); return; }
+    const attempt = connectionAttempts.capture();
+    const current = () => attempt.current() && demoDeviceSession.source === "virtual" && demoDeviceSession.virtual === transport;
+    demoPasteInFlight.current = true;
+    setDemoPending(true);
     try {
-      const parsed = parseDemoLibraryText(await navigator.clipboard.readText());
-      if (!parsed.ok) { setNotice(parsed.message); return; }
-      const counts = demoLibraryCounts(parsed.document.library);
-      if (!await appPrompts.confirm(`Replace the demo library on this phone with ${counts.presets} preset${counts.presets === 1 ? "" : "s"} in ${counts.setlists} setlist${counts.setlists === 1 ? "" : "s"}?`)) return;
-      await store.replaceLibrary(parsed.document.library);
-      const current = await activeGateway.currentSnapshot();
-      deviceHistory.clear();
-      presetWorkflow.resetCache();
-      reconcileWorkflowSnapshot(current);
-      setSelectedBlockId("");
-      setNotice(`Demo library replaced: ${counts.presets} preset${counts.presets === 1 ? "" : "s"} in ${counts.setlists} setlist${counts.setlists === 1 ? "" : "s"}.`);
-    } catch (error) { setNotice(error instanceof Error ? error.message : "The demo library could not be pasted."); }
+      await pasteOwnedDemoLibrary({
+        current,
+        async readLibrary() {
+          const text = await navigator.clipboard.readText();
+          if (!current()) return;
+          const parsed = parseDemoLibraryText(text);
+          if (!parsed.ok) { setNotice(parsed.message); return; }
+          const counts = demoLibraryCounts(parsed.document.library);
+          return { library: parsed.document.library, confirmation: `Replace the demo library on this phone with ${counts.presets} preset${counts.presets === 1 ? "" : "s"} in ${counts.setlists} setlist${counts.setlists === 1 ? "" : "s"}?` };
+        },
+        confirm: appPrompts.confirm,
+        replaceLibrary: (library) => store.replaceLibrary(library),
+        readSnapshot: () => transport!.currentSnapshot(),
+        applied(snapshot) {
+          const counts = demoLibraryCounts(store.state);
+          deviceHistory.clear();
+          presetWorkflow.resetCache();
+          reconcileWorkflowSnapshot(snapshot);
+          setSelectedBlockId("");
+          setNotice(`Demo library replaced: ${counts.presets} preset${counts.presets === 1 ? "" : "s"} in ${counts.setlists} setlist${counts.setlists === 1 ? "" : "s"}.`);
+        }
+      });
+    } catch (error) { if (current()) setNotice(error instanceof Error ? error.message : "The demo library could not be pasted."); }
+    finally { demoPasteInFlight.current = false; setDemoPending(false); }
   };
 
   const connectUsb = async () => {
@@ -834,6 +894,7 @@ export function App() {
     else tempoWorkflow.openTempo();
   };
   const display = createQcDeviceDisplay({
+    captureSessionCurrent: deviceWorkflowSession.captureSessionCurrent,
     snapshot, selectedBlockId, pending: devicePending, destination: screenDestination, views: deviceViews, cpu: cpuTelemetry, undo: deviceUndo,
     workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow, scene: sceneWorkflow, preset: presetWorkflow, routing: routingWorkflow },
     mirror: activeGateway,
@@ -864,20 +925,19 @@ export function App() {
     finally { setBrowserRelayPairingPending(false); }
   };
 
-  const changeControlAccessMode = async (mode: ControlAccessMode) => {
-    const previous = controlAccessMode;
-    setControlAccessMode(mode);
-    writeControlAccessMode(window.localStorage, mode);
-    if (!native) return;
-    try {
-      await relayWorkflow.setAccessMode(mode);
-      setNotice(`MCP control access changed to ${mode}. Guarded confirmations still apply; manual controls remain available.`);
-    } catch (error) {
-      setControlAccessMode(previous);
-      writeControlAccessMode(window.localStorage, previous);
-      setNotice(error instanceof Error ? error.message : "Could not change the remote access mode.");
-    }
-  };
+  const changeControlAccessMode = useMemo(() => createControlAccessChange({
+    write: (mode) => native ? relayWorkflow.setAccessMode(mode) : Promise.resolve({ accessMode: mode }),
+    read: () => relayWorkflow.refresh(),
+    observed(mode) {
+      setControlAccessMode(mode);
+      setControlAccessModeVerified(true);
+      writeControlAccessMode(window.localStorage, mode);
+      setNotice(`MCP control access is ${mode}. Guarded confirmations still apply; manual controls remain available.`);
+    },
+    uncertain: () => setControlAccessModeVerified(false),
+    pending: setControlAccessChangePending,
+    failed: (error) => setNotice(`${error instanceof Error ? error.message : "Could not change the remote access mode."} Refresh remote status if the access mode is not confirmed.`)
+  }), [native, relayWorkflow.setAccessMode, relayWorkflow.refresh]);
 
   return <main className={`android-app${screenDimmed ? " screen-dimmed" : ""}`} onPointerDown={resetScreenDimmer} onKeyDown={resetScreenDimmer} onTouchStart={resetScreenDimmer}>
     <header className="mobile-header">
@@ -935,12 +995,12 @@ export function App() {
         </div>}
         {workflowPanel === "remote" && <div className="mobile-connection-panel mobile-remote-panel">
           <div className="dialog-kicker">REMOTE MCP ACCESS</div><h2 id="dialog-title">Quad Cortex pairing</h2>
-          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${remotePresentation.phase}`} />{remotePresentation.state}</span><ControlAccessSelect value={controlAccessMode} ariaLabel="MCP device access" disabled={devicePending} onChange={(mode) => void changeControlAccessMode(mode)} /></div>
+          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${remotePresentation.phase}`} />{remotePresentation.state}</span><ControlAccessSelect value={controlAccessMode} ariaLabel="MCP device access" disabled={devicePending || relayWorkflow.pending || controlAccessChangePending || !controlAccessModeVerified} onChange={(mode) => void changeControlAccessMode(mode)} /></div>
           <p className="mobile-panel-description">{remotePresentation.detail}</p>
           <dl className="mobile-connection-details">
             <div><dt>Pairing</dt><dd>{relayPaired ? relayWorkflow.status?.pairing?.email ?? "Paired" : browserRelayPairing ? "Waiting for browser sign-in" : "Not paired"}</dd></div>
             <div><dt>Tunnel</dt><dd>{relayWorkflow.status?.state === "connected" ? "Connected" : relayWorkflow.status?.state?.replaceAll("_", " ") ?? "Checking"}</dd></div>
-            <div><dt>Control access</dt><dd>{controlAccessMode}</dd></div>
+            <div><dt>Control access</dt><dd>{controlAccessModeVerified ? controlAccessMode : "Not confirmed · refresh remote status"}</dd></div>
           </dl>
           {browserRelayPairing && <p className="mobile-status-detail">Browser sign-in expires {new Date(browserRelayPairing.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>}
           {relayWorkflow.status?.endpoint && <p className="mobile-status-detail">Remote service: {relayWorkflow.status.endpoint}</p>}

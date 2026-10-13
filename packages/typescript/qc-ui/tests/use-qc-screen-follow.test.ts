@@ -16,6 +16,7 @@ const observation = (kind: QcObservedScreenKind): QcScreenObservation => ({ kind
 type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard" | "MetronomeEditor" | "CpuLoadIndicator" | "DirectoryDialog" | "SceneSelectorPopup" | "PortSelector" | "MidiMatrixDialog" | "CopySceneDialog" | "SearchDialog" | "OptionsPopup";
 
 interface Scenario {
+  sessionEpoch?: number;
   follow?: boolean; ready?: boolean; available?: boolean;
   /** What the app shows. */
   view?: string | null; popup?: "grid-menu" | "scene-menu" | "mode-menu" | null; settingsOpen?: boolean; tempoOpen?: boolean;
@@ -40,11 +41,12 @@ function harness(initial: Scenario = {}) {
   const log: string[] = [];
   /** Runs after each touch the unit answers: the poller seeing the screen the unit passes through. */
   const watchers: Array<(unit: Unit) => void> = [];
-  const world = { unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: (initial.menuScroll ?? "bottom") as "bottom" | "mid" | "top", swipedAt: -1e9, rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", stuck: initial.scrollStuck ?? false, panel: initial.panel ?? false };
+  const world = { treeRead: undefined as (() => Promise<{ tree: string }>) | undefined, unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: (initial.menuScroll ?? "bottom") as "bottom" | "mid" | "top", swipedAt: -1e9, rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", stuck: initial.scrollStuck ?? false, panel: initial.panel ?? false };
   const state = { blockMenuOpen: initial.blockMenuOpen ?? false, directorySearchOpen: initial.directorySearchOpen ?? false, sceneCommand: (initial.sceneCommand ?? null) as "copy" | "swap" | null, view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, directoryOpen: initial.directoryOpen ?? false, routePicker: initial.routePicker as { row: number; side: string } | undefined, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
   const gateway = {
     graphicsTree: async () => {
+      if (world.treeRead) return world.treeRead();
       const u = world.unit;
       const lines = ["zenUI::RootGraphicsItem"];
       if (["CpuLoadIndicator", "SceneSelectorPopup", "PortSelector", "CopySceneDialog", "OptionsPopup"].includes(u) || (u === "ParameterEditor" && world.panel)) lines.push("zenUI::Grid");
@@ -109,6 +111,8 @@ function harness(initial: Scenario = {}) {
     open() {}
   });
   const options = (scenario: Scenario): QcScreenFollowOptions => ({
+    sessionKey: scenario.sessionEpoch ?? 0,
+    captureSessionCurrent: () => { const epoch = scenario.sessionEpoch ?? 0; return () => epoch === (current.sessionEpoch ?? 0); },
     gateway, follow: scenario.follow ?? true, available: scenario.available ?? false, ready: scenario.ready ?? true,
     destination: destination() as never, workflows: workflowsFor(), notice: (message) => { log.push(`notice:${message}`); },
     screenPoll: { intervalMs: 1, timeoutMs: 2, scrollSettleMs: 30, rowDelayMs: 30, rowTimeoutMs: 2 }
@@ -776,4 +780,48 @@ test("the CPU Monitor closes on the unit by its own class, even when another cla
   assert.equal(treeShows(["zenUI::Grid", "zenUI::CpuLoadIndicator", "zenUI::MessageDialog"].join(nl), "cpu-monitor"), false);
   assert.equal(treeShows(["zenUI::Grid", "zenUI::CpuLoadIndicator"].join(nl), "cpu-monitor"), true);
   assert.equal(treeShows("zenUI::Grid", "cpu-monitor"), false);
+});
+
+function deferredFollowTree() {
+  let resolve!: (tree: { tree: string }) => void;
+  const promise = new Promise<{ tree: string }>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+test("screen-follow navigation cannot send its next gesture after a session replacement", async () => {
+  for (const afterMenu of [false, true]) {
+    const host = harness({ follow: false, available: true });
+    const read = deferredFollowTree();
+    let reads = 0;
+    host.world.treeRead = () => afterMenu && ++reads === 1
+      ? Promise.resolve({ tree: "zenUI::RootGraphicsItem\nzenUI::Grid" }) : read.promise;
+    await host.rerender({ settingsOpen: true });
+    assert.deepEqual(host.log, afterMenu ? ["tap:764,22"] : []);
+    await host.rerender({ sessionEpoch: 1 });
+    await act(async () => { read.resolve({ tree: "zenUI::RootGraphicsItem\nzenUI::" + (afterMenu ? "MainMenuPopup" : "Grid") }); for (let n = 0; n < 12; n++) await Promise.resolve(); });
+    assert.deepEqual(host.log, afterMenu ? ["tap:764,22"] : [], "no Settings tap or stale notice reaches the successor");
+    act(() => host.renderer.unmount());
+  }
+});
+
+test("changing the destination retires a pending screen-follow route even within the same session", async () => {
+  const host = harness({ follow: false, available: true });
+  const read = deferredFollowTree();
+  host.world.treeRead = () => read.promise;
+  await host.rerender({ settingsOpen: true });
+  await host.rerender({ settingsOpen: false });
+  await act(async () => { read.resolve({ tree: "zenUI::RootGraphicsItem\nzenUI::Grid" }); for (let n = 0; n < 12; n++) await Promise.resolve(); });
+  assert.deepEqual(host.log, [], "the cancelled open cannot reopen the menu after the user closed Settings");
+  act(() => host.renderer.unmount());
+});
+
+test("retained screen observations cannot clear or open successor UI", async () => {
+  const host = harness();
+  const old = host.follower;
+  await host.rerender({ sessionEpoch: 1 });
+  act(() => old.observe(observation("tuner")));
+  assert.deepEqual(host.log, []);
+  act(() => host.follower.observe(observation("tuner")));
+  assert.ok(host.log.includes("tuner.openTuner"), "the successor still accepts its own observations");
+  act(() => host.renderer.unmount());
 });

@@ -1,8 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { QC_MAXIMUM_TEMPO_BPM, QC_MINIMUM_TEMPO_BPM } from "@qc-remote/client";
 import type { DeviceActionResult, TempoClockState, TempoSettings } from "@qc-remote/client";
 import { useGuardedMutation } from "./use-guarded-mutation.ts";
 import type { DeviceGatewayWorkflowOptions } from "./workflow-options";
+import { useDeviceWorkflowSession } from "./use-device-workflow-session.ts";
 
 /** TempoSettings's own enum members (generated-payloads.ts), verbatim - the
  * T/SIGNATURE/SUBDIVISIONS/SOUND/ROUTING picker rows' real option lists. */
@@ -58,35 +59,44 @@ export type TempoWorkflowOptions = DeviceGatewayWorkflowOptions;
  * as "L50" and would have sent values the gateway rejects.
  */
 export function useTempoWorkflow(options: TempoWorkflowOptions) {
-  const { gateway, pending, notice } = options;
-  const guarded = useGuardedMutation(options, "changing tempo and metronome settings");
+  const session = useDeviceWorkflowSession(options);
+  const { gateway, pending, notice } = session.options;
+  const guarded = useGuardedMutation(session.options, "changing tempo and metronome settings");
   const [opening, setOpening] = useState<{ open: boolean; returnFocusTarget?: "grid-menu" }>({ open: false });
   const { open, returnFocusTarget } = opening;
   const [loading, setLoading] = useState(false);
   const [settings, setSettings] = useState<TempoSettings>();
   const [tempoClock, setTempoClock] = useState<TempoClockState>();
+  const stateOwner = useRef(session.key);
+  useEffect(() => {
+    stateOwner.current = session.key;
+    setOpening({ open: false }); setLoading(false); setSettings(undefined); setTempoClock(undefined);
+  }, [session.key]);
 
   const refresh = useCallback(async () => {
+    if (!session.current()) return;
     // Reading is unavailable on the virtual device and possibly other
     // gateways (virtual-gateway.ts marks globalTempoSettings unavailable) -
     // leave whatever was last observed rather than surfacing a second error
     // on top of a write that may have just succeeded.
-    try { setSettings(await gateway.globalTempoSettings()); } catch { /* see above */ }
-    try { setTempoClock(await gateway.currentTempoClock()); } catch { /* see above */ }
-  }, [gateway]);
+    try { const value = await gateway.globalTempoSettings(); session.apply(() => setSettings(value)); } catch { /* see above */ }
+    try { const value = await gateway.currentTempoClock(); session.apply(() => setTempoClock(value)); } catch { /* see above */ }
+  }, [gateway, session]);
 
   const openTempo = useCallback((returnFocusTarget?: "grid-menu") => {
+    if (!session.current()) return;
     setOpening({ open: true, returnFocusTarget });
     setLoading(true);
     void Promise.allSettled([
-      gateway.globalTempoSettings().then(setSettings),
-      gateway.currentTempoClock().then(setTempoClock)
-    ]).finally(() => setLoading(false));
-  }, [gateway]);
+      gateway.globalTempoSettings().then((value) => session.apply(() => setSettings(value))),
+      gateway.currentTempoClock().then((value) => session.apply(() => setTempoClock(value)))
+    ]).finally(() => session.apply(() => setLoading(false)));
+  }, [gateway, session]);
 
-  const close = useCallback(() => setOpening({ open: false }), []);
+  const close = useCallback(() => session.apply(() => setOpening({ open: false })), [session]);
 
   const commit = useCallback(async (labelText: string, action: () => Promise<DeviceActionResult>) => {
+    if (!session.current()) return;
     await guarded.run({
       write: action,
       settle: async (result) => {
@@ -94,7 +104,7 @@ export function useTempoWorkflow(options: TempoWorkflowOptions) {
         await refresh();
       }
     });
-  }, [guarded.run, notice, refresh]);
+  }, [guarded.run, notice, refresh, session]);
 
   const setLedEnabled = useCallback((enabled: boolean) =>
     commit(`Tempo LED ${enabled ? "on" : "off"}`, () => gateway.setTempoMetronome(enabled, null, null, null, null, null, null, null, null)), [commit, gateway]);
@@ -137,14 +147,18 @@ export function useTempoWorkflow(options: TempoWorkflowOptions) {
 
   const setGlobalBpm = useCallback((bpm: number) => {
     const clamped = Math.max(QC_MINIMUM_TEMPO_BPM, Math.min(QC_MAXIMUM_TEMPO_BPM, Math.round(bpm)));
-    const expectedMode = settings?.mode ?? "GLOBAL";
-    const expectedGlobalBpm = settings?.globalBpm ?? clamped;
+    const currentSettings = stateOwner.current === session.key ? settings : undefined;
+    const expectedMode = currentSettings?.mode ?? "GLOBAL";
+    const expectedGlobalBpm = currentSettings?.globalBpm ?? clamped;
     return commit(`Global Tempo ${clamped} BPM`, () => gateway.setGlobalTempo(clamped, expectedMode, expectedGlobalBpm));
-  }, [commit, gateway, settings]);
+  }, [commit, gateway, settings, session.key]);
 
   return {
-    open, returnFocusTarget, openTempo, close, loading, pending,
-    settings, tempoClock, refresh,
+    open: stateOwner.current === session.key && open,
+    returnFocusTarget: stateOwner.current === session.key ? returnFocusTarget : undefined,
+    openTempo, close, loading: stateOwner.current === session.key && loading, pending,
+    settings: stateOwner.current === session.key ? settings : undefined,
+    tempoClock: stateOwner.current === session.key ? tempoClock : undefined, refresh,
     setLedEnabled, setRunning, setVolumeDb, setPan,
     setTimeSignature, setSubdivision, setSound, setRouting,
     setMode, setGlobalBpm

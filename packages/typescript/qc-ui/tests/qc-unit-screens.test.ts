@@ -129,6 +129,88 @@ test("opening Settings leaves the unit's menu as found when the row was not wher
   assert.deepEqual(moved.log, ["tap:764,22", "swipe:600,420,600,150", "swipe:600,420,600,150", "tap:600,406", "tap:764,22"], "the menu is closed again, not left open");
 });
 
+test("menu navigation preserves the measured top and bottom routes when the screen remains current", async () => {
+  const routes = [
+    { target: "settings", row: "600,406", screen: "SettingsDialog", drag: "600,420,600,150" },
+    { target: "tempo", row: "610,286", screen: "MetronomeEditor", drag: "600,420,600,150" },
+    { target: "midi-out", row: "580,406", screen: "MidiMatrixDialog", drag: "600,150,600,420" },
+    { target: "copy-scene", row: "582,346", screen: "CopySceneDialog", drag: "600,150,600,420" }
+  ] as const;
+  for (const route of routes) {
+    const live = unit("MainMenuPopup", { [`tap:${route.row}:MainMenuPopup`]: route.screen });
+    assert.equal(await openOnUnit(live.gateway, poll, route.target, undefined, { swap: true }), "shown");
+    assert.deepEqual(live.log, [`swipe:${route.drag}`, `swipe:${route.drag}`, `tap:${route.row}`]);
+  }
+});
+
+test("each delayed menu touch is refused when the same session leaves the menu", async () => {
+  for (const target of ["settings", "midi-out"] as const) {
+    for (const afterSwipes of [0, 1, 2]) {
+      let reads = 0, swipes = 0;
+      let screen = "MainMenuPopup";
+      const log: string[] = [];
+      const gateway = {
+        graphicsTree: async () => {
+          if (++reads > 1 && afterSwipes === 0) screen = "SettingsDialog";
+          return { tree: tree("Grid", screen, ...(screen === "SettingsDialog" ? ["UpdaterSettings"] : [])) };
+        },
+        swipeScreen: async (x: number, y: number, toX: number, toY: number) => {
+          log.push(`swipe:${x},${y},${toX},${toY}`);
+          if (++swipes === afterSwipes) screen = "SettingsDialog";
+        },
+        tapScreen: async () => { log.push("unexpected tap"); },
+        longTapScreen: async () => { log.push("unexpected hold"); }
+      } as never;
+      assert.equal(await openOnUnit(gateway, poll, target), "mismatch", `${target}: switch after ${afterSwipes} swipes`);
+      assert.equal(log.length, afterSwipes);
+      assert.ok(log.every((entry) => entry.startsWith("swipe:")), "No row tap or cleanup tap may enter the new screen");
+    }
+  }
+});
+
+test("search rechecks Directory and the block menu rechecks the actual panel before tapping", async () => {
+  for (const initial of ["DirectoryDialog", "ParameterEditor"]) {
+    let reads = 0;
+    const touches: string[] = [];
+    const gateway = {
+      graphicsTree: async () => ({ tree: ++reads === 1 ? tree("Grid", initial) : tree("Grid", "SettingsDialog") }),
+      tapScreen: async () => { touches.push("tap"); },
+      swipeScreen: async () => { touches.push("swipe"); },
+      longTapScreen: async () => { touches.push("hold"); }
+    } as never;
+    assert.equal(await openOnUnit(gateway, poll, initial === "DirectoryDialog" ? "search" : "block-menu"), "mismatch");
+    assert.deepEqual(touches, [], "Grid under Settings does not authorize the old panel's kebab or Directory search icon");
+  }
+  const directory = unit("DirectoryDialog", { "tap:634,30:DirectoryDialog": "SearchDialog" });
+  assert.equal(await openOnUnit(directory.gateway, poll, "search"), "shown");
+  assert.deepEqual(directory.log, ["tap:634,30"]);
+});
+
+test("a replacement lane or splitter panel cannot inherit the measured ParameterEditor kebab", async () => {
+  for (const replacement of ["LaneInputControlEditor", "LaneOutputControlEditor", "SMParamsEditor", "ParameterEditorHeader"]) {
+    let reads = 0;
+    const touches: string[] = [];
+    const gateway = {
+      graphicsTree: async () => ({ tree: tree("Grid", ++reads === 1 ? "ParameterEditor" : replacement) }),
+      tapScreen: async () => { touches.push("tap"); },
+      swipeScreen: async () => { touches.push("swipe"); },
+      longTapScreen: async () => { touches.push("hold"); }
+    } as never;
+    const result = await openOnUnit(gateway, poll, "block-menu");
+    assert.ok(result === "no-route" || result === "mismatch", replacement);
+    assert.deepEqual(touches, [], `${replacement} is not the measured ParameterEditor panel`);
+  }
+  const touches: string[] = [];
+  let menuOpen = false;
+  const normal = {
+    graphicsTree: async () => ({ tree: tree("Grid", "ParameterEditor", ...(menuOpen ? ["_OptionsPopup"] : [])) }),
+    tapScreen: async (x: number, y: number) => { touches.push(`tap:${x},${y}`); menuOpen = true; },
+    swipeScreen: async () => undefined, longTapScreen: async () => undefined
+  } as never;
+  assert.equal(await openOnUnit(normal, poll, "block-menu"), "shown");
+  assert.deepEqual(touches, ["tap:30,226"]);
+});
+
 test("closing on the unit: the kebab toggles the menu, the check button closes a dialog, a nested dialog gets one more tap", async () => {
   const menu = unit("MainMenuPopup", { "tap:764,22:MainMenuPopup": "Grid" });
   assert.equal(await closeOnUnit(menu.gateway, poll, "preset-menu"), true);

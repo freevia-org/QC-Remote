@@ -32,6 +32,7 @@ final class RelayCredentialStore {
     private static final String REVISION = "credential_revision";
     private static final String REJECTED = "credential_rejected";
     private static final String PREVIOUS = "previous_pairing_encrypted";
+    private static final String PENDING_REVOCATION = "pending_revocation_encrypted";
     private static String unconfirmedRevision;
     static void credentialWriteStarted(String revision) { synchronized (MUTATION_LOCK) { unconfirmedRevision=revision; } }
     static void credentialWriteCompleted(String revision,boolean persisted) { synchronized (MUTATION_LOCK) {
@@ -85,8 +86,10 @@ final class RelayCredentialStore {
     }
     String adoptIfCurrent(Snapshot expected,String endpoint,String credential,String deviceId,String owner) throws Exception {
         synchronized (MUTATION_LOCK) {
+            if (hasPendingRevocation()) return "PAIRING_REVOCATION_PENDING";
             Snapshot held=snapshot();
             if (!sameIdentity(held,expected)) return "PAIRING_SUPERSEDED";
+            if (hasUnacknowledgedReplacement()) return "PAIRING_REPLACEMENT_PENDING";
             String refusal=GeneratedRelayProfile.pairingOwnerRefusal(held.paired(),held.owner,owner,held.rejected);
             if (refusal != null) return refusal;
             save(endpoint,credential,deviceId,owner);
@@ -100,12 +103,97 @@ final class RelayCredentialStore {
         }
     }
 
+    boolean hasPendingRevocation() { synchronized (MUTATION_LOCK) { return prefs().contains(PENDING_REVOCATION); } }
+
+    /** Never overwrite the only credential capable of withdrawing an older
+     * identity while its replacement has not been acknowledged. */
+    boolean hasUnacknowledgedReplacement() throws Exception {
+        synchronized (MUTATION_LOCK) {
+            String previous=prefs().getString(PREVIOUS,null);
+            if (previous == null) return false;
+            org.json.JSONObject record=new org.json.JSONObject(previous);
+            return record.has(ENDPOINT) && record.has(DEVICE_ID) && record.has(CREDENTIAL)
+                && !java.util.Objects.equals(deviceId(),record.getString(DEVICE_ID));
+        }
+    }
+
+    /** At most two pending withdrawals (active and unacknowledged predecessor).
+     * Pairing cannot replace either until both are confirmed.
+     * The active credential is cleared immediately; this encrypted record only authorizes revoke. */
+    Snapshot beginUnpair(Snapshot expected) throws Exception {
+        synchronized (MUTATION_LOCK) {
+            if (!isCurrent(expected)) throw new IllegalStateException("Pairing changed while unpairing.");
+            org.json.JSONArray pending=pendingRecords();
+            if (expected.paired()) {
+                if (pending.length() != 0) throw new IllegalStateException("An earlier pairing withdrawal is still pending.");
+                pending.put(new org.json.JSONObject().put(ENDPOINT,expected.endpoint).put(DEVICE_ID,expected.deviceId)
+                    .put(CREDENTIAL,prefs().getString(CREDENTIAL,null)).put(REVISION,expected.revision));
+                String previous=prefs().getString(PREVIOUS,null);
+                if (previous != null) {
+                    org.json.JSONObject old=new org.json.JSONObject(previous);
+                    if (old.has(ENDPOINT) && old.has(DEVICE_ID) && old.has(CREDENTIAL)
+                        && !expected.deviceId.equals(old.getString(DEVICE_ID))) {
+                        pending.put(new org.json.JSONObject().put(ENDPOINT,old.getString(ENDPOINT))
+                            .put(DEVICE_ID,old.getString(DEVICE_ID)).put(CREDENTIAL,old.getString(CREDENTIAL))
+                            .put(REVISION,old.optString(REVISION,"legacy")));
+                    }
+                }
+            }
+            SharedPreferences.Editor edit=prefs().edit().clear().putString(REVISION,java.util.UUID.randomUUID().toString());
+            if (pending.length() != 0) edit.putString(PENDING_REVOCATION,pending.toString());
+            if (!edit.commit()) throw new IllegalStateException("Could not persist local unpairing and pending withdrawal.");
+            return pendingRevocation();
+        }
+    }
+
+    Snapshot pendingRevocation() throws Exception {
+        synchronized (MUTATION_LOCK) {
+            org.json.JSONArray pending=pendingRecords();
+            return pending.length() == 0 ? null : pendingSnapshot(pending.getJSONObject(0));
+        }
+    }
+
+    private org.json.JSONArray pendingRecords() throws Exception {
+        String value=prefs().getString(PENDING_REVOCATION,null);
+        if (value == null) return new org.json.JSONArray();
+        // Migrate the earlier one-record encrypted tombstone without dropping it.
+        Object parsed=new org.json.JSONTokener(value).nextValue();
+        org.json.JSONArray records=parsed instanceof org.json.JSONArray ? (org.json.JSONArray)parsed
+            : new org.json.JSONArray().put((org.json.JSONObject)parsed);
+        if (records.length() > 2) throw new IllegalStateException("Pending withdrawal record exceeds its bound.");
+        return records;
+    }
+
+    private Snapshot pendingSnapshot(org.json.JSONObject record) throws Exception {
+        return new Snapshot(record.getString(ENDPOINT),decryptCredential(record.getString(CREDENTIAL)),
+            record.getString(DEVICE_ID),"",record.getString(REVISION),false);
+    }
+
+    boolean completeRevocation(Snapshot expected) throws Exception {
+        synchronized (MUTATION_LOCK) {
+            org.json.JSONArray pending=pendingRecords(),remaining=new org.json.JSONArray();
+            boolean found=false;
+            for (int i=0;i<pending.length();i++) {
+                org.json.JSONObject record=pending.getJSONObject(i);
+                if (sameIdentity(expected,pendingSnapshot(record))) found=true;
+                else remaining.put(record);
+            }
+            if (!found) return false;
+            SharedPreferences.Editor edit=prefs().edit();
+            if (remaining.length() == 0) edit.remove(PENDING_REVOCATION);
+            else edit.putString(PENDING_REVOCATION,remaining.toString());
+            return edit.commit();
+        }
+    }
+
     private final Context context;
 
     RelayCredentialStore(Context context) { this.context = context.getApplicationContext(); }
 
     void save(String endpoint, String credential, String deviceId, String ownerEmail) throws Exception {
         synchronized (MUTATION_LOCK) {
+        if (hasPendingRevocation()) throw new IllegalStateException("Withdraw the previous pairing while online before pairing again.");
+        if (hasUnacknowledgedReplacement()) throw new IllegalStateException("Connect Remote to acknowledge the pending replacement or explicitly unpair before pairing again.");
         if (deviceId == null || deviceId.trim().isEmpty()) throw new IllegalArgumentException("Relay device ID is required.");
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key());
@@ -169,6 +257,10 @@ final class RelayCredentialStore {
             throw new IllegalStateException("Pairing persistence was not confirmed; new connection refused.");
         String encoded = prefs().getString(CREDENTIAL, null);
         if (encoded == null) return null;
+        return decryptCredential(encoded);
+    }
+
+    private String decryptCredential(String encoded) throws Exception {
         byte[] value = Base64.decode(encoded, Base64.NO_WRAP);
         if (value.length < 13) throw new IllegalStateException("Stored relay credential is invalid.");
         byte[] iv = new byte[12];

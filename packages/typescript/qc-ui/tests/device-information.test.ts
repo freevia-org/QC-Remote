@@ -93,5 +93,7 @@ test("no host or window blanks a field of the Device Information screen", () => 
   assert.match(windowSource, /device\.information \?\? \{ deviceName: device\.deviceName \}/);
   const settings = read("../src/device-settings-screen.tsx");
   assert.doesNotMatch(settings, /DeviceInformationDetail|corOsVersion: workflow\.identity\?\.appFwVersion/, "Device Settings uses the same pane and mapping");
-  assert.match(read("../src/use-qc-device-views.ts"), /qcDeviceInformation\(await gateway\.identity\(\), snapshot\.deviceName\)/);
+  const views = read("../src/use-qc-device-views.ts");
+  assert.match(views, /gateway\.identity\(\)[\s\S]*?owner\.apply\(\(\) => setDeviceInformation\(\{ key: owner\.key, value: qcDeviceInformation\(identity, snapshot\.deviceName\)/,
+    "the captured identity read is session-scoped before mapping its original device name");
 });

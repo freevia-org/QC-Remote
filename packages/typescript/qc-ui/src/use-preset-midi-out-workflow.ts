@@ -1,7 +1,7 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GatewayTransport, MidiOutMessage, PresetSnapshot } from "@qc-remote/client";
 import { requirePresetIdentity } from "@qc-remote/client";
-import { useGuardedMutation } from "./use-guarded-mutation.ts";
+import { connectBeforeNotice, DEVICE_COMMAND_BUSY_NOTICE } from "./use-guarded-mutation.ts";
 import { hasActiveMidiOut, MIDI_OUT_SLOT_COUNT, midiOutRows, midiOutSlots } from "./preset-midi-out-rows.ts";
 
 /** The ten MIDI Out sources the unit offers: footswitches A-H and both expression pedals. */
@@ -26,6 +26,8 @@ export interface PresetMidiOutWorkflowOptions {
   snapshot: PresetSnapshot;
   /** The demo device cannot store MIDI Out; every write is refused. */
   demo?: boolean;
+  /** Revoke an in-flight write immediately when the host's selected session changes. */
+  captureSessionCurrent?(): () => boolean;
   onSaved?(snapshot: PresetSnapshot): void;
 }
 
@@ -35,41 +37,87 @@ export interface PresetMidiOutWorkflowOptions {
  * the gateway sequencing, its guards and the outcome live here.
  *
  * The editor reports outcomes on its own screen rather than in the app
- * footer, so the shared guarded-mutation policy runs against a local pending
- * flag and posts its refusals and failures to `error`.
+ * footer. The shared refusal wording is preserved, while an immediate local
+ * operation owner serializes writes and retires their results, failures and
+ * pending state when the selected preset or device session changes.
  */
 export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) {
-  const { gateway, snapshot, demo = false, onSaved } = options;
+  const { snapshot, demo = false, onSaved } = options;
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState("");
+  const [outcome, setOutcome] = useState<{ current(): boolean; error: string; status: "saved" | "cleared" | null }>();
+  const error = outcome?.current() ? outcome.error : "";
   // Save and Clear all report separately; one shared flag made the overview
   // announce "MIDI assignments cleared." after an ordinary Save.
-  const [status, setStatus] = useState<"saved" | "cleared" | null>(null);
+  const status = outcome?.current() ? outcome.status : null;
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
   const onSavedRef = useRef(onSaved);
   onSavedRef.current = onSaved;
-  const report = useCallback((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)), []);
-  const guarded = useGuardedMutation({ connected: !demo, pending, setPending, notice: setError, fail: report }, "changing MIDI Out");
+  const latestOptions = useRef(options);
+  latestOptions.current = options;
+  const mounted = useRef(true);
+  type OperationOwner = { current(): boolean; retire(): void; adopt(snapshot: PresetSnapshot): void };
+  const inFlight = useRef<OperationOwner | undefined>(undefined);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; inFlight.current?.retire(); inFlight.current = undefined; };
+  }, []);
+  const operationCurrent = () => {
+    const origin = latestOptions.current;
+    const hostCurrent = origin.captureSessionCurrent?.() ?? (() => true);
+    const identities = new Set([origin.snapshot.presetIdentity]);
+    const session = origin.snapshot.stateVersion?.session;
+    const setlist = origin.snapshot.setlistKey;
+    const position = origin.snapshot.presetPosition;
+    let retired = false;
+    const current = () => {
+      const latest = latestOptions.current;
+      return !retired && mounted.current && hostCurrent() && latest.gateway === origin.gateway && Boolean(latest.demo) === Boolean(origin.demo)
+        && identities.has(latest.snapshot.presetIdentity) && latest.snapshot.stateVersion?.session === session
+        && latest.snapshot.setlistKey === setlist && latest.snapshot.presetPosition === position;
+    };
+    return { current, retire: () => { retired = true; }, adopt: (snapshot: PresetSnapshot) => { identities.add(snapshot.presetIdentity); } };
+  };
+  useEffect(() => {
+    if (inFlight.current && !inFlight.current.current()) { inFlight.current.retire(); inFlight.current = undefined; setPending(false); }
+    if (outcome && !outcome.current()) setOutcome(undefined);
+  });
+  const run = useCallback(async (status: "saved" | "cleared", write: (owner: OperationOwner) => Promise<void>) => {
+    const owner = operationCurrent();
+    if (latestOptions.current.demo) {
+      setOutcome({ current: owner.current, error: connectBeforeNotice("changing MIDI Out"), status: null }); return;
+    }
+    if (inFlight.current?.current()) {
+      setOutcome({ current: owner.current, error: DEVICE_COMMAND_BUSY_NOTICE, status: null }); return;
+    }
+    inFlight.current?.retire();
+    inFlight.current = owner;
+    setPending(true);
+    setOutcome(undefined);
+    try {
+      await write(owner);
+      if (owner.current()) setOutcome({ current: owner.current, error: "", status });
+    } catch (reason) {
+      if (owner.current()) setOutcome({ current: owner.current, error: reason instanceof Error ? reason.message : String(reason), status: null });
+    } finally {
+      if (inFlight.current === owner) { inFlight.current = undefined; if (mounted.current) setPending(false); }
+    }
+  }, []);
 
   const save = useCallback(async (source: PresetMidiOutSource, draft: MidiOutMessage[]) => {
-    setError(""); setStatus(null);
     const current = snapshotRef.current;
-    await guarded.run({
-      write: () => {
+    const targetGateway = latestOptions.current.gateway;
+    await run("saved", async (owner) => {
         // All twelve rows in the order shown, empty rows as type 0 placeholders,
         // so no message moves (observed on the unit 2026-10-07).
         const messages = midiOutRows(draft);
-        return source === "preset"
-          ? gateway.setPresetLoadMidiOut(messages, midiOutRows(presetMidiOutSlots(current.presetLoadMidiOut)), current.presetName, requirePresetIdentity(current))
-          : gateway.setMidiOut(source, messages, current.presetName, requirePresetIdentity(current));
-      },
-      settle: (result) => {
-        if (result.snapshot) onSavedRef.current?.(result.snapshot);
-        setStatus("saved");
-      }
+        const result = source === "preset"
+          ? await targetGateway.setPresetLoadMidiOut(messages, midiOutRows(presetMidiOutSlots(current.presetLoadMidiOut)), current.presetName, requirePresetIdentity(current))
+          : await targetGateway.setMidiOut(source, messages, current.presetName, requirePresetIdentity(current));
+        if (!owner.current()) return;
+        if (result.snapshot) { owner.adopt(result.snapshot); onSavedRef.current?.(result.snapshot); }
     });
-  }, [gateway, guarded.run]);
+  }, [run]);
 
   /**
    * Clears every source that carries messages, one guarded write each, after
@@ -78,33 +126,32 @@ export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) 
    * guarded with the latest snapshot the device returned, not the render's.
    */
   const clearAll = useCallback(async () => {
-    setError(""); setStatus(null);
     const sources: PresetMidiOutSource[] = [...PRESET_MIDI_OUT_SOURCES.keys(), "preset"];
-    await guarded.run({
-      write: async () => {
+    const targetGateway = latestOptions.current.gateway;
+    await run("cleared", async (owner) => {
         const cleared: string[] = [];
         let current = snapshotRef.current;
         for (const target of sources) {
+          if (!owner.current()) return;
           const before = presetMidiOutSlots(presetMidiOutSourceMessages(current, target));
           if (!hasActiveMidiOut(before)) continue;
           try {
             const result = target === "preset"
-              ? await gateway.setPresetLoadMidiOut([], midiOutRows(before), current.presetName, requirePresetIdentity(current))
-              : await gateway.setMidiOut(target, [], current.presetName, requirePresetIdentity(current));
+              ? await targetGateway.setPresetLoadMidiOut([], midiOutRows(before), current.presetName, requirePresetIdentity(current))
+              : await targetGateway.setMidiOut(target, [], current.presetName, requirePresetIdentity(current));
+            if (!owner.current()) return;
             cleared.push(presetMidiOutSourceLabel(target));
-            if (result.snapshot) { current = result.snapshot; onSavedRef.current?.(result.snapshot); }
+            if (result.snapshot) { current = result.snapshot; owner.adopt(result.snapshot); onSavedRef.current?.(result.snapshot); }
           } catch (reason) {
             const detail = reason instanceof Error ? reason.message : String(reason);
             throw new Error(`Could not clear ${presetMidiOutSourceLabel(target)}: ${detail} ${cleared.length ? `Already cleared: ${cleared.join(", ")}.` : "Nothing was cleared."}`);
           }
         }
-      },
-      settle: () => setStatus("cleared")
     });
-  }, [gateway, guarded.run]);
+  }, [run]);
 
-  const clearError = useCallback(() => setError(""), []);
-  const clearStatus = useCallback(() => setStatus(null), []);
+  const clearError = useCallback(() => setOutcome((value) => value ? { ...value, error: "" } : value), []);
+  const clearStatus = useCallback(() => setOutcome((value) => value ? { ...value, status: null } : value), []);
 
   return useMemo(() => ({ snapshot, demo, pending, error, status, save, clearAll, clearError, clearStatus }),
     [clearAll, clearError, clearStatus, demo, error, pending, save, snapshot, status]);

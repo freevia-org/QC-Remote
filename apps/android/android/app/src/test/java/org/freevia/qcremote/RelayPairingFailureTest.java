@@ -78,6 +78,44 @@ public class RelayPairingFailureTest {
         Object value=begin(false);harness.getMethod("response",boolean.class).invoke(value,true);
         JSONObject facts=report(value);assertEquals(0,facts.getInt("starts"));assertEquals(1,facts.getInt("withdrawals"));assertTrue(facts.getBoolean("oldDurable"));assertEquals("PAIRING_OWNER_CHANGED",facts.getString("error"));
     }
+    @Test public void localUnpairRetainsOnlyEncryptedWithdrawalUntilAnOnlineRetrySucceeds() throws Exception {
+        Object value=harness.getConstructor().newInstance();
+        JSONObject facts=new JSONObject((String)harness.getMethod("unpairAndRetry").invoke(value));
+        assertFalse(facts.getBoolean("pairedAfterClear"));
+        assertTrue(facts.getBoolean("encryptedOnly"));
+        assertTrue(facts.getBoolean("pairBlocked"));
+        assertTrue(facts.getBoolean("retrySameCredential"));
+        assertTrue(facts.getBoolean("legacyMigrated"));
+        assertTrue(facts.getBoolean("staleCannotClear"));
+        assertTrue(facts.getBoolean("confirmed"));
+        assertFalse(facts.getBoolean("pendingAfterConfirmation"));
+        assertTrue(facts.getBoolean("newPairAllowed"));
+    }
+    @Test public void unpairBeforeReplacementAckRetainsBothCredentialsAndRetiresOnlyConfirmedOnes() throws Exception {
+        Object value=harness.getConstructor().newInstance();
+        JSONObject facts=new JSONObject((String)harness.getMethod("unpairDuringReplacement").invoke(value));
+        assertFalse(facts.getBoolean("paired"));
+        assertEquals("fixture-new",facts.getString("first"));
+        assertEquals("fixture-old",facts.getString("remaining"));
+        assertTrue(facts.getBoolean("remainingCredentialIntact"));
+        assertTrue(facts.getBoolean("staleCannotDropRemaining"));
+        assertTrue(facts.getBoolean("pairBlocked"));
+        assertTrue(facts.getBoolean("bothConfirmed"));
+        assertFalse(facts.getBoolean("pending"));
+    }
+    @Test public void secondReplacementIsRefusedBeforePostingAndCannotOverwriteFirstPredecessor() throws Exception {
+        Object value=begin(false);harness.getMethod("response",boolean.class).invoke(value,false);
+        harness.getMethod("begin",boolean.class).invoke(value,false);
+        JSONObject facts=report(value);
+        assertEquals(1,facts.getInt("posts"));
+        assertEquals("PAIRING_REPLACEMENT_PENDING",facts.getString("error"));
+        assertEquals("fixture-old",facts.getString("previousId"));
+        assertTrue((Boolean)harness.getMethod("directOverwriteRefused").invoke(value));
+        assertEquals("fixture-old",report(value).getString("previousId"));
+        assertEquals(true,harness.getMethod("ack",String.class,boolean.class).invoke(value,"fixture-old",false));
+        harness.getMethod("begin",boolean.class).invoke(value,false);
+        assertEquals(2,report(value).getInt("posts"));
+    }
     @AfterClass public static void cleanup() throws Exception {
         if(loader!=null){loader.close();loader=null;}
         if(output!=null&&Files.exists(output))try(java.util.stream.Stream<Path> paths=Files.walk(output)){for(Path p:(Iterable<Path>)paths.sorted(Comparator.reverseOrder())::iterator)Files.delete(p);}
@@ -113,6 +151,10 @@ public class RelayPairingFailureTest {
         "        http.pending.onResponse(new Call(http),new Response(receipt.toString()));",
         "    }",
         "    public void loss() throws Exception {http.pending.onFailure(new Call(http),new IOException(\"synthetic response lost\"));}",
+        "    public boolean directOverwriteRefused() throws Exception {",
+        "        try {new RelayCredentialStore(context).save(\"https://qcrc.freevia.org\",\"t\".repeat(32),\"fixture-third\",\"owner@example.test\");return false;}",
+        "        catch(IllegalStateException expected){return true;}",
+        "    }",
         "    public String report() throws Exception {",
         "        return new JSONObject().put(\"posts\",http.posts).put(\"starts\",starts).put(\"withdrawals\",withdrawals)",
         "            .put(\"oldDurable\",\"fixture-old\".equals(context.prefs.disk.get(\"device_id\")))",
@@ -123,6 +165,38 @@ public class RelayPairingFailureTest {
         "        RelayCredentialStore store=new RelayCredentialStore(context); RelayCredentialStore.Snapshot current=store.snapshot();",
         "        if(stale)current=new RelayCredentialStore.Snapshot(current.endpoint,current.credential,current.deviceId,current.owner,\"stale\",false);",
         "        return store.acknowledgeReplacement(current,previous);",
+        "    }",
+        "    public String unpairAndRetry() throws Exception {",
+        "        RelayCredentialStore store=new RelayCredentialStore(context);",
+        "        RelayCredentialStore.Snapshot pending=store.beginUnpair(store.snapshot());",
+        "        boolean paired=store.paired();",
+        "        String record=(String)context.prefs.disk.get(\"pending_revocation_encrypted\");",
+        "        boolean encryptedOnly=!record.contains(\"o\".repeat(32)) && !context.prefs.disk.containsKey(\"credential\");",
+        "        boolean blocked=false;try{store.save(\"https://qcrc.freevia.org\",\"n\".repeat(32),\"fixture-new\",\"owner@example.test\");}catch(IllegalStateException expected){blocked=true;}",
+        "        context.prefs.edit().putString(\"pending_revocation_encrypted\",new org.json.JSONArray(record).getJSONObject(0).toString()).commit();",
+        "        RelayCredentialStore.Snapshot retry=store.beginUnpair(store.snapshot());",
+        "        boolean migrated=((String)context.prefs.disk.get(\"pending_revocation_encrypted\")).startsWith(\"[\");",
+        "        boolean same=RelayCredentialStore.sameIdentity(pending,retry);",
+        "        RelayCredentialStore.Snapshot stale=new RelayCredentialStore.Snapshot(pending.endpoint,pending.credential,pending.deviceId,\"\",\"stale\",false);",
+        "        boolean staleCannotClear=!store.completeRevocation(stale) && store.hasPendingRevocation();",
+        "        boolean confirmed=store.completeRevocation(retry);boolean remaining=store.hasPendingRevocation();",
+        "        store.save(\"https://qcrc.freevia.org\",\"n\".repeat(32),\"fixture-new\",\"owner@example.test\");",
+        "        return new JSONObject().put(\"pairedAfterClear\",paired).put(\"encryptedOnly\",encryptedOnly).put(\"pairBlocked\",blocked)",
+        "            .put(\"retrySameCredential\",same).put(\"legacyMigrated\",migrated).put(\"staleCannotClear\",staleCannotClear).put(\"confirmed\",confirmed)",
+        "            .put(\"pendingAfterConfirmation\",remaining).put(\"newPairAllowed\",store.paired()).toString();",
+        "    }",
+        "    public String unpairDuringReplacement() throws Exception {",
+        "        RelayCredentialStore store=new RelayCredentialStore(context);",
+        "        store.save(\"https://qcrc.freevia.org\",\"n\".repeat(32),\"fixture-new\",\"owner@example.test\");",
+        "        RelayCredentialStore.Snapshot first=store.beginUnpair(store.snapshot());boolean paired=store.paired();",
+        "        boolean confirmedFirst=store.completeRevocation(first);",
+        "        RelayCredentialStore.Snapshot remaining=store.beginUnpair(store.snapshot());",
+        "        boolean stale=!store.completeRevocation(first) && store.hasPendingRevocation();",
+        "        boolean blocked=false;try{store.save(\"https://qcrc.freevia.org\",\"n\".repeat(32),\"another\",\"owner@example.test\");}catch(IllegalStateException expected){blocked=true;}",
+        "        boolean both=confirmedFirst && store.completeRevocation(remaining);",
+        "        return new JSONObject().put(\"paired\",paired).put(\"first\",first.deviceId).put(\"remaining\",remaining.deviceId)",
+        "            .put(\"remainingCredentialIntact\",\"o\".repeat(32).equals(remaining.credential)).put(\"staleCannotDropRemaining\",stale)",
+        "            .put(\"pairBlocked\",blocked).put(\"bothConfirmed\",both).put(\"pending\",store.hasPendingRevocation()).toString();",
         "    }",
         "    static class PluginCall {",
         "        String error; void resolve(JSObject object){}",

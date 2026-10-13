@@ -233,6 +233,7 @@ export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, targ
   let announced = false;
   const announce = () => { if (!announced) { announced = true; beforeGesture?.(); } };
   const shows = (kind: QcObservedScreenKind) => untilUnitShows(gateway, poll, (seen) => seen === kind);
+  const stillShows = async (kind: QcObservedScreenKind) => treeShows((await gateway.graphicsTree()).tree, kind);
   const tap = async (point: { x: number; y: number }) => { announce(); await gateway.tapScreen(point.x, point.y); };
 
   if (target === "io") {
@@ -259,13 +260,17 @@ export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, targ
     } else if (current !== "directory") {
       return "busy";
     }
+    if (!await stillShows("directory")) return "mismatch";
     await tap(G.directorySearch);
     return await shows("search") ? "shown" : "not-shown";
   }
   if (target === "block-menu") {
     if (current !== "parameter-editor") return "busy";
     // Measured on a block editor that is a bottom panel with the Grid still above it; a full-screen editor has no measured menu button.
-    if (!(await gateway.graphicsTree()).tree.includes("zenUI::Grid")) return "no-route";
+    const panel = (await gateway.graphicsTree()).tree;
+    if (!treeShows(panel, "parameter-editor")) return "mismatch";
+    if (!/zenUI::ParameterEditor(?![A-Za-z0-9_])/.test(panel)
+        || !/zenUI::Grid(?![A-Za-z0-9_])/.test(panel)) return "no-route";
     await tap(G.blockMenuButton);
     return await shows("block-menu") ? "shown" : "not-shown";
   }
@@ -279,14 +284,18 @@ export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, targ
   const top = target === "midi-out" || target === "copy-scene";
   // One drag does not reach the end of the menu (it stops part way), so two are sent, each given time to settle,
   // and the row is tapped only after a further wait: a touch during the scroll animation is ignored.
-  announce();
   const drag = top ? G.menuScrollTop : G.menuScrollBottom;
   for (let pass = 0; pass < 2; pass += 1) {
+    // A scroll wait gives the user or another client time to leave the menu.
+    // Re-admit every touch against the current screen, not the initial read.
+    if (!await stillShows("preset-menu")) return "mismatch";
+    announce();
     await gateway.swipeScreen(drag.x, drag.y, drag.toX, drag.toY);
     await sleep(poll.scrollSettleMs ?? 1_500);
   }
   await sleep(poll.rowDelayMs ?? 1_000);
   const row = target === "midi-out" ? G.midiOutRow : target === "copy-scene" ? (detail.swap ? G.swapSceneRow : G.copySceneRow) : BOTTOM_ROWS[target as keyof typeof BOTTOM_ROWS];
+  if (!await stillShows("preset-menu")) return "mismatch";
   await tap(row);
   // One tap only: if the dialog does not appear it is not tapped for again.
   if (await untilTree(gateway, poll, (tree) => treeShows(tree, target), poll.rowTimeoutMs ?? 3_000)) return "shown";
