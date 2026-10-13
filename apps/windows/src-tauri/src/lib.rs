@@ -4982,8 +4982,17 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let _ = window.hide();
+                    let tray_enabled = window
+                        .app_handle()
+                        .try_state::<broker_tray_control::BrokerTrayControl>()
+                        .is_some_and(|control| control.status().tray_enabled);
+                    match macos_main_window_close_action(tray_enabled) {
+                        MacosMainWindowCloseAction::Hide => {
+                            api.prevent_close();
+                            let _ = window.hide();
+                        }
+                        MacosMainWindowCloseAction::Exit => window.app_handle().exit(0),
+                    }
                     return;
                 }
             }
@@ -5220,6 +5229,26 @@ fn is_process_exit_event(event: &tauri::RunEvent) -> bool {
 fn main_window_is_gone(label: &str, event: &tauri::WindowEvent) -> bool {
     label == "main" && matches!(event, tauri::WindowEvent::Destroyed)
 }
+
+/// A closed main window can only be reopened from the Dock if its native
+/// window is recreated. In background mode the existing window is retained
+/// and hidden; without it, exit so a Dock reopen starts a fresh app instance.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum MacosMainWindowCloseAction {
+    Hide,
+    Exit,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_main_window_close_action(tray_enabled: bool) -> MacosMainWindowCloseAction {
+    if tray_enabled {
+        MacosMainWindowCloseAction::Hide
+    } else {
+        MacosMainWindowCloseAction::Exit
+    }
+}
+
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;

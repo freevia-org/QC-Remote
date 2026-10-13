@@ -483,6 +483,11 @@ fn run_resident(
     keep_user_quit: bool,
     host: Option<Arc<dyn ResidentHost>>,
 ) {
+    // This path is supplied by the caller (or the app's configured data
+    // directory). Validate/create it before reading settings or touching the
+    // Quit record; resident::elect repeats the check for every caller.
+    #[cfg(target_os = "macos")]
+    crate::platform::paths_macos::prepare_directory(&directory).unwrap_or_else(|error| fail(error));
     if !crate::tray_settings::read_in(&directory).tray_enabled {
         return;
     }

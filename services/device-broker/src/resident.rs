@@ -432,12 +432,15 @@ pub fn election_path(descriptor: &Path) -> PathBuf {
 /// spawns a broker, so a logon start can never put a second broker on the
 /// device or delete a live broker's descriptor. Never touches USB.
 pub fn elect(descriptor: &Path, budget: Duration) -> Result<Election, String> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let directory = descriptor
             .parent()
             .ok_or("Broker descriptor has no directory")?;
+        #[cfg(target_os = "linux")]
         crate::platform::paths::prepare_directory(directory)?;
+        #[cfg(target_os = "macos")]
+        crate::platform::paths_macos::prepare_directory(directory)?;
         match qc_owner_only_file::read_owner_only(descriptor) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -660,6 +663,34 @@ mod tests {
             "processCreatedAt": created,
         })
         .to_string()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_election_rejects_a_group_or_other_writable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_scratch, directory) = scratch("unsafe-directory");
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let descriptor = directory.join(DESCRIPTOR_FILE);
+
+        assert!(elect(&descriptor, Duration::from_secs(1)).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_election_rejects_a_non_owner_only_descriptor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_scratch, directory) = scratch("public-descriptor");
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let descriptor = directory.join(DESCRIPTOR_FILE);
+        std::fs::write(&descriptor, b"{}").unwrap();
+        std::fs::set_permissions(&descriptor, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(elect(&descriptor, Duration::from_secs(1)).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

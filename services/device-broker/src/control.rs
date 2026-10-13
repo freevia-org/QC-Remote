@@ -570,6 +570,27 @@ impl Session {
         let stream = TcpStream::connect_timeout(&address, timeouts.connect)
             .map_err(|error| io_failure(error, "connecting to the broker"))?;
         let _ = stream.set_nodelay(true);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let owner_check = |port, pid| {
+            verify_listener_owner(port, pid, crate::platform::process::loopback_listener_owner)
+        };
+        // Windows keeps its existing listener-verification behavior.
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let owner_check = |_, _| Ok(());
+        Self::open_connected(stream, descriptor, timeouts, owner_check)
+    }
+
+    fn open_connected(
+        stream: TcpStream,
+        descriptor: &Descriptor,
+        timeouts: &Timeouts,
+        owner_check: impl FnOnce(u16, u32) -> Result<(), String>,
+    ) -> Result<Self, Failure> {
+        // The descriptor is owner-only, but its listener can disappear while
+        // its process is still alive (for example during shutdown). Verify the
+        // connected port still belongs to that process before sending its
+        // bearer token. Checking instanceId in the reply would be too late.
+        owner_check(descriptor.port, descriptor.process_id).map_err(Failure::Refused)?;
         let mut session = Self { stream, next_id: 1 };
         let frame = json!({
             "method": "broker.authenticate",
@@ -636,6 +657,80 @@ impl Session {
         .map_err(|error| io_failure(error, "reading from the broker"))?;
         serde_json::from_slice(&body)
             .map_err(|_| Failure::Io("the broker sent a frame that is not JSON".into()))
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn verify_listener_owner(
+    port: u16,
+    expected_pid: u32,
+    owner: impl FnOnce(u16) -> Result<Option<u32>, String>,
+) -> Result<(), String> {
+    match owner(port) {
+        Ok(Some(pid)) if pid == expected_pid => Ok(()),
+        Ok(Some(pid)) => Err(format!(
+            "Process {pid}, not the published QC device broker, owns its loopback port"
+        )),
+        Ok(None) => Err("Nothing is listening on the published QC device broker port".into()),
+        Err(error) => Err(format!(
+            "Could not verify which process owns the shared QC device broker port: {error}"
+        )),
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod listener_owner_tests {
+    use super::{verify_listener_owner, Descriptor, Session, Timeouts};
+    use std::io::Read;
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+
+    #[test]
+    fn only_the_published_process_may_receive_the_control_token() {
+        assert!(verify_listener_owner(1234, 42, |_| Ok(Some(42))).is_ok());
+        assert!(verify_listener_owner(1234, 42, |_| Ok(Some(43))).is_err());
+        assert!(verify_listener_owner(1234, 42, |_| Ok(None)).is_err());
+        assert!(verify_listener_owner(1234, 42, |_| Err("inspection failed".into())).is_err());
+    }
+
+    #[test]
+    fn an_owner_mismatch_closes_the_socket_without_sending_the_authentication_frame() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (observed, received) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut first_byte = [0_u8; 1];
+            observed.send(stream.read(&mut first_byte)).unwrap();
+        });
+        let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let descriptor = Descriptor {
+            port,
+            bearer_token: "must-not-be-sent".into(),
+            instance_id: "instance".into(),
+            process_id: 42,
+            process_created_at: Some(1),
+            published_at_unix_ms: 1,
+            gateway_api_version: None,
+        };
+
+        assert!(
+            Session::open_connected(stream, &descriptor, &Timeouts::default(), |_, _| {
+                Err("listener owner mismatch".into())
+            })
+            .is_err()
+        );
+        assert_eq!(
+            received
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        server.join().unwrap();
     }
 }
 
