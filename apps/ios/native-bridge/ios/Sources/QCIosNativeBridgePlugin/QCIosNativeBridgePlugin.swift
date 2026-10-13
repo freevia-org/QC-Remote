@@ -51,7 +51,6 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     private let driverReadQueue = DispatchQueue(label: "org.freevia.qcremote.ios.driverkit-read", qos: .userInitiated)
     private var protocolSession: QCIosProtocolSession?
     private var driverConnection: UInt64 = 0
-    private var driverReportEpoch: UInt64 = 0
     private var driverGeneration: UInt64 = 0
     private var driverReaderGeneration: UInt64 = 0
     private var driverStateSequence: UInt64 = 0
@@ -355,7 +354,6 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                 self.driverGeneration &+= 1
                 self.driverStateSequence = 0
                 self.driverConnection = connection
-                self.driverReportEpoch = 0
                 self.driverSessionID = UUID().uuidString.lowercased()
                 self.protocolSession = session
                 self.driverSynchronized = false
@@ -378,7 +376,6 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             self.driverGeneration &+= 1
             self.protocolSession = nil
             self.driverConnection = 0
-            self.driverReportEpoch = 0
             self.driverSessionID = ""
             self.driverSynchronized = false
             self.rejectPendingGatewayReads("The Quad Cortex connection ended before the read completed.", code: "DRIVER_DISCONNECTED")
@@ -791,7 +788,6 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         let connection = try session.opened(nowMs: now)
         driverStateSequence = 0
         driverConnection = connection
-        driverReportEpoch = 0
         driverSessionID = UUID().uuidString.lowercased()
         protocolSession = session
         driverSynchronized = false
@@ -997,7 +993,6 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             if let handshake = try session.nextHandshake(nowMs: now, sessionID: driverSessionID) {
                 let epoch = try session.reportEpoch(connection: driverConnection)
                 guard epoch != 0 else { throw QCIosProtocolSession.BridgeError.operationFailed }
-                driverReportEpoch = epoch
                 let accepted = try writeProtocolReports(handshake["reports"])
                 if !accepted {
                     notifyListeners("qcConnection", data: ["state": "disconnected", "detail": "The QC handshake report was not fully transferred."], retainUntilConsumed: false)
@@ -1232,7 +1227,6 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         driverGeneration &+= 1
         protocolSession = nil
         driverConnection = 0
-        driverReportEpoch = 0
         driverSessionID = ""
         driverSynchronized = false
         rejectPendingGatewayReads("The Quad Cortex connection ended before the read completed.", code: "DRIVER_DISCONNECTED")
