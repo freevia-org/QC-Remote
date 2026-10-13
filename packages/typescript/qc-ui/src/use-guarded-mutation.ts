@@ -1,4 +1,5 @@
-import { useCallback, useMemo } from "react";
+import { claimDeviceCommand, deviceCommandBusy, releaseDeviceCommand } from "./device-command-ownership.ts";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import type { DeviceCommandOptions } from "./workflow-options";
 
 /** The notice for a write refused because another device command owns the pending flag. */
@@ -50,32 +51,71 @@ export interface GuardedMutation {
  * `action` completes "Connect the Quad Cortex before …" for this workflow.
  */
 export function useGuardedMutation(options: DeviceCommandOptions, action: string): GuardedMutation {
-  const { connected, pending, setPending, notice, fail } = options;
+  const latest = useRef(options);
+  latest.current = options;
+  const operation = useRef<{ current(): boolean; release(): void; retire(): void } | null>(null);
+  const scope = useRef({ key: options.sessionKey, connected: options.connected });
+  const retiredRelease = useRef<(() => void) | undefined>(undefined);
+  if (!Object.is(scope.current.key, options.sessionKey) || scope.current.connected !== options.connected) {
+    scope.current = { key: options.sessionKey, connected: options.connected };
+    retiredRelease.current = operation.current?.release;
+    operation.current?.retire();
+    operation.current = null;
+  }
+  useEffect(() => {
+    const release = retiredRelease.current;
+    retiredRelease.current = undefined;
+    if (!operation.current) release?.();
+  }, [options.connected, options.sessionKey]);
+  useEffect(() => () => {
+    const held = operation.current;
+    operation.current = null;
+    held?.retire();
+    held?.release();
+  }, []);
 
   const admit = useCallback((override?: string) => {
-    if (!connected) { notice(connectBeforeNotice(override ?? action)); return false; }
-    if (pending) { notice(DEVICE_COMMAND_BUSY_NOTICE); return false; }
+    const host = latest.current;
+    if (!host.connected) { host.notice(connectBeforeNotice(override ?? action)); return false; }
+    if (host.pending || operation.current || deviceCommandBusy(host.setPending)) { host.notice(DEVICE_COMMAND_BUSY_NOTICE); return false; }
     return true;
-  }, [action, connected, notice, pending]);
+  }, [action]);
 
   const run = useCallback(async <T,>(step: GuardedMutationStep<T>) => {
     if (!admit(step.action)) return false;
-    setPending(true);
-    if (step.progress) notice(step.progress);
+    const host = latest.current;
+    const probe = host.captureSessionCurrent?.() ?? (() => true);
+    if (!probe()) return false;
+    const held = { current: () => false,
+      release: () => { if (!deviceCommandBusy(host.setPending)) host.setPending(false); },
+      retire: () => { releaseDeviceCommand(host.setPending, held); }
+    };
+    if (!claimDeviceCommand(host.setPending, held)) { host.notice(DEVICE_COMMAND_BUSY_NOTICE); return false; }
+    held.current = () => operation.current === held && probe();
+    operation.current = held;
+    host.setPending(true);
+    if (step.progress) host.notice(step.progress);
     try {
+      if (!held.current()) return false;
       const result = await step.write();
+      if (!held.current()) return false;
       await step.settle?.(result);
-      return true;
+      return held.current();
     } catch (error) {
-      fail(error);
-      if (step.recover) {
+      if (!held.current()) return false;
+      host.fail(error);
+      if (step.recover && held.current()) {
         try { await step.recover(error); } catch { /* The reported error stands. */ }
       }
       return false;
     } finally {
-      setPending(false);
+      if (operation.current === held) {
+        operation.current = null;
+        held.retire();
+        held.release();
+      }
     }
-  }, [admit, fail, notice, setPending]);
+  }, [admit]);
 
   return useMemo(() => ({ admit, run }), [admit, run]);
 }

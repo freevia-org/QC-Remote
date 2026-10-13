@@ -1170,6 +1170,7 @@ function currentValue(state: VirtualParameterState, parameterIndex: number, scen
 
 function writeValue(state: VirtualParameterState, parameterIndex: number, scene: number, value: number): void {
   assertInteger(parameterIndex, 0, PARAMETER_INDEX_LIMIT, "parameterIndex");
+  if (!Number.isInteger(scene) || scene < 0 || scene >= QC_SCENE_COUNT) throw new Error("scene must be a valid scene index");
   const scenes = state.sceneValues?.[parameterIndex];
   if (scenes) scenes[scene] = value;
   else state.parameterValues[parameterIndex] = value;

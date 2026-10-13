@@ -1,6 +1,7 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DeviceActionResult, DeviceIdentity, GeneralIntegerSetting, GeneralSettings, GeneralToggleSetting } from "@qc-remote/client";
 import { useGuardedMutation } from "./use-guarded-mutation.ts";
+import { observedGlobalBypassUpdate } from "./global-bypass-update.ts";
 import type { DeviceGatewayWorkflowOptions } from "./workflow-options";
 
 /** Section of the device's own Settings dialog - the header/left-nav pill the
@@ -41,7 +42,12 @@ export const HOLD_TIMING_STEPS_MS = [500, 600, 700, 800, 900, 1000] as const;
 export const MIDI_CLOCK_OUT_VALUES = ["off", "midiDinOnly", "usbMidiOnly", "bothUsbAndDinMidi"] as const;
 export type MidiClockOutValue = typeof MIDI_CLOCK_OUT_VALUES[number];
 
-export type DeviceSettingsWorkflowOptions = DeviceGatewayWorkflowOptions;
+export type DeviceSettingsWorkflowOptions = DeviceGatewayWorkflowOptions & {
+  /** Stable identity of the selected device/session, including virtual sources. */
+  sessionKey?: unknown;
+  /** Immediate boundary guard while native events are ahead of React's render. */
+  captureSessionCurrent?(): () => boolean;
+};
 
 /**
  * The device's own Settings screen (Account/System/Device/Support, with MIDI
@@ -67,12 +73,51 @@ export type DeviceSettingsWorkflowOptions = DeviceGatewayWorkflowOptions;
  */
 export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions) {
   const { gateway, pending, notice, fail } = options;
-  const guarded = useGuardedMutation(options, "changing device settings");
-  const [opening, setOpening] = useState<{ open: boolean; returnFocusTarget?: "grid-menu" }>({ open: false });
-  const { open, returnFocusTarget } = opening;
-  const [loading, setLoading] = useState(false);
-  const [settings, setSettings] = useState<GeneralSettings>();
-  const [identity, setIdentity] = useState<DeviceIdentity>();
+  const ownerRef = useRef<{ key: unknown; gateway: typeof gateway; connected: boolean; current: () => boolean } | undefined>(undefined);
+  if (!ownerRef.current || ownerRef.current.key !== options.sessionKey || ownerRef.current.gateway !== gateway
+      || ownerRef.current.connected !== options.connected) {
+    ownerRef.current = { key: options.sessionKey, gateway, connected: options.connected,
+      current: options.captureSessionCurrent?.() ?? (() => true) };
+  }
+  const owner = ownerRef.current;
+  const mounted = useRef(true);
+  const pendingOwner = useRef<typeof owner | undefined>(undefined);
+  const latestSetPending = useRef(options.setPending);
+  latestSetPending.current = options.setPending;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (pendingOwner.current) { pendingOwner.current = undefined; latestSetPending.current(false); }
+    };
+  }, []);
+  useEffect(() => {
+    if (pendingOwner.current && pendingOwner.current !== owner) {
+      pendingOwner.current = undefined;
+      latestSetPending.current(false);
+    }
+  }, [owner]);
+  const current = useCallback(() => mounted.current && ownerRef.current === owner && owner.connected && owner.current(), [owner]);
+  const guarded = useGuardedMutation({ ...options,
+    setPending: (value) => {
+      if (value && current()) { pendingOwner.current = owner; options.setPending(true); }
+      else if (!value && pendingOwner.current === owner && current()) { pendingOwner.current = undefined; options.setPending(false); }
+    },
+    notice: (message) => { if (current()) notice(message); },
+    fail: (error) => { if (current()) fail(error); }
+  }, "changing device settings");
+  const [opening, setOpening] = useState<{ owner: typeof owner; open: boolean; returnFocusTarget?: "grid-menu" }>({ owner, open: false });
+  const open = opening.owner === owner && opening.open;
+  const returnFocusTarget = opening.owner === owner ? opening.returnFocusTarget : undefined;
+  const [loadingRecord, setLoadingRecord] = useState<{ owner: typeof owner; value: boolean }>();
+  const loading = loadingRecord?.owner === owner ? loadingRecord.value : false;
+  const setLoading = useCallback((value: boolean) => { if (current()) setLoadingRecord({ owner, value }); }, [current, owner]);
+  const [settingsRecord, setSettingsRecord] = useState<{ owner: typeof owner; value: GeneralSettings }>();
+  const [identityRecord, setIdentityRecord] = useState<{ owner: typeof owner; value: DeviceIdentity }>();
+  const settings = settingsRecord?.owner === owner && current() ? settingsRecord.value : undefined;
+  const identity = identityRecord?.owner === owner && current() ? identityRecord.value : undefined;
+  const setSettings = useCallback((value: GeneralSettings) => { if (current()) setSettingsRecord({ owner, value }); }, [current, owner]);
+  const setIdentity = useCallback((value: DeviceIdentity) => { if (current()) setIdentityRecord({ owner, value }); }, [current, owner]);
   // The unit opens Settings on System with its first row, Connection, selected
   // (walked on the device from the Grid menu, twice: the Connection pane with
   // its network list). corpus settings-system.png shows Brightness selected
@@ -89,9 +134,12 @@ export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions
   // interface - so unlike every other MIDI row this one has no authoritative
   // read path to refresh from. Tracked locally, optimistically, from this
   // hook's own successful writes only; `undefined` until the first one.
-  const [midiThru, setMidiThruState] = useState<boolean>();
+  const [midiThruRecord, setMidiThruRecord] = useState<{ owner: typeof owner; value: boolean }>();
+  const midiThru = midiThruRecord?.owner === owner && current() ? midiThruRecord.value : undefined;
+  const setMidiThruState = useCallback((value: boolean) => { if (current()) setMidiThruRecord({ owner, value }); }, [current, owner]);
 
   const refresh = useCallback(async () => {
+    if (!current()) return;
     try {
       setSettings(await gateway.generalSettings());
     } catch {
@@ -101,31 +149,34 @@ export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions
       // row's live value) rather than surfacing a second error on top of a
       // write that may have just succeeded.
     }
-  }, [gateway]);
+  }, [gateway, current, setSettings]);
 
   const openSettings = useCallback((returnFocusTarget?: "grid-menu") => {
-    setOpening({ open: true, returnFocusTarget });
+    if (!current()) return;
+    setOpening({ owner, open: true, returnFocusTarget });
     setLoading(true);
     void Promise.allSettled([
       gateway.generalSettings().then(setSettings),
       gateway.identity().then(setIdentity)
     ]).then(([settingsResult, identityResult]) => {
-      if (settingsResult.status === "rejected" && identityResult.status === "rejected") fail(settingsResult.reason);
-    }).finally(() => setLoading(false));
-  }, [fail, gateway]);
+      if (current() && settingsResult.status === "rejected" && identityResult.status === "rejected") fail(settingsResult.reason);
+    }).finally(() => { if (current()) setLoading(false); });
+  }, [fail, gateway, current, setIdentity, setSettings, owner, setLoading]);
 
-  const close = useCallback(() => setOpening({ open: false }), []);
+  const close = useCallback(() => setOpening({ owner, open: false }), [owner]);
 
   const commit = useCallback(async (labelText: string, action: () => Promise<DeviceActionResult>) => {
+    if (!current()) return;
     await guarded.run({
       progress: `${labelText}…`,
       write: action,
       settle: async (result) => {
+        if (!current()) return;
         notice(result.detail);
         await refresh();
       }
     });
-  }, [guarded.run, notice, refresh]);
+  }, [guarded.run, notice, refresh, current]);
 
   const setToggle = useCallback((setting: GeneralToggleSetting, label: string, enabled: boolean) =>
     commit(`${enabled ? "Enabling" : "Disabling"} ${label}`, () => gateway.setGeneralToggle(setting, enabled)), [commit, gateway]);
@@ -135,17 +186,15 @@ export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions
 
   // -- Device ---------------------------------------------------------------
   const setGlobalBypass = useCallback(async (category: "cab" | "ir", row: 1 | 2 | 3 | 4, bypassed: boolean) => {
-    const current = category === "cab" ? settings?.globalBypassCab : settings?.globalBypassIr;
-    const rows: [boolean, boolean, boolean, boolean] = [
-      row === 1 ? bypassed : current?.row1 ?? false,
-      row === 2 ? bypassed : current?.row2 ?? false,
-      row === 3 ? bypassed : current?.row3 ?? false,
-      row === 4 ? bypassed : current?.row4 ?? false
-    ];
-    const cab = category === "cab" ? rows : [settings?.globalBypassCab?.row1 ?? false, settings?.globalBypassCab?.row2 ?? false, settings?.globalBypassCab?.row3 ?? false, settings?.globalBypassCab?.row4 ?? false] as [boolean, boolean, boolean, boolean];
-    const ir = category === "ir" ? rows : [settings?.globalBypassIr?.row1 ?? false, settings?.globalBypassIr?.row2 ?? false, settings?.globalBypassIr?.row3 ?? false, settings?.globalBypassIr?.row4 ?? false] as [boolean, boolean, boolean, boolean];
+    if (!current()) return;
+    const update = observedGlobalBypassUpdate(settings, category, row, bypassed);
+    if (!update) {
+      notice("Global Bypass rows have not been read completely. Reopen Settings before changing them.");
+      return;
+    }
+    const { cab, ir } = update;
     await commit(`Updating Global Bypass row ${row}`, () => gateway.setGlobalBypass(cab, ir));
-  }, [commit, gateway, settings]);
+  }, [commit, gateway, notice, settings, current]);
 
   const setSceneBypassBehavior = useCallback((behavior: "alwaysOverwrite" | "nonstompOverwrite" | "neverOverwrite") =>
     commit("Setting Scene Bypass Behavior", () => gateway.setSceneBypassBehavior(behavior)), [commit, gateway]);
@@ -159,15 +208,17 @@ export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions
   // -- MIDI (the Device row's own eighth entry) ------------------------------
   const setMidiChannel = useCallback((channel: number) => setInteger("midiChannel", "MIDI Channel", channel), [setInteger]);
   const setMidiThru = useCallback(async (enabled: boolean) => {
+    if (!current()) return;
     await guarded.run({
       progress: `${enabled ? "Enabling" : "Disabling"} MIDI Thru…`,
       write: () => gateway.setMidiThru(enabled),
       settle: (result) => {
+        if (!current()) return;
         notice(result.detail);
         setMidiThruState(enabled);
       }
     });
-  }, [gateway, guarded.run, notice]);
+  }, [gateway, guarded.run, notice, current, setMidiThruState]);
   const setMidiOverUsb = useCallback((enabled: boolean) => setToggle("midiOverUsb", "MIDI Over USB", enabled), [setToggle]);
   const setIgnoreDuplicatePc = useCallback((enabled: boolean) => setToggle("ignoreDuplicatePc", "Ignore Duplicate PC", enabled), [setToggle]);
   const setMidiClockOut = useCallback((value: MidiClockOutValue) => setInteger("midiClockOut", "MIDI Clock Out", MIDI_CLOCK_OUT_VALUES.indexOf(value)), [setInteger]);

@@ -18,6 +18,7 @@ import type { TempoWorkflow } from "./use-tempo-workflow";
 import type { TunerWorkflow } from "./use-tuner-workflow";
 
 export interface QcDeviceScreenContentOptions {
+  captureSessionCurrent?(): () => boolean;
   snapshot: PresetSnapshot;
   destination: Pick<QcScreenDestination, "view" | "returnFocusTarget" | "setView">;
   workflows: {
@@ -54,7 +55,7 @@ export function qcDeviceScreenContent(options: QcDeviceScreenContentOptions): Re
     case "tempo": return <CorOsTempoScreen workflow={workflows.tempo} snapshot={snapshot} queueTempo={queueTempo} onSelectScene={(index) => void selectScene(index)} onClose={workflows.tempo.close} />;
     case "tuner": return <CorOsTunerScreen workflow={workflows.tuner} onClose={() => void closeScreen()} />;
     case "looper-editor": {
-      const looper = qcLooperScreenActions({ snapshot, looper: workflows.looper, grid: workflows.grid, setView, setParameterMenuInitiallyOpen, notice });
+      const looper = qcLooperScreenActions({ captureSessionCurrent: options.captureSessionCurrent, snapshot, looper: workflows.looper, grid: workflows.grid, setView, setParameterMenuInitiallyOpen, notice });
       return <LooperXScreen workflow={workflows.looper} activeScene={snapshot.activeScene} onSelectScene={(scene) => void selectScene(scene)} onParameters={looper.onParameters} onMenu={looper.onMenu} onClose={() => void looper.onClose()} />;
     }
     case "modes": return <ModesConfigurationScreen returnFocusTarget={returnFocusTarget} workflow={workflows.modes} onClose={() => setView(null)} />;

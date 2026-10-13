@@ -907,9 +907,12 @@ public class QcUsbPlugin extends Plugin {
     ) {
         RelayDeadline relayDeadline = CURRENT_RELAY_DEADLINE.get();
         if (plan.midi) {
-            CompletableFuture<org.json.JSONObject> midi = relayMidi(plan.controller, plan.value, relayDeadline);
-            if (relayDeadline != null) {
-            }
+            final String admission;
+            try {
+                admission = stateDecoder.operationTicket(plan.sessionFence, monotonicMillis(),
+                    QcUsbProfile.COMMAND_CONFIRMATION_TIMEOUT_MS);
+            } catch (Exception error) { return failedFuture(error); }
+            CompletableFuture<org.json.JSONObject> midi = relayMidi(plan.controller, plan.value, relayDeadline, admission);
             return midi.thenApply(result -> {
             try { return result.put("accepted", true).put("verified", false).put("detail", plan.detail)
                 .put("verification", "accepted_unverified"); }
@@ -1330,16 +1333,14 @@ public class QcUsbPlugin extends Plugin {
         return result;
     }
 
-    private CompletableFuture<org.json.JSONObject> relayMidi(int controller, int value) {
-        return relayMidi(controller, value, null);
-    }
-
-    private CompletableFuture<org.json.JSONObject> relayMidi(int controller, int value, RelayDeadline relayDeadline) {
+    private CompletableFuture<org.json.JSONObject> relayMidi(int controller, int value,
+            RelayDeadline relayDeadline, String admission) {
         if (value < 0 || value > 127) return failedRelay("INVALID_ARGUMENT", "MIDI value is outside the supported range.");
         if (midiOutputEndpoint == null) return failedRelay("MIDI_NOT_AVAILABLE", "Quad Cortex USB-MIDI is unavailable.");
         CompletableFuture<org.json.JSONObject> result = new CompletableFuture<>();
         long queuedAtUnixMs = System.currentTimeMillis();
         long queuedAtMonotonicMs = monotonicMillis();
+        final long queuedGeneration = connectionGeneration.get();
         submitRelayTask(midiIo, relayDeadline, () -> {
             try {
                 if (relayDeadline != null && relayDeadline.isExpired()) {
@@ -1353,23 +1354,33 @@ public class QcUsbPlugin extends Plugin {
                     result.completeExceptionally(relayDeadlineExpired());
                     return;
                 }
-                if (!beginRelayMutation(relayDeadline)) {
-                    if (relayDeadline != null && relayDeadline.isExpired()) {
-                        result.completeExceptionally(relayDeadlineExpired());
-                        return;
-                    }
-                    throw new RelayException("WRITE_QUARANTINED",
-                        "A previous device write has an unknown outcome. Writes are disabled until the QC reconnects and synchronizes.");
-                }
                 byte[] packet = {
                     (byte) QcUsbProfile.MIDI_USB_EVENT_PACKET_HEADER,
                     (byte) QcUsbProfile.MIDI_CONTROL_CHANGE_STATUS,
                     (byte) controller,
                     (byte) value
                 };
-                UsbDeviceConnection activeMidiConnection = midiConnection;
-                if (activeMidiConnection == null) throw new RelayException("MIDI_NOT_AVAILABLE", "Quad Cortex USB-MIDI disconnected before the write.");
-                int written = activeMidiConnection.bulkTransfer(midiOutputEndpoint, packet, packet.length, MIDI_WRITE_TIMEOUT_MS);
+                final int written;
+                // Closing and publishing a USB session use this monitor too.
+                // A queued performance command must retain its native plan's
+                // provenance instead of borrowing a replacement connection.
+                synchronized (this) {
+                    written = QcMidiWriteGate.send(queuedGeneration, connectionGeneration.get(),
+                        isReady() && stateDecoder.sessionSynchronized(), stateDecoder.suspensionRefusal(),
+                        () -> stateDecoder.prepareDispatch(admission, monotonicMillis()),
+                        () -> {
+                            if (!beginRelayMutation(relayDeadline)) {
+                                if (relayDeadline != null && relayDeadline.isExpired()) throw relayDeadlineExpired();
+                                throw RelayException.quarantinedBeforeDispatch();
+                            }
+                        },
+                        () -> {
+                            UsbDeviceConnection activeMidiConnection = midiConnection;
+                            if (activeMidiConnection == null || midiOutputEndpoint == null)
+                                throw new RelayException("MIDI_NOT_AVAILABLE", "Quad Cortex USB-MIDI disconnected before the write.");
+                            return activeMidiConnection.bulkTransfer(midiOutputEndpoint, packet, packet.length, MIDI_WRITE_TIMEOUT_MS);
+                        });
+                }
                 lastMidiCommandAt = monotonicMillis();
                 if (written != packet.length) throw new RelayException("MIDI_WRITE_FAILED", "The complete MIDI packet was not written.");
                 lastMidiQueueDelayMs = Math.max(0, monotonicMillis() - queuedAtMonotonicMs);
@@ -1994,12 +2005,17 @@ public class QcUsbPlugin extends Plugin {
      * state that could not arrive, and only force-stopping the app recovered
      * it. Hand it to the ordinary terminal-failure path instead, which closes
      * the transport and re-arms the reconnect loop. */
-    private void scheduleSilentSessionWatchdog() {
+    private synchronized void scheduleSilentSessionWatchdog() {
         final long baseline = usbDiagnostics.snapshot().messagesReceived;
+        final QcSilentSessionWatchdog watchdog = new QcSilentSessionWatchdog(
+            connectionGeneration.get(), baseline, connectionGeneration::get,
+            () -> usbDiagnostics.snapshot().messagesReceived, this::isReady,
+            () -> terminalTransportFailed(
+                "The Quad Cortex accepted the USB session but sent no state.", "session-silent"));
         keepalive.schedule(() -> {
-            if (!isReady() || usbDiagnostics.snapshot().messagesReceived != baseline) return;
-            terminalTransportFailed(
-                "The Quad Cortex accepted the USB session but sent no state.", "session-silent");
+            // Closing and publishing a connection hold this same monitor.
+            // A timer created by an older handshake cannot retire its successor.
+            synchronized (this) { watchdog.run(); }
         }, SILENT_SESSION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
     }
 

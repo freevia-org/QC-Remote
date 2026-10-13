@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { QcStateUpdate } from "@qc-remote/core";
+import { SupersededPresetOperation, type QcStateUpdate } from "@qc-remote/core";
+import { useDeviceWorkflowSession } from "./use-device-workflow-session.ts";
 import {
   readQcScreenFollowSetting, useAdaptiveQcScreenPolling, writeQcScreenFollowSetting,
   type QcObservedScreenKind, type QcScreenObservation, type QcScreenPollingPhase
@@ -42,6 +43,8 @@ export interface QcScreenFollowWorkflows {
 }
 
 export interface QcScreenFollowOptions {
+  sessionKey?: unknown;
+  captureSessionCurrent?(): () => boolean;
   gateway: Pick<GatewayTransport, "graphicsTree" | "tapScreen" | "swipeScreen" | "longTapScreen">;
   /** The user's "follow the Quad Cortex screen" setting: whether the unit's screens move the app's. */
   follow: boolean;
@@ -82,17 +85,26 @@ const ROUTED: readonly QcObservedScreenKind[] = ["preset-menu", "settings", "mod
  * Tuner, Gig View and I/O have their own commands in useQcDeviceViews.
  */
 export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcScreenPollingPhase; observe(observation: QcScreenObservation): void } {
-  const { gateway, follow, available, ready } = options;
+  const { follow, available, ready } = options;
+  const lifetime = useDeviceWorkflowSession({ ...options, connected: ready && available,
+    fail: (error: unknown) => options.notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed.") });
+  const gateway = lifetime.options.gateway;
   const followed = useRef<QcObservedScreenKind | undefined>(undefined);
   useEffect(() => {
     if (!follow || !ready) followed.current = undefined;
   }, [follow, ready]);
-  const latest = useRef(options);
-  latest.current = options;
+  const latest = useRef({ ...lifetime.options, lifetime });
+  latest.current = { ...lifetime.options, lifetime };
   /** Routes the app is driving on the unit right now: what the unit shows on the way is the app's doing, not the unit's. */
-  const driving = useRef(0);
+  const driving = useRef({ key: lifetime.key, count: 0 });
+  if (driving.current.key !== lifetime.key) {
+    driving.current = { key: lifetime.key, count: 0 };
+    followed.current = undefined;
+  }
 
   const observe = useCallback((observation: QcScreenObservation) => {
+    if (!lifetime.current()) return;
+    if (!latest.current.lifetime.current()) return;
     const kind = observation.kind;
     if (followed.current === kind) return;
     followed.current = kind;
@@ -103,7 +115,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     if (kind === "parameter-editor" && workflows.grid.details) return;
     // The app asked the unit for this screen, so the app already shows it; the screens the unit passes through
     // while the app drives it there (the menu on the way to Settings) must not pull the app back.
-    if (driving.current > 0) { destination.latch.takeUnit(kind); return; }
+    if (driving.current.count > 0) { destination.latch.takeUnit(kind); return; }
     if (kind !== "parameter-editor" && destination.latch.takeUnit(kind)) return;
     // The unit is moving the app: the app's change must not be driven back to the unit. Only a change that will
     // happen is expected; one the app already shows would otherwise swallow the user's next real change.
@@ -131,7 +143,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     else if (kind === "preset-menu") setPopup("grid-menu");
     else if (kind === "scene-selector") setPopup("scene-menu");
     else if (kind === "parameter-editor" || QC_UNIT_MIRROR_KINDS.includes(kind)) setView("unit-mirror");
-  }, []);
+  }, [lifetime.key]);
 
   const { phase } = useAdaptiveQcScreenPolling({ gateway, enabled: follow && available, connected: ready, onObservation: observe });
 
@@ -149,32 +161,54 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     if (!current.ready || !current.available) return;
     // A change the unit made is not sent back.
     if (current.destination.latch.takeApp(appKind)) return;
-    const { gateway: unit, destination, notice } = current;
+    const { destination, notice, lifetime: owner } = current;
+    let live = true;
+    // Cleanup retires this navigation route too, so an old screen read cannot
+    // dispatch the next tap after either the destination or device changes.
+    const assertCurrent = () => { if (!live || !owner.current()) throw new SupersededPresetOperation(); };
+    const unit = new Proxy(current.gateway, {
+      get(target, key) {
+        const method = Reflect.get(target, key);
+        if (typeof method !== "function") return method;
+        return async (...args: unknown[]) => {
+          assertCurrent();
+          const result = await method.apply(target, args);
+          assertCurrent();
+          return result;
+        };
+      }
+    });
     const poll = current.screenPoll ?? DEFAULT_SCREEN_POLL;
     const detail = { swap: current.workflows.scene?.command === "swap", side: routeSide.current };
     const run = async () => {
       if (previous === "search" && (appKind === "directory" || !ROUTED.includes(appKind))) {
         // Leaving the search dialog; leaving the Directory with it closes that too.
-        let closed = await closeOnUnit(unit, poll, "search", () => destination.latch.expectUnit("directory"));
-        if (closed && appKind !== "directory") closed = await closeOnUnit(unit, poll, "directory", () => destination.latch.expectUnit("grid"));
+        let closed = await closeOnUnit(unit, poll, "search", () => { assertCurrent(); destination.latch.expectUnit("directory"); });
+        if (closed && appKind !== "directory") closed = await closeOnUnit(unit, poll, "directory", () => { assertCurrent(); destination.latch.expectUnit("grid"); });
+        assertCurrent();
         if (!closed) notice("The Quad Cortex did not close the same screen.");
       } else if (ROUTED.includes(appKind)) {
         // Armed just before the first touch, so a screen the unit never was asked for cannot be mistaken for one it was.
-        const result = await openOnUnit(unit, poll, appKind as QcOpenTarget, () => destination.latch.expectUnit(appKind), detail);
+        const result = await openOnUnit(unit, poll, appKind as QcOpenTarget, () => { assertCurrent(); destination.latch.expectUnit(appKind); }, detail);
+        assertCurrent();
         if (result === "busy") notice("Close the screen open on the Quad Cortex first; the app does not drive it from another screen.");
         else if (result === "mismatch") { destination.latch.cancelUnit(appKind); notice("The Quad Cortex did not show the screen the app opened, so the app stopped sending touches. Check the unit."); }
         else if (result === "not-shown") { destination.latch.cancelUnit(appKind); notice("The Quad Cortex did not show the same screen."); }
       } else if (ROUTED.includes(previous)) {
-        if (!await closeOnUnit(unit, poll, previous as QcCloseTarget, () => destination.latch.expectUnit("grid"), detail)) {
+        if (!await closeOnUnit(unit, poll, previous as QcCloseTarget, () => { assertCurrent(); destination.latch.expectUnit("grid"); }, detail)) {
+          assertCurrent();
           destination.latch.cancelUnit("grid");
           notice("The Quad Cortex did not close the same screen.");
         }
       }
     };
-    driving.current += 1;
-    void run().catch((error: unknown) => notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed."))
-      .finally(() => { driving.current -= 1; });
-  }, [appKind]);
+    const driven = driving.current;
+    driven.count += 1;
+    void run().catch((error: unknown) => {
+      if (live && owner.current() && !(error instanceof SupersededPresetOperation)) notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed.");
+    }).finally(() => { if (driving.current === driven) driven.count -= 1; });
+    return () => { live = false; };
+  }, [appKind, lifetime.key]);
 
   return { phase, observe };
 }

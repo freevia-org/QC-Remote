@@ -11,6 +11,9 @@ const { createElement } = (await import("react")).default;
 const { useQcDeviceViews } = await import("../src/use-qc-device-views.ts");
 
 interface World {
+  sessionEpoch: number;
+  treeRead?: () => Promise<{ tree: string }>;
+  identityRead?: () => Promise<never>;
   view: string | null;
   demo: boolean;
   hardwareReady: boolean;
@@ -31,19 +34,22 @@ interface World {
 function mount(overrides: Partial<World> = {}) {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const log: string[] = [];
-  const world: World = { view: null, demo: false, hardwareReady: true, sessionReady: true, showResult: true, setlistKey: "set-a", presetList: undefined, ioFails: false, identityFails: false, unit: "Grid", unitIgnoresGestures: false, ...overrides };
+  const world: World = { sessionEpoch: 0, view: null, demo: false, hardwareReady: true, sessionReady: true, showResult: true, setlistKey: "set-a", presetList: undefined, ioFails: false, identityFails: false, unit: "Grid", unitIgnoresGestures: false, ...overrides };
   const latch = createQcScreenLatch();
-  const options = (): QcDeviceViewsOptions => ({
-    destination: { latch, get view() { return world.view as never; }, setView: ((next: unknown) => { world.view = typeof next === "function" ? (next as (current: string | null) => string | null)(world.view) : next as string | null; log.push(`view:${world.view}`); }) as never },
-    snapshot: { setlistKey: world.setlistKey, deviceName: "Rig" },
-    session: { demo: world.demo, hardwareReady: world.hardwareReady, sessionReady: world.sessionReady },
-    gateway: {
-      identity: async () => { if (world.identityFails) throw new Error("identity failed"); return { serial: "S1", customName: "", appFwVersion: "3.1" } as never; },
-      graphicsTree: async () => ({ tree: `zenUI::RootGraphicsItem\nzenUI::${world.unit}${world.treeText ? ` text '${world.treeText}'` : ""}` }),
+  const gateway = {
+      identity: async () => { if (world.identityRead) return world.identityRead(); if (world.identityFails) throw new Error("identity failed"); return { serial: "S1", customName: "", appFwVersion: "3.1" } as never; },
+      graphicsTree: async () => world.treeRead ? world.treeRead() : ({ tree: `zenUI::RootGraphicsItem\nzenUI::${world.unit}${world.treeText ? ` text '${world.treeText}'` : ""}` }),
       tapScreen: async (x: number, y: number) => { log.push(`tap:${x},${y}`); if (!world.unitIgnoresGestures && world.unit === "CheatSheetDialog") world.unit = "Grid"; },
       longTapScreen: async (x: number, y: number) => { log.push(`long:${x},${y}`); },
       swipeScreen: async (x: number, y: number, toX: number, toY: number) => { log.push(`swipe:${x},${y},${toX},${toY}`); if (!world.unitIgnoresGestures && world.unit === "Grid" && Math.abs(toY - y) > 245) world.unit = "CheatSheetDialog"; }
-    } as never,
+    } as never;
+  const options = (): QcDeviceViewsOptions => ({
+    sessionKey: world.sessionEpoch,
+    captureSessionCurrent: () => { const epoch = world.sessionEpoch; return () => epoch === world.sessionEpoch; },
+    destination: { latch, get view() { return world.view as never; }, setView: ((next: unknown) => { world.view = typeof next === "function" ? (next as (current: string | null) => string | null)(world.view) : next as string | null; log.push(`view:${world.view}`); }) as never },
+    snapshot: { setlistKey: world.setlistKey, deviceName: "Rig" },
+    session: { demo: world.demo, hardwareReady: world.hardwareReady, sessionReady: world.sessionReady },
+    gateway,
     screenPoll: { intervalMs: 1, timeoutMs: 6 },
     workflows: {
       performance: { showDeviceView: async (view, visible = true) => { log.push(`show:${view}:${visible}`); return world.showResult; } },
@@ -56,11 +62,12 @@ function mount(overrides: Partial<World> = {}) {
     fail: (error) => { log.push(`fail:${(error as Error).message}`); }
   });
   const seen: { current?: QcDeviceViews } = {};
-  function Probe() { seen.current = useQcDeviceViews(options()); return null; }
+  const identityFrames: unknown[] = [];
+  function Probe() { seen.current = useQcDeviceViews(options()); identityFrames.push(seen.current.deviceInformation); return null; }
   let renderer!: ReactTestRenderer;
   act(() => { renderer = create(createElement(Probe)); });
   const rerender = () => act(() => renderer.update(createElement(Probe)));
-  return { log, world, latch, rerender, get views() { return seen.current!; }, renderer };
+  return { log, world, latch, rerender, identityFrames, get views() { return seen.current!; }, renderer };
 }
 
 test("opening Gig View goes through the shared command, then loads the setlist the Gig list needs", async () => {
@@ -294,4 +301,79 @@ test("a touch the user makes on the picture of the unit's Settings is never forw
   await act(async () => { await grid.views.forwardGesture(10, 10, 10, 10, "tap"); });
   assert.deepEqual(grid.log, ["tap:10,10"], "other screens still forward the user's touch");
   grid.renderer.unmount();
+});
+
+function deferredTree() {
+  let resolve!: (tree: { tree: string }) => void;
+  const promise = new Promise<{ tree: string }>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+test("device screen reads cannot dispatch a gesture or open after the transport changes", async () => {
+  for (const action of ["gesture", "open", "close"] as const) {
+    const host = mount({ view: action === "close" ? "io-overview" : null });
+    const read = deferredTree();
+    host.world.treeRead = () => read.promise;
+    let operation!: Promise<void>;
+    await act(async () => {
+      operation = action === "gesture" ? host.views.forwardGesture(1, 2, 0, 0, "tap")
+        : action === "open" ? host.views.open("io") : host.views.close();
+      await Promise.resolve();
+    });
+    host.world.sessionEpoch++;
+    host.rerender();
+    await act(async () => {
+      read.resolve({ tree: "zenUI::RootGraphicsItem\nzenUI::" + (action === "close" ? "CheatSheetDialog" : "Grid") });
+      await operation;
+    });
+    assert.deepEqual(host.log, [], action + ": no gesture, refresh, local destination or stale notice");
+    assert.equal(host.world.view, action === "close" ? "io-overview" : null);
+    act(() => host.renderer.unmount());
+  }
+});
+
+test("closing I/O never retries its check tap after the session is replaced", async () => {
+  const host = mount({ view: "io-overview", unit: "CheatSheetDialog", unitIgnoresGestures: true });
+  const read = deferredTree();
+  let reads = 0;
+  host.world.treeRead = () => ++reads === 1
+    ? Promise.resolve({ tree: "zenUI::RootGraphicsItem\nzenUI::CheatSheetDialog" }) : read.promise;
+  let operation!: Promise<void>;
+  await act(async () => { operation = host.views.close(); for (let n = 0; n < 8; n++) await Promise.resolve(); });
+  assert.deepEqual(host.log, ["tap:743,30"]);
+  host.world.sessionEpoch++;
+  host.rerender();
+  await act(async () => { read.resolve({ tree: "zenUI::RootGraphicsItem\nzenUI::CheatSheetDialog" }); await operation; });
+  assert.deepEqual(host.log, ["tap:743,30"], "the retired route cannot send the retry or claim it closed");
+  assert.equal(host.world.view, "io-overview");
+  act(() => host.renderer.unmount());
+});
+
+test("retained device-view APIs cannot change successor session state", async () => {
+  const host = mount({ demo: true, hardwareReady: false });
+  const old = host.views;
+  host.world.sessionEpoch++;
+  host.rerender();
+  await act(async () => {
+    await old.open("io"); await old.close(); await old.toggle("gig");
+    await old.forwardGesture(1, 2, 0, 0, "tap");
+  });
+  assert.deepEqual(host.log, []);
+  assert.equal(host.world.view, null);
+  await act(async () => { await host.views.open("io"); });
+  assert.deepEqual(host.log, ["view:io-overview", "notice:Demo: I/O Settings opened."], "the successor API remains usable");
+  act(() => host.renderer.unmount());
+});
+
+test("Device Information is hidden on the first replacement render before passive reset", async () => {
+  const host = mount();
+  await act(async () => { await host.views.open("info"); });
+  assert.equal(host.views.deviceInformation?.serial, "S1");
+  host.world.identityRead = () => new Promise<never>(() => undefined);
+  host.identityFrames.length = 0;
+  host.world.sessionEpoch++;
+  host.rerender();
+  assert.equal(host.identityFrames[0], undefined, "a new session never renders the previous unit identity");
+  assert.equal(host.views.deviceInformation, undefined);
+  act(() => host.renderer.unmount());
 });

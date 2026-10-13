@@ -1,3 +1,4 @@
+import { bindDeviceCommandScope } from "./device-command-ownership.ts";
 import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import type { ConnectionSource, GatewayTransport, PresetSnapshot } from "@qc-remote/client";
 import { SupersededPresetOperation, type QcDeviceTransport } from "@qc-remote/core";
@@ -75,6 +76,7 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
   const setPending = useCallback<Dispatch<SetStateAction<boolean>>>((value) => {
     if (lifetime.current(origin)) hostCallbacks.current.setPending(value);
   }, [lifetime, origin]);
+  bindDeviceCommandScope(setPending, options.setPending);
   const fail = useCallback((error: unknown) => {
     if (!(error instanceof SupersededPresetOperation)) hostCallbacks.current.fail(error);
   }, []);
@@ -85,9 +87,10 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
   }, []);
 
   const reconcile = useCallback((incoming: PresetSnapshot) => {
+    if (!lifetime.current(origin)) return;
     const next = controller.acceptSnapshot(incoming);
     setSelectedBlockId((current) => next.blocks.some((block) => block.id === current) ? current : "");
-  }, [controller, setSelectedBlockId]);
+  }, [controller, lifetime, origin, setSelectedBlockId]);
 
   const history = useDeviceHistory({
     gateway, snapshot: controller.snapshot, connected, pending, setPending,

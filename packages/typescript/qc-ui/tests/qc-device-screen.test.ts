@@ -89,3 +89,35 @@ test("Looper X Parameters and Menu explain themselves when the preset has no Loo
     "notice:Add a Looper X block to this preset before opening its menu."
   ]);
 });
+
+test("refused Looper X commands never close the screen or open its block editor", async () => {
+  for (const action of ["close", "parameters", "menu"] as const) {
+    const host = looperHarness();
+    const options = { ...host.options, looper: { run: async () => false } };
+    const actions = qcLooperScreenActions(options);
+    await (action === "close" ? actions.onClose() : action === "parameters" ? actions.onParameters() : actions.onMenu());
+    assert.deepEqual(host.log, [], action + ": refusal cannot claim a UI transition or dispatch openBlock");
+  }
+});
+
+test("Looper X follow-up actions retire with the device session while the command is pending", async () => {
+  for (const action of ["close", "parameters", "menu"] as const) {
+    const host = looperHarness();
+    let current = true;
+    let resolve!: (accepted: boolean) => void;
+    const command = new Promise<boolean>((done) => { resolve = done; });
+    const actions = qcLooperScreenActions({ ...host.options,
+      captureSessionCurrent: () => () => current,
+      looper: { run: async () => command }
+    });
+    const pending = action === "close" ? actions.onClose() : action === "parameters" ? actions.onParameters() : actions.onMenu();
+    current = false;
+    resolve(true);
+    await pending;
+    assert.deepEqual(host.log, [], action + ": an old accepted result cannot change successor UI or openBlock");
+    await actions.onParameters();
+    await actions.onMenu();
+    await actions.onClose();
+    assert.deepEqual(host.log, [], "retained actions refuse before command admission too");
+  }
+});
