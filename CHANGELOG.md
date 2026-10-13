@@ -9,6 +9,21 @@ and are not published to a registry.
 
 ## Unreleased
 
+### Both apps
+
+- **Device Information can show the unit's own CorOS version.** The unit's
+  version reply has no CorOS field, so the CorOS row used to show the documented
+  reference version marked "(reference)". The unit does state its software
+  version in the update request it sends its host (the
+  `X-Cloud-Api-Hardware-Source-Version` header of the type-61 message, read
+  whether or not the internet switch is on; no other header is read). The session
+  now keeps that value when it is a dotted version number and the identity read
+  reports it as `corOsVersion`, for Windows and Android alike. The unit sends the
+  request only when it checks for updates, so until it has, or after the session
+  restarts, the row still shows the reference version marked as such. The header
+  was identified from the capture's header names and value length; confirm the
+  first live value against the unit's Settings > Updates screen.
+
 ### Windows
 
 - **A Quad Cortex connected to QC Remote can now use this computer's internet

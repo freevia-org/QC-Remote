@@ -2201,12 +2201,20 @@ impl DeviceController {
             ) {
                 continue;
             }
-            match runtime.observe_with_clock(message.message_type, &message.payload, || {
-                self.session_clock
-                    .elapsed()
-                    .as_millis()
-                    .min(u128::from(u64::MAX)) as u64
-            }) {
+            let observation =
+                runtime.observe_with_clock(message.message_type, &message.payload, || {
+                    self.session_clock
+                        .elapsed()
+                        .as_millis()
+                        .min(u128::from(u64::MAX)) as u64
+                });
+            // The unit states its CorOS version in its update request, not in
+            // the reply a read decodes; the session holds what it stated.
+            let observation = {
+                let owner = self.session_owner.lock_recover();
+                runtime.with_session_facts(observation, owner.observed_cor_os_version())
+            };
+            match observation {
                 ReadObservation::Matched { value } => {
                     if self.state.lock_recover().session_epoch != epoch {
                         return Err("Device session changed while decoding a QC read".into());

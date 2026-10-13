@@ -245,7 +245,11 @@ export interface DeviceIdentity {
   zencoderFwApp?: string;
   zencoderFwBootloader?: string;
   zenwirelessFwVersion?: string;
-  /** The CorOS version number, if a gateway reports it. The version reply has no field for it. */
+  /**
+   * The CorOS version number. The version reply has no field for it: the host reads it from
+   * the update request the unit sends (the `X-Cloud-Api-Hardware-Source-Version` header of
+   * its type-61 message), so it is present only once the unit has sent one this session.
+   */
   corOsVersion?: string;
 }
 

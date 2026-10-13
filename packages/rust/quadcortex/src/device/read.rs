@@ -76,6 +76,30 @@ impl GatewayReadRuntime {
         self.expectation.accepts_ingress(ingress, now_ms)
     }
 
+    /// Adds what the session itself has observed to a projected reply the device could not
+    /// state in that reply. Today that is the CorOS version in an identity reply: the unit
+    /// states it in its update request, not in the version reply. Any other read, a reply
+    /// that is not a match, or a session that has seen no version passes through unchanged.
+    pub fn with_session_facts(
+        &self,
+        observation: ReadObservation,
+        cor_os_version: Option<&str>,
+    ) -> ReadObservation {
+        match (observation, &self.projection, cor_os_version) {
+            (
+                ReadObservation::Matched { mut value },
+                GatewayResponseProjection::DeviceIdentity,
+                Some(version),
+            ) => {
+                if let Some(identity) = value.as_object_mut() {
+                    identity.insert("corOsVersion".into(), Value::String(version.to_owned()));
+                }
+                ReadObservation::Matched { value }
+            }
+            (observation, _, _) => observation,
+        }
+    }
+
     /// Decoding may be expensive (for example a screen image). Hosts call this
     /// on an operation/decoder lane, never as part of the native report reader.
     /// Rejected input does not complete the read; a later valid reply may do so
@@ -134,6 +158,54 @@ mod tests {
             ReadObservation::Matched { .. }
         ));
         assert_eq!(runtime.observe(9, &[8, 1], 150), ReadObservation::Expired);
+    }
+
+    fn identity_reply() -> Vec<u8> {
+        use crate::proto::cortex_protobuf_v2 as pa;
+        use prost::Message as _;
+        pa::VersionMessage {
+            action: pa::message_action::Enum::Update as i32,
+            device_serial_number: Some(
+                pa::version_message::DeviceSerialNumber::DeviceSerialNumber("SYN-0001".into()),
+            ),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
+    #[test]
+    fn an_identity_read_carries_the_cor_os_version_the_session_observed() {
+        let runtime = GatewayReadRuntime::new(10, GatewayResponseProjection::DeviceIdentity, 0, 50);
+        let matched = runtime.observe(10, &identity_reply(), 1);
+        let ReadObservation::Matched { value } = runtime.with_session_facts(matched, Some("4.1.0"))
+        else {
+            panic!("the identity reply no longer matches");
+        };
+        assert_eq!(value["corOsVersion"], "4.1.0");
+        assert_eq!(value["serial"], "SYN-0001");
+
+        // A session that has seen no update request leaves the field out, so a
+        // host shows its documented reference value instead of a guess.
+        let matched = runtime.observe(10, &identity_reply(), 1);
+        let ReadObservation::Matched { value } = runtime.with_session_facts(matched, None) else {
+            panic!("the identity reply no longer matches");
+        };
+        assert!(value.get("corOsVersion").is_none());
+
+        // Only an identity read takes it; and a reply that is not a match is untouched.
+        let settings =
+            GatewayReadRuntime::new(9, GatewayResponseProjection::GeneralSettings, 0, 50);
+        let matched = settings.observe(9, &[8, 1], 1);
+        let ReadObservation::Matched { value } =
+            settings.with_session_facts(matched, Some("4.1.0"))
+        else {
+            panic!("the settings reply no longer matches");
+        };
+        assert!(value.get("corOsVersion").is_none());
+        assert_eq!(
+            runtime.with_session_facts(ReadObservation::Unrelated, Some("4.1.0")),
+            ReadObservation::Unrelated
+        );
     }
 
     #[test]
