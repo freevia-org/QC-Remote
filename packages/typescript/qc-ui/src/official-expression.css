@@ -1,6 +1,8 @@
 @scope (.qc-screen-fixture-root) {
 .expression-bypass-official, .expression-bypass-official * { box-sizing: border-box; font-family: var(--qc-font-device-plain); }
-.qc-screen.expression-bypass-official { position: absolute; inset: 0; display: block; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); font-weight: 400; container-type: inline-size; }
+/* z-index 10: above every Grid hit layer (z-index 5 to 9, same stacking context). Without it the header's close X and check lay under the
+   Grid's Preset Directory, Save and menu hit areas, and a click on them opened those instead of closing the screen. */
+.qc-screen.expression-bypass-official { position: absolute; z-index: 10; inset: 0; display: block; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); font-weight: 400; container-type: inline-size; }
 .expression-bypass-official button { border: 0; color: inherit; font: inherit; }
 /* The shared navigation bar's own box, declared once in qc-screen-elements.css;
    this header's buttons ink on the same y 8..51. */
