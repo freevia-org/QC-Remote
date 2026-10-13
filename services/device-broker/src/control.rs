@@ -1158,15 +1158,15 @@ struct NativeEnv {
 fn broker_stderr_log() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        return std::env::var_os("LOCALAPPDATA")
+        std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)
-            .map(|base| base.join("QC Remote").join("broker-stderr.log"));
+            .map(|base| base.join("QC Remote").join("broker-stderr.log"))
     }
     #[cfg(target_os = "macos")]
     {
         let directory = crate::platform::paths_macos::default_directory();
         crate::platform::paths_macos::prepare_directory(&directory).ok()?;
-        return Some(directory.join("broker-stderr.log"));
+        Some(directory.join("broker-stderr.log"))
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {

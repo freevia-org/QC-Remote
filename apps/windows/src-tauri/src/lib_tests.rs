@@ -1491,8 +1491,8 @@ fn real_broker_test_lock_excludes_another_handle_and_releases_on_unwind() {
 
 /// Allocates a new directory without deleting anything from an earlier run.
 pub(crate) fn unique_fixture_directory(name: &str) -> PathBuf {
-    let parent = fs::canonicalize(std::env::temp_dir())
-        .expect("canonicalize system temporary directory");
+    let parent =
+        fs::canonicalize(std::env::temp_dir()).expect("canonicalize system temporary directory");
     unique_fixture_directory_in(&parent, name)
 }
 

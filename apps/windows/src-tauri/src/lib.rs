@@ -1953,10 +1953,7 @@ fn spawn_gateway_reader_with(
 /// this keeps every window on the one, better-tested shared-broker hosting
 /// mode (`GatewayProcess::start_shared`) instead of silently degrading to
 /// the private, unshared one (`start_owned_child`) on a resolution error.
-#[cfg(any(
-    not(any(target_os = "linux", target_os = "macos")),
-    test
-))]
+#[cfg(any(not(any(target_os = "linux", target_os = "macos")), test))]
 fn resolve_descriptor_directory(
     app_local_data_dir: Result<PathBuf, impl std::fmt::Display>,
     bundle_identifier: &str,
@@ -2926,12 +2923,7 @@ fn attach_to_spawned_device_broker(
         if Instant::now() >= deadline {
             #[cfg(test)]
             if let Ok(stderr) = fs::read(broker_stderr_path()) {
-                let tail = stderr
-                    .iter()
-                    .rev()
-                    .take(2_000)
-                    .copied()
-                    .collect::<Vec<_>>();
+                let tail = stderr.iter().rev().take(2_000).copied().collect::<Vec<_>>();
                 let tail = tail.into_iter().rev().collect::<Vec<_>>();
                 eprintln!("broker stderr tail: {}", String::from_utf8_lossy(&tail));
             }
