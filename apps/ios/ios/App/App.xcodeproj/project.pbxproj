@@ -418,7 +418,7 @@
 				CODE_SIGN_ENTITLEMENTS = ../../driverkit/QCRemoteUSBDriver.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DRIVERKIT_DEPLOYMENT_TARGET = 16.0;
+				DRIVERKIT_DEPLOYMENT_TARGET = 19.0;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ../../driverkit/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/DriverExtensions";
@@ -438,7 +438,7 @@
 				CODE_SIGN_ENTITLEMENTS = ../../driverkit/QCRemoteUSBDriver.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DRIVERKIT_DEPLOYMENT_TARGET = 16.0;
+				DRIVERKIT_DEPLOYMENT_TARGET = 19.0;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ../../driverkit/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/DriverExtensions";
