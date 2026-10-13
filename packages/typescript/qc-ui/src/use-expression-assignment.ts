@@ -107,7 +107,9 @@ export function useExpressionAssignment(options: ExpressionAssignmentOptions) {
   // MIN/MAX RANGE drags write through the shared latest-value writer. Block
   // details are not re-read after a range write, so an accepted range is kept
   // against the details it was written over until those details are replaced.
-  const ranges = useLatestValueWriter<ExpressionRange>({ pending, setPending, resetKey: held, commandSessionKey: options.commandSessionKey ?? options.sessionKey ?? options.gateway });
+  const physicalSession = useMemo(() => ({ gateway: options.gateway, key: options.sessionKey, connected, session: snapshot.stateVersion?.session }),
+    [options.gateway, options.sessionKey, connected, snapshot.stateVersion?.session]);
+  const ranges = useLatestValueWriter<ExpressionRange>({ pending, setPending, resetKey: held, commandSessionKey: options.commandSessionKey ?? physicalSession });
   const [written, setWritten] = useState<ReadonlyMap<string, { details: BlockDetails; range: ExpressionRange }>>(() => new Map());
 
   useEffect(() => {

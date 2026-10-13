@@ -32,9 +32,10 @@ export function registerDeviceCommandSession(setter: PendingSetter, key: unknown
   const root = scope(setter), previous = sessions.get(root);
   if (previous?.managed && !managed) return false;
   const changed = Boolean(previous && !Object.is(previous.key, key));
+  const retired = changed && owners.has(root);
   if (changed) owners.delete(root);
   sessions.set(root, { key, managed: managed || previous?.managed === true });
-  return changed;
+  return retired;
 }
 /** A settled wire operation releases only its own claim, even after unmount. */
 export function completeDeviceCommand(setter: PendingSetter, owner: object): void {

@@ -48,10 +48,12 @@ test("expression replies and queued writes retire permanently on disconnect, pre
           : { ...options, sessionKey: "demo" };
         renderer.update(React.createElement(Harness));
       });
-      assert.equal(pending, false);
+      // A preset change cancels callbacks, but the dispatched wire write still owns the same physical session.
+      assert.equal(pending, boundary === "preset");
       assert.equal(value.isOpen, false);
       if (boundary === "source-ABA") await act(async () => { options = { ...options, sessionKey: "usb" }; renderer.update(React.createElement(Harness)); });
       await act(async () => { old.resolve({ detail: "old reply", snapshot: initial }); });
+      assert.equal(pending, false);
       assert.equal(writes.length, 1, "Retired queued range and assign must never dispatch");
       assert.deepEqual(saved, []);
       assert.deepEqual(histories, []);

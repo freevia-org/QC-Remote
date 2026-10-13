@@ -1,4 +1,4 @@
-import { claimDeviceCommand, completeDeviceCommand, deviceCommandBusy, registerDeviceCommandSession } from "./device-command-ownership.ts";
+import { bindDeviceCommandScope, claimDeviceCommand, completeDeviceCommand, deviceCommandBusy, registerDeviceCommandSession } from "./device-command-ownership.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /** One control's write slot: at most one write in flight, newest target wins. */
@@ -109,6 +109,8 @@ export function useLatestValueWriter<T>(options: LatestValueWriterOptions) {
   const commandRunning = useRef(false);
   const pendingRef = useRef(options.pending);
   const setPendingRef = useRef(options.setPending);
+  const commandScope = useRef(options.setPending);
+  bindDeviceCommandScope(options.setPending, commandScope.current);
   const physicalKey = options.commandSessionKey ?? options.resetKey;
   if (physicalKey !== undefined) registerDeviceCommandSession(options.setPending, physicalKey, options.commandSessionKey !== undefined);
   if (!Object.is(resetKey.current, options.resetKey)) {
