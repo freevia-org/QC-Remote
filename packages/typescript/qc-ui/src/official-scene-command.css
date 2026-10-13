@@ -32,13 +32,15 @@
  * `.scene-command-grid` ghost): that ghost is the same live Grid redrawn at
  * reduced opacity as part of one fixture screen, and the real Grid
  * QuadCortexSurface already renders behind this overlay supplies that role
- * for free. The scrim below reuses that same screen-background tint
- * (var(--qc-palette-424142)) at partial opacity as an adaptation of that
- * dimming, since the ghost itself is not redrawn.
+ * for free. The scrim below is the wash the Grid's own menu lays
+ * over the chain (--qc-screen-wash-grid-menu), not a tint of its own: the unit
+ * dims the Grid behind this dialog exactly as it does behind that menu, so black
+ * reads 66,65,66 (a 424142 tint at .55 read 36,36,36), and the Grid's slots and
+ * ink take the same pre-wash values (reference-parameter-editor.css).
  */
 
 .scene-command-overlay { position: absolute; z-index: 90; inset: 0; display: grid; place-items: center; pointer-events: none; }
-.scene-command-scrim { position: absolute; inset: 0; background: var(--qc-palette-424142); opacity: .55; }
+.scene-command-scrim { position: absolute; inset: 0; background: var(--qc-screen-wash-grid-menu); }
 
 .scene-command-panel {
   position: relative;
