@@ -137,8 +137,8 @@
   place-items: center;
   border-radius: .5cqw;
   background: var(--qc-scene-badge);
-  color: var(--qc-screen-surface-base);
-  font-size: 2.75cqw;
+  color: var(--qc-palette-000000);
+  font-size: 2.875cqw;
   font-weight: 800;
   line-height: 1;
 }

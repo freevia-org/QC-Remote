@@ -27,7 +27,7 @@
 .coros-vector-screen .vector-scene-dropdown{padding:0;box-shadow:none;font-family:var(--qc-font-device-plain)}
 .coros-vector-screen .vector-scene-dropdown button{padding:0 2cqw}
 .coros-vector-screen .vector-scene-dropdown button.is-active{background:var(--qc-palette-080808)}
-.coros-vector-screen .vector-scene-dropdown button span{width:3cqw;height:3cqw;font-size:2.5cqw}
+.coros-vector-screen .vector-scene-dropdown button span{width:3cqw;height:3cqw;font-size:2.875cqw}
 .coros-vector-screen:has(.vector-scene-dropdown) .grid-scene-badge rect{fill:var(--qc-palette-686868)}
 .coros-vector-screen:has(.vector-scene-dropdown) .scene-hit{outline:0;box-shadow:none!important}
 .coros-route-picker.is-output,.coros-route-picker.is-output .route-picker-list,.coros-route-picker.is-output .route-picker-list>b{background:var(--qc-screen-surface-base)}
@@ -201,20 +201,6 @@
 .coros-device-models>button{min-height:7.5cqw;padding-left:5.625%}
 .coros-device-models .device-model-pin{margin-right:1.5cqw}
 
-.coros-tempo,.coros-tempo *{font-family:var(--qc-font-device-plain)!important}.coros-tempo{background:var(--qc-screen-background)}
-.coros-tempo>header{height:var(--qc-nav-bar-height);padding:1cqw 1cqw 1cqw 2.375cqw;font-size:2cqw}.coros-tempo>header button{width:12.25cqw;height:5.5cqw;margin-left:0;border-radius:1cqw;font-size:3cqw}.tempo-scene{width:16.5cqw;height:5.5cqw;display:grid;grid-template-columns:4.5cqw 4.75cqw 4.5cqw;align-items:center;justify-content:center;gap:.75cqw;margin-left:auto;border-radius:1cqw;background:var(--qc-screen-surface-raised);color:var(--qc-palette-8e938f);font-size:2.5cqw}.tempo-scene strong{height:3cqw;display:grid;place-items:center;border-radius:.5cqw;background:var(--qc-palette-f4d224);color:var(--qc-palette-111);font-size:2.25cqw}.tempo-scene b{font-weight:400;text-align:center}
-.coros-tempo.tempo-official>header .tempo-scene{display:none}.coros-tempo.tempo-official>header button{margin-left:auto}.coros-tempo:not(.tempo-official)>header button{margin-left:2.25cqw}
-.tempo-display{height:53.54%;grid-template-rows:1fr auto auto;padding-top:4.75cqw;background:var(--qc-screen-background)}.tempo-display strong{font-size:11.5cqw;line-height:.9}.tempo-display small{margin-top:.7cqw;font-size:2cqw}.tempo-display div{gap:13cqw;margin:5.1cqw 0 2.75cqw}.tempo-display i{width:3cqw;height:3cqw;box-shadow:0 -3cqw 0 -1cqw var(--qc-palette-181a19)}.tempo-display i.is-active{box-shadow:0 -3cqw 0 -1cqw var(--qc-palette-777a78)}
-.tempo-controls{height:45%;grid-template-columns:repeat(5,1fr);grid-template-rows:repeat(2,1fr);border-radius:1cqw;background:var(--qc-screen-surface-control)}.tempo-control{padding:1.25cqw;border-right-color:var(--qc-screen-surface-base);border-bottom-color:var(--qc-screen-background)}.tempo-control>span{font-size:2cqw}.tempo-control>strong{left:1.5cqw;bottom:1.75cqw;font-size:2cqw}.tempo-control .tempo-dial{right:1.25cqw;bottom:1cqw;width:7.5cqw;height:7.5cqw}.tempo-control.is-radio>.qc-pill-toggle~span{gap:2cqw;height:3.2cqw;font-size:2cqw}.tempo-info{position:absolute;right:1.125cqw;top:1.125cqw;width:2.75cqw;height:2.75cqw;display:grid;place-items:center;border-radius:50%;background:var(--qc-screen-text-muted);color:var(--qc-palette-303431);font-size:1.75cqw}.tempo-control.is-mute button{width:100%;height:4.75cqw;border-radius:1cqw;font-size:1.5cqw}.tempo-control.is-select button{inset:auto 1.25cqw 1.5cqw;height:4.75cqw;padding:0 1cqw;border-radius:.75cqw;font-size:2cqw}
-.tempo-control .tempo-dial{position:absolute}
-.tempo-display{position:relative;display:block;padding-top:0}.tempo-display strong{position:absolute;left:0;right:0;top:4.75cqw;text-align:center}.tempo-display small{position:absolute;left:0;right:0;top:16.5cqw;margin:0;text-align:center}.tempo-display div{position:absolute;left:0;right:0;top:25.125cqw;justify-content:center;margin:0}
-.tempo-official .tempo-display i:nth-child(3){position:relative}.tempo-official .tempo-display i:nth-child(3)::after{content:"";position:absolute;left:1cqw;top:4cqw;width:1cqw;height:1cqw;border-radius:50%;background:var(--qc-palette-444944)}
-.tempo-control.is-radio>.qc-pill-toggle+span{margin-top:1.75cqw}.tempo-control.is-mute button{transform:translateY(1cqw)}
-.tempo-display strong{top:5.125cqw}.tempo-control.is-tempo .tempo-dial,.tempo-control.is-volume .tempo-dial{right:.625cqw;width:72px;height:72px}.tempo-control.is-pan .tempo-dial{right:.75cqw;width:72px;height:72px}/* The toggle is QcPillToggle; this is placement only. The unit puts
-   the two pills at x 180.96 and 338.00, y 303.94 - 2cqw into the cell, not the
-   2.125cqw the retired box used. */
-.tempo-control.is-radio>.qc-pill-toggle{position:absolute;left:2cqw;top:5.875cqw}.tempo-control.is-radio>.qc-pill-toggle~span{position:relative;gap:2.5cqw;padding-left:4.85cqw}.tempo-control.is-select button b{position:absolute;right:2cqw;top:50%;width:0;height:0;margin-top:-.25cqw;border-left:.625cqw solid var(--qc-transparent);border-right:.625cqw solid var(--qc-transparent);border-top:.875cqw solid var(--qc-screen-text-primary);font-size:0}
-.tempo-control .tempo-dial{transform:translateY(1.25cqw)}
 .coros-gig-view.has-live-tuner{grid-template-rows:12.5% 3.3333% minmax(0,1fr)}.live-tuner-strip{background:linear-gradient(to bottom,var(--qc-screen-surface-raised) 0 50%,var(--qc-screen-surface-base) 50% 100%)}
 .gig-device-icon{top:8%}.coros-gig-view.has-live-tuner .gig-tiles strong{transform:translateY(1cqw)}
 .coros-gig-view .gig-mode svg{width:26px;height:26px;transform:translate(0,-1px)}.coros-gig-view .gig-mode svg.qc-mode-glyph-scene{transform:translate(-1px,0)}.coros-gig-view .gig-mode svg.qc-mode-glyph-preset{width:24px;height:24px;transform:translate(-2px,-1px)}
