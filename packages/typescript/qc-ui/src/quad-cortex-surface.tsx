@@ -24,7 +24,7 @@ import { QC_HOLD_DELAY_MS, useHoldGesture } from "./use-hold-gesture";
 import { hardwareRotaryPixelsPerStep, useRotaryGesture } from "./use-rotary-gesture";
 import { CorOsDirectory } from "./coros-directory";
 import type { PresetDirectoryState } from "./directory-library-model";
-import { GRID_CONTEXT_MENU, gridBlocksByRow, mixAnchorX, openSplitPath, PRESET_LOCATION_TRACKING, presetTitleLayout, presetTitlePresentation, rejoinSplitPath, routedPortIsPlugged, rowHasVisibleSignalRail, splitAnchorX, type CorOsContextAction } from "./coros-ui";
+import { GRID_CONTEXT_MENU, gridBlocksByRow, mixAnchorX, openSplitPath, PRESET_LOCATION_TRACKING, presetTitleLayout, presetTitlePresentation, RAIL_LABEL_FONT_SIZE, RAIL_LABEL_LINE_STEP, railLabelBaseline, rejoinSplitPath, routedPortIsPlugged, rowHasVisibleSignalRail, splitAnchorX, type CorOsContextAction } from "./coros-ui";
 // The Grid path never loads the screen fixtures, so the shared element library
 // is imported here too - and first, for the same reason it is imported first
 // there: it is the base the screen files refine, not a patch applied over them.
@@ -635,8 +635,8 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   const railLabel = (label: string | undefined, x: number, y: number) => {
     const lines = routeLines(label);
     if (label === "+") return railMark(x, y);
-    const firstY = y - (lines.length - 1) * 8.5;
-    return <text x={x} y={firstY} fill={QC_COLORS.reference.routeText} stroke="none" fontFamily={QC_TYPOGRAPHY.deviceRoute} fontWeight="400" fontSize="14.5">{lines.map((line, index) => <tspan key={`${line}-${index}`} x={x} dy={index ? 17 : 0}>{line}</tspan>)}</text>;
+    const firstY = railLabelBaseline(y, lines.length);
+    return <text x={x} y={firstY} fill={QC_COLORS.reference.routeText} stroke="none" fontFamily={QC_TYPOGRAPHY.deviceRoute} fontWeight="400" fontSize={RAIL_LABEL_FONT_SIZE}>{lines.map((line, index) => <tspan key={`${line}-${index}`} x={x} dy={index ? RAIL_LABEL_LINE_STEP : 0}>{line}</tspan>)}</text>;
   };
   // A port item keeps three pixels of screen colour around it, exactly as a block
   // tile does (TILE_MARGIN in device-glyph.tsx). grid-base fills the input rail to

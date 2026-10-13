@@ -33,6 +33,17 @@ export const PRESET_TITLE_RIGHT_EDGE = 564;
    them is short, by 1.6px per glyph across the header's 1.012 x-scale. */
 export const PRESET_LOCATION_TRACKING = 0.5;
 
+/* A port pill's label, as the unit draws it. Measured on grid-base and nine
+   more corpus frames: two lines of 11px caps (a 16px IBM Plex face) whose tops
+   are 21px apart, the pair's ink centred 1.5px above the row centre
+   ("Multi" spans 33px). The label is an SVG text whose first baseline is
+   railLabelBaseline(row centre, line count). */
+export const RAIL_LABEL_FONT_SIZE = 16;
+export const RAIL_LABEL_LINE_STEP = 21;
+export function railLabelBaseline(centreY: number, lineCount: number): number {
+  return centreY + 4.5 - (lineCount - 1) * (RAIL_LABEL_LINE_STEP / 2);
+}
+
 export function presetTitlePresentation(name: string, dirty: boolean) {
   const normalizedName = name.trim() || "Unsaved";
   // CorOS can publish the dirty marker in the displayed name before the

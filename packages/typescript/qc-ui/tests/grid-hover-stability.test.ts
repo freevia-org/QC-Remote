@@ -98,6 +98,10 @@ export async function render(presentation) {
         await new Promise((resolve) => setTimeout(resolve, 600));
         const before = await page.evaluate(PROBE) as Probe;
         assert.equal(before.labels.length, 10, `${where}: the number, the name and four port labels per side are found (${before.labels.map((label) => label.label).join(", ")})`);
+        // The unit draws a port label as 16px caps in two lines whose tops are 21 canvas px apart (measured on grid-base and nine more corpus frames).
+        for (const label of before.labels.filter((entry) => /^(In|Multi)/.test(entry.label))) assert.equal(label.fontSize, "16px", `${where}: "${label.label}" is the unit's 16px`);
+        const steps = await page.evaluate("[...document.querySelectorAll('svg.coros-vector-canvas text')].filter((text) => /^(In|Multi)/.test(text.textContent.trim())).map((text) => text.querySelectorAll('tspan')[1].getAttribute('dy'))") as string[];
+        assert.deepEqual([...new Set(steps)], ["21"], `${where}: the second line of a port label is 21 canvas px below the first`);
         const idle = decodePng(await page.screenshot());
         // Targets whose own hover outline cannot touch a label: Grid cells and controls that do not overlap any label box.
         const clear = before.hits.filter((hit) => /coros-vector-(add|block)-hit/.test(hit.kind) && !before.labels.some((label) => overlaps(hit.box, label.box, 8)));
