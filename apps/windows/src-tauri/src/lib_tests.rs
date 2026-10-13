@@ -3899,10 +3899,10 @@ fn a_tool_call_racing_a_failing_tool_call_still_recovers_the_broker() {
         device_broker_descriptor::unix_time_ms(),
     )
     .expect("the recovered broker is published where the gateway meets it");
-    adapter.stop();
     let mut broker_child = adapter
         .take_hosted_broker_child()
         .expect("the adapter owns the recovered broker child");
+    adapter.stop();
     let exited = wait_for_broker_child_exit(&mut broker_child, Duration::from_secs(12));
     if !exited {
         print_broker_stderr_tail_on_failure();
