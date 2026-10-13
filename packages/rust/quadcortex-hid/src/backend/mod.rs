@@ -20,6 +20,8 @@ pub(crate) enum WriteStallPolicy {
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{device_id, write_report_delivered, SharedLinuxHid as NativeHid};
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{device_id, write_report_delivered, SharedMacosHid as NativeHid};
+pub(crate) use macos::{
+    device_id, with_hid_thread, write_report_delivered, SharedMacosHid as NativeHid,
+};
 #[cfg(windows)]
 pub(crate) use windows::{device_id, write_report_delivered, SharedWindowsHid as NativeHid};

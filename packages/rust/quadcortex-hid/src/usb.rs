@@ -863,7 +863,6 @@ pub struct QcUsb {
     owner: Arc<Mutex<SessionRuntime>>,
     connection_identity: u64,
     session_clock: Instant,
-    _api: HidApi,
     next_sequence: u64,
     /// Whether the latest `read_message` received no HID report: an idle poll
     /// or the reader's idle marker. A partial frame is not an empty read.
@@ -923,6 +922,14 @@ pub(crate) fn macos_device_identity(path: &CStr, serial: Option<&str>) -> String
 }
 
 pub fn connected_devices() -> Result<Vec<QcUsbDevice>, UsbError> {
+    #[cfg(target_os = "macos")]
+    return crate::backend::with_hid_thread(connected_devices_on_hid_thread);
+
+    #[cfg(not(target_os = "macos"))]
+    connected_devices_on_hid_thread()
+}
+
+fn connected_devices_on_hid_thread() -> Result<Vec<QcUsbDevice>, UsbError> {
     let api = HidApi::new().map_err(|error| UsbError::Hid(error.to_string()))?;
     let mut devices: Vec<_> = api
         .device_list()
@@ -1053,23 +1060,47 @@ impl QcUsb {
         session_clock: &Instant,
         device_id: Option<&str>,
     ) -> Result<Self, UsbError> {
-        let api = HidApi::new().map_err(|error| UsbError::Hid(error.to_string()))?;
-        // Enumerate the entire vendor, admit members of the shared
-        // product-ID set, then select the lexicographically first HID path.
-        // Do not prioritize one product ID or filter by interface use.
-        let (path, selected_identity) = selected_supported_path(
-            api.device_list().map(|candidate| {
-                (
-                    candidate.vendor_id(),
-                    candidate.product_id(),
-                    candidate.path(),
-                    crate::backend::device_id(candidate),
+        #[cfg(target_os = "macos")]
+        let device = {
+            let requested_device_id = device_id.map(str::to_owned);
+            crate::backend::with_hid_thread(move || {
+                let api = HidApi::new().map_err(|error| UsbError::Hid(error.to_string()))?;
+                // Keep selection and open on the same HID thread as discovery.
+                let (path, selected_identity) = selected_supported_path(
+                    api.device_list().map(|candidate| {
+                        (
+                            candidate.vendor_id(),
+                            candidate.product_id(),
+                            candidate.path(),
+                            crate::backend::device_id(candidate),
+                        )
+                    }),
+                    requested_device_id.as_deref(),
                 )
-            }),
-            device_id,
-        )
-        .ok_or(UsbError::NotAvailable)?;
-        let device = NativeHid::open(&api, path, &selected_identity)?;
+                .ok_or(UsbError::NotAvailable)?;
+                NativeHid::open(&api, path, &selected_identity)
+            })?
+        };
+        #[cfg(not(target_os = "macos"))]
+        let device = {
+            let api = HidApi::new().map_err(|error| UsbError::Hid(error.to_string()))?;
+            // Enumerate the entire vendor, admit members of the shared
+            // product-ID set, then select the lexicographically first HID path.
+            // Do not prioritize one product ID or filter by interface use.
+            let (path, selected_identity) = selected_supported_path(
+                api.device_list().map(|candidate| {
+                    (
+                        candidate.vendor_id(),
+                        candidate.product_id(),
+                        candidate.path(),
+                        crate::backend::device_id(candidate),
+                    )
+                }),
+                device_id,
+            )
+            .ok_or(UsbError::NotAvailable)?;
+            NativeHid::open(&api, path, &selected_identity)?
+        };
         let connection_identity = owner
             .lock_recover()
             .opened(session_clock.elapsed().as_millis() as u64)
@@ -1090,7 +1121,6 @@ impl QcUsb {
             owner,
             connection_identity,
             session_clock: *session_clock,
-            _api: api,
             next_sequence: 1,
             last_read_was_empty: false,
             report_layout: ReportLayout::ReportIdPrefixed,
