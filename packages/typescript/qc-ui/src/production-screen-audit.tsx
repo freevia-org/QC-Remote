@@ -51,7 +51,7 @@ export function CorOsProductionScreenAudit({ view, snapshot }: { view: string; s
   } satisfies Partial<IoEqWorkflow> as IoEqWorkflow;
   const looper = {
     status: { state: 0, loopLength: 12_672_000, freeSamples: 12_672_000, oneShot: false, halfSpeed: false, redoAvailable: false },
-    loading: false, pending: false, async refresh() {}, async run() {}
+    loading: false, pending: false, async refresh() {}, async run() { return false; }
   };
   const modes = { slots: [0, 6], loading: false, pending: false, async refresh() {}, async commit() {} };
   // The audit never talks to a device. Its MIDI Out writes succeed locally so
