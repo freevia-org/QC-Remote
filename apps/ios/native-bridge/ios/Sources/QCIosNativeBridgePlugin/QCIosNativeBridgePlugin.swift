@@ -5,6 +5,11 @@ import UIKit
 import CoreMIDI
 import Darwin
 
+private let qcMidiTransportTypeProperty = "transportType" as CFString
+private let qcMidiTransportTypeUSB: Int32 = 1
+private let qcParamErr: OSStatus = -50
+private let qcMemFullErr: OSStatus = -108
+
 @_silgen_name("qc_ios_report_size")
 private func qcIosReportSize() -> Int
 
@@ -835,8 +840,8 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         for index in 0..<MIDIGetNumberOfDevices() {
             let device = MIDIGetDevice(index)
             var transport: Int32 = 0
-            guard MIDIObjectGetIntegerProperty(device, kMIDIPropertyTransportType, &transport) == noErr,
-                  transport == Int32(kMIDITransportType_USB) else { continue }
+            guard MIDIObjectGetIntegerProperty(device, qcMidiTransportTypeProperty, &transport) == noErr,
+                  transport == qcMidiTransportTypeUSB else { continue }
             let name = midiString(device, key: kMIDIPropertyName)
             let manufacturer = midiString(device, key: kMIDIPropertyManufacturer)
             var uniqueID: Int32 = 0
@@ -892,10 +897,10 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             var packetList = MIDIPacketList()
             let bytes = [UInt8(0xB0 | (channel - 1)), UInt8(controller), UInt8(value)]
             let status = bytes.withUnsafeBufferPointer { buffer -> OSStatus in
-                guard let baseAddress = buffer.baseAddress else { return paramErr }
+                guard let baseAddress = buffer.baseAddress else { return qcParamErr }
                 var packet = MIDIPacketListInit(&packetList)
                 packet = MIDIPacketListAdd(&packetList, UInt32(MemoryLayout<MIDIPacketList>.size), packet, 0, UInt16(bytes.count), baseAddress)
-                guard packet != nil, let output = midiOutput, let destination = midiDestination else { return memFullErr }
+                guard packet != nil, let output = midiOutput, let destination = midiDestination else { return qcMemFullErr }
                 return MIDISend(output, destination, &packetList)
             }
             guard status == noErr else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
@@ -910,10 +915,10 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         }
         var packetList = MIDIPacketList()
         let status = bytes.withUnsafeBufferPointer { buffer -> OSStatus in
-            guard let baseAddress = buffer.baseAddress else { return paramErr }
+            guard let baseAddress = buffer.baseAddress else { return qcParamErr }
             var packet = MIDIPacketListInit(&packetList)
             packet = MIDIPacketListAdd(&packetList, UInt32(MemoryLayout<MIDIPacketList>.size), packet, 0, UInt16(bytes.count), baseAddress)
-            guard packet != nil else { return memFullErr }
+            guard packet != nil else { return qcMemFullErr }
             return MIDISend(output, destination, &packetList)
         }
         guard status == noErr else {
