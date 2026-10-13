@@ -746,6 +746,13 @@ impl LeaseHolder {
     /// Takes the claim before the device is opened. `Err(holder)` names a live
     /// process that owns the unit; the caller must not open it.
     pub fn acquire(&mut self) -> Result<(), LeaseRecord> {
+        self.acquire_with_replacer(replace_own)
+    }
+
+    fn acquire_with_replacer(
+        &mut self,
+        mut replace: impl FnMut(&Path, &LeaseRecord) -> std::io::Result<()>,
+    ) -> Result<(), LeaseRecord> {
         if let Some(directory) = self.shared_directory.take() {
             prepare_shared_directory(&directory);
         }
@@ -779,7 +786,12 @@ impl LeaseHolder {
                         self.since_unix_ms = existing.since_unix_ms;
                     }
                     let current = own_record(&self.role, self.since_unix_ms);
-                    let _ = replace_own(&self.path, &current);
+                    replace(&self.path, &current).map_err(|_| transition_wait_record())?;
+                    if !read_record(&self.path)
+                        .is_some_and(|landed| same_generation(&landed, &current))
+                    {
+                        return Err(transition_wait_record());
+                    }
                     self.mark_held();
                     return Ok(());
                 }
@@ -792,9 +804,10 @@ impl LeaseHolder {
                     }
                 }
                 None if self.path.exists() => {
-                    // Unreadable: no live holder can be named from it. It was
-                    // written whole (hard link), so it is debris.
-                    let _ = std::fs::remove_file(&self.path);
+                    // Corruption or temporary read denial is not evidence that
+                    // a recorded owner's native session is gone. Never replace
+                    // an existing claim without an attributable stale owner.
+                    return Err(transition_wait_record());
                 }
                 None => {}
             }
@@ -802,7 +815,7 @@ impl LeaseHolder {
                 // Verify we are the one that landed (a racing opener's remove
                 // can interleave with ours).
                 match read_record(&self.path) {
-                    Some(landed) if is_own(&landed) => {
+                    Some(landed) if same_generation(&landed, &record) => {
                         self.mark_held();
                         return Ok(());
                     }
@@ -1360,11 +1373,71 @@ mod tests {
             opener.release();
         }
 
-        // Debris that is not a record at all never blocks the device.
+        // A malformed claim cannot prove that the recorded owner is gone.
         std::fs::write(&path, b"{ not json").unwrap();
-        opener.acquire().expect("unreadable record");
-        opener.release();
-        assert!(!path.exists());
+        assert!(opener.acquire().is_err());
+        assert!(!opener.is_held());
+        assert_eq!(held_count(&path), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), b"{ not json");
+    }
+
+    #[test]
+    fn failed_or_unverified_own_record_refresh_never_reports_acquired() {
+        for failure in [true, false] {
+            let name = if failure {
+                "refresh-error"
+            } else {
+                "refresh-noop"
+            };
+            let (_directory, path) = scratch(name);
+            let previous = own_record("old deferred release", unix_ms().saturating_sub(10));
+            write_record(&path, &previous);
+            let before = std::fs::read(&path).unwrap();
+            let mut opener = holder(&path);
+            let mut replacer_called = false;
+            let result = opener.acquire_with_replacer(|replacement_path, replacement| {
+                replacer_called = true;
+                assert_eq!(replacement_path, path);
+                assert!(!same_generation(replacement, &previous));
+                if failure {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "simulated replacement failure",
+                    ))
+                } else {
+                    // Simulate a helper that claims success without persisting.
+                    Ok(())
+                }
+            });
+            assert!(replacer_called, "the injected replacement path was exercised");
+            assert!(result.is_err());
+            assert!(!opener.is_held());
+            assert_eq!(held_count(&path), 0);
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(read_record(&path), Some(previous.clone()));
+
+            // Once persistence works, the newly recorded generation is held;
+            // delayed cleanup for the old generation cannot erase it.
+            opener.acquire().expect("real replacement persists");
+            assert!(opener.is_held());
+            let current = read_record(&path).unwrap();
+            assert_eq!(current.since_unix_ms, opener.since_unix_ms);
+            assert!(!same_generation(&current, &previous));
+            let pending = PendingLeaseRelease {
+                paths: vec![path.clone()],
+                generation: previous,
+            };
+            let _transition = LeaseTransitionGuard::acquire(
+                std::slice::from_ref(&path),
+                Duration::from_millis(100),
+            )
+            .unwrap();
+            assert!(remove_release_generation_locked(&pending));
+            assert_eq!(read_record(&path), Some(current));
+            drop(_transition);
+            opener.release();
+            assert_eq!(held_count(&path), 0);
+        }
     }
 
     #[test]
