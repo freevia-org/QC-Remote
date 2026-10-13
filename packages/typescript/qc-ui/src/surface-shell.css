@@ -691,7 +691,7 @@
 .directory-tools button { flex: 0 0 19%; display: grid; place-items: center; padding: 0; border-radius: 0.875cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
 .directory-tools button:hover { background: var(--qc-palette-2c322d); color: var(--qc-palette-43ed73); }
 .directory-tools button.is-active { background: var(--qc-palette-183b24); color: var(--qc-palette-43ef72); }
-.directory-tools svg { width: 38%; height: auto; aspect-ratio: 1; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.directory-tools svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .directory-tool-divider { width: 1px; margin: 8% 0; background: var(--qc-palette-434844); }
 .directory-tools .directory-close { flex-basis: 28%; background: var(--qc-screen-surface-control); }
 .coros-directory-body { min-height: 0; display: grid; grid-template-columns: 32% 15% minmax(0, 1fr); gap: 1%; padding: 0 1% 1%; }
@@ -869,4 +869,8 @@
 .directory-folders button span .directory-nav-badge .badge-plate { fill: var(--qc-editor-disabled-shadow); }
 .directory-folders button span .directory-nav-badge .badge-disc { fill: var(--qc-screen-text-primary); }
 .directory-folders button span .directory-nav-badge .badge-arrow { fill: var(--qc-editor-disabled-shadow); stroke: none; }
-.directory-folders button .directory-folder-more { --qc-screen-glyph-size: 3cqw; margin-right: -.75cqw; display: grid; place-items: center; color: var(--qc-palette-747976); }
+/* Same mark as the preset rows' kebab: the 24px box ends 9px inside the panel
+   (dots on x 242-244) and the unit sets its middle dot a pixel
+   below the row's centre. */
+.coros-directory .directory-folders button .directory-folder-more { flex: none; width: 3cqw; height: 3cqw; margin-right: -.875cqw; translate: 0 1px; display: block; color: var(--qc-icon-toolbar-muted); font-size: 3cqw; }
+.coros-directory .directory-folders button .directory-folder-more svg { display: block; width: 100%; height: 100%; }
