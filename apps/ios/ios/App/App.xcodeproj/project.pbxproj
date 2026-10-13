@@ -120,6 +120,9 @@
 			files = (
 			);
 			name = "Build QC Rust Runtime";
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/libquadcortex_ios_ffi.a",
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "/bin/sh \"${SRCROOT}/../../tools/build-ios-rust-ffi.sh\"";
