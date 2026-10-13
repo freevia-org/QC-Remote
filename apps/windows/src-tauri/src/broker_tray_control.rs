@@ -76,6 +76,8 @@ pub trait TrayEffects: Send + Sync {
         directory: &Path,
         supersede_user_quit: bool,
     ) -> Result<(), String>;
+    #[cfg(target_os = "macos")]
+    fn validate_run_entry(&self, executable: &Path) -> Result<(), String>;
     fn set_run_entry(&self, executable: &Path, directory: &Path) -> Result<(), String>;
     fn remove_run_entry(&self) -> Result<(), String>;
 }
@@ -168,26 +170,61 @@ impl<E: TrayEffects> BrokerTrayControl<E> {
                 None => broker_tray_settings_in(&self.directory),
             };
             if settings.tray_enabled {
-                // The user's own switch turned on (`set_enabled(true)`) is an
-                // explicit background start: its one clear point for a
-                // recorded Quit, under the election lock, whether or not a
-                // spawn follows (a quitting resident may still hold its
-                // marker). The startup reconcile never clears.
-                if enabled == Some(true) {
-                    crate::acknowledge_user_connect_in(
-                        &crate::device_broker_descriptor::device_broker_descriptor_path(
-                            &self.directory,
-                        ),
-                    )?;
+                let transition = (|| {
+                    #[cfg(not(target_os = "macos"))]
+                    if enabled == Some(true) {
+                        crate::acknowledge_user_connect_in(
+                            &crate::device_broker_descriptor::device_broker_descriptor_path(
+                                &self.directory,
+                            ),
+                        )?;
+                    }
+                    let executable = self.effects.locate()?;
+                    #[cfg(target_os = "macos")]
+                    self.effects.validate_run_entry(&executable)?;
+                    // The user's own switch turned on is an explicit start:
+                    // clear a recorded Quit once before spawning. Validate the
+                    // app location first so a rejected macOS install does not
+                    // consume that user intent. Startup reconcile never clears.
+                    #[cfg(target_os = "macos")]
+                    if enabled == Some(true) {
+                        crate::acknowledge_user_connect_in(
+                            &crate::device_broker_descriptor::device_broker_descriptor_path(
+                                &self.directory,
+                            ),
+                        )?;
+                    }
+                    if !self.effects.is_running() {
+                        // Always keep a later Quit; only the setting transition
+                        // above is allowed to supersede the existing record.
+                        self.effects.spawn(&executable, &self.directory, false)?;
+                    }
+                    self.effects.set_run_entry(&executable, &self.directory)
+                })();
+                match transition {
+                    Ok(()) => Ok(()),
+                    Err(error) => {
+                        #[cfg(target_os = "macos")]
+                        {
+                            // Failed macOS startup must not leave the preference
+                            // claiming that a resident/login item is enabled.
+                            // Removing the owned plist also clears a stale path
+                            // after moving the app; it does not boot out a live
+                            // broker, which follows its normal disabled drain.
+                            let mut error = rollback_macos_enable(&self.directory, error);
+                            if let Err(cleanup_error) = self.effects.remove_run_entry() {
+                                error.push_str(&format!(
+                                    "; could not remove the QC Remote login item: {cleanup_error}"
+                                ));
+                            }
+                            Err(error)
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            Err(error)
+                        }
+                    }
                 }
-                let executable = self.effects.locate()?;
-                if !self.effects.is_running() {
-                    // Always `--keep-user-quit`: the switch cleared above, at
-                    // its one point; the resident never clears again, and a
-                    // Quit recorded since stands.
-                    self.effects.spawn(&executable, &self.directory, false)?;
-                }
-                self.effects.set_run_entry(&executable, &self.directory)
             } else {
                 // The running broker reads the switch within a second, drops
                 // its icon and host, and reaps itself after the grace once
@@ -214,6 +251,16 @@ impl<E: TrayEffects> BrokerTrayControl<E> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = result.as_ref().err().cloned();
         result.map(|()| self.status())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn rollback_macos_enable(directory: &Path, error: String) -> String {
+    match set_tray_enabled_in(directory, false) {
+        Ok(_) => error,
+        Err(rollback_error) => format!(
+            "{error}; QC Remote could not turn the background setting back off: {rollback_error}"
+        ),
     }
 }
 
@@ -329,6 +376,11 @@ impl TrayEffects for NativeTrayEffects {
                     .to_owned(),
             )
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn validate_run_entry(&self, executable: &Path) -> Result<(), String> {
+        macos::validate_run_entry_location(executable)
     }
 
     fn spawn(
@@ -598,6 +650,10 @@ mod tests {
             self.event("locate")?;
             Ok(self.directory.join("qc-device-broker.exe"))
         }
+        #[cfg(target_os = "macos")]
+        fn validate_run_entry(&self, _executable: &Path) -> Result<(), String> {
+            self.event("run-validate")
+        }
         fn spawn(
             &self,
             _executable: &Path,
@@ -651,16 +707,18 @@ mod tests {
         let control = controller(&dir.0, &state);
         set_tray_enabled_in(&dir.0, false).unwrap();
         let enabled = control.set_enabled(true).unwrap();
-        assert_eq!(
-            *state.events.lock().unwrap(),
-            ["locate", "spawn", "run-add"]
-        );
+        #[cfg(target_os = "macos")]
+        let enabled_events = ["locate", "run-validate", "spawn", "run-add"];
+        #[cfg(not(target_os = "macos"))]
+        let enabled_events = ["locate", "spawn", "run-add"];
+        assert_eq!(*state.events.lock().unwrap(), enabled_events);
         assert!(enabled.tray_enabled && enabled.tray_running && !enabled.tray_stopping);
         let disabled = control.set_enabled(false).unwrap();
-        assert_eq!(
-            *state.events.lock().unwrap(),
-            ["locate", "spawn", "run-add", "run-remove"]
-        );
+        #[cfg(target_os = "macos")]
+        let completed_events = ["locate", "run-validate", "spawn", "run-add", "run-remove"];
+        #[cfg(not(target_os = "macos"))]
+        let completed_events = ["locate", "spawn", "run-add", "run-remove"];
+        assert_eq!(*state.events.lock().unwrap(), completed_events);
         assert!(!disabled.tray_enabled && disabled.tray_running && disabled.tray_stopping);
         state.running.store(false, Ordering::SeqCst);
         assert!(!control.status().tray_stopping);
@@ -690,15 +748,20 @@ mod tests {
         let control = controller(&dir.0, &state);
         assert!(control.reconcile().unwrap().tray_running);
         assert!(!dir.0.join("device-broker-tray.json").exists());
-        assert_eq!(
-            *state.events.lock().unwrap(),
-            ["locate", "spawn", "run-add"]
-        );
+        #[cfg(target_os = "macos")]
+        let startup_events = ["locate", "run-validate", "spawn", "run-add"];
+        #[cfg(not(target_os = "macos"))]
+        let startup_events = ["locate", "spawn", "run-add"];
+        assert_eq!(*state.events.lock().unwrap(), startup_events);
         state.events.lock().unwrap().clear();
         control.reconcile().unwrap();
+        #[cfg(target_os = "macos")]
+        let running_events = ["locate", "run-validate", "run-add"];
+        #[cfg(not(target_os = "macos"))]
+        let running_events = ["locate", "run-add"];
         assert_eq!(
             *state.events.lock().unwrap(),
-            ["locate", "run-add"],
+            running_events,
             "an already-running tray must not receive a menu-opening second launch"
         );
         set_tray_enabled_in(&dir.0, false).unwrap();
@@ -794,8 +857,19 @@ mod tests {
             let enabled = failure != "run-remove";
             let error = control.set_enabled(enabled).unwrap_err();
             assert_eq!(control.status().last_error, Some(error.clone()));
-            assert_eq!(control.status().tray_enabled, enabled);
-            assert_eq!(state.events.lock().unwrap().last(), Some(&failure));
+            #[cfg(target_os = "macos")]
+            let expected_enabled = enabled && !matches!(failure, "locate" | "spawn" | "run-add");
+            #[cfg(not(target_os = "macos"))]
+            let expected_enabled = enabled;
+            assert_eq!(control.status().tray_enabled, expected_enabled);
+            #[cfg(target_os = "macos")]
+            let expected_last_event = if enabled { "run-remove" } else { failure };
+            #[cfg(not(target_os = "macos"))]
+            let expected_last_event = failure;
+            assert_eq!(
+                state.events.lock().unwrap().last(),
+                Some(&expected_last_event)
+            );
             control.set_idle_minutes(&json!(30)).unwrap();
             assert_eq!(control.status().last_error, Some(error));
             *state.fail.lock().unwrap() = None;
@@ -810,6 +884,39 @@ mod tests {
             control.status().last_error.as_deref(),
             Some("fake locate failure")
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_macos_enable_transition_rolls_back_preference_and_removes_stale_login_entry() {
+        for (failure, expected_events) in [
+            ("locate", vec!["locate", "run-remove"]),
+            ("run-validate", vec!["locate", "run-validate", "run-remove"]),
+            (
+                "spawn",
+                vec!["locate", "run-validate", "spawn", "run-remove"],
+            ),
+            (
+                "run-add",
+                vec!["locate", "run-validate", "spawn", "run-add", "run-remove"],
+            ),
+        ] {
+            let dir = Scratch::new();
+            let state = Arc::new(FakeState::default());
+            *state.fail.lock().unwrap() = Some(failure);
+            let control = controller(&dir.0, &state);
+
+            let error = control.set_enabled(true).unwrap_err();
+
+            assert_eq!(error, format!("fake {failure} failure"));
+            assert!(!control.status().tray_enabled, "{failure}");
+            assert_eq!(
+                control.status().last_error.as_deref(),
+                Some(error.as_str()),
+                "{failure}"
+            );
+            assert_eq!(*state.events.lock().unwrap(), expected_events, "{failure}");
+        }
     }
 
     #[test]
@@ -908,17 +1015,22 @@ mod tests {
             let disable = scope.spawn(|| second.set_enabled(false).unwrap());
             std::thread::sleep(Duration::from_millis(50));
             assert!(broker_tray_settings_in(&dir.0).tray_enabled);
-            assert_eq!(*state.events.lock().unwrap(), ["locate", "spawn"]);
+            #[cfg(target_os = "macos")]
+            let in_flight_events = ["locate", "run-validate", "spawn"];
+            #[cfg(not(target_os = "macos"))]
+            let in_flight_events = ["locate", "spawn"];
+            assert_eq!(*state.events.lock().unwrap(), in_flight_events);
             let (lock, condition) = &state.release_spawn;
             *lock.lock().unwrap() = true;
             condition.notify_all();
             enable.join().unwrap();
             assert!(disable.join().unwrap().tray_stopping);
         });
-        assert_eq!(
-            *state.events.lock().unwrap(),
-            ["locate", "spawn", "run-add", "run-remove"]
-        );
+        #[cfg(target_os = "macos")]
+        let completed_events = ["locate", "run-validate", "spawn", "run-add", "run-remove"];
+        #[cfg(not(target_os = "macos"))]
+        let completed_events = ["locate", "spawn", "run-add", "run-remove"];
+        assert_eq!(*state.events.lock().unwrap(), completed_events);
         assert!(!first.status().tray_enabled);
     }
 
