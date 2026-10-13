@@ -23,7 +23,7 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 | Platform | Current release | Download | Store |
 | --- | --- | --- | --- |
 | Windows 10/11, x64 | 0.1.182 | [Signed installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/QC-Remote-Windows-0.1.182-x64-setup.exe) | Microsoft Store: pending |
-| Ubuntu 24.04, x86_64 | 0.1.186 | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.186/qc-remote_0.1.186_amd64.deb) | — |
+| Ubuntu 24.04, x86_64 | 0.1.187 | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.187/qc-remote_0.1.187_amd64.deb) | — |
 | Android 7.0+, USB host/OTG | 0.3.36 GitHub APK; 0.3.37 (build 42) internal test | [Signed APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/qc-remote-0.3.36.apk) | [Invited Google Play test](https://play.google.com/apps/internaltest/4701527491652130240); [public listing](https://play.google.com/store/apps/details?id=org.freevia.qcremote) pending review |
 | iPhone and iPad | Development preview; not released | Build from [`apps/ios`](apps/ios/README.md) | — |
 
@@ -34,12 +34,7 @@ requires Apple-approved DriverKit entitlements and hardware validation. See
 
 The Windows and Android downloads remain on the stable
 [v0.1.182 release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.182).
-Linux 0.1.186 is the Ubuntu 24.04 x86_64 release; see its
-[release notes and checksums](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.186).
-It has signed GitHub build provenance. Runtime acceptance used Ubuntu 24.04
-x86_64 under WSL2 with Xfce and a physical Quad Cortex attached through USB/IP;
-bare-metal Linux is not covered. See the [Linux setup guide](docs/USER-GUIDE.md#linux) and
-[package verification instructions](docs/USER-GUIDE.md#verify-the-linux-download).
+Linux 0.1.187 is for Ubuntu 24.04 x86_64 with signed GitHub build provenance. Exact-package testing passed for installation, native app/tray, MCP, and connected-device control and recovery on Ubuntu 24.04 WSL2/Xfce with a physical Quad Cortex over USB/IP. Bare-metal Linux has not been tested. See the [Linux 0.1.187 release notes](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.187), [Linux setup guide](docs/USER-GUIDE.md#linux), and [package verification instructions](docs/USER-GUIDE.md#verify-the-linux-download).
 
 QC Remote was developed and tested with Quad Cortex firmware (CorOS) 4.1.0. It
 does not contain, replace, or modify Quad Cortex firmware, and it does not

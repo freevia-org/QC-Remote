@@ -80,11 +80,11 @@ directly.
   the phone. Its file name has the form `qc-remote-<version>.apk`. The release
   also carries a `.aab` file; that is the Android App Bundle prepared for
   Google Play, not something to install on a phone.
-- **Linux (Ubuntu 24.04, x86_64; v0.1.186 release).** Download
-  [`qc-remote_0.1.186_amd64.deb`](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.186/qc-remote_0.1.186_amd64.deb)
-  from the [v0.1.186 release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.186),
+- **Linux (Ubuntu 24.04, x86_64; v0.1.187 release).** Download
+  [`qc-remote_0.1.187_amd64.deb`](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.187/qc-remote_0.1.187_amd64.deb)
+  from the [v0.1.187 release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.187),
   [verify the download](#verify-the-linux-download), then install it with
-  `sudo apt install ./qc-remote_0.1.186_amd64.deb`. The
+  `sudo apt install ./qc-remote_0.1.187_amd64.deb`. The
   package includes the application, resident broker/MCP host, and a udev rule.
   Before reconnecting the Quad Cortex, follow the udev activation commands in
   the [Linux setup](#linux) section below. If the
@@ -97,10 +97,15 @@ download with `sha256sum -c SHA256SUMS`; on Windows, run
 `Get-FileHash <file> -Algorithm SHA256` in PowerShell.
 
 The Microsoft Store listing is pending, and the Google Play listing is pending
-an internal-test upload, so its link may not open yet. The exact Linux v0.1.186
-package passed clean install/removal and all release acceptance checks. Runtime
-acceptance used Ubuntu 24.04 x86_64 under WSL2 with Xfce and a physical Quad
-Cortex attached through USB/IP; bare-metal Linux is not covered.
+an internal-test upload, so its link may not open yet. Linux 0.1.187 for Ubuntu
+24.04 x86_64 passed exact-package install/removal and installed desktop checks,
+including fresh-login resident/tray startup, GUI close/reopen with the same
+resident, local HTTP/stdio MCP, and access-policy behavior. With a physical Quad
+Cortex over USB/IP, guarded HID/MIDI scene control and restoration, explicit
+disconnect/reconnect, credential-safe broker restart, and graceful shutdown were
+verified. Recovery checks used explicit device reselection/reconnect and a managed
+broker restart. Automatic recovery is not claimed. Bare-metal Linux has not been
+tested.
 
 The Linux package is versioned independently of the stable
 Windows and Android releases. Once released, only the latest build for each platform
@@ -108,14 +113,11 @@ receives fixes; earlier builds are not supported ([`SECURITY.md`](../SECURITY.md
 
 ### Verify the Linux download
 
-The v0.1.186 Linux release was built by a GitHub Actions workflow, with a signed build attestation. Its exact
-Debian package checksum and attestation have been verified. After downloading the
-package and `SHA256SUMS` from the release, verify the checksum and provenance
-with the [GitHub CLI](https://cli.github.com/):
+The v0.1.187 Linux package was built by the GitHub Actions workflow from `5f41591cd514244eeed665e41dd79a50fd6bb037`. Its SHA-256 is `519a3c01c3c96c4d1c18973c48ee65c18d6e6dea87fcb4ddcea370763903c345` and its signed build provenance was verified. Verify the package checksum and provenance with the [GitHub CLI](https://cli.github.com/):
 
 ```sh
 sha256sum -c SHA256SUMS
-gh attestation verify qc-remote_0.1.186_amd64.deb \
+gh attestation verify qc-remote_0.1.187_amd64.deb \
   --repo freevia-org/QC-Remote \
   --signer-workflow freevia-org/QC-Remote/.github/workflows/linux-broker.yml \
   --deny-self-hosted-runners
@@ -129,7 +131,15 @@ embedded Debian package signature or an APT repository signing key. Version
 
 ### Linux
 
-The v0.1.186 Linux release targets Ubuntu 24.04 x86_64 and passed the exact-package runtime and device acceptance checks. Runtime acceptance used Ubuntu 24.04 under WSL2 with Xfce and the physical Quad Cortex attached through USB/IP; bare-metal Linux is not covered. The GUI, tray resident, local
+The v0.1.187 Linux release targets Ubuntu 24.04 x86_64. Exact-package
+install/removal and installed Xfce desktop checks passed, including fresh-login
+resident autostart, tray, HTTP/stdio MCP, access-policy behavior, and GUI
+close/reopen with the same resident. Connected checks passed for HTTP and stdio
+MCP, guarded HID/MIDI scene control with restoration, explicit disconnect and
+reconnection, credential-safe broker restart, and graceful shutdown. Connected
+checks used Ubuntu 24.04 WSL2/Xfce with a physical Quad Cortex over USB/IP.
+Recovery checks used explicit device reselection/reconnect and a managed broker
+restart. Automatic recovery is not claimed. Bare-metal Linux has not been tested. The GUI, tray resident, local
 MCP HTTP endpoint, and stdio bridge share one broker process and one per-user
 state directory. The app uses USB HID for device control and the matching ALSA
 raw MIDI endpoint for its performance MIDI feature; it is not a USB audio
