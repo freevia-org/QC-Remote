@@ -3284,17 +3284,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
             // used to flash an opening phase every retry even though HID had
             // already proved there was nothing to open. Hosts may now treat
             // `connecting` as evidence that a matching USB device exists.
-            #[cfg(all(test, target_os = "macos"))]
-            if device_id.lock_recover().as_deref() == Some("no-such-device") {
-                use std::io::Write as _;
-                let _ = writeln!(std::io::stderr(), "contested-start: before HID enumeration");
-            }
             let devices = quadcortex_hid::usb::connected_devices().unwrap_or_default();
-            #[cfg(all(test, target_os = "macos"))]
-            if device_id.lock_recover().as_deref() == Some("no-such-device") {
-                use std::io::Write as _;
-                let _ = writeln!(std::io::stderr(), "contested-start: after HID enumeration");
-            }
             let selected = {
                 let mut selected = device_id.lock_recover();
                 let detected = devices

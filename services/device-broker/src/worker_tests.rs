@@ -25,11 +25,6 @@ fn wait_for_status(
     }
 }
 
-fn trace_contested_start(stage: &str) {
-    use std::io::Write as _;
-    let _ = writeln!(std::io::stderr(), "contested-start: {stage}");
-}
-
 /// The contested start from the live test: a hardware broker holds the
 /// unit and a second opener auto-connects. It must defer with the visible
 /// waiting text, retry without opening anything, leave the owner's record
@@ -45,9 +40,7 @@ fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
     let _dir = OwnedTestDirectory(dir.clone());
     let path = dir.join("device-owner.json");
     let mut owner = Sleeper::start();
-    trace_contested_start("helper started");
     write_record(&path, &owner.record());
-    trace_contested_start("owner record published");
     let record_bytes = std::fs::read(&path).unwrap();
 
     // A device id that matches nothing, so this test can never open a real
@@ -58,7 +51,6 @@ fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
         path.clone(),
     )
     .expect("controller starts");
-    trace_contested_start("controller started");
 
     let expected = format!(
             "The Quad Cortex is in use by a hardware or conformance run (device broker --stdio) \
@@ -68,23 +60,19 @@ fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
     let waiting = wait_for_status(&controller, "the waiting status", |status| {
         status.detail == expected
     });
-    trace_contested_start("waiting status observed");
     assert_eq!(waiting.phase, "searching");
     assert!(!waiting.connected);
     // Several retry cadences pass (RECONNECT_INTERVAL_MS is 750 ms) and it
     // is still waiting, still searching, and the record is untouched.
     thread::sleep(Duration::from_millis(2_000));
-    trace_contested_start("retry interval elapsed");
     let still = controller.status();
     assert_eq!(still.detail, expected);
     assert_eq!(std::fs::read(&path).unwrap(), record_bytes);
 
     owner.kill();
-    trace_contested_start("owner stopped");
     let taken = wait_for_status(&controller, "the takeover", |status| {
         status.detail != expected
     });
-    trace_contested_start("takeover observed");
     assert!(
         !taken.detail.contains("in use by"),
         "after the owner died: {}",

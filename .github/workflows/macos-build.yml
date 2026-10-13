@@ -62,12 +62,6 @@ jobs:
         run: npm ci
       - name: Test broker, HID and native platform crates
         run: cargo test --locked --manifest-path Cargo.toml -p quadcortex -p quadcortex-hid -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --target ${{ matrix.target }} -- --test-threads=1
-      - name: Capture Intel HID enumeration crash backtrace
-        if: ${{ failure() && matrix.target == 'x86_64-apple-darwin' }}
-        run: |
-          test_binary="$(find target/${{ matrix.target }}/debug/deps -maxdepth 1 -type f -name 'qc_device_broker-*' -perm -111 | head -n 1)"
-          test -n "$test_binary"
-          lldb --batch -o run -o "thread backtrace all" -- "$test_binary" --exact worker::tests::a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits --nocapture
       - name: Build the broker for desktop host tests
         run: cargo build --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.target }}
         working-directory: apps/windows
