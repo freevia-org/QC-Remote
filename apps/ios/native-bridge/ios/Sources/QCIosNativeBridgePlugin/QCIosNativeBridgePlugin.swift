@@ -53,6 +53,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
     private var driverConnection: UInt64 = 0
     private var driverReportEpoch: UInt64 = 0
     private var driverGeneration: UInt64 = 0
+    private var driverReaderGeneration: UInt64 = 0
     private var driverStateSequence: UInt64 = 0
     private var driverSessionID = ""
     private var driverSynchronized = false
@@ -351,16 +352,14 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                 let session = try QCIosProtocolSession()
                 let now = self.monotonicMilliseconds()
                 let connection = try session.opened(nowMs: now)
-                let epoch = try session.reportEpoch(connection: connection)
                 self.driverGeneration &+= 1
                 self.driverStateSequence = 0
                 self.driverConnection = connection
-                self.driverReportEpoch = epoch
+                self.driverReportEpoch = 0
                 self.driverSessionID = UUID().uuidString.lowercased()
                 self.protocolSession = session
                 self.driverSynchronized = false
                 let diagnostics = try self.driverClient.diagnostics()
-                self.startDriverReader(generation: self.driverGeneration, session: session, connection: connection, epoch: epoch)
                 self.scheduleDriverProtocolPump(generation: self.driverGeneration, session: session)
                 call.resolve(["connected": true, "synchronized": false, "deviceId": 1, "name": "Quad Cortex USB", "diagnostics": diagnostics])
             } catch {
@@ -790,15 +789,13 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         let session = try QCIosProtocolSession()
         let now = monotonicMilliseconds()
         let connection = try session.opened(nowMs: now)
-        let epoch = try session.reportEpoch(connection: connection)
         driverStateSequence = 0
         driverConnection = connection
-        driverReportEpoch = epoch
+        driverReportEpoch = 0
         driverSessionID = UUID().uuidString.lowercased()
         protocolSession = session
         driverSynchronized = false
         backup.generation = driverGeneration
-        startDriverReader(generation: driverGeneration, session: session, connection: connection, epoch: epoch)
         scheduleDriverProtocolPump(generation: driverGeneration, session: session)
         notifyListeners("qcConnection", data: ["state": "available", "synchronized": false,
                                                 "detail": "Backup saved. Reconnecting the QC protocol session."],
@@ -942,15 +939,21 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         UInt64(max(0, ProcessInfo.processInfo.systemUptime * 1_000))
     }
 
-    private func startDriverReader(generation: UInt64, session: QCIosProtocolSession, connection: UInt64, epoch: UInt64) {
+    private func startDriverReader(generation: UInt64, session: QCIosProtocolSession, connection: UInt64) {
+        guard driverReaderGeneration != generation else { return }
+        driverReaderGeneration = generation
         driverReadQueue.async {
             while self.driverGenerationIsCurrent(generation) {
                 do {
+                    let epoch = try session.reportEpoch(connection: connection)
+                    if epoch == 0 {
+                        Thread.sleep(forTimeInterval: 0.01)
+                        continue
+                    }
                     let report = try self.driverClient.readReport()
                     self.driverQueue.async {
                         guard self.driverGeneration == generation,
-                              self.driverConnection == connection,
-                              self.driverReportEpoch == epoch else { return }
+                              self.driverConnection == connection else { return }
                         do {
                             if let event = try session.pushReport(report, connection: connection, epoch: epoch, receivedAtMs: self.monotonicMilliseconds()) {
                                 self.publishDriverEvent(event)
@@ -992,12 +995,16 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         let now = monotonicMilliseconds()
         do {
             if let handshake = try session.nextHandshake(nowMs: now, sessionID: driverSessionID) {
+                let epoch = try session.reportEpoch(connection: driverConnection)
+                guard epoch != 0 else { throw QCIosProtocolSession.BridgeError.operationFailed }
+                driverReportEpoch = epoch
                 let accepted = try writeProtocolReports(handshake["reports"])
                 if !accepted {
                     notifyListeners("qcConnection", data: ["state": "disconnected", "detail": "The QC handshake report was not fully transferred."], retainUntilConsumed: false)
                     stopDriverSession(generation: generation)
                     return
                 }
+                startDriverReader(generation: generation, session: session, connection: driverConnection)
             }
             guard let batch = try session.nextLifecycleBatch(nowMs: now, unixTimeMs: UInt64(Date().timeIntervalSince1970 * 1_000)) else { return }
             let ticket = try JSONSerialization.data(withJSONObject: batch["ticket"] ?? NSNull())

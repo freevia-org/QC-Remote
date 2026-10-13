@@ -57,6 +57,9 @@ jobs:
       - name: Sync the Capacitor iOS project
         run: npm run ios:sync --workspace @qc-remote/ios
 
+      - name: Test the iOS Rust bridge FFI on the runner
+        run: cargo test --manifest-path apps/ios/native-bridge/rust/Cargo.toml --locked
+
       - name: Build app and DriverKit extension without signing
         run: >-
           xcodebuild

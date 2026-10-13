@@ -308,10 +308,11 @@ pub unsafe extern "C" fn qc_ios_report_epoch(session: *mut QcIosSession, connect
 
 /// Pushes one HID input report and writes a JSON event when it completes a QC frame.
 ///
-/// Returns `0` when more reports are needed, a positive JSON byte count when an
-/// event was written, and a negative required capacity minus one on short output.
-/// Invalid or stale input returns `-1`. If the buffer is short, the event is
-/// retained and returned by the next stateful JSON call when given enough space.
+/// Returns `0` when a report is incomplete or belongs to an inactive/stale
+/// reader, a positive JSON byte count when an event was written, and a negative
+/// required capacity minus one on short output. Invalid input returns `-1`.
+/// If the buffer is short, the event is retained and returned by the next
+/// stateful JSON call when given enough space.
 ///
 /// # Safety
 /// All pointers must reference their declared lengths; session access must be serialized.
@@ -336,13 +337,15 @@ pub unsafe extern "C" fn qc_ios_push_report(
         let Ok(report) = bytes(report, report_len) else {
             return -1;
         };
-        let Ok(Some((frame, ticket))) =
-            session
+        let (frame, ticket) =
+            match session
                 .runtime
                 .push_native_report(connection, epoch, report, received_at_ms)
-        else {
-            return -1;
-        };
+            {
+                Ok(Some(value)) => value,
+                Ok(None) => return 0,
+                Err(_) => return -1,
+            };
 
         let (states, tempo_clock) =
             if frame.message_type == quadcortex::profile::MESSAGE_TYPE_MODEL_REPO {
@@ -1657,4 +1660,118 @@ pub unsafe extern "C" fn qc_ios_build_control(
             capacity,
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+
+    #[test]
+    fn exported_control_builder_returns_allowlisted_qc_message() {
+        let action = CString::new("versionHello").unwrap();
+        let mut output = vec![0_i8; 4096];
+        let written =
+            unsafe { qc_ios_build_control(action.as_ptr(), output.as_mut_ptr(), output.len()) };
+
+        assert!(written > 0);
+        let json = unsafe { CStr::from_ptr(output.as_ptr()) }.to_str().unwrap();
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert!(value["messageType"].as_u64().is_some());
+        assert!(value["payload"]
+            .as_array()
+            .is_some_and(|payload| !payload.is_empty()));
+
+        let unsupported = CString::new("rawUsbWrite").unwrap();
+        assert_eq!(
+            unsafe {
+                qc_ios_build_control(unsupported.as_ptr(), output.as_mut_ptr(), output.len())
+            },
+            -1
+        );
+    }
+
+    #[test]
+    fn exported_encoder_reports_required_capacity_and_emits_complete_hid_report() {
+        let payload = b"ios-ffi-test";
+        let required = unsafe {
+            qc_ios_encode_message(1, payload.as_ptr(), payload.len(), ptr::null_mut(), 0)
+        };
+        assert!(required < -1);
+
+        let mut reports = vec![0_u8; (-required - 1) as usize];
+        let written = unsafe {
+            qc_ios_encode_message(
+                1,
+                payload.as_ptr(),
+                payload.len(),
+                reports.as_mut_ptr(),
+                reports.len(),
+            )
+        };
+        assert_eq!(written, 1);
+        assert_eq!(reports.len(), qc_ios_report_size());
+        assert_eq!(reports[0], quadcortex::framing::OUT_REPORT_ID);
+    }
+
+    #[test]
+    fn session_exports_connection_and_report_epoch() {
+        let session = qc_ios_session_create();
+        assert!(!session.is_null());
+
+        let connection = unsafe { qc_ios_session_opened(session, 100) };
+        assert_ne!(connection, 0);
+        assert_eq!(unsafe { qc_ios_report_epoch(session, connection) }, 0);
+
+        let session_id = CString::new("ios-ffi-test-session").unwrap();
+        let mut handshake_output = vec![0_i8; 4096];
+        let handshake_bytes = unsafe {
+            qc_ios_next_handshake(
+                session,
+                101,
+                session_id.as_ptr(),
+                handshake_output.as_mut_ptr(),
+                handshake_output.len(),
+            )
+        };
+        assert!(handshake_bytes > 0);
+        let handshake_json = unsafe { CStr::from_ptr(handshake_output.as_ptr()) }
+            .to_str()
+            .unwrap();
+        let handshake: Value = serde_json::from_str(handshake_json).unwrap();
+        assert!(handshake["reports"]
+            .as_array()
+            .is_some_and(|reports| !reports.is_empty()));
+
+        let epoch = unsafe { qc_ios_report_epoch(session, connection) };
+        assert_ne!(epoch, 0);
+        let stale_report = vec![0_u8; qc_ios_report_size()];
+        let mut report_output = vec![0_i8; 256];
+        assert_eq!(
+            unsafe {
+                qc_ios_push_report(
+                    session,
+                    connection,
+                    0,
+                    stale_report.as_ptr(),
+                    stale_report.len(),
+                    102,
+                    report_output.as_mut_ptr(),
+                    report_output.len(),
+                )
+            },
+            0,
+            "an inactive reader epoch must be ignored without killing the reader"
+        );
+
+        let mut output = vec![0_i8; 256];
+        let written =
+            unsafe { qc_ios_transport_status(session, output.as_mut_ptr(), output.len()) };
+        assert!(written > 0);
+        let json = unsafe { CStr::from_ptr(output.as_ptr()) }.to_str().unwrap();
+        let status: Value = serde_json::from_str(json).unwrap();
+        assert!(status["phase"].as_str().is_some());
+
+        unsafe { qc_ios_session_destroy(session) };
+    }
 }
