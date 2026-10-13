@@ -52,6 +52,17 @@ and are not published to a registry.
   restarts, the row still shows the reference version marked as such. The header
   was identified from the capture's header names and value length; confirm the
   first live value against the unit's Settings > Updates screen.
+- **The CorOS version is also read from the unit's own Device Information
+  screen.** While the unit shows Settings > Support > Device Information, the
+  screen-follow poll (the one that already reads the unit's graphics tree on
+  Windows and Android alike; it runs while "Follow the Quad Cortex screen" is on)
+  takes the text node right after its `CorOS:` label, keeps it only when it is a
+  dotted version number of two to four parts, and Device Information shows it
+  from then on, after that screen closes too, until the session ends. Nothing else
+  on that screen (serial number, MAC address, kernel, hashes) is read, kept or
+  logged, and the app sends the unit nothing to get it: it appears when someone
+  opens that screen on the unit. If the update request and the screen ever
+  disagree, the value obtained later wins.
 
 ### Windows
 

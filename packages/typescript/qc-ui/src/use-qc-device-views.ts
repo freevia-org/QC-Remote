@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { qcDeviceInformation } from "./device-information.ts";
-import type { GatewayTransport, PresetList, PresetSnapshot } from "@qc-remote/client";
+import type { DeviceIdentity, GatewayTransport, PresetList, PresetSnapshot } from "@qc-remote/client";
+import type { ObservedCorOsVersion } from "./cor-os-version.ts";
 import type { CorOsDeviceInformation } from "./coros-reference-settings-pane.tsx";
 import { closeQcLooperScreen } from "./qc-device-screen.ts";
 import { closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, unitScreen, untouchableUnitScreen, type QcScreenPoll } from "./qc-unit-screens.ts";
@@ -32,6 +33,8 @@ export interface QcDeviceViewsOptions {
     looper: { run(command: string, value?: number | null): Promise<void | boolean> };
     ioEq: { refresh(): Promise<unknown> };
     preset: { presetList?: Pick<PresetList, "setlistKey">; loadDirectory(...args: [boolean, string, boolean]): unknown };
+    /** The CorOS version the unit's own Device Information screen last showed (use-device-settings-workflow.ts), if any. */
+    deviceSettings?: { screenCorOsVersion?: ObservedCorOsVersion };
   };
   notice(message: string): void;
   fail(error: unknown): void;
@@ -63,7 +66,7 @@ const isIoView = (view: string | null | undefined) => Boolean(view?.startsWith("
  * the demo device is projected locally by that command, never sent to hardware.
  */
 export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
-  const [deviceInformation, setDeviceInformation] = useState<{ key: unknown; value: CorOsDeviceInformation }>();
+  const [deviceInformation, setDeviceInformation] = useState<{ key: unknown; value: CorOsDeviceInformation; identity?: DeviceIdentity; readAt?: number }>();
   const lifetime = useDeviceWorkflowSession({ ...options, connected: options.session.sessionReady });
   const latest = useRef({ ...lifetime.options, lifetime });
   latest.current = { ...lifetime.options, lifetime };
@@ -151,7 +154,7 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
     destination.setView("settings-info");
     try {
       const identity=await gateway.identity();
-      owner.apply(() => setDeviceInformation({ key: owner.key, value: qcDeviceInformation(identity, snapshot.deviceName) }));
+      owner.apply(() => setDeviceInformation({ key: owner.key, value: qcDeviceInformation(identity, snapshot.deviceName), identity, readAt: Date.now() }));
     } catch (error) {
       fail(error);
     }
@@ -166,7 +169,7 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
     let current = true;
     const { gateway, snapshot } = lifetime.options;
     gateway.identity()
-      .then((identity) => { if (current) lifetime.apply(() => setDeviceInformation({ key: lifetime.key, value: qcDeviceInformation(identity, snapshot.deviceName) })); })
+      .then((identity) => { if (current) lifetime.apply(() => setDeviceInformation({ key: lifetime.key, value: qcDeviceInformation(identity, snapshot.deviceName), identity, readAt: Date.now() })); })
       .catch(() => undefined);
     return () => { current = false; };
   }, [sessionReady, lifetime.key]);
@@ -204,6 +207,12 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
     }
   }, [lifetime.key]);
 
-  const currentInformation = deviceInformation?.key === lifetime.key ? deviceInformation.value : undefined;
+  const screenCorOsVersion = options.workflows.deviceSettings?.screenCorOsVersion;
+  const currentRecord = deviceInformation?.key === lifetime.key ? deviceInformation : undefined;
+  // The CorOS row is whichever of the host's value and the Device Information screen's was obtained later.
+  const currentInformation = useMemo(() => !currentRecord ? undefined
+    : !screenCorOsVersion || !currentRecord.identity ? currentRecord.value
+    : { ...currentRecord.value, corOsVersion: qcDeviceInformation(currentRecord.identity, undefined, { identityReadAt: currentRecord.readAt, screen: screenCorOsVersion }).corOsVersion },
+  [currentRecord, screenCorOsVersion]);
   return useMemo(() => ({ deviceInformation: currentInformation, open, close, toggle, forwardGesture }), [currentInformation, open, close, toggle, forwardGesture]);
 }

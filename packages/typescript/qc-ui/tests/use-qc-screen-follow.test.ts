@@ -104,7 +104,7 @@ function harness(initial: Scenario = {}) {
   const workflowsFor = () => ({
     grid: { ...named("grid", "close"), details: current.editorOpen ? {} : undefined },
     preset: { ...named("preset", "closeDirectory", "openDirectory"), directoryOpen: state.directoryOpen },
-    deviceSettings: { ...named("settings", "close", "openSettings"), open: state.settingsOpen },
+    deviceSettings: { ...named("settings", "close", "openSettings"), open: state.settingsOpen, noteCorOsVersionFromScreen: (version: string) => { log.push(`settings.cor-os:${version}`); } },
     tempo: { ...named("tempo", "close", "openTempo"), open: state.tempoOpen },
     tuner: named("tuner", "close", "openTuner"),
     ioEq: { ...named("io", "refresh"), followUnitSelection: (selection: unknown) => { selections.push(selection); } },
@@ -1004,5 +1004,39 @@ test("the unit's I/O selection is applied on every observation of the I/O screen
   assert.deepEqual(host.selections.at(-1), undefined, "leaving I/O clears the selection, so a reopened screen cannot show an old one");
   act(() => host.follower.observe(observation("io", output)));
   assert.deepEqual(host.selections.at(-1), output, "reopened on Output 1/2 after Output 3/4 earlier: the unit's selection, not the earlier one");
+  host.renderer.unmount();
+});
+
+const DEVICE_INFORMATION_TREE = readFileSync(new URL("./support/device-information-unit-tree.txt", import.meta.url), "utf8");
+
+test("the poll hands the follower the unit's Device Information tree, which keeps only the CorOS version and sends nothing", async () => {
+  const host = harness({ available: true });
+  host.world.treeRead = async () => ({ tree: DEVICE_INFORMATION_TREE });
+  await act(async () => { await host.rerender({ available: true }); });
+  const seen = host.log.filter((entry) => entry.startsWith("settings.cor-os:"));
+  assert.ok(seen.length > 0, `the poll read the tree: ${JSON.stringify(host.log)}`);
+  assert.deepEqual([...new Set(seen)], ["settings.cor-os:4.1.0"]);
+  assert.ok(!JSON.stringify(host.log).includes("XXXXXXXX"), "no serial, MAC or hash reaches anything the follower calls");
+  assert.ok(!host.log.some((entry) => /^(tap|hold|swipe):/.test(entry)), "reading the screen never touches the unit");
+  host.renderer.unmount();
+});
+
+test("a tree that is not the Device Information screen, or states no version, hands nothing over", () => {
+  const host = harness();
+  for (const tree of ["zenUI::RootGraphicsItem\n  zenUI::Grid", DEVICE_INFORMATION_TREE.replace("'4.1.0'", "'XXXXXXXX'"), ""]) act(() => host.follower.observeTree(tree));
+  assert.deepEqual(host.log.filter((entry) => entry.startsWith("settings.cor-os:")), []);
+  act(() => host.follower.observeTree(DEVICE_INFORMATION_TREE));
+  assert.deepEqual(host.log.filter((entry) => entry.startsWith("settings.cor-os:")), ["settings.cor-os:4.1.0"]);
+  host.renderer.unmount();
+});
+
+test("a tree read after the session ended hands nothing to the next session", async () => {
+  const host = harness({ sessionEpoch: 0 });
+  await host.rerender({ sessionEpoch: 1 });
+  const stale = host.follower.observeTree;
+  await host.rerender({ sessionEpoch: 2 });
+  host.log.length = 0;
+  act(() => stale(DEVICE_INFORMATION_TREE));
+  assert.deepEqual(host.log, []);
   host.renderer.unmount();
 });

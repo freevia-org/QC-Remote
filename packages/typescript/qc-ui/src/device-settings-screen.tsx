@@ -363,7 +363,7 @@ export function CorOsDeviceSettings({ workflow, onClose }: DeviceSettingsScreenP
   const [menuOpen, setMenuOpen] = useState(false);
   const sectionSelector = useRef<HTMLButtonElement>(null);
   const sectionTitle = DEVICE_SETTINGS_SECTIONS.find(([key]) => key === section)?.[1] ?? "Device";
-  const info = qcDeviceInformation(workflow.identity);
+  const info = qcDeviceInformation(workflow.identity, undefined, { identityReadAt: workflow.identityReadAt, screen: workflow.screenCorOsVersion });
   const select = (message: string | undefined, apply: () => void) => () => { apply(); if (message) announce(message); };
 
   let nav: { key: string; label: string; active: boolean; unavailable: boolean; icon: () => ReactNode; onSelect(): void }[];

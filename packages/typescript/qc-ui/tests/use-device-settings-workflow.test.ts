@@ -69,3 +69,51 @@ test("Global Bypass edits preserve observed rows and never replace unknown rows 
   assert.deepEqual(settings.globalBypassCab, { row1: false, row2: true, row3: false, row4: true });
   assert.deepEqual(observedGlobalBypassUpdate({ globalBypassIr: { row1: true, row2: false, row3: true, row4: false } }, "ir", 1, false), { cab: null, ir: [false, false, true, false] });
 });
+
+test("the CorOS version the unit's Device Information screen showed is kept for the session, reconciled with the host's, and dropped with the session", async (t) => {
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let value, renderer;
+  let identity: { serial: string; corOsVersion?: string } = { serial: "SYN-0001" };
+  const gateway = { generalSettings: async () => ({}), identity: async () => identity };
+  let options = { gateway, sessionKey: "usb-A", connected: true, pending: false,
+    setPending: () => {}, notice: () => {}, fail: (error) => { throw error; } };
+  function Harness() { value = useDeviceSettingsWorkflow(options); return null; }
+  await act(async () => { renderer = create(React.createElement(Harness)); });
+  t.after(async () => { await act(async () => renderer.unmount()); });
+  assert.equal(value.screenCorOsVersion, undefined);
+
+  // Anything that is not a dotted version number is not kept, whatever the screen showed.
+  await act(async () => { for (const text of ["XXXXXXXX", "d14e", "", "4", "1.2.3.4.5", "XX:XX:XX:XX:XX:XX"]) value.noteCorOsVersionFromScreen(text); });
+  assert.equal(value.screenCorOsVersion, undefined);
+
+  await act(async () => { value.noteCorOsVersionFromScreen("4.1.0"); });
+  assert.equal(value.screenCorOsVersion.value, "4.1.0");
+  const first = value.screenCorOsVersion;
+  // Seen again at once: nothing re-renders. The record only holds a version number and a time.
+  await act(async () => { value.noteCorOsVersionFromScreen("4.1.0"); });
+  assert.equal(value.screenCorOsVersion, first);
+  assert.deepEqual(Object.keys(value.screenCorOsVersion).sort(), ["at", "value"]);
+
+  // The screen closing on the unit changes nothing: the value is still there (no read, no further note).
+  await act(async () => { await value.refresh(); });
+  assert.equal(value.screenCorOsVersion.value, "4.1.0");
+
+  // The identity read reports the host's value: both are stated; the screen was seen before the read, so the host's wins.
+  identity = { serial: "SYN-0001", corOsVersion: "4.1.0" };
+  await act(async () => { value.openSettings(); });
+  assert.equal(typeof value.identityReadAt, "number");
+  assert.ok(value.identityReadAt >= value.screenCorOsVersion.at);
+
+  // A different session never inherits it.
+  await act(async () => { options = { ...options, sessionKey: "usb-B" }; renderer.update(React.createElement(Harness)); });
+  assert.equal(value.screenCorOsVersion, undefined);
+  assert.equal(value.identity, undefined);
+  await act(async () => { value.noteCorOsVersionFromScreen("4.2.0"); });
+  assert.equal(value.screenCorOsVersion.value, "4.2.0");
+
+  // A reading that arrives for a session that has ended is dropped.
+  const stale = value.noteCorOsVersionFromScreen;
+  await act(async () => { options = { ...options, sessionKey: "usb-C" }; renderer.update(React.createElement(Harness)); });
+  await act(async () => { stale("9.9.9"); });
+  assert.equal(value.screenCorOsVersion, undefined);
+});

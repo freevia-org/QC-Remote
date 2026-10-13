@@ -1020,7 +1020,7 @@ export function App() {
   const deviceViews = useQcDeviceViews({ ...deviceWorkflowSession,
     destination: screenDestination, snapshot, gateway: activeGateway, notice: setNotice, fail: actionFailed,
     session: { demo: demoSession, hardwareReady: deviceReady, sessionReady },
-    workflows: { performance: performanceWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, ioEq: ioEqWorkflow, preset: presetWorkflow }
+    workflows: { performance: performanceWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, ioEq: ioEqWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow }
   });
   const navigateBank = performanceWorkflow.navigateBank;
   const navigatePreset = performanceWorkflow.movePreset;

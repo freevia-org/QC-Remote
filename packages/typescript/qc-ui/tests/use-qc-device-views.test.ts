@@ -29,6 +29,9 @@ interface World {
   unitIgnoresGestures: boolean;
   /** Extra text the unit's tree carries (a label on the screen). */
   treeText?: string;
+  /** What the unit's own Device Information screen last showed as the CorOS version, and what the identity read states. */
+  screenVersion?: { value: string; at: number };
+  identityCorOsVersion?: string;
 }
 
 function mount(overrides: Partial<World> = {}) {
@@ -37,7 +40,7 @@ function mount(overrides: Partial<World> = {}) {
   const world: World = { sessionEpoch: 0, view: null, demo: false, hardwareReady: true, sessionReady: true, showResult: true, setlistKey: "set-a", presetList: undefined, ioFails: false, identityFails: false, unit: "Grid", unitIgnoresGestures: false, ...overrides };
   const latch = createQcScreenLatch();
   const gateway = {
-      identity: async () => { if (world.identityRead) return world.identityRead(); if (world.identityFails) throw new Error("identity failed"); return { serial: "S1", customName: "", appFwVersion: "3.1" } as never; },
+      identity: async () => { if (world.identityRead) return world.identityRead(); if (world.identityFails) throw new Error("identity failed"); return { serial: "S1", customName: "", appFwVersion: "3.1", ...(world.identityCorOsVersion ? { corOsVersion: world.identityCorOsVersion } : {}) } as never; },
       graphicsTree: async () => world.treeRead ? world.treeRead() : ({ tree: `zenUI::RootGraphicsItem\nzenUI::${world.unit}${world.treeText ? ` text '${world.treeText}'` : ""}` }),
       tapScreen: async (x: number, y: number) => { log.push(`tap:${x},${y}`); if (!world.unitIgnoresGestures && world.unit === "CheatSheetDialog") world.unit = "Grid"; },
       longTapScreen: async (x: number, y: number) => { log.push(`long:${x},${y}`); },
@@ -56,7 +59,8 @@ function mount(overrides: Partial<World> = {}) {
       tuner: { openTuner: () => { log.push("tuner.open"); } },
       looper: { run: async (command) => { log.push(`looper:${command}`); } },
       ioEq: { refresh: async () => { log.push("io.refresh"); if (world.ioFails) throw new Error("io failed"); } },
-      preset: { presetList: world.presetList, loadDirectory: (...args) => { log.push(`load:${args.join(",")}`); } }
+      preset: { presetList: world.presetList, loadDirectory: (...args) => { log.push(`load:${args.join(",")}`); } },
+      deviceSettings: { screenCorOsVersion: world.screenVersion }
     },
     notice: (message) => { log.push(`notice:${message}`); },
     fail: (error) => { log.push(`fail:${(error as Error).message}`); }
@@ -376,4 +380,28 @@ test("Device Information is hidden on the first replacement render before passiv
   assert.equal(host.identityFrames[0], undefined, "a new session never renders the previous unit identity");
   assert.equal(host.views.deviceInformation, undefined);
   act(() => host.renderer.unmount());
+});
+
+test("Device Information shows the CorOS version the unit's own screen showed, unless the host's value was read after it", async () => {
+  const shown = mount({ screenVersion: { value: "4.1.0", at: Date.now() + 60_000 } });
+  await act(async () => { await shown.views.open("info"); });
+  assert.equal(shown.views.deviceInformation?.corOsVersion, "4.1.0", "the screen's value fills a CorOS row the identity read could not");
+  assert.equal(shown.views.deviceInformation?.serial, "S1");
+  shown.renderer.unmount();
+
+  // The screen was seen a minute before the identity read stated a different value: the later one, the host's, wins.
+  const older = mount({ screenVersion: { value: "4.1.0", at: Date.now() - 60_000 }, identityCorOsVersion: "4.2.0" });
+  await act(async () => { await older.views.open("info"); });
+  assert.equal(older.views.deviceInformation?.corOsVersion, "4.2.0");
+  older.renderer.unmount();
+
+  // Seen after the read, the screen's value wins; with nothing from the screen the host's value is shown as it is.
+  const newer = mount({ screenVersion: { value: "4.1.0", at: Date.now() + 60_000 }, identityCorOsVersion: "4.2.0" });
+  await act(async () => { await newer.views.open("info"); });
+  assert.equal(newer.views.deviceInformation?.corOsVersion, "4.1.0");
+  newer.renderer.unmount();
+  const none = mount({ identityCorOsVersion: "4.2.0" });
+  await act(async () => { await none.views.open("info"); });
+  assert.equal(none.views.deviceInformation?.corOsVersion, "4.2.0");
+  none.renderer.unmount();
 });
