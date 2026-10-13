@@ -67,6 +67,34 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     captureSessionCurrent: captureActionCurrent
   }, "editing block parameters");
 
+  const parameterOwnerCurrent = useMemo(() => {
+    const hostCurrent = options.captureSessionCurrent?.() ?? (() => true);
+    const checkpoint = controller.lifetime.checkpoint();
+    return () => actionKey === currentActionKey.current && hostCurrent() && controller.lifetime.current(checkpoint);
+  }, [actionKey, controller.lifetime, controller.lifetime.version, options.captureSessionCurrent]);
+  const parameterRetirements = useRef(new Map<number, number>());
+  const retireParameter = useCallback((index: number) => {
+    if (!parameterOwnerCurrent()) return;
+    parameterRetirements.current.set(index, (parameterRetirements.current.get(index) ?? 0) + 1);
+    const timer = timers.current.get(index);
+    if (timer !== undefined) window.clearTimeout(timer);
+    timers.current.delete(index);
+    revisions.current.delete(index);
+    targets.current.delete(index);
+    gestures.current.delete(index);
+    releases.current.delete(index);
+    if (previewQueue.current?.gesture.parameter.index === index) previewQueue.current = undefined;
+    const target = authorityTargets.current.get(index);
+    if (target) controller.cancelInteraction(target);
+    authorityTargets.current.delete(index);
+  }, [controller.cancelInteraction, parameterOwnerCurrent]);
+  useEffect(() => {
+    const details = editor.details;
+    for (const index of authorityTargets.current.keys()) {
+      const parameter = details?.parameters.find((candidate) => candidate.index === index);
+      if (!parameter?.writable || parameter.enabled === false) retireParameter(index);
+    }
+  }, [editor.details, retireParameter]);
   const resolveWaiters = useCallback(() => {
     if (previewRunning.current || previewQueue.current) return;
     for (const resolve of previewWaiters.current.splice(0)) resolve();
@@ -92,6 +120,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     const parameter = details.parameters.find((item) => item.index === gesture.parameter.index);
     const actual = parameter?.normalizedValue;
     if (!parameter || actual == null || !Number.isFinite(actual) || !parameter.writable || parameter.enabled === false) {
+      retireParameter(gesture.parameter.index);
       throw new Error("The parameter no longer has a writable synchronized value.");
     }
     const observedSend = gesture.sent.findIndex((value) => sameParameterValue(value, actual));
@@ -103,7 +132,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     if (observedSend >= 0) gesture.sent.splice(0, observedSend + 1);
     gesture.observed = actual;
     return {details, parameter};
-  }, [editor.load, gestureCurrent]);
+  }, [editor.load, gestureCurrent, retireParameter]);
 
   const readGesture = useCallback(async (gesture: ParameterGesture) => {
     if (!gestureCurrent(gesture)) throw new SupersededPresetOperation();
@@ -277,7 +306,13 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
   }, [waitForPreviews]);
 
   const draft = useCallback((parameter: BlockParameter, value: number) => {
-    if (batchRunning.current || !parameter.writable || parameter.enabled === false) return clock.current;
+    if (!parameterOwnerCurrent()) return clock.current;
+    if (!parameter.writable || parameter.enabled === false) {
+      const current = detailsRef.current?.parameters.find((item) => item.index === parameter.index);
+      if (!current?.writable || current.enabled === false) retireParameter(parameter.index);
+      return clock.current;
+    }
+    if (batchRunning.current) return clock.current;
     const revision = ++clock.current;
     revisions.current.set(parameter.index, revision);
     targets.current.set(parameter.index, value);
@@ -301,10 +336,16 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       void drainPreviews();
     }
     return revision;
-  }, [connected, controller, drainPreviews, editor, gateway, gestureCurrent, reconcile, snapshot]);
+  }, [connected, controller, drainPreviews, editor, gateway, gestureCurrent, reconcile, parameterOwnerCurrent, retireParameter, snapshot]);
 
   const commit = useCallback((parameter: BlockParameter, value: number) => {
-    if (batchRunning.current || !parameter.writable || parameter.enabled === false) return;
+    if (!parameterOwnerCurrent()) return;
+    if (!parameter.writable || parameter.enabled === false) {
+      const current = detailsRef.current?.parameters.find((item) => item.index === parameter.index);
+      if (!current?.writable || current.enabled === false) retireParameter(parameter.index);
+      return;
+    }
+    if (batchRunning.current) return;
     const revision = draft(parameter, value);
     const target = authorityTargets.current.get(parameter.index);
     if (target) controller.releaseInteraction(target, value);
@@ -316,7 +357,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       releases.current.set(parameter.index, {revision, apply: () => apply(parameter, value, revision)});
       void drainReleases();
     }, 8));
-  }, [apply, controller, draft, drainReleases]);
+  }, [apply, controller, draft, drainReleases, parameterOwnerCurrent, retireParameter]);
 
   const commitBatch = useCallback(async (changes: Array<{ parameter: BlockParameter; value: number }>) => {
     if (snapshot.gridLayoutComplete === false) {
@@ -341,8 +382,9 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       && samePresetAddress(context.current.snapshot, snapshot)
       && context.current.snapshot.presetIdentity === snapshot.presetIdentity
       && context.current.snapshot.activeScene === snapshot.activeScene && sameBlock(detailsRef.current);
-    const assertCurrent = () => {if (!current()) throw new SupersededPresetOperation();};
     const batch = [...new Map(changes.map(change => [change.parameter.index, change])).values()];
+    const retirements = new Map(batch.map(({parameter}) => [parameter.index, parameterRetirements.current.get(parameter.index) ?? 0]));
+    const assertCurrent = () => { if (!current() || batch.some(({parameter}) => (parameterRetirements.current.get(parameter.index) ?? 0) !== retirements.get(parameter.index))) throw new SupersededPresetOperation(); };
     for (const {parameter, value} of batch) {
       const target = { kind: "parameter" as const, row: details.row, column: details.column, parameterIndex: parameter.index };
       authorityTargets.current.set(parameter.index, target);
