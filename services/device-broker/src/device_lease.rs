@@ -958,24 +958,75 @@ pub(crate) mod testing {
     /// A directory one test created for itself alone, removed whole when the
     /// guard drops, so a failing assertion or a panic no longer leaves it in
     /// the temp directory. Declare it before anything that holds a file,
-    /// child or thread in the directory, so those drop first. Removal is best
-    /// effort: a handle still closing (Windows) gets a few short retries,
-    /// then the directory is left and named on stderr; it never panics.
+    /// child or thread in the directory, so those drop first. Removal is
+    /// [`remove_test_directory`]: best effort, and it never panics.
     pub(crate) struct OwnedTestDirectory(pub(crate) PathBuf);
 
     impl Drop for OwnedTestDirectory {
         fn drop(&mut self) {
-            const ATTEMPTS: u32 = 5;
-            for attempt in 1..=ATTEMPTS {
-                match std::fs::remove_dir_all(&self.0) {
-                    Ok(()) => return,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-                    Err(error) if attempt == ATTEMPTS => {
-                        eprintln!("left test directory {}: {error}", self.0.display());
-                    }
-                    Err(_) => std::thread::sleep(Duration::from_millis(50)),
-                }
+            if let Err(error) = remove_test_directory(&self.0) {
+                eprintln!("left test directory {}: {error}", self.0.display());
             }
+        }
+    }
+
+    /// Removes a directory one test created for itself alone, with all it
+    /// holds; a directory already gone is success. Call it only once nothing
+    /// the test started can still write there. On Windows a handle that is
+    /// still closing (a helper process just killed, a scanner reading a file
+    /// just written) refuses a delete for a moment, so `remove_dir_all` is
+    /// retried with a growing pause, about a second in all. A last pass then
+    /// removes entry by entry, so one stubborn file keeps only itself and its
+    /// parents. Links are removed, never followed. Never panics.
+    pub(crate) fn remove_test_directory(path: &Path) -> std::io::Result<()> {
+        const ATTEMPTS: u64 = 8;
+        for attempt in 1..=ATTEMPTS {
+            match std::fs::remove_dir_all(path) {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(_) if attempt < ATTEMPTS => {
+                    std::thread::sleep(Duration::from_millis(25 * attempt))
+                }
+                Err(_) => {}
+            }
+        }
+        match remove_entries(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            result => result,
+        }
+    }
+
+    /// Refuses to descend into a symlink or junction: `path` itself is
+    /// removed as a link, never walked, so this can never reach outside the
+    /// directory the test actually created.
+    fn remove_entries(path: &Path) -> std::io::Result<()> {
+        if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return std::fs::remove_file(path).or_else(|_| std::fs::remove_dir(path));
+        }
+        let mut first_error = None;
+        for entry in std::fs::read_dir(path)? {
+            let removed = entry.and_then(|entry| {
+                let child = entry.path();
+                let kind = entry.file_type()?;
+                if kind.is_dir() && !kind.is_symlink() {
+                    remove_entries(&child)
+                } else if kind.is_symlink() && kind.is_dir() {
+                    // A directory link on Windows is removed as a directory.
+                    std::fs::remove_dir(&child)
+                } else {
+                    std::fs::remove_file(&child)
+                }
+            });
+            match removed {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => std::fs::remove_dir(path),
         }
     }
 
@@ -1032,12 +1083,12 @@ mod tests {
     /// A record path in a directory of this test's own, removed by the
     /// returned guard. It is named by the process id, so every run that did
     /// not remove it left one more behind.
-    fn scratch(name: &str) -> (TestDirectory, PathBuf) {
+    fn scratch(name: &str) -> (OwnedTestDirectory, PathBuf) {
         let dir = std::env::temp_dir().join(format!("qc-lease-{name}-{}", std::process::id()));
         let _ = create_test_directory(&dir);
         let path = dir.join("device-owner.json");
         let _ = std::fs::remove_file(&path);
-        (TestDirectory(dir), path)
+        (OwnedTestDirectory(dir), path)
     }
 
     fn holder(path: &Path) -> LeaseHolder {
@@ -1057,14 +1108,6 @@ mod tests {
                 let _ = self.child.kill();
                 let _ = self.child.wait();
             }
-        }
-    }
-
-    struct TestDirectory(PathBuf);
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
@@ -1142,7 +1185,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&directory);
         create_test_directory(&directory).unwrap();
-        let _owned_directory = TestDirectory(directory.clone());
+        let _owned_directory = OwnedTestDirectory(directory.clone());
         let path = directory.join(RECORD_NAME);
         write_record(
             &path,
@@ -1358,13 +1401,13 @@ mod tests {
 
     /// Both roots under one directory of this test's own, removed whole by
     /// the returned guard.
-    fn two_roots(name: &str) -> (TestDirectory, PathBuf, PathBuf) {
+    fn two_roots(name: &str) -> (OwnedTestDirectory, PathBuf, PathBuf) {
         let base =
             std::env::temp_dir().join(format!("qc-lease-roots-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let program_data = base.join("ProgramData");
         let local = base.join("Local");
-        let directory = TestDirectory(base);
+        let directory = OwnedTestDirectory(base);
         create_test_directory(&program_data).unwrap();
         create_test_directory(&local).unwrap();
         (directory, program_data, local)
@@ -1413,7 +1456,7 @@ mod tests {
             unix_ms()
         ));
         create_test_directory(&directory).unwrap();
-        let _directory = TestDirectory(directory.clone());
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join("device-owner.json");
         let mut owner = holder(&path);
         owner.acquire().unwrap();
@@ -1466,7 +1509,7 @@ mod tests {
             unix_ms()
         ));
         create_test_directory(&directory).unwrap();
-        let _directory = TestDirectory(directory.clone());
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join("device-owner.json");
         let old = own_record("lease generation", unix_ms());
         let newer = own_record("lease generation", old.since_unix_ms + 1);
@@ -1499,7 +1542,7 @@ mod tests {
             unix_ms()
         ));
         create_test_directory(&directory).unwrap();
-        let _directory = TestDirectory(directory.clone());
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join("device-owner.json");
         let mut first = holder(&path);
         let mut second = holder(&path);
@@ -1524,7 +1567,7 @@ mod tests {
             unix_ms()
         ));
         create_test_directory(&directory).unwrap();
-        let _directory = TestDirectory(directory.clone());
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join("device-owner.json");
         let lock = path.with_extension("transition");
         let claim = PathBuf::from(format!("{}.claim", lock.display()));
