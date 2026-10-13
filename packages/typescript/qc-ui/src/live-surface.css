@@ -96,10 +96,7 @@
   z-index: 20;
   top: calc(100% - .3cqw);
   display: grid;
-  padding: .7cqw;
   border: 1px solid var(--qc-palette-444548);
-  border-radius: .75cqw;
-  background: var(--qc-palette-232426);
   box-shadow: 0 1.2cqw 3cqw var(--qc-palette-rgb-0-0-0-65);
 }
 .parameter-context-menu { left: 1%; width: 38cqw; max-height: 42cqw; overflow-y: auto; padding: .7cqw 0; border-radius: .25cqw; background: var(--qc-device-context-menu); --qc-scroll-thumb: var(--qc-device-disabled); }

@@ -394,7 +394,7 @@
 .assignment-parameters section > strong { position: absolute; left: 1.25cqw; bottom: 1.05cqw; font-size: 1.85cqw; font-weight: 400; }
 .assignment-parameters section > em { position: absolute; left: 1.3cqw; top: 4.9cqw; z-index: 2; color: var(--qc-palette-152519); font: bold 1.3cqw/1.05 var(--qc-font-device-plain); letter-spacing: .35cqw; }
 .assignment-parameters section.is-assigned { box-shadow: inset 0 0 0 .65cqw var(--qc-palette-40ef70); border-radius: 1.7cqw; }
-.assignment-stomp-message { height: 78.8%; display: grid; place-content: center; gap: 1.5cqw; background: var(--qc-palette-292b2a); text-align: center; }
+.assignment-stomp-message { display: grid; place-content: center; gap: 1.5cqw; text-align: center; }
 /* The dialog is 418x286 at x 191, y 97, over a dimmed copy of the editor -
    not a panel standing in for it. */
 /* Two washes, not a ramp between them: above the Grid's black the unit dims to
@@ -577,7 +577,7 @@
 .gig-scene-tile.is-active > strong, .gig-scene-tile.is-active .gig-scene-tools { color: var(--qc-screen-background); }
 
 /* CorOS 4.1 manual-reference refinements. */
-.coros-midi-out > header { height: var(--qc-nav-bar-height); }.coros-midi-out > header .midi-trash { width: 7%; margin-left: auto; color: var(--qc-palette-193620); }.coros-midi-out > header button:last-child { margin-left: 0; }.midi-assignment-surface { height: 82%; display: grid; grid-template-columns: 62% 38%; align-items: center; padding: 2cqw 3.2cqw 3cqw; }.midi-footswitches { position: relative; height: 28cqw; display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: 1.2fr 1fr 1fr; align-items: center; justify-items: center; overflow: hidden; border-radius: 2cqw; background: var(--qc-screen-surface-control); }.midi-footswitches::after { content: ""; position: absolute; left: 0; right: 0; top: 10.3cqw; border-top: 1px solid var(--qc-palette-1b1e1c); }.midi-preset-load { grid-column: 2 / 5; width: 17cqw; height: 8.5cqw; border: .45cqw solid var(--qc-screen-background) !important; border-radius: .7cqw; background: var(--qc-screen-surface-base); color: var(--qc-palette-e4e6e5) !important; font-size: 1.35cqw !important; line-height: 1.4; }.midi-switch { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; gap: .8cqw; background: var(--qc-transparent); color: var(--qc-palette-d3d5d4) !important; font-size: 1.35cqw !important; }.midi-switch i { width: 2cqw; height: 2cqw; border-radius: 50%; background: var(--qc-screen-surface-raised); }.midi-expression { height: 28cqw; display: grid; grid-template-columns: 1fr 1fr; gap: 4cqw; padding-left: 4cqw; }.midi-expression label { display: grid; grid-template-rows: 3cqw 1fr; color: var(--qc-palette-d5d7d6); font-size: 1.5cqw; text-align: center; }.midi-expression label div { position: relative; border: .45cqw solid var(--qc-screen-surface-base); border-radius: 1.2cqw; background: var(--qc-screen-surface-control); box-shadow: inset 0 0 0 .35cqw var(--qc-palette-080808); }.midi-tabs, .midi-table, .coros-midi-out > footer { display: none; }
+.coros-midi-out > header { height: var(--qc-nav-bar-height); }.coros-midi-out > header .midi-trash { width: 7%; margin-left: auto; color: var(--qc-palette-193620); }.coros-midi-out > header button:last-child { margin-left: 0; }.midi-assignment-surface { height: 82%; display: grid; grid-template-columns: 62% 38%; align-items: center; padding: 2cqw 3.2cqw 3cqw; }.midi-footswitches { position: relative; height: 28cqw; display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: 1.2fr 1fr 1fr; align-items: center; justify-items: center; overflow: hidden; border-radius: 2cqw; background: var(--qc-screen-surface-control); }.midi-footswitches::after { content: ""; position: absolute; left: 0; right: 0; top: 10.3cqw; border-top: 1px solid var(--qc-palette-1b1e1c); }.midi-preset-load { grid-column: 2 / 5; width: 17cqw; height: 8.5cqw; border: .45cqw solid var(--qc-screen-background) !important; border-radius: .7cqw; background: var(--qc-screen-surface-base); color: var(--qc-palette-e4e6e5) !important; font-size: 1.35cqw !important; line-height: 1.4; }.midi-switch { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; gap: .8cqw; background: var(--qc-transparent); color: var(--qc-palette-d3d5d4) !important; font-size: 1.35cqw !important; }.midi-switch i { width: 2cqw; height: 2cqw; border-radius: 50%; background: var(--qc-screen-surface-raised); }.midi-expression { height: 28cqw; display: grid; grid-template-columns: 1fr 1fr; gap: 4cqw; padding-left: 4cqw; }.midi-expression label { display: grid; grid-template-rows: 3cqw 1fr; color: var(--qc-palette-d5d7d6); font-size: 1.5cqw; text-align: center; }.midi-expression label div { position: relative; border: .45cqw solid var(--qc-screen-surface-base); border-radius: 1.2cqw; box-shadow: inset 0 0 0 .35cqw var(--qc-palette-080808); }.midi-tabs, .midi-table, .coros-midi-out > footer { display: none; }
 .midi-switch:nth-of-type(2) { grid-area: 2 / 1; }.midi-switch:nth-of-type(3) { grid-area: 2 / 2; }.midi-switch:nth-of-type(4) { grid-area: 2 / 3; }.midi-switch:nth-of-type(5) { grid-area: 2 / 4; }.midi-switch:nth-of-type(6) { grid-area: 3 / 1; }.midi-switch:nth-of-type(7) { grid-area: 3 / 2; }.midi-switch:nth-of-type(8) { grid-area: 3 / 3; }.midi-switch:nth-of-type(9) { grid-area: 3 / 4; }
 
 .coros-io-settings, .coros-global-eq { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-palette-e9ebea); container-type: inline-size; font-family: var(--qc-font-device-plain); }
@@ -891,7 +891,6 @@
 .coros-directory-fixture.is-physical-context .directory-fixture-items button.is-current { background: var(--qc-rotary-face); }
 .coros-directory-fixture.is-physical-context .directory-fixture-items button > strong { font-size: 16px; }
 .coros-directory-fixture.is-physical-context .directory-fixture-items button > span { font-size: 16px; }
-.coros-directory-fixture.is-physical-context .directory-fixture-items button.is-current .physical-preset-name { color: var(--qc-screen-accent); }
 .coros-directory-fixture.is-physical-context .directory-fixture-items button small { font-size: 9px; }
 .coros-directory-fixture .directory-item-menu { left: 528px; right: auto; top: 212px; width: 256px; height: 260px; overflow: hidden; border: 0; border-radius: 8px; background: var(--qc-screen-background); box-shadow: none; }
 /* Same collapse as the Presets actions drawer: under the wash the unit stops
@@ -934,7 +933,7 @@
 .coros-physical-confirmation:not(.is-over-grid) > .coros-directory-fixture.is-cloud-upload > header > button:nth-of-type(2) { background: var(--qc-palette-101c10); }
 /* The unit puts no upload badge on an empty slot, scrimmed or not. */
 .coros-directory-fixture .directory-fixture-items button.is-empty .preset-upload { display: none; }
-.coros-physical-confirmation > .physical-grid-underlay { position: absolute; inset: 0; z-index: 1; }
+.coros-physical-confirmation > .physical-grid-underlay { position: absolute; inset: 0; }
 .physical-grid-underlay.is-full-grid .underlay-grid { height: 480px; }
 .qc-screen.coros-cpu-monitor { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen); color: var(--qc-cab-arrow-dark); font-family: var(--qc-font-device-plain); }
 .coros-cpu-monitor > .physical-grid-underlay { position: absolute; inset: 0; }
@@ -1152,7 +1151,7 @@
 
 /* The option rows are 45px and the two footer buttons 157x45, centred on the
    dialog at x 239 and 404 rather than right-aligned. */
-.coros-directory-fixture .directory-copy-dialog footer { justify-content: center; gap: 1.125cqw; padding: 0 0 4%; }
+.coros-directory-fixture .directory-copy-dialog footer { justify-content: center; gap: 1.125cqw; }
 .coros-directory-fixture .directory-copy-dialog footer button { width: 19.625cqw; height: 5.625cqw; padding: 0; border-radius: .8cqw; font-size: 2.25cqw; }
 .coros-directory-fixture .directory-copy-dialog footer button:last-child { background: var(--qc-palette-1838ff); }
 .coros-directory-fixture .directory-copy-dialog > button b { margin-left: 0; color: inherit; font-weight: 700; }

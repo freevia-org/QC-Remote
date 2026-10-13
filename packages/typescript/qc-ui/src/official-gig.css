@@ -61,7 +61,7 @@
 .gig-official.is-scene .gig-official-tiles article:nth-child(7) { background: var(--qc-palette-17182f); }
 .gig-official.is-scene .gig-official-tiles article:nth-child(8) { background: var(--qc-palette-0c3026); }
 .gig-official.is-stomp .gig-official-tiles article { padding: 1.5cqw 2cqw; }
-.gig-official.is-stomp .gig-official-tiles article > small { position: absolute; right: 2cqw; top: 1.25cqw; color: var(--qc-palette-8d928e); font-size: 5cqw; }
+.gig-official.is-stomp .gig-official-tiles article > small { position: absolute; right: 2cqw; color: var(--qc-palette-8d928e); font-size: 5cqw; }
 .gig-official.is-stomp .gig-official-tiles article > b { width: 8.75cqw; height: 8.75cqw; display: grid; place-items: center; border: .25cqw solid var(--qc-screen-accent); border-radius: 1.5cqw; background: var(--qc-palette-090a09); font-size: 4cqw; }
 .gig-official .gig-official-tiles article > b.has-device-glyph { border: 0; border-radius: 0; background: var(--qc-transparent); }
 .gig-official .gig-official-tiles article > b.has-device-glyph > svg { display: block; width: 100%; height: 100%; }
@@ -118,7 +118,7 @@
 .gig-official.is-hybrid .hybrid-scene > small { position: absolute; inset: 1.5cqw 2cqw auto; color: var(--qc-palette-a8aaa8); font-size: 3cqw; text-align: left; }
 .gig-official.is-hybrid .hybrid-scene > strong { z-index: 1; margin: 0; font-size: 4cqw; }
 .gig-official.is-hybrid .hybrid-scene > strong { position: relative; top: 1cqw; }
-.gig-official.is-hybrid .hybrid-stomp > small { position: absolute; right: 2cqw; top: 1.25cqw; color: var(--qc-palette-8d928e); font-size: 5cqw; }
+.gig-official.is-hybrid .hybrid-stomp > small { position: absolute; right: 2cqw; color: var(--qc-palette-8d928e); font-size: 5cqw; }
 .gig-official.is-hybrid .hybrid-stomp > small { top: .25cqw; }
 .gig-official.is-hybrid .hybrid-stomp > b { width: 8.75cqw; height: 8.75cqw; display: grid; place-items: center; border: .25cqw solid var(--qc-screen-accent); border-radius: 1.5cqw; background: var(--qc-palette-090a09); font-size: 4cqw; }
 .gig-official.is-hybrid .gig-official-tiles article:nth-child(5) > b { margin-left: -.5cqw; border-color: var(--qc-palette-090a09); }

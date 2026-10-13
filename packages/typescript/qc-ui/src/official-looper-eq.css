@@ -28,7 +28,6 @@
 .coros-looper > header span strong > svg { width: 2cqw !important; height: 2cqw !important; margin-left: .25cqw; vertical-align: -.25cqw; fill: currentColor; stroke: none; }
 .looper-timeline { gap: 1.5cqw; padding: .625cqw 2cqw; border: 0; background: linear-gradient(to bottom, var(--qc-screen-surface-control) 0 52%, var(--qc-screen-surface-raised) 52% 100%); font-size: 2cqw; }
 .looper-actions { background: var(--qc-screen-surface-base); }
-.looper-actions button { background: var(--qc-screen-surface-control); }
 .looper-timeline span:first-child b { display: inline-block; width: 2.25cqw; height: 2.25cqw; border-radius: 50%; background: var(--qc-palette-ff2421); color: var(--qc-transparent); vertical-align: -.35cqw; }
 .looper-timeline .looper-close-caret { display: inline-block; margin: 0 .75cqw; color: var(--qc-screen-text-primary); font-size: 3cqw; font-weight: 400; line-height: .5; }
 /* This caret is a hollow two-pixel chevron at (56,101), a dedicated icon
@@ -44,7 +43,7 @@
 .looper-actions button strong { font-size: 10cqw; }
 .looper-actions button strong { position: relative; top: 0; }
 .looper-actions button b { top: 0; right: 1.75cqw; font-size: 5cqw; }
-.looper-actions button strong { width: 10cqw; height: 10cqw; color: var(--qc-palette-f2f5f2); }
+.looper-actions button strong { width: 10cqw; height: 10cqw; }
 .looper-actions button strong > .qc-looper-action-glyph { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .looper-actions button strong > .qc-looper-action-glyph-half-speed { overflow: visible; }
 .looper-actions button:nth-child(1) strong,
@@ -175,8 +174,6 @@
    11.125cqw (89px) in a 107px content box centres at a whole pixel. */
 .capture-official-result label { width: 18.125cqw; height: 11.125cqw; }
 .capture-official-result label .capture-level-dial { right: .8125cqw; bottom: -1.375cqw; width: 72px; height: 72px; }
-.capture-official-progress > main > nav { padding-top: .375cqw; }
-.capture-official-progress h1 { margin-bottom: 4cqw; }
 .capture-official-progress > header > span { transform: translateY(1px); }
 .capture-official-progress > header > button:last-child { position: relative; font-size: 0; }
 .capture-official-progress > header > button:last-child::before,
@@ -184,9 +181,7 @@
 .capture-official-progress > header > button:last-child::before { transform: translate(-50%,-50%) rotate(45deg); }
 .capture-official-progress > header > button:last-child::after { transform: translate(-50%,-50%) rotate(-45deg); }
 .capture-official-progress > main > nav div:last-child b { color: var(--qc-screen-text-primary); }
-.capture-official-progress .capture-official-progress-bar b { width: 29.9%; }
-.capture-official-progress section > em { right: 2cqw; top: 18.625cqw; width: 2.75cqw; height: 2.75cqw; border: .375cqw solid var(--qc-palette-505450); border-top-color: var(--qc-screen-text-primary); border-right-color: var(--qc-screen-text-primary); border-radius: 50%; color: var(--qc-transparent); font-size: 0; transform: rotate(-17deg); }
-.capture-official-save > main { margin-top: 3.75cqw; }
+.capture-official-progress section > em { right: 2cqw; width: 2.75cqw; height: 2.75cqw; border: .375cqw solid var(--qc-palette-505450); border-top-color: var(--qc-screen-text-primary); border-right-color: var(--qc-screen-text-primary); border-radius: 50%; color: var(--qc-transparent); font-size: 0; transform: rotate(-17deg); }
 .capture-official-save > header { gap: 2.25cqw; }
 .capture-official-save > header .capture-folder { width: 20.375cqw; }
 .capture-official-save > header > button:nth-child(3) { width: 9.5cqw; }
@@ -220,7 +215,6 @@
 .capture-official-save .capture-kinds button.is-active { color: var(--qc-screen-text-primary); --qc-device-tile-ground: var(--qc-screen); }
 .capture-official-save .capture-instruments button { background: var(--qc-screen-surface-raised); }
 .capture-official-save .capture-instruments button.is-active { background: var(--qc-screen-text-primary); }
-.capture-official-save .capture-kinds { height: 15.5cqw; gap: 1.625cqw; }
 .capture-official-save > main > small:nth-of-type(2) { margin-bottom: 2.5cqw; }
 .capture-official-save > main > small:first-child,
 .capture-official-save > main > h1 { position: relative; top: .375cqw; }
@@ -320,7 +314,7 @@
    grounds used to be stated here, unconditionally and at the on state's
    values; they are state-gated inside @scope now, where they can actually
    win. */
-.coros-global-eq .global-eq-power.is-off { background: var(--qc-screen-surface-control); color: var(--qc-palette-adaaad); }
+.coros-global-eq .global-eq-power.is-off { color: var(--qc-palette-adaaad); }
 .coros-global-eq .global-eq-power.is-off > i { background: var(--qc-screen-surface-base); }
 .coros-global-eq .global-eq-more{background:var(--qc-rotary-face)}.coros-global-eq .global-eq-more svg{width:3cqw;height:3cqw}.coros-global-eq .global-eq-power.is-off{background:var(--qc-rotary-face)}.coros-global-eq:has(.global-eq-power.is-off) .global-eq-graph>svg>path{stroke:var(--qc-context-capture-muted)}
 

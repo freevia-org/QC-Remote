@@ -175,7 +175,7 @@
 .coros-reference-parameter-editor header small { color: var(--qc-palette-9da19f); font-size: 1.75cqw; font-weight: 400; }
 .coros-reference-parameter-editor header strong { font-size: 2.375cqw; font-weight: 400; }
 .coros-reference-parameter-editor .editor-spacer { flex: 1; }
-.coros-reference-parameter-editor .editor-stomp { flex: 0 0 8.2%; grid-template-columns: 45% 1fr; font-size: 2.25cqw; font-weight: 700; }
+.coros-reference-parameter-editor .editor-stomp { flex: 0 0 8.2%; font-size: 2.25cqw; font-weight: 700; }
 .coros-reference-parameter-editor .editor-stomp svg { width: 85%; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .coros-reference-parameter-editor .editor-scene { flex: 0 0 17%; display: grid !important; grid-template-columns: 1fr 5cqw 1fr !important; gap: 0; font-size: 2.2cqw; }
 /* 3.75cqw is the 30px a shuttle arrow's box is on the unit's 800px screen; a grid item's button is only as wide as its content, and its svg is 70% of it. */
@@ -271,7 +271,6 @@
 .coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-title strong { display: flex; align-items: center; gap: .7cqw; white-space: nowrap; font-size: 2.1cqw; }
 .coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-title strong i { color: inherit; font-size: 1.5cqw; font-style: normal; }
 .coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-stomp { left: 30.25%; width: 8.125%; }
-.coros-reference-parameter-editor.coros-cab-editor .cab-editor-header .editor-scene { left: 39.625%; width: 17.5%; }
 .coros-reference-parameter-editor.coros-cab-editor .cab-header-divider { top: 2.5cqw; width: 1px; height: 2.5cqw; background: var(--qc-palette-303430); }
 .coros-reference-parameter-editor.coros-cab-editor .divider-one { left: 57.125%; }
 .coros-reference-parameter-editor.coros-cab-editor .divider-two { left: 76.375%; }

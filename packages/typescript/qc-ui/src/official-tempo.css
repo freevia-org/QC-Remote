@@ -127,7 +127,7 @@
 .tempo-control .tempo-dial { position: absolute; bottom: 1cqw; width: 72px; height: 72px; padding: 0; transform: translateY(1.25cqw); }
 .tempo-control.is-tempo .tempo-dial, .tempo-control.is-pan .tempo-dial { right: .75cqw; }
 .tempo-control.is-volume .tempo-dial { right: .875cqw; }
-.tempo-control.is-radio { display: block; border: 0; color: inherit; text-align: left; font: inherit; }
+.tempo-control.is-radio { border: 0; color: inherit; text-align: left; font: inherit; }
 /* A <button> centres its content vertically unless it is a flex or grid container; the unit
    sets MODE and TEMPO LED on the same line as TEMPO, from the cell's top. */
 .tempo-control.is-radio { display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; }

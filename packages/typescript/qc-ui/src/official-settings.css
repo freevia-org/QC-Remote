@@ -65,7 +65,6 @@
 .settings-system-detail > p { margin-bottom: 1.25cqw; }
 .settings-system-detail > div { position: relative; height: 9.875cqw; }
 .settings-system-detail > div span, .settings-system-detail > div strong { font-size: 2.25cqw; font-weight: 400; }
-.settings-system-detail > div strong { position: absolute; right: 1.5cqw; }
 .settings-system-detail > div .qc-segment-bar { position: absolute; left: 0; top: 5.0625cqw; }
 .settings-system-detail > footer { font-size: 3cqw; word-spacing: 1.25cqw; }
 /* qc-brightness-panel.tsx: the up/down marks set into the instruction line, the
@@ -76,9 +75,8 @@
 .settings-system-detail > div .qc-segment-bar-hit:focus-visible { opacity: 1; outline: .25cqw solid var(--qc-screen-accent); outline-offset: .25cqw; background: none; }
 .settings-system-detail > footer > button { display: block; padding: 0; border: 0; background: none; color: inherit; line-height: 0; cursor: pointer; }
 .settings-system-detail > footer > button:disabled { cursor: default; }
-.settings-device-detail > p { margin-bottom: 1cqw; }
-.settings-device-detail > small { display: block; color: var(--qc-palette-929692); font-size: 1.75cqw; line-height: 1.25; }
-.settings-device-detail > div { position: relative; height: 10.5cqw; margin-top: 2cqw; padding-left: 22cqw; display: grid; grid-template-columns: repeat(4, 1fr); gap: 2cqw; border-bottom: 1px solid var(--qc-palette-101310); }
+.settings-device-detail > small { display: block; color: var(--qc-palette-929692); }
+.settings-device-detail > div { position: relative; height: 10.5cqw; padding-left: 22cqw; display: grid; grid-template-columns: repeat(4, 1fr); gap: 2cqw; border-bottom: 1px solid var(--qc-palette-101310); }
 .settings-device-detail > div > b { position: absolute; left: 0; top: .25cqw; width: 8.75cqw; height: 8.75cqw; display: grid; place-items: center; border: .3cqw solid var(--qc-palette-7257ff); border-radius: 1.5cqw; background: var(--qc-screen-background); font-size: 4cqw; font-weight: 400; }
 .settings-device-detail > div > button { display: grid; grid-template-rows: 3cqw 5.5cqw; justify-items: center; padding: 0; border: 0; background: var(--qc-transparent); color: var(--qc-palette-929692); font-size: 1.75cqw; }
 .settings-device-detail > div > button i { width: 8.25cqw; height: 5.5cqw; display: grid; place-items: center; border-radius: 1cqw; background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); font-size: 3cqw; font-style: normal; }
@@ -110,7 +108,7 @@
    (its art carries a 1px left margin inside a 26px box, so the box starts at
    335) and STOMP's ink 377..399. A 16px gap and the row's own fractional top
    put every one of them on a half pixel, where crispEdges snaps the art. */
-.coros-settings-official.settings-system .settings-system-detail > footer { display: flex; align-items: flex-start; gap: 15px; height: 3cqw; margin-left: 1cqw; transform: translateY(.875cqw); }
+.coros-settings-official.settings-system .settings-system-detail > footer { display: flex; align-items: flex-start; gap: 15px; height: 3cqw; margin-left: 1cqw; }
 .coros-settings-official.settings-system .settings-system-detail > footer > button > svg { width: 26px; height: 26px; display: block; }
 .coros-settings-official.settings-system .settings-system-detail > footer > button > svg.qc-mode-glyph-preset { width: 24px; height: 24px; }
 .coros-settings-official.settings-system .settings-system-detail > footer > button.is-faint { opacity: .18; }

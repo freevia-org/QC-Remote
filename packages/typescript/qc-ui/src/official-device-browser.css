@@ -56,7 +56,6 @@
 .device-browser-grid header em { margin-right: auto; margin-left: -2.25cqw; color: var(--qc-palette-a2a5a2); font-size: 9cqw; font-style: normal; transform: translateY(2.875cqw) scaleX(.55); transform-origin: left center; }
 .device-browser-grid header b { color: var(--qc-palette-b09d48); }
 .device-browser-grid header .amp-undo { position: absolute; left: 26.25cqw; }
-.device-browser-grid header > b { position: absolute; left: 32cqw; }
 .device-browser-grid header .amp-save { position: absolute; left: 38cqw; }
 .device-browser-grid header .amp-more { position: absolute; left: 45cqw; }
 .device-browser-grid header .amp-status { position: absolute; right: 1cqw; top: 0; width: 1.25cqw; height: 1.25cqw; border-radius: 50%; background: var(--qc-palette-58a364); }
