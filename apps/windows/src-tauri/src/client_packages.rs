@@ -2650,7 +2650,24 @@ fn jan_data_directory_in(config_home: &Path, data_home: &Path) -> PathBuf {
     data_home.join("Jan").join("data")
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(target_os = "macos")]
+fn jan_data_directory() -> Option<PathBuf> {
+    let data_home = xdg_data_home()?;
+    let settings = data_home.join("Jan").join("settings.json");
+    if let Ok(contents) = fs::read_to_string(settings) {
+        if let Ok(document) = serde_json::from_str::<Value>(&contents) {
+            if let Some(path) = document.get("data_folder").and_then(Value::as_str) {
+                let path = PathBuf::from(path);
+                if path.is_absolute() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    Some(data_home.join("Jan").join("data"))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn jan_data_directory() -> Option<PathBuf> {
     None
 }
