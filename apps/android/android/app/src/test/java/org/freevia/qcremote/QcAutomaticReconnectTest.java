@@ -67,6 +67,9 @@ public final class QcAutomaticReconnectTest {
     @Test public void currentRecoveryKeepsRetryingWhileDeviceIsAbsent() throws Exception { scenario("absentDeviceRetry"); }
     @Test public void terminalReaderRecoveryCannotOverrideDisconnect() throws Exception { scenario("readerDisconnectRace"); }
     @Test public void replacementIntentAndTerminalOwnerRetireOldTimers() throws Exception { scenario("replacementAndShutdown"); }
+    @Test public void currentSuspensionResyncReopensOnce() throws Exception { scenario("currentSuspensionResync"); }
+    @Test public void retiredReaderCannotConsumeSuccessorResync() throws Exception { scenario("retiredSuspensionReader"); }
+    @Test public void queuedSuspensionResyncCannotOverrideNewIntent() throws Exception { scenario("queuedSuspensionRetirement"); }
 
     @AfterClass public static void cleanup() throws Exception {
         try { if (loader != null) loader.close(); }
@@ -161,9 +164,42 @@ public final class ReconnectHarness {
   scheduleAutomaticReconnect("new loss"); relayAdmissionGuard.terminal = true; keepalive.next();
   check(stateDecoder.arms == 2 && opens == 0 && keepalive.tasks.isEmpty(), "terminal owner rearmed");
  }
- static final class Decoder { int arms; boolean due; CountDownLatch entered, release; boolean sessionTerminalReadFailed() { if (entered != null) { entered.countDown(); try { if (!release.await(2, TimeUnit.SECONDS)) throw new AssertionError("terminal fixture timeout"); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); } } return true; } long sessionScheduleReconnect(long now) { arms++; due = true; return 750; } boolean sessionReconnectDue(long now) { return due; } void sessionReconnectAttempted(long now) {} }
+ public void currentSuspensionResync() {
+  stateDecoder.resync = "reset";
+  scheduleSuspensionResync(connectionGeneration.get());
+  check(keepalive.tasks.size() == 1 && opens == 0 && stateDecoder.resync == null, "current resync not queued");
+  keepalive.next();
+  check(opens == 1 && keepalive.tasks.isEmpty(), "current resync did not reopen once");
+  scheduleSuspensionResync(connectionGeneration.get());
+  check(keepalive.tasks.isEmpty(), "consumed resync queued twice");
+ }
+ public void retiredSuspensionReader() {
+  long oldReader = connectionGeneration.get();
+  disconnect(new PluginCall());
+  connection = new UsbDeviceConnection(); reading = true; stateDecoder.resync = "successor";
+  scheduleSuspensionResync(oldReader);
+  check(keepalive.tasks.isEmpty() && "successor".equals(stateDecoder.resync), "old reader stole successor resync");
+  scheduleSuspensionResync(connectionGeneration.get()); keepalive.next();
+  check(opens == 1, "successor reader failed to reopen");
+ }
+ public void queuedSuspensionRetirement() {
+  stateDecoder.resync = "reset"; scheduleSuspensionResync(connectionGeneration.get());
+  disconnect(new PluginCall()); keepalive.next();
+  check(opens == 0 && keepalive.tasks.isEmpty(), "queued resync overrode Disconnect");
+  connection = new UsbDeviceConnection(); reading = true;
+  stateDecoder.resync = "reset"; scheduleSuspensionResync(connectionGeneration.get());
+  automaticReconnectGeneration.incrementAndGet(); keepalive.next();
+  check(opens == 0 && keepalive.tasks.isEmpty(), "queued resync borrowed replacement intent");
+  stateDecoder.resync = "reset"; scheduleSuspensionResync(connectionGeneration.get());
+  connectionGeneration.incrementAndGet(); keepalive.next();
+  check(opens == 0 && keepalive.tasks.isEmpty(), "queued resync borrowed replacement connection");
+  stateDecoder.resync = "reset"; scheduleSuspensionResync(connectionGeneration.get());
+  relayAdmissionGuard.terminal = true; keepalive.next();
+  check(opens == 0 && keepalive.tasks.isEmpty(), "queued resync reopened terminal owner");
+ }
+ static final class Decoder { int arms; boolean due; String resync; CountDownLatch entered, release; String takeSuspensionResync() { String value = resync; resync = null; return value; } boolean sessionTerminalReadFailed() { if (entered != null) { entered.countDown(); try { if (!release.await(2, TimeUnit.SECONDS)) throw new AssertionError("terminal fixture timeout"); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); } } return true; } long sessionScheduleReconnect(long now) { arms++; due = true; return 750; } boolean sessionReconnectDue(long now) { return due; } void sessionReconnectAttempted(long now) {} }
  static final class Guard { boolean terminal; boolean isTerminal() { return terminal; } boolean publish(long epoch, Runnable action) { if (terminal || epoch != 1) return false; action.run(); return true; } }
- static final class Scheduler { final ArrayDeque<Runnable> tasks = new ArrayDeque<>(); void schedule(Runnable task, long delay, TimeUnit unit) { tasks.add(task); } void next() { tasks.removeFirst().run(); } }
+ static final class Scheduler { final ArrayDeque<Runnable> tasks = new ArrayDeque<>(); void schedule(Runnable task, long delay, TimeUnit unit) { tasks.add(task); } void execute(Runnable task) { tasks.add(task); } void next() { tasks.removeFirst().run(); } }
  static final class Manager { boolean hasPermission(UsbDevice device) { return true; } }
  static final class UsbDeviceConnection {} static final class UsbDevice {} static final class Flight { void event(String text) {} }
  static final class PluginCall { void resolve() {} }

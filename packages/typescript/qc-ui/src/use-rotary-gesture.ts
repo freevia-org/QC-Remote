@@ -170,7 +170,7 @@ export function useRotaryValue<E extends Element = HTMLButtonElement>(options: R
   }, []);
   const handlers = useRotaryGesture<E>({
     ...gesture,
-    onRotate: (steps) => { set(valueRef.current + steps * latest.current.step); },
+    onRotate: (steps) => { if (!latest.current.disabled) set(valueRef.current + steps * latest.current.step); },
     onSettle: () => latest.current.onCommit(valueRef.current)
   });
   return useMemo(() => ({ ...handlers, set }), [handlers, set]);
