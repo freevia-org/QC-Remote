@@ -306,7 +306,7 @@ fn client_readme() -> String {
         "%LOCALAPPDATA%\\QC Remote\\integrations\\local-mcp-bridge.cjs",
     );
     format!(
-        "# QC Remote local MCP clients\n\nVersion {}. Keep QC Remote open and connect the Quad Cortex before using these integrations. QC Remote remains the only USB owner.\n\n## Claude Desktop\n\nInstall the included `.mcpb` in Claude Desktop: Settings > Extensions > Advanced settings > Install Extension. The extension exposes the QC Device Knowledge skill as MCP resources.\n\n## ChatGPT Desktop and Codex\n\nOpen LOCAL in QC Remote and choose **Pair**. The app updates only its managed `qc-remote` MCP entry and installs the bundled skill under `{skill_codex}`. Existing skill contents are backed up before replacement. The managed route follows QC Remote upgrades automatically.\n\n## Google Antigravity\n\nOpen LOCAL in QC Remote and choose **Pair**. The app installs the bundled skill under `{skill_antigravity}` and updates its managed MCP entry. For manual setup, merge `antigravity/mcp_config.example.json` into `{antigravity_config}`.\n\n## Codex CLI manual fallback\n\nRun `{installer}`. It installs the bridge at `{installed}`, installs the bundled skill, and registers the bridge with Codex.\n\n## VS Code\n\nRun `{installer}` once to install the bridge at `{installed}`, then adapt `vscode/mcp.example.json`.\n",
+        "# QC Remote local MCP clients\n\nVersion {}. Keep QC Remote open and connect the Quad Cortex before using these integrations. QC Remote remains the only USB owner.\n\n## Claude Desktop\n\nInstall the included `.mcpb` in Claude Desktop: Settings > Extensions > Advanced settings > Install Extension. The extension exposes the QC Device Knowledge skill as MCP resources.\n\n## ChatGPT Desktop and Codex\n\nOpen LOCAL in QC Remote and choose **Pair**. The app updates only its managed `qc-remote` MCP entry and installs the bundled skill under `{skill_codex}`. Existing skill contents are backed up before replacement. The managed route follows QC Remote upgrades automatically.\n\n## Google Antigravity\n\nOpen LOCAL in QC Remote and choose **Pair**. The app installs the bundled skill under `{skill_antigravity}` and updates its managed MCP entry. For manual setup, merge `antigravity/mcp_config.example.json` into `{antigravity_config}`. Before saving, replace the `command` value with the full path to the QC Remote executable inside your installed app bundle (for example, `/Applications/QC Remote.app/Contents/MacOS/QC Remote`).\n\n## Codex CLI manual fallback\n\nRun `{installer}`. It installs the bridge at `{installed}`, installs the bundled skill, and registers the bridge with Codex.\n\n## VS Code\n\nRun `{installer}` once to install the bridge at `{installed}`, then adapt `vscode/mcp.example.json`.\n",
         env!("CARGO_PKG_VERSION"),
         skill_codex = skill_codex, skill_antigravity = skill_antigravity,
         antigravity_config = antigravity_config, installer = installer, installed = installed
@@ -464,7 +464,7 @@ fn local_client_archive() -> Result<Vec<u8>, String> {
     // Antigravity does not pass `env` to a native STDIO child, so only
     // the argument reaches the heartbeat.
     #[cfg(target_os = "macos")]
-    let antigravity_executable = "/Applications/QC Remote.app/Contents/MacOS/QC Remote";
+    let antigravity_executable = "/path/to/QC Remote.app/Contents/MacOS/QC Remote";
     #[cfg(not(target_os = "macos"))]
     let antigravity_executable = r"C:\Users\<you>\AppData\Local\QC Remote\qc-remote.exe";
     let antigravity_example = format!(
