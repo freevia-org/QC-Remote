@@ -377,7 +377,8 @@ mod tests {
         let executable = Path::new("/Applications/QC & Remote.app/Contents/MacOS/qc-device-broker");
         let directory = Path::new("/Users/example/Library/Application Support/QC <Remote>");
         let xml = launch_agent(executable, directory).expect("valid macOS paths");
-        let value = Value::from_reader(xml.as_bytes()).expect("valid LaunchAgent plist");
+        let value = Value::from_reader(std::io::Cursor::new(xml.as_bytes()))
+            .expect("valid LaunchAgent plist");
         let dictionary = value.as_dictionary().expect("LaunchAgent dictionary");
 
         assert_eq!(
