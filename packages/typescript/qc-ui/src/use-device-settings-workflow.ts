@@ -1,3 +1,4 @@
+import { bindDeviceCommandScope, deviceCommandBusy } from "./device-command-ownership.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DeviceActionResult, DeviceIdentity, GeneralIntegerSetting, GeneralSettings, GeneralToggleSetting } from "@qc-remote/client";
 import { useGuardedMutation } from "./use-guarded-mutation.ts";
@@ -82,27 +83,30 @@ export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions
   const owner = ownerRef.current;
   const mounted = useRef(true);
   const pendingOwner = useRef<typeof owner | undefined>(undefined);
+  const pendingScope = useRef(options.setPending);
   const latestSetPending = useRef(options.setPending);
   latestSetPending.current = options.setPending;
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      if (pendingOwner.current) { pendingOwner.current = undefined; latestSetPending.current(false); }
+      if (pendingOwner.current) { pendingOwner.current = undefined; if (!deviceCommandBusy(pendingScope.current)) latestSetPending.current(false); }
     };
   }, []);
   useEffect(() => {
     if (pendingOwner.current && pendingOwner.current !== owner) {
       pendingOwner.current = undefined;
-      latestSetPending.current(false);
+      if (!deviceCommandBusy(pendingScope.current)) latestSetPending.current(false);
     }
   }, [owner]);
   const current = useCallback(() => mounted.current && ownerRef.current === owner && owner.connected && owner.current(), [owner]);
+  const scopedSetPending = useCallback((value: boolean) => {
+    if (value && current()) { pendingOwner.current = owner; latestSetPending.current(true); }
+    else if (!value && pendingOwner.current === owner && current()) { pendingOwner.current = undefined; latestSetPending.current(false); }
+  }, [current, owner]);
+  bindDeviceCommandScope(scopedSetPending, pendingScope.current);
   const guarded = useGuardedMutation({ ...options,
-    setPending: (value) => {
-      if (value && current()) { pendingOwner.current = owner; options.setPending(true); }
-      else if (!value && pendingOwner.current === owner && current()) { pendingOwner.current = undefined; options.setPending(false); }
-    },
+    setPending: scopedSetPending,
     notice: (message) => { if (current()) notice(message); },
     fail: (error) => { if (current()) fail(error); }
   }, "changing device settings");

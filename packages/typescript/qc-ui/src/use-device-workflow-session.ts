@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SupersededPresetOperation } from "@qc-remote/core";
 import type { DeviceCommandOptions } from "./workflow-options";
-import { bindDeviceCommandScope, deviceCommandBusy } from "./device-command-ownership.ts";
-type DeviceWorkflowSessionOptions = Pick<DeviceCommandOptions, "sessionKey" | "captureSessionCurrent" | "notice" | "fail"> & {
+import { bindDeviceCommandScope, deviceCommandBusy, registerDeviceCommandSession } from "./device-command-ownership.ts";
+type DeviceWorkflowSessionOptions = Pick<DeviceCommandOptions, "sessionKey" | "commandSessionKey" | "captureSessionCurrent" | "notice" | "fail"> & {
   gateway: object; connected: boolean; setPending?(pending: boolean): void;
 };
 
@@ -15,6 +15,7 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
   const ownerRef = useRef<Owner | null>(null);
   const epoch = useRef(0);
   const pendingOwner = useRef<Owner | null>(null);
+  const pendingReset = useRef(false);
   let owner = ownerRef.current;
   const probe = options.captureSessionCurrent?.() ?? (() => true);
   if (!owner || (!owner.current() && probe()) || owner.key !== options.sessionKey
@@ -54,18 +55,23 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
         if (value) pendingOwner.current = held;
         else if (pendingOwner.current === held) pendingOwner.current = null;
         const setter = latest.current.setPending;
-        if (value || (setter && !deviceCommandBusy(setter))) setter?.(value);
+        if (value || (setter && !deviceCommandBusy(scoped.setPending))) setter?.(value);
       }
     };
   }, [held]);
-  if (options.setPending) bindDeviceCommandScope(scoped.setPending, options.setPending);
+  const commandSessionKey = options.commandSessionKey ?? options.sessionKey ?? options.gateway;
+  if (options.setPending) {
+    bindDeviceCommandScope(scoped.setPending, options.setPending);
+    pendingReset.current = registerDeviceCommandSession(scoped.setPending, commandSessionKey, true) || pendingReset.current;
+  }
   useEffect(() => {
-    if (pendingOwner.current && pendingOwner.current !== held) {
+    if (pendingReset.current || (pendingOwner.current && pendingOwner.current !== held)) {
+      pendingReset.current = false;
       pendingOwner.current = null;
       const setter = latest.current.setPending;
-      if (setter && !deviceCommandBusy(setter)) setter(false);
+      if (setter && !deviceCommandBusy(scoped.setPending)) setter(false);
     }
-  }, [held]);
+  }, [commandSessionKey, held, scoped.setPending]);
   useEffect(() => {
     // StrictMode replays mount effects. Replace the revoked owner explicitly;
     // restoring it would revive reads started before that cleanup.
@@ -76,11 +82,11 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
       if (pendingOwner.current) {
         pendingOwner.current = null;
         const setter = latest.current.setPending;
-        if (setter && !deviceCommandBusy(setter)) setter(false);
+        if (setter && !deviceCommandBusy(scoped.setPending)) setter(false);
       }
     };
   }, []);
   return { key: held, current: scoped.current, apply: scoped.apply,
     options: { ...options, gateway: scoped.gateway, setPending: scoped.setPending, notice: scoped.notice, fail: scoped.fail,
-      sessionKey: held, captureSessionCurrent: () => held.current } as T };
+      sessionKey: held, commandSessionKey, captureSessionCurrent: () => held.current } as T };
 }

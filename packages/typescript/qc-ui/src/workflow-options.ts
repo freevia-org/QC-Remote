@@ -13,6 +13,8 @@ export interface WorkflowPrompts {
 export interface DeviceCommandOptions {
   connected: boolean;
   sessionKey?: unknown;
+  /** The host transport/session identity, independent of a hook mount owner. */
+  commandSessionKey?: unknown;
   captureSessionCurrent?(): () => boolean;
   pending: boolean;
   setPending(pending: boolean): void;
