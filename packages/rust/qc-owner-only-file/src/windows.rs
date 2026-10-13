@@ -76,10 +76,10 @@ use windows_sys::Win32::{
         Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
         EqualSid, GetAce, GetAclInformation, GetLengthSid, GetSecurityDescriptorControl,
         GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor,
-        SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TokenUser, ACCESS_ALLOWED_ACE,
-        ACL, ACL_REVISION, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
-        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
-        SECURITY_DESCRIPTOR, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+        SetSecurityDescriptorControl, SetSecurityDescriptorDacl, SetSecurityDescriptorOwner,
+        TokenUser, ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION,
+        DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
     },
     Storage::FileSystem::{
         CreateDirectoryW, CreateFileW, CREATE_NEW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
@@ -114,7 +114,8 @@ pub fn create_owner_only_directory(path: &Path) -> Result<bool, String> {
     let mut dacl = OwnerOnlyDacl::grant_full_access(user.sid())?;
     // SAFETY: all-zero is a valid uninitialised SECURITY_DESCRIPTOR value.
     let mut descriptor: SECURITY_DESCRIPTOR = unsafe { mem::zeroed() };
-    let descriptor_pointer = owner_only_descriptor(&mut dacl, &mut descriptor)?;
+    let descriptor_pointer =
+        owner_only_directory_descriptor(&mut dacl, &mut descriptor, user.sid())?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: descriptor_pointer,
@@ -307,6 +308,23 @@ fn owner_only_descriptor(
     } == 0
     {
         return Err(last_error("mark the DACL protected"));
+    }
+    Ok(descriptor_pointer)
+}
+
+/// Directory ownership is checked along with its DACL. Set the owner
+/// explicitly because Windows otherwise selects it from the token's default
+/// owner, which may be the Administrators group for an elevated process.
+fn owner_only_directory_descriptor(
+    dacl: &mut OwnerOnlyDacl,
+    descriptor: &mut SECURITY_DESCRIPTOR,
+    owner: PSID,
+) -> Result<PSECURITY_DESCRIPTOR, String> {
+    let descriptor_pointer = owner_only_descriptor(dacl, descriptor)?;
+    // SAFETY: `owner` is the live SID in CurrentUser, and the descriptor and
+    // SID remain alive through CreateDirectoryW in the caller.
+    if unsafe { SetSecurityDescriptorOwner(descriptor_pointer, owner, 0) } == 0 {
+        return Err(last_error("set the owner-only directory owner"));
     }
     Ok(descriptor_pointer)
 }
@@ -650,6 +668,30 @@ fn last_error(action: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::Security::GetSecurityDescriptorOwner;
+
+    #[test]
+    fn directory_descriptor_explicitly_names_current_user_as_owner() {
+        let user = CurrentUser::look_up().expect("current user SID");
+        let mut dacl = OwnerOnlyDacl::grant_full_access(user.sid()).expect("owner-only DACL");
+        // SAFETY: all-zero is a valid uninitialised SECURITY_DESCRIPTOR value.
+        let mut descriptor: SECURITY_DESCRIPTOR = unsafe { mem::zeroed() };
+        let descriptor = owner_only_directory_descriptor(&mut dacl, &mut descriptor, user.sid())
+            .expect("owner-only directory descriptor");
+        let mut actual_owner: PSID = ptr::null_mut();
+        let mut defaulted = 0;
+        // SAFETY: descriptor is initialized and live; both output pointers refer to locals.
+        assert_ne!(
+            unsafe {
+                GetSecurityDescriptorOwner(descriptor, &raw mut actual_owner, &raw mut defaulted)
+            },
+            0
+        );
+        assert!(!actual_owner.is_null());
+        // SAFETY: both SIDs are valid and remain live for the comparison.
+        assert_ne!(unsafe { EqualSid(actual_owner, user.sid()) }, 0);
+        assert_eq!(defaulted, 0);
+    }
 
     fn scratch_file(name: &str) -> std::path::PathBuf {
         let directory = std::env::temp_dir().join(format!(
