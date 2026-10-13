@@ -23,7 +23,7 @@ function editor(pick: (name: string, category: string) => boolean) {
 }
 
 const scenes = demoSnapshot.scenes;
-const sceneCommand = (swap: boolean): ReactNode => createElement(CorOsSceneCommand, { scenes, sourceScene: 0, swap, pending: false, onSelect: noop, onCancel: noop });
+const sceneCommand = (swap: boolean, mirrorsUnit = true): ReactNode => createElement(CorOsSceneCommand, { scenes, sourceScene: 0, swap, pending: false, mirrorsUnit, onSelect: noop, onCancel: noop });
 const ports = [[0, "Input 1"], [1, "Input 2"], [2, "Return 1"], [3, "Return 2"], [4, "USB input 5"], [5, "USB input 6"], [6, "USB input 7"], [7, "USB input 8"]] as const;
 const models = Array.from({ length: 24 }, (_, index) => ({ id: 100 + index, name: `Model ${index}`, category: ["Amp", "Cab", "Drive", "Delay", "Reverb"][index % 5], type: 0 }));
 
@@ -36,6 +36,7 @@ export const POPUP_PROPS_BY_ID: Record<string, () => Partial<QuadCortexSurfacePr
   "add-device-drawer": () => ({ addDevicePicker: { row: 0, column: 3, models, loading: false, pending: false, query: "", onQueryChange: noop, onCategoryChange: noop, pinnedModelIds: [], onSelect: noop, onTogglePinned: noop, onClose: noop } as unknown as QuadCortexSurfaceProps["addDevicePicker"] }),
   "copy-scene": () => ({ sceneCommand: sceneCommand(false) }),
   "swap-scene": () => ({ sceneCommand: sceneCommand(true) }),
+  "scene-destination-picker": () => ({ sceneCommand: sceneCommand(false, false) }),
   "scene-label-editor": () => ({ sceneEditor: { sourceScene: 0, setSourceScene: noop, scenes, label: "", setLabel: noop, color: 0, setColor: noop, colors: [], pending: false, saveLabel: noop, saveColor: noop, onClose: noop } as unknown as QuadCortexSurfaceProps["sceneEditor"] }),
   "cpu-monitor": () => ({ cpuMonitor: { cpuLoad: 27, cpuColumns: [], onClose: noop } }),
   "save-as": () => ({ savePreset: { open: true, name: "Preset", disabled: false, onNameChange: noop, onSave: noop, onCancel: noop } }),

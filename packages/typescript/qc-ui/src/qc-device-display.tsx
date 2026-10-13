@@ -87,7 +87,7 @@ export function createQcDeviceDisplay(host: QcDeviceDisplayHost): QcDeviceDispla
     destination, openSave: preset.openSave, deviceSettings: workflows.deviceSettings, scene, modes: workflows.modes, tempo: workflows.tempo, notice: host.notice
   });
   // Copy/swap is the Grid context-menu command. It is drawn inside the display, over whatever screen shows, so it keeps the unit's geometry.
-  const sceneCommand = scene.command ? <CorOsSceneCommand scenes={snapshot.scenes} sourceScene={scene.sourceScene} swap={scene.command === "swap"} pending={pending} onSelect={(destinationScene) => void scene.chooseDestination(destinationScene)} onCancel={scene.closeCommand} returnFocusTarget={scene.commandReturnTarget} /> : null;
+  const sceneCommand = scene.command ? <CorOsSceneCommand scenes={snapshot.scenes} sourceScene={scene.sourceScene} swap={scene.command === "swap"} pending={pending} mirrorsUnit={scene.commandMirrorsUnit} onSelect={(destinationScene) => void scene.chooseDestination(destinationScene)} onCancel={scene.closeCommand} returnFocusTarget={scene.commandReturnTarget} /> : null;
   const surface: QcDisplaySurfaceProps = {
     snapshot,
     selectedBlockId: host.selectedBlockId,

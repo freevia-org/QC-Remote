@@ -133,19 +133,34 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
   // button for the Grid menu entry; none for Gig View's, whose tile has no
   // stable return target.
   const [commandReturnTarget, setCommandReturnTarget] = useState<"grid-menu" | undefined>(undefined);
+  // Whether the panel is the unit's own dialog (opened from the Grid menu, or by the unit): it then shows the
+  // unit's title, prompt and CANCEL only, because the destination is a footswitch press on the unit and the app
+  // never picks one. Gig View's Copy/Swap tile (below) has no unit dialog behind it and keeps its destination list.
+  const [commandMirrorsUnit, setCommandMirrorsUnit] = useState(false);
 
   const openCommand = useCallback((swapMode: boolean) => {
     if (unavailable()) return;
     setSourceScene(snapshot.activeScene);
     setCommandReturnTarget("grid-menu");
+    setCommandMirrorsUnit(true);
     setCommand(swapMode ? "swap" : "copy");
   }, [setSourceScene, snapshot.activeScene, unavailable]);
+
+  /** The unit opened its Copy/Swap Scene dialog: show the same panel. Not gated by a pending write; the unit is already there. */
+  const openUnitCommand = useCallback((swapMode: boolean, scene: number) => {
+    if (!Number.isInteger(scene) || scene < 0 || scene >= snapshot.scenes.length) return;
+    setSourceScene(scene);
+    setCommandReturnTarget(undefined);
+    setCommandMirrorsUnit(true);
+    setCommand(swapMode ? "swap" : "copy");
+  }, [setSourceScene, snapshot.scenes.length]);
 
   const openCommandForScene = useCallback((scene: number, swapMode: boolean) => {
     if (unavailable()) return;
     if (!Number.isInteger(scene) || scene < 0 || scene >= snapshot.scenes.length) return;
     setSourceScene(scene);
     setCommandReturnTarget(undefined);
+    setCommandMirrorsUnit(false);
     setCommand(swapMode ? "swap" : "copy");
   }, [setSourceScene, snapshot.scenes.length, unavailable]);
 
@@ -174,7 +189,7 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
   return {
     sourceScene, setSourceScene, destinationScene, setDestinationScene, swap, setSwap, label, setLabel, color, setColor, colors, open, close: onClose, copy, saveLabel, saveColor,
     commandReturnTarget,
-    command, openCommand, openCommandForScene, closeCommand, chooseDestination,
+    command, commandMirrorsUnit, openCommand, openUnitCommand, openCommandForScene, closeCommand, chooseDestination,
     labelColorOpen, openLabelColor, closeLabelColor
   };
 }

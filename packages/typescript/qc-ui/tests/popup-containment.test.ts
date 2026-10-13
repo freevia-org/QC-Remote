@@ -22,7 +22,8 @@ const skip = !browser && !mustRun ? "no Chrome or Chromium found; set QC_BROWSER
 
 type Box = [number, number, number, number];
 interface Hit { label: string; inView: boolean; ok: boolean; topmost: string | null }
-interface Sample { key: string; fixture: string; viewport: readonly [number, number]; bezel: Box; found: Record<string, Box[]>; fonts: number[]; hits: Hit[] }
+interface Behind { inView: boolean; overlay: boolean; topmost: string | null }
+interface Sample { key: string; fixture: string; viewport: readonly [number, number]; bezel: Box; found: Record<string, Box[]>; fonts: number[]; hits: Hit[]; behind: Behind }
 
 const MEASURE = (selectors: string[]) => `
 (async () => {
@@ -44,7 +45,11 @@ const MEASURE = (selectors: string[]) => `
     const top = document.elementFromPoint(cx, cy);
     hits.push({ inView: cx >= 0 && cy >= 0 && cx < innerWidth && cy < innerHeight, label: element.getAttribute('aria-label') || element.textContent.trim(), ok: Boolean(top) && (top === element || element.contains(top)), topmost: top ? (top.getAttribute('aria-label') || top.className || top.tagName) : null });
   }
-  return { bezel: [bezel.left, bezel.top, bezel.width, bezel.height], found, fonts, hits };
+  // What a click reaches on the Grid outside the popup, at the display's left edge halfway down: a modal popup must take it.
+  const bx = bezel.left + bezel.width * 0.04, by = bezel.top + bezel.height * 0.5;
+  const under = document.elementFromPoint(bx, by);
+  const behind = { inView: bx >= 0 && by >= 0 && bx < innerWidth && by < innerHeight, overlay: Boolean(under && under.closest('.scene-command-overlay')), topmost: under ? (under.getAttribute('aria-label') || under.className || under.tagName) : null };
+  return { bezel: [bezel.left, bezel.top, bezel.width, bezel.height], found, fonts, hits, behind };
 })()
 `;
 
@@ -100,7 +105,7 @@ export async function render(fixtureId, model, presentation) {
     }
     samples = await withBrowser(browser, work.path, [], async (page) => {
       const results: Sample[] = [];
-      for (const entry of cases) results.push({ key: entry.key, fixture: entry.fixture, viewport: entry.viewport, ...(await page(entry.viewport, entry.url, MEASURE(entry.selectors)) as Pick<Sample, "bezel" | "found" | "fonts" | "hits">) });
+      for (const entry of cases) results.push({ key: entry.key, fixture: entry.fixture, viewport: entry.viewport, ...(await page(entry.viewport, entry.url, MEASURE(entry.selectors)) as Pick<Sample, "bezel" | "found" | "fonts" | "hits" | "behind">) });
       return results;
     });
   } finally {
@@ -229,6 +234,28 @@ test("the unit's captured picture, and the picture inside it, are exactly the di
   assert.deepEqual(failures, []);
 });
 
+test("the Copy/Swap Scene panel is the unit's dialog: only CANCEL is there to click, it is what a click reaches, and the Grid behind cannot be", { skip }, () => {
+  const failures: string[] = [];
+  let checked = 0;
+  for (const id of ["copy-scene", "swap-scene"]) {
+    const panel = samples.filter((sample) => sample.fixture === id);
+    assert.ok(panel.length >= 2 * VIEWPORTS.length, `${id} was laid out in both hosts at every window size`);
+    for (const sample of panel) {
+      assert.deepEqual(sample.hits.map((hit) => hit.label), ["CANCEL"], `${sample.key}: the panel's only control is CANCEL (no destination to pick)`);
+      // A narrow window can scroll the display out of view, where nothing can be hit at all.
+      const cancel = sample.hits[0];
+      if (!cancel.inView) continue;
+      checked += 1;
+      if (!cancel.ok) failures.push(`${sample.key}: a click on CANCEL reaches "${cancel.topmost}" instead`);
+      if (sample.behind.inView && !sample.behind.overlay) failures.push(`${sample.key}: a click beside the panel reaches "${sample.behind.topmost}" on the Grid behind it`);
+    }
+  }
+  assert.ok(checked >= 2 * 2 * VIEWPORTS.length / 2, `CANCEL was in view in ${checked} layouts`);
+  assert.deepEqual(failures.slice(0, 10), [], `${failures.length} layouts leave the Grid reachable or bury CANCEL`);
+  // Gig View's Copy/Swap tile has no unit dialog behind it and keeps its own destination list.
+  assert.ok(samples.filter((sample) => sample.fixture === "scene-destination-picker").every((sample) => sample.hits.length > 1), "the Gig tile's panel still lists destinations");
+});
+
 // ------------------------------------------------------------------------------------------ no browser needed
 
 test("every route that falls back to the captured picture draws the one measured picture element", () => {
@@ -237,6 +264,9 @@ test("every route that falls back to the captured picture draws the one measured
   const mirrored = Object.entries(QC_UNIT_SCREENS).filter(([, entry]) => /unit mirror|unit-mirror/i.test(entry.app)).map(([kind]) => kind).sort();
   const listed = [...QC_UNIT_MIRROR_KINDS, "parameter-editor"].sort();
   assert.deepEqual(mirrored, listed, "a screen the table says is mirrored as a picture must be in QC_UNIT_MIRROR_KINDS, and the reverse");
+  // The Copy/Swap Scene dialog is drawn as the app's own panel, not as a picture (a title that cannot be read is the only exception, in the follow hook).
+  assert.ok(!(QC_UNIT_MIRROR_KINDS as readonly string[]).includes("copy-scene"), "copy-scene is not in the picture-fallback table");
+  assert.doesNotMatch(QC_UNIT_SCREENS["copy-scene"].app, /unit mirror|unit-mirror/i);
   const content = readFileSync(join(uiSource, "qc-device-screen-content.tsx"), "utf8");
   assert.equal([...content.matchAll(/QcUnitScreenMirror/g)].length, 2, "the picture is drawn in one place");
   const follow = readFileSync(join(uiSource, "use-qc-screen-follow.ts"), "utf8");

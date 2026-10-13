@@ -127,6 +127,18 @@
 }
 .scene-command-panel footer button:disabled { opacity: .5; cursor: default; }
 
+/* The unit's own dialog (zenUI::CopySceneDialog), measured on its 800x480 frame: a 420x230 box at (190,125) in the
+   dialog grey, the title's capitals starting 47px below its top and the prompt's 95px, and CANCEL a black 356x45 button
+   at (222,278). It is modal on the unit, so the scrim takes every click: nothing on the Grid behind it can be reached,
+   and the only touch the app sends from here is CANCEL. Absolute children keep each line where the unit draws it. */
+.scene-command-overlay.is-unit-dialog { pointer-events: auto; }
+.scene-command-panel.is-unit-dialog { width: 420px; height: 230px; max-height: none; padding: 0; display: block; overflow: hidden; text-align: center; }
+.scene-command-panel.is-unit-dialog h1,
+.scene-command-panel.is-unit-dialog p { position: absolute; left: 0; right: 0; margin: 0; line-height: 24px; }
+.scene-command-panel.is-unit-dialog h1 { top: 41px; }
+.scene-command-panel.is-unit-dialog p { top: 89px; }
+.scene-command-panel.is-unit-dialog footer { position: absolute; left: 32px; right: 32px; top: 153px; margin: 0; }
+
 /* CorOsSceneLabelDialog / SceneQuickEditPopover (scene-editor.tsx) - the
  * device's own scene name/color screen, at its native 800x480, since -
  * unlike CorOsSceneCommand above - no prior fixture source exists to port
