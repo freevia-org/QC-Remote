@@ -1409,7 +1409,10 @@ mod tests {
                     Ok(())
                 }
             });
-            assert!(replacer_called, "the injected replacement path was exercised");
+            assert!(
+                replacer_called,
+                "the injected replacement path was exercised"
+            );
             assert!(result.is_err());
             assert!(!opener.is_held());
             assert_eq!(held_count(&path), 0);
