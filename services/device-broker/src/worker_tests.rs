@@ -32,7 +32,8 @@ fn wait_for_status(
 #[test]
 fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
     use crate::device_lease::testing::{write_record, OwnedTestDirectory, Sleeper};
-    let dir = std::env::temp_dir().join(format!("qc-contested-{}", std::process::id()));
+    let dir = crate::device_lease::testing::temp_directory()
+        .join(format!("qc-contested-{}", std::process::id()));
     crate::device_lease::testing::create_directory(&dir).unwrap();
     // Removed even when an assertion fails. The owner process and the
     // controller are declared later, so they are killed and stopped first.
@@ -3658,7 +3659,8 @@ fn controller_searching_for_an_absent_qc(
     DeviceController,
     String,
 ) {
-    let dir = std::env::temp_dir().join(format!("qc-absent-{tag}-{}", std::process::id()));
+    let dir = crate::device_lease::testing::temp_directory()
+        .join(format!("qc-absent-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     crate::device_lease::testing::create_directory(&dir).unwrap();
     let directory = crate::device_lease::testing::OwnedTestDirectory(dir.clone());
