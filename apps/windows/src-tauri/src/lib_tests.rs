@@ -1746,6 +1746,22 @@ fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
     condition()
 }
 
+/// Wait for an owned broker child to exit and reap it through its `Child`
+/// handle. On timeout, stop only this test's broker before returning failure.
+fn wait_for_broker_child_exit(child: &mut std::process::Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
+}
+
 fn print_broker_stderr_tail_on_failure() {
     if let Ok(stderr) = fs::read(broker_stderr_path()) {
         let stderr_text = String::from_utf8_lossy(&stderr);
@@ -1763,7 +1779,7 @@ fn print_broker_stderr_tail_on_failure() {
 fn a_second_gateway_process_attaches_to_the_first_instead_of_spawning_a_new_broker() {
     let _serialize = serialize_real_broker_test();
     let descriptor_path = test_descriptor_path("second-attaches");
-    let first = GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path)
+    let mut first = GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path)
         .expect("the first process becomes the broker");
     let first_pid = first
         .hosted_broker_pid()
@@ -1804,10 +1820,13 @@ fn a_second_gateway_process_attaches_to_the_first_instead_of_spawning_a_new_brok
     // after the attached-only client drops
     assert!(first.request(rpc::RUNTIME_STATUS, json!({})).is_ok());
 
+    let mut broker_child = first
+        .take_hosted_broker_child()
+        .expect("the first gateway owns the broker child");
     drop(first);
     // Nobody kills the broker, not even the process that spawned it: with
     // its last client gone it exits on its own after its 5 s grace.
-    let exited = wait_until(Duration::from_secs(12), || !process_is_alive(first_pid));
+    let exited = wait_for_broker_child_exit(&mut broker_child, Duration::from_secs(12));
     if !exited {
         print_broker_stderr_tail_on_failure();
     }
@@ -2485,6 +2504,9 @@ fn a_hosting_process_dropped_after_a_transport_failure_leaves_the_shared_broker_
     let broker_pid = host
         .hosted_broker_pid()
         .expect("the first process hosts the broker");
+    let mut broker_child = host
+        .take_hosted_broker_child()
+        .expect("the hosting gateway owns the broker child");
     let mut other = GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path)
         .expect("another window attaches");
     assert!(other.hosted_broker_pid().is_none());
@@ -2513,7 +2535,7 @@ fn a_hosting_process_dropped_after_a_transport_failure_leaves_the_shared_broker_
         .map(|process| process.broker_pid);
     drop(recovered);
     drop(other);
-    let exited_on_its_own = wait_until(Duration::from_secs(12), || !process_is_alive(broker_pid));
+    let exited_on_its_own = wait_for_broker_child_exit(&mut broker_child, Duration::from_secs(12));
     if !exited_on_its_own {
         print_broker_stderr_tail_on_failure();
     }
@@ -3878,7 +3900,10 @@ fn a_tool_call_racing_a_failing_tool_call_still_recovers_the_broker() {
     )
     .expect("the recovered broker is published where the gateway meets it");
     adapter.stop();
-    let exited = wait_until(Duration::from_secs(12), || !process_is_alive(published.process_id));
+    let mut broker_child = adapter
+        .take_hosted_broker_child()
+        .expect("the adapter owns the recovered broker child");
+    let exited = wait_for_broker_child_exit(&mut broker_child, Duration::from_secs(12));
     if !exited {
         print_broker_stderr_tail_on_failure();
     }
