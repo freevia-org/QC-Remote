@@ -1,7 +1,7 @@
 #include "QCRemoteUSBDriver.h"
+#include "QCRemoteUSBUserClient.h"
 
 #include <DriverKit/IOBufferMemoryDescriptor.h>
-#include <DriverKit/IOKitTypes.h>
 #include <USBDriverKit/USBDriverKit.h>
 #include <string.h>
 
