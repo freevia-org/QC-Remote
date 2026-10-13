@@ -1,4 +1,4 @@
-import { claimDeviceCommand, completeDeviceCommand, deviceCommandBusy, registerDeviceCommandSession } from "./device-command-ownership.ts";
+import { bindDeviceCommandScope, claimDeviceCommand, completeDeviceCommand, deviceCommandBusy, registerDeviceCommandSession } from "./device-command-ownership.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeviceCommandOptions } from "./workflow-options";
 
@@ -59,6 +59,8 @@ export function useGuardedMutation(options: DeviceCommandOptions, action: string
   const operation = useRef<{ current(): boolean; started: boolean; setter: DeviceCommandOptions["setPending"] } | null>(null);
   const scope = useRef({ key: options.sessionKey, connected: options.connected });
   const pendingReset = useRef(false);
+  const commandScope = useRef(options.setPending);
+  bindDeviceCommandScope(options.setPending, commandScope.current);
   const physicalKey = options.commandSessionKey ?? options.sessionKey;
   if (physicalKey !== undefined) pendingReset.current = registerDeviceCommandSession(options.setPending, physicalKey, options.commandSessionKey !== undefined) || pendingReset.current;
   if (!Object.is(scope.current.key, options.sessionKey) || scope.current.connected !== options.connected) {
