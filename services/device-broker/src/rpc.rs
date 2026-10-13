@@ -6552,7 +6552,7 @@ mod tcp_tests {
     /// reuses PIDs, and a predecessor's `.claim` sidecar outlives it (see
     /// `a_stale_claim_from_a_same_pid_predecessor_never_blocks_a_fixture`).
     fn scratch_descriptor_path(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
+        let dir = crate::device_lease::testing::temp_directory().join(format!(
             "qc-broker-tcp-test-{name}-{}-{}",
             std::process::id(),
             generate_token(8)
