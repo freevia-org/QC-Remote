@@ -175,3 +175,56 @@ test("fresh disabled parameter readback refuses a linked edit before its first w
     assert.equal(failures.length,1);
   } finally { act(() => renderer.unmount()); }
 });
+test("a disabled operand retires only its actual interaction lease and a re-enabled gesture can finish", async () => {
+  const { QcInteractionAuthority } = await import("../src/interaction-authority.ts");
+  const authority = new QcInteractionAuthority();
+  const firstRead = deferred<BlockDetails>();
+  const calls: string[] = [];
+  let reads=0, observed=.5;
+  const editable = {...parameter,type:"float",enabled:true};
+  let details={...block(),parameters:[editable,{...editable,index:1}]};
+  const target={kind:"parameter" as const,row:0,column:0,parameterIndex:0};
+  const peer={...target,parameterIndex:1};
+  const gateway = {
+    async blockDetails() { calls.push("read"); if (++reads===1) return firstRead.promise; return {...details,parameters:details.parameters.map((item) => ({...item,normalizedValue:observed}))}; },
+    async previewParameter(_row:number,_column:number,_index:number,value:number) { calls.push("preview");observed=value;return {acceptedValue:value}; },
+    async setParameter(_row:number,_column:number,_index:number,value:number) { calls.push("write"); observed=value;return {detail:"written",block:{...details,parameters:details.parameters.map((item) => ({...item,normalizedValue:value}))}}; }
+  } as unknown as GatewayTransport;
+  let snapshot={...IDLE_PLACEHOLDER_SNAPSHOT,presetIdentity:"authority-test",setlistKey:"A",presetPosition:0,activeScene:0};
+  const controller={lifetime:new PresetLifetime(snapshot),updateInteraction:(item:typeof target,value:number)=>authority.update(item,value),releaseInteraction:(item:typeof target,value:number)=>authority.release(item,value),cancelInteraction:(item:typeof target)=>authority.cancel(item)};
+  let workflow!:ReturnType<typeof useParameterWorkflow>;
+  function Probe() { workflow=useParameterWorkflow({gateway,snapshot,connected:true,pending:false,controller,
+    editor:{details,drafts:{},page:0,draft(){},load(){},updateParameter(){}},setPending(){},notice(){},fail(error:unknown){throw error;},recordHistory(){},reconcile(){}
+  } as unknown as ParameterWorkflowOptions);return null; }
+  let renderer!:ReturnType<typeof create>;
+  const previousWindow=Object.getOwnPropertyDescriptor(globalThis,"window");
+  Object.defineProperty(globalThis,"window",{configurable:true,value:{setTimeout,clearTimeout}});
+  try {
+    act(()=>{renderer=create(React.createElement(Probe));});
+    const obsoleteCommit = workflow.commit;
+    act(()=>{workflow.draft(editable,.8);});
+    authority.update(peer,.9);
+    assert.equal(authority.accepts(target,.4),false);
+    assert.equal(authority.accepts(peer,.4),false);
+    act(()=>{details={...details,parameters:details.parameters.map((item)=>item.index===0?{...item,enabled:false}:item)};renderer.update(React.createElement(Probe));});
+    assert.equal(authority.accepts(target,.4),true,"disabled transition cancels the actual active lease");
+    assert.equal(authority.accepts(peer,.4),false,"unrelated operand keeps its own gesture lease");
+    await act(async()=>{firstRead.resolve({...details});});
+    assert.deepEqual(calls,["read"],"retired preview never reaches the wire after its read settles");
+    act(()=>{details={...details,parameters:details.parameters.map((item)=>({...item,enabled:true}))};renderer.update(React.createElement(Probe));});
+    assert.equal(workflow.targetValue(editable),.5,"obsolete draft target does not survive re-enabling");
+    act(()=>{workflow.draft({...editable,type:"switch",options:["Off","On"]},.8);workflow.commit({...editable,enabled:false},.7);});
+    assert.equal(authority.accepts(target,.4),false,"same-owner obsolete disabled argument leaves a re-enabled active gesture intact");
+    await act(async()=>{workflow.commit({...editable},.7);await new Promise((resolve)=>setTimeout(resolve,30));});
+    assert.ok(calls.includes("write"),"new current gesture remains functional");
+    assert.equal(authority.accepts(target,.7),true,"current release accepts matching device observation");
+    assert.equal(authority.accepts(peer,.4),false);    act(()=>{snapshot={...snapshot,presetIdentity:"replacement-owner"};controller.lifetime.invalidate();renderer.update(React.createElement(Probe));});
+    act(()=>{workflow.draft({...editable,type:"switch",options:["Off","On"]},.8);});
+    assert.equal(authority.accepts(target,.4),false);
+    act(()=>{obsoleteCommit({...editable,enabled:false},.7);workflow.commit({...editable,enabled:false},.7);});
+    assert.equal(authority.accepts(target,.4),false,"old owner and obsolete disabled operands cannot retire a successor's healthy gesture");
+  } finally {
+    if(renderer) act(()=>renderer.unmount());
+    if(previousWindow) Object.defineProperty(globalThis,"window",previousWindow);else Reflect.deleteProperty(globalThis,"window");
+  }
+});
