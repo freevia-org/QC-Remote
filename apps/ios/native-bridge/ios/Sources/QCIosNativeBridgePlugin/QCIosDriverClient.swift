@@ -1,19 +1,19 @@
 import Foundation
-import IOKit
+import QCIosDriverKitClient
 
 /// Thin client for the bundled QC DriverKit user client. USB session ownership
 /// remains in the DEXT; this class only passes bounded report structures.
 final class QCIosDriverClient {
     enum ClientError: Error {
         case serviceUnavailable
-        case openFailed(kern_return_t)
-        case callFailed(kern_return_t)
+        case openFailed(Int32)
+        case callFailed(Int32)
         case disconnected
         case malformedResponse
     }
 
     private let stateLock = NSLock()
-    private var connection: io_connect_t = 0
+    private var connection: UInt32 = 0
 
     var isOpen: Bool {
         stateLock.lock()
@@ -22,23 +22,13 @@ final class QCIosDriverClient {
     }
 
     static func isServiceAvailable() -> Bool {
-        guard let matching = IOServiceNameMatching("QCRemoteUSBDriver") else { return false }
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, matching)
-        guard service != IO_OBJECT_NULL else { return false }
-        IOObjectRelease(service)
-        return true
+        qc_driver_service_available() != 0
     }
 
     static func canOpenService() -> Bool {
-        guard let matching = IOServiceNameMatching("QCRemoteUSBDriver") else { return false }
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, matching)
-        guard service != IO_OBJECT_NULL else { return false }
-        defer { IOObjectRelease(service) }
-
-        var connection: io_connect_t = 0
-        let status = IOServiceOpen(service, mach_task_self_, 0, &connection)
-        guard status == kIOReturnSuccess else { return false }
-        IOServiceClose(connection)
+        var connection: UInt32 = 0
+        guard qc_driver_open(&connection) == 0 else { return false }
+        _ = qc_driver_close(connection)
         return true
     }
 
@@ -50,16 +40,12 @@ final class QCIosDriverClient {
         }
         stateLock.unlock()
 
-        guard let matching = IOServiceNameMatching("QCRemoteUSBDriver") else {
-            throw ClientError.serviceUnavailable
+        var opened: UInt32 = 0
+        let status = qc_driver_open(&opened)
+        guard status == 0, opened != 0 else {
+            if status == Int32(bitPattern: 0xe00002f0) { throw ClientError.serviceUnavailable }
+            throw ClientError.openFailed(status)
         }
-        let service = IOServiceGetMatchingService(kIOMainPortDefault, matching)
-        guard service != IO_OBJECT_NULL else { throw ClientError.serviceUnavailable }
-        defer { IOObjectRelease(service) }
-
-        var opened: io_connect_t = 0
-        let status = IOServiceOpen(service, mach_task_self_, 0, &opened)
-        guard status == kIOReturnSuccess else { throw ClientError.openFailed(status) }
 
         stateLock.lock()
         if connection == 0 {
@@ -67,7 +53,7 @@ final class QCIosDriverClient {
             stateLock.unlock()
         } else {
             stateLock.unlock()
-            IOServiceClose(opened)
+            _ = qc_driver_close(opened)
         }
     }
 
@@ -76,7 +62,7 @@ final class QCIosDriverClient {
         let active = connection
         connection = 0
         stateLock.unlock()
-        if active != 0 { IOServiceClose(active) }
+        if active != 0 { _ = qc_driver_close(active) }
     }
 
     func diagnostics() throws -> [String: Int] {
@@ -121,19 +107,12 @@ final class QCIosDriverClient {
         let active = connection
         stateLock.unlock()
         guard active != 0 else { throw ClientError.disconnected }
-        var outputCount = output.count
+        var outputCount = UInt32(output.count)
         let status = output.withUnsafeMutableBytes { buffer in
-            IOConnectCallStructMethod(
-                active,
-                selector,
-                input,
-                inputCount,
-                buffer.baseAddress,
-                &outputCount
-            )
+            qc_driver_call(active, selector, input, UInt32(inputCount), buffer.baseAddress, &outputCount)
         }
-        guard status == kIOReturnSuccess else { throw ClientError.callFailed(status) }
-        return outputCount
+        guard status == 0 else { throw ClientError.callFailed(status) }
+        return Int(outputCount)
     }
 
     private func readUInt32(_ bytes: [UInt8], _ offset: Int) -> Int {

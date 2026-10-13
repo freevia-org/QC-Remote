@@ -3,7 +3,6 @@ import Capacitor
 import Security
 import UIKit
 import CoreMIDI
-import IOKit
 import Darwin
 
 @_silgen_name("qc_ios_report_size")
@@ -556,7 +555,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                             let transferred = result["bytesTransferred"] ?? 0
                             let usbStatus = result["usbStatus"] ?? -1
                             let outcome: UInt8 = transferred == 129
-                                ? (usbStatus == Int(kIOReturnPipeStalled) ? 1 : 0)
+                                ? (usbStatus == Int(-536854449) ? 1 : 0)
                                 : 2
                             guard outcome != 2 else { throw QCIosDriverClient.ClientError.malformedResponse }
                             _ = try session.finishReport(ticket: delivery, index: index, outcome: outcome, nowMs: self.monotonicMilliseconds())
@@ -669,7 +668,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
                     let result = try driverClient.writeReport(report)
                     let transferred = result["bytesTransferred"] ?? 0
                     let usbStatus = result["usbStatus"] ?? -1
-                    let outcome: UInt8 = transferred == 129 ? (usbStatus == Int(kIOReturnPipeStalled) ? 1 : 0) : 2
+                    let outcome: UInt8 = transferred == 129 ? (usbStatus == Int(-536854449) ? 1 : 0) : 2
                     guard outcome != 2 else { throw QCIosDriverClient.ClientError.malformedResponse }
                     _ = try session.finishReport(ticket: delivery, index: index, outcome: outcome, nowMs: monotonicMilliseconds())
                     reportCount += 1
