@@ -8,7 +8,9 @@ fn main() {
         version: env!("CARGO_PKG_VERSION"),
         #[cfg(target_os = "linux")]
         default_directory: Some(qc_device_broker::platform::paths::default_directory),
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(target_os = "macos")]
+        default_directory: Some(qc_device_broker::platform::paths_macos::default_directory),
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         default_directory: None,
         host: None,
         build_marker: None,

@@ -42,7 +42,7 @@
 //! watchdog treats "in flight" as never idle, no matter how long the request
 //! has been running.
 
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use crate::platform::process::os_parent_process_id;
 use crate::platform::process::{os_process_created_at, os_process_is_alive};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -149,12 +149,12 @@ pub fn watch(
 }
 
 /// The current process's parent id, or `None` if it cannot be determined.
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub fn parent_process_id() -> Option<u32> {
     os_parent_process_id()
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn parent_process_id() -> Option<u32> {
     None
 }

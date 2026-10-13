@@ -198,11 +198,11 @@ fn listener_refusal(
             "Process {pid}, not the published QC device broker, is listening on its port"
         )),
         Ok(None) => Some("Nothing is listening on the published QC device broker port".into()),
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         Err(error) => Some(format!(
             "Could not verify which process owns the shared QC device broker port: {error}"
         )),
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         Err(_) => None,
     }
 }
@@ -322,8 +322,8 @@ mod tests {
         assert!(listener_refusal(&published, Ok(Some(4242)), false).is_some());
         assert!(listener_refusal(&published, Ok(None), true).is_some());
         // Windows retains its historical liveness fallback when the table
-        // cannot be read. Linux tests its stricter behavior separately.
-        #[cfg(not(target_os = "linux"))]
+        // cannot be read. Unix targets fail closed on an unknown owner.
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         assert_eq!(listener_refusal(&published, Err("x".into()), true), None);
         assert!(listener_refusal(&published, Err("x".into()), false).is_some());
     }

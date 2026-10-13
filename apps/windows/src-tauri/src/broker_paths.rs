@@ -8,7 +8,11 @@ pub fn app_local_data_dir() -> PathBuf {
     {
         qc_native_platform::paths::default_directory()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        qc_native_platform::paths_macos::default_directory()
+    }
+    #[cfg(windows)]
     {
         std::env::var_os("LOCALAPPDATA")
             .map(PathBuf::from)

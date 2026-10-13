@@ -5,6 +5,8 @@
 pub(crate) mod midi;
 #[cfg(target_os = "linux")]
 pub mod paths;
+#[cfg(target_os = "macos")]
+pub mod paths_macos;
 pub(crate) mod process;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub(crate) mod shutdown;

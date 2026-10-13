@@ -1,8 +1,13 @@
 //! OS process facts. Windows keeps its existing implementation; Linux reads
 //! procfs and treats inaccessible or malformed process data as unknown.
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub use qc_windows_process::*;
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::*;
 
 #[cfg(target_os = "linux")]
 mod linux {

@@ -905,6 +905,23 @@ pub(crate) fn device_path_id(path: &CStr) -> String {
         .collect()
 }
 
+/// macOS keeps a selected HID interface bound to its path and, when the
+/// device reports one, its serial. The serial detects a different unit that
+/// appears at a reused IORegistry path after hot-plug.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn macos_device_identity(path: &CStr, serial: Option<&str>) -> String {
+    let path = device_path_id(path);
+    let Some(serial) = serial.filter(|serial| !serial.is_empty()) else {
+        return path;
+    };
+    let serial = serial
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{path}:serial:{serial}")
+}
+
 pub fn connected_devices() -> Result<Vec<QcUsbDevice>, UsbError> {
     let api = HidApi::new().map_err(|error| UsbError::Hid(error.to_string()))?;
     let mut devices: Vec<_> = api
@@ -1602,9 +1619,9 @@ impl Drop for QcUsb {
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_session_reports, first_supported_path, observe_initial, HidIo, HidWriteMessage,
-        IncomingMessage, ReportLayout, TransportRuntime, UsbError, UsbTelemetry,
-        READER_LOCK_STALL_THRESHOLD_MS,
+        encode_session_reports, first_supported_path, macos_device_identity, observe_initial,
+        HidIo, HidWriteMessage, IncomingMessage, ReportLayout, TransportRuntime, UsbError,
+        UsbTelemetry, READER_LOCK_STALL_THRESHOLD_MS,
     };
     use crate::backend::WriteStallPolicy;
     use hidapi::HidError;
@@ -1634,6 +1651,27 @@ mod tests {
             payload: payload.to_vec(),
             received_at_unix_ms: u128::from(sequence),
         }
+    }
+
+    #[test]
+    fn macos_identity_keeps_path_and_distinguishes_replacement_serials() {
+        let path = CString::new("IOService:/USB/QuadCortex").expect("valid HID path");
+        let first = macos_device_identity(path.as_c_str(), Some("QC-001"));
+        let replacement = macos_device_identity(path.as_c_str(), Some("QC-002"));
+
+        assert_ne!(first, replacement);
+        assert!(first.starts_with(&macos_device_identity(path.as_c_str(), None)));
+        assert!(first.ends_with("serial:51432d303031"));
+    }
+
+    #[test]
+    fn missing_or_empty_macos_serial_uses_the_path_identity() {
+        let path = CString::new("IOService:/USB/QuadCortex").expect("valid HID path");
+
+        assert_eq!(
+            macos_device_identity(path.as_c_str(), None),
+            macos_device_identity(path.as_c_str(), Some(""))
+        );
     }
 
     #[test]

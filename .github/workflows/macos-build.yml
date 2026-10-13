@@ -1,0 +1,89 @@
+name: macOS desktop build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/macos-build.yml
+      - apps/windows/**
+      - contracts/**
+      - packages/rust/**
+      - packages/typescript/**
+      - services/device-broker/**
+      - services/rust-mcp/**
+      - package.json
+      - package-lock.json
+      - Cargo.toml
+      - Cargo.lock
+  push:
+    paths:
+      - .github/workflows/macos-build.yml
+      - apps/windows/**
+      - contracts/**
+      - packages/rust/**
+      - packages/typescript/**
+      - services/device-broker/**
+      - services/rust-mcp/**
+      - package.json
+      - package-lock.json
+      - Cargo.toml
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    env:
+      # src-tauri pins MSVC for local Windows builds; CI uses the installed
+      # stable host toolchain on both macOS architectures.
+      RUSTUP_TOOLCHAIN: stable
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            target: aarch64-apple-darwin
+          - runner: macos-26-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install desktop dependencies
+        run: npm ci
+      - name: Test broker, HID and native platform crates
+        run: cargo test --locked --manifest-path Cargo.toml -p quadcortex -p quadcortex-hid -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --target ${{ matrix.target }} -- --test-threads=1
+      - name: Build the broker for desktop host tests
+        run: cargo build --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.target }}
+        working-directory: apps/windows
+      - name: Test the Tauri desktop host
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop-broker,custom-protocol --lib --target ${{ matrix.target }} -- --test-threads=1
+        working-directory: apps/windows
+        env:
+          TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
+          QC_GATEWAY_EXECUTABLE: ${{ github.workspace }}/apps/windows/src-tauri/target/${{ matrix.target }}/debug/qc-device-broker
+      - name: Build and stage the macOS broker sidecar
+        run: |
+          cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.target }}
+          src-tauri/target/${{ matrix.target }}/release/qc-device-broker --self-check
+          mkdir -p src-tauri/binaries
+          cp src-tauri/target/${{ matrix.target }}/release/qc-device-broker src-tauri/binaries/qc-device-broker-${{ matrix.target }}
+        working-directory: apps/windows
+      - name: Build the macOS app and broker
+        run: npm run tauri:build:mac
+        working-directory: apps/windows
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qc-remote-macos-${{ matrix.target }}-dmg
+          path: apps/windows/src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14

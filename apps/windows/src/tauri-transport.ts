@@ -89,6 +89,10 @@ export function listenTauri<T>(event: string, handler: (event: { payload: T }) =
   return import("@tauri-apps/api/event").then(({ listen }) => listen<T>(event, handler));
 }
 
+export function macosMenuEventsReady(): Promise<void> {
+  return callTauri<void>("macos_menu_events_ready");
+}
+
 const generatedGatewayTransport = createGatewayClientTransport<GatewayTransport>(
   <T,>(method: string, params?: Record<string, unknown>) => callTauri<T>("gateway_invoke", { method, params }),
   "rpc"

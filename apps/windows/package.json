@@ -10,7 +10,8 @@
     "typecheck": "tsc -b",
     "test": "node --experimental-strip-types --test tests/qc-readiness.test.ts tests/updater-relay-setting.test.ts",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:mac": "tauri icon src-tauri/icons/icon.png --output src-tauri/icons/generated && tauri build --config src-tauri/tauri.macos.conf.json --features desktop-broker,custom-protocol"
   },
   "dependencies": {
     "@qc-remote/client": "0.1.0",

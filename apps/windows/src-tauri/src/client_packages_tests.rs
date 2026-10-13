@@ -313,6 +313,12 @@ fn claude_manifest_satisfies_the_mcpb_required_fields() {
         assert!(manifest.get(field).is_some(), "MCPB requires {field}");
     }
     assert_eq!(manifest["manifest_version"], "0.3");
+    #[cfg(target_os = "macos")]
+    assert_eq!(manifest["compatibility"]["platforms"], json!(["darwin"]));
+    #[cfg(target_os = "linux")]
+    assert_eq!(manifest["compatibility"]["platforms"], json!(["linux"]));
+    #[cfg(target_os = "windows")]
+    assert_eq!(manifest["compatibility"]["platforms"], json!(["win32"]));
     assert!(manifest["author"]["name"]
         .as_str()
         .is_some_and(|name| !name.is_empty()));
@@ -384,10 +390,18 @@ fn every_manual_configuration_names_one_installed_bridge() {
     .expect("client zip");
     let installer = codex_installer();
     assert!(installer.contains(BRIDGE_FILE_NAME));
+    #[cfg(target_os = "windows")]
     assert!(
         installer.contains("codex mcp remove qc-remote"),
         "an existing server must come with the command that upgrades it"
     );
+    #[cfg(target_os = "macos")]
+    {
+        assert!(installer.contains("codex mcp add qc-remote"));
+        assert!(installer.contains("managed-native"));
+        assert!(installer.contains("An MCP server named 'qc-remote' already exists"));
+        assert!(installer.contains("codex mcp remove qc-remote"));
+    }
     for path in ["codex/mcp-config.example.toml", "vscode/mcp.example.json"] {
         let text = archive_text(&mut archive, path);
         assert!(
@@ -401,11 +415,34 @@ fn every_manual_configuration_names_one_installed_bridge() {
     }
     let antigravity = archive_text(&mut archive, "antigravity/mcp_config.example.json");
     assert!(antigravity.contains("--local-mcp-bridge"));
+    #[cfg(target_os = "windows")]
     assert!(antigravity.contains("qc-remote.exe"));
+    #[cfg(target_os = "macos")]
+    assert!(antigravity.contains("Contents/MacOS/QC Remote"));
     let readme = archive_text(&mut archive, "README.md");
     assert!(
         readme.contains(BRIDGE_FILE_NAME),
         "the README must document the one installed bridge location"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_macos_codex_installer_is_valid_shell() {
+    let installer = codex_installer();
+    let path =
+        std::env::temp_dir().join(format!("qc-remote-codex-install-{}.sh", std::process::id()));
+    fs::write(&path, installer).expect("write installer fixture");
+    let checked = std::process::Command::new("/bin/sh")
+        .arg("-n")
+        .arg(&path)
+        .output()
+        .expect("macOS provides /bin/sh");
+    let _ = fs::remove_file(&path);
+    assert!(
+        checked.status.success(),
+        "sh -n rejected the generated Codex installer: {}",
+        String::from_utf8_lossy(&checked.stderr)
     );
 }
 
@@ -415,9 +452,15 @@ fn generic_package_is_self_contained() {
         local_client_archive().expect("local client archive"),
     ))
     .expect("client zip");
+    #[cfg(target_os = "windows")]
+    let installer_path = "codex/install.ps1";
+    #[cfg(target_os = "macos")]
+    let installer_path = "codex/install.sh";
+    #[cfg(target_os = "linux")]
+    let installer_path = "codex/install.ps1";
     for path in [
         "README.md",
-        "codex/install.ps1",
+        installer_path,
         "codex/mcp-config.example.toml",
         "claude/server/index.cjs",
         "antigravity/mcp_config.example.json",
@@ -5080,4 +5123,83 @@ fn no_status_read_waits_on_an_external_tool_without_a_deadline() {
         unbounded.is_empty(),
         "external tools waited on without a deadline: {unbounded:?}"
     );
+}
+
+#[cfg(target_os = "macos")]
+mod macos_application_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_SCRATCH: AtomicUsize = AtomicUsize::new(0);
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let sequence = NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed);
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock is after the Unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "qc-macos-app-search-{}-{sequence}-{nonce}",
+                std::process::id(),
+            ));
+            std::fs::create_dir(&path).expect("create isolated app-search fixture");
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).expect("remove app-search fixture");
+        }
+    }
+
+    fn write_bundle(root: &Path, executable: &str) -> PathBuf {
+        let bundle = root.join("Claude.app");
+        let contents = bundle.join("Contents");
+        let executable_directory = contents.join("MacOS");
+        std::fs::create_dir_all(&executable_directory).expect("create app bundle directories");
+        std::fs::write(
+            contents.join("Info.plist"),
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundleExecutable</key><string>{executable}</string><key>CFBundleShortVersionString</key><string>1.2.3</string></dict></plist>"
+            ),
+        )
+        .expect("write app bundle metadata");
+        let executable_path = executable_directory.join(executable);
+        if Path::new(executable)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+        {
+            std::fs::write(&executable_path, b"test executable").expect("write app executable");
+        }
+        executable_path
+    }
+
+    #[test]
+    fn finds_a_user_installed_app_bundle_and_reads_its_version() {
+        let scratch = Scratch::new();
+        let executable = write_bundle(&scratch.0, "Claude");
+
+        let installation =
+            macos_application_installation_in(&CLAUDE_DESKTOP_SEARCH, &[scratch.0.clone()])
+                .expect("find the app bundle");
+
+        assert_eq!(installation.executable, Some(executable));
+        assert_eq!(installation.version.as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
+    fn refuses_app_bundle_executable_paths_that_escape_the_bundle() {
+        let scratch = Scratch::new();
+        write_bundle(&scratch.0, "../../outside");
+
+        assert!(
+            macos_application_installation_in(&CLAUDE_DESKTOP_SEARCH, &[scratch.0.clone()])
+                .is_none()
+        );
+        assert!(!scratch.0.join("outside").is_file());
+    }
 }

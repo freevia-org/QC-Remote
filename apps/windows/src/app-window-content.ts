@@ -174,7 +174,7 @@ export function idleMinutesFromInput(text: string, valueAsNumber: number): numbe
 }
 
 export function idleDisconnectHelp(minutes: number | null, trayEnabled: boolean): string {
-  if (!trayEnabled) return "Show the tray icon to apply this release setting.";
+  if (!trayEnabled) return "Enable the background broker to apply this release setting.";
   if (minutes === null) return "Never: keep the device connected until you choose Disconnect or Quit.";
   if (minutes === 0) return "Immediately: release the device about five seconds after the last attached app or AI client disconnects.";
   return `Release the device ${minutes} minute${minutes === 1 ? "" : "s"} after the last attached app or AI client disconnects. An AI app that stays connected keeps the device, even when idle.`;

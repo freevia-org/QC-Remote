@@ -6,7 +6,7 @@ import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND } from "@qc-remote/theme";
 import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, readControlAccessMode, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, useQcFollowSetting, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
-import { appWindows, brokerDevice, DEVICE_INFO_EVENTS, diagnosticsFiles, externalLinks, helpWindows, localAccess, localClientPackages, physicalDevices, type PhysicalQcDevice, onDevicePhase, publicRelay, publishWindowState, serveAppWindowRequests, serveDiagnosticsRequests, SETTINGS_EVENTS, tauriTransport, virtualDeviceStorage, WORKSPACE_EVENTS, workspaceFiles, type AntigravityLocalIntegrationStatus, type ChatGptLocalIntegrationStatus, type ClaudeDesktopExtensionStatus, type JanLocalIntegrationStatus, type LmStudioLocalIntegrationStatus, type LocalAccessStatus, type OtherMcpStdioSetup } from "./tauri-transport";
+import { appWindows, brokerDevice, DEVICE_INFO_EVENTS, diagnosticsFiles, externalLinks, helpWindows, listenTauri, localAccess, localClientPackages, macosMenuEventsReady, physicalDevices, type PhysicalQcDevice, onDevicePhase, publicRelay, publishWindowState, serveAppWindowRequests, serveDiagnosticsRequests, SETTINGS_EVENTS, tauriTransport, virtualDeviceStorage, WORKSPACE_EVENTS, workspaceFiles, type AntigravityLocalIntegrationStatus, type ChatGptLocalIntegrationStatus, type ClaudeDesktopExtensionStatus, type JanLocalIntegrationStatus, type LmStudioLocalIntegrationStatus, type LocalAccessStatus, type OtherMcpStdioSetup } from "./tauri-transport";
 import { createWindowsQcTransport } from "./qc-transport";
 import { useWindowsDeviceFrames } from "./use-windows-device-frames";
 import { useWindowsPrompts } from "./use-windows-prompts";
@@ -35,6 +35,8 @@ const appVersion = appPackage.version;
 const publicRelayEndpoint = QC_BRAND.publicRelayEndpoint;
 export function App() {
   const { connection, setConnection, attempts: connectionAttempts } = useQcConnectionWorkflow(initialConnection);
+  const macMenuConnectRef = useRef<(() => void) | null>(null);
+  const macMenuDisconnectRef = useRef<(() => void) | null>(null);
   const [syncProgress, setSyncProgress] = useState<number | null>(null);
   const [runtime, setRuntime] = useState<RuntimeStatus>();
   const [deviceSuspended, setDeviceSuspended] = useState(false);
@@ -1321,6 +1323,38 @@ export function App() {
     }
   };
 
+  // The macOS status item stays available while the main window is hidden.
+  // Route its actions through the same user workflows as the in-window
+  // controls so selection, Quit acknowledgement and connection reporting stay
+  // consistent.
+  macMenuConnectRef.current = () => { void connect("reconnect", undefined, true); };
+  macMenuDisconnectRef.current = () => { void disconnectDevice(); };
+  useEffect(() => {
+    let disposed = false;
+    const unlisten: Array<() => void> = [];
+    void Promise.all([
+      listenTauri<void>("macos-menu-connect", () => macMenuConnectRef.current?.()),
+      listenTauri<void>("macos-menu-disconnect", () => macMenuDisconnectRef.current?.())
+    ]).then((stops) => {
+      if (disposed) {
+        stops.forEach((stop) => stop());
+        return;
+      }
+      unlisten.push(...stops);
+      if (typeof navigator !== "undefined" && /Mac/.test(navigator.platform)) {
+        void macosMenuEventsReady().catch((error: unknown) => {
+          console.error("QC Remote could not activate macOS menu actions:", error);
+        });
+      }
+    }).catch((error: unknown) => {
+      console.error("QC Remote could not register macOS menu actions:", error);
+    });
+    return () => {
+      disposed = true;
+      for (const stop of unlisten) stop();
+    };
+  }, []);
+
   /**
    * Open the demo device against its last saved state and route every
    * command to it.
@@ -2093,6 +2127,11 @@ export function App() {
     },
     setBrokerTrayEnabled: async (enabled) => {
       const status = await applyBrokerTrayChange(() => brokerTray.setEnabled(enabled));
+      const isMacOS = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
+      if (isMacOS) {
+        return status.trayStopping ? "Background broker stopping; it will exit within five seconds."
+          : status.trayEnabled ? "Menu bar item and background broker enabled." : "Menu bar item hidden; background broker disabled.";
+      }
       return status.trayStopping ? "Broker tray stopping; it will exit within five seconds."
         : status.trayEnabled ? "Tray icon shown." : "Tray icon hidden.";
     },
@@ -2395,7 +2434,7 @@ export function App() {
   const openClaudeDesktopDownload = async () => {
     try {
       await localClientPackages.openClaudeDesktopDownload();
-      reportLocal({ tone: "action-required", message: "Claude Desktop's download page opened. Install it for this Windows account, then press Refresh here." });
+      reportLocal({ tone: "action-required", message: "Claude Desktop's download page opened. Install it for this user account, then press Refresh here." });
     } catch (error) {
       failLocal("Claude Desktop", error, "Install Claude Desktop");
     }
@@ -2518,7 +2557,7 @@ export function App() {
   const openAntigravityDownload = async () => {
     try {
       await localClientPackages.openAntigravityDownload();
-      reportLocal({ tone: "action-required", message: "The official Google Antigravity download page opened. Install it for this Windows account, then press Refresh here." });
+      reportLocal({ tone: "action-required", message: "The official Google Antigravity download page opened. Install it for this user account, then press Refresh here." });
     } catch (error) {
       failLocal("Google Antigravity", error, "Install Antigravity");
     }

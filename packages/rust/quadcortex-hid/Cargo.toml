@@ -22,3 +22,6 @@ hidapi = { version = "=2.6.7", default-features = false, features = ["windows-na
 [target.'cfg(target_os = "linux")'.dependencies]
 hidapi = { version = "=2.6.7", default-features = false, features = ["linux-native-basic-udev"] }
 libc.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+hidapi = { version = "=2.6.7", default-features = false, features = ["macos-shared-device"] }

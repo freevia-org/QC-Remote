@@ -314,12 +314,16 @@ pub fn main(binary: Binary) {
                 .find(|pair| pair[0] == "--descriptor-path")
                 .map(|pair| PathBuf::from(&pair[1]))
                 .unwrap_or_else(|| fail("--broker-serve requires --descriptor-path <path>"));
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             let election = {
                 let directory = descriptor_path.parent().unwrap_or_else(|| {
                     fail("The broker descriptor needs an absolute parent directory")
                 });
+                #[cfg(target_os = "linux")]
                 crate::platform::paths::prepare_directory(directory)
+                    .unwrap_or_else(|error| fail(error));
+                #[cfg(target_os = "macos")]
+                crate::platform::paths_macos::prepare_directory(directory)
                     .unwrap_or_else(|error| fail(error));
                 match resident::elect(&descriptor_path, RESIDENT_ELECTION_BUDGET)
                     .unwrap_or_else(|error| fail(error))
@@ -328,7 +332,7 @@ pub fn main(binary: Binary) {
                     Election::Serve(guard) => Some(guard),
                 }
             };
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             let election = None;
             serve(
                 &args,
@@ -340,7 +344,7 @@ pub fn main(binary: Binary) {
             )
         }
         Mode::Stdio => {
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             let signals =
                 crate::platform::shutdown::Pending::new().unwrap_or_else(|error| fail(error));
             // A first broker starts idle so it cannot race its client's explicit
@@ -363,7 +367,7 @@ pub fn main(binary: Binary) {
                 &controller,
                 binary.default_directory.map(|default| default()),
             );
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             let _signal_watch = {
                 let shutdown = controller.shutdown_handle();
                 signals
@@ -519,7 +523,7 @@ fn serve(
     started_for_residence: bool,
 ) {
     let phase_events = phase_events_enabled(args, started_for_residence);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     let signals = match crate::platform::shutdown::Pending::new() {
         Ok(signals) => signals,
         Err(error) => {
@@ -527,7 +531,7 @@ fn serve(
             fail(error)
         }
     };
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     let mut signal_watch = None;
     // Always start disconnected here, regardless of `--auto-connect`: the
     // real USB handshake can take upwards of ten seconds against real
@@ -551,11 +555,11 @@ fn serve(
     // thread there is no residence, so no host either.
     let tray_allowed = tray_allowed(args);
     let supervisor: Arc<OnceLock<Arc<Supervisor>>> = Arc::new(OnceLock::new());
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     let exit_status = Arc::new(std::sync::atomic::AtomicI32::new(0));
     let on_exit = {
         let supervisor = Arc::clone(&supervisor);
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         let exit_status = Arc::clone(&exit_status);
         Arc::new(move || {
             // Clients were already sent `broker.shuttingDown` and the device
@@ -564,21 +568,21 @@ fn serve(
                 supervisor.stop_for_exit(EXIT_HOST_STOP);
             }
             tray::remove_icon_now();
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             std::process::exit(exit_status.load(std::sync::atomic::Ordering::Acquire));
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(unix))]
             std::process::exit(0)
         })
     };
     let published = {
         let supervisor = Arc::clone(&supervisor);
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         let signal_watch_slot = &mut signal_watch;
         move |handle: BrokerHandle| {
             // Published: a peer's election now attaches to this broker.
             drop(election);
             note_publication(&handle, started_for_residence);
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             {
                 let shutdown = handle.clone();
                 *signal_watch_slot = Some(

@@ -18,6 +18,8 @@ const AUTO_APPROVE_REMOTE_ACTIONS_ACCOUNT: &str = "outbound-public-relay-auto-ap
 /// browser pairing session so the relay's confirmation page can show it.
 pub(crate) const RELAY_DEVICE_NAME: &str = if cfg!(target_os = "linux") {
     "QC Remote on Linux"
+} else if cfg!(target_os = "macos") {
+    "QC Remote on macOS"
 } else if cfg!(target_os = "windows") {
     "QC Remote on Windows"
 } else {
@@ -25,6 +27,8 @@ pub(crate) const RELAY_DEVICE_NAME: &str = if cfg!(target_os = "linux") {
 };
 const RELAY_PLATFORM: &str = if cfg!(target_os = "linux") {
     "linux"
+} else if cfg!(target_os = "macos") {
+    "macos"
 } else if cfg!(target_os = "windows") {
     "windows"
 } else {

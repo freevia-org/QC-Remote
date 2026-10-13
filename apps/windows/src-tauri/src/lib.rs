@@ -58,6 +58,54 @@ mod tray_native;
 mod tray_presence;
 mod virtual_device_store;
 mod workspace;
+
+#[derive(Default)]
+struct MacMenuEventState {
+    frontend_ready: bool,
+    pending: Vec<&'static str>,
+}
+
+#[derive(Default)]
+struct MacMenuEventBridge(Mutex<MacMenuEventState>);
+
+impl MacMenuEventBridge {
+    #[cfg(any(target_os = "macos", test))]
+    fn dispatch(&self, event: &'static str) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.frontend_ready {
+            true
+        } else {
+            state.pending.push(event);
+            false
+        }
+    }
+
+    fn frontend_ready(&self) -> Vec<&'static str> {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        state.frontend_ready = true;
+        std::mem::take(&mut state.pending)
+    }
+}
+
+#[cfg(test)]
+mod mac_menu_event_bridge_tests {
+    use super::MacMenuEventBridge;
+
+    #[test]
+    fn queues_menu_events_until_frontend_listeners_are_ready() {
+        let bridge = MacMenuEventBridge::default();
+
+        assert!(!bridge.dispatch("macos-menu-connect"));
+        assert!(!bridge.dispatch("macos-menu-disconnect"));
+        assert_eq!(
+            bridge.frontend_ready(),
+            ["macos-menu-connect", "macos-menu-disconnect"]
+        );
+        assert!(bridge.frontend_ready().is_empty());
+        assert!(bridge.dispatch("macos-menu-connect"));
+    }
+}
+
 use client_packages::{
     antigravity_local_integration_status, chatgpt_local_integration_status,
     claude_desktop_extension_status, install_antigravity_local_integration,
@@ -71,6 +119,29 @@ use client_packages::{
     remove_chatgpt_local_integration, remove_jan_local_integration,
     remove_lm_studio_local_integration, save_local_client_package,
 };
+
+#[tauri::command]
+fn macos_menu_events_ready(app: AppHandle) -> Result<(), String> {
+    let Some(bridge) = app.try_state::<MacMenuEventBridge>() else {
+        return Ok(());
+    };
+    for event in bridge.frontend_ready() {
+        if let Err(error) = app.emit(event, ()) {
+            eprintln!("QC Remote could not deliver queued macOS menu action: {error}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn emit_macos_menu_event(app: &tauri::AppHandle, event: &'static str) {
+    let bridge = app.state::<MacMenuEventBridge>();
+    if bridge.dispatch(event) {
+        if let Err(error) = app.emit(event, ()) {
+            eprintln!("QC Remote could not deliver macOS menu action: {error}");
+        }
+    }
+}
 use local_access::{test_local_mcp, LocalAccess, LocalAccessStatus};
 use relay::{BrowserPairingProgress, RelayBridge, RelayStatus};
 use virtual_device_store::{read_virtual_device_store, write_virtual_device_store};
@@ -1882,7 +1953,10 @@ fn spawn_gateway_reader_with(
 /// this keeps every window on the one, better-tested shared-broker hosting
 /// mode (`GatewayProcess::start_shared`) instead of silently degrading to
 /// the private, unshared one (`start_owned_child`) on a resolution error.
-#[cfg(any(not(target_os = "linux"), test))]
+#[cfg(any(
+    not(any(target_os = "linux", target_os = "macos")),
+    test
+))]
 fn resolve_descriptor_directory(
     app_local_data_dir: Result<PathBuf, impl std::fmt::Display>,
     bundle_identifier: &str,
@@ -1907,7 +1981,14 @@ fn app_descriptor_directory(
         qc_native_platform::paths::prepare_directory(&directory)?;
         Ok(directory)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (app_local_data_dir, bundle_identifier);
+        let directory = broker_paths::app_local_data_dir();
+        qc_native_platform::paths_macos::prepare_directory(&directory)?;
+        Ok(directory)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Ok(resolve_descriptor_directory(
             app_local_data_dir,
@@ -2915,6 +2996,8 @@ fn native_broker_sidecar_names() -> Vec<String> {
         ]);
     } else if let Some(target) = native_linux_target_triple() {
         names.push(format!("qc-device-broker-{target}"));
+    } else if let Some(target) = native_macos_target_triple() {
+        names.push(format!("qc-device-broker-{target}"));
     }
     names
 }
@@ -2928,6 +3011,15 @@ fn native_linux_target_triple() -> Option<&'static str> {
     return Some("aarch64-unknown-linux-gnu");
     #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "musl"))]
     return Some("aarch64-unknown-linux-musl");
+    #[allow(unreachable_code)]
+    None
+}
+
+fn native_macos_target_triple() -> Option<&'static str> {
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    return Some("x86_64-apple-darwin");
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return Some("aarch64-apple-darwin");
     #[allow(unreachable_code)]
     None
 }
@@ -2948,6 +3040,10 @@ mod native_broker_filename_tests {
             assert!(names.contains(&"qc-device-broker-x86_64-unknown-linux-gnu".into()));
             #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "gnu"))]
             assert!(names.contains(&"qc-device-broker-aarch64-unknown-linux-gnu".into()));
+            #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+            assert!(names.contains(&"qc-device-broker-x86_64-apple-darwin".into()));
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            assert!(names.contains(&"qc-device-broker-aarch64-apple-darwin".into()));
         }
     }
 }
@@ -4108,10 +4204,22 @@ fn broker_tray_settings(
 
 #[tauri::command]
 fn set_broker_tray_enabled(
+    app: AppHandle,
     state: State<'_, broker_tray_control::BrokerTrayControl>,
     enabled: bool,
 ) -> Result<broker_tray_control::BrokerTrayStatus, String> {
-    state.set_enabled(enabled)
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+    let status = state.set_enabled(enabled)?;
+    #[cfg(target_os = "macos")]
+    {
+        let tray = app
+            .try_state::<tauri::tray::TrayIcon>()
+            .ok_or_else(|| "The QC Remote menu bar item is not available".to_owned())?;
+        tray.set_visible(enabled)
+            .map_err(|error| format!("Could not update the QC Remote menu bar item: {error}"))?;
+    }
+    Ok(status)
 }
 
 /// The Settings switch "Internet for the Quad Cortex". An app setting only: it
@@ -4724,7 +4832,7 @@ pub fn run() {
     // correctly refuses descriptor takeover, which can leave two windows
     // showing different client states. Redirect every later launch to the one
     // process that owns the UI and bring that window back from the taskbar.
-    #[cfg(all(any(windows, target_os = "linux"), not(test)))]
+    #[cfg(all(any(windows, target_os = "linux", target_os = "macos"), not(test)))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         // A second launch is a user reopening QC Remote (bridges never reach
         // this: `--local-mcp-bridge` returns before `run`). It is that
@@ -4752,6 +4860,7 @@ pub fn run() {
         .manage(Mutex::new(gateway))
         .manage(lock_free_reads)
         .manage(RelayBridge::default())
+        .manage(MacMenuEventBridge::default())
         .setup(move |app| {
             // Before anything can reach the gateway: every QC Remote process
             // meets the others' shared device broker through this directory.
@@ -4793,6 +4902,8 @@ pub fn run() {
                 tray_control.report_error(error);
             }
             app.manage(tray_control);
+            #[cfg(target_os = "macos")]
+            setup_macos_status_item(app)?;
             // Keep the native Windows title tied to the compiled package rather
             // than a manually-maintained label. This makes the running build
             // immediately identifiable from the taskbar and title bar.
@@ -4853,6 +4964,14 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
+            }
             if !main_window_is_gone(window.label(), event) {
                 return;
             }
@@ -4870,6 +4989,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            macos_menu_events_ready,
             relay_status,
             relay_usage,
             relay_devices,
@@ -4939,6 +5059,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running QC Remote")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if matches!(
+                &event,
+                tauri::RunEvent::Reopen {
+                    has_visible_windows: false,
+                    ..
+                }
+            ) {
+                show_macos_main_window(app);
+            }
             if !is_process_exit_event(&event) {
                 return;
             }
@@ -4947,6 +5077,105 @@ pub fn run() {
                 local_access.shutdown_for_exit();
             }
         });
+}
+
+#[cfg(target_os = "macos")]
+fn setup_macos_status_item(app: &mut tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::TrayIconBuilder;
+    use tauri::Manager;
+
+    let connect = MenuItem::with_id(
+        app,
+        "connect-quad-cortex",
+        "Connect to Quad Cortex",
+        true,
+        None::<&str>,
+    )?;
+    let disconnect = MenuItem::with_id(
+        app,
+        "disconnect-quad-cortex",
+        "Disconnect from Quad Cortex",
+        true,
+        None::<&str>,
+    )?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let open = MenuItem::with_id(app, "open-qc-remote", "Open QC Remote", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit-qc-remote", "Quit QC Remote", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&connect, &disconnect, &separator, &open, &quit])?;
+    let tray = TrayIconBuilder::with_id("qc-remote-menu-bar")
+        .icon(tauri::include_image!("icons/32x32.png"))
+        .icon_as_template(false)
+        .tooltip("QC Remote")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "connect-quad-cortex" => {
+                show_macos_main_window(app);
+                emit_macos_menu_event(app, "macos-menu-connect");
+            }
+            "disconnect-quad-cortex" => {
+                show_macos_main_window(app);
+                emit_macos_menu_event(app, "macos-menu-disconnect");
+            }
+            "open-qc-remote" => {
+                show_macos_main_window(app);
+            }
+            "quit-qc-remote" => quit_macos(app.clone()),
+            _ => {}
+        })
+        .build(app)?;
+    let visible = app
+        .state::<broker_tray_control::BrokerTrayControl>()
+        .status()
+        .tray_enabled;
+    if let Err(error) = tray.set_visible(visible) {
+        eprintln!("QC Remote menu bar visibility could not be set: {error}");
+    }
+    app.manage(tray);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn quit_macos(app: tauri::AppHandle) {
+    use tauri::Manager;
+
+    let worker_app = app.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name("qc-user-quit-broker".into())
+        .spawn(move || {
+            let result = worker_app
+                .try_state::<broker_tray_control::BrokerTrayControl>()
+                .ok_or_else(|| "QC Remote background broker control is unavailable".to_owned())
+                .and_then(|control| control.quit_broker());
+            match result {
+                Ok(()) => worker_app.exit(0),
+                Err(error) => {
+                    if let Some(control) =
+                        worker_app.try_state::<broker_tray_control::BrokerTrayControl>()
+                    {
+                        control.report_error(error);
+                    }
+                    show_macos_main_window(&worker_app);
+                }
+            }
+        })
+    {
+        if let Some(control) = app.try_state::<broker_tray_control::BrokerTrayControl>() {
+            control.report_error(format!("Could not start the broker quit request: {error}"));
+        }
+        show_macos_main_window(&app);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn show_macos_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
 }
 
 /// The events Tauri delivers while the process is on its way out.

@@ -32,13 +32,14 @@ license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
 # the broker crate is linked only with it, so the app itself builds exactly as
 # before.
 [features]
-tray-sidecar = ["dep:qc-device-broker", "qc-device-broker/linux-tray"]
+tray-sidecar = ["desktop-broker", "qc-device-broker/linux-tray"]
+desktop-broker = ["dep:qc-device-broker"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [[bin]]
 name = "qc-device-broker"
 path = "src/bin/qc-device-broker.rs"
-required-features = ["tray-sidecar"]
+required-features = ["desktop-broker"]
 
 [lib]
 name = "qc_remote_lib"
@@ -66,7 +67,6 @@ base64 = "0.22"
 dirs = "6"
 rand = "0.9"
 quadcortex = { path = "../../../packages/rust/quadcortex" }
-qc-windows-midi = { path = "../../../packages/rust/qc-windows-midi" }
 qc-relay-client = { path = "../../../packages/rust/qc-relay-client" }
 qc-remote-mcp = { path = "../../../services/rust-mcp" }
 rfd = "0.15"
@@ -81,6 +81,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 subtle = "2"
 tauri = { version = "2", default-features = false, features = ["wry"] }
+tauri-plugin-single-instance = "=2.4.5"
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 toml_edit = "0.25"
 webbrowser = "1"
@@ -92,11 +93,11 @@ zip = { version = "8.1", default-features = false }
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 windows-registry = "0.6"
+qc-windows-midi = { path = "../../../packages/rust/qc-windows-midi" }
 # The broker owns the native tray through windows-sys. The GUI has no direct
 # tray-icon, muda or tao API dependency; Tauri owns its own window/menu graph.
 # Used (lib.rs). Exact so a plugin release cannot change how a second launch
 # hands its arguments to the running app without a reviewed manifest change.
-tauri-plugin-single-instance = "=2.4.5"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -105,7 +106,12 @@ libc = "0.2"
 # Pairing credentials stay in the desktop's Secret Service store. Do not use
 # keyring's always-present mock backend when a Linux Secret Service is absent.
 keyring = { version = "3.6", default-features = false, features = ["sync-secret-service"] }
-tauri-plugin-single-instance = "=2.4.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
+libc = "0.2"
+tauri = { version = "2", default-features = false, features = ["tray-icon", "image-png"] }
+plist = "1.10"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
