@@ -87,6 +87,8 @@ The driver user client needs a bounded report API:
 3. Submit one complete HID output report with a completion result.
 4. Deliver completed interrupt-IN reports asynchronously to the app, including
    disconnect and terminal transfer errors.
+5. Abort the outstanding interrupt-IN transfer before closing the user client;
+   interrupt reads have no timeout, so teardown must explicitly cancel them.
 
 The iOS C ABI and Swift adapter now use the shared `TransportRuntime`,
 `SessionRuntime`, and state decoder. iPad gateway reads use shared read

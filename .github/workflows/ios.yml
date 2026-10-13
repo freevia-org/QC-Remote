@@ -5,6 +5,7 @@ on:
     paths:
       - "apps/ios/**"
       - "apps/android/src/**"
+      - "packages/rust/**"
       - "packages/typescript/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -16,6 +17,7 @@ on:
     paths:
       - "apps/ios/**"
       - "apps/android/src/**"
+      - "packages/rust/**"
       - "packages/typescript/**"
       - "Cargo.toml"
       - "Cargo.lock"

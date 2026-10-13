@@ -17,8 +17,6 @@ export interface QCIosNativeBridgePlugin {
   connectUsbDriver(): Promise<{ connected: boolean; synchronized: boolean; deviceId: number; name: string; diagnostics: Record<string, number> }>;
   disconnectUsbDriver(): Promise<void>;
   usbDriverDiagnostics(): Promise<Record<string, number>>;
-  writeUsbReport(options: { report: string }): Promise<{ bytesTransferred: number; usbStatus: number }>;
-  readUsbReport(): Promise<{ report: string }>;
   gatewayReadUsb(options: { method: string; params?: Record<string, unknown> }): Promise<unknown>;
   gatewayWriteUsb(options: { method: string; params?: Record<string, unknown> }): Promise<unknown>;
   driverCurrentPreset(): Promise<{ snapshot: Record<string, unknown> | null }>;

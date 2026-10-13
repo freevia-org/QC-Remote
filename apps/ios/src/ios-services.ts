@@ -38,7 +38,7 @@ async function load(): Promise<void> {
 }
 async function save(): Promise<void> { await QCIosNativeBridge.secureSet({ key: storageKey, value: JSON.stringify(stored) }); }
 function emit(name: string, value: unknown): void {
-  if (name === "qcStateBatch") {
+  if (name === "qcStateBatch" && directIpadSession) {
     directStateFrames.push(value as (typeof directStateFrames)[number]);
     if (directStateFrames.length > 512) directStateFrames.splice(0, directStateFrames.length - 512);
   }
@@ -104,8 +104,10 @@ async function connectMcp(): Promise<void> {
     authPending = false;
     lastStatus = await callTool("get_qc_status", {});
     emit("qcConnection", { state: "available", name: lastStatus?.deviceName ?? "Quad Cortex via QC Remote" });
-    cursor = 0;
-    startStatePolling();
+    if (!directIpadSession) {
+      cursor = 0;
+      startStatePolling();
+    }
   } catch (error) {
     if (error instanceof UnauthorizedError) { authPending = true; emit("qcConnection", { state: "disconnected" }); return; }
     client = undefined; transport = undefined;
@@ -118,10 +120,12 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<an
   return parseResult(await client.callTool({ name, arguments: args }));
 }
 function startStatePolling(): void {
+  if (directIpadSession) return;
   if (statePoll) clearInterval(statePoll);
   statePoll = setInterval(() => { void (async () => {
     try {
       const page = await invokeRemote("device.stateEvents", { afterSequence: cursor, limit: 256 });
+      if (directIpadSession) return;
       for (const frame of page.frames ?? []) {
         cursor = Math.max(cursor, frame.sequence ?? cursor);
         emit("qcStateBatch", frame as NativeStateFrame<QcStateUpdate>);
@@ -191,6 +195,14 @@ const nativePlugin = {
         if (driver.available || directIpadSession) {
           const result = await QCIosNativeBridge.connectUsbDriver();
           directIpadSession = true;
+          directStateFrames.splice(0);
+          cursor = 0;
+          if (statePoll) clearInterval(statePoll);
+          statePoll = undefined;
+          const previousClient = client;
+          client = undefined;
+          transport = undefined;
+          void previousClient?.close().catch(() => undefined);
           return { connected: true, synchronized: result.synchronized, name: result.name, deviceId: result.deviceId };
         }
       }

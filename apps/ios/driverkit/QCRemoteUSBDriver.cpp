@@ -9,6 +9,7 @@ namespace {
 constexpr uint32_t kReadReport = 0;
 constexpr uint32_t kWriteReport = 1;
 constexpr uint32_t kCopyDiagnostics = 2;
+constexpr uint32_t kAbortRead = 3;
 constexpr uint32_t kReportLength = 129;
 constexpr uint8_t kHidInterfaceClass = 0x03;
 constexpr uint8_t kPreferredQcHidInterface = 5;
@@ -144,6 +145,7 @@ kern_return_t IMPL(QCRemoteUSBDriver, Stop) {
 
 void QCRemoteUSBDriver::ReleaseUsbResources() {
     if (ivars->inputPipe) {
+        (void)ivars->inputPipe->Abort(kIOUSBAbortSynchronous, kIOReturnAborted, nullptr);
         ivars->inputPipe->release();
         ivars->inputPipe = nullptr;
     }
@@ -163,6 +165,11 @@ void QCRemoteUSBDriver::ReleaseUsbResources() {
     ivars->interfaceNumber = 0;
     ivars->inputEndpointAddress = 0;
     ivars->inputPacketSize = 0;
+}
+
+kern_return_t QCRemoteUSBDriver::AbortRead() {
+    if (!ivars->inputPipe) return kIOReturnNotReady;
+    return ivars->inputPipe->Abort(kIOUSBAbortSynchronous, kIOReturnAborted, nullptr);
 }
 
 kern_return_t QCRemoteUSBDriver::ReadReport(OSData **report) {
@@ -285,6 +292,15 @@ kern_return_t QCRemoteUSBUserClient::ExternalMethod(
             if (arguments->structureInput || arguments->structureInputDescriptor
                 || arguments->structureOutputMaximumSize < sizeof(QcUsbDiagnostics)) return kIOReturnBadArgument;
             return ivars->driver->CopyDiagnostics(&arguments->structureOutput);
+        }
+        case kAbortRead: {
+            if (arguments->structureInput || arguments->structureInputDescriptor
+                || arguments->structureOutputMaximumSize < sizeof(uint32_t)) return kIOReturnBadArgument;
+            const kern_return_t status = ivars->driver->AbortRead();
+            if (status != kIOReturnSuccess) return status;
+            const uint32_t result = 0;
+            arguments->structureOutput = OSData::withBytes(&result, sizeof(result));
+            return arguments->structureOutput ? kIOReturnSuccess : kIOReturnNoMemory;
         }
         default:
             return kIOReturnUnsupported;

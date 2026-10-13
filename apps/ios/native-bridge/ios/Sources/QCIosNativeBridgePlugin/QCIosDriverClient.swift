@@ -62,7 +62,16 @@ final class QCIosDriverClient {
         let active = connection
         connection = 0
         stateLock.unlock()
-        if active != 0 { _ = qc_driver_close(active) }
+        if active != 0 {
+            // Interrupt-IN reads have no timeout. Abort the pipe before closing
+            // the user client so a blocked reader can leave its dispatch queue.
+            var response = [UInt8](repeating: 0, count: 4)
+            var responseCount = UInt32(response.count)
+            _ = response.withUnsafeMutableBytes { buffer in
+                qc_driver_call(active, 3, nil, 0, buffer.baseAddress, &responseCount)
+            }
+            _ = qc_driver_close(active)
+        }
     }
 
     func diagnostics() throws -> [String: Int] {
