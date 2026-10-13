@@ -22,6 +22,8 @@ on:
       - Cargo.toml
       - Cargo.lock
   push:
+    branches:
+      - master
     paths:
       - .github/workflows/macos-build.yml
       - apps/windows/**
