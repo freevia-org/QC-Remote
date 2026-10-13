@@ -5,12 +5,12 @@
 .coros-screen-dimmer { position: absolute; z-index: 20; inset: 0; padding: 0; border: 0; background: var(--qc-screen-wash-grid-menu); }
 /* grid-scene-selector's dropdown ground reads 49,52,49, which is on the
    5/6/5 ladders; 48,51,50 is not. */
-.coros-vector-screen .vector-scene-dropdown { left: 56.75%; right: auto; top: 9.17%; box-sizing: border-box; width: 29%; height: 86.67%; padding: 0; border-radius: 9px; background: var(--qc-palette-313431); box-shadow: none; }
+.coros-vector-screen .vector-scene-dropdown { left: 56.75%; right: auto; top: 9.17%; box-sizing: border-box; width: 29%; height: 86.67%; padding: 0; overflow: hidden; border-radius: 9px; background: var(--qc-palette-313431); box-shadow: none; }
 .coros-vector-screen .vector-scene-dropdown button { height: 12.5%; gap: 4%; padding: 0 2cqw; border-radius: 0; font-size: 2cqw; font-weight: 400; }
 .coros-vector-screen .vector-scene-dropdown button:hover,
 .coros-vector-screen .vector-scene-dropdown button.is-active { background: var(--qc-palette-080808); }
-.coros-vector-screen .vector-scene-dropdown button.is-active { color: var(--qc-palette-20f25a); }
-.coros-vector-screen .vector-scene-dropdown button span { width: 3cqw; height: 3cqw; border-radius: 4px; font-size: 2.5cqw; line-height: 1; }
+.coros-vector-screen .vector-scene-dropdown button.is-active { color: var(--qc-screen-accent); }
+.coros-vector-screen .vector-scene-dropdown button span { width: 3cqw; height: 3cqw; border-radius: 4px; color: var(--qc-palette-000000); font-size: 2.875cqw; line-height: 1; }
 /* The menu is a 7-row list of 60px rows starting at y=16, each context-menu
    glyph cropped at a multiple of 60 from 94. Expressed as 3.33%/87.5% the top
    landed on 15.969 and each 14.3% row on 60.047, so the rows drifted half a

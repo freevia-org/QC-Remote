@@ -7,6 +7,7 @@ import { QcRotaryControl } from "./qc-rotary-control";
 import { QcRotaryDial } from "./qc-rotary-dial";
 import { QcSceneSelector } from "./qc-shared-controls";
 import { QcUiIcon } from "./theme-icons";
+import { tempoVolumePosition } from "./tempo-volume-taper";
 import { useRotaryValue } from "./use-rotary-gesture";
 import { TEMPO_ROUTINGS, TEMPO_SOUNDS, TEMPO_SUBDIVISIONS, TEMPO_TIME_SIGNATURES, type TempoWorkflow } from "./use-tempo-workflow";
 import "./official-tempo.css";
@@ -36,7 +37,7 @@ const TEMPO_DIAL_WHEEL_SETTLE_MS = 200;
  * the shared `useRotaryValue` (use-rotary-gesture.ts); only the two constants
  * above differ from the block editor's knobs.
  */
-function TempoDial({ className, label, valueText, value, min, max, step, origin, disabled, accent, onDraftChange, onCommit }: {
+function TempoDial({ className, label, valueText, value, min, max, step, origin, position, disabled, accent, onDraftChange, onCommit }: {
   className?: string;
   /** The control's name: TEMPO, VOLUME or PAN. */
   label: string;
@@ -48,6 +49,8 @@ function TempoDial({ className, label, valueText, value, min, max, step, origin,
   step: number;
   /** Where the fill starts, in the dial's own units. Omit for the unit's usual fill from the minimum. */
   origin?: number;
+  /** Where the dial is drawn, 0..1 along its sweep, when that is not the value's place in min..max (VOLUME's taper). */
+  position?: (value: number) => number;
   disabled?: boolean;
   accent?: string;
   onDraftChange(value: number): void;
@@ -61,7 +64,7 @@ function TempoDial({ className, label, valueText, value, min, max, step, origin,
     wheelSettleMs: TEMPO_DIAL_WHEEL_SETTLE_MS
   });
   return <QcRotaryControl className={`tempo-dial${className ? ` ${className}` : ""}`} disabled={disabled} label={label} value={value} min={min} max={max} valueText={valueText} gesture={gesture}>
-    <QcRotaryDial value={(clamp(value) - min) / (max - min)} origin={origin === undefined ? undefined : (clamp(origin) - min) / (max - min)} accent={accent} />
+    <QcRotaryDial value={position ? position(clamp(value)) : (clamp(value) - min) / (max - min)} origin={origin === undefined ? undefined : (clamp(origin) - min) / (max - min)} accent={accent} />
   </QcRotaryControl>;
 }
 
@@ -184,7 +187,7 @@ function CorOsTempoSession({ workflow, snapshot, queueTempo, onSelectScene, onCl
           </button>
           <section className="tempo-control is-volume">
             <span>VOLUME</span>
-            <TempoDial label="Volume" valueText={`${displayVolume.toFixed(1)} dB`} value={displayVolume} min={VOLUME_MIN} max={VOLUME_MAX} step={.5} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftVolume(value); }} onCommit={commitVolume} />
+            <TempoDial label="Volume" valueText={`${displayVolume.toFixed(1)} dB`} value={displayVolume} min={VOLUME_MIN} max={VOLUME_MAX} step={.5} position={tempoVolumePosition} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftVolume(value); }} onCommit={commitVolume} />
             <strong>{displayVolume.toFixed(1)}<span className="tempo-unit"> dB</span></strong>
           </section>
           <section className="tempo-control is-mute">
