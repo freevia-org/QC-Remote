@@ -53,7 +53,7 @@ export function qcDeviceScreenContent(options: QcDeviceScreenContentOptions): Re
   const kind = resolveQcDeviceScreen(destination.view, { deviceSettings: workflows.deviceSettings.open, tempo: workflows.tempo.open });
   switch (kind) {
     case "device-settings": return <CorOsDeviceSettings workflow={workflows.deviceSettings} onClose={workflows.deviceSettings.close} />;
-    case "tempo": return <CorOsTempoScreen workflow={workflows.tempo} snapshot={snapshot} queueTempo={queueTempo} onSelectScene={(index) => void selectScene(index)} onClose={workflows.tempo.close} />;
+    case "tempo": return <CorOsTempoScreen screenGestureContextKey={options.screenGestureContextKey} captureSessionCurrent={options.captureSessionCurrent} workflow={workflows.tempo} snapshot={snapshot} queueTempo={queueTempo} onSelectScene={(index) => void selectScene(index)} onClose={workflows.tempo.close} />;
     case "tuner": return <CorOsTunerScreen workflow={workflows.tuner} onClose={() => void closeScreen()} />;
     case "looper-editor": {
       const looper = qcLooperScreenActions({ captureSessionCurrent: options.captureSessionCurrent, snapshot, looper: workflows.looper, grid: workflows.grid, setView, setParameterMenuInitiallyOpen, notice });

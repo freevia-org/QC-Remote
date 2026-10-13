@@ -385,3 +385,45 @@ test("unit mirror retires the old owner picture and delayed capture across physi
   await act(async () => { renderer.update(show("B", async () => frame("refresh"))); });
   assert.deepEqual(images(), [`data:image/png;base64,${frame("refresh").pngBase64}`], "same-owner refreshed captures remain usable");
 });
+test("Tempo wheel settlement cannot cross preset, scene, mode or physical owners", async (t) => {
+  const writes: string[] = [];
+  let physical = "A";
+  const captureSessionCurrent = () => { const owner = physical; return () => owner === physical; };
+  const show = (preset: string, scene = 0, mode = "PRESET", physicalKey = physical) => components.qcDeviceScreenContent({
+    screenGestureContextKey: physicalKey, captureSessionCurrent,
+    snapshot: { ...IDLE_PLACEHOLDER_SNAPSHOT, presetIdentity: preset, activeScene: scene, tempo: 120 },
+    destination: { view: null }, workflows: { deviceSettings: { open: false }, tempo: {
+      open: true, settings: { mode, globalBpm: 90 }, pending: false, loading: false,
+      setGlobalBpm: (value: number) => writes.push(`global:${value}`)
+    } }, queueTempo: (value: number) => writes.push(`${preset}:${scene}:${value}`), selectScene() {}
+  });
+  let renderer!: ReturnType<typeof create>;
+  await act(async () => { renderer = create(show("preset-A")); });
+  t.after(async () => { await act(async () => renderer.unmount()); });
+  const wheel = () => renderer.root.findByProps({ role: "slider", "aria-label": "Tempo" }).props.onWheel({ deltaY: -1, preventDefault() {} });
+  const settle = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 240)); }); };
+  act(wheel);
+  await act(async () => renderer.update(show("preset-B")));
+  await settle();
+  assert.deepEqual(writes, [], "old wheel draft must not become a write to the recalled preset");
+  act(wheel);
+  await act(async () => renderer.update(show("preset-B", 1)));
+  await settle();
+  assert.deepEqual(writes, [], "scene replacement retires the old draft");
+  act(wheel);
+  await act(async () => renderer.update(show("preset-B", 1, "GLOBAL")));
+  await settle();
+  assert.deepEqual(writes, [], "PRESET draft cannot settle through a new GLOBAL callback");
+  act(wheel);
+  await settle();
+  assert.deepEqual(writes, ["global:91"], "healthy same-owner wheel still settles normally");
+  writes.length = 0;
+  act(wheel);
+  physical = "B"; // Host transport guard retires before the next React render.
+  await settle();
+  assert.deepEqual(writes, [], "physical replacement refuses a pending settle even before rerender");
+  await act(async () => renderer.update(show("preset-B", 1, "GLOBAL")));
+  act(wheel);
+  await settle();
+  assert.deepEqual(writes, ["global:91"], "new physical owner gets a fresh usable draft");
+});
