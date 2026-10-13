@@ -34,7 +34,7 @@
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		A20000000000000000000001 /* QCRemoteUSBDriver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = QCRemoteUSBDriver.cpp; sourceTree = "<group>"; };
-		A20000000000000000000002 /* QCRemoteUSBDriver.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp; path = QCRemoteUSBDriver.iig; sourceTree = "<group>"; };
+		A20000000000000000000002 /* QCRemoteUSBDriver.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = QCRemoteUSBDriver.iig; sourceTree = "<group>"; };
 		A20000000000000000000003 /* DriverKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = DriverKit.framework; path = System/Library/Frameworks/DriverKit.framework; sourceTree = SDKROOT; };
 		A20000000000000000000004 /* USBDriverKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = USBDriverKit.framework; path = System/Library/Frameworks/USBDriverKit.framework; sourceTree = SDKROOT; };
 		A20000000000000000000005 /* QCRemoteUSBDriver.dext */ = {isa = PBXFileReference; explicitFileType = wrapper.driver-extension; includeInIndex = 0; path = QCRemoteUSBDriver.dext; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -161,7 +161,7 @@
 			name = QCRemoteUSBDriver;
 			productName = QCRemoteUSBDriver;
 			productReference = A20000000000000000000005 /* QCRemoteUSBDriver.dext */;
-			productType = "com.apple.product-type.driverkit";
+			productType = "com.apple.product-type.driver-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -411,7 +411,7 @@
 				CODE_SIGN_ENTITLEMENTS = ../../driverkit/QCRemoteUSBDriver.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DRIVERKIT_DEPLOYMENT_TARGET = 16.0;
+				DRIVERKIT_DEPLOYMENT_TARGET = 19.0;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ../../driverkit/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/DriverExtensions";
@@ -431,7 +431,7 @@
 				CODE_SIGN_ENTITLEMENTS = ../../driverkit/QCRemoteUSBDriver.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DRIVERKIT_DEPLOYMENT_TARGET = 16.0;
+				DRIVERKIT_DEPLOYMENT_TARGET = 19.0;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ../../driverkit/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/DriverExtensions";
