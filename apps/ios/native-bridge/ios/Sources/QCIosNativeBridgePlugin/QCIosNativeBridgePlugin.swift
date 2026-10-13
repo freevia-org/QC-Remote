@@ -899,7 +899,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
             let status = bytes.withUnsafeBufferPointer { buffer -> OSStatus in
                 guard let baseAddress = buffer.baseAddress else { return qcParamErr }
                 var packet = MIDIPacketListInit(&packetList)
-                packet = MIDIPacketListAdd(&packetList, UInt32(MemoryLayout<MIDIPacketList>.size), packet, 0, UInt16(bytes.count), baseAddress)
+                packet = MIDIPacketListAdd(&packetList, MemoryLayout<MIDIPacketList>.size, packet, 0, bytes.count, baseAddress)
                 guard packet != nil, let output = midiOutput, let destination = midiDestination else { return qcMemFullErr }
                 return MIDISend(output, destination, &packetList)
             }
@@ -917,7 +917,7 @@ public class QCIosNativeBridgePlugin: CAPPlugin, CAPBridgedPlugin {
         let status = bytes.withUnsafeBufferPointer { buffer -> OSStatus in
             guard let baseAddress = buffer.baseAddress else { return qcParamErr }
             var packet = MIDIPacketListInit(&packetList)
-            packet = MIDIPacketListAdd(&packetList, UInt32(MemoryLayout<MIDIPacketList>.size), packet, 0, UInt16(bytes.count), baseAddress)
+            packet = MIDIPacketListAdd(&packetList, MemoryLayout<MIDIPacketList>.size, packet, 0, bytes.count, baseAddress)
             guard packet != nil else { return qcMemFullErr }
             return MIDISend(output, destination, &packetList)
         }
