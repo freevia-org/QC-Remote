@@ -5,7 +5,7 @@
 //! attaches to the broker it lives in. This entry never constructs a Tauri
 //! application.
 use crate::{host_presence, local_access, local_stdio, relay};
-use qc_relay_client::{Client, ConnectionState, DeviceAdapter};
+use qc_relay_client::{Client, ConnectionState, Credentials, DeviceAdapter};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -154,17 +154,52 @@ async fn run(
         IN_PROCESS_HOST_PROVIDER,
         Some(host_token),
     )
+    .with_access_policy_directory(directory.clone())
     // With no MCP client attached the gateway is detached; /health and the
     // relay then answer from this process's broker, which a readiness read
     // never opens, reopens or joins.
     .with_broker_readiness(readiness);
     let adapter: Arc<dyn DeviceAdapter> = Arc::new(device.clone());
-    let (access, access_rx) = watch::channel(relay::load_access_mode());
+    let (access, access_rx) = watch::channel(qc_relay_client::AccessMode::ReadOnly);
+    let mut credential_snapshot = None;
     let mut listener: Option<local_access::RunningLocalAccess> = None;
     let mut relay_host: Option<BackgroundRelay> = None;
     let mut last_settings = Instant::now() - Duration::from_secs(5);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     let mut maintenance: Option<tokio::task::JoinHandle<()>> = None;
+    let (credential_tx, mut credential_rx) =
+        watch::channel(None::<Result<Option<Credentials>, String>>);
+    let mut refresh_stop = stop.clone();
+    let refresh_access = access.clone();
+    let credential_refresh = tokio::spawn(async move {
+        let mut refresh = tokio::time::interval(Duration::from_secs(5));
+        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                changed = refresh_stop.changed() => {
+                    if changed.is_err() || *refresh_stop.borrow() { break; }
+                }
+                _ = refresh.tick() => {}
+            }
+            let previous = *refresh_access.borrow();
+            let mode = tokio::select! {
+                changed = refresh_stop.changed() => {
+                    if changed.is_err() || *refresh_stop.borrow() { break; }
+                    continue;
+                }
+                mode = relay::refresh_access_mode(previous) => mode,
+            };
+            refresh_access.send_replace(mode);
+            let credentials = tokio::select! {
+                changed = refresh_stop.changed() => {
+                    if changed.is_err() || *refresh_stop.borrow() { break; }
+                    continue;
+                }
+                credentials = relay::load_credentials() => credentials,
+            };
+            credential_tx.send_replace(Some(credentials));
+        }
+    });
     // The linked-apps list is fetched when this relay connects (and after a
     // remote Unlink, in remote_unlink.rs), never on a timer.
     let mut relay_was_connected = false;
@@ -176,6 +211,15 @@ async fn run(
         tokio::select! {
             changed = stop.changed() => { if changed.is_err() || *stop.borrow() { break; } }
             _ = interval.tick() => {}
+            changed = credential_rx.changed() => {
+                if changed.is_err() { break; }
+                match credential_rx.borrow_and_update().clone() {
+                    Some(Ok(credentials)) => credential_snapshot = credentials,
+                    Some(Err(error)) => eprintln!("QC Remote background host could not refresh pairing: {error}"),
+                    None => {}
+                }
+                last_settings = Instant::now() - Duration::from_secs(5);
+            }
         }
         if *stop.borrow()
             || !crate::broker_tray_settings::broker_tray_settings_in(&directory).tray_enabled
@@ -183,6 +227,12 @@ async fn run(
             break;
         }
         let local_enabled = local_access::local_mcp_enabled_in(&directory);
+        let remote_enabled = crate::access_policy_store::effective_remote_enabled(&directory);
+        if !remote_enabled && relay_host.take().is_some() {
+            crate::remote_grants::clear();
+            host_presence::set_remote_endpoint(None);
+            host_presence::set_remote_state(watch::channel(ConnectionState::Stopped).1);
+        }
         if !local_enabled {
             if let Some(old) = listener.take() {
                 old.stop();
@@ -199,12 +249,15 @@ async fn run(
         }
         if last_settings.elapsed() >= Duration::from_secs(5) {
             last_settings = Instant::now();
-            access.send_replace(relay::load_access_mode());
-            let credential = relay::load_credentials()
-                .ok()
-                .flatten()
-                .filter(|c| c.uses_current_identity_provider());
-            host_presence::set_remote_endpoint(credential.as_ref().map(|c| c.endpoint.as_str()));
+            let credential = credential_snapshot
+                .as_ref()
+                .filter(|c| c.uses_current_identity_provider())
+                .cloned();
+            host_presence::set_remote_endpoint(if remote_enabled {
+                credential.as_ref().map(|c| c.endpoint.as_str())
+            } else {
+                None
+            });
             let identity = credential
                 .as_ref()
                 .and_then(|c| {
@@ -219,11 +272,26 @@ async fn run(
                 // The list belongs to the relay (and pairing) just dropped.
                 crate::remote_grants::clear();
             }
-            if relay_host.is_none() {
+            if remote_enabled && relay_host.is_none() {
                 if let Some(credentials) = credential {
                     if let Ok(Some(lease)) =
                         HostLease::try_acquire(&directory, "remote-mcp-host.lock")
                     {
+                        // Serialize credential refresh and publication against
+                        // pair/unpair. Release this before the long-lived run;
+                        // the per-invocation latch check closes the remaining
+                        // race after publication.
+                        let operation = match HostLease::try_acquire(
+                            &directory,
+                            "relay-pairing-operation.lock",
+                        ) {
+                            Ok(Some(operation)) => operation,
+                            Ok(None) => continue,
+                            Err(error) => {
+                                eprintln!("Could not acquire relay pairing lease: {error}");
+                                continue;
+                            }
+                        };
                         let (state, state_rx) = watch::channel(ConnectionState::Stopped);
                         host_presence::set_remote_state(state_rx);
                         let (halt, halt_rx) = watch::channel(false);
@@ -232,12 +300,23 @@ async fn run(
                         // No remote method waits for a host-side approval
                         // (HOST_APPROVAL_METHODS is empty): the user
                         // confirms once, in the AI app that asked.
-                        if let Ok(credentials) = relay::begin_credential_connection(credentials) {
+                        let connection_state = state.clone();
+                        let host_adapter = adapter.clone();
+                        let policy = access_rx.clone();
+                        let task = tokio::spawn(async move {
+                            let Ok(credentials) =
+                                relay::begin_credential_connection(credentials).await
+                            else {
+                                return;
+                            };
+                            if !host_adapter.remote_session_enabled() {
+                                return;
+                            }
                             let client = Client::new(
                                 credentials,
-                                adapter.clone(),
-                                state.clone(),
-                                access_rx.clone(),
+                                host_adapter,
+                                connection_state,
+                                policy,
                                 halt_rx,
                             )
                             .with_gateway_api_version(
@@ -246,14 +325,16 @@ async fn run(
                             .with_mcp_presence(presence)
                             .with_credential_status(Arc::new(relay::record_credential_status))
                             .with_replacement_ack(Arc::new(relay::acknowledge_replacement));
-                            relay_host = Some(BackgroundRelay {
-                                task: tokio::spawn(client.run()),
-                                stop: halt,
-                                _lease: lease,
-                                credential: identity,
-                                state,
-                            });
-                        }
+                            drop(operation);
+                            client.run().await;
+                        });
+                        relay_host = Some(BackgroundRelay {
+                            task,
+                            stop: halt,
+                            _lease: lease,
+                            credential: identity,
+                            state,
+                        });
                     }
                 }
             }
@@ -308,6 +389,7 @@ async fn run(
             None
         };
     }
+    credential_refresh.abort();
     drop(relay_host);
     host_presence::set_remote_endpoint(None);
     device.stop();

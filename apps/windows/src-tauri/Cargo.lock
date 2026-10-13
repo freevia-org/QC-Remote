@@ -3363,6 +3363,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "keyring",
+ "libc",
  "qc-broker-framing",
  "qc-device-broker",
  "qc-native-platform",

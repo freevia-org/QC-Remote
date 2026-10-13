@@ -14,7 +14,88 @@ use std::{
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-pub use windows::{is_owner_only, write_staged};
+pub use windows::{
+    create_owner_only_directory, is_owner_only, is_owner_only_directory, write_staged,
+};
+
+/// Create a directory protected to the current user, or accept an existing
+/// directory only when its ownership and permissions already meet that policy.
+/// Existing paths are never modified or removed. Returns `true` only when this
+/// call created the directory; callers may use that result to scope cleanup.
+#[cfg(unix)]
+pub fn create_owner_only_directory(path: &Path) -> Result<bool, String> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    let created = match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(error) => {
+            return Err(format!(
+                "Could not create owner-only directory {}: {error}",
+                path.display()
+            ));
+        }
+    };
+
+    if created {
+        // DirBuilder's mode is subject to umask. Tighten only the directory we
+        // just created; never change permissions on a pre-existing path.
+        if let Err(error) = fs::set_permissions(path, fs::Permissions::from_mode(0o700)) {
+            let _ = fs::remove_dir(path);
+            return Err(format!(
+                "Could not protect owner-only directory {}: {error}",
+                path.display()
+            ));
+        }
+    }
+
+    match is_owner_only_directory(path) {
+        Ok(true) => Ok(created),
+        Ok(false) => {
+            if created {
+                let _ = fs::remove_dir(path);
+            }
+            Err(format!(
+                "Directory {} is not private to this user",
+                path.display()
+            ))
+        }
+        Err(error) => {
+            if created {
+                let _ = fs::remove_dir(path);
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Verify a regular directory is owned by the current user and inaccessible
+/// to group/other users. The final path component is inspected without
+/// following a symlink.
+#[cfg(unix)]
+pub fn is_owner_only_directory(path: &Path) -> Result<bool, String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("Could not inspect directory {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(false);
+    }
+    // SAFETY: geteuid has no arguments or preconditions.
+    let uid = unsafe { libc::geteuid() };
+    Ok(metadata.uid() == uid && metadata.mode() & 0o077 == 0)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn create_owner_only_directory(path: &Path) -> Result<bool, String> {
+    let _ = path;
+    Err("Owner-only directories are unsupported on this platform".into())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn is_owner_only_directory(path: &Path) -> Result<bool, String> {
+    let _ = path;
+    Err("Owner-only directories are unsupported on this platform".into())
+}
 
 /// Portable staging creates a fresh file with mode 0600 on Unix. Platforms
 /// without a supported per-user protection mechanism fail closed.

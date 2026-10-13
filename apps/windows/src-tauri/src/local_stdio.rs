@@ -871,6 +871,7 @@ pub(crate) struct HeadlessDeviceAdapter {
     /// How long one broker read may take, counted from when it started:
     /// [`BROKER_READINESS_TIMEOUT`] outside tests.
     broker_read_budget: Duration,
+    access_policy_directory: Option<PathBuf>,
 }
 
 /// What a broker read answers once it has one. `Err` is a read that panicked
@@ -1154,6 +1155,7 @@ impl HeadlessDeviceAdapter {
             broker: None,
             broker_read: Arc::new(Mutex::new(None)),
             broker_read_budget: BROKER_READINESS_TIMEOUT,
+            access_policy_directory: None,
             gateway: Arc::new(Mutex::new(gateway)),
         }
     }
@@ -1181,6 +1183,7 @@ impl HeadlessDeviceAdapter {
             broker: None,
             broker_read: Arc::new(Mutex::new(None)),
             broker_read_budget: BROKER_READINESS_TIMEOUT,
+            access_policy_directory: None,
             gateway: Arc::new(Mutex::new(gateway)),
         }
     }
@@ -1188,6 +1191,18 @@ impl HeadlessDeviceAdapter {
 
 #[async_trait]
 impl DeviceAdapter for HeadlessDeviceAdapter {
+    fn effective_access_mode(&self) -> Option<AccessMode> {
+        self.access_policy_directory
+            .as_deref()
+            .map(crate::access_policy_store::effective_mode)
+    }
+
+    fn remote_session_enabled(&self) -> bool {
+        self.access_policy_directory
+            .as_deref()
+            .is_none_or(crate::access_policy_store::effective_remote_enabled)
+    }
+
     async fn ready(&self) -> bool {
         // Never blocks: a probe that waited for the gateway lock would sit
         // behind a whole backup on an async worker thread.
@@ -1220,6 +1235,11 @@ impl DeviceAdapter for HeadlessDeviceAdapter {
 }
 
 impl HeadlessDeviceAdapter {
+    pub(crate) fn with_access_policy_directory(mut self, directory: PathBuf) -> Self {
+        self.access_policy_directory = Some(directory);
+        self
+    }
+
     /// One call, in the connection mode the caller chose.
     async fn invoke_as(
         &self,
@@ -1273,12 +1293,10 @@ impl HeadlessDeviceAdapter {
 ///
 /// A window applies a change the moment it is made, because the change is
 /// made through that window's own [`crate::relay::RelayBridge`]. A headless
-/// host shares no memory with the window where the user changes it; the only
-/// channel between them is what the window persists - the access level in
-/// Windows Credential Manager and the switch in `local-mcp-enabled.json` - so
-/// the host polls both. Five seconds bounds how long a tightened access level
-/// can go unenforced by a headless host, at the cost of one Credential Manager
-/// read and one small file read per interval.
+/// host shares no memory with the window where the user changes it, so its
+/// status watch refreshes from the canonical policy file and local MCP switch.
+/// Request admission also reads the canonical file directly; the polling
+/// interval therefore affects displayed state, not enforcement latency.
 const HEADLESS_SETTINGS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Everything a headless bridge needs to decide whether, and how, to host.
@@ -1293,6 +1311,7 @@ pub(crate) struct HeadlessHostSettings {
     /// shared broker's descriptor and the local MCP switch both live here.
     app_local_data_dir: PathBuf,
     load_access_mode: Arc<dyn Fn() -> AccessMode + Send + Sync>,
+    refresh_access_mode: Arc<dyn Fn(AccessMode) -> AccessMode + Send + Sync>,
     refresh_interval: Duration,
     /// Whether a broker this host spawns opens the device session itself;
     /// see `Gateway::auto_connect_first_broker`.
@@ -1302,12 +1321,15 @@ pub(crate) struct HeadlessHostSettings {
 impl HeadlessHostSettings {
     /// The settings a window of this user's installed app would apply.
     ///
-    /// `None` when Windows reports no local data directory at all; the bridge
-    /// then relays only, exactly as before it could host.
+    /// `None` when the operating system reports no local data directory; the
+    /// bridge then relays only, exactly as before it could host.
     pub(crate) fn for_this_user() -> Option<Self> {
         Some(Self {
             app_local_data_dir: app_local_data_dir()?,
-            load_access_mode: Arc::new(crate::relay::load_access_mode),
+            load_access_mode: Arc::new(|| AccessMode::ReadOnly),
+            refresh_access_mode: Arc::new(|previous| {
+                tauri::async_runtime::block_on(crate::relay::refresh_access_mode(previous))
+            }),
             refresh_interval: HEADLESS_SETTINGS_REFRESH_INTERVAL,
             auto_connect: true,
         })
@@ -1543,7 +1565,8 @@ fn refresh_headless_settings(
             running.stop();
             return;
         }
-        let mode = (settings.load_access_mode)();
+        let previous = (settings.load_access_mode)();
+        let mode = (settings.refresh_access_mode)(previous);
         access.send_if_modified(|current| {
             let changed = *current != mode;
             *current = mode;
@@ -1585,7 +1608,8 @@ pub(crate) fn attempt_headless_mcp_hosting(
     let device = HeadlessDeviceAdapter::new(
         settings.device_broker_descriptor_path(),
         settings.auto_connect,
-    );
+    )
+    .with_access_policy_directory(settings.app_local_data_dir.clone());
     let adapter: Arc<dyn DeviceAdapter> = Arc::new(device.clone());
     let (access_tx, access_rx) = watch::channel((settings.load_access_mode)());
     match local_access::start_listener(paths.to_vec(), adapter.clone(), access_rx.clone()) {
@@ -2742,17 +2766,36 @@ mod tests {
     }
 
     /// Settings for a headless host that touch nothing of the user's: the
-    /// broker descriptor and the local MCP switch live in `directory`, the
-    /// access level is whatever `mode` holds, and no broker it spawns opens a
+    /// broker descriptor, local MCP switch, and canonical access policy live
+    /// in `directory`; policy changes are written through the real store API
+    /// from the fixture's `mode`, and no broker it spawns opens a
     /// USB session (the machine running the tests may have a real Quad Cortex
     /// in use by the installed app).
     fn test_settings(
         directory: &std::path::Path,
         mode: Arc<Mutex<AccessMode>>,
     ) -> HeadlessHostSettings {
+        crate::access_policy_store::write(directory, *mode.lock().expect("mode"))
+            .expect("persist initial test policy");
+        let load_directory = directory.to_path_buf();
+        let refresh_directory = directory.to_path_buf();
+        let refresh_mode = mode.clone();
         HeadlessHostSettings {
             app_local_data_dir: directory.to_path_buf(),
-            load_access_mode: Arc::new(move || *mode.lock().expect("mode")),
+            load_access_mode: Arc::new(move || {
+                crate::access_policy_store::effective_mode(&load_directory)
+            }),
+            refresh_access_mode: Arc::new(move |_previous| {
+                let current = crate::access_policy_store::effective_mode(&refresh_directory);
+                let requested = *refresh_mode.lock().expect("mode");
+                if current == requested {
+                    current
+                } else {
+                    crate::access_policy_store::write(&refresh_directory, requested)
+                        .map(|record| record.mode)
+                        .unwrap_or(AccessMode::ReadOnly)
+                }
+            }),
             refresh_interval: Duration::from_millis(20),
             auto_connect: false,
         }
@@ -3542,6 +3585,12 @@ mod tests {
             rand::random::<u128>()
         ));
         std::fs::create_dir(&directory).expect("a scratch directory of this test's own");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                .expect("protect scratch directory");
+        }
         let guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
         (directory, guard)
     }
@@ -4498,13 +4547,13 @@ mod tests {
 
     /// Runs a real hosting fixture whose assertions fail ("injected failure")
     /// and whose listener teardown is given `fault` after it really stopped
-    /// the listener. Returns the startup record, the failure message
-    /// `finish_or_rethrow` produced, and whether the directory and its bytes
-    /// were still there before the test's own removal.
+    /// the listener. Returns the startup record, the failure message,
+    /// retained known-file contents and total retained file bytes before the
+    /// test removes the directory.
     fn run_hosting_fixture_with_cleanup_fault(
         name: &str,
         fault: CleanupFault,
-    ) -> (StartupSeen, String, bool) {
+    ) -> (StartupSeen, String, Option<Vec<u8>>, u64) {
         let seen = std::sync::Mutex::new(StartupSeen {
             cleanup_fault: fault,
             ..StartupSeen::default()
@@ -4525,8 +4574,24 @@ mod tests {
             .unwrap_or_default();
         let seen = seen.into_inner().unwrap();
         let directory = seen.directory.clone().expect("a directory");
-        let kept = directory.join("bytes-to-keep").exists();
-        (seen, message, kept)
+        let kept_bytes = std::fs::read(directory.join("bytes-to-keep")).ok();
+        let retained_bytes = fixture_directory_bytes(&directory);
+        (seen, message, kept_bytes, retained_bytes)
+    }
+
+    fn fixture_directory_bytes(path: &std::path::Path) -> u64 {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_dir() => std::fs::read_dir(path)
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|entry| fixture_directory_bytes(&entry.path()))
+                        .sum()
+                })
+                .unwrap_or(0),
+            Ok(metadata) => metadata.len(),
+            Err(_) => 0,
+        }
     }
 
     /// The fixture's own resources are gone (the listener no longer accepts,
@@ -4582,11 +4647,18 @@ mod tests {
     #[test]
     fn a_hosting_fixture_whose_stop_is_not_acknowledged_keeps_its_bytes() {
         let mut bystander = test_owned_sleeper();
-        let (seen, message, kept) = run_hosting_fixture_with_cleanup_fault(
+        let (seen, message, kept_bytes, retained_bytes) = run_hosting_fixture_with_cleanup_fault(
             "hosting-stop-unacknowledged",
             CleanupFault::ListenerUnacknowledged,
         );
-        assert!(kept, "the directory and its bytes were preserved");
+        // Reap all owned processes and remove the preserved fixture before any
+        // assertion can panic and leak the test's bystander child.
+        assert_reaped_then_remove(&seen, &mut bystander);
+        assert_eq!(
+            kept_bytes.as_deref(),
+            Some(b"0123456789".as_slice()),
+            "the known fixture bytes were preserved"
+        );
         assert!(message.starts_with("injected failure"), "{message}");
         assert!(
             message.contains("listener: termination not acknowledged (injected)"),
@@ -4596,8 +4668,10 @@ mod tests {
             message.contains("termination not acknowledged; directory left in place"),
             "{message}"
         );
-        assert!(message.contains("(bytes: 10)"), "{message}");
-        assert_reaped_then_remove(&seen, &mut bystander);
+        assert!(
+            message.contains(&format!("(bytes: {retained_bytes})")),
+            "{message}"
+        );
     }
 
     /// On the real hosting fixture: the listener teardown
@@ -4607,11 +4681,16 @@ mod tests {
     #[test]
     fn a_panicking_hosting_teardown_step_does_not_stop_the_later_steps() {
         let mut bystander = test_owned_sleeper();
-        let (seen, message, kept) = run_hosting_fixture_with_cleanup_fault(
+        let (seen, message, kept_bytes, retained_bytes) = run_hosting_fixture_with_cleanup_fault(
             "hosting-teardown-panics",
             CleanupFault::ListenerPanics,
         );
-        assert!(kept, "a panicked step never authorises removal");
+        assert_reaped_then_remove(&seen, &mut bystander);
+        assert_eq!(
+            kept_bytes.as_deref(),
+            Some(b"0123456789".as_slice()),
+            "the known fixture bytes were preserved"
+        );
         assert!(message.starts_with("injected failure"), "{message}");
         assert!(
             message.contains("cleanup step `listener` panicked: injected cleanup panic"),
@@ -4621,7 +4700,10 @@ mod tests {
             message.contains("termination not acknowledged; directory left in place"),
             "{message}"
         );
-        assert_reaped_then_remove(&seen, &mut bystander);
+        assert!(
+            message.contains(&format!("(bytes: {retained_bytes})")),
+            "{message}"
+        );
     }
 
     /// A startup that panics at `fault`, before the fixture recorded or
