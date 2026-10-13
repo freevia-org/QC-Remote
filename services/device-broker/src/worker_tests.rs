@@ -40,7 +40,9 @@ fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
     let _dir = OwnedTestDirectory(dir.clone());
     let path = dir.join("device-owner.json");
     let mut owner = Sleeper::start();
+    eprintln!("contested-start: helper started");
     write_record(&path, &owner.record());
+    eprintln!("contested-start: owner record published");
     let record_bytes = std::fs::read(&path).unwrap();
 
     // A device id that matches nothing, so this test can never open a real
@@ -51,6 +53,7 @@ fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
         path.clone(),
     )
     .expect("controller starts");
+    eprintln!("contested-start: controller started");
 
     let expected = format!(
             "The Quad Cortex is in use by a hardware or conformance run (device broker --stdio) \
@@ -60,19 +63,23 @@ fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
     let waiting = wait_for_status(&controller, "the waiting status", |status| {
         status.detail == expected
     });
+    eprintln!("contested-start: waiting status observed");
     assert_eq!(waiting.phase, "searching");
     assert!(!waiting.connected);
     // Several retry cadences pass (RECONNECT_INTERVAL_MS is 750 ms) and it
     // is still waiting, still searching, and the record is untouched.
     thread::sleep(Duration::from_millis(2_000));
+    eprintln!("contested-start: retry interval elapsed");
     let still = controller.status();
     assert_eq!(still.detail, expected);
     assert_eq!(std::fs::read(&path).unwrap(), record_bytes);
 
     owner.kill();
+    eprintln!("contested-start: owner stopped");
     let taken = wait_for_status(&controller, "the takeover", |status| {
         status.detail != expected
     });
+    eprintln!("contested-start: takeover observed");
     assert!(
         !taken.detail.contains("in use by"),
         "after the owner died: {}",
