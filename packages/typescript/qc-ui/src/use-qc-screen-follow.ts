@@ -200,14 +200,27 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
   const routeSide = useRef<"input" | "output">("input");
   if (appKind === "route-selector") routeSide.current = options.workflows.routing?.picker?.side === "output" ? "output" : "input";
   const previousAppKind = useRef<QcObservedScreenKind | undefined>(undefined);
+  /**
+   * The route the app is driving on the unit, from the screen it left to the one it shows, until it has an answer. A new
+   * lifetime (the native state stream restarting, the session becoming ready again) retires the route that was running,
+   * and the effect below then re-runs with the app's screen unchanged, which used to forget the route: the user's CANCEL
+   * closed the panel and nothing reached the unit, whose dialog was then drawn again. The new lifetime resumes the route
+   * instead. A close reads the unit's screen before its touch, so resuming one the unit has already finished (or the user
+   * finished on the unit) sends nothing.
+   */
+  const owedRoute = useRef<{ from: QcObservedScreenKind; to: QcObservedScreenKind; detail: { swap: boolean; side: "input" | "output" } } | undefined>(undefined);
   useEffect(() => {
-    const previous = previousAppKind.current;
+    const previousKind = previousAppKind.current;
     previousAppKind.current = appKind;
-    if (previous === undefined || previous === appKind) return;
+    const changed = previousKind !== undefined && previousKind !== appKind;
+    if (changed) owedRoute.current = undefined;
+    const resumed = !changed && owedRoute.current?.to === appKind ? owedRoute.current : undefined;
+    if (!changed && !resumed) return;
+    const previous = resumed ? resumed.from : previousKind!;
     const current = latest.current;
     if (!current.ready || !current.available) return;
-    // A change the unit made is not sent back.
-    if (current.destination.latch.takeApp(appKind)) return;
+    // A change the unit made is not sent back (a resumed route was never one).
+    if (!resumed && current.destination.latch.takeApp(appKind)) return;
     const { destination, notice, lifetime: owner } = current;
     let live = true;
     // Cleanup retires this navigation route too, so an old screen read cannot
@@ -226,7 +239,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
       }
     });
     const poll = current.screenPoll ?? DEFAULT_SCREEN_POLL;
-    const detail = { swap: current.workflows.scene?.command === "swap", side: routeSide.current };
+    const detail = resumed ? resumed.detail : { swap: current.workflows.scene?.command === "swap", side: routeSide.current };
     const run = async () => {
       if (previous === "search" && (appKind === "directory" || !ROUTED.includes(appKind))) {
         // Leaving the search dialog; leaving the Directory with it closes that too.
@@ -251,9 +264,16 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     };
     const driven = driving.current;
     driven.count += 1;
+    // Only a close is owed: it is the user's own dismissal of a screen the unit still shows, and it reads that screen before
+    // its touch. An open never outlives its lifetime: it would send its next gesture into a successor session.
+    if (!ROUTED.includes(appKind) && ROUTED.includes(previous) && previous !== "search") owedRoute.current = { from: previous, to: appKind, detail };
     void run().catch((error: unknown) => {
       if (live && owner.current() && !(error instanceof SupersededPresetOperation)) notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed.");
-    }).finally(() => { if (driving.current === driven) driven.count -= 1; });
+    }).finally(() => {
+      if (driving.current === driven) driven.count -= 1;
+      // Answered, or failed for a reason of its own: the route is done. A retired one stays owed to the next lifetime.
+      if (live && owner.current() && owedRoute.current?.from === previous && owedRoute.current.to === appKind) owedRoute.current = undefined;
+    });
     return () => { live = false; };
   }, [appKind, lifetime.key]);
 

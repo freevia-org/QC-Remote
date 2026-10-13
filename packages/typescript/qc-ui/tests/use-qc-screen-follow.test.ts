@@ -691,6 +691,38 @@ test("CANCEL in the unit-opened panel taps the unit's CANCEL once and nothing el
   host.renderer.unmount();
 });
 
+// Hardware: a click on the panel's CANCEL did nothing and the unit kept its dialog. The click closes the panel, which starts the
+// route that taps the unit's CANCEL; a state-stream restart (or any change of the session key) landing while that route runs
+// replaced the hook's lifetime, so the route was abandoned for good (the effect re-ran with the app screen unchanged) and the
+// follower, its latch reset, drew the still-open dialog again.
+test("CANCEL still reaches the unit when the session key changes as the panel closes, and the panel does not come back", async () => {
+  for (const when of ["with the click", "while the route reads the unit"] as const) {
+    const host = harness({ follow: true, available: true, unit: "CopySceneDialog" });
+    flow(host, [["CopySceneDialog", "copy-scene"]]);
+    act(() => host.follower.observe(observation("copy-scene")));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await host.rerender({});
+    assert.equal(host.state.sceneCommand, "copy");
+    host.log.length = 0;
+    if (when === "with the click") await host.rerender({ sceneCommand: null, sessionEpoch: 1 });
+    else {
+      // The unit answers slowly (a USB read), so the stream restarts while the route is still reading the unit's screen.
+      host.world.treeRead = async () => { await new Promise((resolve) => setTimeout(resolve, 60));  return { tree: host.world.unit === "CopySceneDialog" ? COPY_SCENE_TREE : ["zenUI::RootGraphicsItem", "zenUI::Grid", "zenUI::GraphicsItem"].join("\n") }; };
+      const closing = host.rerender({ sceneCommand: null });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await host.rerender({ sessionEpoch: 1 });
+      await closing;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      host.world.treeRead = undefined;
+    }
+    assert.equal(host.world.unit, "Grid", `${when}: the unit's dialog is closed`);
+    assert.deepEqual(touches(host), ["tap:400,300"], `${when}: CANCEL once`);
+    assert.equal(host.state.sceneCommand, null, `${when}: the panel stays closed`);
+    assert.ok(!host.log.some((entry) => entry.startsWith("scene.openUnitCommand")), `${when}: ${JSON.stringify(host.log)}`);
+    host.renderer.unmount();
+  }
+});
+
 test("the unit closing its dialog (a footswitch press, or its own CANCEL) closes the panel without a touch", async () => {
   const host = harness({ follow: true, available: true, unit: "CopySceneDialog" });
   act(() => host.follower.observe(observation("copy-scene")));
