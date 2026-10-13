@@ -18,6 +18,7 @@ import type { TempoWorkflow } from "./use-tempo-workflow";
 import type { TunerWorkflow } from "./use-tuner-workflow";
 
 export interface QcDeviceScreenContentOptions {
+  screenGestureContextKey?: string;
   captureSessionCurrent?(): () => boolean;
   snapshot: PresetSnapshot;
   destination: Pick<QcScreenDestination, "view" | "returnFocusTarget" | "setView">;
@@ -59,7 +60,7 @@ export function qcDeviceScreenContent(options: QcDeviceScreenContentOptions): Re
       return <LooperXScreen workflow={workflows.looper} activeScene={snapshot.activeScene} onSelectScene={(scene) => void selectScene(scene)} onParameters={looper.onParameters} onMenu={looper.onMenu} onClose={() => void looper.onClose()} />;
     }
     case "modes": return <ModesConfigurationScreen returnFocusTarget={returnFocusTarget} workflow={workflows.modes} onClose={() => setView(null)} />;
-    case "unit-mirror": return <QcUnitScreenMirror gateway={mirror} />;
+    case "unit-mirror": return <QcUnitScreenMirror key={options.screenGestureContextKey} gateway={mirror} captureSessionCurrent={options.captureSessionCurrent} />;
     case "midi-out": return <PresetMidiOutEditor returnFocusTarget={returnFocusTarget} workflow={workflows.midiOut} onClose={() => setView(null)} />;
     case "global-eq": return <CorOsGlobalEqScreen workflow={workflows.ioEq} onBack={() => setView("io-overview")} />;
     case "io": return <CorOsIoSettingsScreen workflow={workflows.ioEq} onGlobalEq={() => setView("global-eq")} onClose={() => void closeScreen()} />;

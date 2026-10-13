@@ -23,6 +23,7 @@ export { usePresetMidiOutWorkflow } from ${JSON.stringify(fileURLToPath(new URL(
 export { CorOsDirectory } from ${JSON.stringify(fileURLToPath(new URL("../src/coros-directory.tsx", import.meta.url)))};
 export { ModesConfigurationScreen } from ${JSON.stringify(fileURLToPath(new URL("../src/modes-configuration-screen.tsx", import.meta.url)))};
 export { QcSegmentBarHit } from ${JSON.stringify(fileURLToPath(new URL("../src/qc-brightness-panel.tsx", import.meta.url)))};
+export { qcDeviceScreenContent } from ${JSON.stringify(fileURLToPath(new URL("../src/qc-device-screen-content.tsx", import.meta.url)))};
 export { QuadCortexSurface } from ${JSON.stringify(fileURLToPath(new URL("../src/quad-cortex-surface.tsx", import.meta.url)))};
 export { IDLE_PLACEHOLDER_SNAPSHOT } from ${JSON.stringify(fileURLToPath(new URL("../src/device-placeholder.ts", import.meta.url)))};
 export { formFactors, skins } from "@qc-remote/form-factors";`, resolveDir: fileURLToPath(new URL("../", import.meta.url)), loader: "tsx" },
@@ -357,4 +358,30 @@ test("rotary value rejects a newly disabled operand without retaining hidden dra
   act(() => { rotary.onKeyDown({ key: "ArrowRight", preventDefault() {} }); rotary.onKeyUp({ key: "ArrowRight" }); });
   assert.equal(drafts.at(-1), .21, "one healthy step starts at the displayed .2, not a rejected hidden .23");
   assert.equal(commits.at(-1), .21);
+});
+test("unit mirror retires the old owner picture and delayed capture across physical sessions", async (t) => {
+  const header = Buffer.alloc(24); header.write("PNG", 1); header.writeUInt32BE(800, 16); header.writeUInt32BE(480, 20);
+  const frame = (name: string) => ({ pngBase64: Buffer.concat([header, Buffer.from(name)]).toString("base64") });
+  let physical = "A", completeOld!: (value: ReturnType<typeof frame>) => void;
+  const captureSessionCurrent = () => { const owner = physical; return () => owner === physical; };
+  const options = (key: string, captureScreen: () => Promise<ReturnType<typeof frame>>) => ({
+    screenGestureContextKey: key, captureSessionCurrent, mirror: { captureScreen },
+    destination: { view: "unit-mirror" }, workflows: { deviceSettings: { open: false }, tempo: { open: false } }
+  });
+  const show = (key: string, captureScreen: () => Promise<ReturnType<typeof frame>>) => components.qcDeviceScreenContent(options(key, captureScreen));
+  let renderer!: ReturnType<typeof create>;
+  await act(async () => { renderer = create(show("A", async () => frame("first"))); });
+  t.after(async () => { await act(async () => renderer.unmount()); });
+  const images = () => renderer.root.findAllByType("img").map((image) => image.props.src);
+  assert.deepEqual(images(), [`data:image/png;base64,${frame("first").pngBase64}`]);
+  await act(async () => { renderer.update(show("A", () => new Promise((resolve) => { completeOld = resolve; }))); });
+  physical = "B";
+  await act(async () => { renderer.update(show("B", async () => { throw new Error("new device capture unavailable"); })); });
+  assert.deepEqual(images(), [], "a failed current-owner read cannot retain the old owner's picture");
+  await act(async () => { completeOld(frame("late-old")); });
+  assert.deepEqual(images(), [], "old in-flight capture cannot publish into the replacement owner");
+  await act(async () => { renderer.update(show("B", async () => frame("current"))); });
+  assert.deepEqual(images(), [`data:image/png;base64,${frame("current").pngBase64}`]);
+  await act(async () => { renderer.update(show("B", async () => frame("refresh"))); });
+  assert.deepEqual(images(), [`data:image/png;base64,${frame("refresh").pngBase64}`], "same-owner refreshed captures remain usable");
 });

@@ -82,7 +82,7 @@ export function createQcDeviceDisplay(host: QcDeviceDisplayHost): QcDeviceDispla
   // The CPU Monitor is laid over the normal Grid, as on the unit, rather than replacing it.
   const cpuMonitor = cpu.monitor(cpuMonitorOpen, destination.returnFocusTarget, () => destination.setView(null));
   const screenContent = host.auditContent ?? qcDeviceScreenContent({
-    captureSessionCurrent: host.captureSessionCurrent, snapshot, destination, workflows, mirror: host.mirror, selectScene: host.selectScene, queueTempo: host.queueTempo,
+    captureSessionCurrent: host.captureSessionCurrent, screenGestureContextKey: host.screenGestureContextKey, snapshot, destination, workflows, mirror: host.mirror, selectScene: host.selectScene, queueTempo: host.queueTempo,
     setParameterMenuInitiallyOpen: host.setParameterMenuInitiallyOpen, closeScreen: views.close, notice: host.notice
   });
   const contextAction = qcContextActionHandler({
