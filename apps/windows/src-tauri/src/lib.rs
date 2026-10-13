@@ -2474,6 +2474,10 @@ fn host_device_broker(descriptor_path: &Path, auto_connect: bool) -> Result<Host
         .arg("--broker-serve")
         .arg("--descriptor-path")
         .arg(descriptor_path);
+    // This process won the shared election before spawning. The broker must
+    // not wait on the same lock while its parent waits for publication.
+    #[cfg(unix)]
+    command.arg("--host-election-held");
     add_broker_session_arguments(&mut command, auto_connect);
     command.stdin(Stdio::null()).stdout(Stdio::null());
     let child = spawn_with_broker_stderr(&mut command)
