@@ -212,7 +212,7 @@ pub(crate) fn state_paths() -> Result<Vec<PathBuf>, String> {
     #[cfg(target_os = "macos")]
     {
         let directory = crate::broker_paths::app_local_data_dir();
-        qc_native_platform::paths::prepare_directory(&directory)?;
+        qc_native_platform::paths_macos::prepare_directory(&directory)?;
         Ok(vec![directory.join(STATE_FILE)])
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -1373,7 +1373,7 @@ pub(crate) fn app_local_data_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let directory = crate::broker_paths::app_local_data_dir();
-        qc_native_platform::paths::prepare_directory(&directory).ok()?;
+        qc_native_platform::paths_macos::prepare_directory(&directory).ok()?;
         Some(directory)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]

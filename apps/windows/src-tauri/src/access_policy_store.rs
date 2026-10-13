@@ -191,7 +191,10 @@ fn validate_base_directory(directory: &Path) -> Result<(), String> {
             #[cfg(target_os = "linux")]
             qc_native_platform::paths::prepare_directory(directory)
                 .map_err(|error| format!("Could not prepare the app data directory: {error}"))?;
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            qc_native_platform::paths_macos::prepare_directory(directory)
+                .map_err(|error| format!("Could not prepare the app data directory: {error}"))?;
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             fs::create_dir_all(directory)
                 .map_err(|error| format!("Could not create the app data directory: {error}"))?;
             let metadata = fs::symlink_metadata(directory)

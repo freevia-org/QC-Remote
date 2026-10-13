@@ -1752,7 +1752,7 @@ fn macos_application_installation_in(
     search: &DesktopAppSearch,
     roots: &[PathBuf],
 ) -> Option<DesktopInstallation> {
-    let mut names = Vec::new();
+    let mut names: Vec<&str> = Vec::new();
     for display_name in search.display_names {
         for name in [
             Some(*display_name),

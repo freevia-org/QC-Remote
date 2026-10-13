@@ -3,6 +3,8 @@
 #[cfg(target_os = "linux")]
 pub mod paths;
 #[cfg(target_os = "macos")]
+pub use paths_macos as paths;
+#[cfg(target_os = "macos")]
 pub mod paths_macos;
 pub mod process;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
