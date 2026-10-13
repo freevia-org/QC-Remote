@@ -149,7 +149,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      LINUX_RELEASE_VERSION: "0.1.186"
+      LINUX_RELEASE_VERSION: "0.1.187"
     permissions:
       contents: write
       id-token: write
