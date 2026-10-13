@@ -82,10 +82,12 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock is after the Unix epoch")
                 .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "qc-macos-private-paths-{}-{nonce}",
-                std::process::id()
-            ));
+            let path = std::fs::canonicalize(std::env::temp_dir())
+                .expect("canonicalize system temporary directory")
+                .join(format!(
+                    "qc-macos-private-paths-{}-{nonce}",
+                    std::process::id()
+                ));
             std::fs::create_dir(&path).expect("create isolated path fixture");
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
                 .expect("secure isolated path fixture");
