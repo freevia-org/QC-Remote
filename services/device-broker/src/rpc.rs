@@ -5065,6 +5065,7 @@ impl BrokerShared {
     fn finish_shutdown(&self) -> crate::worker::WorkerShutdownReport {
         broker_lifecycle_trace("finish shutdown entered");
         self.disconnect_devices();
+        broker_lifecycle_trace("device disconnects completed");
         // `on_idle_shutdown` exits the process. Let the USB workers return
         // first, so a teardown a disconnect left in flight (an ack that timed
         // out inside the HID writer join) reaches the device before the
@@ -5079,6 +5080,7 @@ impl BrokerShared {
             controllers.iter().map(Arc::as_ref),
             crate::worker::WORKER_EXIT_BUDGET,
         );
+        broker_lifecycle_trace("device workers joined");
         if !report.all_verified() {
             eprintln!("QC device broker shutdown: {}", report.summary());
         }
@@ -5091,6 +5093,7 @@ impl BrokerShared {
                 );
             }
         }
+        broker_lifecycle_trace("descriptor claim released");
         (self.on_idle_shutdown)();
         report
     }
