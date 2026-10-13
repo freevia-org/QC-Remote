@@ -2922,6 +2922,17 @@ fn attach_to_spawned_device_broker(
             }
         }
         if Instant::now() >= deadline {
+            #[cfg(test)]
+            if let Ok(stderr) = fs::read(broker_stderr_path()) {
+                let tail = stderr
+                    .iter()
+                    .rev()
+                    .take(2_000)
+                    .copied()
+                    .collect::<Vec<_>>();
+                let tail = tail.into_iter().rev().collect::<Vec<_>>();
+                eprintln!("broker stderr tail: {}", String::from_utf8_lossy(&tail));
+            }
             return Err(SpawnedBrokerFailure::Unpublished(format!(
                 "The QC device broker did not publish its connection within {} seconds",
                 DEVICE_BROKER_PUBLISH_TIMEOUT.as_secs()
