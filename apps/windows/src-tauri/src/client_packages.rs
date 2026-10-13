@@ -1763,7 +1763,7 @@ fn macos_application_installation_in(
         .into_iter()
         .flatten()
         {
-            if !name.is_empty() && !names.iter().any(|known| known == name) {
+            if !name.is_empty() && !names.contains(&name) {
                 names.push(name);
             }
         }
