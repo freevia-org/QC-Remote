@@ -73,7 +73,7 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
 
   const guarded = useGuardedMutation({ connected, pending, setPending, notice, fail,
     sessionKey: currentOwner, commandSessionKey: options.commandSessionKey,
-    captureSessionCurrent: () => currentOwner.current() }, "editing scenes");
+    captureSessionCurrent: () => currentOwner.current }, "editing scenes");
   const unavailable = useCallback(() => !currentOwner.current() || !guarded.admit(), [currentOwner, guarded.admit]);
 
   const open = useCallback(() => {
