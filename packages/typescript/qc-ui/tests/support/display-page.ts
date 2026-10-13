@@ -137,13 +137,18 @@ export interface DisplayMeasurement {
   texts: Array<{ text: string; fontSize: number; box: Box }>;
 }
 
+/** A page held open at a viewport and device pixel ratio, for scripts that need a real pointer between measurements. */
+export interface OpenedPage { evaluate(script: string): Promise<unknown>; move(x: number, y: number): Promise<void>; screenshot(): Promise<Buffer>; cdp(method: string, params?: object): Promise<any>; events: Array<{ method: string; params: any }> }
+export type OpenPage = (viewport: readonly [number, number], url: string, deviceScaleFactor?: number) => Promise<OpenedPage>;
+
 type CdpMessage = { id?: number; method?: string; sessionId?: string; result?: any; error?: { message: string } };
 
-/** A tiny Chrome DevTools Protocol client: enough to open pages at a viewport size and evaluate a script in them. */
-export async function withBrowser<T>(browser: string, workDirectory: string, browserArguments: string[], run: (page: (viewport: readonly [number, number], url: string, script: string) => Promise<unknown>) => Promise<T>): Promise<T> {
+/** A tiny Chrome DevTools Protocol client: enough to open pages at a viewport size and evaluate a script in them.
+ * QC_BROWSER_HEADFUL=1 runs a visible, GPU-composited browser instead of headless software rendering, for chasing compositor-only differences. */
+export async function withBrowser<T>(browser: string, workDirectory: string, browserArguments: string[], run: (page: (viewport: readonly [number, number], url: string, script: string) => Promise<unknown>, open: OpenPage) => Promise<T>): Promise<T> {
   const profile = join(workDirectory, `profile-${Math.random().toString(36).slice(2)}`);
   mkdirSync(profile, { recursive: true });
-  const child = spawn(browser, ["--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, ...browserArguments, "about:blank"], { stdio: "ignore" });
+  const child = spawn(browser, [...(process.env.QC_BROWSER_HEADFUL === "1" ? [] : ["--headless=new", "--disable-gpu"]), "--no-sandbox", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, ...browserArguments, "about:blank"], { stdio: "ignore" });
   try {
     const portFile = join(profile, "DevToolsActivePort");
     for (let attempt = 0; !existsSync(portFile); attempt += 1) {
@@ -155,6 +160,7 @@ export async function withBrowser<T>(browser: string, workDirectory: string, bro
     const socket = new WebSocket(version.webSocketDebuggerUrl);
     await new Promise<void>((resolve, reject) => { socket.onopen = () => resolve(); socket.onerror = () => reject(new Error("debugging socket failed")); });
     let nextId = 0;
+    const events: Array<{ method: string; params: any }> = [];
     const pending = new Map<number, { method: string; resolve(result: unknown): void; reject(error: Error): void }>();
     const waiters: Array<{ method: string; sessionId?: string; resolve: () => void }> = [];
     socket.onmessage = (event) => {
@@ -166,6 +172,7 @@ export async function withBrowser<T>(browser: string, workDirectory: string, bro
         if (message.error) request.reject(new Error(`${request.method}: ${message.error.message}`));
         else request.resolve(message.result);
       } else {
+        events.push({ method: message.method ?? "", params: (message as { params?: unknown }).params });
         const index = waiters.findIndex((waiter) => waiter.method === message.method && waiter.sessionId === message.sessionId);
         if (index >= 0) waiters.splice(index, 1)[0].resolve();
       }
@@ -187,7 +194,25 @@ export async function withBrowser<T>(browser: string, workDirectory: string, bro
       if (evaluated.exceptionDetails) throw new Error(`page script failed: ${JSON.stringify(evaluated.exceptionDetails).slice(0, 300)}`);
       return evaluated.result.value;
     };
-    try { return await run(page); } finally { socket.close(); }
+    const open: OpenPage = async (viewport, url, deviceScaleFactor = 1) => {
+      await send("Emulation.setDeviceMetricsOverride", { width: viewport[0], height: viewport[1], deviceScaleFactor, mobile: false }, sessionId);
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 }, sessionId);
+      const loaded = new Promise<void>((resolve) => waiters.push({ method: "Page.loadEventFired", sessionId, resolve }));
+      await send("Page.navigate", { url }, sessionId);
+      await loaded;
+      return {
+        async evaluate(script) {
+          const evaluated = await send("Runtime.evaluate", { expression: script, awaitPromise: true, returnByValue: true }, sessionId);
+          if (evaluated.exceptionDetails) throw new Error(`page script failed: ${JSON.stringify(evaluated.exceptionDetails).slice(0, 300)}`);
+          return evaluated.result.value;
+        },
+        async move(x, y) { await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, sessionId); },
+        cdp: (method, params = {}) => send(method, params, sessionId),
+        events,
+        async screenshot() { return Buffer.from((await send("Page.captureScreenshot", { format: "png" }, sessionId)).data, "base64"); }
+      };
+    };
+    try { return await run(page, open); } finally { socket.close(); }
   } finally {
     const exited = new Promise<void>((resolve) => { child.once("exit", () => resolve()); setTimeout(resolve, 5000); });
     child.kill();

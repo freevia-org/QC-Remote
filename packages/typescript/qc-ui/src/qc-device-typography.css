@@ -10,21 +10,20 @@ html body #root#root .qc-screen-bezel *::after {
 }
 
 /*
- * The unit antialiases text in grey: every partly covered pixel on its panel is
- * a straight blend between the ink and the ground behind it. Chrome, whenever
- * it can prove the ground under a run is opaque, antialiases on the LCD's
- * subpixels instead and paints each glyph edge with red and green fringes the
- * panel never shows.
+ * The unit antialiases text in grey, and so does the display here without any
+ * help: the canvas is drawn through a scale transform that is never the
+ * identity at a host's window size, and Chrome only uses LCD subpixel
+ * antialiasing for text it can place on whole pixels.
  *
- * There is no property that asks for grey antialiasing on Windows
- * (-webkit-font-smoothing is a macOS control and does nothing here). What does
- * it is giving the screen its own compositing layer, which is what declaring a
- * will-change buys. The transform itself never changes; only the declaration
- * matters.
+ * Do not give the screen a forced compositing layer (will-change: transform,
+ * translateZ(0), a filter) to "guarantee" grey text. A forced layer keeps its
+ * own raster scale and its tiles are rasterised again, with a different glyph
+ * placement, on the first repaint after the page settles. Hovering the Grid is
+ * such a repaint (every hit target paints a hover outline and the add marks
+ * fade in), so the preset number, the preset name and the IN/OUT port labels,
+ * which are all SVG text, visibly changed size when the pointer moved over the
+ * Grid. tests/grid-hover-stability.test.ts pins this.
  */
-html body #root#root .qc-screen-bezel {
-  will-change: transform;
-}
 
 /*
  * The two #root ids outrank every plain per-screen selector, so a screen sheet
