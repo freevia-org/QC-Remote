@@ -2,10 +2,12 @@ import { useState, type CSSProperties, type MouseEvent } from "react";
 import { QC_PRESET_SLOT_COLORS } from "@qc-remote/core";
 import type { PresetEntry, PresetList, PresetSnapshot } from "@qc-remote/client";
 import { officialBlockVisual } from "./block-visuals";
-import { gigPresetTileColor, gigSceneTileColor } from "./gig-view-colors";
+import { gigPresetTileColor, gigSceneTileColor, gigSceneToolColor } from "./gig-view-colors";
 import { QcDeviceGlyph } from "./device-glyph";
 import { sceneDisplayLabel } from "./scene-display-label";
-import { QcDirectoryIcon, QcModeGlyph, QcScreenGlyph, QcUiIcon } from "./theme-icons";
+import { QcModeGlyph, QcScreenGlyph, QcUiIcon } from "./theme-icons";
+import { QcMidiOutAssignmentSurface, QcMidiOutTrashIcon } from "./midi-out-art";
+import "./preset-midi-out.css";
 import { ModeGlyph } from "./coros-official-grid";
 import { QcPillToggle } from "./qc-pill-toggle";
 import { QcRotaryDial } from "./qc-rotary-dial";
@@ -102,6 +104,7 @@ export function CorOsGigView({ snapshot, presetList, onClose, onEditScene, onSel
           "--gig-color": sceneColors[index],
           "--gig-letter": sceneLetterColors[index],
           "--gig-active-color": gigSceneTileColor(snapshot.sceneColors?.[index], index),
+          "--gig-tools": gigSceneToolColor(index === snapshot.activeScene ? gigSceneTileColor(snapshot.sceneColors?.[index], index) : sceneColors[index], index === snapshot.activeScene),
       } as CSSProperties
       }
       role="button"
@@ -320,45 +323,17 @@ export function CorOsTempo({ bpm, onClose, official = false }: { bpm: number; on
 
 export function CorOsMidiOut({ onClose }: { onClose: () => void }) {
   return (
-    <section className="coros-midi-out" aria-label="Preset MIDI Out">
+    <section className="coros-midi-out qc-preset-midi-out" aria-label="Preset MIDI Out">
       <header>
         <span>Preset MIDI Out settings</span>
-        <button className="midi-trash" aria-label="Clear MIDI assignments">
-          <QcDirectoryIcon kind="trash" />
+        <button className="midi-trash" aria-label="Clear MIDI assignments" disabled>
+          <QcMidiOutTrashIcon />
         </button>
         <button aria-label="Close Preset MIDI Out" onClick={onClose}>
           <QcUiIcon kind="check" />
         </button>
       </header>
-      <div className="midi-assignment-surface">
-        <section className="midi-footswitches">
-          <button className="midi-preset-load">
-            ON PRESET LOAD
-            <br />
-            MESSAGE
-          </button>
-          {["A", "B", "C", "D", "E", "F", "G", "H"].map((label) => (
-            <button className="midi-switch" key={label}>
-              <i />
-              {label}
-            </button>
-          ))}
-        </section>
-        <section className="midi-expression">
-          <label>
-            <span>EXP 1</span>
-            <div>
-              <i />
-            </div>
-          </label>
-          <label>
-            <span>EXP 2</span>
-            <div>
-              <i />
-            </div>
-          </label>
-        </section>
-      </div>
+      <QcMidiOutAssignmentSurface />
     </section>
   );
 }

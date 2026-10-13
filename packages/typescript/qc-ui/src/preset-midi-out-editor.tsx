@@ -2,7 +2,9 @@ import { closeUserOpenedTarget, escapeUserOpenedTarget } from "./user-open-focus
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MidiOutMessage, PresetSnapshot } from "@qc-remote/client";
 import { QcConfirm } from "./qc-shared-controls";
-import { QcDirectoryIcon, QcUiIcon } from "./theme-icons";
+import { QcUiIcon } from "./theme-icons";
+import { QcMidiOutAssignmentSurface, QcMidiOutTrashIcon } from "./midi-out-art";
+import { hasActiveMidiOut } from "./preset-midi-out-rows.ts";
 import {
   PRESET_MIDI_OUT_SOURCES as SOURCES,
   presetMidiOutSlots as slots,
@@ -81,23 +83,18 @@ function PresetMidiOutEditorSession({ workflow, onClose, returnFocusTarget, isCu
   const clear = () => { setDraft(slots(undefined)); clearStatus(); };
   const clearAll = () => workflow.clearAll();
   const chooseSource = (next: Source) => { setSource(next); setDetailOpen(true); };
+  // The unit dims the delete button while no source carries a message; Clear all
+  // would write nothing then, so the button is inert exactly when it is dim.
+  const nothingToClear = !([...SOURCES.keys(), "preset"] as Source[]).some((target) => hasActiveMidiOut(slots(sourceMessages(snapshot, target))));
 
   return <section className="coros-midi-out qc-preset-midi-out" aria-label="Preset MIDI Out" data-qc-open-target="preset-midi-out" tabIndex={-1} onKeyDown={(event) => escapeUserOpenedTarget(event, onClose, returnFocusTarget, pending)}>
     <header>
       <span>Preset MIDI Out settings</span>
-      <button type="button" className="midi-trash" aria-label="Clear MIDI assignments" disabled={demo || pending} onClick={() => { if (isCurrent() && !demo && !pending) setConfirmClear(++confirmation.current); }}><QcDirectoryIcon kind="trash" /></button>
+      <button type="button" className="midi-trash" aria-label="Clear MIDI assignments" disabled={demo || pending || nothingToClear} onClick={() => { if (isCurrent() && !demo && !pending && !nothingToClear) setConfirmClear(++confirmation.current); }}><QcMidiOutTrashIcon /></button>
       <button type="button" aria-label="Close Preset MIDI Out" disabled={pending} onClick={(event) => closeUserOpenedTarget(event.currentTarget, onClose, returnFocusTarget)}><QcUiIcon kind="check" /></button>
     </header>
     {demo ? <p className="midi-demo-status" role="status">MIDI Out editing is unavailable in Demo. Connect a Quad Cortex to change device data.</p> : !detailOpen ? <>
-      <div className="midi-assignment-surface">
-        <section className="midi-footswitches" aria-label="Footswitch MIDI assignments">
-          <button type="button" className="midi-preset-load" disabled={pending} onClick={() => chooseSource("preset")}>ON PRESET LOAD<br />MESSAGE</button>
-          {SOURCES.slice(0, 8).map((label, index) => <button type="button" className="midi-switch" key={label} disabled={pending} onClick={() => chooseSource(index)}><i />{label}</button>)}
-        </section>
-        <section className="midi-expression" aria-label="Expression MIDI assignments">
-          {[8, 9].map((index) => <button type="button" className="midi-expression-source" key={index} aria-label={`Edit EXP ${index - 7} MIDI assignment`} disabled={pending} onClick={() => chooseSource(index)}><span>EXP {index - 7}</span><div><i /></div></button>)}
-        </section>
-      </div>
+      <QcMidiOutAssignmentSurface pending={pending} onChoose={chooseSource} />
       {status === "cleared" && <p className="midi-screen-status" role="status">MIDI assignments cleared.</p>}
       {error && <p className="midi-screen-status" role="alert">{error}</p>}
     </> : <>
