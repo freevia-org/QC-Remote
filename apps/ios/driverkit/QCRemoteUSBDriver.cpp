@@ -137,9 +137,9 @@ kern_return_t QCRemoteUSBDriver::Start(IOService *provider) {
     return kIOReturnSuccess;
 }
 
-void QCRemoteUSBDriver::Stop(IOService *provider) {
+kern_return_t QCRemoteUSBDriver::Stop(IOService *provider) {
     ReleaseUsbResources();
-    IOService::Stop(provider);
+    return IOService::Stop(provider);
 }
 
 void QCRemoteUSBDriver::ReleaseUsbResources() {
@@ -245,9 +245,9 @@ kern_return_t QCRemoteUSBUserClient::Start(IOService *provider) {
     return ivars->driver ? kIOReturnSuccess : kIOReturnBadArgument;
 }
 
-void QCRemoteUSBUserClient::Stop(IOService *provider) {
+kern_return_t QCRemoteUSBUserClient::Stop(IOService *provider) {
     ivars->driver = nullptr;
-    IOUserClient::Stop(provider);
+    return IOUserClient::Stop(provider);
 }
 
 kern_return_t QCRemoteUSBUserClient::ExternalMethod(
