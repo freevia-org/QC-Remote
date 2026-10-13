@@ -332,6 +332,12 @@ pub struct DeviceIdentity {
     /// Zenwireless firmware build, if the reply carries one. The "Zenwireless FW" row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zenwireless_fw_version: Option<String>,
+    /// The CorOS version number (for example `4.1.0`), the "CorOS" row. The version reply
+    /// has no field for it, so [`decode_device_identity`] leaves it `None`; the session
+    /// fills it in from the update request the unit sends (see
+    /// [`decode_updater_hardware_version`]) and only once the unit has sent one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cor_os_version: Option<String>,
 }
 
 /// Which global processing modules the device reports as inhibited. A field is `None` when the reply does not mention that module.
@@ -820,7 +826,9 @@ pub fn decode_device_identity(payload: &[u8]) -> Result<DeviceIdentity, Response
     });
     // The version reply has no CorOS version number: the only version-like fields besides
     // those below are `zenos_git_hash` (a build hash, not a version) and the host's own
-    // `cortex_control_version`, so none is reported as the CorOS version.
+    // `cortex_control_version`, so none is reported as the CorOS version. The unit does
+    // state it in the update request it sends (type 61); `cor_os_version` is filled from
+    // there by the session, never from this reply.
     let mac_address = message
         .mac_address
         .map(|pa::version_message::MacAddress::MacAddress(value)| value);
@@ -854,7 +862,41 @@ pub fn decode_device_identity(payload: &[u8]) -> Result<DeviceIdentity, Response
         zencoder_fw_app,
         zencoder_fw_bootloader,
         zenwireless_fw_version,
+        cor_os_version: None,
     })
+}
+
+/// The header the unit puts on every update request (type 61, `UpdaterForwardMessage`) to
+/// state which software it is running, so Neural DSP's firmware server can say whether a
+/// newer CorOS exists. Header names are case-insensitive.
+pub const UPDATER_HARDWARE_VERSION_HEADER: &str = "X-Cloud-Api-Hardware-Source-Version";
+
+/// The CorOS version the unit states in an update request, or `None` when the frame is not
+/// an update request from the unit, carries no such header, or the value is not a dotted
+/// version number (two to four numeric parts of at most three digits). Nothing else in the
+/// request is read: the other headers hold the unit's credentials and serial number.
+pub fn decode_updater_hardware_version(payload: &[u8]) -> Option<String> {
+    let message = pa::UpdaterForwardMessage::decode(payload).ok()?;
+    if message.action != pa::message_action::Enum::Update as i32 {
+        return None;
+    }
+    let pa::updater_forward_message::Request::Request(request) = message.request?;
+    let value = request
+        .headers
+        .iter()
+        .find(|pair| {
+            pair.name
+                .trim()
+                .eq_ignore_ascii_case(UPDATER_HARDWARE_VERSION_HEADER)
+        })?
+        .value
+        .trim();
+    let parts: Vec<&str> = value.split('.').collect();
+    let dotted = (2..=4).contains(&parts.len())
+        && parts.iter().all(|part| {
+            (1..=3).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_digit())
+        });
+    dotted.then(|| value.to_owned())
 }
 
 /// Decodes the tuner state.
@@ -2384,6 +2426,95 @@ mod tests {
         ] {
             assert_eq!(json[key], value, "{key}");
         }
+    }
+
+    fn update_request(headers: &[(&str, &str)]) -> Vec<u8> {
+        pa::UpdaterForwardMessage {
+            action: pa::message_action::Enum::Update as i32,
+            updater_request_id: 7,
+            request_id: None,
+            request: Some(pa::updater_forward_message::Request::Request(
+                pa::UpdaterForwardRequest {
+                    r#type: pa::updater_forward_request_type::Enum::Check as i32,
+                    url: "https://cloud-api.example.test/firmware/v1/latest".into(),
+                    timeout: 60_000,
+                    headers: headers
+                        .iter()
+                        .map(|(name, value)| pa::ProductForwardHeaderPair {
+                            name: (*name).into(),
+                            value: (*value).into(),
+                        })
+                        .collect(),
+                    payload: None,
+                },
+            )),
+            response: None,
+        }
+        .encode_to_vec()
+    }
+
+    #[test]
+    fn the_unit_states_its_cor_os_version_in_its_update_request() {
+        // The header set of the unit's CHECK request, with invented values: the
+        // version header sits among credential-shaped headers that are never read.
+        let frame = update_request(&[
+            ("X-Cloud-Api-Client-Signature", "synthetic-signature"),
+            ("X-Cloud-Api-Hardware-Source-Type", "Synthetic QC"),
+            ("X-Cloud-Api-Hardware-Source-Version", "4.1.0"),
+            ("X-Cloud-Api-Client-Serial-Number", "SYN-0001"),
+            ("Content-Type", "application/json"),
+        ]);
+        assert_eq!(
+            decode_updater_hardware_version(&frame).as_deref(),
+            Some("4.1.0")
+        );
+        let lower = update_request(&[("x-cloud-api-hardware-source-version", " 12.30.1 ")]);
+        assert_eq!(
+            decode_updater_hardware_version(&lower).as_deref(),
+            Some("12.30.1")
+        );
+    }
+
+    #[test]
+    fn only_a_dotted_version_in_an_update_request_counts_as_the_cor_os_version() {
+        for value in [
+            "",
+            "d14e",
+            "4",
+            "4.",
+            "4..1",
+            "4.1.0-beta",
+            "1.2.3.4.5",
+            "4.1 0",
+            "\u{664}.\u{661}.\u{660}",
+            "1234.1",
+        ] {
+            let frame = update_request(&[("X-Cloud-Api-Hardware-Source-Version", value)]);
+            assert_eq!(decode_updater_hardware_version(&frame), None, "{value:?}");
+        }
+        assert_eq!(
+            decode_updater_hardware_version(&update_request(&[("Content-Type", "x")])),
+            None
+        );
+        assert_eq!(decode_updater_hardware_version(&[0xff, 0xff]), None);
+        // A reply to the unit's request is not the unit stating anything.
+        let response = pa::UpdaterForwardMessage {
+            action: pa::message_action::Enum::Update as i32,
+            updater_request_id: 7,
+            ..Default::default()
+        };
+        assert_eq!(
+            decode_updater_hardware_version(&response.encode_to_vec()),
+            None
+        );
+        // Nor is a request that is not an UPDATE.
+        let read = update_request(&[("X-Cloud-Api-Hardware-Source-Version", "4.1.0")]);
+        let mut decoded = pa::UpdaterForwardMessage::decode(read.as_slice()).unwrap();
+        decoded.action = pa::message_action::Enum::Read as i32;
+        assert_eq!(
+            decode_updater_hardware_version(&decoded.encode_to_vec()),
+            None
+        );
     }
 
     #[test]

@@ -944,6 +944,9 @@ pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeObse
                 if !owner.accepts_observation_for(context.session_fence(), &ticket) {
                     return Ok("{\"status\":\"unrelated\"}".into());
                 }
+                // The unit states its CorOS version in its update request, not in
+                // the reply a read decodes; the session holds what it stated.
+                let value = runtime.with_session_facts(value, owner.observed_cor_os_version());
                 let finished_ms = (now_ms.max(0) as u64).saturating_add(
                     call_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
                 );

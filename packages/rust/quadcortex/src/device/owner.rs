@@ -316,6 +316,8 @@ pub struct SessionRuntime {
     catalog_observations: catalog_observations::CatalogObservations,
     library_catalog: library_catalog::LibraryCatalog,
     suspension: suspension::SuspensionTracker,
+    /// The CorOS version the unit stated in its latest update request this session.
+    cor_os_version: Option<String>,
 }
 
 #[cfg(test)]
@@ -350,6 +352,74 @@ mod tests {
         owner
             .state
             .install_model_catalog(crate::state::parse_model_repo(&payload).unwrap());
+    }
+
+    fn update_request_frame(version: &str) -> Vec<u8> {
+        pa::UpdaterForwardMessage {
+            action: pa::message_action::Enum::Update as i32,
+            updater_request_id: 3,
+            request: Some(pa::updater_forward_message::Request::Request(
+                pa::UpdaterForwardRequest {
+                    r#type: pa::updater_forward_request_type::Enum::Check as i32,
+                    url: "https://cloud-api.example.test/firmware/v1/latest".into(),
+                    timeout: 60_000,
+                    headers: vec![pa::ProductForwardHeaderPair {
+                        name: "X-Cloud-Api-Hardware-Source-Version".into(),
+                        value: version.into(),
+                    }],
+                    payload: None,
+                },
+            )),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
+    #[test]
+    fn the_session_keeps_the_cor_os_version_the_unit_stated_until_the_session_ends() {
+        let (mut owner, connection) = live_owner();
+        assert_eq!(owner.observed_cor_os_version(), None);
+
+        let ticket = owner.capture_observation(connection).unwrap();
+        owner
+            .observe_state(
+                &ticket,
+                crate::profile::MESSAGE_TYPE_UPDATER_FORWARD,
+                &update_request_frame("4.1.0"),
+            )
+            .ok();
+        assert_eq!(owner.observed_cor_os_version(), Some("4.1.0"));
+
+        // A frame that states nothing usable does not erase what the unit said.
+        owner
+            .observe_state(
+                &ticket,
+                crate::profile::MESSAGE_TYPE_UPDATER_FORWARD,
+                &update_request_frame("not-a-version"),
+            )
+            .ok();
+        assert_eq!(owner.observed_cor_os_version(), Some("4.1.0"));
+
+        // The next session may be a different unit running different software.
+        owner.reset_state();
+        assert_eq!(owner.observed_cor_os_version(), None);
+    }
+
+    #[test]
+    fn a_stale_observation_does_not_set_the_cor_os_version() {
+        let (mut owner, connection) = live_owner();
+        let stale = owner.capture_observation(connection).unwrap();
+        owner.reset_state();
+        let connection = owner.opened(1).unwrap();
+        owner.lifecycle = Some(SessionDriver::start(connection, "next".into(), 1));
+        owner
+            .observe_state(
+                &stale,
+                crate::profile::MESSAGE_TYPE_UPDATER_FORWARD,
+                &update_request_frame("4.1.0"),
+            )
+            .ok();
+        assert_eq!(owner.observed_cor_os_version(), None);
     }
 
     #[test]

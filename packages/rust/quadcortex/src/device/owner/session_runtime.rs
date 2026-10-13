@@ -30,6 +30,7 @@ impl SessionRuntime {
             catalog_observations: catalog_observations::CatalogObservations::default(),
             library_catalog: library_catalog::LibraryCatalog::default(),
             suspension: suspension::SuspensionTracker::default(),
+            cor_os_version: None,
         }
     }
 
@@ -46,6 +47,13 @@ impl SessionRuntime {
         self.next_observation = 1;
         self.next_state_revision = 1;
         Ok(self.connection)
+    }
+
+    /// The CorOS version the unit stated in an update request during this session, or `None`
+    /// until it has sent one. The unit sends it only when it checks for an update, so a
+    /// session can run for a long time without it.
+    pub fn observed_cor_os_version(&self) -> Option<&str> {
+        self.cor_os_version.as_deref()
     }
 
     /// Returns `true` if `connection` is the currently open native connection.
@@ -96,6 +104,8 @@ impl SessionRuntime {
         self.clear_metadata();
         // A suspension belongs to the session that observed it.
         self.suspension.session_ended();
+        // The version belongs to the unit that stated it in this session.
+        self.cor_os_version = None;
     }
 
     /// Select and install a handshake attempt as one owner transition. A retry
@@ -1218,6 +1228,11 @@ impl SessionRuntime {
         // Before reduction, so a state frame that fails to reduce cannot hide
         // a suspension or a resume.
         self.suspension.observe(message_type, payload);
+        if message_type == crate::profile::MESSAGE_TYPE_UPDATER_FORWARD {
+            if let Some(version) = crate::responses::decode_updater_hardware_version(payload) {
+                self.cor_os_version = Some(version);
+            }
+        }
         let previous_address_revision = self.state.snapshot().address_revision;
         let mut observation = match self.state.ingest(message_type, payload) {
             Ok(observation) => observation,
