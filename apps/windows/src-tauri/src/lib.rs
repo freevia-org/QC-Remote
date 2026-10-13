@@ -50,6 +50,8 @@ mod remote_backup;
 mod remote_grants;
 mod remote_unlink;
 mod system_tools;
+#[cfg(test)]
+mod test_health_dir;
 #[cfg(windows)]
 mod tray_native;
 #[allow(dead_code)] // The hosts publish these types; the broker icon reads the published file.
@@ -1185,11 +1187,8 @@ impl GatewayProcess {
         // Keep the broker's own diagnostics. Discarding them meant a panic, an
         // abort, or any startup complaint left no trace anywhere on the system,
         // so a broker that died was indistinguishable from one the host killed.
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(broker_stderr_sink())
-            .spawn()
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
+        let mut child = spawn_with_broker_stderr(&mut command)
             .map_err(|error| format!("Could not start device gateway: {error}"))?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
@@ -2393,11 +2392,8 @@ fn host_device_broker(descriptor_path: &Path, auto_connect: bool) -> Result<Host
         .arg("--descriptor-path")
         .arg(descriptor_path);
     add_broker_session_arguments(&mut command, auto_connect);
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(broker_stderr_sink())
-        .spawn()
+    command.stdin(Stdio::null()).stdout(Stdio::null());
+    let child = spawn_with_broker_stderr(&mut command)
         .map_err(|error| format!("Could not start device gateway: {error}"))?;
     // The original `Child` moves into the
     // process-lifetime slot at once, before anything fallible, and is only
@@ -3553,6 +3549,19 @@ fn broker_stderr_sink() -> Stdio {
         .unwrap_or_else(|_| Stdio::null())
 }
 
+/// Spawns `command` with its stderr on [`broker_stderr_sink`]. Under test the
+/// child is also recorded as a user of this test process's health directory,
+/// so a later run never sweeps that directory while the child may still hold
+/// the log open (`test_health_dir`).
+fn spawn_with_broker_stderr(command: &mut Command) -> std::io::Result<Child> {
+    #[cfg(test)]
+    let pending = test_health_dir::PendingUse::begin();
+    let child = command.stderr(broker_stderr_sink()).spawn()?;
+    #[cfg(test)]
+    pending.record(child.id());
+    Ok(child)
+}
+
 fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3564,10 +3573,10 @@ fn unix_seconds() -> u64 {
 fn runtime_health_path() -> PathBuf {
     // Tests drive real gateways, and each request rewrites this record. The
     // installed app's own record - and its broker stderr log beside it - is
-    // not theirs to overwrite.
-    std::env::temp_dir()
-        .join(format!("qc-remote-test-health-{}", std::process::id()))
-        .join("runtime-health.json")
+    // not theirs to overwrite. Every test in this process shares one
+    // directory, which a later test process sweeps once this one and every
+    // broker spawned into it are proven gone (`test_health_dir`).
+    test_health_dir::directory().join("runtime-health.json")
 }
 
 #[cfg(not(test))]
