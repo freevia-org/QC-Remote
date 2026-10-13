@@ -55,3 +55,44 @@ for (const outcome of ["verified", "accepted_unverified", "refused"] as const) {
     await act(async () => renderer.unmount());
   });
 }
+
+for (const refused of [false, true]) {
+  test(`model replacement ${refused ? "refused" : "accepted"} never offers a model-only inverse as complete Undo`, async (t) => {
+    const calls: string[] = [], notices: string[] = [];
+    const block = { id: "amp", row: 0, column: 0, modelId: 42, name: "Amp" };
+    const snapshot = { ...demoSnapshot, presetIdentity: "id", blocks: [block] };
+    const gateway = {
+      listModels: async () => ({ models: [{ id: 43, name: "Other Amp" }] }),
+      pinnedModels: async () => ({ models: [] }),
+      replaceBlock: async () => { calls.push("replace"); if (refused) throw new Error("replacement refused"); return { detail: "Replacement sent, not confirmed.", verification: "accepted_unverified" }; },
+      undo: async () => { calls.push("native.undo"); return { detail: "Native history undone.", snapshot }; },
+      currentSnapshot: async () => snapshot
+    };
+    const options = { gateway, snapshot, connected: true, pending: false, setPending() {},
+      notice: (message: string) => notices.push(message), fail: (error: Error) => notices.push(error.message), reconcile() {} };
+    let history, grid, undo, renderer;
+    function Probe() {
+      history = useDeviceHistory(options as never);
+      grid = useGridWorkflow({ ...options, selectedBlockId: "amp", setSelectedBlockId() {}, editor: { close() {} },
+        recordHistory: history.record, clearHistory: history.clear } as never);
+      undo = useQcDeviceUndo({ ...options, history } as never);
+      return null;
+    }
+    await act(async () => { renderer = create(React.createElement(Probe)); });
+    t.after(async () => { await act(async () => renderer.unmount()); });
+    await act(async () => history.record({ label: "old action", execute: async () => { calls.push("old inverse"); return { detail: "old" }; }, redo: async () => ({ detail: "old" }) }));
+    await act(async () => undo.consume([{ kind: "history", undoAvailable: true }]));
+    await act(async () => { await grid.openReplace(); });
+    await act(async () => { await grid.add(43); });
+    if (refused) {
+      assert.equal(history.undoEntry?.label, "old action");
+      assert.deepEqual(calls, ["replace"]);
+    } else {
+      assert.equal(history.undoEntry, undefined);
+      assert.equal(undo.undoLabel, undefined);
+      await act(async () => { await undo.undo(); });
+      assert.deepEqual(calls, ["replace", "native.undo"]);
+      assert.ok(notices.includes("Replacement sent, not confirmed."));
+    }
+  });
+}

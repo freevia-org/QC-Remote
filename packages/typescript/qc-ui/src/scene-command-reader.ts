@@ -79,9 +79,10 @@ export function sceneCommandVerbFromLuma(frame: UnitFrameLuma): SceneCommandVerb
 export type UnitFrameDecoder = (pngBase64: string) => Promise<UnitFrameLuma | undefined>;
 
 export const decodeUnitFrame: UnitFrameDecoder = async (pngBase64) => {
+  let bitmap: ImageBitmap | undefined;
   try {
     const bytes = Uint8Array.from(atob(pngBase64), (character) => character.charCodeAt(0));
-    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
     const canvas = typeof OffscreenCanvas === "function" ? new OffscreenCanvas(bitmap.width, bitmap.height) : Object.assign(document.createElement("canvas"), { width: bitmap.width, height: bitmap.height });
     const context = canvas.getContext("2d") as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
     if (!context) return undefined;
@@ -92,6 +93,8 @@ export const decodeUnitFrame: UnitFrameDecoder = async (pngBase64) => {
     return { width: bitmap.width, height: bitmap.height, luma };
   } catch {
     return undefined;
+  } finally {
+    bitmap?.close();
   }
 };
 

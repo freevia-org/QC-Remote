@@ -46,7 +46,7 @@ function harness(initial: Scenario = {}) {
   const log: string[] = [];
   /** Runs after each touch the unit answers: the poller seeing the screen the unit passes through. */
   const watchers: Array<(unit: Unit) => void> = [];
-  const world = { sceneLetter: "A", unreadableTitle: false, treeRead: undefined as (() => Promise<{ tree: string }>) | undefined, unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: (initial.menuScroll ?? "bottom") as "bottom" | "mid" | "top", swipedAt: -1e9, rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", stuck: initial.scrollStuck ?? false, panel: initial.panel ?? false };
+  const world = { captureRead: undefined as (() => Promise<{pngBase64:string}>) | undefined, sceneLetter: "A", unreadableTitle: false, treeRead: undefined as (() => Promise<{ tree: string }>) | undefined, unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: (initial.menuScroll ?? "bottom") as "bottom" | "mid" | "top", swipedAt: -1e9, rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", stuck: initial.scrollStuck ?? false, panel: initial.panel ?? false };
   const state = { blockMenuOpen: initial.blockMenuOpen ?? false, directorySearchOpen: initial.directorySearchOpen ?? false, sceneCommand: (initial.sceneCommand ?? null) as "copy" | "swap" | null, view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, directoryOpen: initial.directoryOpen ?? false, routePicker: initial.routePicker as { row: number; side: string } | undefined, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
   const gateway = {
@@ -63,7 +63,7 @@ function harness(initial: Scenario = {}) {
       else lines.push(`zenUI::${u}`);
       return { tree: lines.join("\n") };
     },
-    captureScreen: async () => { log.push("capture"); return { pngBase64: "frame" }; },
+    captureScreen: async () => { log.push("capture"); return world.captureRead ? world.captureRead() : { pngBase64: "frame" }; },
     tapScreen: async (x: number, y: number) => {
       log.push(`tap:${x},${y}`);
       if (world.unitIgnores) return;
@@ -965,4 +965,24 @@ test("retained screen observations cannot clear or open successor UI", async () 
   act(() => host.follower.observe(observation("tuner")));
   assert.ok(host.log.includes("tuner.openTuner"), "the successor still accepts its own observations");
   act(() => host.renderer.unmount());
+});
+
+test("a retired scene-dialog capture cannot answer a later dialog in the same session", async (t) => {
+  const host = harness({unit:"CopySceneDialog"});
+  t.after(() => act(() => host.renderer.unmount()));
+  const first = deferredFollowTree(), second = deferredFollowTree();
+  let captures = 0;
+  host.world.captureRead = async () => {
+    const pending = ++captures === 1 ? first : second;
+    await pending.promise; return {pngBase64:"frame"};
+  };
+  await act(async () => { host.follower.observe(observation("copy-scene")); for(let n=0;n<8;n++) await Promise.resolve(); });
+  assert.equal(captures,1);
+  host.world.sceneLetter="B"; host.world.scene="swap";
+  await act(async () => { host.follower.observe(observation("grid")); host.follower.observe(observation("copy-scene")); for(let n=0;n<8;n++) await Promise.resolve(); });
+  assert.equal(captures,2);
+  await act(async () => { first.resolve({tree:"done"}); for(let n=0;n<12;n++) await Promise.resolve(); });
+  assert.equal(host.log.filter((entry)=>entry.startsWith("scene.openUnitCommand:")).length,0,"old capture must not win while its successor reads");
+  await act(async () => { second.resolve({tree:"done"}); for(let n=0;n<12;n++) await Promise.resolve(); });
+  assert.deepEqual(host.log.filter((entry)=>entry.startsWith("scene.openUnitCommand:")),["scene.openUnitCommand:swap:1"]);
 });

@@ -155,6 +155,9 @@ public class QcUsbPlugin extends Plugin {
     private final Object currentPresetRefreshLock = new Object();
     private CompletableFuture<org.json.JSONObject> currentPresetGridRefresh;
     private final AtomicLong connectionGeneration = new AtomicLong();
+    // A recovery timer belongs to one operator connection intent. Explicit
+    // disconnect/reconnect must not let an older timer re-enable recovery.
+    private final AtomicLong automaticReconnectGeneration = new AtomicLong();
     private final QcPendingOperations pendingOperations = new QcPendingOperations();
     private final QcNativeStateDecoder stateDecoder = new QcNativeStateDecoder();
     private static volatile QcUsbPlugin relaySession;
@@ -384,7 +387,10 @@ public class QcUsbPlugin extends Plugin {
                     result.completeExceptionally(relayDeadlineExpired());
                     return;
                 }
-                closeConnection();
+                synchronized (this) {
+                    automaticReconnectGeneration.incrementAndGet();
+                    closeConnection();
+                }
                 result.complete(connectionState("Quad Cortex session closed"));
             } catch (Exception error) { result.completeExceptionally(error); }
         });
@@ -396,15 +402,27 @@ public class QcUsbPlugin extends Plugin {
     }
 
     private CompletableFuture<org.json.JSONObject> relayReconnect(String detail, String backupOrigin) {
+        return relayReconnect(detail, backupOrigin, null);
+    }
+
+    private CompletableFuture<org.json.JSONObject> relayReconnect(
+        String detail, String backupOrigin, Long recoveryGeneration
+    ) {
         RelayDeadline relayDeadline = CURRENT_RELAY_DEADLINE.get();
         UsbDevice candidate = findQuadCortex();
         if (candidate == null) return failedRelay("DEVICE_NOT_FOUND", "No Quad Cortex was found over USB.");
         if (!manager.hasPermission(candidate)) return failedRelay("USB_PERMISSION_REQUIRED", "Quad Cortex USB permission is required.");
         CompletableFuture<org.json.JSONObject> result = new CompletableFuture<>();
+        final long connectionIntent;
         synchronized (this) {
+            if (recoveryGeneration != null
+                && recoveryGeneration != automaticReconnectGeneration.get())
+                return failedRelay("NOT_CONNECTED", "The automatic recovery was canceled by a newer connection request.");
             if (backupOrigin != null && reconnectInFlight != null)
                 return failedRelay("NOT_CONNECTED", "The QC session is already being replaced; backup recovery was not started.");
             if (reconnectInFlight != null) return reconnectInFlight;
+            connectionIntent = recoveryGeneration == null
+                ? automaticReconnectGeneration.incrementAndGet() : recoveryGeneration;
             connecting = true;
             connectingSinceMs = monotonicMillis();
             reconnectInFlight = result;
@@ -437,7 +455,7 @@ public class QcUsbPlugin extends Plugin {
                 return;
             }
             try {
-                openDeviceAndHandshake(candidate, pending, relayAdmissionGuard.epoch());
+                openDeviceAndHandshake(candidate, pending, relayAdmissionGuard.epoch(), connectionIntent);
                 resolvePendingReady();
             } catch (Exception error) {
                 if (pendingReady == pending) pendingReady = null;
@@ -457,31 +475,39 @@ public class QcUsbPlugin extends Plugin {
     }
 
     private void scheduleAutomaticReconnect(String detail) {
+        scheduleAutomaticReconnect(detail, automaticReconnectGeneration.get());
+    }
+
+    private synchronized void scheduleAutomaticReconnect(String detail, long recoveryGeneration) {
+        if (recoveryGeneration != automaticReconnectGeneration.get() || relayAdmissionGuard.isTerminal()) return;
         long delayMs = stateDecoder.sessionScheduleReconnect(monotonicMillis());
         keepalive.schedule(() -> {
-            if (isReady()) return;
-            UsbDevice candidate = findQuadCortex();
-            long now = monotonicMillis();
-            // Re-arm on every path that is not "already connected". Returning
-            // without rescheduling ended this loop for good, and two of its
-            // four exits did exactly that: a tick landing while a connect was
-            // in flight, or before the backoff came due, killed recovery
-            // permanently. Nothing else retries -- pressing Connect meets the
-            // same `connecting` guard -- so the app could only be recovered by
-            // force-stopping it, which is what a detach mid-handshake produced.
-            if (connecting || !stateDecoder.sessionReconnectDue(now)
-                || candidate == null || !manager.hasPermission(candidate)) {
-                scheduleAutomaticReconnect(detail);
-                return;
-            }
-            stateDecoder.sessionReconnectAttempted(now);
-            relayReconnect(detail).whenComplete((ignored, error) -> {
-                if (error != null) {
-                    android.util.Log.w(
-                        "QcUsbPlugin", "Automatic QC USB reconnect failed: " + error.getMessage());
-                    scheduleAutomaticReconnect(detail);
+            synchronized (this) {
+                if (recoveryGeneration != automaticReconnectGeneration.get() || relayAdmissionGuard.isTerminal()) return;
+                if (isReady()) return;
+                UsbDevice candidate = findQuadCortex();
+                long now = monotonicMillis();
+                // Re-arm on every path that is not "already connected". Returning
+                // without rescheduling ended this loop for good, and two of its
+                // four exits did exactly that: a tick landing while a connect was
+                // in flight, or before the backoff came due, killed recovery
+                // permanently. Nothing else retries -- pressing Connect meets the
+                // same `connecting` guard -- so the app could only be recovered by
+                // force-stopping it, which is what a detach mid-handshake produced.
+                if (connecting || !stateDecoder.sessionReconnectDue(now)
+                    || candidate == null || !manager.hasPermission(candidate)) {
+                    scheduleAutomaticReconnect(detail, recoveryGeneration);
+                    return;
                 }
-            });
+                stateDecoder.sessionReconnectAttempted(now);
+                relayReconnect(detail, null, recoveryGeneration).whenComplete((ignored, error) -> {
+                    if (error != null) {
+                        android.util.Log.w(
+                            "QcUsbPlugin", "Automatic QC USB reconnect failed: " + error.getMessage());
+                        scheduleAutomaticReconnect(detail, recoveryGeneration);
+                    }
+                });
+            }
         }, delayMs, TimeUnit.MILLISECONDS);
     }
 
@@ -1588,7 +1614,10 @@ public class QcUsbPlugin extends Plugin {
     @PluginMethod
     public void disconnect(PluginCall call) {
         if (flight != null) flight.event("disconnect-requested");
-        closeConnection();
+        synchronized (this) {
+            automaticReconnectGeneration.incrementAndGet();
+            closeConnection();
+        }
         call.resolve();
     }
 
@@ -1752,6 +1781,7 @@ public class QcUsbPlugin extends Plugin {
     }
 
     private void openAndHandshake(UsbDevice candidate, PluginCall call) {
+        final long connectionIntent;
         synchronized (this) {
             if (isReady() && device != null
                 && device.getDeviceId() == candidate.getDeviceId()) {
@@ -1764,10 +1794,11 @@ public class QcUsbPlugin extends Plugin {
             }
             connecting = true;
             connectingSinceMs = monotonicMillis();
+            connectionIntent = automaticReconnectGeneration.incrementAndGet();
         }
         submitRelayTask(commandIo, CURRENT_RELAY_DEADLINE.get(), () -> {
             try {
-                openDeviceAndHandshake(candidate, null, relayAdmissionGuard.epoch());
+                openDeviceAndHandshake(candidate, null, relayAdmissionGuard.epoch(), connectionIntent);
                 resolveConnected(call, candidate);
             } catch (Exception error) {
                 lastError = error.getMessage();
@@ -1780,13 +1811,15 @@ public class QcUsbPlugin extends Plugin {
     }
 
     private void openDeviceAndHandshake(
-        UsbDevice candidate, QcPendingOperations.Entry<?> preservedOperation, long expectedLifecycleEpoch
+        UsbDevice candidate, QcPendingOperations.Entry<?> preservedOperation, long expectedLifecycleEpoch,
+        long connectionIntent
     ) throws Exception {
         // Activity recreation can leave the previous plugin's UsbRequest reader
         // unwinding after its connection is closed. Wait off the UI thread so
         // the replacement never claims the interface while that reader still
         // owns the old handle.
-        if (relayAdmissionGuard.isTerminal() || expectedLifecycleEpoch != relayAdmissionGuard.epoch()) {
+        if (relayAdmissionGuard.isTerminal() || expectedLifecycleEpoch != relayAdmissionGuard.epoch()
+            || connectionIntent != automaticReconnectGeneration.get()) {
             throw new IllegalStateException("QC Remote is stopping; the USB connection attempt was canceled.");
         }
         if (!QcUsbReaderTeardown.process().await(QcUsbProfile.INITIAL_SYNC_TIMEOUT_MS)) {
@@ -1797,7 +1830,8 @@ public class QcUsbPlugin extends Plugin {
         // All opens run on commandIo. Hold the same monitor as external closes
         // while claiming the completed attempt and beginning its teardown.
         synchronized (this) {
-            if (relayAdmissionGuard.isTerminal() || expectedLifecycleEpoch != relayAdmissionGuard.epoch()) {
+            if (relayAdmissionGuard.isTerminal() || expectedLifecycleEpoch != relayAdmissionGuard.epoch()
+                || connectionIntent != automaticReconnectGeneration.get()) {
                 throw new IllegalStateException("QC Remote is stopping; the USB connection attempt was canceled.");
             }
             PendingReady ready = preservedOperation != null && preservedOperation.operation instanceof PendingReady
@@ -1873,7 +1907,7 @@ public class QcUsbPlugin extends Plugin {
         final UsbInterface publishMidiInterface = selectedMidi;
         final UsbEndpoint publishMidiOutputEndpoint = selectedMidiOutput;
         synchronized (this) {
-        boolean accepted = relayAdmissionGuard.publish(expectedLifecycleEpoch, () -> {
+        boolean accepted = publishConnectionAttempt(expectedLifecycleEpoch, connectionIntent, () -> {
         device = candidate;
         connection = publishHidConnection;
         midiConnection = publishMidiConnection;
@@ -1922,6 +1956,15 @@ public class QcUsbPlugin extends Plugin {
                 try { if (opened != null) opened.close(); } catch (Exception ignored) {}
             }
         }
+    }
+
+    // Publication is the final admission boundary for every open, explicit or automatic.
+    // A manual Disconnect can retire an attempt while its OS claim is still returning.
+    private synchronized boolean publishConnectionAttempt(
+        long expectedLifecycleEpoch, long connectionIntent, Runnable publication
+    ) {
+        if (connectionIntent != automaticReconnectGeneration.get()) return false;
+        return relayAdmissionGuard.publish(expectedLifecycleEpoch, publication);
     }
 
     private void resolveConnected(PluginCall call, UsbDevice candidate) {
@@ -2037,6 +2080,7 @@ public class QcUsbPlugin extends Plugin {
 
     /** Runs exclusively on commandIo, which also serializes public HID writes. */
     private void drainLifecycle() {
+        long generation = connectionGeneration.get();
         if (connection == null) return;
         try {
             QcNativeStateDecoder.LifecycleBatch batch;
@@ -2059,7 +2103,10 @@ public class QcUsbPlugin extends Plugin {
             if (status.error != null) {
                 lastError = "QC lifecycle " + status.phase + ": " + status.error;
                 if (flight != null) flight.event("startup-" + status.phase);
-                scheduleAutomaticReconnect(lastError);
+                synchronized (this) {
+                    if (connection != null && generation == connectionGeneration.get())
+                        scheduleAutomaticReconnect(lastError);
+                }
                 return;
             }
             boolean connected = stateDecoder.sessionConnected();
@@ -2075,7 +2122,10 @@ public class QcUsbPlugin extends Plugin {
             }
         } catch (Exception error) {
             lastError = "Could not submit QC lifecycle command: " + error.getMessage();
-            if (connection != null) terminalTransportFailed(lastError, "lifecycle-write-failed");
+            synchronized (this) {
+                if (connection != null && generation == connectionGeneration.get())
+                    terminalTransportFailed(lastError, "lifecycle-write-failed");
+            }
         }
     }
 
@@ -2314,7 +2364,7 @@ public class QcUsbPlugin extends Plugin {
         terminalTransportFailed(detail, "hid-write-terminal");
     }
 
-    private void terminalTransportFailed(String detail, String event) {
+    private synchronized void terminalTransportFailed(String detail, String event) {
         lastError = detail;
         if (flight != null) flight.event(event);
         closeConnection(null, false);
@@ -2395,7 +2445,7 @@ public class QcUsbPlugin extends Plugin {
         }
     }
 
-    private void recoverUnexpectedReaderExit(
+    private synchronized void recoverUnexpectedReaderExit(
         UsbDeviceConnection activeConnection, long generation
     ) {
         if (!readerIsActive(activeConnection, generation)) return;
@@ -2929,6 +2979,7 @@ public class QcUsbPlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
+        automaticReconnectGeneration.incrementAndGet();
         relayAdmissionGuard.markTerminal();
         rejectPendingConnect("QC Remote stopped before USB permission was answered.");
         statePublicationDrain.close();

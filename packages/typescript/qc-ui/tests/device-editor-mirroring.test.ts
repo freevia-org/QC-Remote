@@ -95,3 +95,19 @@ test("a popup over the editor is named, not tapped over, whether or not the Grid
     assert.deepEqual([host.taps, left], [[], ["block-menu"]]);
   }
 });
+
+test("unrecognized overlays over a parameter editor never inherit its check-button permission", async () => {
+  for (const overlay of ["SomeNewPopup", "SomeNewDialog", "SomeNewOverlay", "SomeNewEditor", "SomeNewPanel"]) {
+    for (const withGrid of [true, false]) {
+      const host = unit(["ParameterEditor", "GenericModelEditor", overlay], withGrid);
+      assert.equal(await closeGridBlockOnDevice(host.gateway), false, overlay);
+      assert.deepEqual(host.taps, [], overlay);
+    }
+  }
+  const normal = unit(["ParameterEditor", "GenericModelEditor", "Label", "ModelItemOverlay"], false);
+  assert.equal(await closeGridBlockOnDevice(normal.gateway), true);
+  assert.deepEqual(normal.taps, ["742,30"]);
+  const impostor = unit(["ParameterEditorTitle"], false);
+  assert.equal(await closeGridBlockOnDevice(impostor.gateway), false);
+  assert.deepEqual(impostor.taps, []);
+});

@@ -92,13 +92,16 @@ export function QcSegmentBarHit({ label, value, max, segments, disabled, onChang
 }) {
   const clamp = (next: number) => Math.max(0, Math.min(max, next));
   const tap = (event: MouseEvent<HTMLButtonElement>) => {
+    // Keyboard activation has no pointer coordinate. Arrow keys own slider
+    // changes; Enter/Space must not interpret their synthetic click as zero.
+    if (disabled || value === undefined || event.detail === 0) return;
     const box = event.currentTarget.getBoundingClientRect();
     if (box.width <= 0) return;
     onChange(clamp(Math.ceil(((event.clientX - box.left) / box.width) * segments)));
   };
   const key = (event: KeyboardEvent<HTMLButtonElement>) => {
     const step = event.key === "ArrowRight" || event.key === "ArrowUp" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowDown" ? -1 : 0;
-    if (!step || value === undefined) return;
+    if (disabled || !step || value === undefined) return;
     event.preventDefault();
     onChange(clamp(value + step));
   };

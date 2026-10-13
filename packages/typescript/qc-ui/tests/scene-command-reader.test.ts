@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { classifyQcGraphicsTree } from "../src/use-adaptive-screen-polling.ts";
-import { sceneCommandVerbFromFrame, sceneCommandVerbFromLuma, sceneIndexFromTree } from "../src/scene-command-reader.ts";
+import { decodeUnitFrame, sceneCommandVerbFromFrame, sceneCommandVerbFromLuma, sceneIndexFromTree } from "../src/scene-command-reader.ts";
 import { titleFrame } from "./support/scene-command-frame.ts";
 
 /** The unit's tree with its Copy Scene / Swap Scene dialog open on 4.1.0 (the same bytes for both commands). */
@@ -40,4 +40,26 @@ test("a frame that does not show a readable title is never guessed", async () =>
   assert.equal(sceneCommandVerbFromLuma({ width: 800, height: 480, luma: half }), undefined, "between the two");
   assert.equal(await sceneCommandVerbFromFrame({ pngBase64: "x" }, async () => undefined), undefined, "an undecodable frame");
   assert.equal(await sceneCommandVerbFromFrame({ pngBase64: "x" }, async () => ({ width: 800, height: 480, luma: titleFrame("swap") })), "swap");
+});
+
+test("browser scene-frame decoding closes its bitmap on success and every post-allocation failure", async () => {
+  const bitmapDescriptor = Object.getOwnPropertyDescriptor(globalThis,"createImageBitmap");
+  const canvasDescriptor = Object.getOwnPropertyDescriptor(globalThis,"OffscreenCanvas");
+  let closed = 0;
+  let mode: "success" | "missing" | "failure" = "success";
+  Object.defineProperty(globalThis,"createImageBitmap",{configurable:true,value:async()=>({width:1,height:1,close(){closed++;}})});
+  Object.defineProperty(globalThis,"OffscreenCanvas",{configurable:true,value:class {
+    getContext() {
+      if(mode === "missing") return null;
+      return {drawImage(){if(mode === "failure") throw new Error("decode failed");},getImageData(){return {data:new Uint8Array([255,255,255,255])};}};
+    }
+  }});
+  try {
+    assert.equal((await decodeUnitFrame("AA=="))?.luma[0],255); assert.equal(closed,1);
+    mode="missing"; assert.equal(await decodeUnitFrame("AA=="),undefined); assert.equal(closed,2);
+    mode="failure"; assert.equal(await decodeUnitFrame("AA=="),undefined); assert.equal(closed,3);
+  } finally {
+    if(bitmapDescriptor) Object.defineProperty(globalThis,"createImageBitmap",bitmapDescriptor); else Reflect.deleteProperty(globalThis,"createImageBitmap");
+    if(canvasDescriptor) Object.defineProperty(globalThis,"OffscreenCanvas",canvasDescriptor); else Reflect.deleteProperty(globalThis,"OffscreenCanvas");
+  }
 });

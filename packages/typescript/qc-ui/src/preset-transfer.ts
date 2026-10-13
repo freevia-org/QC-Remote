@@ -125,7 +125,7 @@ export async function capturePresetText(options: CapturePresetOptions): Promise<
     onProgress?.(`Reading ${block.name} (${read} of ${toRead})…`);
     try {
       const details = await gateway.blockDetails(block.row, block.column, snapshot.presetName, identity);
-      if (details.modelId !== block.modelId) throw new Error(`${Cell(block)} changed while it was being read`);
+      assertCapturedBlock(details, block, snapshot.activeScene);
       const parameterValues: Record<number, number> = {};
       for (const parameter of details.parameters) {
         if (parameter.writable && isNormalized(parameter.normalizedValue)) parameterValues[parameter.index] = parameter.normalizedValue;
@@ -561,6 +561,12 @@ export interface CapturedSetlist {
 const blockAddress = (row: number, column: number) => `${row}:${column}`;
 const laneControls: readonly LaneControl[] = ["inputGate", "laneOutput"];
 
+function assertCapturedBlock(details: BlockDetails, block: GridBlock, scene: number): void {
+  if (details.row !== block.row || details.column !== block.column || details.modelId !== block.modelId || details.scene !== scene) {
+    throw new Error(`${Cell(block)} or its scene changed while it was being read`);
+  }
+}
+
 async function observedSnapshot(gateway: GatewayTransport, result: DeviceActionResult): Promise<PresetSnapshot> {
   return result.snapshot ?? gateway.currentSnapshot();
 }
@@ -569,12 +575,18 @@ async function captureSetlistScene(gateway: GatewayTransport, snapshot: PresetSn
   const identity = requirePresetIdentity(snapshot);
   const blocks: Record<string, BlockDetails> = {};
   for (const block of snapshot.blocks.filter(isGridDevice)) {
-    blocks[blockAddress(block.row, block.column)] = await gateway.blockDetails(block.row, block.column, snapshot.presetName, identity);
+    const details = await gateway.blockDetails(block.row, block.column, snapshot.presetName, identity);
+    assertCapturedBlock(details, block, snapshot.activeScene);
+    blocks[blockAddress(block.row, block.column)] = details;
   }
   const lanes: CapturedSetlistScene["lanes"] = {};
   for (let row = 0; row < QC_GRID_ROWS; row += 1) {
     const controls: Partial<Record<LaneControl, BlockDetails>> = {};
-    for (const control of laneControls) controls[control] = await gateway.laneControlDetails(row, control, snapshot.presetName, identity);
+    for (const control of laneControls) {
+      const details = await gateway.laneControlDetails(row, control, snapshot.presetName, identity);
+      if (details.row !== row || details.scene !== snapshot.activeScene) throw new Error(`Row ${row + 1} ${control} or its scene changed while it was being read`);
+      controls[control] = details;
+    }
     lanes[row] = controls;
   }
   return { snapshot: structuredClone(snapshot), blocks, lanes };

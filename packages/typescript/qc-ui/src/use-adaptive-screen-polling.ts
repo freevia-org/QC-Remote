@@ -93,6 +93,22 @@ export function classifyQcGraphicsTree(tree: string): QcObservedScreenKind {
   return "unknown";
 }
 
+// Model editors and their panels are children of ParameterEditor, not another
+// screen covering its header. These passive classes are present in the unit's
+// measured trees; new popup/dialog classes must not inherit touch permission
+// merely because a familiar screen is still present underneath them.
+const QC_PASSIVE_SCREEN_CHILDREN = new Set([
+  "ModelEditor", "GenericModelEditor", "EQModelEditor", "CabsimModelEditor", "CabsimPanel",
+  "MonosynthModelEditor", "ModelItemOverlay", "MetronomeEditorOverlay"
+]);
+const QC_KNOWN_SCREEN_CLASSES = new Set(QC_SCREEN_CLASSES.flatMap(([, names]) => names));
+
+export function hasUnrecognizedQcScreenOverlay(tree: string): boolean {
+  return [...tree.matchAll(/zenUI::([A-Za-z0-9_]+)/g)].some(([, name]) =>
+    /(?:Popup|Dialog|Overlay|Editor|Panel)$/.test(name)
+    && !QC_KNOWN_SCREEN_CLASSES.has(name) && !QC_PASSIVE_SCREEN_CHILDREN.has(name));
+}
+
 /**
  * Dynamic labels, meters and parameter values change continuously. Class
  * identity and order describe the screen structure without mistaking those

@@ -91,7 +91,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     }
     const parameter = details.parameters.find((item) => item.index === gesture.parameter.index);
     const actual = parameter?.normalizedValue;
-    if (!parameter || actual == null || !Number.isFinite(actual) || !parameter.writable) {
+    if (!parameter || actual == null || !Number.isFinite(actual) || !parameter.writable || parameter.enabled === false) {
       throw new Error("The parameter no longer has a writable synchronized value.");
     }
     const observedSend = gesture.sent.findIndex((value) => sameParameterValue(value, actual));
@@ -174,7 +174,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       notice("The Grid layout is incomplete. Block parameter edits are paused until the current-preset refresh succeeds.");
       return;
     }
-    if (parameter.normalizedValue === null || (pending && !reportFailure && !gesture)) return;
+    if (!parameter.writable || parameter.enabled === false || parameter.normalizedValue === null || (pending && !reportFailure && !gesture)) return;
     if (!gesture && Math.abs(value - parameter.normalizedValue) < .000001) return;
     const originalValue = gesture?.parameter.normalizedValue ?? parameter.normalizedValue;
     const operationSnapshot = gesture?.snapshot ?? snapshot;
@@ -277,7 +277,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
   }, [waitForPreviews]);
 
   const draft = useCallback((parameter: BlockParameter, value: number) => {
-    if (batchRunning.current) return clock.current;
+    if (batchRunning.current || !parameter.writable || parameter.enabled === false) return clock.current;
     const revision = ++clock.current;
     revisions.current.set(parameter.index, revision);
     targets.current.set(parameter.index, value);
@@ -304,7 +304,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
   }, [connected, controller, drainPreviews, editor, gateway, gestureCurrent, reconcile, snapshot]);
 
   const commit = useCallback((parameter: BlockParameter, value: number) => {
-    if (batchRunning.current) return;
+    if (batchRunning.current || !parameter.writable || parameter.enabled === false) return;
     const revision = draft(parameter, value);
     const target = authorityTargets.current.get(parameter.index);
     if (target) controller.releaseInteraction(target, value);
@@ -371,7 +371,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
           observeGesture(gesture, currentBlock);
         } else {
           const observed = currentBlock.parameters.find(item => item.index === parameter.index);
-          if (!observed?.writable || observed.normalizedValue == null || parameter.normalizedValue == null
+          if (!observed?.writable || observed.enabled === false || observed.normalizedValue == null || parameter.normalizedValue == null
               || !sameParameterValue(observed.normalizedValue, parameter.normalizedValue)) {
             throw new Error("A parameter changed before the linked edit. Refresh and retry.");
           }
@@ -383,7 +383,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       for (const change of batch) {
         assertCurrent();
         const parameter = currentBlock.parameters.find((parameter) => parameter.index === change.parameter.index);
-        if (!parameter?.writable || parameter.normalizedValue == null) throw new Error("A parameter is no longer writable.");
+        if (!parameter?.writable || parameter.enabled === false || parameter.normalizedValue == null) throw new Error("A parameter is no longer writable.");
         const admittedValue = expected.get(parameter.index)!;
         if (!gestures.current.has(parameter.index) && sameParameterValue(admittedValue, change.value)) continue;
         const result = await gateway.setParameter(currentBlock.row, currentBlock.column, parameter.index, change.value, admittedValue, snapshot.activeScene, requireModelId(details), snapshot.presetName, requirePresetIdentity(snapshot));
@@ -448,7 +448,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       assertCurrent();
       if (!sameBlock(observed)) throw new Error("The parameter block or scene changed. Select it again before editing.");
       const current = observed.parameters.find((candidate) => candidate.index === parameter.index);
-      if (!current || current.sceneMode !== parameter.sceneMode) throw new Error("The parameter's Scene assignment changed. Refresh and retry.");
+      if (!current || !current.writable || current.enabled === false || current.sceneMode !== parameter.sceneMode) throw new Error("The parameter's Scene assignment changed. Refresh and retry.");
       const enabled = !current.sceneMode;
       const result = await gateway.setParameterSceneMode(observed.row, observed.column, current.index, enabled, requireModelId(observed), snapshot.presetName, requirePresetIdentity(snapshot));
       assertCurrent();
@@ -527,7 +527,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       report(`${role} is not assigned on this parameter page.`);
       return true;
     }
-    if (!parameter.writable) {
+    if (!parameter.writable || parameter.enabled === false) {
       report(`${details.name} · ${parameter.name} is read-only.`);
       return true;
     }

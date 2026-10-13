@@ -10,6 +10,7 @@ import { ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfigurati
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { androidGatewayTransport, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage } from "./native-services";
 import { useAndroidPrompts } from "./use-android-prompts";
+import { useAndroidSessionBlocks } from "./use-android-session-blocks";
 import { OwnedAttemptLatch } from "./owned-attempt-latch.ts";
 import { startRelayReportingFailure } from "./relay-start.ts";
 import { pasteOwnedDemoLibrary } from "./demo-library-paste.ts";
@@ -61,8 +62,7 @@ export function App() {
   });
   const { connection, setConnection, transition: transitionConnection, attempts: connectionAttempts, busy: usbBusy } = deviceConnection;
   const [hardwareConnected, setHardwareConnected] = useState(false);
-  const [deviceSuspended, setDeviceSuspended] = useState(false);
-  const [deviceBulkBlocking, setDeviceBulkBlocking] = useState(false);
+  const { deviceSuspended, deviceBulkBlocking, setDeviceSuspended, setDeviceBulkBlocking, resetSessionBlocks } = useAndroidSessionBlocks();
   const [catalogRevision, setCatalogRevision] = useState(0);
   const demoActive = connection.source === "virtual" && connection.phase === "ready";
   const sessionReady = demoActive || (hardwareConnected && !deviceSuspended && !deviceBulkBlocking);
@@ -425,6 +425,7 @@ export function App() {
     usbRetryRequested.current = false;
     const fromDemo = activeSourceRef.current === "virtual";
     const attempt = connectionAttempts.begin();
+    if (!usbSessionReady.current) resetSessionBlocks();
     if (fromDemo) {
       demoDeviceSession.useDevice();
       activeSourceRef.current = "device";
@@ -499,6 +500,7 @@ export function App() {
           nativeStateStream.current = undefined;
           gridRepair.current = createGridRepairCoordinator();
           setHardwareConnected(false);
+          resetSessionBlocks();
           resetCommands();
           if (activeSourceRef.current !== "virtual") {
             transitionConnection("absent");
@@ -525,7 +527,7 @@ export function App() {
           onStreamRestart: (reason) => {
             resetCommands();
             if (qcStreamRestartClearsBulkOperation(reason)) {
-              setDeviceBulkBlocking(false);
+              resetSessionBlocks();
             }
           }
         });

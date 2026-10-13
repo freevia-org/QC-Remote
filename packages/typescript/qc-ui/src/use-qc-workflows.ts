@@ -179,6 +179,8 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
   });
 
   const scene = useSceneWorkflow({
+    presetLifetime: lifetime,
+    commandSessionKey: options.commandSessionKey ?? options.gateway,
     gateway,
     snapshot: controller.snapshot,
     connected,
