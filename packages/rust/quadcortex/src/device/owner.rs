@@ -3273,6 +3273,110 @@ mod tests {
     }
 
     #[test]
+    fn parameter_retention_overflow_revokes_snapshot_write_operands_and_publishes_incompleteness() {
+        use crate::proto::{
+            chain, model, param, param_value, BinaryPreset, Chain, Model, Param, ParamValue,
+        };
+        use serde_json::json;
+        let (mut owner, connection) = live_owner();
+        let preset = BinaryPreset {
+            chains: vec![Chain {
+                row: Some(chain::Row::Row(0)),
+                models: vec![Model {
+                    column: Some(model::Column::Column(0)),
+                    hash: Some(model::Hash::Hash(7)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let recall = pa::RecallPresetMessage {
+            action: pa::message_action::Enum::Update as i32,
+            preset: Some(pa::recall_preset_message::Preset::Preset(preset)),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let ticket = owner.capture_observation(connection).unwrap();
+        owner
+            .observe_state(&ticket, crate::profile::MESSAGE_TYPE_RECALL_PRESET, &recall)
+            .unwrap();
+        assert!(owner.current_preset().is_some());
+        assert!(owner.state.snapshot().grid_layout_complete);
+        assert_eq!(owner.state.snapshot().blocks.len(), 1);
+        let identity = owner.caller_preset_identity().unwrap();
+        owner.take_state_publications().unwrap();
+
+        // Ordinary malformed messages do not revoke a successfully retained preset.
+        assert!(owner
+            .observe_state(&ticket, crate::profile::MESSAGE_TYPE_GRID, &[0xff])
+            .is_err());
+        assert!(owner.current_preset().is_some());
+        assert!(owner.state.snapshot().grid_layout_complete);
+        assert!(owner.take_state_publications().unwrap().is_empty());
+
+        let overflow = pa::GridMessage {
+            action: pa::message_action::Enum::Update as i32,
+            preset: Some(pa::grid_message::Preset::Preset(BinaryPreset {
+                chains: vec![Chain {
+                    row: Some(chain::Row::Row(0)),
+                    models: vec![Model {
+                        column: Some(model::Column::Column(0)),
+                        params: (0..65_537)
+                            .map(|index| Param {
+                                index: Some(param::Index::Index(index)),
+                                param_values: vec![ParamValue {
+                                    value: Some(param_value::Value::FloatValue(0.5)),
+                                }],
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        assert!(owner
+            .observe_state(&ticket, crate::profile::MESSAGE_TYPE_GRID, &overflow)
+            .is_err());
+        assert!(owner.current_preset().is_none());
+        assert!(owner.assert_caller_preset_identity(&identity).is_err());
+        let retained = owner.state.snapshot();
+        assert!(!retained.has_preset);
+        assert!(!retained.grid_layout_complete);
+        assert!(retained.blocks.is_empty());
+        assert!(retained.routes.is_empty());
+        assert!(retained.preset_identity.is_none());
+        let refused = crate::device::request::plan_gateway_write_with_state(
+            "device.removeBlock",
+            &json!({"row": 0, "column": 0}),
+            &owner.state,
+        )
+        .unwrap_err();
+        assert!(refused.starts_with("STATE_UNAVAILABLE:"), "{refused}");
+        let published = owner.take_state_publications().unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].states.len(), 1);
+        let update = &published[0].states[0];
+        assert_eq!(update.kind, "gridTopology");
+        assert_eq!(update.grid_layout_complete, Some(false));
+        assert!(update.state_version.is_some());
+        assert!(owner.take_state_publications().unwrap().is_empty());
+
+        // Only a new complete device preset can restore this authority.
+        owner
+            .observe_state(&ticket, crate::profile::MESSAGE_TYPE_RECALL_PRESET, &recall)
+            .unwrap();
+        assert!(owner.current_preset().is_some());
+        assert!(owner.state.snapshot().grid_layout_complete);
+        assert_eq!(owner.state.snapshot().blocks.len(), 1);
+    }
+
+    #[test]
     fn caller_identity_survives_reads_but_not_address_aba_or_session_replacement() {
         use crate::state::StateUpdate;
         let (mut owner, connection) = live_owner();

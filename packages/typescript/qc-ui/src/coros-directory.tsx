@@ -14,6 +14,34 @@ function presetDateSortValue(entry: PresetEntry): number {
 }
 
 export function CorOsDirectory({ snapshot, directory }: { snapshot: PresetSnapshot; directory: PresetDirectoryState }) {
+  const context = JSON.stringify([directory.open, directory.list?.setlistKey, snapshot.stateVersion?.session]);
+  const owner = useRef({ context, session: directory.interactionSessionKey, generation: 0 });
+  if (owner.current.context !== context || owner.current.session !== directory.interactionSessionKey) {
+    owner.current = { context, session: directory.interactionSessionKey, generation: owner.current.generation + 1 };
+  }
+  const generation = owner.current.generation;
+  const currentDirectory = useRef(directory);
+  currentDirectory.current = directory;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  const accepts = () => mounted.current && owner.current.generation === generation
+    && currentDirectory.current.open && !currentDirectory.current.disabled && !currentDirectory.current.loading;
+  const scopedDirectory: PresetDirectoryState = {
+    ...directory,
+    onRecall: (entry) => { if (accepts()) directory.onRecall(entry); },
+    onSelectSetlist: (key) => { if (accepts()) directory.onSelectSetlist(key); },
+    onNewSetlist: () => { if (accepts()) directory.onNewSetlist(); },
+    onPresetAction: (action, entry) => { if (accepts()) directory.onPresetAction(action, entry); },
+    onPresetBatchAction: (action, entries) => { if (accepts()) directory.onPresetBatchAction(action, entries); },
+    onArrangePreset: (source, destination) => { if (accepts()) directory.onArrangePreset(source, destination); }
+  };
+  return <CorOsDirectorySession key={generation} snapshot={snapshot} directory={scopedDirectory} />;
+}
+
+function CorOsDirectorySession({ snapshot, directory }: { snapshot: PresetSnapshot; directory: PresetDirectoryState }) {
   const referenceFallback = snapshot.setlistKey === "/user/A/" && !directory.list;
   // The setlist names the `preset-directory` frame actually holds.
   const referenceFolders = ["My Presets", "Set Live", "Set Rec", "Set AcousticLive"];

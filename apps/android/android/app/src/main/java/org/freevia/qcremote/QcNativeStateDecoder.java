@@ -393,6 +393,8 @@ final class QcNativeStateDecoder implements AutoCloseable {
         return one("backup", new JSObject());
     }
 
+    static String validateBackupName(String name) { return nativeValidateBackupName(name); }
+
     List<EncodedMessage> disconnectCommands() throws Exception {
         return commands("disconnect", new JSObject());
     }
@@ -722,6 +724,7 @@ final class QcNativeStateDecoder implements AutoCloseable {
     }
 
     private static native long nativeCreate();
+    private static native String nativeValidateBackupName(String name);
     private static native String nativeMergeExpectedState(String paramsJson, String expectedJson);
     private static native int nativeReportSize();
     private static native int nativeOutboundReportId();

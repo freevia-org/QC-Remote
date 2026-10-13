@@ -1787,6 +1787,29 @@ fn backup_operation(env: &mut JNIEnv, operation: &JString) -> Result<OperationTi
 }
 
 #[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeValidateBackupName(
+    mut env: JNIEnv,
+    _class: JClass,
+    name: JString,
+) -> jstring {
+    or_throw(
+        catch_panic(|| {
+            let result = env
+                .get_string(&name)
+                .map_err(|error| error.to_string())
+                .and_then(|name| {
+                    quadcortex::device::request::validate_backup_name(&name.to_string_lossy())
+                });
+            // Pure validation: this export never acquires a decoder handle,
+            // creates an operation ticket or encodes a device request.
+            json_result(&mut env, result)
+        }),
+        &mut env,
+        ptr::null_mut(),
+    )
+}
+
+#[no_mangle]
 pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeConsumeBackupChunk(
     mut env: JNIEnv,
     _class: JClass,

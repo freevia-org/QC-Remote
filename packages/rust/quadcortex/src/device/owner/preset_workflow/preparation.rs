@@ -120,8 +120,10 @@ impl PresetPreparationEntry {
     fn navigation_matches(&self, state: &crate::device::state_runtime::DeviceStateRuntime) -> bool {
         let now = state.snapshot();
         now.has_preset
-            && now.setlist_key.trim_end_matches('/')
-                == self.original.setlist_key.trim_end_matches('/')
+            && now
+                .setlist_key
+                .trim_end_matches('/')
+                .eq_ignore_ascii_case(self.original.setlist_key.trim_end_matches('/'))
             && now.preset_position == self.original.preset_position
             && now.active_scene == self.original.active_scene
             && now.dirty == self.original.dirty
@@ -820,6 +822,47 @@ mod tests {
         workflow_id
     }
 
+    #[test]
+    fn recased_position_echo_does_not_cancel_owned_preset_preparation() {
+        for different_address in [false, true] {
+            let mut owner = owner(false);
+            let id = owner
+                .begin_preset_preparation("device.savePresetAs", save(&owner), 10)
+                .unwrap();
+            let key = if different_address {
+                "/media/p4/Presets/Other"
+            } else {
+                "/MEDIA/p4/Presets/TEST/"
+            };
+            publish(
+                &mut owner,
+                profile::MESSAGE_TYPE_SETLIST_POSITION,
+                pa::SetlistPositionMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    folder_key: Some(pa::setlist_position_message::FolderKey::FolderKey(
+                        key.into(),
+                    )),
+                    position: Some(pa::setlist_position_message::Position::Position(1)),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+                Some(11),
+                11,
+            );
+            folder(&mut owner, KEY, "Unsaved", Some(12), 12);
+            if different_address {
+                assert!(owner.advance_preset_preparation(id, 13).is_err());
+                assert!(owner.preset_workflow.is_none());
+            } else {
+                let workflow_id = ready(&mut owner, id, 13);
+                assert!(owner
+                    .advance_preset_workflow(workflow_id, 14)
+                    .unwrap()
+                    .operation
+                    .is_some());
+            }
+        }
+    }
     #[test]
     fn startup_catalog_plans_without_a_second_read_and_cannot_cross_sessions() {
         let mut owner = owner(false);

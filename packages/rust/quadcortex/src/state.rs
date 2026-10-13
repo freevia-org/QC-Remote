@@ -34,6 +34,34 @@ use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use thiserror::Error;
 
+/// Operational memory budget between full recalls, not a protocol index limit.
+const RETAINED_PARAMETER_OVERRIDE_LIMIT: usize = 65_536;
+// Includes both retained direct declarations and inherited parameter maps.
+const RETAINED_CATALOG_MODEL_LIMIT: usize = 65_536;
+const RETAINED_CATALOG_PARAMETER_LIMIT: usize = 65_536;
+const RETAINED_CATALOG_DYNAMIC_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Default)]
+struct CatalogRetentionBudget {
+    parameters: usize,
+    bytes: usize,
+}
+
+impl CatalogRetentionBudget {
+    fn reserve(&mut self, parameters: usize, bytes: usize) -> Result<(), StateDecodeError> {
+        let count = self.parameters.saturating_add(parameters);
+        let total = self.bytes.saturating_add(bytes);
+        if count > RETAINED_CATALOG_PARAMETER_LIMIT || total > RETAINED_CATALOG_DYNAMIC_BYTES {
+            return Err(StateDecodeError::CatalogXml(
+                "retained model parameter budget exceeded".into(),
+            ));
+        }
+        self.parameters = count;
+        self.bytes = total;
+        Ok(())
+    }
+}
+
 /// Errors produced while decoding QC protobuf payloads or the model catalog.
 #[derive(Debug, Error)]
 pub enum StateDecodeError {
@@ -42,6 +70,9 @@ pub enum StateDecodeError {
     /// ceiling, whichever is larger.
     #[error("QC state payload exceeds its message type's size limit")]
     PayloadLimit,
+    /// Sparse updates would exceed the retained parameter memory budget.
+    #[error("QC sparse parameter state exceeds its retained-entry limit; refresh the preset")]
+    ParameterRetentionLimit,
     /// The payload could not be parsed as the protobuf message for `message_type`.
     #[error("QC protobuf type {message_type} could not be decoded: {source}")]
     Protobuf {
@@ -574,6 +605,33 @@ struct ParameterSpec {
 pub const LABELLED_END_SPAN: (f64, f64) = (-50.0, 50.0);
 
 impl ParameterSpec {
+    fn retained_dynamic_bytes(&self) -> usize {
+        self.name
+            .len()
+            .saturating_add(self.r#type.len())
+            .saturating_add(self.value_scale.len())
+            .saturating_add(self.units.len())
+            .saturating_add(self.minimum_label.as_ref().map_or(0, String::len))
+            .saturating_add(self.midpoint_label.as_ref().map_or(0, String::len))
+            .saturating_add(self.maximum_label.as_ref().map_or(0, String::len))
+            .saturating_add(self.options.iter().map(String::len).sum::<usize>())
+            .saturating_add(
+                self.options
+                    .len()
+                    .saturating_mul(std::mem::size_of::<String>()),
+            )
+            .saturating_add(
+                self.scale_points
+                    .len()
+                    .saturating_mul(std::mem::size_of::<ScalePoint>()),
+            )
+            .saturating_add(
+                self.enable_when_steps
+                    .len()
+                    .saturating_mul(std::mem::size_of::<u32>()),
+            )
+    }
+
     fn display_precision(&self) -> Option<u32> {
         if self.show_as_integer {
             return Some(0);
@@ -2356,6 +2414,63 @@ impl StateDecoder {
         }
     }
 
+    /// Check the complete sparse update before changing retained state. Unknown
+    /// models and observations before a recall remain supported under this budget.
+    fn grid_parameter_budget_allows(&self, preset: &BinaryPreset) -> bool {
+        if self.parameter_overrides.len() > RETAINED_PARAMETER_OVERRIDE_LIMIT {
+            return false;
+        }
+        let mut new_keys = HashSet::new();
+        for (chain_pos, chain) in preset.chains.iter().enumerate() {
+            let row = chain_row(chain, chain_pos as u32);
+            if row >= domain::GRID_ROWS {
+                continue;
+            }
+            let splitter = match (
+                chain.splitter.is_empty(),
+                chain.combined_splitter.is_empty(),
+            ) {
+                (false, true) => chain.splitter.as_slice(),
+                (true, false) => chain.combined_splitter.as_slice(),
+                _ => &[],
+            };
+            let targets = chain
+                .models
+                .iter()
+                .enumerate()
+                .filter_map(|(pos, model)| {
+                    let column = model_column(model, pos as u32);
+                    (column < domain::GRID_COLUMNS).then_some((column, model))
+                })
+                .chain(chain.input_control.iter().map(|model| (10, model)))
+                .chain(chain.output_control.iter().map(|model| (11, model)))
+                .chain(splitter.iter().map(|model| (8, model)))
+                .chain(chain.mixer.iter().map(|model| (9, model)));
+            for (column, model) in targets {
+                for (pos, parameter) in model.params.iter().enumerate() {
+                    if !parameter
+                        .param_values
+                        .first()
+                        .and_then(float_value)
+                        .is_some_and(|value| (0.0..=1.0).contains(&value))
+                    {
+                        continue;
+                    }
+                    let key = (row, column, param_index(parameter, pos as u32));
+                    if !self.parameter_overrides.contains_key(&key) {
+                        new_keys.insert(key);
+                        if self.parameter_overrides.len() + new_keys.len()
+                            > RETAINED_PARAMETER_OVERRIDE_LIMIT
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
     fn decode_grid(&mut self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
         let message = decode::<pa::GridMessage>(profile::MESSAGE_TYPE_GRID, payload)?;
         if !matches!(
@@ -2367,6 +2482,16 @@ impl StateDecoder {
         let Some(pa::grid_message::Preset::Preset(preset)) = message.preset else {
             return Ok(Vec::new());
         };
+        if message.action == pa::message_action::Enum::Update as i32
+            && !self.grid_parameter_budget_allows(&preset)
+        {
+            self.parameter_overrides = HashMap::new();
+            self.preset = None;
+            self.preset_exact = false;
+            self.grid_layout_exact = false;
+            self.state_revision = self.state_revision.saturating_add(1);
+            return Err(StateDecodeError::ParameterRetentionLimit);
+        }
         let layout_was_exact = self.preset_exact || self.grid_layout_exact;
         self.preset_exact = false;
         self.state_revision = self.state_revision.saturating_add(1);
@@ -2491,6 +2616,19 @@ impl StateDecoder {
             else {
                 continue;
             };
+            // Only BPM and LED have a known sparse meaning. Preserve existing
+            // slots, but do not accumulate arbitrary new parameter indices.
+            if !matches!(index, 0 | 2)
+                && !retained.tempo_program_data.first().is_some_and(|block| {
+                    block
+                        .params
+                        .iter()
+                        .enumerate()
+                        .any(|(pos, item)| param_index(item, pos as u32) == index)
+                })
+            {
+                continue;
+            }
             if retained.tempo_program_data.is_empty() {
                 retained.tempo_program_data.push(Model::default());
             }
@@ -3669,7 +3807,8 @@ fn tar_text(value: &[u8]) -> String {
 fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError> {
     let mut reader = Reader::from_reader(xml);
     reader.config_mut().trim_text(true);
-    let mut catalog = HashMap::new();
+    let mut catalog: HashMap<u32, ModelInfo> = HashMap::new();
+    let mut budget = CatalogRetentionBudget::default();
     let mut category = String::new();
     let mut category_hidden = false;
     let mut current: Option<u32> = None;
@@ -3700,6 +3839,13 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                     current = attrs.get("id").and_then(|value| value.parse::<u32>().ok());
                     parameter_index = 0;
                     if let Some(id) = current {
+                        if !catalog.contains_key(&id)
+                            && catalog.len() >= RETAINED_CATALOG_MODEL_LIMIT
+                        {
+                            return Err(StateDecodeError::CatalogXml(
+                                "retained model entry budget exceeded".into(),
+                            ));
+                        }
                         let model_name = attrs
                             .get("name")
                             .cloned()
@@ -3724,6 +3870,28 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                         } else {
                             "utility"
                         };
+                        if let Some(previous) = catalog.get(&id) {
+                            budget.parameters -= previous.direct_parameters.len();
+                            budget.bytes -= previous.name.len()
+                                + previous.category.len()
+                                + previous.kind.len()
+                                + previous.based_on.len()
+                                + previous.sku.as_ref().map_or(0, String::len)
+                                + previous
+                                    .direct_parameters
+                                    .iter()
+                                    .map(ParameterSpec::retained_dynamic_bytes)
+                                    .sum::<usize>();
+                        }
+                        budget.reserve(
+                            0,
+                            model_name
+                                .len()
+                                .saturating_add(category.len())
+                                .saturating_add(kind.len())
+                                .saturating_add(attrs.get("basedOn").map_or(0, String::len))
+                                .saturating_add(attrs.get("sku").map_or(0, String::len)),
+                        )?;
                         catalog.insert(
                             id,
                             ModelInfo {
@@ -3816,7 +3984,7 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                                 || minimum.is_some_and(|value| value > 0.0));
                         let display_position_raw =
                             attrs.get("displayPos").and_then(|value| value.parse().ok());
-                        model.direct_parameters.push(ParameterSpec {
+                        let parameter = ParameterSpec {
                             index,
                             name: raw_name.replace('_', " "),
                             r#type: kind.clone(),
@@ -3865,7 +4033,9 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                                 .and_then(|value| value.parse().ok()),
                             enable_when_steps: split_u32_list(attrs.get("toggleStep")),
                             replaces: replacement,
-                        });
+                        };
+                        budget.reserve(1, parameter.retained_dynamic_bytes())?;
+                        model.direct_parameters.push(parameter);
                         if replacement.is_none() {
                             parameter_index += 1;
                         }
@@ -3878,9 +4048,11 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
             _ => {}
         }
     }
-    let ids = catalog.keys().copied().collect::<Vec<_>>();
+    let mut ids = catalog.keys().copied().collect::<Vec<_>>();
+    ids.sort_unstable();
+    let mut resolved = HashSet::new();
     for id in ids {
-        resolve_catalog_model(id, &mut catalog, &mut HashSet::new());
+        resolve_catalog_model(id, &mut catalog, &mut resolved, &mut budget)?;
     }
     for (model_id, model) in &mut catalog {
         let cab_category = model.category.to_ascii_lowercase().contains("cabsim");
@@ -3945,46 +4117,292 @@ fn cab_level_maximum_from_skew(parameter: &ParameterSpec) -> Option<f64> {
 fn resolve_catalog_model(
     id: u32,
     catalog: &mut HashMap<u32, ModelInfo>,
-    visiting: &mut HashSet<u32>,
-) {
-    if !visiting.insert(id) {
-        return;
+    resolved: &mut HashSet<u32>,
+    budget: &mut CatalogRetentionBudget,
+) -> Result<(), StateDecodeError> {
+    // Heap-based dependency traversal avoids stack exhaustion. A completed
+    // model's direct parameters are never appended again for another child.
+    let mut path = Vec::new();
+    let mut visiting = HashSet::new();
+    let mut current = id;
+    while !resolved.contains(&current) {
+        let Some(item) = catalog.get(&current) else {
+            break;
+        };
+        if !visiting.insert(current) {
+            return Err(StateDecodeError::CatalogXml(
+                "cyclic model inheritance".into(),
+            ));
+        }
+        path.push(current);
+        let Some(base) = item.clone_id else {
+            break;
+        };
+        current = base;
     }
-    let clone_id = catalog.get(&id).and_then(|item| item.clone_id);
-    if let Some(base) = clone_id {
-        resolve_catalog_model(base, catalog, visiting);
-        let inherited = catalog
-            .get(&base)
-            .map(|item| item.parameters.clone())
+    while let Some(current) = path.pop() {
+        let base = catalog.get(&current).and_then(|item| item.clone_id);
+        let mut prospective: BTreeMap<u32, &ParameterSpec> = base
+            .and_then(|base| catalog.get(&base))
+            .map(|item| {
+                item.parameters
+                    .iter()
+                    .map(|(key, value)| (*key, value))
+                    .collect()
+            })
             .unwrap_or_default();
-        if let Some(item) = catalog.get_mut(&id) {
-            item.parameters = inherited;
+        if let Some(item) = catalog.get(&current) {
+            let mut next = prospective
+                .keys()
+                .next_back()
+                .map_or(0_u64, |value| u64::from(*value) + 1);
+            for direct in &item.direct_parameters {
+                let target = match direct.replaces {
+                    Some(target) => target,
+                    None => {
+                        let target = u32::try_from(next).map_err(|_| {
+                            StateDecodeError::CatalogXml("model parameter index overflow".into())
+                        })?;
+                        next += 1;
+                        target
+                    }
+                };
+                prospective.insert(target, direct);
+            }
         }
-    }
-    if let Some(item) = catalog.get_mut(&id) {
-        let mut next = item
-            .parameters
-            .keys()
-            .next_back()
-            .map(|value| value + 1)
-            .unwrap_or(0);
-        for direct in item.direct_parameters.clone() {
-            let target = direct.replaces.unwrap_or_else(|| {
-                let value = next;
-                next += 1;
-                value
-            });
-            let mut resolved = direct;
-            resolved.index = target;
-            item.parameters.insert(target, resolved);
+        // Borrowed declarations make replacements cheap. Reserve the resulting
+        // map's aggregate bytes BEFORE cloning any inherited strings/vectors.
+        budget.reserve(
+            prospective.len(),
+            prospective
+                .values()
+                .map(|parameter| parameter.retained_dynamic_bytes())
+                .sum::<usize>(),
+        )?;
+        let parameters = prospective
+            .into_iter()
+            .map(|(index, parameter)| {
+                let mut parameter = (*parameter).clone();
+                parameter.index = index;
+                (index, parameter)
+            })
+            .collect();
+        if let Some(item) = catalog.get_mut(&current) {
+            item.parameters = parameters;
         }
+        resolved.insert(current);
     }
-    visiting.remove(&id);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_parameter_retention_is_preflighted_and_fails_closed() {
+        let mut decoder = recalled_layout_decoder();
+        for index in 0..RETAINED_PARAMETER_OVERRIDE_LIMIT as u32 {
+            decoder.parameter_overrides.insert((0, 1, index), 0.25);
+        }
+        // Replacement and duplicate observations need no extra retained key.
+        let update = |indices: &[u32]| {
+            grid_push(
+                pa::message_action::Enum::Update,
+                vec![layout_chain(
+                    0,
+                    vec![Model {
+                        column: Some(model::Column::Column(1)),
+                        params: indices
+                            .iter()
+                            .map(|index| numeric_param(*index, 0.75))
+                            .collect(),
+                        ..Default::default()
+                    }],
+                )],
+            )
+        };
+        decoder
+            .decode(profile::MESSAGE_TYPE_GRID, &update(&[0, 0]))
+            .unwrap();
+        assert_eq!(
+            decoder.parameter_overrides.len(),
+            RETAINED_PARAMETER_OVERRIDE_LIMIT
+        );
+        assert_eq!(decoder.parameter_overrides[&(0, 1, 0)], 0.75);
+        assert!(matches!(
+            decoder.decode(
+                profile::MESSAGE_TYPE_GRID,
+                &update(&[0, RETAINED_PARAMETER_OVERRIDE_LIMIT as u32])
+            ),
+            Err(StateDecodeError::ParameterRetentionLimit)
+        ));
+        assert!(decoder.parameter_overrides.is_empty());
+        assert!(decoder.preset.is_none());
+        assert!(!decoder.preset_exact && !decoder.grid_layout_exact);
+        assert!(decoder.single_parameter_target_detail(0, 1, 0).is_none());
+        // A full authoritative recall restores usable state after invalidation.
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_RECALL_PRESET,
+                &pa::RecallPresetMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    preset: Some(pa::recall_preset_message::Preset::Preset(
+                        BinaryPreset::default(),
+                    )),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        assert!(decoder.preset_exact);
+        assert!(decoder.preset_source_snapshot().is_some());
+    }
+
+    #[test]
+    fn sparse_tempo_keeps_known_and_existing_slots_without_unknown_growth() {
+        let mut decoder = StateDecoder::new();
+        decoder.preset = Some(BinaryPreset {
+            tempo_program_data: vec![Model {
+                params: vec![numeric_param(9, 0.25)],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        for index in 10..4_106 {
+            decoder.apply_grid_tempo_update(&Model {
+                params: vec![numeric_param(index, 0.5)],
+                ..Default::default()
+            });
+        }
+        decoder.apply_grid_tempo_update(&Model {
+            params: vec![
+                numeric_param(0, 0.5),
+                numeric_param(2, 1.0),
+                numeric_param(9, 0.75),
+            ],
+            ..Default::default()
+        });
+        let params = &decoder.preset.as_ref().unwrap().tempo_program_data[0].params;
+        assert_eq!(params.len(), 3);
+        assert_eq!(
+            params
+                .iter()
+                .enumerate()
+                .map(|(pos, p)| param_index(p, pos as u32))
+                .collect::<Vec<_>>(),
+            [9, 0, 2]
+        );
+        assert_eq!(float_value(&params[0].param_values[0]), Some(0.75));
+        assert!(
+            tempo_state(decoder.preset.as_ref().unwrap().tempo_program_data.first())
+                .bpm
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn catalogue_retention_refuses_small_payload_with_large_inherited_names() {
+        let name = "A".repeat(4_096);
+        let mut xml = String::from("<Models><Model id=\"0\">");
+        for _ in 0..128 {
+            xml.push_str(&format!("<Parameter name=\"{name}\" type=\"float\"/>"));
+        }
+        xml.push_str("</Model>");
+        for id in 1..=2_000 {
+            xml.push_str(&format!("<Model id=\"{id}\" clones=\"0\"/>"));
+        }
+        xml.push_str("</Models>");
+        assert!(xml.len() < profile::MAX_FRAME_BYTES);
+        assert!(
+            matches!(parse_catalog(xml.as_bytes()), Err(StateDecodeError::CatalogXml(ref message))
+            if message.contains("retained model parameter budget"))
+        );
+        let direct = format!(
+            "<Models><Model id=\"0\">{}</Model></Models>",
+            "<Parameter/>".repeat(RETAINED_CATALOG_PARAMETER_LIMIT + 1)
+        );
+        assert!(direct.len() < profile::MAX_FRAME_BYTES);
+        assert!(
+            matches!(parse_catalog(direct.as_bytes()), Err(StateDecodeError::CatalogXml(ref message))
+            if message.contains("retained model parameter budget"))
+        );
+        // Count and bytes are separate limits; one reservation cannot partially
+        // advance accounting when the other bound refuses it.
+        let mut budget = CatalogRetentionBudget::default();
+        budget.reserve(RETAINED_CATALOG_PARAMETER_LIMIT, 1).unwrap();
+        assert!(budget.reserve(1, 0).is_err());
+        assert_eq!(budget.parameters, RETAINED_CATALOG_PARAMETER_LIMIT);
+        let mut budget = CatalogRetentionBudget::default();
+        budget.reserve(1, RETAINED_CATALOG_DYNAMIC_BYTES).unwrap();
+        assert!(budget.reserve(0, 1).is_err());
+        assert_eq!(budget.bytes, RETAINED_CATALOG_DYNAMIC_BYTES);
+    }
+
+    #[test]
+    fn catalogue_model_budget_counts_new_ids_but_not_replacements() {
+        let mut xml = String::from("<Models>");
+        for id in 0..RETAINED_CATALOG_MODEL_LIMIT {
+            xml.push_str(&format!("<Model id=\"{id}\" name=\"\"/>"));
+        }
+        // Replacing an existing ID does not consume another retained entry.
+        let at_limit = format!("{xml}<Model id=\"0\" name=\"Replacement\"/></Models>");
+        let parsed = parse_catalog(at_limit.as_bytes()).unwrap();
+        assert_eq!(parsed.len(), RETAINED_CATALOG_MODEL_LIMIT);
+        assert_eq!(parsed[&0].name, "Replacement");
+        drop(parsed);
+        xml.push_str(&format!(
+            "<Model id=\"{}\"/></Models>",
+            RETAINED_CATALOG_MODEL_LIMIT
+        ));
+        assert!(xml.len() < profile::MAX_INFLATED_BYTES);
+        assert!(
+            matches!(parse_catalog(xml.as_bytes()), Err(StateDecodeError::CatalogXml(ref message))
+            if message.contains("retained model entry budget"))
+        );
+    }
+
+    #[test]
+    fn catalogue_inheritance_resolves_each_model_once_with_stable_indices() {
+        let xml = br#"<Models><Model id="100" name="Base">
+            <Parameter name="GAIN" type="float"/><Parameter name="LEVEL" type="float"/>
+            </Model><Model id="101" clones="100" name="Child">
+            <Parameter name="MODE" type="switch" replaces="0"/>
+            <Parameter name="EXTRA" type="float"/>
+            </Model><Model id="102" clones="100" name="Sibling"/>
+            <Model id="103" clones="101" name="Grandchild"/></Models>"#;
+        for _ in 0..16 {
+            let catalog = parse_catalog(xml).unwrap();
+            let names = |id| {
+                catalog[&id]
+                    .parameters
+                    .iter()
+                    .map(|(index, p)| (*index, p.name.as_str()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(names(100), [(0, "GAIN"), (1, "LEVEL")]);
+            assert_eq!(names(101), [(0, "MODE"), (1, "LEVEL"), (2, "EXTRA")]);
+            assert_eq!(names(102), names(100));
+            assert_eq!(names(103), names(101));
+        }
+    }
+
+    #[test]
+    fn catalogue_rejects_cycles_and_index_overflow_without_recursive_resolution() {
+        for xml in [
+            br#"<Models><Model id="1" clones="1"/></Models>"#.as_slice(),
+            br#"<Models><Model id="1" clones="2"/><Model id="2" clones="1"/></Models>"#.as_slice(),
+            br#"<Models><Model id="1"><Parameter name="MAX" replaces="4294967295"/></Model><Model id="2" clones="1"><Parameter name="NEXT"/></Model></Models>"#.as_slice(),
+        ] {
+            assert!(matches!(parse_catalog(xml), Err(StateDecodeError::CatalogXml(_))));
+        }
+        let mut xml = String::from("<Models><Model id=\"4095\"/>");
+        for id in 0..4_095 {
+            xml.push_str(&format!("<Model id=\"{id}\" clones=\"{}\"/>", id + 1));
+        }
+        xml.push_str("</Models>");
+        assert_eq!(parse_catalog(xml.as_bytes()).unwrap().len(), 4_096);
+    }
 
     #[test]
     fn formerly_discarded_device_updates_publish_semantic_state() {

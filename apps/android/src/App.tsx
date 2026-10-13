@@ -16,6 +16,7 @@ import { pasteOwnedDemoLibrary } from "./demo-library-paste.ts";
 import { refreshOwnedNativeSnapshot } from "./native-session-refresh.ts";
 import { createBrowserPairingPoll } from "./browser-pairing-poll.ts";
 import { createControlAccessChange } from "./control-access-change.ts";
+import { openOwnedLooper } from "./open-owned-looper.ts";
 import appPackage from "../package.json";
 import { qcStreamRestartClearsBulkOperation } from "@qc-remote/ui";
 
@@ -171,7 +172,9 @@ export function App() {
     resetScreenDimmer();
     return () => { if (screenDimTimer.current !== undefined) window.clearTimeout(screenDimTimer.current); };
   }, [keepScreenAwake, native, resetScreenDimmer, hardwareConnected]);
+  const deviceCommandSessionKey = `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`;
   const workflows = useQcWorkflows({
+    commandSessionKey: deviceCommandSessionKey,
     controller: qcController,
     transport: qcTransport,
     gateway: activeGateway,
@@ -231,7 +234,7 @@ export function App() {
     fail: (error) => setNotice(error instanceof Error ? error.message : String(error))
   });
   const deviceWorkflowSession = {
-    commandSessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
+    commandSessionKey: deviceCommandSessionKey,
     sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
       const attempt = connectionAttempts.capture();
@@ -277,7 +280,11 @@ export function App() {
   });
   const modesWorkflow = useModesConfigurationWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
   const ioEqWorkflow = useIoEqWorkflows({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed, snapshot });
-  const deviceUndo = useQcDeviceUndo({ history: deviceHistory, snapshot, gateway: activeGateway, fail: workflowFailed });
+  const deviceUndo = useQcDeviceUndo({ ...deviceWorkflowSession,
+    history: deviceHistory, snapshot, gateway: activeGateway, presetLifetime: qcController.lifetime,
+    connected: sessionReady, pending: devicePending, setPending: setDevicePending,
+    notice: setNotice, fail: workflowFailed, reconcile: reconcileWorkflowSnapshot
+  });
   const deviceViews = useQcDeviceViews({ ...deviceWorkflowSession,
     destination: screenDestination, snapshot, gateway: activeGateway, notice: setNotice, fail: workflowFailed,
     session: { demo: demoActive, hardwareReady: native && hardwareConnected && !deviceSuspended && !deviceBulkBlocking, sessionReady },
@@ -316,6 +323,7 @@ export function App() {
     fail: (error) => setNotice(error instanceof Error ? error.message : String(error))
   });
   const parameterEditorBindings = qcParameterEditorBindings({
+    editorContextKey: `${deviceCommandSessionKey}:${qcController.lifetime.version}`,
     titlePresetMark: corpusFixtureEnabled && editor.details?.name === "Simple Gate",
     snapshot,
     selectedBlockId,
@@ -609,8 +617,13 @@ export function App() {
     // dedicated transport screen. Demo retains the parameter preview because
     // its virtual gateway deliberately has no looper transport.
     if (!demoActive && /\blooper\b/i.test(`${block.category ?? ""} ${block.name}`)) {
-      await looperWorkflow.run("open");
-      setMobileScreenView("looper-editor");
+      const sessionCurrent = deviceWorkflowSession.captureSessionCurrent();
+      const lifetime = qcController.lifetime.checkpoint();
+      await openOwnedLooper({
+        current: () => sessionCurrent() && qcController.lifetime.current(lifetime),
+        open: () => looperWorkflow.run("open"),
+        show: () => setMobileScreenView("looper-editor")
+      });
       return;
     }
     return gridWorkflow.openBlock(block);
@@ -895,6 +908,7 @@ export function App() {
   };
   const display = createQcDeviceDisplay({
     captureSessionCurrent: deviceWorkflowSession.captureSessionCurrent,
+    screenGestureContextKey: deviceCommandSessionKey,
     snapshot, selectedBlockId, pending: devicePending, destination: screenDestination, views: deviceViews, cpu: cpuTelemetry, undo: deviceUndo,
     workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow, scene: sceneWorkflow, preset: presetWorkflow, routing: routingWorkflow },
     mirror: activeGateway,

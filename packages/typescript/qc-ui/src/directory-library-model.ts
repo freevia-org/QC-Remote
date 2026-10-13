@@ -32,6 +32,8 @@ export interface DirectoryLibraryState {
 
 /** Stateful Directory data and actions supplied by the preset workflow. */
 export interface PresetDirectoryState {
+  /** Physical transport owner; changing it retires local row actions. */
+  interactionSessionKey?: unknown;
   open: boolean;
   list?: PresetList;
   loading: boolean;

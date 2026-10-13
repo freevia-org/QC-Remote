@@ -202,3 +202,35 @@ test("expression undo stays usable after same-session edits but never crosses a 
   assert.equal(writes.length, 2);
   await act(async () => renderer.unmount());
 });
+
+test("bypass expression Undo restores the prior pedal or absence and Redo reapplies the chosen pedal", async (t) => {
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  for (const assigned of [true, false]) await t.test(assigned ? "previously assigned" : "initially unassigned", async () => {
+    const prior = { pedal: 1, mode: 2, invert: true, delayMs: 37, latchEmulation: true };
+    const selectedDetails = { ...details, bypassExpression: assigned ? prior : undefined };
+    const writes: unknown[][] = [], entries: Array<{ execute(snapshot: unknown): Promise<unknown>; redo(snapshot: unknown): Promise<unknown> }> = [];
+    const options = {
+      gateway: { setExpressionBypass: async (...args: unknown[]) => { writes.push(args); return { detail: "accepted", snapshot: initial }; } },
+      snapshot: initial, sessionKey: "usb", connected: true, pending: false, setPending: () => {},
+      reconcile: () => {}, recordHistory: (entry) => entries.push(entry), notice: () => {}, fail: (error) => { throw error; }
+    };
+    let value, renderer;
+    function Harness() { value = useExpressionAssignment(options as never); return null; }
+    await act(async () => { renderer = create(React.createElement(Harness)); });
+    await act(async () => { value.openAssignment(selectedDetails); });
+    await act(async () => { value.assignmentFor(selectedDetails).onPedalChange(2); });
+    await act(async () => { value.assignmentFor(selectedDetails).onAssign("bypass"); });
+    assert.equal(entries.length, 1);
+    await entries[0].execute(initial);
+    await entries[0].redo(initial);
+    assert.deepEqual(writes.map((args) => args[2]), [2, assigned ? 1 : 0, 2]);
+    const settings = assigned ? [2, true, 37, true] : [0, false, 0, false];
+    for (const args of writes) {
+      assert.deepEqual(args.slice(0, 2), [details.row, details.column]);
+      assert.deepEqual(args.slice(3, 7), settings, "Undo preserves all non-pedal bypass settings");
+      assert.equal(args[7], 42);
+      assert.equal(args[9], initial.presetIdentity);
+    }
+    await act(async () => renderer.unmount());
+  });
+});

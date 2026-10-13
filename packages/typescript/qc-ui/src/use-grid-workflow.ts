@@ -10,6 +10,8 @@ import type { DeviceHistoryEntry } from "./use-device-history";
 import type { DeviceMutationWorkflowOptions } from "./workflow-options";
 
 export interface GridWorkflowOptions extends DeviceMutationWorkflowOptions {
+  /** Retire app inverses when only the unit can restore a complete removed block. */
+  clearHistory(): void;
   topologyComplete?: boolean;
   selectedBlockId: string;
   setSelectedBlockId: Dispatch<SetStateAction<string>>;
@@ -299,7 +301,6 @@ export function useGridWorkflow(options: GridWorkflowOptions) {
     setPending(true);
     notice(`Removing ${block.name}…`);
     try {
-      const removed = await gateway.blockDetails(block.row, block.column, snapshot.presetName, requirePresetIdentity(snapshot));
       const result = await gateway.removeBlock(block.row, block.column, block.modelId, snapshot.presetName, requirePresetIdentity(snapshot));
       if (result.snapshot) reconcile(result.snapshot);
       const wasSelected = selectedBlockId === block.id;
@@ -307,34 +308,14 @@ export function useGridWorkflow(options: GridWorkflowOptions) {
         setSelectedBlockId("");
         editor.close();
       }
-      recordHistory({
-        label: `remove ${block.name}`,
-        execute: async (current) => {
-          let latest = await gateway.addBlock(block.row, block.column, block.modelId as number, current.presetName, null, requirePresetIdentity(current));
-          let working = latest.snapshot ?? current;
-          const defaults = await gateway.blockDetails(block.row, block.column, working.presetName, requirePresetIdentity(working));
-          for (const parameter of removed.parameters) {
-            const initial = defaults.parameters.find((candidate) => candidate.index === parameter.index);
-            if (!parameter.writable || parameter.normalizedValue === null || initial?.normalizedValue === null || initial?.normalizedValue === undefined || Math.abs(parameter.normalizedValue - initial.normalizedValue) < .000001) continue;
-            latest = await gateway.setParameter(block.row, block.column, parameter.index, parameter.normalizedValue, initial.normalizedValue, snapshot.activeScene, requireModelId(removed), working.presetName, requirePresetIdentity(working));
-            working = latest.snapshot ?? working;
-          }
-          const restored = working.blocks.find((candidate) => candidate.row === block.row && candidate.column === block.column);
-          if ((block.footswitch ?? null) !== (restored?.footswitch ?? null)) {
-            latest = await gateway.setBlockFootswitch(block.row, block.column, block.footswitch ?? null, block.footswitchAssignmentType ?? "primary", restored?.footswitch ?? null, restored?.footswitchAssignmentType ?? null, block.modelId as number, working.presetName, requirePresetIdentity(working));
-            working = latest.snapshot ?? working;
-          }
-          const finalBlock = working.blocks.find((candidate) => candidate.row === block.row && candidate.column === block.column);
-          if ((block.bypassed ?? false) !== (finalBlock?.bypassed ?? false)) latest = await gateway.toggleBypass(block.row, block.column, snapshot.activeScene, finalBlock?.bypassed ?? false, block.bypassed ?? false, requireModelId(block), working.presetName, requirePresetIdentity(working));
-          return { ...latest, detail: `Restored ${block.name} and its previous settings.` };
-        },
-        redo: (current) => gateway.removeBlock(block.row, block.column, block.modelId as number, current.presetName, requirePresetIdentity(current))
-      });
+      // A partial BlockDetails cannot restore expression assignments or every
+      // Scene. Retire the app inverse and leave generic Undo to native history.
+      options.clearHistory();
       if (wasSelected) onClosePanel?.();
       notice(result.detail);
     } catch (error) { fail(error); }
     finally { setPending(false); }
-  }, [connected, editor, fail, gateway, notice, onClosePanel, pending, reconcile, recordHistory, selectedBlockId, setPending, setSelectedBlockId, snapshot.activeScene, snapshot.presetIdentity, snapshot.presetName]);
+  }, [connected, editor, fail, gateway, notice, onClosePanel, options.clearHistory, pending, reconcile, selectedBlockId, setPending, setSelectedBlockId, snapshot.presetIdentity, snapshot.presetName]);
 
   const remove = useCallback(() => removeBlock(snapshot.blocks.find((candidate) => candidate.id === selectedBlockId)), [removeBlock, selectedBlockId, snapshot.blocks]);
 

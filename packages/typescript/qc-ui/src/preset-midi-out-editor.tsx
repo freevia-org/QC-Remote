@@ -35,16 +35,34 @@ function sourceKey(snapshot: PresetSnapshot, source: Source): string {
  * Production Preset MIDI Out editor. The host owns navigation; the writes,
  * their guards and their outcome belong to `usePresetMidiOutWorkflow`.
  */
-export function PresetMidiOutEditor({ workflow, onClose, returnFocusTarget }: {
+type PresetMidiOutEditorProps = {
   workflow: PresetMidiOutWorkflow;
   onClose(): void;
   returnFocusTarget?: "grid-menu";
-}) {
+};
+
+export function PresetMidiOutEditor(props: PresetMidiOutEditorProps) {
+  const { workflow } = props;
+  const { snapshot } = workflow;
+  const context = JSON.stringify([workflow.contextVersion, workflow.demo, snapshot.stateVersion?.session, snapshot.presetIdentity, snapshot.setlistKey, snapshot.presetPosition]);
+  const owner = useRef({ context, generation: 0 });
+  if (owner.current.context !== context) owner.current = { context, generation: owner.current.generation + 1 };
+  const generation = owner.current.generation;
+  return <PresetMidiOutEditorSession key={generation} {...props} isCurrent={() => owner.current.generation === generation && (workflow.contextCurrent?.() ?? true)} />;
+}
+
+function PresetMidiOutEditorSession({ workflow, onClose, returnFocusTarget, isCurrent }: PresetMidiOutEditorProps & { isCurrent(): boolean }) {
   const { snapshot, demo, pending, error, status, clearError, clearStatus } = workflow;
   const [source, setSource] = useState<Source>("preset");
   const [detailOpen, setDetailOpen] = useState(false);
   const [draft, setDraft] = useState<MidiOutMessage[]>(() => slots(snapshot.presetLoadMidiOut));
-  const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmClear, setConfirmClear] = useState<number>();
+  const confirmation = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; confirmation.current += 1; };
+  }, []);
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
   // The host passes a new snapshot object on every reconciled frame (tempo
@@ -59,7 +77,7 @@ export function PresetMidiOutEditor({ workflow, onClose, returnFocusTarget }: {
     setDraft((current) => current.map((message, item) => item === index ? { ...message, ...values } : message));
     clearStatus();
   };
-  const save = () => workflow.save(source, draft);
+  const save = () => { if (mounted.current && isCurrent() && !demo && !pending) return workflow.save(source, draft); };
   const clear = () => { setDraft(slots(undefined)); clearStatus(); };
   const clearAll = () => workflow.clearAll();
   const chooseSource = (next: Source) => { setSource(next); setDetailOpen(true); };
@@ -67,7 +85,7 @@ export function PresetMidiOutEditor({ workflow, onClose, returnFocusTarget }: {
   return <section className="coros-midi-out qc-preset-midi-out" aria-label="Preset MIDI Out" data-qc-open-target="preset-midi-out" tabIndex={-1} onKeyDown={(event) => escapeUserOpenedTarget(event, onClose, returnFocusTarget, pending)}>
     <header>
       <span>Preset MIDI Out settings</span>
-      <button type="button" className="midi-trash" aria-label="Clear MIDI assignments" disabled={demo || pending} onClick={() => setConfirmClear(true)}><QcDirectoryIcon kind="trash" /></button>
+      <button type="button" className="midi-trash" aria-label="Clear MIDI assignments" disabled={demo || pending} onClick={() => { if (isCurrent() && !demo && !pending) setConfirmClear(++confirmation.current); }}><QcDirectoryIcon kind="trash" /></button>
       <button type="button" aria-label="Close Preset MIDI Out" disabled={pending} onClick={(event) => closeUserOpenedTarget(event.currentTarget, onClose, returnFocusTarget)}><QcUiIcon kind="check" /></button>
     </header>
     {demo ? <p className="midi-demo-status" role="status">MIDI Out editing is unavailable in Demo. Connect a Quad Cortex to change device data.</p> : !detailOpen ? <>
@@ -100,6 +118,6 @@ export function PresetMidiOutEditor({ workflow, onClose, returnFocusTarget }: {
       {error && <p role="alert">{error}</p>}{status === "saved" && <p role="status">MIDI Out saved.</p>}
       <footer className="midi-detail-actions"><button type="button" onClick={clear} disabled={pending}>Clear messages</button><button type="button" onClick={() => setDetailOpen(false)} disabled={pending}>Cancel</button><button type="button" onClick={() => void save()} disabled={pending}>{pending ? "Saving…" : "Save"}</button></footer>
     </>}
-    {confirmClear && <QcConfirm message="Clear every MIDI Out message in this preset, on all footswitches, both expression pedals and preset load?" confirmLabel="Clear all" onConfirm={() => { setConfirmClear(false); void clearAll(); }} onCancel={() => setConfirmClear(false)} />}
+    {confirmClear && <QcConfirm message="Clear every MIDI Out message in this preset, on all footswitches, both expression pedals and preset load?" confirmLabel="Clear all" onConfirm={() => { if (!mounted.current || !isCurrent() || confirmation.current !== confirmClear || demo || pending) return; confirmation.current += 1; setConfirmClear(undefined); void clearAll(); }} onCancel={() => { if (confirmation.current !== confirmClear) return; confirmation.current += 1; setConfirmClear(undefined); }} />}
   </section>;
 }

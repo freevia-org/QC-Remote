@@ -132,6 +132,8 @@ export interface QcDisplaySurfaceProps {
   /** Forward a gesture made on a device-owned screen (currently Tuner and
    * I/O Settings) to the same 800x480 coordinates on the physical QC. */
   onDeviceScreenGesture?: (x: number, y: number, toX: number, toY: number, kind: "tap" | "long-tap" | "swipe") => void;
+  /** Physical transport/native session owner; held gestures cannot cross a reconnect. */
+  screenGestureContextKey?: string;
   sceneEditor?: Omit<SceneQuickEditPopoverProps, "inDeviceDisplay">;
   /** The Copy/Swap Scene dialog. It is drawn inside the display, over whatever screen is showing, at the unit's own geometry. */
   sceneCommand?: ReactNode;
@@ -586,7 +588,9 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   // box at (655,59) on grid-base and the route selectors — one centre, two
   // sizes — so a fixed translate can only ever serve one of them.
   const modeGlyphVector = QC_SCREEN_ICON_VECTORS[`mode.${snapshot.mode.toLowerCase()}` as keyof typeof QC_SCREEN_ICON_VECTORS];
-  const modeGlyphOrigin = { x: 668 - modeGlyphVector.width / 2, y: 72 - modeGlyphVector.height / 2 };
+  // UNKNOWN is a valid unreadable mode, not a known mode to substitute.
+  // Only its positioning uses a safe box; the glyph still receives UNKNOWN.
+  const modeGlyphOrigin = { x: 668 - (modeGlyphVector?.width ?? 24) / 2, y: 72 - (modeGlyphVector?.height ?? 24) / 2 };
   const routes = rowY.map((_, row) => snapshot.routes.find((route) => route.row === row));
   const displayInput = (row: number) => {
     const input = routes[row]?.input;
@@ -1073,7 +1077,7 @@ function controlByRole(controls: HardwareControl[], role: string) { return contr
 // Edit Details focus their own name input instead.
 const GRID_MENU_FOCUS_TARGETS = new Set<string>(["settings", "tempo", "modes-configuration", "preset-midi-out", "cpu-monitor"]);
 
-export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, popup, onPopupChange, screenView = "grid", screenContent, cpuMonitor, deviceInformation, presentation = "hardware", onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, sceneEditor, sceneCommand, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
+export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, popup, onPopupChange, screenView = "grid", screenContent, cpuMonitor, deviceInformation, presentation = "hardware", onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, screenGestureContextKey, sceneEditor, sceneCommand, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
   const scenes = formFactor.controls.filter((control) => control.group === "scene");
   const bankUp = controlByRole(formFactor.controls, "bank:up")!;
   const bankDown = controlByRole(formFactor.controls, "bank:down")!;
@@ -1090,16 +1094,38 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
   const bankDownLed = parameterLed(4, { active: false, assigned: false, color: navigationLedColor });
   const displaySnapshot = fixtureSnapshot(screenView, snapshot);
   const fixtureOnly = screenView !== "grid";
-  const screenSwipe = useRef<{ pointerId: number; startX: number; startY: number; height: number; destination: "gig" | "io"; committed: boolean } | null>(null);
-  const deviceScreenGesture = useRef<{ pointerId: number; x: number; y: number; bounds: DOMRect; captureTarget: HTMLElement; longTapFired: boolean; longTapTimer?: number } | null>(null);
-  useEffect(() => () => {
+  const screenSwipe = useRef<{ pointerId: number; startX: number; startY: number; height: number; destination: "gig" | "io"; committed: boolean; captureTarget: HTMLElement; current(): boolean } | null>(null);
+  const gestureContext = `${screenGestureContextKey ?? snapshot.presetIdentity ?? ""}:${screenView}`;
+  const gestureOwner = useRef({ context: gestureContext, generation: 0 });
+  if (gestureOwner.current.context !== gestureContext) {
+    gestureOwner.current = { context: gestureContext, generation: gestureOwner.current.generation + 1 };
+  }
+  const gestureGeneration = gestureOwner.current.generation;
+  const gestureMounted = useRef(true);
+  const gestureEpoch = useRef(0);
+  const gestureCurrent = () => gestureMounted.current && gestureOwner.current.generation === gestureGeneration;
+  const captureGestureCurrent = () => {
+    const epoch = gestureEpoch.current;
+    return () => gestureCurrent() && gestureEpoch.current === epoch;
+  };
+  const deviceScreenGesture = useRef<{ pointerId: number; x: number; y: number; bounds: DOMRect; captureTarget: HTMLElement; current(): boolean; longTapFired: boolean; longTapTimer?: number } | null>(null);
+  useEffect(() => {
+    gestureMounted.current = true;
+    return () => {
+    gestureMounted.current = false;
+    gestureEpoch.current++;
+    const swipe = screenSwipe.current;
+    screenSwipe.current = null;
+    if (swipe?.captureTarget.hasPointerCapture?.(swipe.pointerId)) swipe.captureTarget.releasePointerCapture(swipe.pointerId);
     const gesture = deviceScreenGesture.current;
+    deviceScreenGesture.current = null;
     if (gesture?.longTapTimer !== undefined) window.clearTimeout(gesture.longTapTimer);
     if (gesture?.captureTarget.hasPointerCapture?.(gesture.pointerId)) {
       gesture.captureTarget.releasePointerCapture(gesture.pointerId);
     }
-  }, []);
-  const forwardsDeviceScreenGestures = screenView === "tuner" || screenView.startsWith("io-") || screenView === "unit-mirror";
+    };
+  }, [gestureContext]);
+  const forwardsDeviceScreenGestures = screenView === "tuner" || screenView.startsWith("io-") || screenView === "global-eq" || screenView === "unit-mirror";
   const gridEdgeGesturesEnabled = screenView === "grid"
     && !sceneEditor
     && !parameterEditor
@@ -1110,7 +1136,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
     && !addDevicePicker
     && !savePreset?.open;
   const beginScreenSwipe = (event: PointerEvent<HTMLDivElement>) => {
-    if (!gridEdgeGesturesEnabled || event.button !== 0) return;
+    if (!gestureCurrent() || !gridEdgeGesturesEnabled || event.button !== 0) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const relativeY = event.clientY - bounds.top;
     // A rendered phone display can be only ~200 px tall. A ten-percent band
@@ -1127,11 +1153,11 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
     // Grid control beneath it. Once the movement is clearly the device's
     // vertical edge gesture, capture the pointer so Android cannot turn it
     // into page movement and no underlying button receives the release.
-    screenSwipe.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, height: bounds.height, destination, committed: false };
+    screenSwipe.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, height: bounds.height, destination, committed: false, captureTarget: event.currentTarget, current: captureGestureCurrent() };
   };
   const trackScreenSwipe = (event: PointerEvent<HTMLDivElement>) => {
     const swipe = screenSwipe.current;
-    if (!swipe || swipe.pointerId !== event.pointerId) return;
+    if (!swipe || !swipe.current() || swipe.pointerId !== event.pointerId) return;
     const dx = event.clientX - swipe.startX;
     const dy = event.clientY - swipe.startY;
     const directedDistance = swipe.destination === "gig" ? -dy : dy;
@@ -1147,8 +1173,9 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
   };
   const finishScreenSwipe = (event: PointerEvent<HTMLDivElement>) => {
     const swipe = screenSwipe.current;
+    if (!swipe || swipe.pointerId !== event.pointerId) return;
     screenSwipe.current = null;
-    if (!swipe || swipe.pointerId !== event.pointerId || !swipe.committed) return;
+    if (!swipe.current() || !swipe.committed) return;
     event.preventDefault();
     event.stopPropagation();
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -1161,8 +1188,11 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
     y: Math.max(0, Math.min(479, Math.round((clientY - bounds.top) * 480 / bounds.height)))
   });
   const beginDeviceScreenGesture = (event: PointerEvent<HTMLDivElement>) => {
-    if (!forwardsDeviceScreenGestures || !onDeviceScreenGesture) return;
+    if (!gestureCurrent() || !forwardsDeviceScreenGestures || !onDeviceScreenGesture) return;
     const target = event.target as Element;
+    // Live controls already dispatch semantic writes. Only explicitly local
+    // navigation needs a matching screen tap; a mirrored raw canvas is different.
+    if (screenContent && screenView !== "unit-mirror" && !target.closest("[data-qc-screen-navigation]")) return;
     // Native screen controls also have local click handlers that keep the
     // reconstructed screen in sync with the physical tap. Capturing on this
     // wrapper would retarget pointerup/click away from those controls. Bubbled
@@ -1175,6 +1205,12 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
     // otherwise the two displays immediately disagree.
     const closeButton = target.closest("button[aria-label^='Close']");
     if (closeButton && closeButton.getAttribute("aria-label") !== "Close Global EQ") return;
+    const previousGesture = deviceScreenGesture.current;
+    if (previousGesture) {
+      if (previousGesture.longTapTimer !== undefined) window.clearTimeout(previousGesture.longTapTimer);
+      if (previousGesture.captureTarget.hasPointerCapture?.(previousGesture.pointerId)) previousGesture.captureTarget.releasePointerCapture(previousGesture.pointerId);
+      deviceScreenGesture.current = null;
+    }
     const bounds = event.currentTarget.getBoundingClientRect();
     // Capture on the control itself when the gesture starts there. That keeps
     // pointerup/cancel routed through its click handler while still delivering
@@ -1182,9 +1218,16 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
     const captureTarget = interactiveControl ?? event.currentTarget;
     captureTarget.setPointerCapture?.(event.pointerId);
     const point = canonicalScreenPoint(event.clientX, event.clientY, bounds);
-    const gesture = { pointerId: event.pointerId, ...point, bounds, captureTarget, longTapFired: false, longTapTimer: undefined as number | undefined };
+    const ownerCurrent = captureGestureCurrent();
+    // Local I/O pane choices don't replace the outer screenView. Fence a held
+    // gesture against that inner navigation as well as the host session.
+    const pane = target.closest("[data-qc-screen-context]");
+    const paneContext = pane?.getAttribute("data-qc-screen-context");
+    const wrapper = event.currentTarget;
+    const gesture = { pointerId: event.pointerId, ...point, bounds, captureTarget, current: () => ownerCurrent() && (!pane || (pane.isConnected && wrapper.contains(pane) && pane.getAttribute("data-qc-screen-context") === paneContext)), longTapFired: false, longTapTimer: undefined as number | undefined };
     gesture.longTapTimer = window.setTimeout(() => {
       gesture.longTapTimer = undefined;
+      if (deviceScreenGesture.current !== gesture || !gesture.current()) return;
       gesture.longTapFired = true;
       onDeviceScreenGesture(point.x, point.y, point.x, point.y, "long-tap");
     }, GRID_LONG_PRESS_MS);
@@ -1205,7 +1248,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
     deviceScreenGesture.current = null;
     if (gesture.captureTarget.hasPointerCapture?.(event.pointerId)) gesture.captureTarget.releasePointerCapture(event.pointerId);
     if (gesture.longTapTimer !== undefined) window.clearTimeout(gesture.longTapTimer);
-    if (!onDeviceScreenGesture) return;
+    if (!gesture.current() || !onDeviceScreenGesture) return;
     if (gesture.longTapFired) return;
     const point = canonicalScreenPoint(event.clientX, event.clientY, gesture.bounds);
     const kind = Math.abs(point.x - gesture.x) <= 3 && Math.abs(point.y - gesture.y) <= 3 ? "tap" : "swipe";
@@ -1231,7 +1274,17 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
     <div className={`qc-screen-bezel${gridEdgeGesturesEnabled ? " is-grid-edge-gesture-surface" : ""}`} onPointerDownCapture={beginScreenSwipe} onPointerMoveCapture={trackScreenSwipe} onPointerUpCapture={finishScreenSwipe} onPointerCancel={() => { screenSwipe.current = null; }}>{sceneEditor
       ? <div className="qc-screen-fixture-root is-scene-editor"><SceneQuickEditPopover {...sceneEditor} inDeviceDisplay /></div>
       : screenContent
-      ? <div className="qc-screen-fixture-root is-canonical-canvas">{screenContent}</div>
+      ? <div className="qc-screen-fixture-root is-canonical-canvas" onPointerDown={beginDeviceScreenGesture} onPointerMove={trackDeviceScreenGesture} onPointerUp={finishDeviceScreenGesture} onPointerCancel={cancelDeviceScreenGesture} onClickCapture={(event) => {
+        // Pointer clicks were sent on pointerup. Keyboard activation has no
+        // pointer coordinates, so delegate only a marked semantic control's
+        // activation before its local handler replaces that navigation pane.
+        if (!gestureCurrent() || event.detail !== 0 || !forwardsDeviceScreenGestures || !onDeviceScreenGesture) return;
+        const target = (event.target as Element).closest<HTMLElement>("[data-qc-screen-navigation]");
+        if (!target) return;
+        const buttonBounds = target.getBoundingClientRect();
+        const point = canonicalScreenPoint(buttonBounds.left + buttonBounds.width / 2, buttonBounds.top + buttonBounds.height / 2, event.currentTarget.getBoundingClientRect());
+        onDeviceScreenGesture(point.x, point.y, point.x, point.y, "tap");
+      }}>{screenContent}</div>
       : fixtureOnly
       ? <div className="qc-screen-fixture-root is-canonical-canvas" onPointerDown={beginDeviceScreenGesture} onPointerMove={trackDeviceScreenGesture} onPointerUp={finishDeviceScreenGesture} onPointerCancel={cancelDeviceScreenGesture}><Suspense fallback={null}><CorOsScreenFixture view={screenView} snapshot={displaySnapshot} gigPresetList={gigPresetList} deviceInformation={deviceInformation} onClose={onCloseScreen} onEditScene={onEditScene} onSelectScene={(scene) => onAction({ kind: "select-scene", scene })} onSelectModeSlot={(slot) => onAction({ kind: "select-mode-slot", slot })} onRecallGigPreset={onRecallGigPreset} onPressGigFootswitch={(index) => { const role = `footswitch:${String.fromCharCode(65 + index)}`; onAction({ kind: "switch", role, phase: "press" }); onAction({ kind: "switch", role, phase: "release" }); }} onEditGigBlock={(blockId) => onAction({ kind: "select-block", blockId })} onCopyGigScene={onCopyGigScene} onSwapGigScene={onSwapGigScene} /></Suspense></div>
       : <div className="qc-screen-fixture-root is-live-grid"><CorOsGrid

@@ -824,6 +824,7 @@ export function QcRouteGlyph({ side, label }: { side: "input" | "output"; label:
 export function QcModeGlyph({ mode }: { mode: PresetSnapshot["mode"] }) {
   const icon = `mode.${mode.toLowerCase()}` as ScreenVectorName;
   const vector = QC_SCREEN_ICON_VECTORS[icon];
+  if (!vector) return null;
   // HYBRID is a composition, not a drawing: the device shows a preset box, a
   // join, and a scene box side by side within one 74x26 mode box. The two mode
   // marks are delegated to their own entries and only the join is authored

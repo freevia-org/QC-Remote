@@ -1488,6 +1488,13 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
         assertCell(row, column);
         const block = requireBlock(state.current.preset, row, column, expectedModelId);
         block.parameterValues = index.defaults(block.modelId);
+        // Scene-mode values take precedence over parameterValues in every
+        // projection. Reset those values too, retaining the mode assignment.
+        for (const key of Object.keys(block.sceneValues ?? {})) {
+          const value = block.parameterValues[Number(key)];
+          if (value === undefined) delete block.sceneValues![Number(key)];
+          else block.sceneValues![Number(key)] = perScene(value);
+        }
         edited(state);
         return done("Block parameters reset to defaults", state);
       });

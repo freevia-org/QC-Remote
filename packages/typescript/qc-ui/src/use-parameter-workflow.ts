@@ -1,5 +1,6 @@
 import { requireModelId, requirePresetIdentity } from "@qc-remote/client";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useGuardedMutation } from "./use-guarded-mutation.ts";
 import type { BlockDetails, BlockParameter, GatewayTransport, PresetSnapshot } from "@qc-remote/client";
 import type { BlockEditorSessionController } from "./use-block-editor-session";
 import type { DeviceMutationWorkflowOptions } from "./workflow-options";
@@ -47,6 +48,24 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
   context.current = {snapshot, connected};
   const detailsRef = useRef(editor.details);
   useEffect(() => { detailsRef.current = editor.details; }, [editor.details]);
+  // Selection changes must retire an awaited action during render, before the
+  // old editor's effect cleanup runs. A return to the same block is a new owner.
+  const actionKey = useMemo(() => ({}), [options.sessionKey, gateway, connected,
+    snapshot.presetIdentity, snapshot.setlistKey, snapshot.presetPosition, snapshot.activeScene,
+    editor.details?.row, editor.details?.column, editor.details?.modelId, editor.details?.scene]);
+  const currentActionKey = useRef(actionKey);
+  currentActionKey.current = actionKey;
+  const captureActionCurrent = () => {
+      const hostCurrent = options.captureSessionCurrent?.() ?? (() => true);
+      const checkpoint = controller.lifetime.checkpoint();
+      const epoch = lifetime.current;
+      return () => hostCurrent() && controller.lifetime.current(checkpoint)
+        && epoch === lifetime.current && actionKey === currentActionKey.current;
+  };
+  const actionGuard = useGuardedMutation({ ...options, sessionKey: actionKey,
+    commandSessionKey: options.commandSessionKey ?? options.sessionKey ?? gateway,
+    captureSessionCurrent: captureActionCurrent
+  }, "editing block parameters");
 
   const resolveWaiters = useCallback(() => {
     if (previewRunning.current || previewQueue.current) return;
@@ -411,24 +430,32 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       return;
     }
     const details = detailsRef.current;
-    if (!details || pending) return;
+    if (!details) return;
     if (!connected) {
       notice("Connect the Quad Cortex before changing a parameter's Scene assignment.");
       return;
     }
-    setPending(true);
-    notice(`${parameter.sceneMode ? "Removing" : "Assigning"} ${parameter.name} ${parameter.sceneMode ? "from" : "to"} Scenes…`);
-    try {
+    const currentAction = captureActionCurrent();
+    const assertCurrent = () => { if (!currentAction()) throw new SupersededPresetOperation(); };
+    const sameBlock = (block: BlockDetails) => block.row === details.row && block.column === details.column
+      && block.modelId === details.modelId && block.scene === details.scene;
+    await actionGuard.run({
+      progress: `${parameter.sceneMode ? "Removing" : "Assigning"} ${parameter.name} ${parameter.sceneMode ? "from" : "to"} Scenes…`,
+      write: async () => {
       await waitForPreviews();
+      assertCurrent();
       const observed = await gateway.blockDetails(details.row, details.column, snapshot.presetName, requirePresetIdentity(snapshot));
-      if (observed.modelId !== details.modelId || observed.scene !== details.scene) throw new Error("The parameter block or scene changed. Select it again before editing.");
+      assertCurrent();
+      if (!sameBlock(observed)) throw new Error("The parameter block or scene changed. Select it again before editing.");
       const current = observed.parameters.find((candidate) => candidate.index === parameter.index);
       if (!current || current.sceneMode !== parameter.sceneMode) throw new Error("The parameter's Scene assignment changed. Refresh and retry.");
       const enabled = !current.sceneMode;
       const result = await gateway.setParameterSceneMode(observed.row, observed.column, current.index, enabled, requireModelId(observed), snapshot.presetName, requirePresetIdentity(snapshot));
+      assertCurrent();
       const confirmed = await gateway.blockDetails(observed.row, observed.column, snapshot.presetName, requirePresetIdentity(snapshot));
+      assertCurrent();
       const confirmedParameter = confirmed.parameters.find((candidate) => candidate.index === current.index);
-      if (confirmedParameter?.sceneMode !== enabled) throw new Error("The Quad Cortex did not confirm the parameter's Scene assignment.");
+      if (!sameBlock(confirmed) || confirmedParameter?.sceneMode !== enabled) throw new Error("The Quad Cortex did not confirm the parameter's Scene assignment.");
       detailsRef.current = confirmed;
       editor.load(confirmed);
       if (result.snapshot) reconcile(result.snapshot);
@@ -438,46 +465,48 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
         redo: (latest) => gateway.setParameterSceneMode(observed.row, observed.column, current.index, enabled, requireModelId(observed), latest.presetName, requirePresetIdentity(latest))
       });
       notice(result.detail);
-    } catch (error) {
-      fail(error);
-    } finally {
-      setPending(false);
-    }
-  }, [connected, editor, fail, gateway, notice, pending, reconcile, recordHistory, setPending, snapshot, waitForPreviews]);
+      }
+    });
+  }, [actionGuard, actionKey, connected, controller.lifetime, editor, gateway, notice, options.captureSessionCurrent, reconcile, recordHistory, snapshot, waitForPreviews]);
   const resetDefaults = useCallback(async () => {
     if (snapshot.gridLayoutComplete === false) {
       notice("The Grid layout is incomplete. Block parameter edits are paused until the current-preset refresh succeeds.");
       return;
     }
     const details = detailsRef.current;
-    if (!details || pending) return;
+    if (!details) return;
     if (!connected) {
       notice("Connect the Quad Cortex before resetting block parameters.");
       return;
     }
-    setPending(true);
-    notice(`Resetting ${details.name} parameters…`);
-    try {
+    const currentAction = captureActionCurrent();
+    const assertCurrent = () => { if (!currentAction()) throw new SupersededPresetOperation(); };
+    const sameBlock = (block: BlockDetails) => block.row === details.row && block.column === details.column
+      && block.modelId === details.modelId && block.scene === details.scene;
+    await actionGuard.run({
+      progress: `Resetting ${details.name} parameters…`,
+      write: async () => {
       await waitForPreviews();
+      assertCurrent();
       const observed = await gateway.blockDetails(details.row, details.column, snapshot.presetName, requirePresetIdentity(snapshot));
-      if (observed.modelId !== details.modelId || observed.scene !== details.scene) {
+      assertCurrent();
+      if (!sameBlock(observed)) {
         throw new Error("The parameter block or scene changed. Select it again before resetting.");
       }
       const result = await gateway.resetBlockParameters(observed.row, observed.column, requireModelId(observed), snapshot.presetName, requirePresetIdentity(snapshot));
+      assertCurrent();
       const confirmed = await gateway.blockDetails(observed.row, observed.column, snapshot.presetName, requirePresetIdentity(snapshot));
-      if (confirmed.modelId !== observed.modelId || confirmed.scene !== observed.scene) {
+      assertCurrent();
+      if (!sameBlock(confirmed)) {
         throw new Error("The parameter block or scene changed before reset readback.");
       }
       detailsRef.current = confirmed;
       editor.load(confirmed);
       reconcile(result.snapshot ?? { ...snapshot, dirty: true });
       notice("Block parameters reset to defaults.");
-    } catch (error) {
-      fail(error);
-    } finally {
-      setPending(false);
-    }
-  }, [connected, editor, fail, gateway, notice, pending, reconcile, setPending, snapshot, waitForPreviews]);
+      }
+    });
+  }, [actionGuard, actionKey, connected, controller.lifetime, editor, gateway, notice, options.captureSessionCurrent, reconcile, snapshot, waitForPreviews]);
   const adjustEncoder = useCallback((
     role: string,
     delta: number,

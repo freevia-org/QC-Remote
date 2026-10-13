@@ -8,14 +8,19 @@ export const QC_GRID_SCREEN_ROWS = [147, 241, 335, 429] as const;
 export const QC_PARAMETER_EDITOR_DONE = { x: 742, y: 30 } as const;
 
 function requireGrid(tree: string): void {
-  if (!tree.includes("zenUI::Grid")) {
+  if (!/zenUI::Grid(?![A-Za-z0-9_])/.test(tree)) {
     throw new Error("The Quad Cortex is not showing the Grid. Return to the Grid, then select the block again.");
   }
 }
 
 function requireBareGrid(tree: string): void {
   requireGrid(tree);
-  if (tree.includes("zenUI::ParameterEditor")) {
+  // The Grid remains in a menu/dialog tree. Its presence does not make a cell
+  // coordinate safe to touch. Unknown popup/dialog/editor classes are refused
+  // too; ordinary Grid children (labels, tiles and paths) remain admissible.
+  const classes = [...tree.matchAll(/zenUI::([A-Za-z0-9_]+)/g)].map((match) => match[1]);
+  if (classifyQcGraphicsTree(tree) !== "grid"
+      || classes.some((name) => /(?:Popup|Dialog|Editor|Overlay|Panel)$/.test(name))) {
     throw new Error("The Quad Cortex Grid is covered by another screen. Close it, then select the block again.");
   }
 }

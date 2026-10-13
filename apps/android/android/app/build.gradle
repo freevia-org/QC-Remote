@@ -87,6 +87,10 @@ def qcRepoRoot = rootProject.projectDir.parentFile.parentFile.parentFile
 def buildSharedQcRust = tasks.register('buildSharedQcRust', Exec) {
     workingDir qcRepoRoot
     inputs.file(new File(qcRepoRoot, 'scripts/build-android-rust.ps1'))
+    inputs.files(
+        new File(qcRepoRoot, 'Cargo.toml'),
+        new File(qcRepoRoot, 'Cargo.lock')
+    )
     inputs.files(fileTree(new File(qcRepoRoot, 'packages/rust/quadcortex')) {
         include 'Cargo.toml', 'Cargo.lock', 'build.rs', 'proto/**', 'src/**'
         exclude 'target/**'

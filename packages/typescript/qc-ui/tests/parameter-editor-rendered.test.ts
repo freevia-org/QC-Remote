@@ -1,0 +1,222 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createRequire, register } from "node:module";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { act, create } from "react-test-renderer";
+
+register("./support/react-singleton-loader.mjs", import.meta.url);
+const React = (await import("react")).default;
+const rendererRequire = createRequire(createRequire(import.meta.url).resolve("react-test-renderer"));
+const { build } = await import("esbuild");
+const work = mkdtempSync(join(tmpdir(), "qc-editor-rendered-"));
+test.after(() => rmSync(work, { recursive: true, force: true }));
+const outfile = join(work, "editors.mjs");
+let components: Record<string, any>;
+try {
+await build({
+  stdin: { contents: `export { CorOsParameterEditor } from ${JSON.stringify(fileURLToPath(new URL("../src/parameter-editor.tsx", import.meta.url)))};
+export { PresetMidiOutEditor } from ${JSON.stringify(fileURLToPath(new URL("../src/preset-midi-out-editor.tsx", import.meta.url)))};
+export { usePresetMidiOutWorkflow } from ${JSON.stringify(fileURLToPath(new URL("../src/use-preset-midi-out-workflow.ts", import.meta.url)))};
+export { CorOsDirectory } from ${JSON.stringify(fileURLToPath(new URL("../src/coros-directory.tsx", import.meta.url)))};
+export { QuadCortexSurface } from ${JSON.stringify(fileURLToPath(new URL("../src/quad-cortex-surface.tsx", import.meta.url)))};
+export { IDLE_PLACEHOLDER_SNAPSHOT } from ${JSON.stringify(fileURLToPath(new URL("../src/device-placeholder.ts", import.meta.url)))};
+export { formFactors, skins } from "@qc-remote/form-factors";`, resolveDir: fileURLToPath(new URL("../", import.meta.url)), loader: "tsx" },
+  outfile, bundle: true, format: "esm", platform: "node", jsx: "automatic", logLevel: "error",
+  loader: { ".ttf": "dataurl", ".svg": "dataurl", ".png": "dataurl", ".woff2": "dataurl" },
+  plugins: [{ name: "renderer-react", setup(builder) {
+    builder.onResolve({ filter: /^react(?:\/jsx(?:-dev)?-runtime)?$/ }, ({ path }) => ({ path: pathToFileURL(rendererRequire.resolve(path)).href, external: true }));
+  } }]
+});
+components = await import(pathToFileURL(outfile).href);
+} catch (error) {
+  rmSync(work, { recursive: true, force: true });
+  throw error;
+}
+const { CorOsParameterEditor, PresetMidiOutEditor, usePresetMidiOutWorkflow, CorOsDirectory, QuadCortexSurface, IDLE_PLACEHOLDER_SNAPSHOT, formFactors, skins } = components;
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+function propsFor(name: string, commits: number[]) {
+  const cab = name.includes("C30");
+  const parameter = { index: cab ? 5 : 0, name: cab ? "POSITION" : name === "Parametric-8" ? "N1 GAIN" : "THRESHOLD",
+    type: "float", options: [], steps: 101, normalizedValue: .2, writable: true, enabled: true, minimum: 0, maximum: 10, units: "", displayValue: "2.0" };
+  return { details: { name, category: cab ? "Guitar Cab" : name === "Parametric-8" ? "EQ" : "Utility", modelId: 42, row: 0, column: 0, scene: 0, parameters: [parameter] },
+    drafts: {}, accent: "white", activeScene: 0, scenes: ["A"], bypassed: false, page: 0,
+    onPageChange() {}, onDraftChange() {}, onCommit(_parameter: unknown, value: number) { commits.push(value); }, onToggleSceneMode() {}, onToggleBypass() {}, onSceneSelect() {},
+    onFootswitchAssignmentStart() {}, onUnassignFootswitch() {}, onContextAction() {}, onClose() {} };
+}
+
+for (const name of ["Simple Gate", "Parametric-8", "212 UK C30 65 (M)"]) {
+  test(`${name} uses live values and commits through its real rendered control`, async (t) => {
+    const commits: number[] = [];
+    const props = propsFor(name, commits);
+    let renderer!: ReturnType<typeof create>;
+    act(() => { renderer = create(React.createElement(CorOsParameterEditor, props)); });
+    t.after(() => act(() => renderer.unmount()));
+    const dials = renderer.root.findAll((node) => typeof node.type === "function" && ["QcRotaryDial", "QcBarSlider"].includes(node.type.name));
+    assert.ok(dials.some((dial) => dial.props.value === .2));
+    const range = renderer.root.findAll((node) => node.type === "input" && node.props.type === "range")[0];
+    if (range) act(() => range.props.onPointerUp({ currentTarget: { value: ".3" } }));
+    else {
+      const slider = renderer.root.findAll((node) => node.type === "button" && node.props.role === "slider")[0];
+      assert.ok(slider);
+      await act(async () => { slider.props.onKeyDown({ key: "ArrowUp", preventDefault() {} }); slider.props.onKeyUp({ key: "ArrowUp" }); });
+    }
+    assert.equal(commits.length, 1);
+    if (name === "Parametric-8") {
+      act(() => renderer.update(React.createElement(CorOsParameterEditor, { ...props, referenceOnly: true })));
+      assert.ok(renderer.root.findAll((node) => typeof node.type === "function" && node.type.name === "QcRotaryDial").some((node) => node.props.value === .5));
+      assert.equal(renderer.root.findAll((node) => node.type === "button" && node.props.role === "slider").length, 0);
+    }
+  });
+}
+
+test("UNKNOWN mode renders an honest Grid without a fabricated known mode glyph", (t) => {
+  const formFactor = formFactors[0], skin = skins.find((item: { id: string }) => item.id === formFactor.defaultSkinId);
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(React.createElement(QuadCortexSurface, { formFactor, skin, snapshot: { ...IDLE_PLACEHOLDER_SNAPSHOT, mode: "UNKNOWN" }, presentation: "display", canUndo: false,
+    onAction() {}, onOpenPreset() {}, onUndo() {}, onSave() {}, onOpenRouting() {}, onRefresh() {} })); });
+  t.after(() => act(() => renderer.unmount()));
+  assert.ok(renderer.root.findAllByType("text").some((node) => node.children.includes("UNKNOWN")));
+  assert.equal(renderer.root.findAllByType("svg").filter((node) => String(node.props.className).startsWith("qc-mode-glyph")).length, 0);
+});
+
+test("StrictMode effect replay still permits a current Save modal", async (t) => {
+  const saved: string[] = [];
+  const props = { ...propsFor("Amp", []), onSaveDevicePreset(name: string) { saved.push(name); } };
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(React.createElement(React.StrictMode, null, React.createElement(CorOsParameterEditor, props))); });
+  t.after(() => act(() => renderer.unmount()));
+  const content = renderer.root.findAll((node) => typeof node.type === "function" && node.type.name === "CorOsParameterEditorContent")[0];
+  act(() => content.props.onContextAction("save-device-preset"));
+  act(() => renderer.root.findByProps({ placeholder: "Name" }).props.onChange({ target: { value: "Current" } }));
+  await act(async () => renderer.root.findByProps({ className: "is-primary" }).props.onClick());
+  assert.deepEqual(saved, ["Current"]);
+});
+
+test("live standard-layout controls respect the device's disabled parameter state", (t) => {
+  const props = propsFor("Digital Flanger", []);
+  props.details.parameters[0].enabled = false;
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(React.createElement(CorOsParameterEditor, props)); });
+  t.after(() => act(() => renderer.unmount()));
+  const ranges = renderer.root.findAll((node) => node.type === "input" && node.props.type === "range");
+  assert.equal(ranges.length, 1);
+  assert.equal(ranges[0].props.disabled, true);
+});
+
+test("same-address session retirement and an obsolete Looper load cannot revive or overwrite a Save modal", async (t) => {
+  const saved: string[] = [];
+  let resolve!: (values: number[]) => void;
+  const oldLoad = new Promise<number[]>((done) => { resolve = done; });
+  let props = { ...propsFor("Looper X", []), editorContextKey: "device-A:preset-lifetime-1",
+    onSaveDevicePreset(name: string) { saved.push(name); }, onLoadLooperAssignments: () => oldLoad };
+  let renderer!: ReturnType<typeof create>;
+  const view = () => React.createElement(CorOsParameterEditor, props);
+  act(() => { renderer = create(view()); });
+  t.after(() => act(() => renderer.unmount()));
+  const begin = (action: string) => renderer.root.findAll((node) => typeof node.type === "function" && node.type.name === "CorOsParameterEditorContent")[0].props.onContextAction(action);
+  act(() => begin("save-device-preset"));
+  act(() => renderer.root.findByProps({ placeholder: "Name" }).props.onChange({ target: { value: "Old" } }));
+  const oldSave = renderer.root.findByProps({ className: "is-primary" }).props.onClick;
+  act(() => { props = { ...props, editorContextKey: "device-A:preset-lifetime-2" }; renderer.update(view()); });
+  assert.equal(renderer.root.findAllByProps({ "aria-label": "Save device preset" }).length, 0);
+  await act(async () => oldSave());
+  assert.deepEqual(saved, []);
+  act(() => begin("assign-looper-actions"));
+  act(() => begin("save-device-preset"));
+  act(() => renderer.root.findByProps({ placeholder: "Name" }).props.onChange({ target: { value: "Current" } }));
+  assert.equal(renderer.root.findByProps({ className: "is-primary" }).props.disabled, false);
+  await act(async () => resolve([0, 1, 2, 3, 4, 5, 6, 7]));
+  assert.equal(renderer.root.findAllByProps({ "aria-label": "Reassign Looper X actions" }).length, 0);
+  await act(async () => renderer.root.findByProps({ className: "is-primary" }).props.onClick());
+  assert.deepEqual(saved, ["Current"]);
+});
+
+test("Directory retires setlist selection, menu, and retained actions across session ABA", async (t) => {
+  const arranged: unknown[] = [], actions: unknown[] = [], batches: unknown[] = [];
+  const entries = [{position:0,location:"1A",name:"Source",instrument:0,occupied:true},{position:1,location:"1B",name:"Destination",instrument:0,occupied:true}];
+  let directory = { interactionSessionKey: "transport-A", open:true, loading:false, disabled:false,
+    list:{setlistKey:"A",setlistName:"A",presets:entries,folders:[]},
+    onClose(){},onRefresh(){},onRecall(){},onSelectSetlist(){},onNewSetlist(){},
+    onPresetAction(action: string, entry: unknown){actions.push([action,entry]);},
+    onPresetBatchAction(action: string, rows: unknown[]){batches.push([action,rows]);},
+    onArrangePreset(source: unknown, destination: unknown){arranged.push([source,destination]);} };
+  const view = () => React.createElement(CorOsDirectory, {snapshot:IDLE_PLACEHOLDER_SNAPSHOT,directory});
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(view()); }); t.after(() => act(() => renderer.unmount()));
+  const recall = (index: number) => renderer.root.findAll((node) => node.type === "button" && String(node.props.className).startsWith("preset-recall"))[index];
+  const multi = () => renderer.root.findByProps({"aria-label":"Multi select presets"}).props.onClick();
+  act(() => { multi(); }); act(() => { recall(0).props.onClick(); });
+  act(() => { renderer.root.findAllByProps({className:"directory-batch-action"})[1].props.onClick(); });
+  const staleDestination = recall(1).props.onClick;
+  act(() => { directory={...directory,list:{...directory.list,setlistKey:"B"}}; renderer.update(view()); });
+  act(() => { recall(1).props.onClick(); staleDestination(); });
+  assert.deepEqual(arranged, []);
+  act(() => { multi(); }); act(() => { recall(0).props.onClick(); });
+  const staleDelete = renderer.root.findByProps({className:"directory-batch-action is-danger"}).props.onClick;
+  act(() => { directory={...directory,interactionSessionKey:"transport-B"}; renderer.update(view()); });
+  act(() => { directory={...directory,interactionSessionKey:"transport-A",list:{...directory.list,setlistKey:"A"}}; renderer.update(view()); });
+  act(() => { staleDelete(); });
+  assert.deepEqual(batches, []);
+  assert.equal(renderer.root.findAllByProps({className:"directory-batch-action is-danger"}).length,0);
+  act(() => { renderer.root.findByProps({"aria-label":"Open menu for 1A Source"}).props.onClick(); });
+  const staleMenu = renderer.root.findAll((node) => node.type === "button" && node.props.role === "menuitem")[0].props.onClick;
+  act(() => { directory={...directory,open:false}; renderer.update(view()); });
+  act(() => { directory={...directory,open:true}; renderer.update(view()); });
+  act(() => { staleMenu(); }); assert.deepEqual(actions, []);
+  assert.equal(renderer.root.findAll((node) => node.props.role === "menu").length,0);
+  act(() => { multi(); }); act(() => { recall(0).props.onClick(); });
+  act(() => { renderer.root.findAllByProps({className:"directory-batch-action"})[1].props.onClick(); });
+  act(() => { recall(1).props.onClick(); });
+  assert.deepEqual(arranged, [[entries[0], entries[1]]], "current setlist remains usable");
+});
+test("MIDI Clear-all authorization belongs to its actual workflow host and preset lifetime", async (t) => {
+  let writes = 0, epoch = 0;
+  const gateway = { async setMidiOut() { writes++; return {detail:"Cleared"}; } };
+  let snapshot = {...IDLE_PLACEHOLDER_SNAPSHOT, presetIdentity:"midi-original", midiOut:[{source:0,messages:[{type:1,channel:1,param1:1,param2:2,param3:0}]}]};
+  const captureSessionCurrent = () => { const captured = epoch; return () => captured === epoch; };
+  function Probe() {
+    const workflow = usePresetMidiOutWorkflow({gateway, snapshot, captureSessionCurrent});
+    return React.createElement(PresetMidiOutEditor, {workflow,onClose(){}});
+  }
+  let renderer: ReturnType<typeof create> | undefined;
+  const oldFrame = Object.getOwnPropertyDescriptor(globalThis, "requestAnimationFrame");
+  const oldCancel = Object.getOwnPropertyDescriptor(globalThis, "cancelAnimationFrame");
+  const frames = new Set<ReturnType<typeof setTimeout>>();
+  Object.defineProperty(globalThis, "requestAnimationFrame", {configurable:true,value:(callback: (time: number) => void) => {
+    const timer = setTimeout(() => { frames.delete(timer); callback(0); },0); frames.add(timer); return timer;
+  }});
+  Object.defineProperty(globalThis, "cancelAnimationFrame", {configurable:true,value:(timer: ReturnType<typeof setTimeout>) => { clearTimeout(timer); frames.delete(timer); }});
+  try {
+  await act(async () => { renderer = create(React.createElement(React.StrictMode, null, React.createElement(Probe))); });
+  const open = () => renderer!.root.findByProps({"aria-label":"Clear MIDI assignments"}).props.onClick();
+  const confirm = () => renderer!.root.findByProps({confirmLabel:"Clear all"});
+  await act(async () => { open(); }); const oldHost = confirm().props.onConfirm;
+  epoch++; await act(async () => { oldHost(); }); assert.equal(writes,0,"host retirement refuses even before rerender");
+  await act(async () => { renderer!.update(React.createElement(React.StrictMode, null, React.createElement(Probe))); });
+  assert.equal(renderer!.root.findAllByProps({confirmLabel:"Clear all"}).length,0);
+  await act(async () => { oldHost(); }); assert.equal(writes,0);
+  await act(async () => { open(); }); const oldPreset = confirm().props.onConfirm;
+  snapshot={...snapshot,presetIdentity:"midi-replacement"};
+  await act(async () => { renderer!.update(React.createElement(React.StrictMode, null, React.createElement(Probe))); });
+  await act(async () => { open(); }); const current = confirm().props.onConfirm;
+  await act(async () => { oldPreset(); }); assert.equal(writes,0);
+  assert.equal(renderer!.root.findAllByProps({confirmLabel:"Clear all"}).length,1,"old completion must not close new confirmation");
+  await act(async () => { current(); current(); }); assert.equal(writes,1,"current confirmation dispatches once");
+  await act(async () => { open(); }); const cancelled = confirm().props.onConfirm;
+  await act(async () => { confirm().props.onCancel(); open(); });
+  await act(async () => { cancelled(); }); assert.equal(writes,1,"cancelled token cannot authorize a reopened dialog");
+  assert.equal(renderer!.root.findAllByProps({confirmLabel:"Clear all"}).length,1);
+  const unmounted = confirm().props.onConfirm;
+  await act(async () => { renderer!.unmount(); });
+  await act(async () => { unmounted(); }); assert.equal(writes,1);
+  } finally {
+    if (renderer) await act(async () => { renderer!.unmount(); });
+    for (const frame of frames) clearTimeout(frame);
+    if (oldFrame) Object.defineProperty(globalThis,"requestAnimationFrame",oldFrame); else Reflect.deleteProperty(globalThis,"requestAnimationFrame");
+    if (oldCancel) Object.defineProperty(globalThis,"cancelAnimationFrame",oldCancel); else Reflect.deleteProperty(globalThis,"cancelAnimationFrame");
+  }
+});

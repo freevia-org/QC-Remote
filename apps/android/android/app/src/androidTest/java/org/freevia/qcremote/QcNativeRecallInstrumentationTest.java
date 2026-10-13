@@ -210,6 +210,19 @@ public final class QcNativeRecallInstrumentationTest extends TestCase {
         closed.close(); // Idempotence, no native handle reused.
     }
 
+    public void testBackupNamePreflightRunsWithoutAnyDeviceOwner() throws Exception {
+        // No decoder instance, session, operation or USB transport is created.
+        // Exercise the same pure JNI boundary used before backup admission.
+        rejected(() -> QcNativeStateDecoder.validateBackupName("x".repeat(65)));
+        rejected(() -> QcNativeStateDecoder.validateBackupName("bad\nname"));
+        rejected(() -> QcNativeStateDecoder.validateBackupName("\u007f"));
+        rejected(() -> QcNativeStateDecoder.validateBackupName("   "));
+        String valid = "x".repeat(64);
+        assertEquals(valid, QcNativeStateDecoder.validateBackupName(valid));
+        String unicode = "\ud83c\udfb8".repeat(64);
+        assertEquals(unicode, QcNativeStateDecoder.validateBackupName(unicode));
+    }
+
     // Input protobuf fixtures only. Output JSON is always the actual JNI serializer.
     // ProductionAutomation.proto: UPDATE=1, position fields1/3/4, recall fields1/3.
     // Preset.proto: BinaryPreset.name=2. No production state setter is exported.

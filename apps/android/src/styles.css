@@ -105,6 +105,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .mobile-gig-control { grid-column: 3; grid-row: 1; }
 
 .mobile-workflow-backdrop { position: fixed; z-index: 200; inset: 0; display: grid; align-items: end; padding: max(12px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom)); background: var(--qc-palette-000a); backdrop-filter: blur(5px); }
+/* Prompts may be opened from the USB sheet, which stays open after cancellation. */
+.android-app > .qc-confirm-wash, .android-app > .qc-text-prompt-wash { z-index: 210; }
 .mobile-workflow-panel { position: relative; max-height: 86dvh; overflow: auto; padding: 20px 16px 18px; border: 1px solid var(--qc-app-border); border-radius: 18px 18px 10px 10px; background: var(--qc-app-panel); box-shadow: 0 -18px 50px var(--qc-palette-000b); }
 .mobile-workflow-close { position: absolute; z-index: 1; top: 10px; right: 10px; width: 32px; height: 32px; border: 1px solid var(--qc-palette-394049); border-radius: 10px; background: var(--qc-palette-1a1f25); color: var(--qc-palette-dce1e5); font-size: 23px; line-height: 1; }
 .mobile-workflow-panel h2 { margin: 4px 42px 16px 0; font-size: 21px; }

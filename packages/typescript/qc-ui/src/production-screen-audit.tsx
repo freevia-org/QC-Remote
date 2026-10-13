@@ -57,7 +57,7 @@ export function CorOsProductionScreenAudit({ view, snapshot }: { view: string; s
   // The audit never talks to a device. Its MIDI Out writes succeed locally so
   // Save and Clear all show their real outcome instead of a missing-method error.
   const midiOut: PresetMidiOutWorkflow = {
-    snapshot, demo: false, pending: false, error: "", status: midiOutStatus,
+    snapshot, demo: false, pending: false, error: "", status: midiOutStatus, contextVersion: 0, contextCurrent: () => true,
     async save() { setMidiOutStatus("saved"); },
     async clearAll() { setMidiOutStatus("cleared"); },
     clearError: ignore,
