@@ -172,9 +172,7 @@ final class QCIosProtocolSession {
 
     func reportEpoch(connection: UInt64) throws -> UInt64 {
         try queue.sync {
-            let epoch = qcIosReportEpoch(session, connection)
-            guard epoch != 0 else { throw BridgeError.operationFailed }
-            return epoch
+            qcIosReportEpoch(session, connection)
         }
     }
 
