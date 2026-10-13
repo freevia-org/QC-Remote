@@ -506,10 +506,10 @@
 .coros-tuner > footer > section:last-child > .qc-pill-toggle { position: absolute; left: 2.075cqw; top: 6cqw; }
 .coros-tuner > footer > section:last-child .tuner-choice b { font-weight: 400; }
 
-.coros-midi-out, .coros-cpu-monitor { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-palette-eef0ef); container-type: inline-size; font-family: var(--qc-font-device-plain); }
-.coros-midi-out button, .coros-cpu-monitor button { border: 0; color: inherit; font: inherit; }
-.coros-midi-out > header, .coros-cpu-monitor > header { box-sizing: border-box; height: var(--qc-nav-bar-height); display: flex; align-items: center; gap: 2cqw; padding: 1%; color: var(--qc-palette-999c9a); font-size: 2cqw; }
-.coros-midi-out > header button, .coros-cpu-monitor > header button { width: 12.25%; height: 100%; margin-left: auto; border-radius: 1cqw; background: var(--qc-screen-surface-control); color: var(--qc-palette-f3f4f3); font-size: 2.8cqw; }
+.coros-cpu-monitor { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-palette-eef0ef); container-type: inline-size; font-family: var(--qc-font-device-plain); }
+.coros-cpu-monitor button { border: 0; color: inherit; font: inherit; }
+.coros-cpu-monitor > header { box-sizing: border-box; height: var(--qc-nav-bar-height); display: flex; align-items: center; gap: 2cqw; padding: 1%; color: var(--qc-palette-999c9a); font-size: 2cqw; }
+.coros-cpu-monitor > header button { width: 12.25%; height: 100%; margin-left: auto; border-radius: 1cqw; background: var(--qc-screen-surface-control); color: var(--qc-palette-f3f4f3); font-size: 2.8cqw; }
 .tempo-main { height: 31%; display: grid; grid-template-columns: 42% 29% 29%; padding: 0 1%; }
 .tempo-main > section { display: grid; align-content: center; padding: 1.5cqw 2cqw; border-right: 1px solid var(--qc-screen-surface-raised); background: var(--qc-screen-surface-control); }
 .tempo-main > section:first-child { border-radius: 1cqw 0 0 1cqw; }.tempo-main > section:last-child { border-radius: 0 1cqw 1cqw 0; border-right: 0; }
@@ -528,7 +528,7 @@
 .coros-gig-view header { display: flex; align-items: center; gap: 1%; padding: 1% 2%; background: var(--qc-screen-surface-base); }
 .coros-gig-view header strong { min-width: 0; flex: 1; overflow: hidden; font-size: clamp(11px, 3.75cqw, 30px); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .coros-gig-view header > span, .coros-gig-view header button { height: 100%; display: grid; place-items: center; border: 0; border-radius: 7px; }
-.coros-gig-view .gig-mode { flex: 0 0 8.2%; background: var(--qc-screen-surface-raised); font-size: clamp(11px, 3cqw, 24px); }
+.coros-gig-view .gig-mode { flex: 0 0 8.25cqw; background: var(--qc-screen-surface-raised); font-size: clamp(11px, 3cqw, 24px); }
 .coros-gig-view .gig-scene { flex: 0 0 5.2%; color: var(--qc-palette-111); background: var(--qc-palette-f4cf25); font-size: clamp(11px, 3.4cqw, 27px); font-weight: 800; }
 .coros-gig-view header button { flex: 0 0 12.25%; color: var(--qc-screen-text-primary); background: var(--qc-screen-surface-control); font-size: clamp(12px, 3cqw, 24px); cursor: pointer; }
 .coros-gig-view .gig-mode, .coros-gig-view .gig-scene { padding: 0; font-family: inherit; cursor: pointer; }
@@ -571,14 +571,12 @@
 .gig-scene-tile > b { left: 16%; right: auto; top: 12%; color: color-mix(in srgb, var(--gig-color) 72%, var(--qc-screen-background)); font-size: 18cqw; line-height: 1; }
 .coros-gig-view .gig-scene-tile > strong { left: 0; right: 0; top: 41%; bottom: auto; color: var(--qc-screen-text-primary); font-size: 3.8cqw; font-weight: 700; text-align: center; }
 .coros-gig-view .gig-scene-tile.is-active > strong { top: 34%; }
-.gig-scene-tools { position: absolute; z-index: 1; left: 10%; right: 10%; top: 8%; color: var(--qc-palette-afb6b3); font-size: 2.8cqw; letter-spacing: .7cqw; }
+.gig-scene-tools { position: absolute; z-index: 1; left: 10%; right: 10%; top: 8%; color: var(--gig-tools, var(--qc-palette-afb6b3)); font-size: 2.8cqw; letter-spacing: .7cqw; }
 .gig-scene-tile.is-active { background: var(--gig-active-color) !important; }
 .gig-scene-tile.is-active > b { color: var(--qc-palette-e82a2f); }
-.gig-scene-tile.is-active > strong, .gig-scene-tile.is-active .gig-scene-tools { color: var(--qc-screen-background); }
+.gig-scene-tile.is-active > strong { color: var(--qc-screen-background); }
 
 /* CorOS 4.1 manual-reference refinements. */
-.coros-midi-out > header { height: var(--qc-nav-bar-height); }.coros-midi-out > header .midi-trash { width: 7%; margin-left: auto; color: var(--qc-palette-193620); }.coros-midi-out > header button:last-child { margin-left: 0; }.midi-assignment-surface { height: 82%; display: grid; grid-template-columns: 62% 38%; align-items: center; padding: 2cqw 3.2cqw 3cqw; }.midi-footswitches { position: relative; height: 28cqw; display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: 1.2fr 1fr 1fr; align-items: center; justify-items: center; overflow: hidden; border-radius: 2cqw; background: var(--qc-screen-surface-control); }.midi-footswitches::after { content: ""; position: absolute; left: 0; right: 0; top: 10.3cqw; border-top: 1px solid var(--qc-palette-1b1e1c); }.midi-preset-load { grid-column: 2 / 5; width: 17cqw; height: 8.5cqw; border: .45cqw solid var(--qc-screen-background) !important; border-radius: .7cqw; background: var(--qc-screen-surface-base); color: var(--qc-palette-e4e6e5) !important; font-size: 1.35cqw !important; line-height: 1.4; }.midi-switch { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; gap: .8cqw; background: var(--qc-transparent); color: var(--qc-palette-d3d5d4) !important; font-size: 1.35cqw !important; }.midi-switch i { width: 2cqw; height: 2cqw; border-radius: 50%; background: var(--qc-screen-surface-raised); }.midi-expression { height: 28cqw; display: grid; grid-template-columns: 1fr 1fr; gap: 4cqw; padding-left: 4cqw; }.midi-expression label { display: grid; grid-template-rows: 3cqw 1fr; color: var(--qc-palette-d5d7d6); font-size: 1.5cqw; text-align: center; }.midi-expression label div { position: relative; border: .45cqw solid var(--qc-screen-surface-base); border-radius: 1.2cqw; box-shadow: inset 0 0 0 .35cqw var(--qc-palette-080808); }.midi-tabs, .midi-table, .coros-midi-out > footer { display: none; }
-.midi-switch:nth-of-type(2) { grid-area: 2 / 1; }.midi-switch:nth-of-type(3) { grid-area: 2 / 2; }.midi-switch:nth-of-type(4) { grid-area: 2 / 3; }.midi-switch:nth-of-type(5) { grid-area: 2 / 4; }.midi-switch:nth-of-type(6) { grid-area: 3 / 1; }.midi-switch:nth-of-type(7) { grid-area: 3 / 2; }.midi-switch:nth-of-type(8) { grid-area: 3 / 3; }.midi-switch:nth-of-type(9) { grid-area: 3 / 4; }
 
 .coros-io-settings, .coros-global-eq { position: absolute; inset: 0; overflow: hidden; background: var(--qc-screen-surface-base); color: var(--qc-palette-e9ebea); container-type: inline-size; font-family: var(--qc-font-device-plain); }
 .coros-io-settings button, .coros-global-eq button { border: 0; color: inherit; font: inherit; }
@@ -712,20 +710,6 @@
 .system-keyboard { position: absolute; inset: 0; background: var(--qc-rotary-face-edge); }.system-keyboard > header { height: 12%; display: grid; grid-template-columns: 10% 1fr 10%; align-items: center; }.system-keyboard > header button { height: 100%; border: 0; background: var(--qc-transparent); color: var(--qc-screen-text-primary); font-size: 2.4cqw; }.system-keyboard > header strong { font-size: 1.6cqw; font-weight: 400; text-align: center; }.system-keyboard-value { box-sizing: border-box; width: 70%; height: 8cqw; margin: 1cqw auto 2cqw; padding: .8cqw 1.2cqw; border-bottom: .3cqw solid var(--qc-palette-42f173); background: var(--qc-palette-1d231e); color: var(--qc-palette-42f173); font-size: 3.8cqw; }.system-keyboard > section { display: grid; gap: .65cqw; padding: 0 1.5%; }.system-keyboard > section > div { height: 5.4cqw; display: flex; justify-content: center; gap: .7cqw; }.system-keyboard > section button { min-width: 7.7cqw; border: 0; border-radius: .6cqw; background: var(--qc-screen-surface-control); color: var(--qc-palette-f0f2f0); font-size: 1.35cqw; }.system-keyboard > section button.is-space { width: 45cqw; }
 .system-dialog { position: absolute; left: 50%; top: 50%; width: 47%; transform: translate(-50%,-50%); display: flex; flex-direction: column; align-items: center; padding: 2.3cqw; border: 1px solid var(--qc-palette-424943); border-radius: 1cqw; background: var(--qc-rotary-face); box-shadow: 0 1cqw 4cqw var(--qc-screen-background); text-align: center; }.system-dialog .dialog-icon { width: 4cqw; height: 4cqw; display: grid; place-items: center; border-radius: 50%; background: var(--qc-palette-183920); color: var(--qc-palette-42f173); font-size: 2cqw; }.system-dialog .dialog-icon.is-error { background: var(--qc-palette-401b20); color: var(--qc-palette-ff6674); }.system-dialog h1 { margin: 1.1cqw 0 .7cqw; font-size: 2cqw; font-weight: 400; }.system-dialog p { margin: 0; color: var(--qc-palette-9ba19c); font-size: 1.05cqw; line-height: 1.4; }.system-dialog footer { width: 100%; display: grid; grid-template-columns: repeat(2,1fr); gap: 1cqw; margin-top: 2cqw; }.system-dialog footer button { height: 4.5cqw; border: 0; border-radius: .5cqw; background: var(--qc-palette-303631); color: var(--qc-palette-f0f2f0); font-size: 1.05cqw; }.system-dialog footer button.is-danger { background: var(--qc-palette-bd2638); }.system-dialog footer button:only-child { grid-column: 1 / -1; background: var(--qc-palette-193dff); }.system-dialog.is-busy { width: 38%; }.dialog-spinner { width: 5cqw; height: 5cqw; border: .6cqw solid var(--qc-palette-384039); border-top-color: var(--qc-palette-42f173); border-radius: 50%; }
 
-/* The physical pedal has a recessed housing around a separately inset tread.
-   The tread is drawn once, here, on the inset `i`. It used to be declared three
-   times - twice more on the housing's own ::before/::after, at a second period
-   in remaining-fixtures-fixes.css - and neither of those ever painted: the pair
-   was switched off two rules below this one and nothing restored `display`.
-   Thirteen rule blocks aimed at those two pseudo-elements were dead code and
-   have been removed. */
-.midi-expression label div { background: var(--qc-palette-080808); }
-
-.midi-expression label div > i { position: absolute; left: 1cqw; right: 1.125cqw; top: 2.625cqw; bottom: .75cqw; border-radius: .5cqw; background: var(--qc-screen-surface-control); }
-.midi-expression label div > i::before,
-.midi-expression label div > i::after { content: ""; position: absolute; left: 18%; right: 18%; height: 6cqw; background: repeating-linear-gradient(to bottom, var(--qc-rotary-face) 0 .3cqw, var(--qc-transparent) .3cqw .65cqw); }
-.midi-expression label div > i::before { top: 1.5cqw; }
-.midi-expression label div > i::after { bottom: 1cqw; }
 }
 
 /* Virtual Device naming uses the full native keyboard. */

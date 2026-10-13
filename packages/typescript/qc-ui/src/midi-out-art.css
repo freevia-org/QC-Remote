@@ -1,0 +1,10 @@
+/* The Preset MIDI Out art (midi-out-art.tsx). Each svg is sized in cqw so it
+   scales with the 800-unit display: 20x24 and 108x260 device pixels. */
+.qc-midi-out-trash-icon { display: block; width: 2.5cqw; height: 3cqw; overflow: visible; }
+.qc-midi-out-trash-fill { fill: currentColor; }
+.qc-midi-out-trash-stroke { fill: none; stroke: currentColor; stroke-width: 2; }
+.qc-midi-out-trash-cross { stroke-width: 1.7; }
+.qc-midi-out-pedal { display: block; width: 13.5cqw; height: 32.5cqw; overflow: visible; }
+.qc-midi-out-pedal-body { fill: var(--qc-palette-080808); stroke: var(--qc-rotary-face); stroke-width: 2; stroke-linejoin: round; }
+.qc-midi-out-pedal-plate { fill: var(--qc-screen-surface-control); }
+.qc-midi-out-pedal-ribs { fill: var(--qc-rotary-face); }
