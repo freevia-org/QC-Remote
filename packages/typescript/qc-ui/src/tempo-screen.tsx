@@ -13,6 +13,8 @@ import "./official-tempo.css";
 
 export interface TempoScreenProps {
   workflow: TempoWorkflow;
+  screenGestureContextKey?: string;
+  captureSessionCurrent?(): () => boolean;
   snapshot: PresetSnapshot;
   /** The existing preset-scoped BPM path (use-continuous-control-workflow.ts's
    * queueTempo) - reused as-is for the PRESET-mode dial, never duplicated. */
@@ -95,7 +97,15 @@ function panLabel(pan: number): string {
  * backend write behind it - see use-tempo-workflow.ts's own module comment
  * for the PRESET/GLOBAL BPM split and every field's exact gateway call.
  */
-export function CorOsTempoScreen({ workflow, snapshot, queueTempo, onSelectScene, onClose }: TempoScreenProps) {
+export function CorOsTempoScreen(props: TempoScreenProps) {
+  const ownerKey = JSON.stringify([props.screenGestureContextKey, props.snapshot.presetIdentity, props.snapshot.setlistKey, props.snapshot.presetPosition, props.snapshot.activeScene, props.workflow.settings?.mode ?? "PRESET"]);
+  return <CorOsTempoSession key={ownerKey} {...props} />;
+}
+
+function CorOsTempoSession({ workflow, snapshot, queueTempo, onSelectScene, onClose, captureSessionCurrent }: TempoScreenProps) {
+  // A physical replacement can precede its host render. The keyed session also
+  // retires drafts and rotary settle timers on preset, scene or tempo-mode changes.
+  const [ownerCurrent] = useState(() => captureSessionCurrent?.() ?? (() => true));
   const { settings, tempoClock, pending, loading } = workflow;
   const mode: NonNullable<TempoSettings["mode"]> = settings?.mode ?? "PRESET";
   const globalMode = mode === "GLOBAL";
@@ -130,12 +140,13 @@ export function CorOsTempoScreen({ workflow, snapshot, queueTempo, onSelectScene
   const disabled = pending || loading;
 
   const commitBpm = (bpm: number) => {
+    if (!ownerCurrent()) return;
     setDraftBpm(undefined);
     if (globalMode) void workflow.setGlobalBpm(bpm);
     else queueTempo(bpm, "Encoder");
   };
-  const commitVolume = (value: number) => { setDraftVolume(undefined); void workflow.setVolumeDb(value); };
-  const commitPan = (value: number) => { setDraftPan(undefined); void workflow.setPan(value); };
+  const commitVolume = (value: number) => { if (!ownerCurrent()) return; setDraftVolume(undefined); void workflow.setVolumeDb(value); };
+  const commitPan = (value: number) => { if (!ownerCurrent()) return; setDraftPan(undefined); void workflow.setPan(value); };
 
   // A device screen, not a window-level dialog: the host passes it as the
   // surface's screenContent so it fills the bezel's own 800x480 canvas.
@@ -156,7 +167,7 @@ export function CorOsTempoScreen({ workflow, snapshot, queueTempo, onSelectScene
         <div className="tempo-controls">
           <section className="tempo-control is-tempo">
             <span>TEMPO</span>
-            <TempoDial label="Tempo" valueText={`${Math.round(displayBpm)} BPM`} value={displayBpm} min={BPM_MIN} max={BPM_MAX} step={1} disabled={disabled} onDraftChange={setDraftBpm} onCommit={commitBpm} />
+            <TempoDial label="Tempo" valueText={`${Math.round(displayBpm)} BPM`} value={displayBpm} min={BPM_MIN} max={BPM_MAX} step={1} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftBpm(value); }} onCommit={commitBpm} />
             <strong>{Math.round(displayBpm)}<span className="tempo-unit"> BPM</span></strong>
           </section>
           <button type="button" className={`tempo-control is-radio${disabled ? " is-pending" : ""}`} disabled={disabled} aria-pressed={globalMode} aria-label={`Tempo Mode: ${globalMode ? "Global" : "Preset"}`} onClick={() => void workflow.setMode(globalMode ? "PRESET" : "GLOBAL")}>
@@ -173,7 +184,7 @@ export function CorOsTempoScreen({ workflow, snapshot, queueTempo, onSelectScene
           </button>
           <section className="tempo-control is-volume">
             <span>VOLUME</span>
-            <TempoDial label="Volume" valueText={`${displayVolume.toFixed(1)} dB`} value={displayVolume} min={VOLUME_MIN} max={VOLUME_MAX} step={.5} disabled={disabled} onDraftChange={setDraftVolume} onCommit={commitVolume} />
+            <TempoDial label="Volume" valueText={`${displayVolume.toFixed(1)} dB`} value={displayVolume} min={VOLUME_MIN} max={VOLUME_MAX} step={.5} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftVolume(value); }} onCommit={commitVolume} />
             <strong>{displayVolume.toFixed(1)}<span className="tempo-unit"> dB</span></strong>
           </section>
           <section className="tempo-control is-mute">
@@ -181,7 +192,7 @@ export function CorOsTempoScreen({ workflow, snapshot, queueTempo, onSelectScene
           </section>
           <section className="tempo-control is-pan">
             <span>PAN</span>
-            <TempoDial label="Pan" valueText={panLabel(displayPan)} value={displayPan} min={PAN_MIN} max={PAN_MAX} step={.02} origin={PAN_CENTER} disabled={disabled} onDraftChange={setDraftPan} onCommit={commitPan} />
+            <TempoDial label="Pan" valueText={panLabel(displayPan)} value={displayPan} min={PAN_MIN} max={PAN_MAX} step={.02} origin={PAN_CENTER} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftPan(value); }} onCommit={commitPan} />
             <strong>{panLabel(displayPan)}</strong>
           </section>
           <section className="tempo-control is-select">
