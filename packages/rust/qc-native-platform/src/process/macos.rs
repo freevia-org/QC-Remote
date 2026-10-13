@@ -57,6 +57,65 @@ pub fn os_parent_process_id() -> Option<u32> {
         .filter(|pid| *pid != 0)
 }
 
+/// Resolve a loopback TCP listener to one process owned by this user. `lsof`
+/// is used because libproc does not expose a stable Rust socket-info type;
+/// uncertainty stays an error so broker authentication fails closed.
+pub fn loopback_listener_owner(port: u16) -> Result<Option<u32>, String> {
+    if port == 0 {
+        return Err("A zero broker port cannot identify a listener".into());
+    }
+    fn listeners(port: u16) -> Result<Vec<u32>, String> {
+        let output = std::process::Command::new("/usr/sbin/lsof")
+            .args(["-nP", "-Fpn", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
+            .output()
+            .map_err(|error| format!("Inspect loopback TCP listener: {error}"))?;
+        if !output.status.success() {
+            return Err("Could not inspect loopback TCP listener".into());
+        }
+        let mut current = None;
+        let mut found = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some(pid) = line.strip_prefix('p') {
+                current = pid.parse::<u32>().ok();
+            } else if let Some(name) = line.strip_prefix('n') {
+                let is_loopback = name == format!("127.0.0.1:{port}")
+                    || name == format!("[::1]:{port}")
+                    || name == format!("[::ffff:127.0.0.1]:{port}");
+                if is_loopback {
+                    if let Some(pid) = current {
+                        found.push(pid);
+                    }
+                }
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        Ok(found)
+    }
+
+    let first = listeners(port)?;
+    if first.is_empty() {
+        return Ok(None);
+    }
+    if first.len() != 1 {
+        return Err("The loopback port does not have one identifiable process owner".into());
+    }
+    let owner = first[0];
+    // SAFETY: geteuid has no arguments or preconditions.
+    let uid = unsafe { libc::geteuid() };
+    let identity = process_info(owner)
+        .filter(|info| info.pbi_uid == uid)
+        .and_then(|_| os_process_created_at(owner))
+        .ok_or("The loopback listener owner cannot be verified")?;
+    if !os_process_is_alive(owner)
+        || os_process_created_at(owner) != Some(identity)
+        || listeners(port)? != first
+    {
+        return Err("The loopback listener changed while its owner was checked".into());
+    }
+    Ok(Some(owner))
+}
+
 fn process_path(pid: u32) -> Option<Vec<u8>> {
     let pid = libc::pid_t::try_from(pid).ok()?;
     let mut path = vec![0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
@@ -216,6 +275,17 @@ mod tests {
                 .iter()
                 .any(|process| process.pid == std::process::id()),
             "the current process must be found by its exact executable identity"
+        );
+    }
+
+    #[test]
+    fn loopback_listener_owner_finds_the_process_that_bound_it() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        assert_eq!(
+            loopback_listener_owner(port).unwrap(),
+            Some(std::process::id())
         );
     }
 }
