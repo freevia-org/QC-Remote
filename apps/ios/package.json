@@ -15,10 +15,10 @@
   "dependencies": {
     "@capacitor/app": "^8.0.0",
     "@capacitor/browser": "^8.0.0",
-    "@capacitor/core": "^8.5.0",
+    "@capacitor/core": "^8.5.3",
     "@capacitor/ios": "^8.5.0",
-    "@capacitor/status-bar": "^8.0.0",
-    "@modelcontextprotocol/sdk": "1.31.0",
+    "@capacitor/status-bar": "^8.0.4",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@qc-remote/ios-native-bridge": "file:./native-bridge",
     "@qc-remote/client": "0.1.0",
     "@qc-remote/core": "0.1.0",
@@ -29,11 +29,11 @@
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.4.3",
+    "@capacitor/cli": "8.5.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "6.1.1",
+    "@vitejs/plugin-react": "6.1.2",
     "typescript": "^7.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.3.4"
   }
 }
