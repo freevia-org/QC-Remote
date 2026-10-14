@@ -1,3 +1,4 @@
+// ci timing probe
 //! One reusable Rust library for Quad Cortex protocol and device operations.
 //!
 //! Protocol bindings and registries are generated from the project-maintained
