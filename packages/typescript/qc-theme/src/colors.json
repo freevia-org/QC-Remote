@@ -152,7 +152,7 @@
   "device": {
     "panel": "#121212",
     "panelRaised": "#1e1e1e",
-    "controlSurface": "#2e2e2e",
+    "controlSurface": "#292c29",
     "divider": "#1a1a1b",
     "disabled": "#77797c",
     "toolbarMuted": "#616161",
