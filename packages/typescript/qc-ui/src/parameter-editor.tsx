@@ -3,6 +3,7 @@ import type { BlockDetails, BlockParameter } from "@qc-remote/client";
 import { sceneLetter } from "@qc-remote/core";
 import { QC_COLORS } from "@qc-remote/theme";
 import { EQ_FILTER_TYPE_LABELS, parameterControlKind, parameterDisplay, parameterEditorAccent, parameterEditorFamily, parameterEditorIsFullScreen, parameterEditorPageCount, parameterEditorPageSize, parameterEditorPageSlots, parameterEditorTabs, parameterNormalizedValue, parameterOptionLabels, parameterRealValue, parameterStep, type ParameterEditorFamily } from "./parameter-model";
+import { QcDeviceOptionsMenu } from "./device-options-menu";
 import { parameterContextMenuItems, type ParameterEditorContextAction } from "./parameter-menu";
 import { QcEditorIcon, QcPresetStackIcon, QcScreenGlyph, QcUiIcon } from "./theme-icons";
 import { QcPillToggle } from "./qc-pill-toggle";
@@ -342,16 +343,14 @@ function referenceDialSteps(_editorName: string, parameter: BlockParameter) {
   return parameter.options.length > 1 ? parameter.options.length : 0;
 }
 
-function CorOsReferenceStandardEditor({ props, accent, parameters, menuOpen, setMenuOpen, contextItems, runContextAction }: {
+function CorOsReferenceStandardEditor({ props, accent, parameters, menuOpen, setMenuOpen }: {
   props: CorOsParameterEditorProps;
   accent: string;
   parameters: BlockParameter[];
   menuOpen: boolean;
   setMenuOpen: (open: boolean) => void;
-  contextItems: ReturnType<typeof parameterContextMenuItems>;
-  runContextAction: (action: ParameterEditorContextAction) => void;
 }) {
-  const { details, drafts, activeScene, scenes, bypassed, footswitch, disabled, onDraftChange, onCommit, onToggleBypass, onSceneSelect, footswitchAssignmentPending, onFootswitchAssignmentStart, onUnassignFootswitch, contextActionEnabled, onPageChange, onClose } = props;
+  const { details, drafts, activeScene, scenes, bypassed, footswitch, disabled, onDraftChange, onCommit, onToggleBypass, onSceneSelect, footswitchAssignmentPending, onFootswitchAssignmentStart, onUnassignFootswitch, onPageChange, onClose } = props;
   const hasPages = details.name === "Digital Flanger";
   const sceneCount = Math.max(1, scenes.length);
   return <section className={`coros-parameter-editor coros-reference-parameter-editor editor-${referenceEditorClass(details.name)}${bypassed ? " is-bypassed" : ""}`} style={{ "--editor-color": accent } as CSSProperties} aria-label={`${details.name} parameter editor`}>
@@ -364,7 +363,6 @@ function CorOsReferenceStandardEditor({ props, accent, parameters, menuOpen, set
       {hasPages && <span className="editor-pages" aria-label="Parameter pages"><button aria-label="Parameter page 1" onClick={() => onPageChange(0)}>1</button><button aria-label="Parameter page 2" onClick={() => onPageChange(1)}>2</button></span>}
       <button className="editor-bypass" aria-label={bypassed ? "Activate device" : "Bypass device"} aria-pressed={bypassed} onClick={onToggleBypass}>{/* Bypassed blocks show the barred ring, not the power symbol: a 72px accent ring plus a 48px white bar, not a link glyph. */}<QcEditorIcon kind={bypassed ? "bypass-muted" : "bypass"} /></button>
       <button className="editor-done" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button>
-      {menuOpen && <div className="qc-block-context-menu qc-scroll-rail" role="menu" aria-label="Device contextual menu">{contextItems.map((item) => { const disabled = item.disabled || contextActionEnabled?.[item.action] === false; return <button key={item.action} role="menuitem" className={`${item.action === "remove" ? "is-danger" : ""}${item.separatorBefore ? " has-separator" : ""}${disabled ? " is-disabled" : ""}`} disabled={disabled} onClick={() => runContextAction(item.action)}><span><QcEditorIcon kind={item.icon}/></span>{item.label}</button>; })}</div>}
     </header>
     <div className={`coros-parameter-controls${parameters.length > 5 ? " is-two-row" : ""}`}>{parameters.map((parameter) => {
       const value = drafts[parameter.index] ?? parameter.normalizedValue ?? 0;
@@ -381,27 +379,24 @@ function CorOsReferenceStandardEditor({ props, accent, parameters, menuOpen, set
   </section>;
 }
 
-function CorOsReferenceSpecialEditor({ props, accent, menuOpen, setMenuOpen, contextItems, runContextAction }: {
+function CorOsReferenceSpecialEditor({ props, accent, menuOpen, setMenuOpen }: {
   props: CorOsParameterEditorProps;
   accent: string;
   menuOpen: boolean;
   setMenuOpen: (open: boolean) => void;
-  contextItems: ReturnType<typeof parameterContextMenuItems>;
-  runContextAction: (action: ParameterEditorContextAction) => void;
 }) {
-  const { details, activeScene, scenes, bypassed, footswitch, onToggleBypass, onSceneSelect, onPageChange, footswitchAssignmentPending, onFootswitchAssignmentStart, onUnassignFootswitch, contextActionEnabled, onClose } = props;
+  const { details, activeScene, scenes, bypassed, footswitch, onToggleBypass, onSceneSelect, onPageChange, footswitchAssignmentPending, onFootswitchAssignmentStart, onUnassignFootswitch, onClose } = props;
   const sceneCount = Math.max(1, scenes.length);
   const sceneControl = <QcSceneSelector className="editor-scene" letter={sceneLetter(activeScene)} onPrevious={() => onSceneSelect((activeScene - 1 + sceneCount) % sceneCount)} onNext={() => onSceneSelect((activeScene + 1) % sceneCount)} />;
-  const menu = menuOpen && <div className="qc-block-context-menu qc-scroll-rail" role="menu" aria-label="Device contextual menu">{contextItems.map((item) => { const disabled = item.disabled || contextActionEnabled?.[item.action] === false; return <button key={item.action} role="menuitem" className={`${item.action === "remove" ? "is-danger" : ""}${item.separatorBefore ? " has-separator" : ""}${disabled ? " is-disabled" : ""}`} disabled={disabled} onClick={() => runContextAction(item.action)}><span><QcEditorIcon kind={item.icon}/></span>{item.label}</button>; })}</div>;
   const more = <button className="editor-more" aria-label="Device contextual menu" aria-expanded={menuOpen} onClick={() => { onFootswitchAssignmentStart(false); setMenuOpen(!menuOpen); }}><QcUiIcon kind="more" /></button>;
   if (details.name === "212 UK C30 65 (M)") return <section className="coros-parameter-editor coros-reference-parameter-editor coros-special-editor coros-cab-editor editor-ukc30-cab" aria-label={`${details.name} parameter editor`}>
-    <header className="cab-editor-header">{more}<span className="editor-title"><small>GUITAR CAB</small><strong style={{ color: accent }}>{details.name}<i className="cab-preset-mark"><QcPresetStackIcon /></i></strong></span><QcEditorFootswitchAssignment letter={footswitch === undefined ? "E" : sceneLetter(footswitch)} aria-label={footswitch === undefined ? "Assign a footswitch" : `Assigned to footswitch ${sceneLetter(footswitch)}`} />{sceneControl}<span className="cab-header-divider divider-one" /><button className="cab-header-mode is-active" onClick={() => onPageChange(0)}>CAB</button><button className="cab-header-mode" onClick={() => onPageChange(1)}>EQ</button><span className="cab-header-divider divider-two" /><button className={`editor-bypass${bypassed ? " is-bypassed" : ""}`} aria-label={bypassed ? "Activate device" : "Bypass device"} onClick={onToggleBypass}><QcEditorIcon kind="bypass" /></button><button className="editor-done" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button>{menu}</header>
+    <header className="cab-editor-header">{more}<span className="editor-title"><small>GUITAR CAB</small><strong style={{ color: accent }}>{details.name}<i className="cab-preset-mark"><QcPresetStackIcon /></i></strong></span><QcEditorFootswitchAssignment letter={footswitch === undefined ? "E" : sceneLetter(footswitch)} aria-label={footswitch === undefined ? "Assign a footswitch" : `Assigned to footswitch ${sceneLetter(footswitch)}`} />{sceneControl}<span className="cab-header-divider divider-one" /><button className="cab-header-mode is-active" onClick={() => onPageChange(0)}>CAB</button><button className="cab-header-mode" onClick={() => onPageChange(1)}>EQ</button><span className="cab-header-divider divider-two" /><button className={`editor-bypass${bypassed ? " is-bypassed" : ""}`} aria-label={bypassed ? "Activate device" : "Bypass device"} onClick={onToggleBypass}><QcEditorIcon kind="bypass" /></button><button className="editor-done" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button></header>
     <div className="cab-halves">{[0, 1].map((side) => <section key={side}><div className="cab-values">{CAB_REFERENCE_VALUES.map((control) => <span key={control.name}>{control.name}<QcBarSlider value={control.value} origin={control.origin} /><b>{control.display}</b></span>)}</div><div className="cab-speaker"><QcCabMicrophoneTarget x={side ? 68.75 : 31.25} y={50} direction={side ? "left" : "right"} /></div><div className="cab-footer"><button className="cab-phase" disabled title="This captured model does not publish microphone phase controls." aria-label={`Microphone ${side + 1} phase unavailable`}><QcUiIcon kind="phase-invert" /></button><button className="cab-mic" disabled title="This captured model does not publish a microphone selector."><QcUiIcon kind="cab-previous" /><strong>{side ? "Ribbon 160" : "Dynamic 57"}</strong><QcUiIcon kind="cab-next" /></button><button className="cab-enable" disabled title="This captured model does not publish a microphone enable control."><i /></button></div></section>)}</div>
     {footswitchAssignmentPending && <QcFootswitchAssignmentPrompt assignedLetter={footswitch === undefined ? undefined : sceneLetter(footswitch)} onCancel={() => onFootswitchAssignmentStart(false)} onUnassign={onUnassignFootswitch} />}
   </section>;
   const gridLines = [1.902, 6.386, 9.918, 12.636, 15.082, 17.12, 19.022, 20.652, 31.386, 37.772, 42.255, 45.788, 48.505, 50.951, 52.989, 54.891, 56.522, 67.255, 73.641, 78.125, 81.658, 84.375, 86.821, 88.859, 90.761, 92.391];
   return <section className="coros-parameter-editor coros-reference-parameter-editor coros-special-editor coros-eq-editor editor-parametric-8" aria-label={`${details.name} parameter editor`}>
-    <header>{more}<span className="editor-title is-eq"><small>EQ</small><strong style={{ color: accent }}>{details.name}<i className="eq-preset-mark"><QcPresetStackIcon /></i></strong></span><span className="editor-spacer" /><QcEditorFootswitchAssignment letter={footswitch === undefined ? "F" : sceneLetter(footswitch)} aria-label={footswitch === undefined ? "Assign a footswitch" : `Assigned to footswitch ${sceneLetter(footswitch)}`} />{sceneControl}<button className={`editor-bypass${bypassed ? " is-bypassed" : ""}`} aria-label={bypassed ? "Activate device" : "Bypass device"} onClick={onToggleBypass}><QcEditorIcon kind="bypass" /></button><button className="editor-done" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button>{menu}</header>
+    <header>{more}<span className="editor-title is-eq"><small>EQ</small><strong style={{ color: accent }}>{details.name}<i className="eq-preset-mark"><QcPresetStackIcon /></i></strong></span><span className="editor-spacer" /><QcEditorFootswitchAssignment letter={footswitch === undefined ? "F" : sceneLetter(footswitch)} aria-label={footswitch === undefined ? "Assign a footswitch" : `Assigned to footswitch ${sceneLetter(footswitch)}`} />{sceneControl}<button className={`editor-bypass${bypassed ? " is-bypassed" : ""}`} aria-label={bypassed ? "Activate device" : "Bypass device"} onClick={onToggleBypass}><QcEditorIcon kind="bypass" /></button><button className="editor-done" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button></header>
     <div className="eq-graph"><div className="eq-grid-lines" aria-hidden="true">{gridLines.map((left) => <i key={left} style={{ left: `${left}%` }} />)}</div><div className="eq-axis-labels"><b>100</b><b>1k</b><b>10k</b></div><span>1</span><span>2</span><span>3</span><span>4</span></div><div className="eq-tabs">{[1, 2, 3, 4, 5, 6, 7, 8].map((number) => <span key={number}>{number}</span>)}<span>OUT</span></div><div className="eq-values"><span className="eq-type">TYPE<strong><svg className="eq-filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 16h6l7-8h7" /></svg><span>{EQ_FILTER_TYPE_LABELS[4].toUpperCase()}</span><QcUiIcon kind="down" /></strong></span><span className="eq-dial-value">GAIN<QcRotaryDial className="eq-control-dial" value={0.5} accent={accent} /><strong>0.0 <small>dB</small></strong></span><span className="eq-dial-value">FREQ<QcRotaryDial className="eq-control-dial" value={0.1565} accent={accent} /><strong>50 <small>Hz</small></strong></span><span className="eq-dial-value">Q<QcRotaryDial className="eq-control-dial" value={0.0779} accent={accent} /><strong>0.71</strong></span><span className="eq-bypass-value">BYPASS 1<strong><QcEditorIcon kind="band-power" /></strong></span></div>
     {footswitchAssignmentPending && <QcFootswitchAssignmentPrompt assignedLetter={footswitch === undefined ? undefined : sceneLetter(footswitch)} onCancel={() => onFootswitchAssignmentStart(false)} onUnassign={onUnassignFootswitch} />}
   </section>;
@@ -807,9 +802,11 @@ function CorOsParameterEditorContent(props: CorOsParameterEditorProps) {
   const singleRow = pageSize === 10 && family !== "synth" && !screenSlots.some((parameter, slot) => parameter && slot >= 5);
   const contextItems = parameterContextMenuItems(details, clipboardModelId);
   const runContextAction = (action: ParameterEditorContextAction) => { setMenuOpen(false); onContextAction(action); };
-  if (props.referenceOnly && (details.name === "212 UK C30 65 (M)" || details.name === "Parametric-8")) return <CorOsReferenceSpecialEditor props={props} accent={accent} menuOpen={menuOpen} setMenuOpen={setMenuOpen} contextItems={contextItems} runContextAction={runContextAction} />;
-  if (REFERENCE_STANDARD_EDITORS.has(details.name)) return <CorOsReferenceStandardEditor props={props} accent={accent} parameters={screenSlots.filter((parameter): parameter is BlockParameter => parameter !== undefined)} menuOpen={menuOpen} setMenuOpen={setMenuOpen} contextItems={contextItems} runContextAction={runContextAction} />;
-  return <section className={`coros-parameter-editor family-${family}${fullScreen ? " is-full-screen" : ""}${tabs.length ? " has-tabs" : ""}${routingNode ? ` is-routing-node is-${routingNode}` : ""}`} style={{ "--parameter-accent": accent } as CSSProperties} aria-label={`${details.name} parameter editor`}>
+  const special = Boolean(props.referenceOnly && (details.name === "212 UK C30 65 (M)" || details.name === "Parametric-8"));
+  const menuLayer = !routingNode && menuOpen ? <QcDeviceOptionsMenu items={contextItems} enabled={contextActionEnabled} coversScreen={special || fullScreen} onDismiss={() => setMenuOpen(false)} onRun={runContextAction} /> : null;
+  if (special) return <><CorOsReferenceSpecialEditor props={props} accent={accent} menuOpen={menuOpen} setMenuOpen={setMenuOpen} />{menuLayer}</>;
+  if (REFERENCE_STANDARD_EDITORS.has(details.name)) return <><CorOsReferenceStandardEditor props={props} accent={accent} parameters={screenSlots.filter((parameter): parameter is BlockParameter => parameter !== undefined)} menuOpen={menuOpen} setMenuOpen={setMenuOpen} />{menuLayer}</>;
+  return <><section className={`coros-parameter-editor family-${family}${fullScreen ? " is-full-screen" : ""}${tabs.length ? " has-tabs" : ""}${routingNode ? ` is-routing-node is-${routingNode}` : ""}`} style={{ "--parameter-accent": accent } as CSSProperties} aria-label={`${details.name} parameter editor`}>
     <header className="parameter-editor-header">
       <button className="parameter-more" disabled={Boolean(routingNode)} aria-label={routingNode ? "Routing node options unavailable" : "Device contextual menu"} aria-expanded={routingNode ? false : menuOpen} onClick={() => { onFootswitchAssignmentStart(false); setMenuOpen((open) => !open); }}><i /><i /><i /></button>
       <span ref={title.ref} className={`parameter-device-name${title.wrapped ? " is-wrapped" : ""}`}><small>{editorCategoryLabel(details.category, details.name)}</small><strong style={{ color: accent }}>{details.name}</strong></span>
@@ -818,9 +815,6 @@ function CorOsParameterEditorContent(props: CorOsParameterEditorProps) {
       <i className="parameter-header-divider" aria-hidden="true" />
       <button className={`parameter-bypass${bypassed ? " is-bypassed" : ""}`} disabled={Boolean(routingNode)} aria-label={routingNode ? `${details.name} bypass is controlled by routing` : bypassed ? "Activate device" : "Bypass device"} aria-pressed={routingNode ? undefined : bypassed} onClick={onToggleBypass}><QcEditorIcon kind={bypassed ? "bypass-muted" : "bypass"} /></button>
       <button className="parameter-close" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button>
-      {!routingNode && menuOpen && <div className="qc-block-context-menu qc-scroll-rail" role="menu" aria-label="Device contextual menu">
-        {contextItems.map((item) => { const disabled = item.disabled || contextActionEnabled?.[item.action] === false; return <button key={item.action} role="menuitem" className={`${item.action === "remove" ? "is-danger" : ""}${item.separatorBefore ? " has-separator" : ""}${disabled ? " is-disabled" : ""}`} disabled={disabled} onClick={() => runContextAction(item.action)}><span><QcEditorIcon kind={item.icon}/></span>{item.label}</button>; })}
-      </div>}
     </header>
     {tabs.length > 0 && <nav className="parameter-tabs" aria-label="Parameter tabs">{tabs.map((label, index) => <button key={label} className={safePage === index ? "is-active" : ""} aria-current={safePage === index ? "page" : undefined} onClick={() => onPageChange(index)}>{label}</button>)}</nav>}
     {routingNode ? <RoutingNodeEditorBody routingNode={routingNode} parameters={details.parameters} drafts={drafts} disabled={disabled} onDraftChange={onDraftChange} onCommit={onCommit} /> : family === "eq" ? <EqEditorBody parameters={writable} drafts={drafts} accent={accent} disabled={disabled} selectedBand={selectedEqBand} outputSelected={eqOutputSelected} onSelectBand={(band) => { setSelectedEqBand(band); setEqOutputSelected(false); }} onSelectOutput={() => setEqOutputSelected(true)} onDraftChange={onDraftChange} onCommit={onCommit} /> : family === "cab" ? <CabEditorBody parameters={shown} page={safePage} drafts={drafts} accent={accent} disabled={disabled} onDraftChange={onDraftChange} onCommit={onCommit} onCommitBatch={onCommitBatch} /> : family === "ir" ? <IrLoaderEditorBody name={details.name} parameters={shown} page={safePage} drafts={drafts} accent={accent} disabled={disabled} onDraftChange={onDraftChange} onCommit={onCommit} /> : <div className={`parameter-controls${singleRow ? " is-single-row" : ""}`}>
@@ -831,7 +825,7 @@ function CorOsParameterEditorContent(props: CorOsParameterEditorProps) {
       {!shown.length && <p className="parameter-empty">This device exposes no adjustable catalog parameters.</p>}
     </div>}
     {!routingNode && footswitchAssignmentPending && <QcFootswitchAssignmentPrompt assignedLetter={footswitch === undefined ? undefined : sceneLetter(footswitch)} onCancel={() => onFootswitchAssignmentStart(false)} onUnassign={onUnassignFootswitch} />}
-  </section>;
+  </section>{menuLayer}</>;
 }
 
 function CorOsParameterEditorSession(props: CorOsParameterEditorProps) {

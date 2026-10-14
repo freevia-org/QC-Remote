@@ -25,11 +25,11 @@ export interface QcParameterEditorBindingOptions {
 }
 
 const unavailableLabels = {
-  "save-device-preset": "Save Current Parameters As…",
+  "save-device-preset": "Save Current Parameters as...",
   "change-device": "Change device",
   "reset-defaults": "Reset to defaults",
   "assign-looper-actions": "Reassign Looper X Actions",
-  "mute-bypass": "Mute/Bypass",
+  "mute-bypass": "Mute/bypass",
   "model-update": "Model update available",
   "legacy-version": "Change to legacy version"
 } as const;
@@ -90,7 +90,7 @@ export function qcParameterEditorBindings(options: QcParameterEditorBindingOptio
       "reset-defaults": connected && !pending,
       expression: true,
       "assign-looper-actions": connected && !pending,
-      "mute-bypass": false,
+      "mute-bypass": connected && !pending,
       "model-update": false,
       "legacy-version": false,
       remove: connected && !pending

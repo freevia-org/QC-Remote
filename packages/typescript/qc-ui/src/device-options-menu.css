@@ -1,0 +1,19 @@
+@scope (.qc-screen-fixture-root) {
+/* The block editor's options menu, a layer of the screen (see device-options-menu.tsx). Pixels are the unit's 800x480
+   frame: the canvas is 800px wide at every host size. Measured on the unit: panel 32..351 x 30..449 (320 x 420, radius 8,
+   16,16,16), seven rows of 60 from the panel's top, a 54px icon column with a 24px glyph, the label from x=87, a 2px thumb
+   at x=342 from y=42, 276 long (49,52,49), no row dividers. */
+.qc-device-options-scrim { position: absolute; z-index: 50; inset: 0; box-sizing: border-box; padding: 0; border: 0; border-radius: 0; cursor: default;
+  background: linear-gradient(var(--qc-screen-dim-options-menu-grid) 0 196px, var(--qc-screen-dim-options-menu-editor) 196px); }
+.qc-device-options-scrim.is-covering { background: var(--qc-screen-dim-options-menu-editor); }
+.qc-device-options-panel { position: absolute; z-index: 51; left: 32px; top: 30px; box-sizing: border-box; width: 320px; height: 420px; overflow: hidden; border-radius: 8px; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); }
+.qc-device-options-list { height: 100%; overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
+.qc-device-options-list::-webkit-scrollbar { display: none; }
+.qc-device-options-thumb { position: absolute; right: 8px; width: 0; border-right: 2px solid var(--qc-palette-313431); pointer-events: none; }
+.qc-device-options-list > button { box-sizing: border-box; width: 100%; height: 60px; display: grid; grid-template-columns: 54px 1fr; align-items: center; padding: 0; border: 0; border-radius: 0; background: var(--qc-screen-surface-base); color: var(--qc-screen-text-primary); font: 16px var(--qc-font-device-plain); text-align: left; }
+.qc-device-options-list > button > span { display: grid; place-items: center; text-align: center; }
+.qc-device-options-list > button > span svg { width: 24px; height: 24px; overflow: visible; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.qc-device-options-list > button.is-disabled { color: var(--qc-context-capture-dark); }
+.qc-device-options-list > button.is-disabled > span { color: var(--qc-editor-disabled); }
+.qc-device-options-list > button:focus-visible:not(:disabled) { background: var(--qc-screen-surface-raised); outline: 0; }
+}

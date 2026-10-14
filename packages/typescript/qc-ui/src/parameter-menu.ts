@@ -10,29 +10,28 @@ export interface ParameterContextMenuItem {
   label: string;
   icon: "save" | "change" | "copy" | "paste" | "reset" | "expression" | "looper" | "mute" | "model-update" | "model-downgrade" | "remove";
   disabled?: boolean;
-  separatorBefore?: boolean;
 }
 
 export function parameterContextMenuItems(details: Pick<BlockDetails, "name" | "category" | "modelId">, clipboardModelId?: number): ParameterContextMenuItem[] {
   const category = details.category.trim().toLowerCase();
   const supportsDevicePresets = !/(?:neural\s*capture|input|output|splitter|mixer)/i.test(category);
   const looper = /looper/i.test(`${details.category} ${details.name}`);
-  const fxLoop = /fx\s*loop/i.test(`${details.category} ${details.name}`);
   return [
-    ...(supportsDevicePresets ? [{ action: "save-device-preset", label: "Save Current Parameters As…", icon: "save" } as const] : []),
-    { action: "change-device", label: "Change device", icon: "change", separatorBefore: supportsDevicePresets },
+    { action: "change-device", label: "Change device", icon: "change" },
     { action: "copy-device", label: "Copy device", icon: "copy" },
     { action: "paste-device", label: "Paste device", icon: "paste", disabled: clipboardModelId !== details.modelId },
     { action: "reset-defaults", label: "Reset to defaults", icon: "reset" },
-    { action: "expression", label: "Assign Expression Pedal", icon: "expression" },
+    ...(supportsDevicePresets ? [{ action: "save-device-preset", label: "Save Current Parameters as...", icon: "save" } as const] : []),
+    { action: "expression", label: "Assign expression pedal", icon: "expression" },
     ...(looper ? [{ action: "assign-looper-actions", label: "Reassign Looper X Actions", icon: "looper" } as const] : []),
-    ...(fxLoop ? [{ action: "mute-bypass", label: "Mute/Bypass", icon: "mute" } as const] : []),
+    // The unit lists Mute/bypass on every block, not only an FX Loop.
+    { action: "mute-bypass", label: "Mute/bypass", icon: "mute" },
     // The unit shows these two on every block regardless of an actual update -
     // it is CorOS's own position for them, not a per-model check this app can
     // run. Always disabled, same honest "not exposed" message as the others.
-    { action: "model-update", label: "Model update available", icon: "model-update", disabled: true, separatorBefore: true },
+    { action: "model-update", label: "Model update available", icon: "model-update", disabled: true },
     { action: "legacy-version", label: "Change to legacy version", icon: "model-downgrade", disabled: true },
-    { action: "remove", label: "Remove block from the grid", icon: "remove", separatorBefore: true }
+    { action: "remove", label: "Remove block from the grid", icon: "remove" }
   ];
 }
 
@@ -45,5 +44,5 @@ export function parameterContextMenuItems(details: Pick<BlockDetails, "name" | "
  * filtered copy of the other one.
  */
 export function laneControlContextMenuItems(): ParameterContextMenuItem[] {
-  return [{ action: "expression", label: "Assign Expression Pedal", icon: "expression" }];
+  return [{ action: "expression", label: "Assign expression pedal", icon: "expression" }];
 }
