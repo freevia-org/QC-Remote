@@ -9,6 +9,10 @@ on:
       - contracts/**
       - packages/rust/**
       - packages/typescript/**
+      - !packages/typescript/qc-ui/**/*.ts
+      - !packages/typescript/qc-ui/**/*.tsx
+      - !packages/typescript/qc-ui/**/*.css
+      - !packages/typescript/qc-ui/**/*.md
       - services/device-broker/**
       - services/rust-mcp/**
       - THIRD_PARTY-NOTICES.md
@@ -30,6 +34,10 @@ on:
       - contracts/**
       - packages/rust/**
       - packages/typescript/**
+      - !packages/typescript/qc-ui/**/*.ts
+      - !packages/typescript/qc-ui/**/*.tsx
+      - !packages/typescript/qc-ui/**/*.css
+      - !packages/typescript/qc-ui/**/*.md
       - services/device-broker/**
       - services/rust-mcp/**
       - THIRD_PARTY-NOTICES.md
@@ -45,6 +53,12 @@ on:
 
 permissions:
   contents: read
+
+# Superseded pull request runs are cancelled; runs for master and manual or
+# scheduled dispatches are never cancelled.
+concurrency:
+  group: macos-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:

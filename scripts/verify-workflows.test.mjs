@@ -696,7 +696,8 @@ test('condition mutants that add a trusted value or drop a guard change the trut
 
 test('CI bounds jobs, caches npm, and verifies the quadcortex crate on Linux', () => {
   const ci = readFileSync(path.join(workflowsDir, 'ci.yml'), 'utf8');
-  assert.match(ci, /^concurrency:\n[\s\S]*?cancel-in-progress: true/m);
+  // Only pull request runs are cancelled; a master run must finish (it warms the caches).
+  assert.match(ci, /^concurrency:\n[\s\S]*?cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/m);
   const jobsStart = ci.indexOf('\njobs:\n') + '\njobs:\n'.length;
   const jobs = ci.slice(jobsStart).split(/^  [a-z][a-z0-9-]*:\s*$/m).slice(1);
   assert.ok(jobs.length >= 8, `expected the CI job set, got ${jobs.length}`);
@@ -707,7 +708,7 @@ test('CI bounds jobs, caches npm, and verifies the quadcortex crate on Linux', (
   assert.doesNotMatch(ci, /- run: npm run build\s*$/m, 'the workspace build duplicates the following typecheck gate');
 });
 
-test('CI validates program bytes on pull requests and audits only policy after merge', () => {
+test('CI gates native jobs on the change filter and rebuilds them on master to keep caches warm', () => {
   const ci = readFileSync(path.join(workflowsDir, 'ci.yml'), 'utf8');
   const bodyOf = (name) => {
     const marker = `\n  ${name}:\n`;
@@ -717,17 +718,23 @@ test('CI validates program bytes on pull requests and audits only policy after m
     const next = ci.slice(bodyStart).search(/^  [a-z][a-z0-9-]*:\s*$/m);
     return next === -1 ? ci.slice(bodyStart) : ci.slice(bodyStart, bodyStart + next);
   };
-  for (const name of [
-    'rust',
-    'rust-msrv',
-    'rust-windows-app',
-    'quadcortex-linux',
-    'third-party-notices',
-    'typescript',
-    'cloud-relay',
-    'android',
-  ]) {
+  for (const name of ['third-party-notices', 'typescript', 'cloud-relay']) {
     assert.match(bodyOf(name), /^    if: github\.event_name == 'pull_request'$/m, `${name} must not rebuild protected master`);
   }
+  // The native jobs also run on master, to refresh the Rust/Gradle caches that
+  // pull requests restore. On a pull request they are skipped (never dropped)
+  // when the change filter says nothing native changed, and they run unless
+  // `changes` succeeded and answered exactly 'false' (fail open).
+  const nativeGate = "if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}";
+  const nativeJobs = ['rust', 'rust-msrv', 'rust-windows-app', 'quadcortex-linux', 'android'];
+  for (const name of nativeJobs) {
+    const body = bodyOf(name);
+    assert.match(body, /^    needs: changes$/m, `${name} must depend on the change filter`);
+    assert.ok(body.includes(`    ${nativeGate}\n`), `${name} must carry the fail-open native gate`);
+    assert.ok(body.includes("save-if: ${{ github.ref == 'refs/heads/master' }}"), `${name} must save its cache only from master`);
+  }
+  const changes = bodyOf('changes');
+  assert.doesNotMatch(changes, /^    if:/m, 'the change filter runs on every event');
+  assert.match(changes, /node scripts\/ci-changes\.mjs/);
   assert.doesNotMatch(bodyOf('public-history'), /^    if: github\.event_name == 'pull_request'$/m);
 });

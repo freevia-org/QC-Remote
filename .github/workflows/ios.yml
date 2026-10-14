@@ -7,6 +7,10 @@ on:
       - "apps/android/src/**"
       - "packages/rust/**"
       - "packages/typescript/**"
+      - "!packages/typescript/qc-ui/**/*.ts"
+      - "!packages/typescript/qc-ui/**/*.tsx"
+      - "!packages/typescript/qc-ui/**/*.css"
+      - "!packages/typescript/qc-ui/**/*.md"
       - "Cargo.toml"
       - "Cargo.lock"
       - "package.json"
@@ -19,6 +23,10 @@ on:
       - "apps/android/src/**"
       - "packages/rust/**"
       - "packages/typescript/**"
+      - "!packages/typescript/qc-ui/**/*.ts"
+      - "!packages/typescript/qc-ui/**/*.tsx"
+      - "!packages/typescript/qc-ui/**/*.css"
+      - "!packages/typescript/qc-ui/**/*.md"
       - "Cargo.toml"
       - "Cargo.lock"
       - "package.json"
@@ -31,7 +39,7 @@ permissions:
 
 concurrency:
   group: ios-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
