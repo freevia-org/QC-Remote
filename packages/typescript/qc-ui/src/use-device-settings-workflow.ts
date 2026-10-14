@@ -5,6 +5,7 @@ import { useGuardedMutation } from "./use-guarded-mutation.ts";
 import { observedGlobalBypassUpdate } from "./global-bypass-update.ts";
 import type { DeviceGatewayWorkflowOptions } from "./workflow-options";
 import { isCorOsVersion, type ObservedCorOsVersion } from "./cor-os-version.ts";
+import type { QcSettingsUnitSelection } from "./settings-unit-selection.ts";
 
 /** How often a CorOS version the Device Information screen keeps showing is stamped again. */
 const SCREEN_VERSION_REFRESH_MS = 5_000;
@@ -155,6 +156,18 @@ export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions
   const [systemRow, setSystemRow] = useState<DeviceSettingsSystemRow>("wifi");
   const [deviceRow, setDeviceRow] = useState<DeviceSettingsDeviceRow>("bypass");
   const [supportRow, setSupportRow] = useState<DeviceSettingsSupportRow>("about");
+  /**
+   * The unit's Settings dialog names a section and row (read from its graphics tree by the follower): show the same ones.
+   * Only the app's choice of pane changes; nothing is sent to the unit and no setting is written.
+   */
+  const followUnitSelection = useCallback((selection: QcSettingsUnitSelection) => {
+    if (!current()) return;
+    setSection(selection.section);
+    if (selection.section === "account") setAccountRow(selection.row);
+    else if (selection.section === "system") setSystemRow(selection.row);
+    else if (selection.section === "device") setDeviceRow(selection.row);
+    else setSupportRow(selection.row);
+  }, [current]);
   // `generalSettings()` projects no `midiThru` field at all - grep
   // packages/typescript/qc-client/src/generated-payloads.ts's `GeneralSettings`
   // interface - so unlike every other MIDI row this one has no authoritative
@@ -266,7 +279,7 @@ export function useDeviceSettingsWorkflow(options: DeviceSettingsWorkflowOptions
     open, returnFocusTarget, openSettings, close, loading, refresh, announce: notice,
     settings, identity, midiThru,
     identityReadAt, screenCorOsVersion, noteCorOsVersionFromScreen,
-    section, setSection,
+    section, setSection, followUnitSelection,
     accountRow, setAccountRow,
     systemRow, setSystemRow,
     deviceRow, setDeviceRow,
