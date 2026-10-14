@@ -27,11 +27,20 @@ export const GRID_ROUTE_BOUNDARIES = [75, 141, 228.5, 317, 404.5, 488, 572, 659.
 // 402px of ink, 38px tall. 596 stretched the same string to 434x41.
 export const PRESET_TITLE_RIGHT_EDGE = 564;
 
-/* The unit tracks the bank/slot block looser than this font's own advances.
-   grid-base puts "32H" at ink 13, 57 and 101 where -1 tracking puts ours at
-   13, 55 and 98 - the glyphs are the right widths, so only the gap between
-   them is short, by 1.6px per glyph across the header's 1.012 x-scale. */
-export const PRESET_LOCATION_TRACKING = 0.5;
+/* The header's scene badge and mode label, measured on the SCENE unit frame and
+   on grid-base (STOMP), which agree to the pixel. The badge is a 24px square at
+   (656,12) - 24 yellow columns and rows, not 25 - holding a 23px letter centred
+   on x 668 with its baseline at 33. The mode label is 22px IBM Plex Bold at
+   x 692, baseline 80 (not 21.5: its caps are 16 rows tall on both frames). The
+   SCENE glyph's ink starts at row 60 of its 26-unit box, so the ink-centred
+   position is one row lower than the box-centred one STOMP uses. */
+export const SCENE_BADGE = { x: 656, y: 12, size: 24, radius: 3, letterX: 668, letterBaseline: 33, letterSize: 23 } as const;
+export const MODE_LABEL = { x: 692, baseline: 80, size: 22 } as const;
+export const MODE_GLYPH_CENTRE = { x: 668, y: 72 } as const;
+/** Rows the ink of a mode glyph sits below the centre of its box (the SCENE art leaves its last row and first column empty). */
+export function modeGlyphInkRise(mode: string): number {
+  return mode === "SCENE" ? 1 : 0;
+}
 
 /* A port pill's label, as the unit draws it. Measured on grid-base and nine
    more corpus frames: two lines of 11px caps (a 16px IBM Plex face) whose tops
@@ -56,29 +65,60 @@ export function presetTitlePresentation(name: string, dirty: boolean) {
     : normalizedName;
   const effectiveDirty = dirty || nameCarriesDirtyMarker;
   const unsaved = cleanName.toLocaleLowerCase() === "unsaved";
+  const text = `${cleanName}${effectiveDirty ? "*" : ""}`;
+  // The unit sizes the title from the string it was sent, so a clean name that
+  // ends in a space is fitted with that space even though the space draws
+  // nothing. A dirty title is fitted as drawn: no frame shows where the marker
+  // sits relative to such a space.
+  const trailingSpace = effectiveDirty || !name.trim() ? "" : name.slice(name.trimEnd().length);
   return {
-    text: `${cleanName}${effectiveDirty ? "*" : ""}`,
+    text,
+    fitText: `${text}${trailingSpace}`,
     dimmed: unsaved && !effectiveDirty,
     italic: effectiveDirty
   };
 }
 
+/* The Grid header, measured on two unit frames at 800x480 (a one-digit and a
+   three-character bank) and the five others that share it. The bank and slot
+   are one 70px run at x 12, baseline 77, with no tracking: "7F" puts its 7 at
+   ink 16 and its F at 60, and "32H" puts its digits at 13, 57 and 101, which
+   are IBM Plex Bold's own 42px advances. The name starts 15px after that run
+   (110 after "7F", 162 after "32H"), and a render of the same string at the
+   fitted size, origin and baseline differs from the unit's pixels by under
+   three levels on average.
+
+   The name's size is an integer, as in every unit frame: 50 and 50 and 45 on
+   three names whose natural widths differ by 14%, none in between. It is the
+   largest integer whose advance still ends by x 558.5 - three frames bracket
+   that edge to within a pixel (the 45px name ends at 550.7..560.5, the first
+   50px at 559.9..568.8, the 39px one at 558.5..568.7). The baseline follows
+   the size down from the bank's 77 by 0.375 of the size lost - 69 at 50, 68
+   at 45, 66 at 40 - and sits on whole pixels, a half going up. */
+export const PRESET_BANK_SIZE = 70;
+export const PRESET_BANK_X = 12;
+export const PRESET_BANK_BASELINE = 77;
+export const PRESET_TITLE_GUTTER = 15;
+export const PRESET_TITLE_MIN_SIZE = 22;
+export const GRID_TITLE_RIGHT_EDGE = 558.5;
+export const PRESET_TITLE_BASELINE_RISE = 0.375;
+
 export function presetTitleLayout(locationWidth: number, titleWidthAtFullSize: number) {
-  // On grid-base the unit's "32H" ink ends at x 141 and the title's begins at
-  // 164. locationWidth is the block's rendered advance, tracking included, so
-  // the same gutter serves a one-digit and a two-digit bank; the two values
-  // this once carried differed only by the tracking the caller now folds in.
-  const gutter = 16;
-  const start = 14 + Math.max(0, locationWidth) + gutter;
-  const maxWidth = Math.max(180, PRESET_TITLE_RIGHT_EDGE - start);
-  const fontSize = Math.max(22, Math.min(68, 68 * maxWidth / Math.max(1, titleWidthAtFullSize)));
+  // locationWidth is the bank run's advance at PRESET_BANK_SIZE, so one gutter
+  // serves a one-digit and a two-digit bank alike.
+  const gutter = PRESET_TITLE_GUTTER;
+  const start = PRESET_BANK_X + Math.max(0, locationWidth) + gutter;
+  const maxWidth = Math.max(180, GRID_TITLE_RIGHT_EDGE - start);
+  // Advances scale linearly with size, so the largest integer that fits is a floor.
+  const fitted = Math.floor(PRESET_BANK_SIZE * maxWidth / Math.max(1, titleWidthAtFullSize) + 1e-6);
+  const fontSize = Math.max(PRESET_TITLE_MIN_SIZE, Math.min(PRESET_BANK_SIZE, fitted));
   return {
     start,
     gutter,
     maxWidth,
     fontSize,
-    squeeze: titleWidthAtFullSize * fontSize / 68 > maxWidth,
-    baseline: 75 - (68 - fontSize) * .35
+    squeeze: titleWidthAtFullSize * fontSize / PRESET_BANK_SIZE > maxWidth,
+    baseline: Math.ceil(PRESET_BANK_BASELINE - (PRESET_BANK_SIZE - fontSize) * PRESET_TITLE_BASELINE_RISE - 0.5)
   };
 }
 

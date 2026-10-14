@@ -24,7 +24,7 @@ import { QC_HOLD_DELAY_MS, useHoldGesture } from "./use-hold-gesture";
 import { hardwareRotaryPixelsPerStep, useRotaryGesture } from "./use-rotary-gesture";
 import { CorOsDirectory } from "./coros-directory";
 import type { PresetDirectoryState } from "./directory-library-model";
-import { GRID_CONTEXT_MENU, gridBlocksByRow, mixAnchorX, openSplitPath, PRESET_LOCATION_TRACKING, presetTitleLayout, presetTitlePresentation, RAIL_LABEL_FONT_SIZE, RAIL_LABEL_LINE_STEP, railLabelBaseline, rejoinSplitPath, routedPortIsPlugged, rowHasVisibleSignalRail, splitAnchorX, type CorOsContextAction } from "./coros-ui";
+import { GRID_CONTEXT_MENU, gridBlocksByRow, mixAnchorX, openSplitPath, MODE_GLYPH_CENTRE, MODE_LABEL, modeGlyphInkRise, PRESET_BANK_BASELINE, PRESET_BANK_SIZE, PRESET_BANK_X, presetTitleLayout, presetTitlePresentation, RAIL_LABEL_FONT_SIZE, RAIL_LABEL_LINE_STEP, railLabelBaseline, rejoinSplitPath, routedPortIsPlugged, rowHasVisibleSignalRail, SCENE_BADGE, splitAnchorX, type CorOsContextAction } from "./coros-ui";
 // The Grid path never loads the screen fixtures, so the shared element library
 // is imported here too - and first, for the same reason it is imported first
 // there: it is the base the screen files refine, not a patch applied over them.
@@ -566,16 +566,15 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
     if (typeof document === "undefined") return text.length * 40;
     const context = document.createElement("canvas").getContext("2d");
     if (!context) return text.length * 40;
-    context.font = `${italic ? "italic " : ""}800 68px ${QC_TYPOGRAPHY.devicePlain}`;
+    context.font = `${italic ? "italic " : ""}800 ${PRESET_BANK_SIZE}px ${QC_TYPOGRAPHY.devicePlain}`;
     return context.measureText(text).width;
   };
-  // The block's rendered advance: the font's own plus the unit's tracking,
-  // which CSS applies after the last glyph as well as between them.
-  const presetLocationWidth = measureHeaderText(presetLocation) + PRESET_LOCATION_TRACKING * presetLocation.length;
+  // The block's rendered advance: the font's own, as the unit sets it untracked.
+  const presetLocationWidth = measureHeaderText(presetLocation);
   // The official header reserves a clear gutter before Undo. Derive the title
   // width from its actual start so multi-digit banks cannot push it underneath
   // the icon while retaining the QC's natural inline bank/slot/name flow.
-  const presetTitleWidthAtFullSize = measureHeaderText(presetTitle, titlePresentation.italic);
+  const presetTitleWidthAtFullSize = measureHeaderText(titlePresentation.fitText, titlePresentation.italic);
   const {
     start: presetTitleStart,
     maxWidth: presetTitleMaxWidth,
@@ -590,7 +589,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   const modeGlyphVector = QC_SCREEN_ICON_VECTORS[`mode.${snapshot.mode.toLowerCase()}` as keyof typeof QC_SCREEN_ICON_VECTORS];
   // UNKNOWN is a valid unreadable mode, not a known mode to substitute.
   // Only its positioning uses a safe box; the glyph still receives UNKNOWN.
-  const modeGlyphOrigin = { x: 668 - (modeGlyphVector?.width ?? 24) / 2, y: 72 - (modeGlyphVector?.height ?? 24) / 2 };
+  const modeGlyphOrigin = { x: MODE_GLYPH_CENTRE.x - (modeGlyphVector?.width ?? 24) / 2, y: MODE_GLYPH_CENTRE.y - (modeGlyphVector?.height ?? 24) / 2 + modeGlyphInkRise(snapshot.mode) };
   const routes = rowY.map((_, row) => snapshot.routes.find((route) => route.row === row));
   const displayInput = (row: number) => {
     const input = routes[row]?.input;
@@ -893,8 +892,8 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   return <div className="qc-screen coros-vector-screen" aria-label="CorOS Grid">
     <svg className="coros-vector-canvas" viewBox="0 0 800 480" role="img" aria-label={`${snapshot.presetLocation} ${snapshot.presetName}, ${snapshot.mode} mode`}>
       <rect width="800" height="480" fill={QC_COLORS.reference.screen} />
-      <g transform="matrix(1.012 0 0 1 -2 0)" fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize="68">
-        <text x="14" y="75"><tspan fill="var(--qc-grid-white-ink)" letterSpacing={PRESET_LOCATION_TRACKING}>{presetBank}</tspan><tspan fill={presetSlotAccent} letterSpacing={PRESET_LOCATION_TRACKING}>{presetSlot}</tspan></text>
+      <g fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize={PRESET_BANK_SIZE}>
+        <text data-grid-header="location" x={PRESET_BANK_X} y={PRESET_BANK_BASELINE}><tspan fill="var(--qc-grid-white-ink)">{presetBank}</tspan><tspan fill={presetSlotAccent}>{presetSlot}</tspan></text>
         <text
           className={`preset-title${titlePresentation.italic ? " is-dirty" : ""}${titlePresentation.dimmed ? " is-unsaved" : ""}`}
           x={presetTitleStart}
@@ -909,9 +908,9 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
       {!dragPreview && <>
       <QcScreenHeaderGlyph kind="nav-undo" />
       <QcScreenHeaderGlyph kind="nav-save" />
-      <rect x="656" y="12" width="25" height="25" rx="3" fill={sceneMenuOpen ? QC_COLORS.reference.sceneControlMuted : QC_COLORS.reference.sceneBadge} /><text x="668.5" y="33" textAnchor="middle" fill={QC_COLORS.device.panel} fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize="22">{sceneLetter}</text>
+      <rect data-grid-header="scene-badge" x={SCENE_BADGE.x} y={SCENE_BADGE.y} width={SCENE_BADGE.size} height={SCENE_BADGE.size} rx={SCENE_BADGE.radius} fill={sceneMenuOpen ? QC_COLORS.reference.sceneControlMuted : QC_COLORS.reference.sceneBadge} /><text data-grid-header="scene-letter" x={SCENE_BADGE.letterX} y={SCENE_BADGE.letterBaseline} textAnchor="middle" fill={QC_COLORS.device.panel} fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize={SCENE_BADGE.letterSize}>{sceneLetter}</text>
       <QcScreenHeaderGlyph kind="menu" />
-      <g transform={`translate(${modeGlyphOrigin.x} ${modeGlyphOrigin.y})`} color="var(--qc-grid-white-ink)"><QcModeGlyph mode={snapshot.mode} /></g><text x="692" y="80" fill="var(--qc-grid-white-ink)" fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize="21.5">{snapshot.mode}</text>
+      <g data-grid-header="mode-glyph" transform={`translate(${modeGlyphOrigin.x} ${modeGlyphOrigin.y})`} color="var(--qc-grid-white-ink)"><QcModeGlyph mode={snapshot.mode} /></g><text data-grid-header="mode-label" x={MODE_LABEL.x} y={MODE_LABEL.baseline} fill="var(--qc-grid-white-ink)" fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize={MODE_LABEL.size}>{snapshot.mode}</text>
       </>}
       <g fill={QC_COLORS.reference.routePill} stroke={QC_COLORS.reference.screen} strokeWidth="1.2" fontFamily={QC_TYPOGRAPHY.deviceRoute} textAnchor="middle">
         {/* Not a mirror of the input rail: grid-base fills 750..793 on all four rows,
