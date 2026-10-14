@@ -78,7 +78,7 @@ test('ios and macOS builds drop only the qc-ui source globs from their path filt
   for (const name of ['ios.yml', 'macos-build.yml']) {
     const text = workflow(name);
     for (const glob of qcUi) {
-      const lines = text.split('\n').filter((line) => line.replace(/["']/g, '').trim() === `- !${glob}`);
+      const lines = text.split('\n').filter((line) => line.trim() === `- "!${glob}"`);
       assert.equal(lines.length, 2, `${name} must negate ${glob} for pull_request and push`);
     }
   }
