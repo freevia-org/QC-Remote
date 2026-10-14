@@ -3797,7 +3797,7 @@
     {
       "ecosystem": "cargo",
       "name": "rustls",
-      "version": "0.23.45",
+      "version": "0.23.46",
       "license": "Apache-2.0 OR ISC OR MIT",
       "sourceUrl": "https://github.com/rustls/rustls",
       "licenseTextHashes": [
@@ -10574,7 +10574,7 @@
         "cargo:rustix@1.1.4",
         "cargo:rustix@1.1.5",
         "cargo:rustls-native-certs@0.8.4",
-        "cargo:rustls@0.23.45",
+        "cargo:rustls@0.23.46",
         "cargo:scoped-tls@1.0.1",
         "cargo:scopeguard@1.2.0",
         "cargo:security-framework-sys@2.17.0",
@@ -10787,7 +10787,7 @@
         "cargo:hyper-rustls@0.27.10",
         "cargo:hyper-rustls@0.27.9",
         "cargo:rustls-native-certs@0.8.4",
-        "cargo:rustls@0.23.45"
+        "cargo:rustls@0.23.46"
       ]
     },
     {
@@ -10912,7 +10912,7 @@
         "cargo:hyper-rustls@0.27.10",
         "cargo:hyper-rustls@0.27.9",
         "cargo:rustls-native-certs@0.8.4",
-        "cargo:rustls@0.23.45"
+        "cargo:rustls@0.23.46"
       ]
     },
     {
