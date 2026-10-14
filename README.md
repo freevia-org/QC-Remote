@@ -20,11 +20,11 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 ## Download
 
-| Platform | Current release | Download | Store |
+| Platform | Current release | Primary download | Other channel |
 | --- | --- | --- | --- |
-| Windows 10/11, x64 | 0.1.182 | [Signed installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/QC-Remote-Windows-0.1.182-x64-setup.exe) | Microsoft Store: pending |
+| Windows 10/11, x64 | 0.1.182 | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5) | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/QC-Remote-Windows-0.1.182-x64-setup.exe) |
 | Ubuntu 24.04, x86_64 | 0.1.187 | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.187/qc-remote_0.1.187_amd64.deb) | — |
-| Android 7.0+, USB host/OTG | 0.3.36 GitHub APK; 0.3.37 (build 42) internal test | [Signed APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/qc-remote-0.3.36.apk) | [Invited Google Play test](https://play.google.com/apps/internaltest/4701527491652130240); [public listing](https://play.google.com/store/apps/details?id=org.freevia.qcremote) pending review |
+| Android 7.0+, USB host/OTG | Public Google Play listing; 0.3.36 GitHub APK; 0.3.37 (build 42) invited test | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote) | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.182/qc-remote-0.3.36.apk) · [Invited tester opt-in](https://play.google.com/apps/internaltest/4701527491652130240) |
 | iPhone and iPad | Development preview; not released | Build from [`apps/ios`](apps/ios/README.md) | — |
 
 The iPhone app provides one-way USB-MIDI controls only. Full direct USB control
