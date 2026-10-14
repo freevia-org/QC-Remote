@@ -74,6 +74,12 @@ on:
 permissions:
   contents: read
 
+# Only pull_request_target events reach this workflow, so every run belongs to a
+# pull request: a newer event for the same pull request supersedes the run in flight.
+concurrency:
+  group: dco-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   dco:
     name: DCO sign-off

@@ -2,6 +2,13 @@ name: Linux device broker
 
 on:
   pull_request:
+    paths-ignore:
+      - "packages/typescript/qc-ui/**/*.ts"
+      - "packages/typescript/qc-ui/**/*.tsx"
+      - "packages/typescript/qc-ui/**/*.css"
+      - "packages/typescript/qc-ui/**/*.md"
+      - "docs/**"
+      - "*.md"
   push:
     branches: [master]
   workflow_dispatch:
@@ -17,7 +24,7 @@ permissions:
 
 concurrency:
   group: linux-broker-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   native-linux:

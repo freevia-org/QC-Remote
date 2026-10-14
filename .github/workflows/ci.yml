@@ -8,17 +8,41 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request supersedes the run in flight. Pushes to master
+# are never cancelled: they queue (one pending run at most) so every merge
+# finishes the run that refreshes the Rust build caches below.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Decides whether a pull request needs the native jobs (Rust, Windows app,
+  # Android). Only a change confined to the safe set in scripts/ci-changes.mjs
+  # skips them. A job skipped by `if:` reports "Skipped", which branch protection
+  # accepts for a required check; `changes` itself is not required and fails
+  # open: if it errors or is skipped, the native jobs run.
+  changes:
+    name: Select native jobs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      native: ${{ steps.filter.outputs.native }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - id: filter
+        run: node scripts/ci-changes.mjs
+
   rust:
     name: Rust workspace
-    # Pull requests validate the candidate tree. A push to protected master
-    # reruns only the history/policy audit below; rebuilding the same tree adds
-    # latency without testing a different program.
-    if: github.event_name == 'pull_request'
+    # The native jobs run on pull requests that touch more than the safe set
+    # (see `changes`) and on every push to master. The master run is what keeps
+    # the build caches warm: a pull request restores master's cache and does not
+    # write its own (`save-if`), so a new pull request no longer starts from a
+    # cold target directory. Nothing waits on the master run.
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -27,6 +51,8 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -39,7 +65,8 @@ jobs:
   # toolchain below equal to that `rust-version`.
   rust-msrv:
     name: quadcortex on its declared Rust minimum (1.87)
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -52,11 +79,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: msrv-1.87
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo +1.87 test -p quadcortex --locked
 
   rust-windows-app:
     name: Windows app (Rust backend)
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -71,6 +100,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/windows/src-tauri
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Stage check-only sidecar placeholders
         working-directory: apps/windows/src-tauri
         shell: pwsh
@@ -96,13 +126,16 @@ jobs:
 
   quadcortex-linux:
     name: Quad Cortex crate docs and Linux tests
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo test -p quadcortex --locked
       - run: cargo doc -p quadcortex --no-deps --locked
         env:
@@ -153,6 +186,15 @@ jobs:
       - name: Generated broker tray surface drift check
         run: npm run contracts:check
       - run: npm run typecheck
+      # The Windows, Android and iOS apps embed these bundles. The native jobs
+      # build them too, but a pull request confined to the safe set in
+      # scripts/ci-changes.mjs skips those, so this job is where a frontend
+      # build break is caught on every pull request.
+      - name: Web bundles the native apps embed (vite build)
+        run: |
+          npm run build:windows
+          npm run build:android:web
+          npm run build:ios:web
       - run: npm test
 
   public-history:
@@ -233,7 +275,8 @@ jobs:
 
   android:
     name: Android app (debug build + unit tests)
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     # Deliberately debug-only: no release signing or keystore. Do not set QC_ANDROID_KEYSTORE_BASE64,
@@ -255,6 +298,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+          # Caches ~/.gradle (dependencies and wrapper), keyed on the Gradle
+          # files. Saved by the master run, restored by pull requests.
+          cache: gradle
       - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
       - name: Install pinned Android SDK platform, build tools and NDK
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
@@ -272,6 +318,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: android
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --version 4.1.2 --locked
       - name: Gradle debug build and unit tests

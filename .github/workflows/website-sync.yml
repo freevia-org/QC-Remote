@@ -25,6 +25,12 @@ on:
 permissions:
   contents: read
 
+# Superseded pull request runs are cancelled; runs for master and manual or
+# scheduled dispatches are never cancelled.
+concurrency:
+  group: website-sync-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     runs-on: ubuntu-latest
