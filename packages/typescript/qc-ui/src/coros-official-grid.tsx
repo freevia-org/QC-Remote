@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { CpuColumnLoad, PresetSnapshot } from "@qc-remote/client";
 import { QC_TYPOGRAPHY } from "@qc-remote/theme";
-import { PRESET_TITLE_RIGHT_EDGE, presetTitlePresentation, RAIL_LABEL_FONT_SIZE, RAIL_LABEL_LINE_STEP, railLabelBaseline } from "./coros-ui";
+import { MODE_LABEL, PRESET_TITLE_RIGHT_EDGE, presetTitlePresentation, RAIL_LABEL_FONT_SIZE, RAIL_LABEL_LINE_STEP, railLabelBaseline, SCENE_BADGE } from "./coros-ui";
 import { QcDeviceGlyph } from "./device-glyph";
 import { useFontFaceReady } from "./use-font-face-ready";
 import { QcModeGlyph, QcScreenHeaderGlyph, QcScreenVectorGlyph } from "./theme-icons";
@@ -114,8 +114,8 @@ export function CorOsOfficialGrid({ snapshot, children, browserChrome = false, n
         {/* The browser frames show the plain floppy, as the main Grid does (device-browser-dsp-limited reference). */}
         <QcScreenHeaderGlyph kind={browserChrome ? "nav-save" : "export"} />
         <g className="grid-scene-badge">
-          <rect x="656" y="12" width="25" height="25" rx="3" fill="var(--qc-palette-f2cf32)" />
-          <text x="668.5" y="33" textAnchor="middle" fill="var(--qc-screen-surface-base)" fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize="22">
+          <rect x={SCENE_BADGE.x} y={SCENE_BADGE.y} width={SCENE_BADGE.size} height={SCENE_BADGE.size} rx={SCENE_BADGE.radius} fill="var(--qc-palette-f2cf32)" />
+          <text x={SCENE_BADGE.letterX} y={SCENE_BADGE.letterBaseline} textAnchor="middle" fill="var(--qc-screen-surface-base)" fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize={SCENE_BADGE.letterSize}>
             A
           </text>
         </g>
@@ -123,7 +123,7 @@ export function CorOsOfficialGrid({ snapshot, children, browserChrome = false, n
         <g transform="translate(655 60)">
           <ModeGlyph mode={snapshot.mode} />
         </g>
-        <text x="693" y="78" fill="var(--qc-palette-f0f0f0)" fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize="21.5">
+        <text x={MODE_LABEL.x} y={MODE_LABEL.baseline} fill="var(--qc-palette-f0f0f0)" fontFamily={QC_TYPOGRAPHY.devicePlain} fontWeight="800" fontSize={MODE_LABEL.size}>
           {snapshot.mode}
         </text>
         <g className="grid-route-rails" fill="var(--qc-screen-surface-base)" stroke="var(--qc-screen-background)" strokeWidth="1.5" fontFamily={QC_TYPOGRAPHY.deviceRoute} textAnchor="middle">
