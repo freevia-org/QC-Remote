@@ -13,6 +13,7 @@ import type { QcDeviceUndo } from "./use-qc-device-undo.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
 import type { GatewayTransport } from "@qc-remote/client";
 import type { IoUnitSelection } from "./io-unit-selection.ts";
+import { settingsSelectionKey, type QcSettingsUnitSelection } from "./settings-unit-selection.ts";
 
 /**
  * The "Follow the Quad Cortex screen" setting, read and written in one place
@@ -35,7 +36,9 @@ export interface QcScreenFollowWorkflows {
   grid: { close(): void; details?: unknown };
   preset: { closeDirectory(): void; openDirectory(): unknown; directoryOpen?: boolean };
   /** `noteCorOsVersionFromScreen` keeps the CorOS version the unit's Device Information screen shows (see cor-os-version.ts). */
-  deviceSettings: { open: boolean; close(): void; openSettings(): unknown; noteCorOsVersionFromScreen?(version: string): void };
+  deviceSettings: { open: boolean; close(): void; openSettings(): unknown; noteCorOsVersionFromScreen?(version: string): void;
+    /** Selects the section and row the unit's Settings dialog shows (see settings-unit-selection.ts). Never sends anything to the unit. */
+    followUnitSelection?(selection: QcSettingsUnitSelection): void };
   tempo: { open: boolean; close(): void; openTempo(): unknown };
   tuner: { close(): void; openTuner(): unknown };
   ioEq: { refresh(): unknown; followUnitSelection?(selection: IoUnitSelection | undefined): void };
@@ -97,9 +100,11 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     fail: (error: unknown) => options.notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed.") });
   const gateway = lifetime.options.gateway;
   const followed = useRef<QcObservedScreenKind | undefined>(undefined);
+  /** The Settings pane the unit last named and the app was moved to; empty while the unit shows no known Settings pane. */
+  const followedSettingsPane = useRef("");
   const observationGeneration = useRef(0);
   useEffect(() => {
-    if (!follow || !ready) { followed.current = undefined; observationGeneration.current += 1; }
+    if (!follow || !ready) { followed.current = undefined; followedSettingsPane.current = ""; observationGeneration.current += 1; }
   }, [follow, ready]);
   const latest = useRef({ ...lifetime.options, lifetime });
   latest.current = { ...lifetime.options, lifetime };
@@ -108,6 +113,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
   if (driving.current.key !== lifetime.key) {
     driving.current = { key: lifetime.key, count: 0 };
     followed.current = undefined;
+    followedSettingsPane.current = "";
     observationGeneration.current += 1;
   }
 
@@ -166,6 +172,14 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     // The unit's I/O selection is the unit's to name on every open and while open (the app's own taps are mirrored to the
     // unit and come back as the same selection), so it is applied before the once-per-kind latch below; leaving I/O clears it.
     latest.current.workflows.ioEq.followUnitSelection?.(kind === "io" ? observation.ioSelection : undefined);
+    // The unit's Settings section and row are the unit's to name when it changes pane (and on every open, since it opens on
+    // the last section visited). They are applied once per change, not on every observation, so a section the user chose in
+    // the app stays until the unit moves to another pane; the app's own choice is never sent to the unit.
+    const settingsPane = kind === "settings" ? settingsSelectionKey(observation.settingsSelection) : "";
+    if (settingsPane !== followedSettingsPane.current) {
+      followedSettingsPane.current = settingsPane;
+      if (observation.settingsSelection) latest.current.workflows.deviceSettings.followUnitSelection?.(observation.settingsSelection);
+    }
     if (followed.current === kind) return;
     followed.current = kind;
     observationGeneration.current += 1;

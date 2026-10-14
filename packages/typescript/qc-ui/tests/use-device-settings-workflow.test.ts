@@ -117,3 +117,31 @@ test("the CorOS version the unit's Device Information screen showed is kept for 
   await act(async () => { stale("9.9.9"); });
   assert.equal(value.screenCorOsVersion, undefined);
 });
+
+test("following the unit's Settings pane selects the app's section and row, writes nothing, and ignores a session that has ended", async (t) => {
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let value, renderer;
+  const calls: string[] = [];
+  const gateway = new Proxy({ generalSettings: async () => ({}), identity: async () => ({ serial: "SYN-0001" }) }, {
+    get(target, key) { if (key in target) return target[key]; return (...args) => { calls.push(String(key)); return Promise.resolve({ detail: "x" }); }; }
+  });
+  let options = { gateway, sessionKey: "usb-A", connected: true, pending: false,
+    setPending: () => {}, notice: () => {}, fail: (error) => { throw error; } };
+  function Harness() { value = useDeviceSettingsWorkflow(options); return null; }
+  await act(async () => { renderer = create(React.createElement(Harness)); });
+  t.after(async () => { await act(async () => renderer.unmount()); });
+  assert.equal(value.section, "system", "the app's own default until the unit says otherwise");
+  await act(async () => { value.followUnitSelection({ section: "support", row: "info" }); });
+  assert.equal(value.section, "support");
+  assert.equal(value.supportRow, "info");
+  await act(async () => { value.followUnitSelection({ section: "system", row: "updates" }); });
+  assert.deepEqual([value.section, value.systemRow, value.supportRow], ["system", "updates", "info"]);
+  // The app's own navigation still works after following.
+  await act(async () => { value.setSection("device"); value.setDeviceRow("latency"); });
+  assert.deepEqual([value.section, value.deviceRow], ["device", "latency"]);
+  assert.deepEqual(calls, [], "following reads and writes nothing on the unit");
+  const stale = value.followUnitSelection;
+  await act(async () => { options = { ...options, sessionKey: "usb-B" }; renderer.update(React.createElement(Harness)); });
+  await act(async () => { stale({ section: "account", row: "backup" }); });
+  assert.notEqual(value.accountRow, "backup", "a pane named for the previous session is not applied");
+});
