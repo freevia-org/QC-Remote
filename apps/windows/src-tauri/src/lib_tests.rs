@@ -412,7 +412,7 @@ fn gateway_output_deadline_refusal_and_attempted_failure_are_distinct() {
 }
 
 #[test]
-fn gateway_output_deadline_prefilled_socket_is_bounded() {
+fn gateway_output_deadline_unread_socket_is_bounded() {
     struct Release {
         start: Option<mpsc::Sender<()>>,
         release: Option<mpsc::Sender<()>>,
@@ -428,18 +428,30 @@ fn gateway_output_deadline_prefilled_socket_is_bounded() {
         }
     }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let mut writer = TcpStream::connect_timeout(
+    socket2::SockRef::from(&listener)
+        .set_recv_buffer_size(4096)
+        .unwrap();
+    let writer = TcpStream::connect_timeout(
         &listener.local_addr().unwrap(),
         std::time::Duration::from_secs(2),
     )
     .unwrap();
     let (peer, _) = listener.accept().unwrap();
+    let writer_socket = socket2::SockRef::from(&writer);
+    #[cfg(windows)]
+    {
+        writer_socket.set_send_buffer_size(0).unwrap();
+        assert_eq!(writer_socket.send_buffer_size().unwrap(), 0);
+    }
+    #[cfg(not(windows))]
+    writer_socket.set_send_buffer_size(4096).unwrap();
+    assert!(socket2::SockRef::from(&peer).recv_buffer_size().unwrap() <= 2 * 1024 * 1024);
     let elapsed = std::thread::scope(|scope| {
         let (start, started) = mpsc::channel();
         let (release, released) = mpsc::channel();
         scope.spawn(move || {
             // This exact peer closes even if the old unbounded writer stalls.
-            // Start its observation only after backpressure is established.
+            // Start its observation only after the bounded socket pair is ready.
             let _ = started.recv_timeout(std::time::Duration::from_secs(4));
             let _ = released.recv_timeout(std::time::Duration::from_secs(7));
             let _ = peer.shutdown(Shutdown::Both);
@@ -448,28 +460,6 @@ fn gateway_output_deadline_prefilled_socket_is_bounded() {
             start: Some(start),
             release: Some(release),
         };
-        writer.set_nonblocking(true).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let bytes = [0_u8; 64 * 1024];
-        let mut filled = 0_usize;
-        loop {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "could not establish bounded TCP backpressure"
-            );
-            assert!(
-                filled < 128 * 1024 * 1024,
-                "backpressure fixture exceeded its software byte budget"
-            );
-            match writer.write(&bytes) {
-                Ok(0) => panic!("socket closed before backpressure was established"),
-                Ok(count) => filled += count,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => panic!("prefill failed: {error}"),
-            }
-        }
-        writer.set_nonblocking(false).unwrap();
         let reads = LockFreeReads::new(
             writer,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2870,8 +2860,14 @@ fn native_test_health_and_stderr_use_the_actual_original_producer_environment_ro
 }
 /// Allocates a new directory without deleting anything from an earlier run.
 pub(crate) fn unique_fixture_directory(name: &str) -> PathBuf {
+    #[cfg(unix)]
     let parent =
         fs::canonicalize(std::env::temp_dir()).expect("canonicalize system temporary directory");
+    // canonicalize adds a verbatim Windows prefix that Node/PowerShell CLI
+    // parsers do not consistently accept. The allocator below still checks
+    // every Windows parent for symlinks/reparse points before exclusive create.
+    #[cfg(not(unix))]
+    let parent = std::env::temp_dir();
     unique_fixture_directory_in(&parent, name)
 }
 

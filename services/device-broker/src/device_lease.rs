@@ -1310,8 +1310,15 @@ pub(crate) mod testing {
         }
     }
     pub(crate) fn fresh_root(label: &str) -> std::sync::Arc<FixtureRoot> {
+        // macOS's system temp path can pass through the /var symlink. Resolve
+        // only this test-owned parent, not caller-supplied production paths.
+        #[cfg(unix)]
+        let parent = std::fs::canonicalize(std::env::temp_dir())
+            .expect("canonicalize system temporary directory for lease fixture");
+        #[cfg(not(unix))]
+        let parent = std::env::temp_dir();
         for _ in 0..64 {
-            let path = std::env::temp_dir().join(format!(
+            let path = parent.join(format!(
                 "qc-lease-{label}-{:032x}",
                 uuid::Uuid::new_v4().as_u128()
             ));

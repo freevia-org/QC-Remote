@@ -269,7 +269,7 @@ impl Drop for ResolverOwner {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 async fn run(
     command: tokio::process::Command,
     host: &str,

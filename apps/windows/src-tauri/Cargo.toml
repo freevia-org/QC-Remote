@@ -117,6 +117,7 @@ plist = "1.10"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+socket2 = "=0.6.5"
 
 # No debuginfo for dependencies in debug builds.
 #

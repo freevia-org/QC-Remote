@@ -7009,7 +7009,9 @@ mod tcp_tests {
             socket
                 .connect(&listener.local_addr().unwrap().into())
                 .unwrap();
-            assert!(socket.recv_buffer_size().unwrap() <= 64 * 1024);
+            // BSD kernels may round up well beyond the requested 4KiB. The
+            // effective buffer must still be far below our unchanged 8MiB frame.
+            assert!(socket.recv_buffer_size().unwrap() <= 2 * 1024 * 1024);
             let client: TcpStream = socket.into();
             let (server, _) = listener.accept().unwrap();
             let server_socket = socket2::SockRef::from(&server);
@@ -7024,7 +7026,7 @@ mod tcp_tests {
             }
             #[cfg(not(windows))]
             server_socket.set_send_buffer_size(4096).unwrap();
-            assert!(server_socket.send_buffer_size().unwrap() <= 64 * 1024);
+            assert!(server_socket.send_buffer_size().unwrap() <= 2 * 1024 * 1024);
             (client, server)
         }
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();

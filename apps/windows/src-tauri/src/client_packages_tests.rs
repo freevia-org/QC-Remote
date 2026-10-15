@@ -952,7 +952,10 @@ fn the_bundled_bridge_passes_a_node_syntax_check() {
     fs::write(&file, bridge).expect("bridge copy");
     #[cfg(windows)]
     let checked = run_with_timeout(
-        Command::new("node").arg("--check").arg(&file),
+        Command::new("node")
+            .arg("--check")
+            .arg(&file)
+            .stderr(std::process::Stdio::piped()),
         Duration::from_secs(10),
     )
     .expect("node is required to verify the bundled bridge");
@@ -961,7 +964,8 @@ fn the_bundled_bridge_passes_a_node_syntax_check() {
         .expect("node is required to verify the bundled bridge");
     assert!(
         checked.status.success(),
-        "node --check rejected the bundled bridge: {}",
+        "node --check rejected the bundled bridge ({}): {}",
+        checked.status,
         String::from_utf8_lossy(&checked.stderr)
     );
 }
@@ -3333,7 +3337,8 @@ Write-Output 'bounded inventory refuses before copy'
         Command::new("powershell.exe")
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&script)
-            .arg(&directory),
+            .arg(&directory)
+            .stderr(std::process::Stdio::piped()),
         Duration::from_secs(10),
     )
     .expect("bounded installer transaction fixture");
