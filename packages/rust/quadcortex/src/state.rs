@@ -363,6 +363,12 @@ pub struct PresetFolderListing {
     pub is_plugin: bool,
     /// Slot records of the folder, sorted by position.
     pub files: Vec<PresetFileListing>,
+    /// Position of the folder in the order the device first published it, counted from zero.
+    ///
+    /// The wire folder record carries no index, but the device publishes its user folders in the
+    /// order its own directory lists them, so first-seen arrival is that order. Only the retained
+    /// catalog observations assign it; every other projection leaves it `None`.
+    pub order: Option<u32>,
 }
 
 /// Decode a File envelope without dropping action, destination, or field presence.
@@ -465,6 +471,7 @@ pub fn project_preset_folder(
         .collect::<Vec<_>>();
     files.sort_by_key(|file| file.position);
     Some(PresetFolderListing {
+        order: None,
         key,
         name,
         file_type,

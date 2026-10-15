@@ -285,6 +285,12 @@ export interface PresetFolder {
   key: string;
   name: string;
   isFactory: boolean;
+  /**
+   * Position in which the Quad Cortex first published this folder in the current
+   * session, counted from zero. The unit lists its user folders in that order.
+   * Absent from brokers that predate it, and for folders whose arrival was not seen.
+   */
+  order?: number;
 }
 
 export interface PresetFolderList {

@@ -1753,6 +1753,120 @@ mod tests {
         assert_eq!(folders["folders"].as_array().unwrap().len(), 2);
     }
 
+    /// First-seen sequence of the retained folders, keyed by folder key.
+    fn retained_orders(owner: &SessionRuntime, keys: &[&str]) -> Vec<Option<u32>> {
+        keys.iter()
+            .map(|key| {
+                owner
+                    .catalog_observations
+                    .retained_listing(key)
+                    .and_then(|listing| listing.order)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn folder_first_seen_order_is_stable_and_listed_after_the_factory_folder() {
+        let (mut owner, connection) = live_owner();
+        let fence = owner.session_context().unwrap().session_fence().clone();
+        let base = "/media/p4/Presets";
+        let (b, a, c) = (
+            format!("{base}/Folder B"),
+            format!("{base}/Folder A"),
+            format!("{base}/Folder C"),
+        );
+        let factory = "/opt/neuraldsp/Factory Library";
+        // Arrival order, not alphabetical order: B, A, C, then the factory folder last.
+        observe_folder(&mut owner, connection, &b, Some("One"), 1, 2);
+        observe_folder(&mut owner, connection, &a, Some("One"), 3, 4);
+        observe_folder(&mut owner, connection, &c, Some("One"), 5, 6);
+        observe_folder(&mut owner, connection, factory, Some("One"), 7, 8);
+        // Re-observing an earlier folder does not move it.
+        observe_folder(&mut owner, connection, &b, Some("Two"), 9, 10);
+        assert_eq!(
+            retained_orders(&owner, &[&b, &a, &c]),
+            vec![Some(0), Some(1), Some(2)]
+        );
+        let listed = owner
+            .retained_preset_catalog(&fence, "device.listPresetFolders", &b, 20)
+            .unwrap()
+            .unwrap();
+        let keys: Vec<&str> = listed["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|folder| folder["key"].as_str().unwrap())
+            .collect();
+        assert_eq!(keys, vec![factory, b.as_str(), a.as_str(), c.as_str()]);
+        assert_eq!(listed["folders"][1]["order"], 0);
+        assert_eq!(listed["folders"][2]["order"], 1);
+        assert_eq!(listed["folders"][3]["order"], 2);
+        assert_eq!(listed["folders"][0]["isFactory"], true);
+    }
+
+    #[test]
+    fn folder_first_seen_order_survives_rename_and_restarts_after_a_rebuild() {
+        use crate::proto::cortex_protobuf_v2 as pa;
+        use prost::Message;
+        let (mut owner, connection) = live_owner();
+        let base = "/media/p4/Presets";
+        let (first, second) = (format!("{base}/Folder A"), format!("{base}/Folder B"));
+        let renamed = format!("{base}/Folder Z");
+        observe_folder(&mut owner, connection, &first, Some("One"), 1, 2);
+        observe_folder(&mut owner, connection, &second, Some("One"), 3, 4);
+        let folder = |key: &str, name: &str| pa::FolderInfo {
+            key: Some(pa::folder_info::Key::Key(key.into())),
+            name: Some(pa::folder_info::Name::Name(name.into())),
+            ..Default::default()
+        };
+        let rename = pa::FileMessage {
+            action: pa::message_action::Enum::Update as i32,
+            folder: Some(pa::file_message::Folder::Folder(folder(&first, "Folder A"))),
+            to_folder: Some(pa::file_message::ToFolder::ToFolder(folder(
+                &renamed, "Folder Z",
+            ))),
+            ..Default::default()
+        };
+        let ticket = owner
+            .capture_observation_with_ingress(
+                connection,
+                Some(IngressTime {
+                    first_report_at_ms: 5,
+                    last_report_at_ms: 6,
+                }),
+            )
+            .unwrap();
+        owner
+            .observe_state(
+                &ticket,
+                crate::profile::MESSAGE_TYPE_FILE,
+                &rename.encode_to_vec(),
+            )
+            .unwrap();
+        // The renamed folder keeps the position it was first seen in, so it still sorts first
+        // although "Folder Z" follows "Folder B" alphabetically.
+        assert_eq!(
+            retained_orders(&owner, &[&renamed, &second]),
+            vec![Some(0), Some(1)]
+        );
+        assert!(owner
+            .catalog_observations
+            .retained_listing(&first)
+            .is_none());
+        // A rebuild discards the folders; the burst that follows is numbered afresh from zero.
+        owner.catalog_observations.clear_for_rebuild();
+        assert_eq!(
+            retained_orders(&owner, &[&renamed, &second]),
+            vec![None, None]
+        );
+        observe_folder(&mut owner, connection, &second, Some("One"), 7, 8);
+        observe_folder(&mut owner, connection, &first, Some("One"), 9, 10);
+        assert_eq!(
+            retained_orders(&owner, &[&second, &first]),
+            vec![Some(0), Some(1)]
+        );
+    }
+
     /// The reason a listPresets read of `key` reports, at `now_ms`.
     fn absence_of(owner: &SessionRuntime, key: &str, now_ms: u64) -> PresetCatalogAbsence {
         let fence = owner.session_fence().unwrap();
