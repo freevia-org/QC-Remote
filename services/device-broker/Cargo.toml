@@ -12,12 +12,19 @@ default = []
 linux-tray = ["dep:ksni", "dep:zbus"]
 
 [dependencies]
+quadcortex-forwarder = { path = "../../packages/rust/quadcortex-forwarder" }
+bytes = "=1.12.1"
+http = "=1.5.0"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.11.1", features = ["client", "http1", "http2"] }
+hyper-rustls = { version = "=0.27.10", features = ["http1", "http2", "rustls-platform-verifier"] }
+hyper-util = { version = "=0.1.20", features = ["client-legacy", "http1", "http2", "tokio"] }
 qc-broker-framing = { path = "../../packages/rust/qc-broker-framing" }
 qc-owner-only-file = { path = "../../packages/rust/qc-owner-only-file" }
 qc-native-platform = { path = "../../packages/rust/qc-native-platform" }
 base64.workspace = true
 prost.workspace = true
-quadcortex = { path = "../../packages/rust/quadcortex" }
+quadcortex = { path = "../../packages/rust/quadcortex", features = ["cloud-forward"] }
 quadcortex-hid = { path = "../../packages/rust/quadcortex-hid" }
 # The workspace `rand` (root Cargo.toml) stays on the same version as
 # apps/windows/src-tauri/Cargo.toml's, so the shared-broker token/instance-id
@@ -25,20 +32,20 @@ quadcortex-hid = { path = "../../packages/rust/quadcortex-hid" }
 # MCP descriptor minting. The shell is outside the workspace and cannot
 # inherit it; scripts/verify-manifest-pins.test.mjs checks the two agree.
 rand.workspace = true
-# The update-only HTTP relay (src/updater_relay) is the broker's one outbound
-# network use. Both crates are already in the lock file through
-# qc-relay-client, so this adds no package. The relay's client turns off
-# redirects, the system proxy and response decompression itself (explicit
-# builder calls, not the absence of features), and tokio supplies only the
-# current-thread runtime that drives it.
+# URL parsing and method compatibility are shared with the broker's request
+# validators. Hyper provides the direct HTTP transport; unlike a browser-style
+# client it does not synthesize Accept or User-Agent headers.
 reqwest.workspace = true
+rustls = { version = "=0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 # Constant-time bearer-token comparison, the same crate and version
 # apps/windows/src-tauri's local_access.rs already uses.
 subtle = "2"
-tokio = { workspace = true, features = ["rt", "time"] }
+tower-service = "=0.3.3"
+tokio = { workspace = true, features = ["rt", "time", "process", "io-util", "sync"] }
+zeroize = "1"
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -46,12 +53,17 @@ qc-windows-midi = { path = "../../packages/rust/qc-windows-midi" }
 # Windows tray, interactive-session and installer-stop APIs.
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
     "Win32_Graphics_Gdi",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_LibraryLoader",
     "Win32_System_RemoteDesktop",
     "Win32_System_StationsAndDesktops",
     "Win32_System_Threading",
+    "Win32_System_JobObjects",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

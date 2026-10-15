@@ -10,7 +10,7 @@ import {
   useDeviceSettingsWorkflow, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow,
   usePresetMidiOutWorkflow, useTempoWorkflow, useTunerWorkflow
 } from "../../src/index.ts";
-import { createQcScreenLatch } from "../../src/qc-unit-screens.ts";
+import { useQcScreenDestination } from "../../src/use-qc-screen-destination.ts";
 
 const formFactor = formFactors[0];
 const skin = skins.find((entry) => entry.id === formFactor.defaultSkinId) ?? skins[0];
@@ -46,7 +46,11 @@ function useDisplay(flavour: Flavour, scenario: Scenario) {
   const modes = useModesConfigurationWorkflow(options);
   const ioEq = useIoEqWorkflows({ ...options, snapshot: IDLE_PLACEHOLDER_SNAPSHOT });
   const midiOut = usePresetMidiOutWorkflow({ gateway: refusing, snapshot: IDLE_PLACEHOLDER_SNAPSHOT, demo: false });
-  const destination = { view: scenario.view as never, returnFocusTarget: undefined, popup: scenario.popup ?? null, setPopup() {}, latch: createQcScreenLatch(), setView() {}, open() {} };
+  // Use the production destination owner (including its generation lease),
+  // not a partial fake missing the continuation admission boundary.
+  const destination = useQcScreenDestination();
+  if (destination.view !== scenario.view) destination.setView(scenario.view as never);
+  if (destination.popup !== (scenario.popup ?? null)) destination.setPopup(scenario.popup ?? null);
   const display = createQcDeviceDisplay({
     snapshot: IDLE_PLACEHOLDER_SNAPSHOT,
     selectedBlockId: "",

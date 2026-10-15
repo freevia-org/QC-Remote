@@ -1,9 +1,10 @@
 import { requirePresetIdentity } from "@qc-remote/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GatewayTransport, PresetEntry, PresetList, PresetSnapshot, SavePresetResult } from "@qc-remote/client";
-import { canAdoptNativeState, samePresetAddress, type PresetLifetime, type PresetOperation } from "@qc-remote/core";
+import { DeviceMutationAdmission, canAdoptNativeState, samePresetAddress, type PresetLifetime, type PresetOperation } from "@qc-remote/core";
 import { EMPTY_DIRECTORY_LIBRARY, type DirectoryLibraryKind, type DirectoryLibraryState, type PresetDirectoryState } from "./directory-library-model.ts";
 import type { PresetClipboard, PresetWorkflowController, UsePresetWorkflowOptions } from "./preset-workflow-types.ts";
+import { captureGatewaySession } from "./gateway-session.ts";
 
 export type { PresetClipboard, PresetWorkflowController, UsePresetWorkflowOptions } from "./preset-workflow-types.ts";
 
@@ -18,6 +19,9 @@ export const DIRECTORY_REVALIDATE_MS = 2_000;
  * and authoritative snapshot reconciliation lives here.
  */
 export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWorkflowController {
+  const fallbackAdmission = useRef<DeviceMutationAdmission | undefined>(undefined);
+  if (!fallbackAdmission.current) fallbackAdmission.current = new DeviceMutationAdmission();
+  const admission = options.lifetime?.mutations ?? fallbackAdmission.current;
   const {
     gateway, snapshotRef, setSnapshot, connected, pending, setPending,
     prompts, notice, fail, onPresetChanged
@@ -34,6 +38,18 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
   const loadSequence = useRef(0);
   const foldersLoaded = useRef(false);
   const catalogWarmed = useRef(false);
+  const cacheRevision = useRef(0);
+  const captureSession = () => {
+    const origin = cacheRevision.current;
+    const session = options.lifetime?.checkpoint();
+    return captureGatewaySession(options.gateway, () => origin === cacheRevision.current && (!session || Boolean(options.lifetime?.currentSession(session))));
+  };
+  useEffect(() => () => {
+    cacheRevision.current += 1;
+    loadSequence.current += 1;
+    catalogWarmed.current = false;
+    foldersLoaded.current = false;
+  }, []);
   const saveTarget = useRef<{ snapshot: PresetSnapshot; operation?: PresetOperation } | undefined>(undefined);
 
   const closeSave = useCallback(() => {
@@ -52,12 +68,12 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       notice(`Connect the Quad Cortex before ${action}.`);
       return true;
     }
-    if (pending) {
+    if (pending || admission.busy) {
       notice("A device command is already in progress.");
       return true;
     }
     return false;
-  }, [connected, notice, pending]);
+  }, [admission, connected, notice, pending]);
 
   // The Directory's non-preset categories read the device library straight
   // from the gateway. A failed read is kept per kind and drawn in its list
@@ -65,11 +81,13 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
   // user, and an unpublished catalog is a state of the device, not a fault.
   const loadLibrary = useCallback((kind: DirectoryLibraryKind) => {
     if (!connected) return;
+    const operation = captureSession();
+    const gateway = operation.gateway;
     setLibrary((current) => ({ ...current, loading: [...current.loading.filter((candidate) => candidate !== kind), kind], errors: { ...current.errors, [kind]: undefined } }));
     const read = kind === "favorites" ? gateway.favorites() : kind === "recents" ? gateway.recents() : kind === "captures" ? gateway.captures() : gateway.irs(null);
     read.then(
-      (result) => setLibrary((current) => ({ ...current, [kind]: result, loading: current.loading.filter((candidate) => candidate !== kind) })),
-      (error: unknown) => setLibrary((current) => ({ ...current, loading: current.loading.filter((candidate) => candidate !== kind), errors: { ...current.errors, [kind]: error instanceof Error ? error.message : String(error) } }))
+      (result) => { if (operation.current()) setLibrary((current) => ({ ...current, [kind]: result, loading: current.loading.filter((candidate) => candidate !== kind) })); },
+      (error: unknown) => { if (operation.current()) setLibrary((current) => ({ ...current, loading: current.loading.filter((candidate) => candidate !== kind), errors: { ...current.errors, [kind]: error instanceof Error ? error.message : String(error) } })); }
     );
   }, [connected, gateway]);
 
@@ -83,6 +101,8 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
   const requestedSetlistDates = useRef(new Set<string>());
   const loadSetlistDates = useCallback((folderKeys: readonly string[]) => {
     if (!connected) return;
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const wanted = [...new Set(folderKeys)].filter((key) => key && !requestedSetlistDates.current.has(key));
     if (!wanted.length) return;
     for (const key of wanted) requestedSetlistDates.current.add(key);
@@ -90,7 +110,7 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       for (const key of wanted) {
         try {
           const list = await gateway.listPresets(false, key);
-          if (!requestedSetlistDates.current.has(key)) return;
+          if (!operation.current() || !requestedSetlistDates.current.has(key)) return;
           const found = new Map<string, string | number>();
           for (const entry of list.presets) {
             const date = entry.dateMsSinceEpoch ?? (entry.date || undefined);
@@ -98,6 +118,7 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
           }
           if (found.size) setSetlistDates((current) => new Map([...current, ...found]));
         } catch {
+          if (!operation.current()) return;
           // The row keeps drawing without a date.
         }
       }
@@ -137,31 +158,40 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
     return next;
   }, [commitPreset, snapshotRef]);
 
-  const loadDirectory = useCallback(async (refresh = false, setlistKey?: string, quiet = false) => {
+  const loadDirectory = useCallback(async (refresh = false, setlistKey?: string, quiet = false, reader: GatewayTransport = gateway) => {
     const sequence = ++loadSequence.current;
+    const origin = cacheRevision.current;
+    const session = options.lifetime?.checkpoint();
+    const operation = captureGatewaySession(reader, () => origin === cacheRevision.current && (!session || Boolean(options.lifetime?.currentSession(session))));
     setPresetListLoading(true);
     try {
-      const list = await gateway.listPresets(refresh, setlistKey);
+      const list = await operation.gateway.listPresets(refresh, setlistKey);
+      operation.assertCurrent();
       if (sequence === loadSequence.current) setPresetList(list);
       return list;
     } catch (error) {
+      if (!operation.current()) return undefined;
       if (!quiet) fail(error);
       return undefined;
     } finally {
-      if (sequence === loadSequence.current) setPresetListLoading(false);
+      if (operation.current() && sequence === loadSequence.current) setPresetListLoading(false);
     }
   }, [fail, gateway]);
 
-  const loadFolders = useCallback(async (refresh = false, quiet = false) => {
+  const loadFolders = useCallback(async (refresh = false, quiet = false, reader: GatewayTransport = gateway) => {
+    const operation = captureSession();
+    const capturedReader = captureGatewaySession(reader, operation.current);
     setPresetFoldersLoading(true);
     try {
-      const result = await gateway.listPresetFolders(refresh);
+      const result = await capturedReader.gateway.listPresetFolders(refresh);
+      capturedReader.assertCurrent();
       foldersLoaded.current = true;
       setPresetList((current) => current ? { ...current, folders: result.folders } : current);
     } catch (error) {
+      if (!capturedReader.current()) return;
       if (!quiet) fail(error);
     } finally {
-      setPresetFoldersLoading(false);
+      if (capturedReader.current()) setPresetFoldersLoading(false);
     }
   }, [fail, gateway]);
 
@@ -181,8 +211,9 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
     }
     if (catalogWarmed.current || presetList) return;
     catalogWarmed.current = true;
+    const operation = captureSession();
     void (async () => {
-      if (await loadDirectory(false, undefined, true)) await loadFolders(false, true);
+      if (await loadDirectory(false, undefined, true, operation.gateway) && operation.current()) await loadFolders(false, true, operation.gateway);
       // Keep the attempt latched on failure. Loading-state renders and changing
       // callback identities must not turn one rejection into an unbounded loop.
       // Opening/refreshing the directory can retry; a new connection resets us.
@@ -204,11 +235,12 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
   const revalidateDirectory = useCallback(async () => {
     const key = presetListRef.current?.setlistKey;
     if (!key || revalidating.current) return;
+    const operation = captureSession();
     revalidating.current = true;
     const sequence = loadSequence.current;
     try {
-      const fresh = await gateway.listPresets(false, key);
-      if (sequence !== loadSequence.current || fresh.loading) return;
+      const fresh = await operation.gateway.listPresets(false, key);
+      if (!operation.current() || sequence !== loadSequence.current || fresh.loading) return;
       setPresetList((current) => current && current.setlistKey === fresh.setlistKey && JSON.stringify(current) !== JSON.stringify(fresh) ? fresh : current);
     } catch {
       // A failed background read keeps the list on screen; the next tick retries.
@@ -225,70 +257,92 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
 
   const openDirectory = useCallback(async (reload = false) => {
     if (unavailable("opening its preset browser")) return;
+    const operation = captureSession();
     setDirectoryOpen(true);
     // `reload` re-reads this session's published catalog. It deliberately does
     // not set the gateway's `refresh`: the QC publishes its directory once per
     // USB session and answers no second directory read, so `refresh` fails
     // closed and a control built on it could only produce an error.
     if (reload || !presetList || presetList.setlistKey !== snapshotRef.current.setlistKey) {
-      await loadDirectory(false, snapshotRef.current.setlistKey);
+      await loadDirectory(false, snapshotRef.current.setlistKey, false, operation.gateway);
     }
-    if (reload || !foldersLoaded.current) void loadFolders(false);
+    if (operation.current() && (reload || !foldersLoaded.current)) void loadFolders(false, false, operation.gateway);
   }, [loadDirectory, loadFolders, presetList, snapshotRef, unavailable]);
 
   const recall = useCallback(async (entry: PresetEntry) => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const current = snapshotRef.current;
     if (!presetList || samePresetAddress({ setlistKey: presetList.setlistKey, presetPosition: entry.position }, current) || unavailable("recalling a preset")) return;
-    setPending(true);
-    notice(`Recalling ${entry.location} · ${entry.name}…`);
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     try {
+      setPending(true);
+      notice(`Recalling ${entry.location} · ${entry.name}…`);
+
       const result = await gateway.recallPreset(presetList.setlistKey, entry.position, current.presetName, current.presetPosition, current.setlistKey, requirePresetIdentity(current));
+      operation.assertCurrent();
       if (result.snapshot) commitPreset(result.snapshot);
       notice(result.detail ?? `${entry.location} · ${entry.name} recalled.`);
       setDirectoryOpen(false);
     } catch (error) {
+      if (!operation.current()) return;
       fail(error);
     } finally {
-      setPending(false);
+      if (mutationLease.release() && !admission.busy && operation.current()) setPending(false);
     }
-  }, [commitPreset, fail, gateway, notice, presetList, setPending, snapshotRef, unavailable]);
+  }, [admission, commitPreset, fail, gateway, notice, presetList, setPending, snapshotRef, unavailable]);
 
   const recallLocation = useCallback(async (location: string): Promise<string> => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const current = snapshotRef.current;
     if (!connected) throw new Error("Connect the Quad Cortex before recalling a preset.");
-    if (pending) throw new Error("A device command is already in progress.");
+    if (pending || admission.busy) throw new Error("A device command is already in progress.");
     const list = presetList?.setlistKey === current.setlistKey && !presetList.loading
       ? presetList
       : await gateway.listPresets(false, current.setlistKey);
+    operation.assertCurrent();
     const entry = list.presets.find((candidate) => candidate.location.toUpperCase() === location.toUpperCase());
     if (!entry) throw new Error(`${location.toUpperCase()} is empty in ${list.setlistName}.`);
     if (entry.position === current.presetPosition) return `${entry.location} · ${entry.name} is already active.`;
-    setPending(true);
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { throw new Error("A device command is already in progress."); }
     try {
+      setPending(true);
+
       const result = await gateway.recallPreset(list.setlistKey, entry.position, current.presetName, current.presetPosition, current.setlistKey, requirePresetIdentity(current));
+      operation.assertCurrent();
       if (result.snapshot) commitPreset(result.snapshot);
       setDirectoryOpen(false);
       return result.detail ?? `${entry.location} · ${entry.name} recalled.`;
     } finally {
-      setPending(false);
+      if (mutationLease.release() && !admission.busy && operation.current()) setPending(false);
     }
-  }, [commitPreset, connected, gateway, pending, presetList, setPending, snapshotRef]);
+  }, [admission, commitPreset, connected, gateway, pending, presetList, setPending, snapshotRef]);
 
   const reload = useCallback(async () => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const current = snapshotRef.current;
     if (unavailable("discarding preset changes")) return;
-    setPending(true);
-    notice("Reloading the stored preset…");
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     try {
+      setPending(true);
+      notice("Reloading the stored preset…");
+
       const result = await gateway.reloadPreset(current.presetName, current.presetPosition, requirePresetIdentity(current));
+      operation.assertCurrent();
       if (result.snapshot) commitPreset(result.snapshot);
       notice(result.detail ?? "Stored preset reloaded.");
     } catch (error) {
+      if (!operation.current()) return;
       fail(error);
     } finally {
-      setPending(false);
+      if (mutationLease.release() && !admission.busy && operation.current()) setPending(false);
     }
-  }, [commitPreset, fail, gateway, notice, setPending, snapshotRef, unavailable]);
+  }, [admission, commitPreset, fail, gateway, notice, setPending, snapshotRef, unavailable]);
 
   const openSave = useCallback(() => {
     if (unavailable("saving a preset")) return;
@@ -300,6 +354,8 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
   }, [options.lifetime, snapshotRef, unavailable]);
 
   const save = useCallback(async () => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const target = saveTarget.current;
     const current = target?.snapshot;
     const name = saveName.trim();
@@ -311,10 +367,13 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       notice("The active preset changed. Open Save again for the preset you want to save.");
       return;
     }
-    setPending(true);
-    notice(`Saving preset to ${current.presetLocation}…`);
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     const beforeSave = snapshotRef.current;
     try {
+      setPending(true);
+      notice(`Saving preset to ${current.presetLocation}…`);
+
       const result = await gateway.savePresetAs(
         current.setlistKey,
         current.presetPosition,
@@ -323,27 +382,34 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
         current.presetPosition,
         current.presetName !== "Unsaved"
       , requirePresetIdentity(current));
+      operation.assertCurrent();
       commitSavedPreset(result, beforeSave);
       notice(result.detail ?? `${current.presetLocation} saved.`);
       closeSave();
     } catch (error) {
+      if (!operation.current()) return;
       fail(error);
     } finally {
-      setPending(false);
+      if (mutationLease.release() && !admission.busy && operation.current()) setPending(false);
     }
-  }, [closeSave, commitSavedPreset, fail, gateway, notice, options.lifetime, saveName, saveOpen, setPending, snapshotRef, unavailable]);
+  }, [admission, closeSave, commitSavedPreset, fail, gateway, notice, options.lifetime, saveName, saveOpen, setPending, snapshotRef, unavailable]);
 
   const saveCurrentUnsaved = useCallback(async (requestedName: string): Promise<string> => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const current = snapshotRef.current;
     const name = requestedName.trim();
     if (!connected) throw new Error("Connect the Quad Cortex before saving a device preset.");
-    if (pending) throw new Error("A device command is already in progress.");
+    if (pending || admission.busy) throw new Error("A device command is already in progress.");
     if (!name) throw new Error("A preset name is required for device save.");
     if (current.presetName !== "Unsaved") throw new Error("The active preset is already stored. Use Save As or Rename for an occupied slot.");
-    setPending(true);
-    notice(`Saving preset to ${current.presetLocation}…`);
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { throw new Error("A device command is already in progress."); }
     const beforeSave = snapshotRef.current;
     try {
+      setPending(true);
+      notice(`Saving preset to ${current.presetLocation}…`);
+
       const result = await gateway.savePresetAs(
         current.setlistKey,
         current.presetPosition,
@@ -352,14 +418,15 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
         current.presetPosition,
         false
       , requirePresetIdentity(current));
+      operation.assertCurrent();
       commitSavedPreset(result, beforeSave);
       const detail = result.detail ?? `${current.presetLocation} saved.`;
       notice(detail);
       return detail;
     } finally {
-      setPending(false);
+      if (mutationLease.release() && !admission.busy && operation.current()) setPending(false);
     }
-  }, [commitSavedPreset, connected, gateway, notice, pending, setPending, snapshotRef]);
+  }, [admission, commitSavedPreset, connected, gateway, notice, pending, setPending, snapshotRef]);
 
   const copy = useCallback(() => {
     const current = snapshotRef.current;
@@ -384,6 +451,8 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
   }, [notice, snapshotRef, unavailable]);
 
   const paste = useCallback(async () => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const current = snapshotRef.current;
     if (!clipboard) {
       notice("Copy a stored preset before pasting.");
@@ -402,9 +471,15 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       notice("The copied preset is already loaded in this slot.");
       return;
     }
-    setPending(true);
-    notice(`Copying ${clipboard.presetLocation} · ${clipboard.presetName} to ${current.presetLocation}…`);
+    if (!operation.current()) return;
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     try {
+      setPending(true);
+      if (!await prompts.confirm(`Overwrite ${current.presetLocation} · ${current.presetName} in ${current.setlistName} with ${clipboard.presetLocation} · ${clipboard.presetName}? This permanently replaces the stored destination preset.`)) return;
+      operation.assertCurrent();
+      notice(`Copying ${clipboard.presetLocation} · ${clipboard.presetName} to ${current.presetLocation}…`);
+
       // One File COPY frame, as Cortex Control sends it. It names the source
       // by file key and the destination by slot; it neither recalls nor saves,
       // so the active preset snapshot is not rewritten from its result.
@@ -419,39 +494,52 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       // The mutation's own verified catalog state is already in the
       // broker. Re-read it; asking for a device refresh here blocked the
       // whole UI for 45 seconds and then failed quietly.
-      await loadDirectory(false, current.setlistKey, true);
+      await loadDirectory(false, current.setlistKey, true, operation.gateway);
+      operation.assertCurrent();
       notice(result.detail ?? `${current.presetLocation} replaced.`);
     } catch (error) {
+      if (!operation.current()) return;
       fail(error);
     } finally {
-      setPending(false);
+      if (mutationLease.release() && !admission.busy && operation.current()) setPending(false);
     }
-  }, [clipboard, fail, gateway, loadDirectory, notice, setPending, snapshotRef, unavailable]);
+  }, [admission, clipboard, fail, gateway, loadDirectory, notice, prompts, setPending, snapshotRef, unavailable]);
 
   const rename = useCallback(async (suggestedName = snapshotRef.current.presetName) => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const current = snapshotRef.current;
     if (unavailable("renaming a preset")) return;
     const name = (await prompts.prompt("New preset name", suggestedName))?.trim();
     if (!name || name === current.presetName) return;
-    setPending(true);
-    notice(`Renaming ${current.presetLocation}…`);
+    if (!operation.current()) return;
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     const beforeSave = snapshotRef.current;
     try {
+      setPending(true);
+      notice(`Renaming ${current.presetLocation}…`);
+
       const result = await gateway.renameCurrentPreset(name, current.presetName, current.presetPosition, true, requirePresetIdentity(current));
+      operation.assertCurrent();
       commitSavedPreset(result, beforeSave);
       // The mutation's own verified catalog state is already in the
       // broker. Re-read it; asking for a device refresh here blocked the
       // whole UI for 45 seconds and then failed quietly.
-      await loadDirectory(false, current.setlistKey, true);
+      await loadDirectory(false, current.setlistKey, true, operation.gateway);
+      operation.assertCurrent();
       notice(result.detail ?? `${current.presetLocation} renamed.`);
     } catch (error) {
+      if (!operation.current()) return;
       fail(error);
     } finally {
-      setPending(false);
+      if (mutationLease.release() && !admission.busy && operation.current()) setPending(false);
     }
-  }, [commitSavedPreset, fail, gateway, loadDirectory, notice, prompts, setPending, snapshotRef, unavailable]);
+  }, [admission, commitSavedPreset, fail, gateway, loadDirectory, notice, prompts, setPending, snapshotRef, unavailable]);
 
   const directoryPresetAction = useCallback(async (action: "upload" | "edit" | "copy" | "cut" | "paste", entry: PresetEntry) => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const list = presetList;
     if (action === "upload") {
       notice(`Upload to Cloud for ${entry.location} · ${entry.name} is not exposed by the current USB gateway.`);
@@ -497,9 +585,13 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
         notice(`The destination range overlaps selected source ${overlappingSource.presetLocation}. Choose a non-overlapping first destination slot.`);
         return;
       }
-      setPending(true);
+      if (!operation.current()) return;
+      const mutationLease = admission.tryAcquire();
+      if (!mutationLease) { notice("A device command is already in progress."); return; }
       let completed = 0;
       try {
+        setPending(true);
+
         const destinationList = await gateway.listPresets(false, list.setlistKey);
         const sourcesBySetlist = new Map<string, PresetList>();
         for (const source of ordered) {
@@ -509,6 +601,7 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
         }
         const overwritten = destinationPositions.map((position) => destinationList.presets.find((candidate) => candidate.position === position)).filter((candidate) => candidate?.occupied !== false && candidate?.name !== "Unsaved");
         if (overwritten.length && !await prompts.confirm(`Replace ${overwritten.length} occupied preset slot${overwritten.length === 1 ? "" : "s"} with ${ordered.length} copied preset${ordered.length === 1 ? "" : "s"}?`)) return;
+        operation.assertCurrent();
         notice(`Copying ${ordered.length} presets…`);
         for (let index = 0; index < ordered.length; index += 1) {
           const source = ordered[index];
@@ -517,15 +610,18 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
           await gateway.copyPreset(source.setlistKey, source.presetPosition, source.presetName, list.setlistKey, position, destination?.occupied !== false && destination?.name !== "Unsaved");
           completed += 1;
         }
-        const refreshed = await loadDirectory(false, list.setlistKey, true);
+        const refreshed = await loadDirectory(false, list.setlistKey, true, operation.gateway);
+      operation.assertCurrent();
         const verified = refreshed && ordered.every((source, index) => refreshed.presets.find((candidate) => candidate.position === destinationPositions[index])?.name === source.presetName);
         if (!verified) throw new Error("The batch copy completed, but its catalog readback did not match every destination. Inspect the Directory before retrying.");
         setBatchClipboard(undefined);
         notice(`${ordered.length} presets copied and verified.`);
       } catch (error) {
-        try { await loadDirectory(false, list.setlistKey, true); } catch { /* Preserve the operation error. */ }
+      if (!operation.current()) return;
+        try { await loadDirectory(false, list.setlistKey, true, operation.gateway); } catch { /* Preserve the operation error. */ }
+      if (!operation.current()) return;
         fail(completed ? new Error(`${completed} of ${ordered.length} presets were copied before the operation stopped. The Directory was refreshed; inspect it before retrying. ${error instanceof Error ? error.message : String(error)}`) : error);
-      } finally { setPending(false); }
+      } finally { if (mutationLease.release() && !admission.busy && operation.current()) setPending(false); }
       return;
     }
 
@@ -537,8 +633,12 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       return;
     }
     if (unavailable("pasting a preset")) return;
-    setPending(true);
+    if (!operation.current()) return;
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     try {
+      setPending(true);
+
       // Re-read every involved setlist immediately before the persistent
       // operation. The device catalog, not a stale React row, decides whether
       // the source still exists and whether the destination is occupied.
@@ -561,9 +661,11 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
           ? `swap ${source.presetLocation} · ${source.presetName} with ${destination.location} · ${destination.name}`
           : `move ${source.presetLocation} · ${source.presetName} to empty slot ${destination.location}`;
         if (!await prompts.confirm(`This is permanent: ${effect}?`)) return;
+        operation.assertCurrent();
         notice(`${occupied ? "Swapping" : "Moving"} presets…`);
         await gateway.movePreset(list.setlistKey, source.presetPosition, source.presetName, destination.position);
-        const refreshed = await loadDirectory(false, list.setlistKey, true);
+        const refreshed = await loadDirectory(false, list.setlistKey, true, operation.gateway);
+      operation.assertCurrent();
         if (!refreshed) throw new Error("The move was sent, but the updated preset directory could not be verified. Refresh before doing anything else.");
         const moved = refreshed.presets.find((candidate) => candidate.position === destination.position);
         const sourceAfter = refreshed.presets.find((candidate) => candidate.position === source.presetPosition);
@@ -578,6 +680,7 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
 
       const occupied = destination.occupied !== false && destination.name !== "Unsaved";
       if (occupied && !await prompts.confirm(`Overwrite ${destination.location} · ${destination.name} with ${source.presetName}? This permanently replaces the destination preset.`)) return;
+      operation.assertCurrent();
       // Host policy (not a Cortex Control frame): copy touches no active
       // preset, so unsaved edits only matter when the destination is the
       // active slot itself.
@@ -595,21 +698,26 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
         destination.position,
         occupied
       );
-      const refreshed = await loadDirectory(false, list.setlistKey, true);
+      const refreshed = await loadDirectory(false, list.setlistKey, true, operation.gateway);
+      operation.assertCurrent();
       if (!refreshed || refreshed.presets.find((candidate) => candidate.position === destination.position)?.name !== source.presetName) {
         throw new Error("The copy was sent, but the destination could not be verified from the refreshed catalog. Do not retry until you inspect the Directory.");
       }
       setClipboard(undefined);
       notice(result.detail ?? `Preset copied to ${destination.location} and verified.`);
     } catch (error) {
+      if (!operation.current()) return;
       // A timeout may follow a completed persistent operation. Reconcile the
       // catalog once; never replay the mutation on an uncertain result.
-      try { await loadDirectory(false, list.setlistKey, true); } catch { /* Preserve the operation error. */ }
+      try { await loadDirectory(false, list.setlistKey, true, operation.gateway); } catch { /* Preserve the operation error. */ }
+      if (!operation.current()) return;
       fail(error);
-    } finally { setPending(false); }
-  }, [batchClipboard, clipboard, fail, gateway, loadDirectory, notice, pending, presetList, prompts, rename, setPending, snapshotRef, unavailable]);
+    } finally { if (mutationLease.release() && !admission.busy && operation.current()) setPending(false); }
+  }, [admission, batchClipboard, clipboard, fail, gateway, loadDirectory, notice, pending, presetList, prompts, rename, setPending, snapshotRef, unavailable]);
 
   const directoryPresetBatchAction = useCallback(async (action: "copy" | "delete", entries: PresetEntry[]) => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const list = presetList;
     const stored = entries.filter((entry) => entry.occupied !== false && entry.name !== "Unsaved");
     if (!list || !stored.length) return;
@@ -628,9 +736,13 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
     }
     if (unavailable("deleting presets")) return;
     if (!await prompts.confirm(`Permanently delete ${stored.length} selected preset${stored.length === 1 ? "" : "s"}?`)) return;
-    setPending(true);
+    if (!operation.current()) return;
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     let completed = 0;
     try {
+      setPending(true);
+
       const fresh = await gateway.listPresets(false, list.setlistKey);
       for (const selected of stored) {
         const entry = fresh.presets.find((candidate) => candidate.position === selected.position);
@@ -640,7 +752,8 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
         await gateway.deletePreset(list.setlistKey, selected.position, selected.name);
         completed += 1;
       }
-      const refreshed = await loadDirectory(false, list.setlistKey, true);
+      const refreshed = await loadDirectory(false, list.setlistKey, true, operation.gateway);
+      operation.assertCurrent();
       const verified = refreshed && stored.every((selected) => {
         const after = refreshed.presets.find((candidate) => candidate.position === selected.position);
         return !after || after.occupied === false || after.name === "Unsaved";
@@ -648,18 +761,26 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       if (!verified) throw new Error("The delete completed, but at least one selected slot remains occupied in the catalog readback.");
       notice(`${stored.length} presets deleted and verified.`);
     } catch (error) {
-      try { await loadDirectory(false, list.setlistKey, true); } catch { /* Preserve the operation error. */ }
+      if (!operation.current()) return;
+      try { await loadDirectory(false, list.setlistKey, true, operation.gateway); } catch { /* Preserve the operation error. */ }
+      if (!operation.current()) return;
       fail(completed ? new Error(`${completed} of ${stored.length} presets were deleted before the operation stopped. The Directory was refreshed; inspect it before retrying. ${error instanceof Error ? error.message : String(error)}`) : error);
-    } finally { setPending(false); }
-  }, [fail, gateway, loadDirectory, notice, presetList, prompts, setPending, unavailable]);
+    } finally { if (mutationLease.release() && !admission.busy && operation.current()) setPending(false); }
+  }, [admission, fail, gateway, loadDirectory, notice, presetList, prompts, setPending, unavailable]);
 
   const arrangePreset = useCallback(async (source: PresetEntry, destination: PresetEntry) => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const list = presetList;
     if (!list || unavailable("arranging presets")) return;
     if (source.position === destination.position) { notice("Choose a different destination slot."); return; }
     if (source.occupied === false || source.name === "Unsaved") { notice("An empty slot cannot be moved or swapped."); return; }
-    setPending(true);
+    if (!operation.current()) return;
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     try {
+      setPending(true);
+
       const fresh = await gateway.listPresets(false, list.setlistKey);
       const from = fresh.presets.find((candidate) => candidate.position === source.position);
       const to = fresh.presets.find((candidate) => candidate.position === destination.position);
@@ -668,7 +789,8 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       const effect = occupied ? `swap ${from.location} · ${from.name} with ${to.location} · ${to.name}` : `move ${from.location} · ${from.name} to empty slot ${to.location}`;
       if (!await prompts.confirm(`This is permanent: ${effect}?`)) return;
       await gateway.movePreset(list.setlistKey, from.position, from.name, to.position);
-      const refreshed = await loadDirectory(false, list.setlistKey, true);
+      const refreshed = await loadDirectory(false, list.setlistKey, true, operation.gateway);
+      operation.assertCurrent();
       if (!refreshed) throw new Error("The arrangement was sent, but the updated catalog could not be verified.");
       const moved = refreshed.presets.find((candidate) => candidate.position === to.position);
       const sourceAfter = refreshed.presets.find((candidate) => candidate.position === from.position);
@@ -677,67 +799,96 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       }
       notice(occupied ? "Presets swapped and verified." : "Preset moved and verified.");
     } catch (error) {
-      try { await loadDirectory(false, list.setlistKey, true); } catch { /* Preserve the operation error. */ }
+      if (!operation.current()) return;
+      try { await loadDirectory(false, list.setlistKey, true, operation.gateway); } catch { /* Preserve the operation error. */ }
+      if (!operation.current()) return;
       fail(error);
-    } finally { setPending(false); }
-  }, [fail, gateway, loadDirectory, notice, pending, presetList, prompts, setPending, unavailable]);
+    } finally { if (mutationLease.release() && !admission.busy && operation.current()) setPending(false); }
+  }, [admission, fail, gateway, loadDirectory, notice, pending, presetList, prompts, setPending, unavailable]);
 
   const refresh = useCallback(async () => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     if (unavailable("refreshing device state")) return;
-    setPending(true);
-    notice("Refreshing complete device state…");
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     try {
+      setPending(true);
+      notice("Refreshing complete device state…");
+
       const current = await gateway.currentSnapshot();
+      operation.assertCurrent();
       commitPreset(current);
       notice("Live preset state refreshed.");
     } catch (error) {
+      if (!operation.current()) return;
       fail(error);
     } finally {
-      setPending(false);
+      if (mutationLease.release() && !admission.busy && operation.current()) setPending(false);
     }
-  }, [commitPreset, fail, gateway, notice, setPending, unavailable]);
+  }, [admission, commitPreset, fail, gateway, notice, setPending, unavailable]);
 
   const createSetlist = useCallback(async () => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     if (unavailable("creating a setlist")) return;
     const entered = await prompts.prompt("New Setlist name", "");
+    if (!operation.current()) return;
     if (entered === null) return;
     const name = entered.trim();
     if (!name) { notice("Enter a name for the new setlist."); return; }
-    setPending(true);
-    notice(`Creating setlist ${name}…`);
+    if (!operation.current()) return;
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     try {
+      setPending(true);
+      notice(`Creating setlist ${name}…`);
+
       const result = await gateway.createSetlist(name);
+      operation.assertCurrent();
       if (result.snapshot) commitPreset(result.snapshot);
       const folders = await gateway.listPresetFolders(false);
+      operation.assertCurrent();
       foldersLoaded.current = true;
       setPresetList((current) => current ? { ...current, folders: folders.folders } : current);
       const created = folders.folders.find((folder) => folder.name.toLocaleLowerCase() === name.toLocaleLowerCase());
       if (!created) throw new Error(`Setlist ${name} was created, but it was not present in the refreshed folder list.`);
-      const refreshed = await loadDirectory(false, created.key);
+      const refreshed = await loadDirectory(false, created.key, false, operation.gateway);
+      operation.assertCurrent();
       if (!refreshed) throw new Error(`Setlist ${name} was created, but its preset list could not be reloaded.`);
       notice(result.detail ?? `Setlist ${name} created.`);
-    } catch (error) { fail(error); }
-    finally { setPending(false); }
-  }, [commitPreset, fail, gateway, loadDirectory, notice, prompts, setPending, unavailable]);
+    } catch (error) {
+      if (!operation.current()) return; fail(error); }
+    finally { if (mutationLease.release() && !admission.busy && operation.current()) setPending(false); }
+  }, [admission, commitPreset, fail, gateway, loadDirectory, notice, prompts, setPending, unavailable]);
 
   const deletePresetEntry = useCallback(async (entry: PresetEntry) => {
+    const operation = captureSession();
+    const gateway = operation.gateway;
     const list = presetList;
     if (!list || unavailable("deleting a preset")) return;
     const folder = list.folders.find((candidate) => candidate.key === list.setlistKey);
     if (folder?.isFactory) { notice("Factory presets cannot be deleted."); return; }
     if (entry.occupied === false || entry.name === "Unsaved") { notice("An empty preset slot cannot be deleted."); return; }
     if (!await prompts.confirm(`Delete ${entry.location} · ${entry.name} from ${list.setlistName}? This cannot be undone.`)) return;
-    setPending(true);
-    notice(`Deleting ${entry.location} · ${entry.name}…`);
+    if (!operation.current()) return;
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     try {
+      setPending(true);
+      notice(`Deleting ${entry.location} · ${entry.name}…`);
+
       const result = await gateway.deletePreset(list.setlistKey, entry.position, entry.name);
+      operation.assertCurrent();
       if (result.snapshot) commitPreset(result.snapshot);
-      const refreshed = await loadDirectory(false, list.setlistKey);
+      const refreshed = await loadDirectory(false, list.setlistKey, false, operation.gateway);
+      operation.assertCurrent();
       if (!refreshed) throw new Error(`Preset deletion was accepted, but the directory could not be authoritatively reloaded.`);
       notice(result.detail ?? `${entry.location} · ${entry.name} deleted.`);
-    } catch (error) { fail(error); }
-    finally { setPending(false); }
-  }, [commitPreset, fail, gateway, loadDirectory, notice, pending, presetList, prompts, setPending, unavailable]);
+    } catch (error) {
+      if (!operation.current()) return; fail(error); }
+    finally { if (mutationLease.release() && !admission.busy && operation.current()) setPending(false); }
+  }, [admission, commitPreset, fail, gateway, loadDirectory, notice, pending, presetList, prompts, setPending, unavailable]);
 
   // A gateway call in flight and a device still streaming are both "not here
   // yet" from the user's side, and either one must keep the waiting indicator
@@ -797,7 +948,10 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
     refresh,
     clearClipboard: () => setClipboard(undefined),
     resetCache: () => {
+      cacheRevision.current += 1;
       loadSequence.current += 1;
+      setPresetListLoading(false);
+      setPresetFoldersLoading(false);
       foldersLoaded.current = false;
       // A reset discards a previous session's publication, so the next one must
       // be allowed to warm the browser again.

@@ -85,19 +85,49 @@ pub(super) fn write_response(output: &mut impl Write, response: &Value) -> Resul
         .map_err(|error| error.to_string())
 }
 
+/// One TCP frame has one budget across all partial writes. A peer that stops
+/// reading cannot keep a writer mutex and scoped connection threads forever.
+pub(super) fn write_tcp_response(output: &mut TcpStream, response: &Value) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let body = serde_json::to_vec(response).map_err(|error| error.to_string())?;
+    if body.len() > quadcortex::domain::IPC_MAX_FRAME_BYTES {
+        return Err("Native broker response exceeds the IPC frame limit".into());
+    }
+    let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+    frame.extend_from_slice(&body);
+    write_tcp_frame_before_deadline(output, &frame, deadline).map_err(|error| error.to_string())
+}
+
 /// Finish an observer action before making its response visible. The reader
 /// may admit the next request as soon as it receives the first response byte,
 /// so release the single-action latch while holding the writer lock and before
 /// writing any bytes.
+#[cfg(test)]
 pub(super) fn write_observer_action_response<W: Write>(
     output: &Mutex<W>,
     action_pending: &AtomicBool,
     response: &Value,
     on_write_error: impl FnOnce(&mut W),
 ) {
+    write_observer_action_response_with(
+        output,
+        action_pending,
+        response,
+        write_response,
+        on_write_error,
+    );
+}
+
+pub(super) fn write_observer_action_response_with<W: Write>(
+    output: &Mutex<W>,
+    action_pending: &AtomicBool,
+    response: &Value,
+    write: impl FnOnce(&mut W, &Value) -> Result<(), String>,
+    on_write_error: impl FnOnce(&mut W),
+) {
     let mut output = output.lock_recover();
     action_pending.store(false, Ordering::Release);
-    if write_response(&mut *output, response).is_err() {
+    if write(&mut *output, response).is_err() {
         on_write_error(&mut *output);
     }
 }

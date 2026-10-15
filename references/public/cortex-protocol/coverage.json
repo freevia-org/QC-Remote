@@ -2,14 +2,14 @@
   "schemaVersion": 2,
   "declared": 72,
   "decodable": 72,
-  "encodedByApp": 45,
-  "handledInbound": 42,
+  "encodedByApp": 46,
+  "handledInbound": 44,
   "transportRejected": 6,
   "sentOnWire": 44,
   "receivedOnWire": 41,
   "receivedButUnhandled": 1,
   "sentButNeverReceived": 5,
-  "drivenByApp": 48,
+  "drivenByApp": 50,
   "rows": [
     {
       "number": 1,
@@ -186,7 +186,7 @@
       "name": "CloudLogin",
       "decodable": true,
       "encodedByApp": false,
-      "handledInbound": false,
+      "handledInbound": true,
       "transportRejected": true,
       "sentOnWire": false,
       "receivedOnWire": false
@@ -295,8 +295,8 @@
       "number": 29,
       "name": "ProductForward",
       "decodable": true,
-      "encodedByApp": false,
-      "handledInbound": false,
+      "encodedByApp": true,
+      "handledInbound": true,
       "transportRejected": true,
       "sentOnWire": false,
       "receivedOnWire": false

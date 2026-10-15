@@ -67,6 +67,23 @@ function ExpressionTile({ label, assigned, pending, selected, onSelect }: { labe
   </section>;
 }
 
+/** Read-only state: absence is not evidence for either binary position. */
+function ObservedBypassFlag({ value }: { value: boolean | undefined }) {
+  return typeof value === "boolean" ? <label>
+    <QcPillToggle index={value ? 0 : 1} />
+    <b>On</b><small>Off</small>
+  </label> : <b>Unavailable</b>;
+}
+
+/** Wire mode0 Stop /1 Switch /2 Heel-Toe; absence is not a selected role. */
+function ObservedBypassMode({ value }: { value: number | undefined }) {
+  return value === 0 || value === 1 || value === 2 ? <label>
+    <QcPillToggle positions={3} index={2 - value} />
+    <b>Heel-Toe</b>
+    <small>Switch<br />Stop</small>
+  </label> : <b>Unavailable</b>;
+}
+
 export function CorOsExpressionAssignment({ assignment }: { assignment: ExpressionAssignmentState }) {
   const { details, address, pedal, onPedalChange, selected, onSelect, pending, onAssign, onSetRange, onUnassign, onClose } = assignment;
   // GAIN REDUCTION on Input Gate is expressionAssignable: true, writable:
@@ -106,23 +123,11 @@ export function CorOsExpressionAssignment({ assignment }: { assignment: Expressi
         </section>
         <section>
           <span>SWITCH ON</span>
-          <label>
-            <QcPillToggle positions={3} index={0} />
-            <b>Heel-Toe</b>
-            <small>
-              Switch
-              <br />
-              Stop
-            </small>
-          </label>
+          <ObservedBypassMode value={details.bypassExpression?.mode} />
         </section>
         <section>
           <span>INVERT RANGE</span>
-          <label>
-            <QcPillToggle index={0} />
-            <b>On</b>
-            <small>Off</small>
-          </label>
+          <ObservedBypassFlag value={details.bypassExpression?.invert} />
         </section>
         <section className="switch-delay">
           <span>SWITCH DELAY</span>
@@ -130,11 +135,7 @@ export function CorOsExpressionAssignment({ assignment }: { assignment: Expressi
         </section>
         <section className="switch-latch">
           <span>LATCH EMULATION</span>
-          <label>
-            <QcPillToggle index={0} />
-            <b>On</b>
-            <small>Off</small>
-          </label>
+          <ObservedBypassFlag value={details.bypassExpression?.latchEmulation} />
         </section>
       </main>
       : <main className="expression-switch-panel is-trim">

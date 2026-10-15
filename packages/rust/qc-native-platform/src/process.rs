@@ -4,6 +4,12 @@
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub use qc_windows_process::*;
 
+/// Non-Windows completion retains the existing Rust thread contract.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub fn thread_signalled<T>(handle: &std::thread::JoinHandle<T>) -> bool {
+    handle.is_finished()
+}
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]

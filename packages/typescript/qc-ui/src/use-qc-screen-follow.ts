@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { SupersededPresetOperation, type QcStateUpdate } from "@qc-remote/core";
+import { SupersededPresetOperation, type PresetLifetime, type QcStateUpdate } from "@qc-remote/core";
 import { useDeviceWorkflowSession } from "./use-device-workflow-session.ts";
 import {
   readQcScreenFollowSetting, useAdaptiveQcScreenPolling, writeQcScreenFollowSetting,
@@ -50,6 +50,7 @@ export interface QcScreenFollowWorkflows {
 }
 
 export interface QcScreenFollowOptions {
+  lifetime?: PresetLifetime;
   sessionKey?: unknown;
   captureSessionCurrent?(): () => boolean;
   /** `captureScreen` is read-only and only used to tell the unit's Copy Scene dialog from its Swap Scene dialog. */
@@ -227,7 +228,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     if (version !== undefined) latest.current.workflows.deviceSettings.noteCorOsVersionFromScreen?.(version);
   }, [lifetime.key]);
 
-  const { phase } = useAdaptiveQcScreenPolling({ gateway, enabled: follow && available, connected: ready, onObservation: observe, onTree: observeTree });
+  const { phase } = useAdaptiveQcScreenPolling({ gateway, lifetime: options.lifetime, enabled: follow && available, connected: ready, onObservation: observe, onTree: observeTree });
 
   // App to unit: the screen the app shows, in the unit's terms, changing by the user's hand.
   const appKind = appKindOf(options);
@@ -243,12 +244,15 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
    * instead. A close reads the unit's screen before its touch, so resuming one the unit has already finished (or the user
    * finished on the unit) sends nothing.
    */
-  const owedRoute = useRef<{ from: QcObservedScreenKind; to: QcObservedScreenKind; detail: { swap: boolean; side: "input" | "output" } } | undefined>(undefined);
+  const owedRoute = useRef<{ physical?: ReturnType<PresetLifetime["checkpoint"]>; gateway: QcScreenFollowOptions["gateway"]; from: QcObservedScreenKind; to: QcObservedScreenKind; detail: { swap: boolean; side: "input" | "output" } } | undefined>(undefined);
   useEffect(() => {
     const previousKind = previousAppKind.current;
     previousAppKind.current = appKind;
     const changed = previousKind !== undefined && previousKind !== appKind;
-    if (changed) owedRoute.current = undefined;
+    const owed = owedRoute.current;
+    // A stream restart may resume a read-before-close on the SAME physical
+    // session only. Never replay navigation against a replacement device.
+    if (changed || (owed && (!owed.physical || !options.lifetime?.currentSession(owed.physical) || owed.gateway !== options.gateway))) owedRoute.current = undefined;
     const resumed = !changed && owedRoute.current?.to === appKind ? owedRoute.current : undefined;
     if (!changed && !resumed) return;
     const previous = resumed ? resumed.from : previousKind!;
@@ -301,7 +305,7 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     driven.count += 1;
     // Only a close is owed: it is the user's own dismissal of a screen the unit still shows, and it reads that screen before
     // its touch. An open never outlives its lifetime: it would send its next gesture into a successor session.
-    if (!ROUTED.includes(appKind) && ROUTED.includes(previous) && previous !== "search") owedRoute.current = { from: previous, to: appKind, detail };
+    if (!ROUTED.includes(appKind) && ROUTED.includes(previous) && previous !== "search") owedRoute.current = { physical: options.lifetime?.checkpoint(), gateway: options.gateway, from: previous, to: appKind, detail };
     void run().catch((error: unknown) => {
       if (live && owner.current() && !(error instanceof SupersededPresetOperation)) notice(error instanceof Error ? error.message : "The Quad Cortex screen could not be followed.");
     }).finally(() => {

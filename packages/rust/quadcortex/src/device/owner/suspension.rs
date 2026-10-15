@@ -270,6 +270,12 @@ impl SuspensionTracker {
                 let Ok(message) = pa::GeneralSettingsMessage::decode(payload) else {
                     return;
                 };
+                // Only an authoritative GeneralSettings UPDATE can establish
+                // the lock transition. A read/create/delete envelope is not
+                // evidence that the device resumed accepting client writes.
+                if message.action != pa::message_action::Enum::Update as i32 {
+                    return;
+                }
                 let Some(
                     pa::general_settings_message::LockScreenAndVolumeKnob::LockScreenAndVolumeKnob(
                         locked,
@@ -742,6 +748,46 @@ mod tests {
         assert_eq!(ended.ended_by, SuspensionEnd::ScreenUnlocked);
         assert_eq!(ended.resume_reason.as_deref(), Some("FACTORY_RESET"));
         assert!(ended.resync_requested);
+    }
+
+    #[test]
+    fn a_nonupdate_general_settings_unlock_cannot_lift_the_native_write_gate() {
+        for action in [0, 2, 3, 99] {
+            let (mut owner, connection) = live_owner();
+            suspend_for_backup(&mut owner, connection);
+            let release = pa::GeneralSettingsMessage {
+                action,
+                lock_screen_and_volume_knob: Some(
+                    pa::general_settings_message::LockScreenAndVolumeKnob::LockScreenAndVolumeKnob(
+                        false,
+                    ),
+                ),
+                ..Default::default()
+            }
+            .encode_to_vec();
+            assert!(crate::responses::decode_general_settings(&release).is_err());
+            observe(
+                &mut owner,
+                connection,
+                MESSAGE_TYPE_GENERAL_SETTINGS,
+                &release,
+            );
+            assert!(
+                owner.is_suspended(),
+                "nonUPDATE action {action} resumed client writes"
+            );
+            assert_suspended_refusal(&owner.plan_operation(1, 1_000).unwrap_err());
+            // Rejecting a non-publication must not overwrite the previous
+            // engaged lock; the real UPDATE release still resumes normally.
+            observe(
+                &mut owner,
+                connection,
+                MESSAGE_TYPE_GENERAL_SETTINGS,
+                &LOCK_RELEASED,
+            );
+            assert!(!owner.is_suspended());
+            owner.plan_operation(2, 1_000).unwrap();
+        }
     }
 
     #[test]

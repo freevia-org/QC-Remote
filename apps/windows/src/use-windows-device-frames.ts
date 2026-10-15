@@ -44,7 +44,7 @@ export function useWindowsDeviceFrames({
     }).then((unlisten) => {
       if (disposed) unlisten();
       else detach = unlisten;
-    }).catch(() => { available.current = false; });
+    }).catch(() => { if (!disposed) available.current = false; });
     return () => {
       disposed = true;
       detach?.();

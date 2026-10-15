@@ -8,10 +8,7 @@ use crate::{host_presence, local_access, local_stdio, relay};
 use qc_relay_client::{Client, ConnectionState, Credentials, DeviceAdapter};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc, Arc, Mutex,
-};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -25,13 +22,18 @@ pub const IN_PROCESS_HOST_PROVIDER: &str = "QC Remote background host";
 
 pub struct BackgroundMcpHost {
     stop: watch::Sender<bool>,
-    done: mpsc::Receiver<()>,
-    finished: Arc<AtomicBool>,
+    original: Mutex<qc_native_platform::thread_owner::Owned>,
     presence: Arc<Mutex<Option<serde_json::Value>>>,
 }
+static HOST_BUDGET: qc_native_platform::thread_owner::Budget =
+    qc_native_platform::thread_owner::Budget::new(4);
 impl BackgroundMcpHost {
     pub fn finished(&self) -> bool {
-        self.finished.load(Ordering::Acquire)
+        match self.original.try_lock() {
+            Ok(mut original) => original.finished(),
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner().finished(),
+            Err(std::sync::TryLockError::WouldBlock) => false,
+        }
     }
     pub fn presence(&self) -> Option<serde_json::Value> {
         self.presence.lock().ok()?.clone()
@@ -44,7 +46,11 @@ impl BackgroundMcpHost {
     /// back process exit or an installer's stop.
     pub fn stop_within(&mut self, within: Duration) {
         self.stop.send_replace(true);
-        let _ = self.done.recv_timeout(within);
+        let original = self
+            .original
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner());
+        original.wait_within(within);
     }
 }
 impl Drop for BackgroundMcpHost {
@@ -58,6 +64,8 @@ pub fn start(
     host_token: String,
     readiness: local_stdio::BrokerReadinessProbe,
 ) -> Result<BackgroundMcpHost, String> {
+    // Reserve before runtime creation starts any native pool workers.
+    let admission = HOST_BUDGET.reserve()?;
     let lease = HostLease::try_acquire(&directory, "background-mcp-host.lock")?
         .ok_or("Another process already owns the background MCP host")?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -66,32 +74,37 @@ pub fn start(
         .build()
         .map_err(|e| e.to_string())?;
     let (stop, receiver) = watch::channel(false);
-    let (done_tx, done) = mpsc::channel();
-    let finished = Arc::new(AtomicBool::new(false));
     let presence = Arc::new(Mutex::new(None));
-    let (finish_flag, view) = (finished.clone(), presence.clone());
-    std::thread::Builder::new()
-        .name("qc-background-mcp-host".into())
-        .spawn(move || {
+    let view = presence.clone();
+    let original = qc_native_platform::thread_owner::Owned::spawn_reserved(
+        "qc-background-mcp-host",
+        admission,
+        lease,
+        move || {
             // The broker and the USB worker share this process: a panic in the
             // host must end only the host, and must still report it finished
             // so the broker's supervisor restarts it.
             let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 runtime.block_on(run(directory, host_token, readiness, receiver, view));
-                runtime.shutdown_timeout(Duration::from_secs(2));
+                // Runtime Drop retains started blocking work until it ends.
+                // This wait is inside the owned host original, never a GUI
+                // finished()/Drop call. A stall keeps the lease and permit.
+                drop(runtime);
             }));
+            // Runtime teardown above has retired this host's async tasks.
+            // Release their acknowledged relay leases before reporting;
+            // diagnostic output must not strand a completed original.
+            crate::relay_task::reap();
             if served.is_err() {
-                eprintln!("The background MCP host panicked; the broker restarts it");
+                let _ = std::panic::catch_unwind(|| {
+                    eprintln!("The background MCP host panicked; the broker restarts it")
+                });
             }
-            drop(lease);
-            finish_flag.store(true, Ordering::Release);
-            let _ = done_tx.send(());
-        })
-        .map_err(|e| e.to_string())?;
+        },
+    )?;
     Ok(BackgroundMcpHost {
         stop,
-        done,
-        finished,
+        original: Mutex::new(original),
         presence,
     })
 }
@@ -118,9 +131,8 @@ impl HostLease {
 }
 
 struct BackgroundRelay {
-    task: tokio::task::JoinHandle<()>,
+    task: crate::relay_task::Owned,
     stop: watch::Sender<bool>,
-    _lease: HostLease,
     credential: String,
     state: watch::Sender<ConnectionState>,
 }
@@ -128,7 +140,43 @@ impl Drop for BackgroundRelay {
     fn drop(&mut self) {
         self.stop.send_replace(true);
         self.state.send_replace(ConnectionState::Stopped);
-        self.task.abort();
+        // Owned's Drop retains original task+lease+permit until actual join.
+    }
+}
+
+/// At most one active and one stopping local listener. Do not admit a
+/// successor while the previous original is still in native TLS teardown.
+/// On unwind, the owned background thread waits for these exact originals;
+/// its outer bounded stop can refuse without losing lease or attribution.
+#[derive(Default)]
+struct BackgroundListeners {
+    active: Option<local_access::RunningLocalAccess>,
+    retiring: Vec<local_access::RunningLocalAccess>,
+}
+impl BackgroundListeners {
+    fn stop_active(&mut self) {
+        if let Some(old) = self.active.take() {
+            old.stop();
+            self.retiring.push(old);
+        }
+    }
+    fn reap(&mut self) {
+        let mut index = 0;
+        while index < self.retiring.len() {
+            if self.retiring[index].native_finished() {
+                let _ = self.retiring.swap_remove(index).join_original();
+            } else {
+                index += 1;
+            }
+        }
+    }
+}
+impl Drop for BackgroundListeners {
+    fn drop(&mut self) {
+        self.stop_active();
+        for old in self.retiring.drain(..) {
+            let _ = old.join_original();
+        }
     }
 }
 
@@ -162,7 +210,7 @@ async fn run(
     let adapter: Arc<dyn DeviceAdapter> = Arc::new(device.clone());
     let (access, access_rx) = watch::channel(qc_relay_client::AccessMode::ReadOnly);
     let mut credential_snapshot = None;
-    let mut listener: Option<local_access::RunningLocalAccess> = None;
+    let mut listener = BackgroundListeners::default();
     let mut relay_host: Option<BackgroundRelay> = None;
     let mut last_settings = Instant::now() - Duration::from_secs(5);
     let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -227,6 +275,8 @@ async fn run(
             break;
         }
         let local_enabled = local_access::local_mcp_enabled_in(&directory);
+        listener.reap();
+        crate::relay_task::reap();
         let remote_enabled = crate::access_policy_store::effective_remote_enabled(&directory);
         if !remote_enabled && relay_host.take().is_some() {
             crate::remote_grants::clear();
@@ -234,20 +284,17 @@ async fn run(
             host_presence::set_remote_state(watch::channel(ConnectionState::Stopped).1);
         }
         if !local_enabled {
-            if let Some(old) = listener.take() {
-                old.stop();
-            }
-        } else if listener.is_none() {
-            #[cfg(target_os = "linux")]
+            listener.stop_active();
+        } else if listener.active.is_none() && listener.retiring.is_empty() {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             let paths = publication_paths(&directory, None);
-            #[cfg(target_os = "macos")]
-            let paths = publication_paths(&directory, None);
-            #[cfg(windows)]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             let paths =
                 publication_paths(&directory, std::env::var_os("APPDATA").map(PathBuf::from));
             // The existing publisher guard authenticates any GUI owner. It
             // never displaces that owner; after GUI exit the next tick wins.
-            listener = local_access::start_listener(paths, adapter.clone(), access_rx.clone()).ok();
+            listener.active =
+                local_access::start_listener(paths, adapter.clone(), access_rx.clone()).ok();
         }
         if last_settings.elapsed() >= Duration::from_secs(5) {
             last_settings = Instant::now();
@@ -276,6 +323,13 @@ async fn run(
             }
             if remote_enabled && relay_host.is_none() {
                 if let Some(credentials) = credential {
+                    let permit = match crate::relay_task::Permit::acquire() {
+                        Ok(permit) => permit,
+                        Err(error) => {
+                            eprintln!("Background relay admission refused: {error}");
+                            continue;
+                        }
+                    };
                     if let Ok(Some(lease)) =
                         HostLease::try_acquire(&directory, "remote-mcp-host.lock")
                     {
@@ -331,9 +385,12 @@ async fn run(
                             client.run().await;
                         });
                         relay_host = Some(BackgroundRelay {
-                            task,
+                            task: crate::relay_task::Owned::new(
+                                tauri::async_runtime::JoinHandle::Tokio(task),
+                                lease,
+                                permit,
+                            ),
                             stop: halt,
-                            _lease: lease,
                             credential: identity,
                             state,
                         });
@@ -353,6 +410,9 @@ async fn run(
                 .is_none_or(|task| task.is_finished())
         {
             linked_apps_pending = false;
+            if let Some(previous) = linked_apps_fetch.take() {
+                let _ = previous.await;
+            }
             linked_apps_fetch = Some(tokio::spawn(crate::remote_grants::refresh_on_connect(
                 || host_presence::remote_state() == ConnectionState::Connected,
             )));
@@ -361,13 +421,19 @@ async fn run(
             crate::remote_grants::clear();
         }
         relay_was_connected = relay_connected;
-        let endpoint = listener.as_ref().map(|running| running.endpoint());
+        let endpoint = listener.active.as_ref().map(|running| running.endpoint());
         let document = local_access::host_status_document(
             endpoint,
-            listener.as_ref().map(|running| running.instance_id()),
+            listener
+                .active
+                .as_ref()
+                .map(|running| running.instance_id()),
         );
         let snapshot = host_presence::snapshot(None);
         if maintenance.as_ref().is_none_or(|task| task.is_finished()) {
+            if let Some(previous) = maintenance.take() {
+                let _ = previous.await;
+            }
             let device = device.clone();
             let used = host_presence::host_in_use(&snapshot.clients);
             // Broker election/response waits must not delay status publication,
@@ -382,7 +448,9 @@ async fn run(
         }
         // While a GUI publishes, its registry is authoritative; the tray uses
         // its authenticated reader instead of replacing it with an empty list.
-        *view.lock().unwrap_or_else(|p| p.into_inner()) = if listener.is_some() || !local_enabled {
+        *view.lock().unwrap_or_else(|p| p.into_inner()) = if listener.active.is_some()
+            || !local_enabled
+        {
             if let Err(error) = crate::host_runtime_status::publish(&directory, document.clone()) {
                 eprintln!("Could not publish tray host status: {error}");
             }
@@ -392,12 +460,21 @@ async fn run(
         };
     }
     credential_refresh.abort();
+    let _ = credential_refresh.await;
+    if let Some(fetch) = linked_apps_fetch.take() {
+        fetch.abort();
+        let _ = fetch.await;
+    }
     drop(relay_host);
     host_presence::set_remote_endpoint(None);
     device.stop();
-    if let Some(listener) = listener {
-        listener.stop();
+    drop(listener); // Exact local original joins stay inside owned host.
+    if let Some(maintenance) = maintenance.take() {
+        // A started blocking maintenance operation cannot be force-cancelled.
+        // Keep the host original/lease while waiting for its real outcome.
+        let _ = maintenance.await;
     }
+    crate::relay_task::reap();
     crate::host_runtime_status::remove(&directory);
     *view.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
@@ -439,6 +516,207 @@ mod tests {
             IN_PROCESS_HOST_PROVIDER, "QC Remote MCP host",
             "bridges stay participants"
         );
+    }
+
+    #[test]
+    fn a_background_host_keeps_its_lease_until_the_exact_native_tls_original_retires() {
+        use std::cell::RefCell;
+        use std::sync::mpsc;
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        struct Tls(mpsc::Sender<()>, mpsc::Receiver<()>);
+        impl Drop for Tls {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+                let _ = self.1.recv_timeout(Duration::from_secs(30));
+            }
+        }
+        thread_local! { static TLS: RefCell<Option<Tls>> = const { RefCell::new(None) }; }
+        struct Release(Option<mpsc::Sender<()>>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let directory = crate::tests::unique_fixture_directory("background-original-tls");
+        let root = Arc::new(crate::tests::RemoveDirOnDrop::new(directory.clone()));
+        let lease = HostLease::try_acquire(&directory, "host").unwrap().unwrap();
+        let (entered, entered_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let release = Release(Some(release));
+        let original = qc_native_platform::thread_owner::Owned::spawn(
+            "background-tls-fixture",
+            &BUDGET,
+            (lease, root.clone()),
+            move || {
+                TLS.with(|slot| *slot.borrow_mut() = Some(Tls(entered, release_rx)));
+            },
+        )
+        .unwrap();
+        let (stop, _receiver) = watch::channel(false);
+        let mut host = BackgroundMcpHost {
+            stop,
+            original: Mutex::new(original),
+            presence: Arc::new(Mutex::new(None)),
+        };
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!host.finished());
+        host.stop_within(Duration::ZERO);
+        assert!(!host.finished());
+        assert!(HostLease::try_acquire(&directory, "host")
+            .unwrap()
+            .is_none());
+        drop(host);
+        qc_native_platform::thread_owner::reap();
+        assert_eq!(BUDGET.count(), 1);
+        assert!(HostLease::try_acquire(&directory, "host")
+            .unwrap()
+            .is_none());
+        drop(release);
+        let until = Instant::now() + Duration::from_secs(2);
+        while BUDGET.count() != 0 {
+            qc_native_platform::thread_owner::reap();
+            assert!(
+                Instant::now() < until,
+                "native TLS fixture original did not retire"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(HostLease::try_acquire(&directory, "host")
+            .unwrap()
+            .is_some());
+        drop(root);
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn background_runtime_teardown_keeps_the_host_lease_while_started_blocking_work_is_alive() {
+        use std::sync::mpsc;
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        struct Release(Option<mpsc::Sender<()>>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let directory = crate::tests::unique_fixture_directory("background-runtime-drop");
+        let root = Arc::new(crate::tests::RemoveDirOnDrop::new(directory.clone()));
+        let lease = HostLease::try_acquire(&directory, "host").unwrap().unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (entered, entered_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let release = Release(Some(release));
+        let original = qc_native_platform::thread_owner::Owned::spawn(
+            "background-runtime-fixture",
+            &BUDGET,
+            (lease, root.clone()),
+            move || {
+                let _started = runtime.spawn_blocking(move || {
+                    let _ = entered.send(());
+                    let _ = release_rx.recv_timeout(Duration::from_secs(30));
+                });
+                drop(runtime);
+            },
+        )
+        .unwrap();
+        let (stop, _) = watch::channel(false);
+        let mut host = BackgroundMcpHost {
+            stop,
+            original: Mutex::new(original),
+            presence: Arc::new(Mutex::new(None)),
+        };
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        host.stop_within(Duration::from_millis(10));
+        assert!(!host.finished());
+        assert!(HostLease::try_acquire(&directory, "host")
+            .unwrap()
+            .is_none());
+        drop(release);
+        host.stop_within(Duration::from_secs(2));
+        assert!(host.finished());
+        assert!(HostLease::try_acquire(&directory, "host")
+            .unwrap()
+            .is_some());
+        drop(host);
+        drop(root);
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn an_aborted_background_relay_keeps_the_lease_until_cancelled_future_drop_finishes() {
+        let _serial = crate::relay_task::fixture_lock();
+        use std::sync::mpsc;
+        struct DropGate(mpsc::Sender<()>, mpsc::Receiver<()>);
+        impl Drop for DropGate {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+                let _ = self.1.recv_timeout(Duration::from_secs(30));
+            }
+        }
+        struct Release(Option<mpsc::Sender<()>>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let directory = crate::tests::unique_fixture_directory("background-relay-cancel");
+        let root = Arc::new(crate::tests::RemoveDirOnDrop::new(directory.clone()));
+        let lease = HostLease::try_acquire(&directory, "relay")
+            .unwrap()
+            .unwrap();
+        let permit = crate::relay_task::Permit::acquire().unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (polled, polled_rx) = mpsc::channel();
+        let (dropping, dropping_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let release = Release(Some(release));
+        let task = runtime.spawn(async move {
+            let _gate = DropGate(dropping, release_rx);
+            let _ = polled.send(());
+            std::future::pending::<()>().await;
+        });
+        let (stop, _) = watch::channel(false);
+        let (state, _) = watch::channel(ConnectionState::Stopped);
+        let relay = BackgroundRelay {
+            task: crate::relay_task::Owned::new(
+                tauri::async_runtime::JoinHandle::Tokio(task),
+                (lease, root.clone()),
+                permit,
+            ),
+            stop,
+            credential: "fixture-only".into(),
+            state,
+        };
+        polled_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        drop(relay);
+        dropping_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        crate::relay_task::reap();
+        assert!(HostLease::try_acquire(&directory, "relay")
+            .unwrap()
+            .is_none());
+        drop(release);
+        drop(runtime);
+        crate::relay_task::reap();
+        assert!(HostLease::try_acquire(&directory, "relay")
+            .unwrap()
+            .is_some());
+        drop(root);
+        assert!(!directory.exists());
     }
 
     #[test]

@@ -15,11 +15,14 @@ function requireGrid(tree: string): void {
 
 function requireBareGrid(tree: string): void {
   requireGrid(tree);
+  const kind = classifyQcGraphicsTree(tree);
+  // CPU Monitor is non-modal and must leave the normal Grid operable.
+  // Menus, editors and confirmation dialogs can retain Grid underneath.
   // The Grid remains in a menu/dialog tree. Its presence does not make a cell
   // coordinate safe to touch. Unknown popup/dialog/editor classes are refused
   // too; ordinary Grid children (labels, tiles and paths) remain admissible.
   const classes = [...tree.matchAll(/zenUI::([A-Za-z0-9_]+)/g)].map((match) => match[1]);
-  if (classifyQcGraphicsTree(tree) !== "grid"
+  if ((kind !== "grid" && kind !== "cpu-monitor")
       || classes.some((name) => /(?:Popup|Dialog|Editor|Overlay|Panel)$/.test(name))) {
     throw new Error("The Quad Cortex Grid is covered by another screen. Close it, then select the block again.");
   }

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { GatewayTransport } from "@qc-remote/client";
+import type { PresetLifetime } from "@qc-remote/core";
+import { captureGatewaySession } from "./gateway-session.ts";
 import { ioSelectionFromTree, ioSelectionKey, type IoUnitSelection } from "./io-unit-selection.ts";
 import { settingsSelectionFromTree, settingsSelectionKey, type QcSettingsUnitSelection } from "./settings-unit-selection.ts";
 
@@ -46,11 +48,13 @@ export type QcScreenPollingPhase = "off" | "paused" | "polling" | "ready" | "err
 
 /** On unless the user turned it off: an absent or unreadable stored value means on; only a stored "false" is off. */
 export function readQcScreenFollowSetting(storage: Pick<Storage, "getItem">): boolean {
-  return storage.getItem(QC_SCREEN_FOLLOW_STORAGE_KEY) !== "false";
+  try { return storage.getItem(QC_SCREEN_FOLLOW_STORAGE_KEY) !== "false"; }
+  catch { return true; }
 }
 
 export function writeQcScreenFollowSetting(storage: Pick<Storage, "setItem">, enabled: boolean): void {
-  storage.setItem(QC_SCREEN_FOLLOW_STORAGE_KEY, String(enabled));
+  try { storage.setItem(QC_SCREEN_FOLLOW_STORAGE_KEY, String(enabled)); }
+  catch { /* Session choice still applies when storage is unavailable. */ }
 }
 
 /**
@@ -140,12 +144,14 @@ export function useAdaptiveQcScreenPolling({
   gateway,
   enabled,
   connected,
+  lifetime,
   onObservation,
   onTree
 }: {
   gateway: Pick<GatewayTransport, "graphicsTree">;
   enabled: boolean;
   connected: boolean;
+  lifetime?: PresetLifetime;
   onObservation: (observation: QcScreenObservation) => void;
   /** Every tree a poll reads, changed or not: text on a screen can change while its structure does not. */
   onTree?: (tree: string) => void;
@@ -157,6 +163,19 @@ export function useAdaptiveQcScreenPolling({
   const [visible, setVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   const [phase, setPhase] = useState<QcScreenPollingPhase>(enabled ? "paused" : "off");
   const [observation, setObservation] = useState<QcScreenObservation>();
+  const [sessionRevision, setSessionRevision] = useState(0);
+  const rendered = useRef({ gateway, enabled, connected, visible, lifetime });
+  rendered.current = { gateway, enabled, connected, visible, lifetime };
+
+  useEffect(() => {
+    if (!lifetime) return;
+    let origin = lifetime.checkpoint();
+    return lifetime.subscribe(() => {
+      if (lifetime.currentSession(origin)) return;
+      origin = lifetime.checkpoint();
+      setSessionRevision((revision) => revision + 1);
+    });
+  }, [lifetime]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -176,21 +195,30 @@ export function useAdaptiveQcScreenPolling({
     if (!connected || !visible) { setPhase("paused"); return; }
 
     let cancelled = false;
+    const origin = lifetime?.checkpoint();
+    const session = captureGatewaySession(gateway as GatewayTransport, () => {
+      const latest = rendered.current;
+      return !cancelled && latest.gateway === gateway && latest.lifetime === lifetime
+        && latest.enabled && latest.connected && latest.visible
+        && (!origin || Boolean(lifetime?.currentSession(origin)));
+    });
+    setObservation(undefined);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let previousSignature: string | undefined;
     let stablePolls = 0;
     let consecutiveErrors = 0;
 
     const schedule = (delay: number) => {
-      if (!cancelled) timer = setTimeout(() => void poll(), delay);
+      if (session.current()) timer = setTimeout(() => void poll(), delay);
     };
     const poll = async () => {
-      if (cancelled) return;
+      if (!session.current()) return;
       setPhase((current) => current === "ready" ? current : "polling");
       try {
-        const { tree } = await gateway.graphicsTree();
-        if (cancelled) return;
+        const { tree } = await session.gateway.graphicsTree();
+        if (!session.current()) return;
         onTreeRef.current?.(tree);
+        if (!session.current()) return;
         const kind = classifyQcGraphicsTree(tree);
         const ioSelection = kind === "io" ? ioSelectionFromTree(tree) : undefined;
         const settingsSelection = kind === "settings" ? settingsSelectionFromTree(tree) : undefined;
@@ -210,7 +238,7 @@ settings:${settingsSelectionKey(settingsSelection)}` : "");
         setPhase("ready");
         schedule(qcAdaptiveScreenPollDelay(stablePolls));
       } catch {
-        if (cancelled) return;
+        if (!session.current()) return;
         consecutiveErrors += 1;
         setPhase("error");
         schedule(qcAdaptiveScreenPollDelay(stablePolls, consecutiveErrors));
@@ -219,7 +247,7 @@ settings:${settingsSelectionKey(settingsSelection)}` : "");
 
     void poll();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [connected, enabled, gateway, visible]);
+  }, [connected, enabled, gateway, visible, lifetime, sessionRevision]);
 
   return { phase, observation };
 }

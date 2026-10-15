@@ -274,8 +274,7 @@ fn control_lock(directory: &Path) -> Result<File, String> {
         .truncate(false)
         .open(directory.join(CONTROL_LOCK))
         .map_err(|error| format!("Open tray control lock: {error}"))?;
-    file.lock()
-        .map_err(|error| format!("Lock tray control: {error}"))?;
+    crate::broker_tray_settings::lock_with_budget(&file, "tray control")?;
     // This stable lock file is intentionally never removed.
     Ok(file)
 }
@@ -327,6 +326,138 @@ fn run_command(executable: &Path, directory: &Path) -> Result<String, String> {
         quote_windows_argument(executable),
         quote_windows_argument(directory)
     ))
+}
+
+#[cfg(windows)]
+trait ResidentStartupProbe {
+    fn running(&mut self) -> bool;
+    fn serving(&mut self) -> bool;
+    fn child_published(&mut self, pid: u32) -> bool;
+    fn user_quit(&mut self) -> bool;
+    fn observe(
+        &mut self,
+        child: &mut std::process::Child,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
+        child.try_wait()
+    }
+}
+#[cfg(windows)]
+struct NativeStartupProbe<'a> {
+    effects: &'a NativeTrayEffects,
+    directory: &'a Path,
+}
+#[cfg(windows)]
+impl ResidentStartupProbe for NativeStartupProbe<'_> {
+    fn running(&mut self) -> bool {
+        self.effects.is_running()
+    }
+    fn serving(&mut self) -> bool {
+        serving_broker_published(self.directory)
+    }
+    fn child_published(&mut self, pid: u32) -> bool {
+        live_serving_broker(self.directory).is_some_and(|descriptor| descriptor.process_id == pid)
+    }
+    fn user_quit(&mut self) -> bool {
+        crate::device_broker_descriptor::read_user_quit(
+            &crate::device_broker_descriptor::device_broker_descriptor_path(self.directory),
+        )
+        .is_some()
+    }
+}
+
+// Only same-child publication or observed exit releases an acquired original.
+// A session-wide marker can belong to an independently running resident.
+#[cfg(windows)]
+fn finish_resident_start(
+    held: &mut crate::StartSlotContent,
+    pid: u32,
+    checks: &mut impl ResidentStartupProbe,
+    why: &str,
+) {
+    if held.child.is_none() {
+        return;
+    }
+    if checks.child_published(pid) {
+        drop(held.child.take());
+    } else {
+        held.why = Some(format!(
+            "{why}; unpublished resident original pid {pid} retained"
+        ));
+    }
+}
+
+#[cfg(windows)]
+fn spawn_resident_owned_with(
+    command: &mut std::process::Command,
+    descriptor_path: &Path,
+    supersede_user_quit: bool,
+    within: std::time::Duration,
+    checks: &mut impl ResidentStartupProbe,
+) -> Result<(), String> {
+    // Reserve before dispatch in the existing process-global four-slot owner.
+    // The just-acquired Child moves immediately into that original owner.
+    let slot = crate::StartSlotGuard::reserve(descriptor_path)?;
+    let child = command
+        .spawn()
+        .map_err(|error| format!("Start the QC Remote background host: {error}"))?;
+    let mut held = slot.hold(child);
+    let pid = held
+        .child
+        .as_ref()
+        .expect("original resident child held")
+        .id();
+    let deadline = std::time::Instant::now() + within;
+    let mut exited_cleanly = false;
+    loop {
+        if checks.running() {
+            if let Some(child) = held.child.as_mut() {
+                if matches!(checks.observe(child), Ok(Some(_))) {
+                    held.child = None;
+                }
+            }
+            finish_resident_start(&mut held, pid, checks, "A resident is already observable");
+            return Ok(());
+        }
+        if let Some(child) = held.child.as_mut() {
+            match checks.observe(child) {
+                Ok(Some(status)) => {
+                    held.child = None;
+                    if !status.success() {
+                        return Err(format!(
+                            "The QC Remote background host exited during startup ({status})"
+                        ));
+                    }
+                    exited_cleanly = true;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let message = format!("Check QC Remote background host startup: {error}");
+                    finish_resident_start(&mut held, pid, checks, &message);
+                    return Err(message);
+                }
+            }
+        }
+        // A pre-existing broker can make this child exit0 without a new icon.
+        if exited_cleanly && checks.serving() {
+            return Ok(());
+        }
+        if exited_cleanly && !supersede_user_quit && checks.user_quit() {
+            return Err(
+                "The QC Remote background host was not started: QC Remote was quit, \
+                 and only Connect or reopening QC Remote starts it again"
+                    .to_owned(),
+            );
+        }
+        if std::time::Instant::now() >= deadline {
+            let message = format!(
+                "The QC Remote background host did not become ready within {} seconds",
+                within.as_secs(),
+            );
+            finish_resident_start(&mut held, pid, checks, &message);
+            return Err(message);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 impl TrayEffects for NativeTrayEffects {
@@ -392,8 +523,6 @@ impl TrayEffects for NativeTrayEffects {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            // Dropping the Windows Child closes our process handle; the
-            // resident host is independent and must outlive this window.
             let mut command = std::process::Command::new(executable);
             command.arg("--resident").arg("--directory").arg(directory);
             if !supersede_user_quit {
@@ -402,65 +531,20 @@ impl TrayEffects for NativeTrayEffects {
             command
                 .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
                 .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null());
-            // Into the same bounded broker-stderr.log the app's own
-            // `--broker-serve` children write, so a start that exits during
-            // startup leaves its reason behind.
-            let mut child = crate::spawn_with_broker_stderr(&mut command)
-                .map_err(|error| format!("Start the QC Remote background host: {error}"))?;
-            // Keep the controller's lock until the host is observable, so two
-            // GUI startups cannot both decide to start it. A start that finds
-            // a broker already serving exits 0 at once: that broker reads the
-            // switch and becomes the resident host itself within a second.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            let mut exited_cleanly = false;
-            loop {
-                if self.is_running() {
-                    return Ok(());
-                }
-                if !exited_cleanly {
-                    if let Some(status) = child.try_wait().map_err(|error| {
-                        format!("Check QC Remote background host startup: {error}")
-                    })? {
-                        if !status.success() {
-                            return Err(format!(
-                                "The QC Remote background host exited during startup ({status})"
-                            ));
-                        }
-                        exited_cleanly = true;
-                    }
-                }
-                // A clean exit means a broker already serves this directory.
-                // Without a desktop (or with its icon suppressed) that broker
-                // never becomes the resident host, so the marker never
-                // appears; it is still the session's broker, and starting
-                // another would be wrong. Success, not a 3 s timeout.
-                if exited_cleanly && serving_broker_published(directory) {
-                    return Ok(());
-                }
-                // A `--keep-user-quit` start that found a recorded Quit standing
-                // declines (exit 0) and serves nowhere: say so, not a timeout.
-                if exited_cleanly
-                    && !supersede_user_quit
-                    && crate::device_broker_descriptor::read_user_quit(
-                        &crate::device_broker_descriptor::device_broker_descriptor_path(directory),
-                    )
-                    .is_some()
-                {
-                    return Err(
-                        "The QC Remote background host was not started: QC Remote was quit, \
-                         and only Connect or reopening QC Remote starts it again"
-                            .to_owned(),
-                    );
-                }
-                if std::time::Instant::now() >= deadline {
-                    return Err(
-                        "The QC Remote background host did not become ready within 3 seconds"
-                            .to_owned(),
-                    );
-                }
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
+                .stdout(std::process::Stdio::null())
+                .stderr(crate::broker_stderr_sink());
+            let descriptor =
+                crate::device_broker_descriptor::device_broker_descriptor_path(directory);
+            spawn_resident_owned_with(
+                &mut command,
+                &descriptor,
+                supersede_user_quit,
+                std::time::Duration::from_secs(3),
+                &mut NativeStartupProbe {
+                    effects: self,
+                    directory,
+                },
+            )
         }
         #[cfg(target_os = "linux")]
         {
@@ -544,12 +628,14 @@ impl TrayEffects for NativeTrayEffects {
 
 /// A fresh descriptor naming a live broker is published in `directory`.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-fn serving_broker_published(directory: &Path) -> bool {
+fn live_serving_broker(
+    directory: &Path,
+) -> Option<crate::device_broker_descriptor::DeviceBrokerDescriptor> {
     crate::device_broker_descriptor::read_descriptor(
         &crate::device_broker_descriptor::device_broker_descriptor_path(directory),
         crate::device_broker_descriptor::unix_time_ms(),
     )
-    .is_some_and(|descriptor| {
+    .filter(|descriptor| {
         // Alive, and still the process that published (a recycled pid has a
         // different creation time). A descriptor without one is not enough.
         qc_native_platform::process::os_process_is_alive(descriptor.process_id)
@@ -557,6 +643,11 @@ fn serving_broker_published(directory: &Path) -> bool {
             && qc_native_platform::process::os_process_created_at(descriptor.process_id)
                 == descriptor.process_created_at
     })
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+fn serving_broker_published(directory: &Path) -> bool {
+    live_serving_broker(directory).is_some()
 }
 
 #[cfg(windows)]
@@ -594,6 +685,149 @@ mod tests {
     use std::time::{Duration, Instant};
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(windows)]
+    #[test]
+    fn unpublished_tray_startup_keeps_original_on_timeout_wait_error_and_foreign_ready() {
+        use crate::tests::{ChildSlot, CleanupStack, OwnedChild};
+        use std::os::windows::process::CommandExt;
+        // Do not consume the shared production start-slot headroom alongside
+        // other real-broker fixtures. The child below is only our testbinary.
+        let _serialize = crate::tests::serialize_real_broker_test();
+        #[derive(Clone, Copy)]
+        enum Mode {
+            Timeout,
+            WaitError,
+            ForeignReady,
+        }
+        struct Probe {
+            mode: Mode,
+        }
+        impl ResidentStartupProbe for Probe {
+            fn running(&mut self) -> bool {
+                matches!(self.mode, Mode::ForeignReady)
+            }
+            fn serving(&mut self) -> bool {
+                false
+            }
+            fn child_published(&mut self, _pid: u32) -> bool {
+                false
+            }
+            fn user_quit(&mut self) -> bool {
+                false
+            }
+            fn observe(
+                &mut self,
+                child: &mut std::process::Child,
+            ) -> std::io::Result<Option<std::process::ExitStatus>> {
+                if matches!(self.mode, Mode::WaitError) {
+                    Err(std::io::Error::other("injected original wait failure"))
+                } else {
+                    child.try_wait()
+                }
+            }
+        }
+        for mode in [Mode::Timeout, Mode::WaitError, Mode::ForeignReady] {
+            let directory = crate::tests::unique_fixture_directory("tray-start-original");
+            let root = Arc::new(crate::tests::RemoveDirOnDrop::new(directory.clone()));
+            let descriptor =
+                crate::device_broker_descriptor::device_broker_descriptor_path(&directory);
+            let armed: ChildSlot = Default::default();
+            let mut domain = None;
+            let (outcome, report) = crate::tests::run_with_cleanup(|cleanup: &mut CleanupStack| {
+                // Reserve the existing fixture owner BEFORE production child
+                // dispatch, then arm transfer before any observation/assertion.
+                domain = Some(crate::tests::arm_owned_child(
+                    cleanup,
+                    "tray startup original",
+                    &armed,
+                    None,
+                    Duration::ZERO,
+                ));
+                let (path, armed, root) = (descriptor.clone(), armed.clone(), root.clone());
+                cleanup.arm("take retained resident original", move |_| {
+                    if let Some(child) = crate::take_start_slot_child(&path) {
+                        crate::tests::fill_slot(&armed, OwnedChild::new(child).with_resource(root));
+                    }
+                });
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "tests::attached_root_child_fixture",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("QC_ATTACHED_ROOT_FIXTURE", &directory)
+                    .creation_flags(0x0800_0000)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                let result = spawn_resident_owned_with(
+                    &mut command,
+                    &descriptor,
+                    false,
+                    Duration::ZERO,
+                    &mut Probe { mode },
+                );
+                match mode {
+                    Mode::Timeout => assert!(result.unwrap_err().contains("did not become ready")),
+                    Mode::WaitError => assert!(result
+                        .unwrap_err()
+                        .contains("injected original wait failure")),
+                    Mode::ForeignReady => assert!(
+                        result.is_ok(),
+                        "another resident can satisfy readiness without owning this child"
+                    ),
+                }
+                let (pid, why) = crate::start_slot_state(&descriptor)
+                    .expect("original remains in production owner");
+                let pid = pid.expect("the same actual original Child");
+                assert!(why.unwrap().contains("unpublished resident original"));
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while fs::read_to_string(directory.join("ready")).ok().as_deref()
+                    != Some(pid.to_string().as_str())
+                {
+                    assert!(
+                        Instant::now() < deadline,
+                        "exact ignored helper never entered its fixed body"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                // A retry must refuse in this same domain BEFORE command
+                // dispatch. This executable intentionally cannot be spawned.
+                let error = spawn_resident_owned_with(
+                    &mut std::process::Command::new(directory.join("missing-not-dispatched.exe")),
+                    &descriptor,
+                    false,
+                    Duration::ZERO,
+                    &mut Probe {
+                        mode: Mode::Timeout,
+                    },
+                )
+                .unwrap_err();
+                assert!(error.contains("earlier one is still held"), "{error}");
+                panic!("injected tray fixture observation failure");
+            });
+            let retired = crate::tests::fixture_child_retired(domain.as_deref().unwrap());
+            // Only actual original retirement can release the attached root.
+            drop(root);
+            assert!(retired, "exact fixture Child remains owned: {report}");
+            assert!(
+                !report.blocked,
+                "exact Child termination was not acknowledged: {report}"
+            );
+            let primary = outcome.expect_err("injected assertion must remain visible");
+            assert_eq!(
+                primary.downcast_ref::<&str>(),
+                Some(&"injected tray fixture observation failure")
+            );
+            assert!(
+                !directory.exists(),
+                "retired original released its attached root"
+            );
+        }
+    }
 
     struct Scratch(PathBuf);
     impl Scratch {

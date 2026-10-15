@@ -24,3 +24,17 @@ export function createControlAccessChange(options: {
     } finally { running = false; options.pending(false); }
   };
 }
+
+/** Never present a stored mode as an authoritative native permission. */
+export function controlAccessPresentation(options: {
+  mode: ControlAccessMode;
+  verified: boolean;
+  pending: boolean;
+  busy: boolean;
+}) {
+  return {
+    disabled: options.busy || options.pending || !options.verified,
+    readout: options.pending ? "Updating access..."
+      : options.verified ? options.mode : "Not confirmed. Refresh remote status to check."
+  };
+}

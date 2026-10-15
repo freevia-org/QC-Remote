@@ -28,6 +28,12 @@ pub(crate) const CLIENT_ID_ARGUMENT: &str = "--local-mcp-client";
 #[cfg(any(not(target_os = "linux"), test))]
 const APP_DIRECTORY: &str = "org.freevia.qcremote";
 const STATE_FILE: &str = "local-mcp.json";
+// Software discovery/preference/history envelope, not a firmware limit.
+const MAX_LOCAL_DOCUMENT_BYTES: usize = 128 * 1024;
+pub(crate) fn read_local_document(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let mut file = std::fs::File::open(path)?;
+    qc_owner_only_file::read_with_byte_budget(&mut file, MAX_LOCAL_DOCUMENT_BYTES)
+}
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 // A running app re-stamps `publishedAtUnixMs` on every descriptor copy every
 // 30 s. Five missed refreshes means the process is gone, and its ephemeral port
@@ -417,7 +423,7 @@ fn choose_descriptor(paths: &[PathBuf], now_ms: u64) -> Result<ChosenDescriptor,
         if !path.is_file() {
             continue;
         }
-        let endpoint = std::fs::read(path)
+        let endpoint = read_local_document(path)
             .map_err(|error| format!("could not be read: {error}"))
             .and_then(|contents| {
                 serde_json::from_slice::<EndpointDocument>(&contents)
@@ -706,6 +712,28 @@ impl RelayFailure {
     }
 }
 
+/// Only admitted, unanswered mutations lose their safe retry boundary.
+/// Identity/connect refusal and a complete typed server error stay distinct.
+fn unanswered_rpc(rpc: &str, error: BackendError) -> BackendError {
+    if !crate::generated_gateway::is_mutation_method(rpc) && rpc != "broker.createDeviceBackupBound"
+    {
+        return error;
+    }
+    BackendError {
+        code: "device_error",
+        message: format!(
+            "The request may have completed; verify the device before retrying. {}",
+            error.message
+        ),
+        retryable: false,
+        detail_code: Some("WRITE_OUTCOME_AMBIGUOUS".into()),
+        details: Some(Box::new(serde_json::json!({
+            "code": "WRITE_OUTCOME_AMBIGUOUS", "requestSent": true,
+            "retryable": false, "userActionRequired": true, "verification": "unknown"
+        }))),
+    }
+}
+
 impl DesktopBackend {
     /// The relayed request exactly as sent: bearer token, the bridge's
     /// session id when it has one, and the `{rpc, params}` body.
@@ -789,37 +817,54 @@ impl DesktopBackend {
             .rpc_request(&endpoint, rpc, params)
             .send()
             .await
-            .map_err(unreachable_app)?;
+            .map_err(|error| match unreachable_app(error) {
+                RelayFailure::NoPublisher(error) => RelayFailure::NoPublisher(error),
+                RelayFailure::Refused(error) => RelayFailure::Refused(unanswered_rpc(rpc, error)),
+            })?;
         let status = response.status();
-        let envelope = response.json::<RpcEnvelope>().await.map_err(|error| {
-            RelayFailure::Refused(BackendError {
-                code: "local_bridge_error",
-                message: format!(
-                    "QC Remote returned an invalid local response ({status}): {error}"
-                ),
-                retryable: status.is_server_error(),
-                detail_code: None,
-                details: None,
-            })
+        let envelope = qc_relay_client::bounded_response_json::<RpcEnvelope>(response).await.map_err(|_| {
+            RelayFailure::Refused(unanswered_rpc(
+                rpc,
+                BackendError {
+                    code: "local_bridge_error",
+                    message: format!(
+                        "QC Remote returned an invalid, oversized, or incomplete local response ({status})"
+                    ),
+                    retryable: status.is_server_error(),
+                    detail_code: None,
+                    details: None,
+                },
+            ))
         })?;
         if envelope.ok {
             return envelope.result.ok_or_else(|| {
-                RelayFailure::Refused(BackendError {
-                    code: "local_bridge_error",
-                    message: "QC Remote returned a successful response without a result.".into(),
-                    retryable: false,
-                    detail_code: None,
-                    details: None,
-                })
+                RelayFailure::Refused(unanswered_rpc(
+                    rpc,
+                    BackendError {
+                        code: "local_bridge_error",
+                        message: "QC Remote returned a successful response without a result."
+                            .into(),
+                        retryable: false,
+                        detail_code: None,
+                        details: None,
+                    },
+                ))
             });
         }
-        let error = envelope.error.unwrap_or(RpcError {
-            code: "local_bridge_error".into(),
-            message: format!("QC Remote refused the local request ({status})."),
-            retryable: status.is_server_error(),
-            device_code: None,
-            details: None,
-        });
+        let Some(error) = envelope.error else {
+            return Err(RelayFailure::Refused(unanswered_rpc(
+                rpc,
+                BackendError {
+                    code: "local_bridge_error",
+                    message: format!(
+                        "QC Remote returned no typed answer to the local request ({status})."
+                    ),
+                    retryable: status.is_server_error(),
+                    detail_code: None,
+                    details: None,
+                },
+            )));
+        };
         Err(RelayFailure::Refused(BackendError {
             code: backend_code(&error.code),
             message: error.message,
@@ -1276,21 +1321,26 @@ impl HeadlessDeviceAdapter {
         let lock_free_reads = self.lock_free_reads.clone();
         let stopped = self.stopped.clone();
         let method = method.to_owned();
-        tokio::task::spawn_blocking(move || {
-            // The same routing as a window's relay adapter, plus this host's
-            // stop flag.
-            crate::relay_gateway_request(
-                &gateway,
-                &lock_free_reads,
-                &method,
-                params,
-                connection,
-                Some(&*stopped),
-            )
-        })
+        let method_for_action = method.clone();
+        crate::await_relay_gateway(
+            method,
+            &crate::RELAY_GATEWAY_NATIVE_BUDGET,
+            crate::RELAY_GATEWAY_NATIVE_TIMEOUT,
+            move |admission| {
+                // The same routing as a window's relay adapter, plus this host's
+                // stop flag.
+                crate::relay_gateway_request(
+                    &gateway,
+                    &lock_free_reads,
+                    &method_for_action,
+                    params,
+                    connection,
+                    Some(&*stopped),
+                    Some(&admission),
+                )
+            },
+        )
         .await
-        .map_err(|error| crate::relay_device_error(error.to_string()))?
-        .map_err(crate::device_error_from_gateway_failure)
     }
 }
 
@@ -1319,6 +1369,7 @@ pub(crate) struct HeadlessHostSettings {
     load_access_mode: Arc<dyn Fn() -> AccessMode + Send + Sync>,
     refresh_access_mode: Arc<dyn Fn(AccessMode) -> AccessMode + Send + Sync>,
     refresh_interval: Duration,
+    refresh_budget: Arc<std::sync::atomic::AtomicUsize>,
     /// Whether a broker this host spawns opens the device session itself;
     /// see `Gateway::auto_connect_first_broker`.
     auto_connect: bool,
@@ -1337,6 +1388,7 @@ impl HeadlessHostSettings {
                 tauri::async_runtime::block_on(crate::relay::refresh_access_mode(previous))
             }),
             refresh_interval: HEADLESS_SETTINGS_REFRESH_INTERVAL,
+            refresh_budget: production_refresh_budget(),
             auto_connect: true,
         })
     }
@@ -1410,6 +1462,10 @@ fn resolve_app_local_data_dir(
 /// shutdown can both stop a host; the second stop must not delete a
 /// descriptor a window published after the first.
 struct HostedListener {
+    // The existing acquisition sink must also own the exact adapter on a
+    // fixture panic before HeadlessMcpHost/BridgeBackend can be returned.
+    #[cfg(test)]
+    fixture_device: HeadlessDeviceAdapter,
     /// Behind a lock only because the listener holds a channel receiver,
     /// which cannot be shared between threads bare.
     running: Mutex<local_access::RunningLocalAccess>,
@@ -1418,20 +1474,117 @@ struct HostedListener {
 
 impl HostedListener {
     fn stop(&self) -> bool {
-        let Ok(mut result) = self.stop_acknowledged.lock() else {
-            return false;
-        };
+        let mut result = self
+            .stop_acknowledged
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(acknowledged) = *result {
             return acknowledged;
         }
-        let acknowledged = match self.running.lock() {
-            Ok(running) => running.stop(),
-            Err(_) => return false,
-        };
+        let acknowledged = self
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stop();
         if acknowledged {
             *result = Some(true);
         }
         acknowledged
+    }
+}
+
+impl Drop for HostedListener {
+    fn drop(&mut self) {
+        if !self.stop() {
+            eprintln!("QC Remote local MCP: acquired listener retirement was not acknowledged");
+        }
+    }
+}
+
+struct RefreshWorker {
+    thread: std::thread::JoinHandle<()>,
+    // Original owner retains admission through native TLS exit and actual join.
+    _permit: Arc<RefreshPermit>,
+}
+impl std::ops::Deref for RefreshWorker {
+    type Target = std::thread::JoinHandle<()>;
+    fn deref(&self) -> &Self::Target {
+        &self.thread
+    }
+}
+impl RefreshWorker {
+    fn join(self) -> std::thread::Result<()> {
+        let Self { thread, _permit } = self;
+        let result = thread.join();
+        drop(_permit);
+        result
+    }
+}
+static RETAINED_HEADLESS_REFRESH: Mutex<Vec<RefreshWorker>> = Mutex::new(Vec::new());
+const HEADLESS_REFRESH_LIMIT: usize = 4;
+fn production_refresh_budget() -> Arc<std::sync::atomic::AtomicUsize> {
+    static BUDGET: std::sync::OnceLock<Arc<std::sync::atomic::AtomicUsize>> =
+        std::sync::OnceLock::new();
+    BUDGET
+        .get_or_init(|| Arc::new(std::sync::atomic::AtomicUsize::new(0)))
+        .clone()
+}
+struct RefreshPermit(Arc<std::sync::atomic::AtomicUsize>);
+impl RefreshPermit {
+    fn acquire(budget: &Arc<std::sync::atomic::AtomicUsize>) -> Option<Arc<Self>> {
+        reap_refresh_workers();
+        budget
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < HEADLESS_REFRESH_LIMIT).then_some(count + 1)
+            })
+            .ok()?;
+        Some(Arc::new(Self(budget.clone())))
+    }
+}
+impl Drop for RefreshPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+fn reap_refresh_workers() {
+    let complete = {
+        let mut retained = RETAINED_HEADLESS_REFRESH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut complete = Vec::new();
+        let mut index = 0;
+        while index < retained.len() {
+            if qc_native_platform::process::thread_signalled(&retained[index].thread) {
+                complete.push(retained.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        complete
+    };
+    for original in complete {
+        let _ = original.join();
+    }
+}
+
+fn retire_refresh_worker(worker: RefreshWorker, budget: Duration) {
+    let deadline = std::time::Instant::now() + budget;
+    while !qc_native_platform::process::thread_signalled(&worker.thread)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if qc_native_platform::process::thread_signalled(&worker.thread) {
+        if worker.join().is_err() {
+            eprintln!("QC Remote local MCP: settings refresh worker panicked");
+        }
+    } else {
+        eprintln!("QC Remote local MCP: retaining the exact settings refresh worker after retirement deadline");
+        reap_refresh_workers();
+        RETAINED_HEADLESS_REFRESH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(worker);
     }
 }
 
@@ -1518,6 +1671,13 @@ pub(crate) struct HeadlessMcpHost {
     disabled: Arc<AtomicBool>,
     /// Dropped, or sent to, to end the settings refresh thread.
     stop_refresh: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    refresh_worker: Mutex<Option<RefreshWorker>>,
+}
+
+impl Drop for HeadlessMcpHost {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl HeadlessMcpHost {
@@ -1535,10 +1695,24 @@ impl HeadlessMcpHost {
 
     /// Stops serving and unpublishes the descriptors this process wrote.
     pub(crate) fn stop(&self) {
-        if let Ok(mut stop) = self.stop_refresh.lock() {
-            stop.take();
-        }
+        // Withdraw device admission before waiting on listener/refresher
+        // retirement. A previously cloned backend may still be queued for
+        // the gateway; its under-lock stop check must refuse late dispatch.
+        // Already admitted native work retains its owner and may complete.
+        self.device.stop();
+        self.stop_refresh
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         self.running.stop();
+        let worker = self
+            .refresh_worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(worker) = worker {
+            retire_refresh_worker(worker, Duration::from_secs(3));
+        }
     }
 
     fn is_disabled(&self) -> bool {
@@ -1617,6 +1791,8 @@ pub(crate) fn attempt_headless_mcp_hosting(
     if crate::user_quit_refusal(&settings.device_broker_descriptor_path()).is_some() {
         return None;
     }
+    // Admission precedes publication; ownership follows the real worker.
+    let refresh_permit = RefreshPermit::acquire(&settings.refresh_budget)?;
     let device = HeadlessDeviceAdapter::new(
         settings.device_broker_descriptor_path(),
         settings.auto_connect,
@@ -1627,6 +1803,8 @@ pub(crate) fn attempt_headless_mcp_hosting(
     match local_access::start_listener(paths.to_vec(), adapter.clone(), access_rx.clone()) {
         Ok(running) => {
             let running = Arc::new(HostedListener {
+                #[cfg(test)]
+                fixture_device: device.clone(),
                 running: Mutex::new(running),
                 stop_acknowledged: Mutex::new(None),
             });
@@ -1634,25 +1812,30 @@ pub(crate) fn attempt_headless_mcp_hosting(
             register_hosted_listener(paths, &running);
             let disabled = Arc::new(AtomicBool::new(false));
             let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+            let original_refresh_permit = Arc::clone(&refresh_permit);
             let refresh = {
                 let (settings, running, disabled) =
                     (settings.clone(), running.clone(), disabled.clone());
                 std::thread::Builder::new()
                     .name("qc-headless-settings".into())
                     .spawn(move || {
+                        let _refresh_permit = refresh_permit;
                         refresh_headless_settings(settings, access_tx, running, disabled, stop_rx)
                     })
             };
-            if let Err(error) = refresh {
-                // Without the refresh, a later change in a window would never
-                // reach this host. Serving a stale access level indefinitely
-                // is worse than not hosting.
-                eprintln!(
+            let refresh = match refresh {
+                Ok(refresh) => refresh,
+                Err(error) => {
+                    // Without the refresh, a later change in a window would never
+                    // reach this host. Serving a stale access level indefinitely
+                    // is worse than not hosting.
+                    eprintln!(
                     "QC Remote local MCP: this bridge could not watch the access settings, so it will not host: {error}"
                 );
-                running.stop();
-                return None;
-            }
+                    running.stop();
+                    return None;
+                }
+            };
             Some(HeadlessMcpHost {
                 running,
                 device,
@@ -1660,6 +1843,10 @@ pub(crate) fn attempt_headless_mcp_hosting(
                 access: access_rx,
                 disabled,
                 stop_refresh: Mutex::new(Some(stop_tx)),
+                refresh_worker: Mutex::new(Some(RefreshWorker {
+                    thread: refresh,
+                    _permit: original_refresh_permit,
+                })),
             })
         }
         Err(failure) => {
@@ -1688,6 +1875,18 @@ pub(crate) fn attempt_headless_mcp_hosting(
 /// that was relaying to another headless bridge would otherwise be stranded
 /// the moment that bridge's MCP client closed it, with no window to take over.
 struct BridgeBackend {
+    #[cfg(test)]
+    fixture_dependencies: Mutex<std::sync::Weak<tests::McpDependencies>>,
+    #[cfg(test)]
+    host_start_budget: &'static qc_native_platform::thread_owner::Budget,
+    #[cfg(test)]
+    host_start_timeout: Duration,
+    #[cfg(test)]
+    host_start_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    host_created_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    host_start_attempts: Option<Arc<std::sync::atomic::AtomicUsize>>,
     relay: DesktopBackend,
     /// The local MCP descriptor paths; `None` when Windows reports no user
     /// data directories, which leaves the relay's own error to answer.
@@ -1695,8 +1894,14 @@ struct BridgeBackend {
     /// `None` when the app's local data directory cannot be resolved; this
     /// bridge then only ever relays.
     settings: Option<HeadlessHostSettings>,
-    host: tokio::sync::Mutex<Option<Arc<HeadlessMcpHost>>>,
+    host: Arc<tokio::sync::Mutex<Option<Arc<HeadlessMcpHost>>>>,
+    host_stopping: Arc<AtomicBool>,
 }
+
+// Software admission/observation limits, not device or OS-cancellation claims.
+static HOST_START_THREADS: qc_native_platform::thread_owner::Budget =
+    qc_native_platform::thread_owner::Budget::new(4);
+const HOST_START_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl BridgeBackend {
     fn new(
@@ -1707,16 +1912,34 @@ impl BridgeBackend {
     ) -> Self {
         Self {
             relay,
+            #[cfg(test)]
+            fixture_dependencies: Mutex::new(std::sync::Weak::new()),
+            #[cfg(test)]
+            host_start_budget: &HOST_START_THREADS,
+            #[cfg(test)]
+            host_start_timeout: HOST_START_TIMEOUT,
+            #[cfg(test)]
+            host_start_hook: None,
+            #[cfg(test)]
+            host_created_hook: None,
+            #[cfg(test)]
+            host_start_attempts: None,
             paths,
             settings,
-            host: tokio::sync::Mutex::new(host.map(Arc::new)),
+            host: Arc::new(tokio::sync::Mutex::new(host.map(Arc::new))),
+            host_stopping: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// The backend of the host this bridge runs, unless it has none or the
     /// user has since turned local MCP off.
     async fn hosted_backend(&self) -> Option<Arc<dyn QcBackend>> {
-        let mut host = self.host.lock().await;
+        if self.host_stopping.load(Ordering::Acquire) {
+            return None;
+        }
+        // A retained native creator owns this slot. A cache lookup must not
+        // wait indefinitely before reaching relay/host_now's bounded path.
+        let mut host = self.host.try_lock().ok()?;
         if host.as_ref().is_some_and(|current| current.is_disabled()) {
             if let Some(stopped) = host.take() {
                 stopped.stop();
@@ -1728,32 +1951,121 @@ impl BridgeBackend {
     /// Become the host, if nobody else is one by now. Serialised by the
     /// `host` lock, so concurrent requests start at most one listener.
     async fn host_now(&self) -> Option<Arc<dyn QcBackend>> {
+        if self.host_stopping.load(Ordering::Acquire) {
+            return None;
+        }
         let (Some(paths), Some(settings)) = (self.paths.clone(), self.settings.clone()) else {
             return None;
         };
+        #[cfg(test)]
+        let (budget, within) = (self.host_start_budget, self.host_start_timeout);
+        #[cfg(not(test))]
+        let (budget, within) = (&HOST_START_THREADS, HOST_START_TIMEOUT);
+        let deadline = std::time::Instant::now() + within;
         // Before waiting for the host lock or a blocking thread; the hosting
         // admission (`attempt_headless_mcp_hosting`) asks again after both.
         if self.user_quit_refusal().is_some() {
             return None;
         }
-        let mut host = self.host.lock().await;
+        let host = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            self.host.clone().lock_owned(),
+        )
+        .await
+        .ok()?;
+        if std::time::Instant::now() >= deadline || self.host_stopping.load(Ordering::Acquire) {
+            return None;
+        }
         if let Some(current) = host.as_ref() {
             return Some(current.backend());
         }
-        let started =
-            tokio::task::spawn_blocking(move || attempt_headless_mcp_hosting(&paths, &settings))
-                .await
-                .ok()
-                .flatten()?;
+        #[cfg(test)]
+        let resource = self
+            .fixture_dependencies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .upgrade();
+        #[cfg(not(test))]
+        let resource = ();
+        #[cfg(test)]
+        let hook = self.host_start_hook.clone();
+        #[cfg(test)]
+        let created_hook = self.host_created_hook.clone();
+        #[cfg(test)]
+        let attempts = self.host_start_attempts.clone();
+        let creation_settings = settings.clone();
+        let stopping = self.host_stopping.clone();
+        let (mut host, started) = match crate::owned_blocking::run_with_resource(
+            "qc-headless-host-start",
+            budget,
+            deadline,
+            resource,
+            move |context| -> Result<_, std::convert::Infallible> {
+                #[cfg(test)]
+                if let Some(hook) = hook {
+                    hook();
+                }
+                // This exact original owns the actual host slot through all
+                // synchronous creation. Caller cancellation cannot release
+                // serialization while started native work is still running.
+                if stopping.load(Ordering::Acquire) || !context.begin_dispatch() {
+                    return Ok(None);
+                }
+                #[cfg(test)]
+                if let Some(attempts) = attempts {
+                    attempts.fetch_add(1, Ordering::AcqRel);
+                }
+                let started = attempt_headless_mcp_hosting(&paths, &creation_settings);
+                #[cfg(test)]
+                if started.is_some() {
+                    if let Some(hook) = created_hook {
+                        hook();
+                    }
+                }
+                // Started synchronous OS work cannot be forcibly canceled.
+                // Its original remains owned; a late result is stopped rather
+                // than adopted by an obsolete caller.
+                if stopping.load(Ordering::Acquire) || !context.current() {
+                    if let Some(started) = started {
+                        started.stop();
+                    }
+                    return Ok(None);
+                }
+                Ok(started.map(|started| (host, started)))
+            },
+        )
+        .await
+        {
+            Ok(Ok(Some(started))) => started,
+            _ => return None,
+        };
+        if std::time::Instant::now() >= deadline
+            || self.host_stopping.load(Ordering::Acquire)
+            || started.is_disabled()
+            || !settings.local_mcp_enabled()
+            || self.user_quit_refusal().is_some()
+        {
+            started.stop();
+            return None;
+        }
         let started = Arc::new(started);
         *host = Some(started.clone());
         Some(started.backend())
     }
 
-    async fn stop_hosting(&self) {
-        if let Some(host) = self.host.lock().await.take() {
+    async fn stop_hosting(&self) -> Result<(), String> {
+        // Irrevocable admission fence, even when synchronous creation cannot
+        // acknowledge shutdown yet. Its exact owned original remains intact.
+        self.host_stopping.store(true, Ordering::Release);
+        let mut slot = self.host.try_lock().map_err(|_| {
+            "Local MCP hosting shutdown is not acknowledged; its exact native original remains owned and retiring".to_string()
+        })?;
+        if let Some(host) = slot.take() {
             host.stop();
         }
+        // Host-slot/fence completion only. Internal listener/refresher
+        // originals keep their existing bounded observations/retained owners.
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1770,6 +2082,11 @@ impl QcBackend for BridgeBackend {
         rpc: &'static str,
         params: Map<String, Value>,
     ) -> Result<Value, BackendError> {
+        if self.host_stopping.load(Ordering::Acquire) {
+            return Err(BackendError::unavailable(
+                "The local MCP bridge is stopping.",
+            ));
+        }
         // A host this bridge already runs answers a resource read from the
         // broker connection it holds, or offline; its gateway decides that
         // under its own lock (`crate::ConnectionUse`).
@@ -1838,6 +2155,17 @@ impl BridgeBackend {
 /// Serves MCP over stdio for a bridge process: a hosting bridge answers from
 /// its own [`HeadlessMcpHost`], a relaying one through [`DesktopBackend`], and
 /// either can become the other's replacement per [`BridgeBackend`].
+fn finish_bridge_shutdown(
+    result: Result<(), String>,
+    stopped: Result<(), String>,
+) -> Result<(), String> {
+    match (result, stopped) {
+        (Ok(()), stopped) => stopped,
+        (Err(primary), Ok(())) => Err(primary),
+        (Err(primary), Err(cleanup)) => Err(format!("{primary}; shutdown: {cleanup}")),
+    }
+}
+
 async fn serve_bridge(
     host: Option<HeadlessMcpHost>,
     settings: Option<HeadlessHostSettings>,
@@ -1944,8 +2272,8 @@ async fn serve_bridge(
         };
         let _ = tokio::time::timeout(Duration::from_millis(500), close).await;
     }
-    backend.stop_hosting().await;
-    result
+    let stopped = backend.stop_hosting().await;
+    finish_bridge_shutdown(result, stopped)
 }
 
 pub fn run() -> Result<(), String> {
@@ -1987,6 +2315,103 @@ fn startup_host(
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct StdioRelease(Option<std::sync::mpsc::Sender<()>>);
+    impl Drop for StdioRelease {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    static RETAINED_STDIO_FIXTURE_THREADS: Mutex<
+        Vec<(std::thread::JoinHandle<()>, StdioFixturePermit)>,
+    > = Mutex::new(Vec::new());
+    static STDIO_FIXTURE_THREADS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    struct StdioFixturePermit;
+    impl StdioFixturePermit {
+        fn acquire() -> Self {
+            let finished = {
+                let mut retained = RETAINED_STDIO_FIXTURE_THREADS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut finished = Vec::new();
+                let mut index = 0;
+                while index < retained.len() {
+                    if qc_native_platform::process::thread_signalled(&retained[index].0) {
+                        finished.push(retained.swap_remove(index));
+                    } else {
+                        index += 1;
+                    }
+                }
+                finished
+            };
+            // Joining and permit release never happen under the registry lock.
+            for (worker, permit) in finished {
+                let _ = worker.join();
+                drop(permit);
+            }
+            STDIO_FIXTURE_THREADS
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count < 16).then_some(count + 1)
+                })
+                .expect(
+                    "STDIO fixture thread budget exhausted; previous exact workers remain owned",
+                );
+            Self
+        }
+    }
+    impl Drop for StdioFixturePermit {
+        fn drop(&mut self) {
+            STDIO_FIXTURE_THREADS.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+    struct StdioFixtureThread {
+        stop: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+        permit: Option<StdioFixturePermit>,
+    }
+    impl StdioFixtureThread {
+        fn finish(&mut self) -> Result<(), String> {
+            self.stop.store(true, Ordering::Release);
+            let Some(worker) = self.worker.take() else {
+                return Ok(());
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !qc_native_platform::process::thread_signalled(&worker)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let permit = self
+                .permit
+                .take()
+                .expect("each admitted fixture worker retains its permit");
+            if qc_native_platform::process::thread_signalled(&worker) {
+                let result = worker
+                    .join()
+                    .map_err(|_| "STDIO fixture worker panicked".into());
+                drop(permit);
+                result
+            } else {
+                RETAINED_STDIO_FIXTURE_THREADS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((worker, permit));
+                Err(
+                    "STDIO fixture worker retirement unknown; exact original thread retained"
+                        .into(),
+                )
+            }
+        }
+    }
+    impl Drop for StdioFixtureThread {
+        fn drop(&mut self) {
+            if let Err(error) = self.finish() {
+                eprintln!("{error}");
+            }
+        }
+    }
 
     #[test]
     fn a_release_bridge_never_publishes_where_the_state_override_points() {
@@ -2071,9 +2496,27 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let recorded = Arc::clone(&seen);
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { return };
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let permit = StdioFixturePermit::acquire();
+        let worker = std::thread::spawn(move || {
+            while !stopping.load(Ordering::Acquire) {
+                let mut stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    }
+                    Err(_) => return,
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
                 let mut buffer = vec![0_u8; 8192];
                 let read = stream.read(&mut buffer).unwrap_or(0);
                 recorded
@@ -2090,6 +2533,11 @@ mod tests {
                 );
             }
         });
+        let mut fixture_worker = StdioFixtureThread {
+            stop,
+            worker: Some(worker),
+            permit: Some(permit),
+        };
         let token = "S".repeat(43);
         let mut published = document(&format!("http://127.0.0.1:{port}/rpc"), &token);
         published.identity_url = Some(format!("http://127.0.0.1:{port}/identity"));
@@ -2106,6 +2554,9 @@ mod tests {
             .await
             .expect_err("a forged proof must stop the request");
         assert!(matches!(outcome, RelayFailure::NoPublisher(_)));
+        fixture_worker
+            .finish()
+            .expect("the exact squatter listener retired");
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "only the identity check was sent: {seen:?}");
         assert!(seen[0].starts_with("POST /identity "), "{}", seen[0]);
@@ -2324,7 +2775,7 @@ mod tests {
     #[test]
     fn the_heartbeat_is_handed_the_diagnosis_rather_than_stderr_taking_it() {
         let directory = fixture_dir("quiet");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let _directory = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let missing = directory.join("nothing-here.json");
 
         // The announcement runs every five seconds forever, so a reader that
@@ -2360,7 +2811,7 @@ mod tests {
     #[test]
     fn a_descriptor_that_stopped_being_refreshed_reads_the_same_at_every_clock() {
         let directory = fixture_dir("stale-key");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let _directory = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let stale = directory.join("stale.json");
         // Refreshed 200s ago against a 150s allowance, and nothing will
         // refresh it again.
@@ -2417,7 +2868,7 @@ mod tests {
     #[test]
     fn an_hour_of_one_abandoned_descriptor_is_not_an_hour_of_lines() {
         let directory = fixture_dir("stale-hour");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let _directory = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let stale = directory.join("stale.json");
         write_descriptor(&stale, 41005, 1_000_000, 4);
         let paths = [stale];
@@ -2446,15 +2897,13 @@ mod tests {
         std::fs::remove_dir_all(directory).expect("remove fixture");
     }
 
-    /// The name libtest registers the re-executed test under, the variable
-    /// that tells a process it is the child, and the line the child writes last.
+    /// The exact ignored child test and the line that proves its body ran.
+    /// An ambient environment flag never selects a child role or skips parent assertions.
     ///
     /// A `--exact` filter that matches nothing runs no tests and still exits 0,
     /// so the parent insists on seeing the last line rather than trusting the
     /// status alone.
-    const STDERR_CHILD_TEST: &str =
-        "local_stdio::tests::the_request_path_alone_reports_the_copy_the_app_abandoned";
-    const STDERR_CHILD_VAR: &str = "QC_REMOTE_LOCAL_MCP_STDERR_CHILD";
+    const STDERR_CHILD_TEST: &str = "local_stdio::tests::stderr_reader_process_fixture";
     const STDERR_CHILD_FINISHED: &str = "the stderr fixture ran to the end";
 
     /// Both readers, over one fixture, in a re-executed child process.
@@ -2470,36 +2919,36 @@ mod tests {
     /// line from it would be written every five seconds for the life of the
     /// host, which is the run this separation exists to prevent.
     #[test]
+    #[ignore = "owned subprocess fixture, invoked only by the_request_path_alone_reports_the_copy_the_app_abandoned"]
+    fn stderr_reader_process_fixture() {
+        // The child exclusively allocates and owns this scratch root.
+        let directory = fixture_dir("stderr-child");
+        let _directory = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let live = directory.join("live.json");
+        let abandoned = directory.join("abandoned.json");
+        write_descriptor(&live, 41006, 1_190_000, 4);
+        write_descriptor(&abandoned, 41007, 1_000_000, 4);
+        let paths = [live, abandoned];
+
+        let announced = heartbeat_descriptor_from_paths(&paths, 1_200_000)
+            .expect("the refreshed descriptor is still usable");
+        assert_eq!(announced.rpc_url.as_str(), "http://127.0.0.1:41006/rpc");
+        let requested = descriptor_from_paths_at(&paths, 1_200_000)
+            .expect("the refreshed descriptor is still usable");
+        assert_eq!(requested.rpc_url.as_str(), "http://127.0.0.1:41006/rpc");
+
+        std::fs::remove_dir_all(directory).expect("remove fixture");
+        eprintln!("{STDERR_CHILD_FINISHED}");
+    }
+
+    #[test]
     fn the_request_path_alone_reports_the_copy_the_app_abandoned() {
-        if std::env::var_os(STDERR_CHILD_VAR).is_some() {
-            // `fixture_dir` keys on the process id, so this is the child's own
-            // directory and the child is the one that removes it.
-            let directory = fixture_dir("stderr-child");
-            let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-            let live = directory.join("live.json");
-            let abandoned = directory.join("abandoned.json");
-            write_descriptor(&live, 41006, 1_190_000, 4);
-            write_descriptor(&abandoned, 41007, 1_000_000, 4);
-            let paths = [live, abandoned];
-
-            let announced = heartbeat_descriptor_from_paths(&paths, 1_200_000)
-                .expect("the refreshed descriptor is still usable");
-            assert_eq!(announced.rpc_url.as_str(), "http://127.0.0.1:41006/rpc");
-            let requested = descriptor_from_paths_at(&paths, 1_200_000)
-                .expect("the refreshed descriptor is still usable");
-            assert_eq!(requested.rpc_url.as_str(), "http://127.0.0.1:41006/rpc");
-
-            std::fs::remove_dir_all(directory).expect("remove fixture");
-            eprintln!("{STDERR_CHILD_FINISHED}");
-            return;
-        }
-
-        let output = std::process::Command::new(
-            std::env::current_exe().expect("this test binary re-executes itself"),
+        let output = crate::tests::run_owned_test_binary_fixture(
+            std::process::Command::new(
+                std::env::current_exe().expect("this test binary re-executes itself"),
+            )
+            .args(["--exact", STDERR_CHILD_TEST, "--ignored", "--nocapture"]),
         )
-        .args(["--exact", STDERR_CHILD_TEST, "--nocapture"])
-        .env(STDERR_CHILD_VAR, "1")
-        .output()
         .expect("re-execute this test binary as a child");
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         assert!(
@@ -2569,7 +3018,7 @@ mod tests {
     #[test]
     fn a_descriptor_the_app_stopped_refreshing_is_not_used() {
         let directory = fixture_dir("expired");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let _directory = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let expired = directory.join("expired.json");
         // Refreshed 200s ago against a 150s allowance.
         write_descriptor(&expired, 41000, 1_000_000, 4);
@@ -2583,7 +3032,7 @@ mod tests {
     #[test]
     fn a_live_older_instance_outranks_an_expired_newer_one() {
         let directory = fixture_dir("outranks");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let _directory = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let live = directory.join("live.json");
         let expired = directory.join("expired.json");
         write_descriptor(&live, 41001, 1_190_000, 4);
@@ -2598,7 +3047,7 @@ mod tests {
     #[test]
     fn a_release_that_never_refreshes_is_exempt_from_expiry() {
         let directory = fixture_dir("legacy");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let _directory = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let legacy = directory.join("legacy.json");
         // descriptorRevision 3 stamps once at startup, so age says nothing.
         write_descriptor(&legacy, 41003, 1_000, 3);
@@ -2612,7 +3061,7 @@ mod tests {
     #[test]
     fn an_absent_app_is_reported_without_naming_the_users_filesystem() {
         let directory = fixture_dir("absent");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let _directory = crate::tests::RemoveDirOnDrop::new(directory.clone());
         let missing = directory.join("nothing-here.json");
 
         let error = descriptor_from_paths_at(&[missing], 1_000)
@@ -2653,6 +3102,69 @@ mod tests {
             "transport wording must not reach the user"
         );
         assert!(mapped.message.contains("Start QC Remote"));
+    }
+
+    #[tokio::test]
+    async fn admitted_http_mutations_with_lost_or_untyped_answers_are_not_retryable() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        struct Server(tokio::task::JoinHandle<()>);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        for response in [
+            "",
+            "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{",
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\nConnection: close\r\n\r\nbad",
+            "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{\"ok\":false}",
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let applied = effects.clone();
+            let mut server = Server(tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut length = None;
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                    if line == "\r\n" { break; }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = Some(value.trim().parse::<usize>().unwrap());
+                    }
+                }
+                let length = length.unwrap();
+                assert!(length < 4096);
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).await.unwrap();
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(request["rpc"], "device.setTempo");
+                assert_eq!(request["params"]["bpm"], 120);
+                applied.fetch_add(1, Ordering::SeqCst);
+                reader.get_mut().write_all(response.as_bytes()).await.unwrap();
+            }));
+            let endpoint = validate_descriptor(document(
+                &format!("http://{address}/rpc"), &"T".repeat(43)
+            )).unwrap();
+            let backend = DesktopBackend {
+                client: reqwest::Client::builder().timeout(Duration::from_secs(2)).build().unwrap(),
+                session_id: None,
+            };
+            let params = serde_json::json!({"bpm":120}).as_object().unwrap().clone();
+            let failure = match backend.send(endpoint, "device.setTempo", params).await {
+                Err(failure) => failure,
+                Ok(value) => panic!("unexpected successful reply: {value}"),
+            };
+            let RelayFailure::Refused(error) = failure else { panic!("admitted write must not fall back"); };
+            assert!(!error.retryable);
+            assert_eq!(error.detail_code.as_deref(), Some("WRITE_OUTCOME_AMBIGUOUS"));
+            assert_eq!(error.details.as_ref().unwrap()["requestSent"], true);
+            assert_eq!(effects.load(Ordering::SeqCst), 1);
+            tokio::time::timeout(Duration::from_secs(2), &mut server.0).await.unwrap().unwrap();
+        }
     }
 
     /// I4: a connection that never opened delivered nothing, so another host
@@ -2712,12 +3224,7 @@ mod tests {
 
     #[test]
     fn descriptor_falls_back_from_a_stale_copy_to_a_valid_copy() {
-        let directory = std::env::temp_dir().join(format!(
-            "qc-native-local-descriptor-test-{}",
-            std::process::id()
-        ));
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        std::fs::create_dir_all(&directory).expect("descriptor fixture directory");
+        let (directory, _directory) = exclusive_fixture_dir("descriptor-fallback");
         let stale = directory.join("stale.json");
         let current = directory.join("current.json");
         std::fs::write(&stale, b"not JSON").expect("stale descriptor");
@@ -2739,12 +3246,7 @@ mod tests {
 
     #[test]
     fn descriptor_prefers_the_newest_valid_mirror_over_path_order() {
-        let directory = std::env::temp_dir().join(format!(
-            "qc-native-local-descriptor-freshness-test-{}",
-            std::process::id()
-        ));
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        std::fs::create_dir_all(&directory).expect("descriptor fixture directory");
+        let (directory, _directory) = exclusive_fixture_dir("descriptor-freshness");
         let old_primary = directory.join("primary.json");
         let current_mirror = directory.join("mirror.json");
         std::fs::write(
@@ -2775,6 +3277,110 @@ mod tests {
         assert_eq!(endpoint.rpc_url.as_str(), "http://127.0.0.1:53343/rpc");
         assert_eq!(endpoint.bearer_token, "B".repeat(43));
         std::fs::remove_dir_all(directory).expect("remove descriptor fixture");
+    }
+
+    #[test]
+    fn oversized_descriptor_is_refused_before_json_selection_and_valid_mirror_survives() {
+        let (directory, _owned) = exclusive_fixture_dir("oversized-discovery");
+        let oversized = directory.join("oversized.json");
+        let valid = directory.join("valid.json");
+        write_descriptor(&oversized, 41004, 900, 4);
+        write_descriptor(&valid, 41005, 800, 4);
+        let mut bytes = std::fs::read(&oversized).unwrap();
+        bytes.resize(128 * 1024 + 1, b' ');
+        // Syntactically valid JSON: the failure is the byte budget, not parser damage.
+        assert!(serde_json::from_slice::<Value>(&bytes).is_ok());
+        std::fs::write(&oversized, &bytes).unwrap();
+        assert!(choose_descriptor(std::slice::from_ref(&oversized), 1000).is_err());
+        let selected = descriptor_from_paths_at(&[oversized.clone(), valid], 1000).unwrap();
+        assert_eq!(selected.rpc_url.port(), Some(41005));
+        assert_eq!(
+            std::fs::read(oversized).unwrap(),
+            bytes,
+            "refusal never edits discovery bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn actual_local_rpc_reply_refuses_growing_json_before_eof_without_fallback_or_replay() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        struct Finished(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for Finished {
+            fn drop(&mut self) {
+                if let Some(done) = self.0.take() {
+                    let _ = done.send(());
+                }
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let endpoint =
+            validate_descriptor(document(&format!("http://{address}/rpc"), &"T".repeat(43)))
+                .unwrap();
+        let backend = DesktopBackend {
+            client: crate::loopback_http::loopback_client_builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .unwrap(),
+            session_id: None,
+        };
+        let (done, observed) = tokio::sync::oneshot::channel();
+        let result = {
+            // No spawned/detachable server task: select owns the real socket
+            // future on result, timeout, cancellation, and assertion unwind.
+            let server = async move {
+                let _finished = Finished(Some(done));
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 4096];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await;
+                let prefix = b"{\"ok\":true,\"result\":{}}";
+                let mut body = prefix.to_vec();
+                body.resize(16 * 1024 * 1024 + 1, b' ');
+                for chunk in body.chunks(16 * 1024) {
+                    if socket
+                        .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    if socket.write_all(chunk).await.is_err() {
+                        break;
+                    }
+                    if socket.write_all(b"\r\n").await.is_err() {
+                        break;
+                    }
+                }
+                // Deliberately no terminal chunk/EOF; rejection must be byte-driven.
+                std::future::pending::<()>().await;
+            };
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    biased;
+                    () = server => unreachable!("controlled socket remains open until dropped"),
+                    result = backend.send(endpoint, "device.setTempo", Map::new()) => result,
+                }
+            })
+            .await
+        };
+        tokio::time::timeout(Duration::from_secs(2), observed)
+            .await
+            .unwrap()
+            .unwrap();
+        let failure = match result.expect("oversized reply waited for EOF/request deadline") {
+            Err(error) => error,
+            Ok(value) => panic!("oversized reply accepted: {value}"),
+        };
+        let RelayFailure::Refused(error) = failure else {
+            panic!("admitted mutation must never select another publisher");
+        };
+        assert!(!error.retryable);
+        assert_eq!(
+            error.detail_code.as_deref(),
+            Some("WRITE_OUTCOME_AMBIGUOUS")
+        );
+        assert_eq!(error.details.as_ref().unwrap()["requestSent"], true);
     }
 
     /// Settings for a headless host that touch nothing of the user's: the
@@ -2809,16 +3415,13 @@ mod tests {
                 }
             }),
             refresh_interval: Duration::from_millis(20),
+            refresh_budget: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             auto_connect: false,
         }
     }
 
     fn full_access() -> Arc<Mutex<AccessMode>> {
         Arc::new(Mutex::new(AccessMode::Full))
-    }
-
-    fn fresh_fixture_dir(name: &str) -> PathBuf {
-        fixture_dir(name)
     }
 
     fn wait_for(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
@@ -2848,62 +3451,73 @@ mod tests {
 
     #[test]
     fn empty_background_host_does_not_attach_and_passive_presence_honors_explicit_release() {
-        let directory = fresh_fixture_dir("background-no-client");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let device = HeadlessDeviceAdapter::new(directory.join("device-broker.json"), false);
-        device.release_when_unused();
-        assert!(device.gateway.lock().unwrap().process.is_none());
-        device.gateway.lock().unwrap().intentional_release = true;
-        device.retain_while_used();
-        let gateway = device.gateway.lock().unwrap();
-        assert!(
-            gateway.intentional_release,
-            "passive presence cannot undo a tray release"
-        );
-        assert!(
-            gateway.process.is_none(),
-            "no broker spawned from passive presence after release"
-        );
-        assert!(!directory.join("device-broker.json").exists());
-        drop(gateway);
-        std::fs::remove_dir_all(directory).unwrap();
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture_with_mode("background-no-client", cleanup, full_access());
+            let _ = (&settings, &runtime, &bridges);
+            let device = HeadlessDeviceAdapter::new(directory.join("device-broker.json"), false);
+            arm_direct_fixture_device(cleanup, &device);
+            device.release_when_unused();
+            assert!(device.gateway.lock().unwrap().process.is_none());
+            device.gateway.lock().unwrap().intentional_release = true;
+            device.retain_while_used();
+            let gateway = device.gateway.lock().unwrap();
+            assert!(
+                gateway.intentional_release,
+                "passive presence cannot undo a tray release"
+            );
+            assert!(
+                gateway.process.is_none(),
+                "no broker spawned from passive presence after release"
+            );
+            assert!(!directory.join("device-broker.json").exists());
+            drop(gateway);
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     #[test]
     fn active_background_client_retains_one_shared_participant_and_idle_drops_it() {
-        let _serialize = crate::tests::serialize_real_broker_test();
-        let directory = fresh_fixture_dir("background-participant");
-        let descriptor = crate::device_broker_descriptor::device_broker_descriptor_path(&directory);
-        // Bound before the adapter, so it drops after it: the broker can end
-        // through its own grace period, then the directory goes.
-        let _cleanup = crate::tests::armed_broker_teardown(&descriptor);
-        let device = HeadlessDeviceAdapter::new(descriptor, false);
-        device.retain_while_used();
-        let pid = device
-            .gateway
-            .lock()
-            .unwrap()
-            .process
-            .as_ref()
-            .expect("active client attaches")
-            .broker_pid;
-        device.retain_while_used();
-        assert_eq!(
-            device
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture_with_mode("background-participant", cleanup, full_access());
+            let _ = (&settings, &runtime, &bridges);
+            let descriptor =
+                crate::device_broker_descriptor::device_broker_descriptor_path(&directory);
+            let device = HeadlessDeviceAdapter::new(descriptor, false);
+            #[cfg(not(windows))]
+            let portable_originals = crate::tests::arm_mcp_fixture_children(cleanup);
+            arm_direct_fixture_device(cleanup, &device);
+            device.retain_while_used();
+            let pid = device
                 .gateway
                 .lock()
                 .unwrap()
                 .process
                 .as_ref()
-                .unwrap()
-                .broker_pid,
-            pid
-        );
-        device.release_when_unused();
-        assert!(
-            device.gateway.lock().unwrap().process.is_none(),
-            "listener alone cannot retain a broker participant"
-        );
+                .expect("active client attaches")
+                .broker_pid;
+            device.retain_while_used();
+            assert_eq!(
+                device
+                    .gateway
+                    .lock()
+                    .unwrap()
+                    .process
+                    .as_ref()
+                    .unwrap()
+                    .broker_pid,
+                pid
+            );
+            #[cfg(not(windows))]
+            capture_portable_direct_originals(&device, &portable_originals);
+            device.release_when_unused();
+            assert!(
+                device.gateway.lock().unwrap().process.is_none(),
+                "listener alone cannot retain a broker participant"
+            );
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// Black-box proof that a headless bridge process with no live publisher
@@ -2912,25 +3526,27 @@ mod tests {
     /// internal state only this bridge's own code understands.
     #[test]
     fn a_bridge_process_hosts_mcp_itself_when_no_publisher_is_live() {
-        let directory = fresh_fixture_dir("headless-host");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        assert!(
-            descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
-            "precondition: nothing is publishing yet"
-        );
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture_with_mode("headless-host", cleanup, full_access());
+            let _ = (&settings, &runtime, &bridges);
+            let paths = vec![directory.join(STATE_FILE)];
+            assert!(
+                descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
+                "precondition: nothing is publishing yet"
+            );
 
-        let hosted =
-            attempt_headless_mcp_hosting(&paths, &test_settings(&directory, full_access()))
+            let hosted = attempt_headless_mcp_hosting(&paths, &settings)
                 .expect("a bridge process with no live publisher must become one");
 
-        // It must now be discoverable exactly like a GUI-hosted publisher.
-        let discovered = descriptor_from_paths_at(&paths, now_unix_ms())
-            .expect("the newly self-hosted endpoint must be discoverable");
-        assert_eq!(discovered.instance_id, hosted.instance_id());
+            // It must now be discoverable exactly like a GUI-hosted publisher.
+            let discovered = descriptor_from_paths_at(&paths, now_unix_ms())
+                .expect("the newly self-hosted endpoint must be discoverable");
+            assert_eq!(discovered.instance_id, hosted.instance_id());
 
-        hosted.stop();
-        std::fs::remove_dir_all(directory).expect("remove fixture");
+            hosted.stop();
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// Two processes racing to self-host: exactly one becomes the publisher,
@@ -2940,30 +3556,32 @@ mod tests {
     /// rather than reinventing the race here.
     #[test]
     fn a_bridge_process_falls_back_to_relaying_when_it_loses_the_hosting_race() {
-        let directory = fresh_fixture_dir("headless-race");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture_with_mode("headless-race", cleanup, full_access());
+            let _ = (&settings, &runtime, &bridges);
+            let paths = vec![directory.join(STATE_FILE)];
 
-        let first =
-            attempt_headless_mcp_hosting(&paths, &settings).expect("the first process hosts");
+            let first =
+                attempt_headless_mcp_hosting(&paths, &settings).expect("the first process hosts");
 
-        // A second process attempting the same thing must not also become a
-        // publisher; it must detect the live one and behave as an ordinary
-        // relay client instead.
-        let second_attempt = attempt_headless_mcp_hosting(&paths, &settings);
-        assert!(
-            second_attempt.is_none(),
-            "a second process must not also host when one is already live"
-        );
+            // A second process attempting the same thing must not also become a
+            // publisher; it must detect the live one and behave as an ordinary
+            // relay client instead.
+            let second_attempt = attempt_headless_mcp_hosting(&paths, &settings);
+            assert!(
+                second_attempt.is_none(),
+                "a second process must not also host when one is already live"
+            );
 
-        // The first is still the one and only publisher.
-        let discovered = descriptor_from_paths_at(&paths, now_unix_ms())
-            .expect("the first process's endpoint is still discoverable");
-        assert_eq!(discovered.instance_id, first.instance_id());
+            // The first is still the one and only publisher.
+            let discovered = descriptor_from_paths_at(&paths, now_unix_ms())
+                .expect("the first process's endpoint is still discoverable");
+            assert_eq!(discovered.instance_id, first.instance_id());
 
-        first.stop();
-        std::fs::remove_dir_all(directory).expect("remove fixture");
+            first.stop();
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// C1: the headless host's first real device call must reach the shared
@@ -2973,128 +3591,131 @@ mod tests {
     /// which a `--local-mcp-bridge` process never runs.
     #[test]
     fn a_headless_hosts_device_calls_reach_the_shared_broker() {
-        let _serialize = crate::tests::serialize_real_broker_test();
-        let directory = fresh_fixture_dir("headless-shared-broker");
-        let paths = vec![directory.join(STATE_FILE)];
-        // Bound before the host, so it drops after it: the broker can end
-        // through its own grace period, then the directory goes.
-        let _cleanup = crate::tests::armed_broker_teardown(
-            &crate::device_broker_descriptor::device_broker_descriptor_path(&directory),
-        );
-        let hosted =
-            attempt_headless_mcp_hosting(&paths, &test_settings(&directory, full_access()))
-                .expect("the bridge hosts");
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture_with_mode("headless-shared-broker", cleanup, full_access());
+            let _ = (&settings, &runtime, &bridges);
+            let paths = vec![directory.join(STATE_FILE)];
+            let hosted = attempt_headless_mcp_hosting(&paths, &settings).expect("the bridge hosts");
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let status = runtime
-            .block_on(
-                hosted
-                    .adapter
-                    .invoke(crate::rpc::RUNTIME_STATUS, serde_json::json!({})),
+            let status = runtime
+                .block_on(
+                    hosted
+                        .adapter
+                        .invoke(crate::rpc::RUNTIME_STATUS, serde_json::json!({})),
+                )
+                .expect("the first device call is answered");
+            assert!(status.get("gatewayApiVersion").is_some(), "{status}");
+
+            let gateway = hosted.device.gateway.lock().expect("gateway");
+            let process = gateway.process.as_ref().expect("the call started a broker");
+            assert!(
+                process.uses_shared_broker(),
+                "the call must go through the shared broker, not a private child"
+            );
+            let published = crate::device_broker_descriptor::read_descriptor(
+                &crate::device_broker_descriptor::device_broker_descriptor_path(&directory),
+                crate::device_broker_descriptor::unix_time_ms(),
             )
-            .expect("the first device call is answered");
-        assert!(status.get("gatewayApiVersion").is_some(), "{status}");
+            .expect("the broker is published where every window looks for it");
+            assert_eq!(published.process_id, process.broker_pid);
+            drop(gateway);
 
-        let gateway = hosted.device.gateway.lock().expect("gateway");
-        let process = gateway.process.as_ref().expect("the call started a broker");
-        assert!(
-            process.uses_shared_broker(),
-            "the call must go through the shared broker, not a private child"
-        );
-        let published = crate::device_broker_descriptor::read_descriptor(
-            &crate::device_broker_descriptor::device_broker_descriptor_path(&directory),
-            crate::device_broker_descriptor::unix_time_ms(),
-        )
-        .expect("the broker is published where every window looks for it");
-        assert_eq!(published.process_id, process.broker_pid);
-        drop(gateway);
-
-        hosted.stop();
+            hosted.stop();
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// C2: a user who switched local MCP off gets no headless host either.
     #[test]
     fn a_bridge_does_not_host_while_local_mcp_is_switched_off() {
-        let directory = fresh_fixture_dir("headless-switched-off");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        local_access::store_local_mcp_enabled_in(&directory, false).expect("preference");
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture_with_mode("headless-switched-off", cleanup, full_access());
+            let _ = (&settings, &runtime, &bridges);
+            let paths = vec![directory.join(STATE_FILE)];
+            local_access::store_local_mcp_enabled_in(&directory, false).expect("preference");
 
-        assert!(
-            attempt_headless_mcp_hosting(&paths, &test_settings(&directory, full_access()))
-                .is_none(),
-            "local MCP is off, so nothing may be served"
-        );
-        assert!(
-            descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
-            "and nothing is published"
-        );
-        std::fs::remove_dir_all(directory).expect("remove fixture");
+            assert!(
+                attempt_headless_mcp_hosting(&paths, &settings).is_none(),
+                "local MCP is off, so nothing may be served"
+            );
+            assert!(
+                descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
+                "and nothing is published"
+            );
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// C2: the host enforces the access level the user chose, not full
     /// access, and follows a later change made in a window.
     #[test]
     fn a_headless_host_enforces_and_follows_the_persisted_access_level() {
-        let directory = fresh_fixture_dir("headless-access");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        let mode = Arc::new(Mutex::new(AccessMode::ReadOnly));
-        let hosted = attempt_headless_mcp_hosting(&paths, &test_settings(&directory, mode.clone()))
-            .expect("the bridge hosts");
-        assert_eq!(*hosted.access.borrow(), AccessMode::ReadOnly);
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let mode = Arc::new(Mutex::new(AccessMode::ReadOnly));
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture_with_mode("headless-access", cleanup, mode.clone());
+            let _ = (&settings, &runtime, &bridges);
+            let paths = vec![directory.join(STATE_FILE)];
+            let hosted = attempt_headless_mcp_hosting(&paths, &settings).expect("the bridge hosts");
+            assert_eq!(*hosted.access.borrow(), AccessMode::ReadOnly);
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let refused = runtime
-            .block_on(
-                hosted
-                    .backend()
-                    .request(&local_route(), WRITE_RPC, Map::new()),
-            )
-            .expect_err("read-only access refuses a write");
-        assert_eq!(refused.code, "forbidden");
+            let refused = runtime
+                .block_on(
+                    hosted
+                        .backend()
+                        .request(&local_route(), WRITE_RPC, Map::new()),
+                )
+                .expect_err("read-only access refuses a write");
+            assert_eq!(refused.code, "forbidden");
 
-        *mode.lock().unwrap() = AccessMode::Full;
-        assert!(
-            wait_for(Duration::from_secs(5), || *hosted.access.borrow()
-                == AccessMode::Full),
-            "a change the user makes later reaches the running host"
-        );
-        hosted.stop();
-        std::fs::remove_dir_all(directory).expect("remove fixture");
+            *mode.lock().unwrap() = AccessMode::Full;
+            assert!(
+                wait_for(Duration::from_secs(5), || *hosted.access.borrow()
+                    == AccessMode::Full),
+                "a change the user makes later reaches the running host"
+            );
+            hosted.stop();
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// C2: switching local MCP off while a headless host serves stops it and
     /// unpublishes it, as the switch does for a window's own listener.
     #[test]
     fn switching_local_mcp_off_stops_a_running_headless_host() {
-        let directory = fresh_fixture_dir("headless-switch-off-later");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        let hosted =
-            attempt_headless_mcp_hosting(&paths, &test_settings(&directory, full_access()))
-                .expect("the bridge hosts");
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) = arm_legacy_mcp_fixture_with_mode(
+                "headless-switch-off-later",
+                cleanup,
+                full_access(),
+            );
+            let _ = (&settings, &runtime, &bridges);
+            let paths = vec![directory.join(STATE_FILE)];
+            let hosted = attempt_headless_mcp_hosting(&paths, &settings).expect("the bridge hosts");
 
-        local_access::store_local_mcp_enabled_in(&directory, false).expect("preference");
-        assert!(
-            wait_for(Duration::from_secs(5), || hosted.is_disabled()),
-            "the host notices the switch"
-        );
-        // `is_disabled()` flips in memory before the unpublish (a file
-        // removal) necessarily lands on disk - under heavy disk contention
-        // (e.g. many concurrent test runs on the same machine) there is a
-        // brief window where the flag is set but the descriptor file has not
-        // been removed yet. Poll rather than check once.
-        assert!(
-            wait_for(Duration::from_secs(5), || descriptor_from_paths_at(
-                &paths,
-                now_unix_ms()
-            )
-            .is_err()),
-            "and is no longer published"
-        );
-        hosted.stop();
-        std::fs::remove_dir_all(directory).expect("remove fixture");
+            local_access::store_local_mcp_enabled_in(&directory, false).expect("preference");
+            assert!(
+                wait_for(Duration::from_secs(5), || hosted.is_disabled()),
+                "the host notices the switch"
+            );
+            // `is_disabled()` flips in memory before the unpublish (a file
+            // removal) necessarily lands on disk - under heavy disk contention
+            // (e.g. many concurrent test runs on the same machine) there is a
+            // brief window where the flag is set but the descriptor file has not
+            // been removed yet. Poll rather than check once.
+            assert!(
+                wait_for(Duration::from_secs(5), || descriptor_from_paths_at(
+                    &paths,
+                    now_unix_ms()
+                )
+                .is_err()),
+                "and is no longer published"
+            );
+            hosted.stop();
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// `/health` and the relay probe clones of one adapter. A read that
@@ -3118,6 +3739,7 @@ mod tests {
         let released_by_safety_net = Arc::new(AtomicBool::new(false));
         let (entered_tx, entered) = std::sync::mpsc::channel();
         let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let _release_on_unwind = StdioRelease(Some(release.clone()));
         let (entered_tx, release_rx) = (Mutex::new(entered_tx), Mutex::new(Some(release_rx)));
         let (counted, safety_net) = (probes.clone(), released_by_safety_net.clone());
         let adapter = HeadlessDeviceAdapter::new(std::env::temp_dir().join("unused.json"), false)
@@ -3181,6 +3803,7 @@ mod tests {
             .expect("runtime");
         let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let _release_on_unwind = StdioRelease(Some(release.clone()));
         let release_rx = Mutex::new(release_rx);
         let counted = probes.clone();
         let adapter = HeadlessDeviceAdapter::new(std::env::temp_dir().join("unused.json"), false)
@@ -3254,15 +3877,23 @@ mod tests {
             let busy = adapter.gateway.clone();
             let (held_tx, held) = std::sync::mpsc::channel();
             let (release_tx, release) = std::sync::mpsc::channel::<()>();
+            let permit = StdioFixturePermit::acquire();
             let holder = std::thread::spawn(move || {
                 let _guard = busy.lock().expect("gateway");
                 held_tx.send(()).expect("held");
-                let _ = release.recv();
+                let _ = release.recv_timeout(Duration::from_secs(30));
             });
-            held.recv().expect("the gateway is busy");
+            let mut holder = StdioFixtureThread {
+                stop: Arc::new(AtomicBool::new(false)),
+                worker: Some(holder),
+                permit: Some(permit),
+            };
+            let _release_on_unwind = StdioRelease(Some(release_tx.clone()));
+            held.recv_timeout(Duration::from_secs(2))
+                .expect("the gateway is busy");
             let observed = runtime.block_on(adapter.readiness());
             release_tx.send(()).expect("release");
-            holder.join().expect("holder");
+            holder.finish().expect("holder");
             assert_eq!(observed == HostReadiness::Ready, ready, "{observed:?}");
             assert_eq!(asked.load(Ordering::SeqCst), 1, "the broker was asked");
         }
@@ -3276,78 +3907,104 @@ mod tests {
         let busy = adapter.gateway.clone();
         let (held_tx, held) = std::sync::mpsc::channel();
         let (release_tx, release) = std::sync::mpsc::channel::<()>();
+        let holder_permit = StdioFixturePermit::acquire();
         let holder = std::thread::spawn(move || {
             let _guard = busy.lock().expect("gateway");
             held_tx.send(()).expect("held");
-            let _ = release.recv();
+            let _ = release.recv_timeout(Duration::from_secs(30));
         });
-        held.recv().expect("the gateway is busy");
+        let mut holder = StdioFixtureThread {
+            stop: Arc::new(AtomicBool::new(false)),
+            worker: Some(holder),
+            permit: Some(holder_permit),
+        };
+        let release_on_unwind = StdioRelease(Some(release_tx.clone()));
+        held.recv_timeout(Duration::from_secs(2))
+            .expect("the gateway is busy");
 
         // On a thread of its own: a probe that does block would block the
         // runtime driving it too, and no async timeout could then fire.
         let (answered_tx, answered) = std::sync::mpsc::channel();
+        let probe_permit = StdioFixturePermit::acquire();
         let probe = std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().expect("runtime");
             let _ = answered_tx.send(runtime.block_on(adapter.ready()));
         });
+        let mut probe = StdioFixtureThread {
+            stop: Arc::new(AtomicBool::new(false)),
+            worker: Some(probe),
+            permit: Some(probe_permit),
+        };
+        // Release the held lock BEFORE either probe/holder retirement on an
+        // assertion unwind; moving this guard changes its lexical drop order.
+        let _release_on_unwind = release_on_unwind;
         assert!(
             answered.recv_timeout(Duration::from_secs(2)).is_ok(),
             "the probe answered while the gateway was busy"
         );
 
         release_tx.send(()).expect("release");
-        holder.join().expect("holder");
-        probe.join().expect("probe");
+        holder.finish().expect("holder");
+        probe.finish().expect("probe");
     }
 
     /// I4: a bridge that was relaying to another headless host must take over
     /// when that host goes away, not be stranded with nobody to relay to.
     #[test]
     fn a_relaying_bridge_hosts_itself_once_the_publisher_it_used_is_gone() {
-        let directory = fresh_fixture_dir("headless-takeover");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, Arc::new(Mutex::new(AccessMode::ReadOnly)));
-        let first = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge A hosts");
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) = arm_legacy_mcp_fixture_with_mode(
+                "headless-takeover",
+                cleanup,
+                Arc::new(Mutex::new(AccessMode::ReadOnly)),
+            );
+            let _ = (&settings, &runtime, &bridges);
+            let paths = vec![directory.join(STATE_FILE)];
+            let first = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge A hosts");
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        // Bridge B, relaying to A through the same descriptor paths.
-        let bridge = BridgeBackend::new(
-            DesktopBackend {
-                client: reqwest::Client::new(),
-                session_id: None,
-            },
-            Some(paths.clone()),
-            Some(settings.clone()),
-            None,
-        );
-        let relayed = runtime
-            .block_on(bridge.request(&local_route(), WRITE_RPC, Map::new()))
-            .expect_err("A answers, and read-only access refuses the write");
-        assert_eq!(relayed.code, "forbidden", "{}", relayed.message);
-        assert!(
-            !runtime.block_on(bridge.is_hosting()),
-            "B relays while A hosts"
-        );
+            // Bridge B, relaying to A through the same descriptor paths.
+            let bridge = keep_mcp_bridge(
+                &bridges,
+                Arc::new(BridgeBackend::new(
+                    DesktopBackend {
+                        client: reqwest::Client::new(),
+                        session_id: None,
+                    },
+                    Some(paths.clone()),
+                    Some(settings.clone()),
+                    None,
+                )),
+            );
+            let relayed = runtime
+                .block_on(bridge.request(&local_route(), WRITE_RPC, Map::new()))
+                .expect_err("A answers, and read-only access refuses the write");
+            assert_eq!(relayed.code, "forbidden", "{}", relayed.message);
+            assert!(
+                !runtime.block_on(bridge.is_hosting()),
+                "B relays while A hosts"
+            );
 
-        // A's MCP client closes it.
-        first.stop();
-        assert!(descriptor_from_paths_at(&paths, now_unix_ms()).is_err());
+            // A's MCP client closes it.
+            first.stop();
+            assert!(descriptor_from_paths_at(&paths, now_unix_ms()).is_err());
 
-        let answered = runtime
-            .block_on(bridge.request(&local_route(), WRITE_RPC, Map::new()))
-            .expect_err("B answers now, still under read-only access");
-        assert_eq!(answered.code, "forbidden", "{}", answered.message);
-        assert!(
-            runtime.block_on(bridge.is_hosting()),
-            "with nobody publishing, B became the host itself"
-        );
-        let discovered = descriptor_from_paths_at(&paths, now_unix_ms())
-            .expect("and it is discoverable in turn");
-        assert_ne!(discovered.instance_id, first.instance_id());
+            let answered = runtime
+                .block_on(bridge.request(&local_route(), WRITE_RPC, Map::new()))
+                .expect_err("B answers now, still under read-only access");
+            assert_eq!(answered.code, "forbidden", "{}", answered.message);
+            assert!(
+                runtime.block_on(bridge.is_hosting()),
+                "with nobody publishing, B became the host itself"
+            );
+            let discovered = descriptor_from_paths_at(&paths, now_unix_ms())
+                .expect("and it is discoverable in turn");
+            assert_ne!(discovered.instance_id, first.instance_id());
 
-        runtime.block_on(bridge.stop_hosting());
-        std::fs::remove_dir_all(directory).expect("remove fixture");
+            runtime
+                .block_on(bridge.stop_hosting())
+                .expect("host slot retired");
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// I5: a headless host has no window to ask for the device session, so
@@ -3444,15 +4101,384 @@ mod tests {
     /// initialize handshake. A resource read therefore reaches `backend`
     /// inside the very `as_resource_read` scope `QcMcp::read_resource`
     /// enters, and a tool call reaches it outside any.
-    async fn mcp_exchange(backend: Arc<dyn QcBackend>, requests: &[Value]) -> Vec<Value> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        let server = QcMcp::for_route(backend, local_route());
+    static MCP_TEST_ACTORS: qc_native_platform::thread_owner::Budget =
+        qc_native_platform::thread_owner::Budget::new(64);
+    struct McpTestActor {
+        stop: watch::Sender<bool>,
+        task: Option<qc_native_platform::thread_owner::Owned>,
+    }
+    impl McpTestActor {
+        fn stop_within(&mut self, within: Duration) -> Result<(), String> {
+            let _ = self.stop.send(true);
+            let joined = self
+                .task
+                .as_mut()
+                .is_none_or(|task| task.wait_within(within));
+            if joined {
+                self.task.take();
+                Ok(())
+            } else {
+                Err("MCP fixture retirement is unknown; exact original, attached resource, and admission remain retained".into())
+            }
+        }
+    }
+    impl Drop for McpTestActor {
+        fn drop(&mut self) {
+            let _ = self.stop.send(true);
+            // Owned retains the exact unresolved original and its resource;
+            // never abort the outer await that owns rmcp's private inner join.
+        }
+    }
+    fn start_mcp_test_actor(
+        backend: Arc<dyn QcBackend>,
+        budget: &'static qc_native_platform::thread_owner::Budget,
+        resource: impl Send + 'static,
+        after_runtime: impl FnOnce() + Send + 'static,
+    ) -> Result<(McpTestActor, tokio::io::DuplexStream), String> {
+        let permit = budget.reserve()?;
         let (server_io, client_io) = tokio::io::duplex(256 * 1024);
-        let serving = tokio::spawn(async move {
-            if let Ok(running) = server.serve(server_io).await {
-                let _ = running.waiting().await;
+        let (stop, mut stopped) = watch::channel(false);
+        let task = qc_native_platform::thread_owner::Owned::spawn_reserved(
+            "qc-mcp-exchange-fixture",
+            permit,
+            resource,
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("owned MCP fixture runtime");
+                runtime.block_on(async move {
+                    let server = QcMcp::for_route(backend, local_route());
+                    let initialize = server.serve(server_io);
+                    tokio::pin!(initialize);
+                    let running = tokio::select! {
+                        // rmcp only creates the service original when this
+                        // initialization future returns Ready. Prefer that
+                        // result so a simultaneously arriving stop cannot
+                        // discard an already-created RunningService.
+                        biased;
+                        result = &mut initialize => match result {
+                            Ok(running) => running,
+                            Err(_) => return,
+                        },
+                        () = async {
+                            while !*stopped.borrow() {
+                                if stopped.changed().await.is_err() { break; }
+                            }
+                        } => return,
+                    };
+                    let cancel = running.cancellation_token();
+                    let waiting = running.waiting();
+                    tokio::pin!(waiting);
+                    tokio::select! {
+                        result = &mut waiting => { let _ = result; },
+                        () = async {
+                            while !*stopped.borrow() {
+                                if stopped.changed().await.is_err() { break; }
+                            }
+                        } => {
+                            cancel.cancel();
+                            // Never time out/drop this private original's
+                            // await. The external Owned observation is bounded.
+                            let _ = waiting.await;
+                        }
+                    }
+                });
+                drop(runtime);
+                after_runtime();
+            },
+        )?;
+        Ok((
+            McpTestActor {
+                stop,
+                task: Some(task),
+            },
+            client_io,
+        ))
+    }
+    #[test]
+    fn dependent_runtime_cleanup_reaped_inside_tokio_runs_on_its_owned_native_original() {
+        // This independent async-reaper oracle remains unchanged below.
+        static ORIGINALS: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        let mut cleanup = crate::tests::CleanupStack::default();
+        let dependent_runtime = tokio::runtime::Runtime::new().unwrap();
+        let (completed, completion) = std::sync::mpsc::channel();
+        cleanup.arm("actual dependent runtime", move |_| {
+            assert!(
+                tokio::runtime::Handle::try_current().is_err(),
+                "runtime shutdown must not run in the async reaper context"
+            );
+            dependent_runtime.shutdown_timeout(Duration::from_secs(2));
+            let _ = completed.send(());
+        });
+        let (_, dependencies) = arm_mcp_exchange(&mut cleanup, Duration::from_millis(10));
+        let (release, waiting) = std::sync::mpsc::channel();
+        struct Finalize(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for Finalize {
+            fn drop(&mut self) {
+                drop(self.0.take());
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while ORIGINALS.count() != 0 && std::time::Instant::now() < deadline {
+                    qc_native_platform::thread_owner::reap();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                qc_native_platform::thread_owner::reap();
+            }
+        }
+        let mut finalize = Finalize(Some(release));
+        let original = qc_native_platform::thread_owner::Owned::spawn(
+            "dependent-runtime-late-reap",
+            &ORIGINALS,
+            dependencies,
+            move || {
+                let _ = waiting.recv();
+            },
+        )
+        .unwrap();
+        drop(original);
+        let initial = cleanup.run();
+        assert!(
+            initial.blocked,
+            "still-live original owns the dependent transaction"
+        );
+        assert!(completion.try_recv().is_err());
+        drop(finalize.0.take());
+        let caller_runtime = tokio::runtime::Runtime::new().unwrap();
+        caller_runtime.block_on(async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                qc_native_platform::thread_owner::reap();
+                if completion.try_recv().is_ok() {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "actual dependent runtime cleanup failed after async-context late reap"
+                );
+                tokio::time::sleep(Duration::from_millis(2)).await;
             }
         });
+        // The cleanup actor may still be in native TLS after publishing its
+        // report; exact shared reaping, not the channel, releases admission.
+        drop(finalize);
+    }
+
+    #[test]
+    fn sole_owned_normal_mcp_cleanup_runs_declared_steps_on_the_outer_original() {
+        let outer = std::thread::current().id();
+        let root = fixture_dir("normal-outer-mcp-cleanup");
+        let seen = Arc::new(AtomicBool::new(false));
+        let owned = seen.clone();
+        let directory = root.clone();
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            cleanup.arm("actual root", move |report| {
+                report.remove_dir_unless_blocked(&directory)
+            });
+            cleanup.arm("actual normal outer transaction", move |_| {
+                assert!(tokio::runtime::Handle::try_current().is_err());
+                assert_eq!(std::thread::current().id(), outer,
+                    "sole-owned normal cleanup must not compete with the late executor observation deadline");
+                owned.store(true, Ordering::Release);
+            });
+            let (_actors, dependencies) = arm_mcp_exchange(cleanup, Duration::from_millis(10));
+            drop(dependencies);
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
+        assert!(seen.load(Ordering::Acquire));
+        assert!(!root.exists());
+    }
+
+    static MCP_CLEANUP_ACTORS: qc_native_platform::thread_owner::Budget =
+        qc_native_platform::thread_owner::Budget::new(64);
+    type McpCleanupCommand = (
+        std::sync::mpsc::Sender<()>,
+        qc_native_platform::thread_owner::Owned,
+    );
+    pub(super) struct McpDependencies {
+        cleanup: std::sync::Mutex<Option<crate::tests::CleanupStack>>,
+        pending: Arc<std::sync::Mutex<Option<crate::tests::CleanupStack>>>,
+        original: std::sync::Mutex<Option<McpCleanupCommand>>,
+    }
+    impl McpDependencies {
+        fn complete_on_outer(&mut self) -> Option<crate::tests::CleanupReport> {
+            // Only Arc::try_unwrap outside Tokio may enter this branch. The
+            // pre-armed executor has not received a stack or wake yet.
+            if self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some()
+            {
+                return None;
+            }
+            let (wake, mut original) = self
+                .original
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()?;
+            let mut cleanup = self
+                .cleanup
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()?;
+            drop(wake); // Empty executor: retire the SAME original first.
+            let joined = original.wait_within(Duration::from_secs(5));
+            drop(original); // Unknown remains in the existing shared owner.
+            if !joined {
+                // This runs first, so the normal root callback retains bytes.
+                cleanup.arm("empty MCP cleanup executor original", |report| {
+                    report.unacknowledged("MCP cleanup executor native retirement unknown; original/admission retained".into());
+                });
+            }
+            // These are the declared existing listener/broker/runtime cleanup
+            // policies, not a second competing five-second report deadline.
+            Some(cleanup.run())
+        }
+    }
+    impl Drop for McpDependencies {
+        fn drop(&mut self) {
+            // A shared original can be reaped by an async caller. Never run
+            // runtime.shutdown_timeout on that caller: the exact pre-armed
+            // native cleanup original owns the entire dependent transaction.
+            let cleanup = self
+                .cleanup
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            *self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = cleanup;
+            if let Some((wake, mut original)) = self
+                .original
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                drop(wake); // Disconnect also wakes; no lost Stop notification.
+                let within = if tokio::runtime::Handle::try_current().is_ok() {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(5)
+                };
+                let _ = original.wait_within(within);
+                // Unknown retirement remains in the SAME shared original
+                // family with pending/runtime/root ownership, never detached.
+            }
+        }
+    }
+    fn arm_mcp_exchange(
+        cleanup: &mut crate::tests::CleanupStack,
+        within: Duration,
+    ) -> (Slot<McpTestActor>, Arc<McpDependencies>) {
+        let report = Arc::new(std::sync::Mutex::new(None));
+        let pending = Arc::new(std::sync::Mutex::new(None::<crate::tests::CleanupStack>));
+        let pending_worker = pending.clone();
+        let completed = report.clone();
+        let (wake, waiting) = std::sync::mpsc::channel::<()>();
+        // Start BEFORE moving the already-armed acquisition stack. If native
+        // admission/spawn fails, the caller's original stack remains intact
+        // for run_with_cleanup after block_on unwinds.
+        let original = qc_native_platform::thread_owner::Owned::spawn(
+            "qc-mcp-dependent-cleanup",
+            &MCP_CLEANUP_ACTORS,
+            pending.clone(),
+            move || {
+                let _ = waiting.recv();
+                let cleanup = pending_worker
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(cleanup) = cleanup {
+                    let report = cleanup.run();
+                    let unclean = !report.is_clean();
+                    *completed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(report);
+                    if unclean {
+                        let _ = std::panic::catch_unwind(|| {
+                            if let Some(report) = completed
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .as_ref()
+                            {
+                                eprintln!("MCP dependent fixture retirement: {report}");
+                            }
+                        });
+                    }
+                }
+            },
+        )
+        .expect("owned MCP dependent cleanup admitted before stack transfer");
+        // Move the ACTUAL dependent cleanup, not merely its pathname. It
+        // contains acquisition sinks, broker owners, runtime and root. It
+        // cannot contain this actor callback, which is armed only afterward.
+        let dependencies = Arc::new(McpDependencies {
+            cleanup: std::sync::Mutex::new(Some(std::mem::take(cleanup))),
+            pending,
+            original: std::sync::Mutex::new(Some((wake, original))),
+        });
+        let actors: Slot<McpTestActor> = slot();
+        let owned = actors.clone();
+        let retained_dependencies = dependencies.clone();
+        cleanup.arm("MCP actor and dependent transaction", move |outer| {
+            if let Some(mut actor) = take(&owned) {
+                if let Err(error) = actor.stop_within(within) {
+                    outer.unacknowledged(error);
+                }
+                // Unknown Owned retains the same dependencies Arc in the
+                // existing shared original family until actual native join.
+                drop(actor);
+            }
+            // Ready resource holders must be actually reaped before deciding
+            // whether this callback is the sole dependency authority.
+            qc_native_platform::thread_owner::reap();
+            let direct = if tokio::runtime::Handle::try_current().is_err() {
+                match Arc::try_unwrap(retained_dependencies) {
+                    Ok(mut dependencies) => dependencies.complete_on_outer(),
+                    Err(shared) => { drop(shared); None }
+                }
+            } else {
+                drop(retained_dependencies);
+                None
+            };
+            let completed = direct.or_else(|| report.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner).take());
+            if let Some(completed) = completed {
+                outer.blocked |= completed.blocked;
+                outer.problems.extend(completed.problems);
+                outer.terminated.extend(completed.terminated);
+            } else {
+                outer.unacknowledged(
+                    "Native original still owns the dependent listener/device/broker/runtime/root transaction".into(),
+                );
+            }
+        });
+        (actors, dependencies)
+    }
+
+    async fn mcp_exchange(
+        cleanup: &mut crate::tests::CleanupStack,
+        backend: Arc<BridgeBackend>,
+        requests: &[Value],
+    ) -> Vec<Value> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let (actors, dependencies) = arm_mcp_exchange(cleanup, Duration::from_secs(5));
+        *backend
+            .fixture_dependencies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::downgrade(&dependencies);
+        let client_io = {
+            let mut owned = actors
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (serving, client_io) =
+                start_mcp_test_actor(backend, &MCP_TEST_ACTORS, dependencies, || {})
+                    .expect("owned MCP fixture actor admitted");
+            *owned = Some(serving);
+            client_io
+        };
         let (read, mut write) = tokio::io::split(client_io);
         let mut lines = BufReader::new(read).lines();
         let initialize = serde_json::json!({
@@ -3498,11 +4524,636 @@ mod tests {
         }
         drop(lines);
         drop(write);
-        let _ = tokio::time::timeout(Duration::from_secs(5), serving).await;
+        let mut owned = actors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        owned
+            .as_mut()
+            .expect("armed MCP original")
+            .stop_within(Duration::from_secs(5))
+            .expect("MCP fixture original acknowledged shutdown");
+        owned.take();
         answers
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn actual_mcp_fixture_unwind_retains_admitted_service_and_root_until_native_join() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        struct Receipt(Arc<AtomicBool>);
+        impl Drop for Receipt {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        struct PendingBackend {
+            entered: std::sync::mpsc::Sender<()>,
+            dropped: Arc<AtomicBool>,
+            release: tokio::sync::watch::Receiver<bool>,
+        }
+        #[async_trait]
+        impl QcBackend for PendingBackend {
+            async fn request(
+                &self,
+                _route: &PrincipalRoute,
+                _rpc: &'static str,
+                _params: Map<String, Value>,
+            ) -> Result<Value, BackendError> {
+                let _receipt = Receipt(self.dropped.clone());
+                let _ = self.entered.send(());
+                let mut release = self.release.clone();
+                while !*release.borrow_and_update() {
+                    if release.changed().await.is_err() {
+                        break;
+                    }
+                }
+                Ok(serde_json::json!([]))
+            }
+        }
+        struct TlsGate {
+            entered: std::sync::mpsc::Sender<()>,
+            release: std::sync::mpsc::Receiver<()>,
+        }
+        impl Drop for TlsGate {
+            fn drop(&mut self) {
+                let _ = self.entered.send(());
+                let _ = self.release.recv_timeout(Duration::from_secs(30));
+            }
+        }
+        thread_local! { static TLS: std::cell::RefCell<Option<TlsGate>> = const { std::cell::RefCell::new(None) }; }
+        struct Finalize {
+            backend_release: tokio::sync::watch::Sender<bool>,
+            release: Option<std::sync::mpsc::Sender<()>>,
+            root: PathBuf,
+        }
+        impl Drop for Finalize {
+            fn drop(&mut self) {
+                // The actual SDK waits for an admitted backend request. Always
+                // unblock it before TLS, even if any observation/assertion fails.
+                let _ = self.backend_release.send(true);
+                if let Some(release) = self.release.take() {
+                    let _ = release.send(());
+                }
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while BUDGET.count() != 0 && std::time::Instant::now() < deadline {
+                    qc_native_platform::thread_owner::reap();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                if BUDGET.count() != 0 {
+                    eprintln!("MCP fixture exact original/resource/admission retained after unknown native retirement: {}", self.root.display());
+                }
+            }
+        }
+        qc_native_platform::thread_owner::reap();
+        assert_eq!(BUDGET.count(), 0);
+        let mut cleanup = crate::tests::CleanupStack::default();
+        let (root, settings, runtime, bridges) =
+            arm_legacy_mcp_fixture("mcp-original-root", &mut cleanup);
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let (backend_release, backend_release_rx) = tokio::sync::watch::channel(false);
+        let finalize = Finalize {
+            backend_release: backend_release.clone(),
+            release: Some(release),
+            root: root.clone(),
+        };
+        let (tls_entered, tls_observed) = std::sync::mpsc::channel();
+        let (entered, observed) = std::sync::mpsc::channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let paths = vec![root.join(STATE_FILE)];
+        let hosted = attempt_headless_mcp_hosting(&paths, &settings)
+            .expect("actual dependent listener acquired");
+        let listener_address = published_listener(&paths).unwrap().address;
+        drop(keep_mcp_bridge(
+            &bridges,
+            Arc::new(BridgeBackend::new(
+                DesktopBackend {
+                    client: reqwest::Client::new(),
+                    session_id: None,
+                },
+                Some(paths),
+                Some(settings),
+                Some(hosted),
+            )),
+        ));
+        drop(bridges);
+        let (actors, resource) = arm_mcp_exchange(&mut cleanup, Duration::from_millis(50));
+        let (actor, client) = start_mcp_test_actor(
+            Arc::new(PendingBackend {
+                entered,
+                dropped: dropped.clone(),
+                release: backend_release_rx.clone(),
+            }),
+            &BUDGET,
+            resource,
+            move || {
+                TLS.with(|slot| {
+                    *slot.borrow_mut() = Some(TlsGate {
+                        entered: tls_entered,
+                        release: release_rx,
+                    })
+                });
+            },
+        )
+        .unwrap();
+        *actors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(actor);
+        let (read, mut write) = tokio::io::split(client);
+        let mut lines = tokio::io::BufReader::new(read).lines();
+        runtime.block_on(async {
+            let init = serde_json::json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{
+                "protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"owned-pending-fixture","version":"1"}}});
+            write.write_all(format!("{init}\n").as_bytes()).await.unwrap();
+            let answer = tokio::time::timeout(Duration::from_secs(2), lines.next_line()).await.unwrap().unwrap().unwrap();
+            assert_eq!(serde_json::from_str::<Value>(&answer).unwrap()["id"], 0);
+            write.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n").await.unwrap();
+            write.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"list_models\",\"arguments\":{\"query\":null}}}\n").await.unwrap();
+        });
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        // Only the nested dependent stack owns the client runtime now.
+        drop(runtime);
+        // Keep the client pipe alive. Actual rmcp cancellation does not
+        // discard an admitted backend request: ownership must remain retained.
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _owned_before_assertion = cleanup;
+            panic!("injected MCP fixture assertion failure");
+        }));
+        assert!(failed.is_err());
+        assert!(
+            matches!(
+                tls_observed.recv_timeout(Duration::from_millis(50)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "runtime/TLS must not retire while the admitted backend is held"
+        );
+        assert!(!dropped.load(Ordering::Acquire));
+        qc_native_platform::thread_owner::reap();
+        assert!(root.exists());
+        assert!(
+            std::net::TcpStream::connect_timeout(&listener_address, Duration::from_millis(100))
+                .is_ok(),
+            "unknown SDK original still owns its real dependent listener"
+        );
+        assert_eq!(BUDGET.count(), 1);
+        assert!(
+            BUDGET.reserve().is_err(),
+            "pending admitted work still owns admission"
+        );
+        backend_release.send(true).unwrap();
+        tls_observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "actual inner handler future did not retire"
+        );
+        qc_native_platform::thread_owner::reap();
+        assert!(
+            root.exists(),
+            "resource retired on runtime/body acknowledgement instead of original join"
+        );
+        assert!(
+            std::net::TcpStream::connect_timeout(&listener_address, Duration::from_millis(100))
+                .is_ok(),
+            "dependent listener cannot retire on body-only acknowledgement"
+        );
+        assert_eq!(BUDGET.count(), 1);
+        assert!(start_mcp_test_actor(
+            Arc::new(PendingBackend {
+                entered: std::sync::mpsc::channel().0,
+                dropped: dropped.clone(),
+                release: backend_release_rx,
+            }),
+            &BUDGET,
+            (),
+            || panic!("must not spawn at capacity")
+        )
+        .is_err());
+        drop(finalize);
+        assert_eq!(BUDGET.count(), 0);
+        assert!(!root.exists());
+        assert!(
+            std::net::TcpStream::connect_timeout(&listener_address, Duration::from_millis(100))
+                .is_err(),
+            "actual original join retires its dependent listener before root cleanup"
+        );
+        drop(lines);
+        drop(write);
+    }
+
     /// One `resources/read` for every backend-answered resource.
+    #[test]
+    fn bridge_shutdown_keeps_protocol_and_unknown_retirement_failures() {
+        assert_eq!(finish_bridge_shutdown(Ok(()), Ok(())), Ok(()));
+        assert_eq!(
+            finish_bridge_shutdown(Err("protocol failed".into()), Ok(())),
+            Err("protocol failed".into())
+        );
+        assert_eq!(
+            finish_bridge_shutdown(Ok(()), Err("native retirement unknown".into())),
+            Err("native retirement unknown".into())
+        );
+        assert_eq!(
+            finish_bridge_shutdown(
+                Err("protocol failed".into()),
+                Err("native retirement unknown".into())
+            ),
+            Err("protocol failed; shutdown: native retirement unknown".into())
+        );
+    }
+
+    #[test]
+    fn actual_bridge_request_and_stop_do_not_wait_on_a_canceled_host_creator() {
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        struct Finish(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for Finish {
+            fn drop(&mut self) {
+                drop(self.0.take());
+                let until = std::time::Instant::now() + Duration::from_secs(5);
+                while BUDGET.count() != 0 && std::time::Instant::now() < until {
+                    qc_native_platform::thread_owner::reap();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+        let mut cleanup = crate::tests::CleanupStack::default();
+        let (root, settings, runtime, bridges) =
+            arm_legacy_mcp_fixture("host-request-entry-held-original", &mut cleanup);
+        let paths = vec![root.join(STATE_FILE)];
+        let (wake, waiting) = std::sync::mpsc::channel();
+        let mut finish = Finish(Some(wake));
+        let waiting = Mutex::new(Some(waiting));
+        let (entered, observed) = std::sync::mpsc::channel();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut backend = BridgeBackend::new(
+            DesktopBackend {
+                client: reqwest::Client::new(),
+                session_id: None,
+            },
+            Some(paths.clone()),
+            Some(settings),
+            None,
+        );
+        backend.host_start_budget = &BUDGET;
+        backend.host_start_timeout = Duration::from_secs(5);
+        backend.host_start_attempts = Some(attempts.clone());
+        backend.host_start_hook = Some(Arc::new(move || {
+            let _ = entered.send(());
+            if let Some(waiting) = waiting.lock().unwrap().take() {
+                let _ = waiting.recv_timeout(Duration::from_secs(30));
+            }
+        }));
+        let bridge = keep_mcp_bridge(&bridges, Arc::new(backend));
+        drop(bridges);
+        let (_, resource) = arm_mcp_exchange(&mut cleanup, Duration::from_millis(50));
+        *bridge.fixture_dependencies.lock().unwrap() = Arc::downgrade(&resource);
+        drop(resource);
+        let creator = bridge.clone();
+        let task = runtime.spawn(async move { creator.host_now().await });
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        task.abort();
+        let canceled = runtime.block_on(task);
+        assert!(matches!(canceled, Err(error) if error.is_cancelled()));
+        assert_eq!(BUDGET.count(), 1);
+        let mut reader = BridgeBackend::new(
+            DesktopBackend {
+                client: reqwest::Client::new(),
+                session_id: None,
+            },
+            Some(paths.clone()),
+            bridge.settings.clone(),
+            None,
+        );
+        reader.host = bridge.host.clone();
+        reader.host_stopping = bridge.host_stopping.clone();
+        reader.host_start_budget = &BUDGET;
+        reader.host_start_timeout = Duration::from_millis(100);
+        // Actual QcBackend entry, not host_now alone. The held original owns
+        // its real host lock while this request first performs cache lookup.
+        let result = runtime
+            .block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    reader.request(&local_route(), "system.status", Map::new()),
+                )
+                .await
+            })
+            .expect("actual request entry must reach bounded refusal, not wait forever on cache");
+        assert!(result.is_err());
+        let error = runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(1), reader.stop_hosting()).await
+            })
+            .expect("stop observation must not wait for unknown native creation")
+            .unwrap_err();
+        assert!(error.contains("not acknowledged"));
+        assert!(reader.host_stopping.load(Ordering::Acquire));
+        assert_eq!(
+            BUDGET.count(),
+            1,
+            "shutdown observation does not discard original"
+        );
+        assert_eq!(attempts.load(Ordering::Acquire), 0);
+        assert!(!paths[0].exists());
+        drop(reader);
+        drop(bridge);
+        drop(runtime);
+        let report = cleanup.run();
+        assert!(report.blocked);
+        assert!(root.exists());
+        drop(finish.0.take());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while BUDGET.count() != 0 {
+            qc_native_platform::thread_owner::reap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "exact original failed to retire"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            attempts.load(Ordering::Acquire),
+            0,
+            "stopped creator must never publish late"
+        );
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn canceled_hosting_admission_retains_original_dependencies_and_refuses_late_publication() {
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        struct Release(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                if let Some(release) = self.0.take() {
+                    let _ = release.send(());
+                }
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while BUDGET.count() != 0 && std::time::Instant::now() < deadline {
+                    qc_native_platform::thread_owner::reap();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                if BUDGET.count() != 0 {
+                    eprintln!("hosting fixture original/dependencies remain retained");
+                }
+            }
+        }
+        qc_native_platform::thread_owner::reap();
+        assert_eq!(BUDGET.count(), 0);
+        let mut cleanup = crate::tests::CleanupStack::default();
+        let (root, settings, runtime, bridges) =
+            arm_legacy_mcp_fixture("host-start-canceled-original", &mut cleanup);
+        let paths = vec![root.join(STATE_FILE)];
+        let (release, blocked) = std::sync::mpsc::channel();
+        let mut finish = Release(Some(release));
+        let blocked = std::sync::Mutex::new(Some(blocked));
+        let (entered, observed) = std::sync::mpsc::channel();
+        let hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook_count = hooks.clone();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut backend = BridgeBackend::new(
+            DesktopBackend {
+                client: reqwest::Client::new(),
+                session_id: None,
+            },
+            Some(paths.clone()),
+            Some(settings),
+            None,
+        );
+        backend.host_start_budget = &BUDGET;
+        backend.host_start_timeout = Duration::from_secs(5);
+        backend.host_start_attempts = Some(attempts.clone());
+        backend.host_start_hook = Some(Arc::new(move || {
+            hook_count.fetch_add(1, Ordering::AcqRel);
+            let _ = entered.send(());
+            if let Some(blocked) = blocked.lock().unwrap().take() {
+                let _ = blocked.recv_timeout(Duration::from_secs(30));
+            }
+        }));
+        let bridge = keep_mcp_bridge(&bridges, Arc::new(backend));
+        drop(bridges);
+        let (_actors, resource) = arm_mcp_exchange(&mut cleanup, Duration::from_millis(50));
+        *bridge.fixture_dependencies.lock().unwrap() = Arc::downgrade(&resource);
+        // The actual host original upgrades this weak dependency. There is
+        // no fixture-only strong backedge from BridgeBackend into its owner.
+        drop(resource);
+        let caller = bridge.clone();
+        let task = runtime.spawn(async move { caller.host_now().await });
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(BUDGET.count(), 1);
+        task.abort();
+        let aborted = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(2), task).await })
+            .expect("caller cancellation acknowledged");
+        assert!(matches!(aborted, Err(error) if error.is_cancelled()));
+        assert_eq!(
+            BUDGET.count(),
+            1,
+            "caller abort cannot discard the native original"
+        );
+        assert!(
+            bridge.host.try_lock().is_err(),
+            "original retains actual host serialization"
+        );
+        let mut contender = BridgeBackend::new(
+            DesktopBackend {
+                client: reqwest::Client::new(),
+                session_id: None,
+            },
+            Some(paths.clone()),
+            bridge.settings.clone(),
+            None,
+        );
+        contender.host = bridge.host.clone();
+        contender.host_start_budget = &BUDGET;
+        contender.host_start_timeout = Duration::from_millis(100);
+        assert!(
+            runtime.block_on(contender.host_now()).is_none(),
+            "contender has one total observation budget"
+        );
+        drop(contender);
+        assert_eq!(
+            hooks.load(Ordering::Acquire),
+            1,
+            "no second native actor admitted behind held host slot"
+        );
+        assert_eq!(attempts.load(Ordering::Acquire), 0);
+        assert!(!paths[0].exists());
+        drop(bridge);
+        drop(runtime);
+        let report = cleanup.run();
+        assert!(
+            report.blocked,
+            "pending native owner must keep dependent transaction: {report}"
+        );
+        assert!(root.exists(), "pending host original lost its root");
+        finish.0.take().unwrap().send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while BUDGET.count() != 0 {
+            qc_native_platform::thread_owner::reap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "original did not acknowledge retirement"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            attempts.load(Ordering::Acquire),
+            0,
+            "canceled queued host started publication late"
+        );
+        assert!(
+            !root.exists(),
+            "actual original retirement completes dependent cleanup"
+        );
+    }
+
+    #[test]
+    fn canceled_admitted_host_stops_actual_published_listener_before_dependent_retirement() {
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        struct Release(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                if let Some(release) = self.0.take() {
+                    let _ = release.send(());
+                }
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while BUDGET.count() != 0 && std::time::Instant::now() < deadline {
+                    qc_native_platform::thread_owner::reap();
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                if BUDGET.count() != 0 {
+                    eprintln!("hosting fixture original/dependencies remain retained");
+                }
+            }
+        }
+        qc_native_platform::thread_owner::reap();
+        assert_eq!(BUDGET.count(), 0);
+        let mut cleanup = crate::tests::CleanupStack::default();
+        let (root, settings, runtime, bridges) =
+            arm_legacy_mcp_fixture("host-start-canceled-after-created", &mut cleanup);
+        let paths = vec![root.join(STATE_FILE)];
+        let (release, blocked) = std::sync::mpsc::channel();
+        let mut finish = Release(Some(release));
+        let blocked = std::sync::Mutex::new(Some(blocked));
+        let (entered, observed) = std::sync::mpsc::channel();
+        let hooks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook_count = hooks.clone();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut backend = BridgeBackend::new(
+            DesktopBackend {
+                client: reqwest::Client::new(),
+                session_id: None,
+            },
+            Some(paths.clone()),
+            Some(settings),
+            None,
+        );
+        backend.host_start_budget = &BUDGET;
+        backend.host_start_timeout = Duration::from_secs(5);
+        backend.host_start_attempts = Some(attempts.clone());
+        backend.host_created_hook = Some(Arc::new(move || {
+            hook_count.fetch_add(1, Ordering::AcqRel);
+            let _ = entered.send(());
+            if let Some(blocked) = blocked.lock().unwrap().take() {
+                let _ = blocked.recv_timeout(Duration::from_secs(30));
+            }
+        }));
+        let bridge = keep_mcp_bridge(&bridges, Arc::new(backend));
+        drop(bridges);
+        let (_actors, resource) = arm_mcp_exchange(&mut cleanup, Duration::from_millis(50));
+        *bridge.fixture_dependencies.lock().unwrap() = Arc::downgrade(&resource);
+        // The actual host original upgrades this weak dependency. There is
+        // no fixture-only strong backedge from BridgeBackend into its owner.
+        drop(resource);
+        let caller = bridge.clone();
+        let task = runtime.spawn(async move { caller.host_now().await });
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(BUDGET.count(), 1);
+        task.abort();
+        let aborted = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(2), task).await })
+            .expect("caller cancellation acknowledged");
+        assert!(matches!(aborted, Err(error) if error.is_cancelled()));
+        assert_eq!(
+            BUDGET.count(),
+            1,
+            "caller abort cannot discard the native original"
+        );
+        assert!(
+            bridge.host.try_lock().is_err(),
+            "original retains actual host serialization"
+        );
+        let mut contender = BridgeBackend::new(
+            DesktopBackend {
+                client: reqwest::Client::new(),
+                session_id: None,
+            },
+            Some(paths.clone()),
+            bridge.settings.clone(),
+            None,
+        );
+        contender.host = bridge.host.clone();
+        contender.host_start_budget = &BUDGET;
+        contender.host_start_timeout = Duration::from_millis(100);
+        assert!(
+            runtime.block_on(contender.host_now()).is_none(),
+            "contender has one total observation budget"
+        );
+        drop(contender);
+        assert_eq!(
+            hooks.load(Ordering::Acquire),
+            1,
+            "no second native actor admitted behind held host slot"
+        );
+        assert_eq!(attempts.load(Ordering::Acquire), 1);
+        let published = published_listener(&paths)
+            .expect("actual loopback host was published before cancellation");
+        let address = published.address;
+        assert!(
+            std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_ok(),
+            "actual created listener remains live while original is held"
+        );
+        drop(bridge);
+        drop(runtime);
+        let report = cleanup.run();
+        assert!(
+            report.blocked,
+            "pending native owner must keep dependent transaction: {report}"
+        );
+        assert!(root.exists(), "pending host original lost its root");
+        assert!(
+            paths[0].exists(),
+            "dependent cleanup must not erase a still-owned published host"
+        );
+        finish.0.take().unwrap().send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while BUDGET.count() != 0 {
+            qc_native_platform::thread_owner::reap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "original did not acknowledge retirement"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            attempts.load(Ordering::Acquire),
+            1,
+            "exactly one actual host creation"
+        );
+        assert!(
+            std::net::TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_err(),
+            "late started.stop must retire the exact published loopback listener"
+        );
+        assert!(
+            !root.exists(),
+            "actual original retirement completes dependent cleanup"
+        );
+    }
+
     fn backend_resource_reads() -> Vec<Value> {
         let reads: Vec<Value> = qc_remote_mcp::resource_rpcs()
             .into_iter()
@@ -3589,21 +5240,279 @@ mod tests {
         .expect("the user's Quit recorded");
     }
 
-    /// A scratch directory of this test's own: a fresh random name, created
-    /// exclusively, removed when the test ends or unwinds.
-    fn exclusive_fixture_dir(name: &str) -> (PathBuf, crate::tests::RemoveDirOnDrop) {
-        let directory = std::env::temp_dir().join(format!(
-            "qc-native-local-{name}-{:032x}",
-            rand::random::<u128>()
-        ));
-        std::fs::create_dir(&directory).expect("a scratch directory of this test's own");
+    // Actual acquisition cleanup, armed before any corresponding effect.
+    type McpFixtureBridges = Arc<std::sync::Mutex<Vec<Arc<BridgeBackend>>>>;
+    type McpFixtureParts = (
+        PathBuf,
+        HeadlessHostSettings,
+        Arc<tokio::runtime::Runtime>,
+        McpFixtureBridges,
+    );
+    fn arm_legacy_mcp_fixture(
+        name: &str,
+        cleanup: &mut crate::tests::CleanupStack,
+    ) -> McpFixtureParts {
+        arm_legacy_mcp_fixture_with_mode(name, cleanup, full_access())
+    }
+
+    fn arm_legacy_mcp_fixture_with_mode(
+        name: &str,
+        cleanup: &mut crate::tests::CleanupStack,
+        mode: Arc<Mutex<AccessMode>>,
+    ) -> McpFixtureParts {
+        // This actual file lease is Send and remains in the same dependency
+        // stack through late actor retirement, not just the caller's scope.
+        let real_broker_lock = crate::tests::serialize_real_broker_test();
+        cleanup.arm("real broker fixture lease", move |_| drop(real_broker_lock));
+        let directory = fixture_dir(name);
+        let root = directory.clone();
+        cleanup.arm("directory", move |report| {
+            report.remove_dir_unless_blocked(&root)
+        });
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
                 .expect("protect scratch directory");
         }
+        let settings = test_settings(&directory, mode);
+        let paths = [directory.join(STATE_FILE)];
+        let runtime_slot: Slot<Arc<tokio::runtime::Runtime>> = slot();
+        let owned_runtime = runtime_slot.clone();
+        cleanup.arm("runtime", move |report| {
+            if let Some(runtime) = take(&owned_runtime) {
+                match Arc::try_unwrap(runtime) {
+                    Ok(runtime) => runtime.shutdown_timeout(Duration::from_secs(2)),
+                    Err(_) => report.unacknowledged("MCP client runtime remains shared".into()),
+                }
+            }
+        });
+        #[cfg(windows)]
+        crate::tests::arm_mcp_fixture_broker(cleanup, &settings.device_broker_descriptor_path());
+        #[cfg(not(windows))]
+        let children = crate::tests::arm_mcp_fixture_children(cleanup);
+        let (guard, acquired) = HostedListenerSinkGuard::install(&paths[0], false);
+        let bridges = Arc::new(std::sync::Mutex::new(Vec::<Arc<BridgeBackend>>::new()));
+        let cleanup_bridges = bridges.clone();
+        let refresh_budget = settings.refresh_budget.clone();
+        cleanup.arm("MCP listeners and devices", move |report| {
+            let _guard = guard;
+            let bridges = std::mem::take(
+                &mut *cleanup_bridges
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            for bridge in bridges {
+                match bridge.host.try_lock() {
+                    Ok(mut host) => {
+                        if let Some(host) = host.take() {
+                            host.stop();
+                        }
+                    }
+                    Err(_) => report
+                        .unacknowledged("MCP hosting admission still owns its bridge slot".into()),
+                };
+            }
+            let listeners = std::mem::take(
+                &mut *acquired
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            for listener in listeners {
+                if !listener.stop() {
+                    report.unacknowledged("MCP listener original retirement unknown".into());
+                }
+                let device = &listener.fixture_device;
+                device.stopped.store(true, Ordering::Release);
+                match device.gateway.try_lock() {
+                    Ok(mut gateway) => {
+                        #[cfg(not(windows))]
+                        {
+                            let gateway: &mut crate::Gateway = &mut gateway;
+                            let mut children = children
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            for process in [&mut gateway.process, &mut gateway.retiring_process]
+                                .into_iter()
+                                .flatten()
+                            {
+                                if let Some(child) = process.take_hosted_broker_child() {
+                                    children.push(crate::tests::OwnedChild::new(child));
+                                }
+                            }
+                        }
+                        gateway.retire_current_process();
+                    }
+                    Err(_) => report.unacknowledged("MCP device gateway remains in use".into()),
+                };
+            }
+            reap_refresh_workers();
+            if refresh_budget.load(Ordering::Acquire) != 0 {
+                report.unacknowledged("MCP settings refresher original remains retained".into());
+            }
+        });
+        let runtime = Arc::new(tokio::runtime::Runtime::new().expect("MCP fixture runtime"));
+        *runtime_slot.lock().unwrap() = Some(runtime.clone());
+        (directory, settings, runtime, bridges)
+    }
+
+    /// Direct adapters use the same prearmed dependency stack as hosted ones.
+    fn arm_direct_fixture_device(
+        cleanup: &mut crate::tests::CleanupStack,
+        device: &HeadlessDeviceAdapter,
+    ) {
+        // Original Child slots are armed before any retain/invoke can spawn.
+        // Keep current and retiring generations distinct; never overwrite one.
+        let current: crate::tests::ChildSlot = Default::default();
+        let retiring: crate::tests::ChildSlot = Default::default();
+        for slot in [&current, &retiring] {
+            crate::tests::arm_owned_child(
+                cleanup,
+                "direct MCP hosted broker",
+                slot,
+                None,
+                Duration::ZERO,
+            );
+        }
+        let device = device.clone();
+        cleanup.arm("direct MCP device", move |report| {
+            device.stopped.store(true, Ordering::Release);
+            match device.gateway.try_lock() {
+                Ok(mut gateway) => {
+                    let gateway: &mut crate::Gateway = &mut gateway;
+                    for (process, slot) in [
+                        (&mut gateway.process, &current),
+                        (&mut gateway.retiring_process, &retiring),
+                    ] {
+                        if let Some(child) = process
+                            .as_mut()
+                            .and_then(|process| process.take_hosted_broker_child())
+                        {
+                            crate::tests::fill_slot(slot, crate::tests::OwnedChild::new(child));
+                        }
+                    }
+                    gateway.retire_current_process();
+                }
+                Err(_) => {
+                    report.unacknowledged("Direct MCP fixture gateway remains owned/in use".into())
+                }
+            };
+        });
+    }
+
+    #[cfg(not(windows))]
+    fn capture_portable_direct_originals(
+        device: &HeadlessDeviceAdapter,
+        originals: &Arc<Mutex<Vec<crate::tests::OwnedChild>>>,
+    ) {
+        // The cohort is already admitted/armed. Capture BEFORE an explicit
+        // release can consume the transport and its PID-pinning Child.
+        let mut originals = originals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut gateway = device
+            .gateway
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let gateway: &mut crate::Gateway = &mut gateway;
+        for process in [&mut gateway.process, &mut gateway.retiring_process]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(child) = process.take_hosted_broker_child() {
+                originals.push(crate::tests::OwnedChild::new(child));
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_headless_host_and_direct_adapter_unwind_retire_dependencies_before_root() {
+        for direct in [false, true] {
+            let seen_root = Mutex::new(None::<PathBuf>);
+            let seen_listener = Mutex::new(None::<std::net::SocketAddr>);
+            let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+                let (root, settings, _runtime, _bridges) = arm_legacy_mcp_fixture_with_mode(
+                    if direct {
+                        "legacy-direct-unwind"
+                    } else {
+                        "legacy-host-unwind"
+                    },
+                    cleanup,
+                    full_access(),
+                );
+                *seen_root.lock().unwrap() = Some(root.clone());
+                if direct {
+                    let device =
+                        HeadlessDeviceAdapter::new(settings.device_broker_descriptor_path(), false);
+                    #[cfg(not(windows))]
+                    let portable_originals = crate::tests::arm_mcp_fixture_children(cleanup);
+                    arm_direct_fixture_device(cleanup, &device);
+                    device.retain_while_used();
+                    assert!(
+                        device.gateway.lock().unwrap().process.is_some(),
+                        "actual isolated software broker participant must be acquired",
+                    );
+                    #[cfg(not(windows))]
+                    capture_portable_direct_originals(&device, &portable_originals);
+                    device.release_when_unused();
+                    assert!(device.gateway.lock().unwrap().process.is_none());
+                    panic!("injected legacy direct-adapter assertion after real release");
+                } else {
+                    let paths = vec![root.join(STATE_FILE)];
+                    let host = attempt_headless_mcp_hosting(&paths, &settings)
+                        .expect("actual legacy listener acquired");
+                    *seen_listener.lock().unwrap() =
+                        Some(published_listener(&paths).unwrap().address);
+                    assert!(root.exists());
+                    assert!(!host.is_disabled());
+                    panic!("injected legacy hosted assertion");
+                }
+            });
+            assert!(
+                outcome.is_err(),
+                "the original assertion failure is preserved"
+            );
+            assert!(report.is_clean(), "{report}");
+            let root = seen_root
+                .into_inner()
+                .unwrap()
+                .expect("actual acquired root");
+            assert!(
+                !root.exists(),
+                "dependency retirement must precede root removal"
+            );
+            if let Some(address) = seen_listener.into_inner().unwrap() {
+                // Original retirement was already required by the cleanup
+                // report. A connect timeout is not an exit observation on
+                // Windows; require actual same-address ownership instead.
+                let rebound = std::net::TcpListener::bind(address)
+                    .expect("acknowledged original listener must release its exact address");
+                assert_eq!(rebound.local_addr().unwrap(), address);
+            }
+        }
+    }
+    fn keep_mcp_bridge(
+        bridges: &McpFixtureBridges,
+        bridge: Arc<BridgeBackend>,
+    ) -> Arc<BridgeBackend> {
+        bridges
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(bridge.clone());
+        bridge
+    }
+
+    /// A scratch directory of this test's own: a fresh random name, created
+    /// exclusively, removed when the test ends or unwinds.
+    fn exclusive_fixture_dir(name: &str) -> (PathBuf, crate::tests::RemoveDirOnDrop) {
+        let directory = crate::tests::unique_fixture_directory(&format!("qc-native-local-{name}"));
         let guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                .expect("protect scratch directory");
+        }
         (directory, guard)
     }
 
@@ -3615,41 +5524,43 @@ mod tests {
     /// origin and B spawned a broker for it.
     #[test]
     fn a_relayed_resource_read_never_makes_the_hosting_bridge_start_a_broker() {
-        let directory = fresh_fixture_dir("relayed-resource-read");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        let hosting = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge B hosts");
-        let device = hosting.device.clone();
-        let broker_descriptor = settings.device_broker_descriptor_path();
-        let relaying = relaying_bridge(&paths, &settings, "stdio-relaying-bridge-a");
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture("relayed-resource-read", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            let hosting = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge B hosts");
+            let device = hosting.device.clone();
+            let broker_descriptor = settings.device_broker_descriptor_path();
+            let relaying = keep_mcp_bridge(
+                &bridges,
+                relaying_bridge(&paths, &settings, "stdio-relaying-bridge-a"),
+            );
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let reads = backend_resource_reads();
-        let answers =
-            runtime.block_on(mcp_exchange(relaying.clone() as Arc<dyn QcBackend>, &reads));
+            let reads = backend_resource_reads();
+            let answers = runtime.block_on(mcp_exchange(cleanup, relaying.clone(), &reads));
 
-        assert_offline(&reads, &answers);
-        assert!(
-            !device.gateway_attached(),
-            "B's gateway brought no broker connection up"
-        );
-        assert!(
-            !broker_descriptor.exists(),
-            "no broker was spawned or published"
-        );
-        assert!(
-            !runtime.block_on(relaying.is_hosting()),
-            "A relayed and did not host"
-        );
-        assert_eq!(
-            descriptor_from_paths_at(&paths, now_unix_ms())
-                .expect("B still publishes")
-                .instance_id,
-            hosting.instance_id()
-        );
-        hosting.stop();
-        std::fs::remove_dir_all(directory).expect("remove fixture");
+            assert_offline(&reads, &answers);
+            assert!(
+                !device.gateway_attached(),
+                "B's gateway brought no broker connection up"
+            );
+            assert!(
+                !broker_descriptor.exists(),
+                "no broker was spawned or published"
+            );
+            assert!(
+                !runtime.block_on(relaying.is_hosting()),
+                "A relayed and did not host"
+            );
+            assert_eq!(
+                descriptor_from_paths_at(&paths, now_unix_ms())
+                    .expect("B still publishes")
+                    .instance_id,
+                hosting.instance_id()
+            );
+            hosting.stop();
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// Control (HTTP): the `list_models` tool, relayed the same way,
@@ -3658,37 +5569,82 @@ mod tests {
     /// grace period, which the teardown waits out before the fixture goes.
     #[test]
     fn a_relayed_tool_call_still_lets_the_hosting_bridge_start_a_broker() {
-        let _serialize = crate::tests::serialize_real_broker_test();
-        let directory = fresh_fixture_dir("relayed-tool-call");
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        // Bound before both bridges, so it drops after them.
-        let _cleanup =
-            crate::tests::armed_broker_teardown(&settings.device_broker_descriptor_path());
-        let hosting = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge B hosts");
-        let device = hosting.device.clone();
-        let relaying = relaying_bridge(&paths, &settings, "stdio-relaying-tool-call");
+        // The actual healthy broker-start oracle remains unchanged below.
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture("relayed-tool-call", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            let hosting = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge B hosts");
+            let device = hosting.device.clone();
+            let relaying = keep_mcp_bridge(
+                &bridges,
+                relaying_bridge(&paths, &settings, "stdio-relaying-tool-call"),
+            );
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let answers = runtime.block_on(mcp_exchange(
-            relaying.clone() as Arc<dyn QcBackend>,
-            &[list_models_tool_call()],
-        ));
+            let answers = runtime.block_on(mcp_exchange(
+                cleanup,
+                relaying.clone(),
+                &[list_models_tool_call()],
+            ));
 
-        assert!(
-            device.gateway_attached(),
-            "a relayed tool call still brings B's broker connection up: {answers:?}"
-        );
-        assert!(
-            crate::device_broker_descriptor::read_descriptor(
-                &settings.device_broker_descriptor_path(),
-                crate::device_broker_descriptor::unix_time_ms(),
-            )
-            .is_some(),
-            "and the broker it reached is published"
-        );
-        assert!(!runtime.block_on(relaying.is_hosting()));
-        hosting.stop();
+            assert!(
+                device.gateway_attached(),
+                "a relayed tool call still brings B's broker connection up: {answers:?}"
+            );
+            assert!(
+                crate::device_broker_descriptor::read_descriptor(
+                    &settings.device_broker_descriptor_path(),
+                    crate::device_broker_descriptor::unix_time_ms(),
+                )
+                .is_some(),
+                "and the broker it reached is published"
+            );
+            assert!(!runtime.block_on(relaying.is_hosting()));
+            hosting.stop();
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
+    }
+
+    #[test]
+    fn stopping_a_real_host_refuses_a_previously_cloned_backend_queued_at_its_gateway() {
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, _bridges) =
+                arm_legacy_mcp_fixture("host-stop-queued-request", cleanup);
+            let host = attempt_headless_mcp_hosting(&[directory.join(STATE_FILE)], &settings)
+                .expect("actual isolated hosted listener");
+            let backend = host.backend();
+            let device = host.device.clone();
+            let descriptor = settings.device_broker_descriptor_path();
+            let held = device.gateway.lock().unwrap();
+            assert!(held.process.is_none());
+            assert!(!descriptor.exists(), "no broker before the actual request");
+            let route = local_route();
+            let mut request = backend.request(&route, "device.listModels", Map::new());
+            runtime.block_on(std::future::poll_fn(|cx| {
+                assert!(
+                    request.as_mut().poll(cx).is_pending(),
+                    "the actual native gateway request must queue behind the held mutex"
+                );
+                std::task::Poll::Ready(())
+            }));
+            host.stop();
+            drop(held);
+            let result = runtime
+                .block_on(async { tokio::time::timeout(Duration::from_secs(5), request).await })
+                .expect("queued request answers within its observation budget");
+            let error =
+                result.expect_err("a stopped host cannot dispatch a previously captured backend");
+            assert!(
+                error.message.to_lowercase().contains("stopping"),
+                "{error:?}"
+            );
+            assert!(
+                device.gateway.lock().unwrap().process.is_none(),
+                "stop refusal happens before attach/election/broker creation"
+            );
+            assert!(!descriptor.exists(), "no native broker-start side effect");
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// With nobody publishing, an MCP resource read must not make a
@@ -3696,28 +5652,30 @@ mod tests {
     /// auto-connecting broker: after Quit, only the user brings it back.
     #[test]
     fn a_resource_read_after_quit_does_not_make_the_bridge_host() {
-        let directory = fresh_fixture_dir("resource-read-after-quit");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        let bridge = bridge_after_quit(&paths, &settings);
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture("resource-read-after-quit", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            let bridge = keep_mcp_bridge(&bridges, bridge_after_quit(&paths, &settings));
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let reads = backend_resource_reads();
-        let answers = runtime.block_on(mcp_exchange(bridge.clone() as Arc<dyn QcBackend>, &reads));
+            let reads = backend_resource_reads();
+            let answers = runtime.block_on(mcp_exchange(cleanup, bridge.clone(), &reads));
 
-        assert_offline(&reads, &answers);
-        assert!(
-            !runtime.block_on(bridge.is_hosting()),
-            "a resource read must not make the bridge host: {answers:?}"
-        );
-        assert!(
-            descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
-            "and nothing is published"
-        );
-        assert!(!settings.device_broker_descriptor_path().exists());
-        runtime.block_on(bridge.stop_hosting());
-        std::fs::remove_dir_all(directory).expect("remove fixture");
+            assert_offline(&reads, &answers);
+            assert!(
+                !runtime.block_on(bridge.is_hosting()),
+                "a resource read must not make the bridge host: {answers:?}"
+            );
+            assert!(
+                descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
+                "and nothing is published"
+            );
+            assert!(!settings.device_broker_descriptor_path().exists());
+            runtime
+                .block_on(bridge.stop_hosting())
+                .expect("host slot retired");
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// The answer to one tool call, as the client sees it, in one string.
@@ -3732,39 +5690,44 @@ mod tests {
     /// still stands. No process is started: the start seam counts any start that is attempted.
     #[test]
     fn a_tool_call_after_quit_does_not_make_the_bridge_host() {
-        let (directory, _directory_guard) = exclusive_fixture_dir("tool-call-after-quit");
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        let seam = crate::GatewayStartSeam::install(&settings.device_broker_descriptor_path());
-        let bridge = bridge_after_quit(&paths, &settings);
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture("tool-call-after-quit", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            let seam = crate::GatewayStartSeam::install(&settings.device_broker_descriptor_path());
+            let bridge = keep_mcp_bridge(&bridges, bridge_after_quit(&paths, &settings));
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let answers = runtime.block_on(mcp_exchange(
-            bridge.clone() as Arc<dyn QcBackend>,
-            &[list_models_tool_call()],
-        ));
+            let answers = runtime.block_on(mcp_exchange(
+                cleanup,
+                bridge.clone(),
+                &[list_models_tool_call()],
+            ));
 
-        let answer = tool_answer_text(&answers);
-        assert!(answer.contains(POST_QUIT_ADVICE), "{answer}");
-        assert!(answer.contains("device_unavailable"), "{answer}");
-        assert!(!answer.contains("from its icon"), "{answer}");
-        assert!(
-            !runtime.block_on(bridge.is_hosting()),
-            "a tool call after Quit must not make the bridge host"
-        );
-        assert!(
-            descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
-            "and nothing is published"
-        );
-        assert_eq!(seam.starts(), 0, "no broker start was attempted");
-        assert!(
-            crate::device_broker_descriptor::read_user_quit(
-                &settings.device_broker_descriptor_path()
-            )
-            .is_some(),
-            "a tool call never clears the Quit"
-        );
-        runtime.block_on(bridge.stop_hosting());
+            let answer = tool_answer_text(&answers);
+            assert!(answer.contains(POST_QUIT_ADVICE), "{answer}");
+            assert!(answer.contains("device_unavailable"), "{answer}");
+            assert!(!answer.contains("from its icon"), "{answer}");
+            assert!(
+                !runtime.block_on(bridge.is_hosting()),
+                "a tool call after Quit must not make the bridge host"
+            );
+            assert!(
+                descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
+                "and nothing is published"
+            );
+            assert_eq!(seam.starts(), 0, "no broker start was attempted");
+            assert!(
+                crate::device_broker_descriptor::read_user_quit(
+                    &settings.device_broker_descriptor_path()
+                )
+                .is_some(),
+                "a tool call never clears the Quit"
+            );
+            runtime
+                .block_on(bridge.stop_hosting())
+                .expect("host slot retired");
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// First use is unchanged. Nobody publishes and no Quit was
@@ -3773,30 +5736,35 @@ mod tests {
     /// for a broker, here the start seam, which starts no process.
     #[test]
     fn a_tool_call_with_no_recorded_quit_still_makes_the_bridge_host() {
-        let (directory, _directory_guard) = exclusive_fixture_dir("tool-call-first-use");
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        let seam = crate::GatewayStartSeam::install(&settings.device_broker_descriptor_path());
-        let bridge = bridge_after_publisher_left(&paths, &settings);
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture("tool-call-first-use", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            let seam = crate::GatewayStartSeam::install(&settings.device_broker_descriptor_path());
+            let bridge = keep_mcp_bridge(&bridges, bridge_after_publisher_left(&paths, &settings));
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let answers = runtime.block_on(mcp_exchange(
-            bridge.clone() as Arc<dyn QcBackend>,
-            &[list_models_tool_call()],
-        ));
+            let answers = runtime.block_on(mcp_exchange(
+                cleanup,
+                bridge.clone(),
+                &[list_models_tool_call()],
+            ));
 
-        assert!(
-            runtime.block_on(bridge.is_hosting()),
-            "a tool call still makes the bridge host: {answers:?}"
-        );
-        assert!(
-            descriptor_from_paths_at(&paths, now_unix_ms()).is_ok(),
-            "and it publishes"
-        );
-        assert!(seam.starts() >= 1, "and its gateway reaches for a broker");
-        let answer = tool_answer_text(&answers);
-        assert!(!answer.contains(POST_QUIT_ADVICE), "{answer}");
-        runtime.block_on(bridge.stop_hosting());
+            assert!(
+                runtime.block_on(bridge.is_hosting()),
+                "a tool call still makes the bridge host: {answers:?}"
+            );
+            assert!(
+                descriptor_from_paths_at(&paths, now_unix_ms()).is_ok(),
+                "and it publishes"
+            );
+            assert!(seam.starts() >= 1, "and its gateway reaches for a broker");
+            let answer = tool_answer_text(&answers);
+            assert!(!answer.contains(POST_QUIT_ADVICE), "{answer}");
+            runtime
+                .block_on(bridge.stop_hosting())
+                .expect("host slot retired");
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// An explicit user start supersedes the Quit (it clears the
@@ -3804,46 +5772,57 @@ mod tests {
     /// hosts again.
     #[test]
     fn an_explicit_start_after_quit_lets_a_tool_call_host_again() {
-        let (directory, _directory_guard) = exclusive_fixture_dir("explicit-start-after-quit");
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        let seam = crate::GatewayStartSeam::install(&settings.device_broker_descriptor_path());
-        let bridge = bridge_after_quit(&paths, &settings);
-        assert!(
-            crate::acknowledge_user_connect_in(&settings.device_broker_descriptor_path()).is_ok()
-        );
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture("explicit-start-after-quit", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            let seam = crate::GatewayStartSeam::install(&settings.device_broker_descriptor_path());
+            let bridge = keep_mcp_bridge(&bridges, bridge_after_quit(&paths, &settings));
+            assert!(
+                crate::acknowledge_user_connect_in(&settings.device_broker_descriptor_path())
+                    .is_ok()
+            );
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let answers = runtime.block_on(mcp_exchange(
-            bridge.clone() as Arc<dyn QcBackend>,
-            &[list_models_tool_call()],
-        ));
+            let answers = runtime.block_on(mcp_exchange(
+                cleanup,
+                bridge.clone(),
+                &[list_models_tool_call()],
+            ));
 
-        assert!(
-            runtime.block_on(bridge.is_hosting()),
-            "the Quit no longer stands: {answers:?}"
-        );
-        assert!(seam.starts() >= 1);
-        runtime.block_on(bridge.stop_hosting());
+            assert!(
+                runtime.block_on(bridge.is_hosting()),
+                "the Quit no longer stands: {answers:?}"
+            );
+            assert!(seam.starts() >= 1);
+            runtime
+                .block_on(bridge.stop_hosting())
+                .expect("host slot retired");
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// A bridge starting after the Quit (a new chat) does not
     /// host either; with no Quit recorded it hosts as before.
     #[test]
     fn a_new_bridge_after_quit_does_not_host_at_startup() {
-        let (directory, _directory_guard) = exclusive_fixture_dir("startup-after-quit");
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        record_user_quit(&settings, "quit-generation");
-        assert!(startup_host(Some(paths.clone()), Some(settings.clone())).is_none());
-        assert!(descriptor_from_paths_at(&paths, now_unix_ms()).is_err());
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, _runtime, _bridges) =
+                arm_legacy_mcp_fixture("startup-after-quit", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            record_user_quit(&settings, "quit-generation");
+            assert!(startup_host(Some(paths.clone()), Some(settings.clone())).is_none());
+            assert!(descriptor_from_paths_at(&paths, now_unix_ms()).is_err());
 
-        crate::device_broker_descriptor::clear_user_quit(&settings.device_broker_descriptor_path())
+            crate::device_broker_descriptor::clear_user_quit(
+                &settings.device_broker_descriptor_path(),
+            )
             .expect("cleared");
-        let host = startup_host(Some(paths.clone()), Some(settings))
-            .expect("with no Quit recorded a starting bridge hosts");
-        assert!(descriptor_from_paths_at(&paths, now_unix_ms()).is_ok());
-        host.stop();
+            let host = startup_host(Some(paths.clone()), Some(settings))
+                .expect("with no Quit recorded a starting bridge hosts");
+            assert!(descriptor_from_paths_at(&paths, now_unix_ms()).is_ok());
+            host.stop();
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// A bridge that decided to host before a Quit was recorded
@@ -3853,27 +5832,31 @@ mod tests {
     /// same admission hosts.
     #[test]
     fn the_hosting_admission_refuses_a_quit_recorded_while_the_bridge_waited() {
-        let (directory, _directory_guard) = exclusive_fixture_dir("admission-after-wait");
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        let bridge = bridge_after_publisher_left(&paths, &settings);
-        // Decided to host with nothing recorded; the Quit lands during the wait.
-        record_user_quit(&settings, "quit-during-the-wait");
-        assert!(attempt_headless_mcp_hosting(&paths, &settings).is_none());
-        assert!(
-            descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
-            "no fresh listener was published"
-        );
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        assert!(runtime.block_on(bridge.host_now()).is_none());
-        assert!(!runtime.block_on(bridge.is_hosting()));
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture("admission-after-wait", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            let bridge = keep_mcp_bridge(&bridges, bridge_after_publisher_left(&paths, &settings));
+            // Decided to host with nothing recorded; the Quit lands during the wait.
+            record_user_quit(&settings, "quit-during-the-wait");
+            assert!(attempt_headless_mcp_hosting(&paths, &settings).is_none());
+            assert!(
+                descriptor_from_paths_at(&paths, now_unix_ms()).is_err(),
+                "no fresh listener was published"
+            );
+            assert!(runtime.block_on(bridge.host_now()).is_none());
+            assert!(!runtime.block_on(bridge.is_hosting()));
 
-        crate::device_broker_descriptor::clear_user_quit(&settings.device_broker_descriptor_path())
+            crate::device_broker_descriptor::clear_user_quit(
+                &settings.device_broker_descriptor_path(),
+            )
             .expect("cleared");
-        let host = attempt_headless_mcp_hosting(&paths, &settings)
-            .expect("with the Quit cleared the same admission hosts");
-        assert!(descriptor_from_paths_at(&paths, now_unix_ms()).is_ok());
-        host.stop();
+            let host = attempt_headless_mcp_hosting(&paths, &settings)
+                .expect("with the Quit cleared the same admission hosts");
+            assert!(descriptor_from_paths_at(&paths, now_unix_ms()).is_ok());
+            host.stop();
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// A bridge that hosts while its gateway holds no broker connection -
@@ -3882,43 +5865,48 @@ mod tests {
     /// recovering or spawning a broker, and goes on hosting.
     #[test]
     fn a_bridge_hosting_after_quit_answers_a_resource_read_offline() {
-        let directory = fresh_fixture_dir("hosting-resource-read-after-quit");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        let hosted = attempt_headless_mcp_hosting(&paths, &settings)
-            .expect("the bridge hosts, as `run` does when nobody publishes");
-        let device = hosted.device.clone();
-        assert!(
-            !device.gateway_attached(),
-            "precondition: no broker connection"
-        );
-        let bridge = Arc::new(BridgeBackend::new(
-            DesktopBackend {
-                client: reqwest::Client::new(),
-                session_id: Some(Arc::from("stdio-hosting-after-quit-test")),
-            },
-            Some(paths.clone()),
-            Some(settings.clone()),
-            Some(hosted),
-        ));
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture("hosting-resource-read-after-quit", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            let hosted = attempt_headless_mcp_hosting(&paths, &settings)
+                .expect("the bridge hosts, as `run` does when nobody publishes");
+            let device = hosted.device.clone();
+            assert!(
+                !device.gateway_attached(),
+                "precondition: no broker connection"
+            );
+            let bridge = keep_mcp_bridge(
+                &bridges,
+                Arc::new(BridgeBackend::new(
+                    DesktopBackend {
+                        client: reqwest::Client::new(),
+                        session_id: Some(Arc::from("stdio-hosting-after-quit-test")),
+                    },
+                    Some(paths.clone()),
+                    Some(settings.clone()),
+                    Some(hosted),
+                )),
+            );
 
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let reads = backend_resource_reads();
-        let answers = runtime.block_on(mcp_exchange(bridge.clone() as Arc<dyn QcBackend>, &reads));
+            let reads = backend_resource_reads();
+            let answers = runtime.block_on(mcp_exchange(cleanup, bridge.clone(), &reads));
 
-        assert_offline(&reads, &answers);
-        assert!(
-            !device.gateway_attached(),
-            "a resource read must not bring a broker connection up"
-        );
-        assert!(!settings.device_broker_descriptor_path().exists());
-        assert!(
-            runtime.block_on(bridge.is_hosting()),
-            "the MCP surface it hosts is left as it was"
-        );
-        runtime.block_on(bridge.stop_hosting());
-        std::fs::remove_dir_all(directory).expect("remove fixture");
+            assert_offline(&reads, &answers);
+            assert!(
+                !device.gateway_attached(),
+                "a resource read must not bring a broker connection up"
+            );
+            assert!(!settings.device_broker_descriptor_path().exists());
+            assert!(
+                runtime.block_on(bridge.is_hosting()),
+                "the MCP surface it hosts is left as it was"
+            );
+            runtime
+                .block_on(bridge.stop_hosting())
+                .expect("host slot retired");
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// Initialize (every exchange starts with it), the listings and
@@ -3942,51 +5930,50 @@ mod tests {
                 "params": {"uri": "qc://device-knowledge/guide"}
             }),
         ];
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
 
-        let directory = fresh_fixture_dir("passive-after-quit");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        let bridge = bridge_after_quit(&paths, &settings);
-        let answers =
-            runtime.block_on(mcp_exchange(bridge.clone() as Arc<dyn QcBackend>, &passive));
-        assert_eq!(
-            answers.len(),
-            4,
-            "every passive request must return a response"
-        );
-        for answer in &answers {
-            assert!(answer.get("error").is_none(), "{answer}");
-        }
-        assert!(!runtime.block_on(bridge.is_hosting()), "nothing here hosts");
-        assert!(descriptor_from_paths_at(&paths, now_unix_ms()).is_err());
-        std::fs::remove_dir_all(directory).expect("remove fixture");
-
-        let directory = fresh_fixture_dir("passive-through-relay");
-        let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
-        let paths = vec![directory.join(STATE_FILE)];
-        let settings = test_settings(&directory, full_access());
-        let hosting = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge B hosts");
-        let device = hosting.device.clone();
-        let relaying = relaying_bridge(&paths, &settings, "stdio-passive-relay");
-        let answers = runtime.block_on(mcp_exchange(
-            relaying.clone() as Arc<dyn QcBackend>,
-            &passive,
-        ));
-        assert_eq!(
-            answers.len(),
-            4,
-            "every passive request must return a response"
-        );
-        for answer in &answers {
-            assert!(answer.get("error").is_none(), "{answer}");
-        }
-        assert!(!device.gateway_attached(), "B stays detached");
-        assert!(!settings.device_broker_descriptor_path().exists());
-        assert!(!runtime.block_on(relaying.is_hosting()));
-        hosting.stop();
-        std::fs::remove_dir_all(directory).expect("remove fixture");
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture("passive-after-quit", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            let bridge = keep_mcp_bridge(&bridges, bridge_after_quit(&paths, &settings));
+            let answers = runtime.block_on(mcp_exchange(cleanup, bridge.clone(), &passive));
+            assert_eq!(
+                answers.len(),
+                4,
+                "every passive request must return a response"
+            );
+            for answer in &answers {
+                assert!(answer.get("error").is_none(), "{answer}");
+            }
+            assert!(!runtime.block_on(bridge.is_hosting()), "nothing here hosts");
+            assert!(descriptor_from_paths_at(&paths, now_unix_ms()).is_err());
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, settings, runtime, bridges) =
+                arm_legacy_mcp_fixture("passive-through-relay", cleanup);
+            let paths = vec![directory.join(STATE_FILE)];
+            let hosting = attempt_headless_mcp_hosting(&paths, &settings).expect("bridge B hosts");
+            let device = hosting.device.clone();
+            let relaying = keep_mcp_bridge(
+                &bridges,
+                relaying_bridge(&paths, &settings, "stdio-passive-relay"),
+            );
+            let answers = runtime.block_on(mcp_exchange(cleanup, relaying.clone(), &passive));
+            assert_eq!(
+                answers.len(),
+                4,
+                "every passive request must return a response"
+            );
+            for answer in &answers {
+                assert!(answer.get("error").is_none(), "{answer}");
+            }
+            assert!(!device.gateway_attached(), "B stays detached");
+            assert!(!settings.device_broker_descriptor_path().exists());
+            assert!(!runtime.block_on(relaying.is_hosting()));
+            hosting.stop();
+        });
+        crate::tests::finish_or_rethrow(outcome, report);
     }
 
     /// A relayed resource read says so on the wire, since the
@@ -4030,6 +6017,236 @@ mod tests {
         }
     }
 
+    #[test]
+    fn dropping_an_acquired_headless_host_stops_its_real_publisher_without_a_sink() {
+        let mut cleanup = crate::tests::CleanupStack::default();
+        let directory = fixture_dir("headless-host-drop");
+        let owned_root = directory.clone();
+        cleanup.arm("directory", move |report| {
+            report.remove_dir_unless_blocked(&owned_root)
+        });
+        let paths = vec![directory.join(STATE_FILE)];
+        let settings = test_settings(&directory, full_access());
+        let host = attempt_headless_mcp_hosting(&paths, &settings).expect("acquired host");
+        let running = host.running.clone();
+        let fallback = running.clone();
+        cleanup.arm("listener", move |report| {
+            if !fallback.stop() {
+                report.unacknowledged("listener retirement was not acknowledged".into());
+            }
+        });
+        assert!(paths[0].is_file());
+        assert_eq!(*running.stop_acknowledged.lock().unwrap(), None);
+        // This is the production owner being discarded by an initialization
+        // error or an abandoned spawn_blocking result, not test-sink cleanup.
+        drop(host);
+        assert_eq!(*running.stop_acknowledged.lock().unwrap(), Some(true));
+        assert!(!paths[0].exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_tls_headless_refresh_holds_capacity_through_original_join() {
+        struct Gate(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+        impl Drop for Gate {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+                let _ = self.1.recv_timeout(Duration::from_secs(5));
+            }
+        }
+        thread_local! { static GATE: std::cell::RefCell<Option<Gate>> = const { std::cell::RefCell::new(None) }; }
+        struct Cleanup {
+            release: Option<std::sync::mpsc::Sender<()>>,
+            original: Option<RefreshWorker>,
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                if let Some(sender) = self.release.take() {
+                    let _ = sender.send(());
+                }
+                if let Some(original) = self.original.take() {
+                    retire_refresh_worker(original, Duration::from_secs(1));
+                }
+                reap_refresh_workers();
+            }
+        }
+        let budget = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let permit = RefreshPermit::acquire(&budget).unwrap();
+        let other: Vec<_> = (0..3)
+            .map(|_| RefreshPermit::acquire(&budget).unwrap())
+            .collect();
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            GATE.with(|gate| *gate.borrow_mut() = Some(Gate(entered, held)))
+        });
+        let mut cleanup = Cleanup {
+            release: Some(release),
+            original: Some(RefreshWorker {
+                thread,
+                _permit: permit,
+            }),
+        };
+        observed.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(cleanup.original.as_ref().unwrap().thread.is_finished());
+        assert!(!qc_native_platform::process::thread_signalled(
+            &cleanup.original.as_ref().unwrap().thread
+        ));
+        let began = std::time::Instant::now();
+        retire_refresh_worker(cleanup.original.take().unwrap(), Duration::from_millis(25));
+        reap_refresh_workers();
+        assert!(began.elapsed() < Duration::from_secs(1));
+        assert_eq!(budget.load(Ordering::Acquire), 4);
+        assert!(RefreshPermit::acquire(&budget).is_none());
+        cleanup.release.take().unwrap().send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while budget.load(Ordering::Acquire) != 3 {
+            reap_refresh_workers();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native refresh original failed to retire"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        drop(other);
+        assert_eq!(budget.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn a_stalled_refresh_worker_is_retained_until_its_actual_completion() {
+        let (release, gate) = std::sync::mpsc::channel();
+        struct Release(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let release = Release(Some(release));
+        let (completed, completion) = std::sync::mpsc::channel();
+        let budget = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let permit = RefreshPermit::acquire(&budget).unwrap();
+        let worker = std::thread::spawn(move || {
+            let _ = gate.recv_timeout(Duration::from_secs(30));
+            let _ = completed.send(());
+        });
+        let worker = RefreshWorker {
+            thread: worker,
+            _permit: permit,
+        };
+        let id = worker.thread().id();
+        retire_refresh_worker(worker, Duration::from_millis(10));
+        assert!(RETAINED_HEADLESS_REFRESH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .any(|worker| worker.thread().id() == id
+                && !qc_native_platform::process::thread_signalled(&worker.thread)));
+        assert_eq!(budget.load(Ordering::Acquire), 1);
+        drop(release);
+        completion
+            .recv_timeout(Duration::from_secs(3))
+            .expect("this exact refresh worker acknowledged release");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            reap_refresh_workers();
+            let retained = RETAINED_HEADLESS_REFRESH
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|worker| worker.thread().id() == id);
+            // Another reaper may have removed the entry but still be joining
+            // its original. Only the final permit drop proves retirement.
+            if !retained && budget.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owned refresh did not retire after release"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(budget.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn stalled_actual_refresh_holds_its_permit_and_refuses_publication_at_capacity() {
+        let mut cleanup = crate::tests::CleanupStack::default();
+        let directory = fixture_dir("headless-refresh-capacity");
+        let owned_root = directory.clone();
+        cleanup.arm("directory", move |report| {
+            report.remove_dir_unless_blocked(&owned_root)
+        });
+        let mut settings = test_settings(&directory, full_access());
+        let (release, waiting) = std::sync::mpsc::channel();
+        let (started, ready) = std::sync::mpsc::channel();
+        struct Release(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let cleanup_release = release.clone();
+        let release = Release(Some(release));
+        let waiting = Mutex::new(waiting);
+        settings.refresh_access_mode = Arc::new(move |mode| {
+            let _ = started.send(());
+            let _ = waiting
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10));
+            mode
+        });
+        let paths = vec![directory.join(STATE_FILE)];
+        let host = attempt_headless_mcp_hosting(&paths, &settings).expect("host");
+        let fallback = host.running.clone();
+        cleanup.arm("listener", move |report| {
+            if !fallback.stop() {
+                report.unacknowledged("listener retirement was not acknowledged".into());
+            }
+        });
+        let budget = settings.refresh_budget.clone();
+        cleanup.arm("refresh worker", move |report| {
+            let _ = cleanup_release.send(());
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while budget.load(Ordering::Acquire) != 0 && std::time::Instant::now() < deadline {
+                reap_refresh_workers();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if budget.load(Ordering::Acquire) != 0 {
+                report.unacknowledged("refresh worker still owns its fixture resources".into());
+            }
+            reap_refresh_workers();
+        });
+        ready.recv_timeout(Duration::from_secs(1)).unwrap();
+        let elapsed = std::time::Instant::now();
+        drop(host);
+        assert!(elapsed.elapsed() < Duration::from_secs(4));
+        assert!(!paths[0].exists());
+        assert_eq!(settings.refresh_budget.load(Ordering::Acquire), 1);
+        let permits: Vec<_> = (0..3)
+            .map(|_| RefreshPermit::acquire(&settings.refresh_budget).unwrap())
+            .collect();
+        let refused = vec![directory.join("refused.json")];
+        assert!(attempt_headless_mcp_hosting(&refused, &settings).is_none());
+        assert!(!refused[0].exists(), "no listener admission at capacity");
+        drop(permits);
+        drop(release);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while settings.refresh_budget.load(Ordering::Acquire) != 0 {
+            reap_refresh_workers();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        reap_refresh_workers();
+        let permit = RefreshPermit::acquire(&settings.refresh_budget)
+            .expect("released actual worker permits new admission");
+        drop(permit);
+    }
+
     /// The listener a hosting fixture started, read from its published
     /// descriptor: where it accepts, and which instance it is.
     #[derive(Clone)]
@@ -4052,6 +6269,29 @@ mod tests {
         Some(HostedListenerIdentity {
             address,
             instance_id: endpoint.instance_id,
+        })
+    }
+
+    fn acquired_listener_identity(
+        sink: &super::HostedListenerSink,
+    ) -> Option<HostedListenerIdentity> {
+        let owner = sink
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .first()
+            .cloned()?;
+        let running = owner
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let endpoint = Url::parse(&running.endpoint()).ok()?;
+        let address = std::net::SocketAddr::new(
+            endpoint.host_str()?.parse().ok()?,
+            endpoint.port_or_known_default()?,
+        );
+        Some(HostedListenerIdentity {
+            address,
+            instance_id: running.instance_id().to_owned(),
         })
     }
 
@@ -4155,6 +6395,7 @@ mod tests {
         let runtime_slot: Slot<Arc<tokio::runtime::Runtime>> = slot();
         let bridge_slot: Slot<Arc<BridgeBackend>> = slot();
         let device_slot: Slot<HeadlessDeviceAdapter> = slot();
+        let unexpected_child_slot: crate::tests::ChildSlot = Default::default();
         // The listener is owned by cleanup from its acquisition
         // inside `attempt_headless_mcp_hosting` (`HostedListenerSinkGuard`),
         // not from when the fixture stores the bridge.
@@ -4178,24 +6419,44 @@ mod tests {
                 }
             });
         }
+        // Reserve the existing child-owner domain before any host/broker can
+        // be acquired. Reverse cleanup transfers the unexpected original from
+        // listener -> armed child owner -> runtime -> root.
+        crate::tests::arm_owned_child(
+            cleanup,
+            "unexpected hosting broker",
+            &unexpected_child_slot,
+            None,
+            Duration::ZERO,
+        );
         {
-            let (paths, runtime_slot, bridge_slot, device_slot, listener_sink) = (
+            let (
+                paths,
+                runtime_slot,
+                bridge_slot,
+                device_slot,
+                listener_sink,
+                unexpected_child_slot,
+            ) = (
                 paths.clone(),
                 runtime_slot.clone(),
                 bridge_slot.clone(),
                 device_slot.clone(),
                 listener_sink.clone(),
+                unexpected_child_slot.clone(),
             );
             cleanup.arm("listener", move |report| {
                 let _owned_until_stopped = listener_guard;
-                if let Some(found) = published_listener(&paths) {
+                if let Some(found) = published_listener(&paths)
+                    .or_else(|| acquired_listener_identity(&listener_sink))
+                {
                     *cleanup_saw_listener.lock().unwrap() = Some(found.address);
                 }
                 stop_hosting_listener(
                     &paths,
                     &runtime_slot,
                     &bridge_slot,
-                    &device_slot,
+                    (&device_slot, &unexpected_child_slot),
                     &listener_sink,
                     &listener_stop_acknowledged,
                     report,
@@ -4286,12 +6547,17 @@ mod tests {
         paths: &[PathBuf],
         runtime_slot: &Slot<Arc<tokio::runtime::Runtime>>,
         bridge_slot: &Slot<Arc<BridgeBackend>>,
-        device_slot: &Slot<HeadlessDeviceAdapter>,
+        device_and_child_slots: (&Slot<HeadlessDeviceAdapter>, &crate::tests::ChildSlot),
         listener_sink: &super::HostedListenerSink,
         listener_stop_acknowledged: &AtomicBool,
         report: &mut crate::tests::CleanupReport,
     ) {
-        let listener = published_listener(paths);
+        let (device_slot, unexpected_child_slot) = device_and_child_slots;
+        // The production host Drop can already stop and unpublish during
+        // startup unwind. Capture the actual acquisition owner, not a claim
+        // that absent post-retirement descriptors mean nothing was acquired.
+        let listener =
+            published_listener(paths).or_else(|| acquired_listener_identity(listener_sink));
         let runtime = runtime_slot.lock().unwrap().clone();
         let bridge = take(bridge_slot);
         // Every listener handed over at its acquisition. Stopping
@@ -4303,12 +6569,16 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         match (&bridge, &runtime) {
-            (Some(bridge), Some(runtime)) => {
-                runtime.block_on(bridge.stop_hosting());
-                if runtime.block_on(bridge.is_hosting()) {
-                    report.unacknowledged("the bridge still hosts".into());
+            (Some(bridge), Some(_)) => match bridge.host.try_lock() {
+                Ok(mut host) => {
+                    if let Some(host) = host.take() {
+                        host.stop();
+                    }
                 }
-            }
+                Err(_) => {
+                    report.unacknowledged("the bridge hosting admission remains in use".into())
+                }
+            },
             (Some(_), None) => {
                 report.unacknowledged("bridge: no runtime to stop it with".into());
             }
@@ -4375,24 +6645,134 @@ mod tests {
             }
         }
         if let Some(device) = take(device_slot) {
-            if device.gateway_attached() {
-                report.unacknowledged("a broker connection is still held".into());
-            }
-            if let Some(child) = device.take_hosted_broker_child() {
-                report.unacknowledged(format!(
-                    "the fixture spawned a broker (pid {}); it is never expected to",
-                    child.id()
-                ));
-                let mut owned = crate::tests::OwnedChild::new(child);
-                owned.stop(
-                    "unexpected broker",
-                    Duration::ZERO,
-                    Duration::from_secs(5),
-                    report,
-                    |child| child.kill(),
-                );
-            }
+            device.stopped.store(true, Ordering::Release);
+            match device.gateway.try_lock() {
+                Ok(mut gateway) => {
+                    if gateway.process.is_some() {
+                        report.unacknowledged("a broker connection is still held".into());
+                    }
+                    if let Some(child) = gateway
+                        .process
+                        .as_mut()
+                        .and_then(|process| process.take_hosted_broker_child())
+                    {
+                        capture_unexpected_hosting_child(child, unexpected_child_slot, report);
+                    }
+                    gateway.retire_current_process();
+                }
+                Err(_) => report.unacknowledged("the fixture device gateway remains in use".into()),
+            };
         }
+    }
+
+    fn capture_unexpected_hosting_child(
+        child: std::process::Child,
+        armed_slot: &crate::tests::ChildSlot,
+        report: &mut crate::tests::CleanupReport,
+    ) {
+        let pid = child.id();
+        // Transfer the actual original before a diagnostic can fail/unwind.
+        // The prearmed cleanup owns unknown termination in TestOwner rather
+        // than dropping a local Child after a bounded observation.
+        crate::tests::fill_slot(armed_slot, crate::tests::OwnedChild::new(child));
+        report.unacknowledged(format!(
+            "the fixture spawned a broker (pid {pid}); it is never expected to"
+        ));
+    }
+
+    #[test]
+    fn hosting_unwind_transfers_unexpected_child_before_runtime_and_root_cleanup() {
+        let directory = fixture_dir("unexpected-hosting-child");
+        let source: Slot<std::process::Child> = slot();
+        let armed: crate::tests::ChildSlot = Default::default();
+        let pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let child_domain = std::sync::Mutex::new(None);
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let root = directory.clone();
+            cleanup.arm("directory", move |report| {
+                report.remove_dir_unless_blocked(&root)
+            });
+            // Actual original-owner admission precedes child acquisition.
+            let domain = crate::tests::arm_owned_child(
+                cleanup,
+                "unexpected fixture child",
+                &armed,
+                None,
+                Duration::ZERO,
+            );
+            *child_domain.lock().unwrap() = Some(domain);
+            let (source, armed) = (source.clone(), armed.clone());
+            let acquire = source.clone();
+            cleanup.arm("listener", move |report| {
+                if let Some(child) = take(&source) {
+                    capture_unexpected_hosting_child(child, &armed, report);
+                }
+            });
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "tests::attached_root_child_fixture",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("QC_ATTACHED_ROOT_FIXTURE", &directory)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+            }
+            // Lock the already-armed acquisition slot BEFORE spawning. No
+            // observation/assertion can drop an unowned returned Child.
+            let mut original = acquire
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let child = command.spawn().unwrap();
+            pid.store(child.id(), Ordering::Release);
+            *original = Some(child);
+            drop(original);
+            assert!(
+                wait_for(Duration::from_secs(2), || {
+                    std::fs::read_to_string(directory.join("ready"))
+                        .ok()
+                        .as_deref()
+                        == Some(pid.load(Ordering::Acquire).to_string().as_str())
+                }),
+                "the exact controlled child must actually enter its fixed helper"
+            );
+            panic!("injected hosting assertion failure");
+        });
+        let message = format!("{report}");
+        let domain = child_domain.into_inner().unwrap().unwrap();
+        let child_retired = crate::tests::fixture_child_retired(&domain)
+            && report.terminated.contains(&pid.load(Ordering::Acquire));
+        // The unexpected-child diagnostic deliberately preserves bytes. Only
+        // the fully acknowledged original permits the fixture's final removal.
+        if child_retired {
+            std::fs::remove_dir_all(&directory).unwrap();
+        }
+        assert!(child_retired, "{message}");
+        assert!(report
+            .problems
+            .iter()
+            .any(|problem| problem.contains("the fixture spawned a broker")));
+        assert!(report
+            .problems
+            .iter()
+            .any(|problem| problem.contains("directory left in place")));
+        assert!(
+            outcome.is_err(),
+            "the primary assertion failure is preserved"
+        );
+        assert!(take(&source).is_none());
+        assert!(armed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none());
+        assert!(!directory.exists());
     }
 
     /// A bridge that hosts with no broker connection answers
@@ -4415,10 +6795,10 @@ mod tests {
             let seam =
                 crate::GatewayStartSeam::install(&fixture.settings.device_broker_descriptor_path());
             let reads = backend_resource_reads();
-            let answers = fixture.runtime.block_on(mcp_exchange(
-                fixture.bridge.clone() as Arc<dyn QcBackend>,
-                &reads,
-            ));
+            let answers =
+                fixture
+                    .runtime
+                    .block_on(mcp_exchange(cleanup, fixture.bridge.clone(), &reads));
             assert_offline(&reads, &answers);
             assert_eq!(seam.starts(), 0, "no start was attempted");
         });
@@ -4643,10 +7023,11 @@ mod tests {
     /// The fixture's own resources are gone (the listener no longer accepts,
     /// the runtime was shut down by the later step), a bystander was never
     /// touched; then the test removes the directory cleanup preserved.
-    fn assert_reaped_then_remove(seen: &StartupSeen, bystander: &mut std::process::Child) {
+    fn assert_reaped_then_remove(seen: &StartupSeen, bystander: &mut StdioBystander) {
         let untouched = matches!(bystander.try_wait(), Ok(None));
-        let _ = bystander.kill();
-        let _ = bystander.wait();
+        bystander
+            .finish()
+            .expect("the original bystander acknowledged retirement");
         let directory = seen.directory.clone().expect("a directory");
         let mut removal = crate::tests::CleanupReport::default();
         removal.remove_dir_unless_blocked(&directory);
@@ -4664,29 +7045,92 @@ mod tests {
         assert!(removal.is_clean(), "{removal}");
     }
 
-    fn test_owned_sleeper() -> std::process::Child {
-        #[cfg(windows)]
-        let mut command = {
-            let mut command = std::process::Command::new("ping");
-            command.args(["-n", "60", "127.0.0.1"]);
-            command
-        };
-        #[cfg(unix)]
-        let mut command = {
-            #[cfg(target_os = "macos")]
-            let executable = "/bin/sleep";
-            #[cfg(not(target_os = "macos"))]
-            let executable = "/usr/bin/sleep";
-            let mut command = std::process::Command::new(executable);
-            command.arg("60");
-            command
-        };
-        command
+    static STDIO_BYSTANDERS_IN_USE: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    struct StdioBystanderPermit;
+    impl Drop for StdioBystanderPermit {
+        fn drop(&mut self) {
+            STDIO_BYSTANDERS_IN_USE.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+    static RETAINED_STDIO_BYSTANDERS: Mutex<Vec<(std::process::Child, StdioBystanderPermit)>> =
+        Mutex::new(Vec::new());
+    struct StdioBystander(Option<std::process::Child>, Option<StdioBystanderPermit>);
+    impl StdioBystander {
+        fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+            self.0.as_mut().expect("owned bystander").try_wait()
+        }
+        fn finish(&mut self) -> Result<(), String> {
+            let Some(mut child) = self.0.take() else {
+                return Ok(());
+            };
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return Ok(());
+            }
+            let kill_error = child.kill().err();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let pid = child.id();
+            RETAINED_STDIO_BYSTANDERS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((child, self.1.take().expect("owned bystander permit")));
+            Err(format!("Bystander {pid} retirement unknown; exact Child retained; kill error: {kill_error:?}"))
+        }
+    }
+    impl Drop for StdioBystander {
+        fn drop(&mut self) {
+            if let Err(error) = self.finish() {
+                eprintln!("{error}");
+            }
+        }
+    }
+    #[test]
+    #[ignore = "owned fixed bystander, invoked only by test_owned_sleeper"]
+    fn stdio_bystander_child_helper() {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+    fn test_owned_sleeper() -> StdioBystander {
+        let mut retained = RETAINED_STDIO_BYSTANDERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut index = 0;
+        while index < retained.len() {
+            if matches!(retained[index].0.try_wait(), Ok(Some(_))) {
+                retained.swap_remove(index);
+            } else {
+                index += 1;
+            }
+        }
+        drop(retained);
+        assert!(
+            STDIO_BYSTANDERS_IN_USE
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| (count < 8)
+                    .then_some(count + 1))
+                .is_ok(),
+            "bystander fixture capacity reached; no new process admitted"
+        );
+        let permit = StdioBystanderPermit;
+        let mut command =
+            std::process::Command::new(std::env::current_exe().expect("owned test binary"));
+        command.args([
+            "--exact",
+            "local_stdio::tests::stdio_bystander_child_helper",
+            "--ignored",
+            "--nocapture",
+        ]);
+        let child = command
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .expect("spawn the bystander sleeper")
+            .expect("spawn the bystander sleeper");
+        StdioBystander(Some(child), Some(permit))
     }
 
     /// On the real hosting fixture: the listener stop is
@@ -4781,7 +7225,9 @@ mod tests {
             "the startup never recorded its listener"
         );
         assert!(report.is_clean(), "{report}");
-        let _ = listener.expect("cleanup found the listener published");
+        let _ = listener.expect(
+            "cleanup found the actual acquired listener identity even if already unpublished",
+        );
         assert!(
             seen.listener_stop_acknowledged.load(Ordering::Acquire),
             "listener thread acknowledged shutdown"

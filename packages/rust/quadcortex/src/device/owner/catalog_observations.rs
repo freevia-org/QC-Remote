@@ -257,6 +257,12 @@ impl CatalogObservations {
                 continue;
             };
             let supplied = std::mem::take(&mut incoming.files);
+            // Match the reducer's header mutation boundary. An empty CREATE
+            // preserves an existing model; record DELETE never edits headers.
+            // Merely receiving those ignored fields is not retained authority.
+            let header_changes = message.action == pa::message_action::Enum::Update as i32
+                || (message.action == pa::message_action::Enum::Create as i32
+                    && (!wire.files.is_empty() || !self.folders.contains_key(&incoming.key)));
             // The sequence number is assigned on first insertion only; later frames, renames
             // and header updates keep it, so it is the order the device first published the
             // folder in, which is the order its own directory lists them.
@@ -272,10 +278,10 @@ impl CatalogObservations {
             });
             // Only this wire header can change retained header evidence. A
             // programmatically changed native/presentation cache is not input.
-            if wire.name.is_some() {
+            if header_changes && wire.name.is_some() {
                 folder.header.name = incoming.name;
             }
-            if wire.is_factory.is_some() {
+            if header_changes && wire.is_factory.is_some() {
                 folder.header.is_factory = incoming.is_factory;
             }
             if message.action == pa::message_action::Enum::Delete as i32 {
@@ -317,6 +323,9 @@ impl CatalogObservations {
                         record.name.clear();
                         record.instrument = 0;
                         record.instrument_present = false;
+                        record.author = None;
+                        record.date = None;
+                        record.date_ms_since_epoch = None;
                     }
                     let mut retained = record.clone();
                     if retained.product_key.is_some() && !retained.instrument_present {
@@ -329,5 +338,158 @@ impl CatalogObservations {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: &str = "/media/p4/Presets/Observed";
+
+    fn ticket() -> ObservationTicket {
+        serde_json::from_value(serde_json::json!({
+            "connection": 1, "epoch": {"sessionId": "test", "revision": 0},
+            "sequence": 1, "ingress": {"firstReportAtMs": 1, "lastReportAtMs": 1}
+        }))
+        .unwrap()
+    }
+
+    fn product(key: Option<&str>, author: &str, date: &str) -> pa::ProductData {
+        pa::ProductData {
+            index: Some(pa::product_data::Index::Index(0)),
+            key: key.map(|key| pa::product_data::Key::Key(key.into())),
+            name: Some(pa::product_data::Name::Name("Preset".into())),
+            author: Some(pa::product_data::Author::Author(author.into())),
+            date: Some(pa::product_data::Date::Date(date.into())),
+            date_ms_since_epoch: Some(pa::product_data::DateMsSinceEpoch::DateMsSinceEpoch(42)),
+            ..Default::default()
+        }
+    }
+
+    fn message(
+        action: pa::message_action::Enum,
+        name: &str,
+        factory: bool,
+        files: Vec<pa::ProductData>,
+    ) -> pa::FileMessage {
+        pa::FileMessage {
+            action: action as i32,
+            r#type: Some(pa::file_message::Type::Type(0)),
+            folder: Some(pa::file_message::Folder::Folder(pa::FolderInfo {
+                key: Some(pa::folder_info::Key::Key(KEY.into())),
+                name: Some(pa::folder_info::Name::Name(name.into())),
+                is_factory: Some(pa::folder_info::IsFactory::IsFactory(factory)),
+                files,
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn apply(
+        native: &mut NativePresetCatalog,
+        observations: &mut CatalogObservations,
+        message: &pa::FileMessage,
+    ) {
+        // The real owner calls observations only after successful native apply.
+        let change = native.apply(message).unwrap();
+        observations.observe(&ticket(), message, &change, native);
+        observations.retention_gate(|_| true, 1).unwrap();
+    }
+
+    #[test]
+    fn keyless_catalog_observation_drops_all_ignored_empty_slot_metadata() {
+        let mut native = NativePresetCatalog::default();
+        let mut observations = CatalogObservations::default();
+        apply(
+            &mut native,
+            &mut observations,
+            &message(
+                pa::message_action::Enum::Create,
+                "Known",
+                false,
+                vec![product(Some("occupied"), "Known author", "Known date")],
+            ),
+        );
+        let occupied = observations.retained_listing(KEY).unwrap();
+        assert_eq!(occupied.files[0].author.as_deref(), Some("Known author"));
+        assert_eq!(occupied.files[0].date.as_deref(), Some("Known date"));
+        let ignored = "x".repeat(64 * 1024);
+        apply(
+            &mut native,
+            &mut observations,
+            &message(
+                pa::message_action::Enum::Update,
+                "Known",
+                false,
+                vec![product(None, &ignored, &ignored)],
+            ),
+        );
+        let retained = observations.retained_listing(KEY).unwrap();
+        assert_eq!(
+            retained.files,
+            native.folder(KEY).unwrap().files,
+            "an empty native slot must not retain discarded metadata in the authority mirror"
+        );
+        assert!(retained.files[0].author.is_none());
+        assert!(retained.files[0].date.is_none());
+        assert!(retained.files[0].date_ms_since_epoch.is_none());
+        assert!(!retained.files[0].is_occupied());
+    }
+
+    #[test]
+    fn catalog_observation_ignored_headers_do_not_bypass_native_retention() {
+        let mut native = NativePresetCatalog::default();
+        let mut observations = CatalogObservations::default();
+        apply(
+            &mut native,
+            &mut observations,
+            &message(
+                pa::message_action::Enum::Create,
+                "Known",
+                false,
+                vec![product(Some("occupied"), "Author", "Date")],
+            ),
+        );
+        let ignored = "x".repeat(64 * 1024);
+        for event in [
+            message(pa::message_action::Enum::Create, &ignored, true, vec![]),
+            message(
+                pa::message_action::Enum::Delete,
+                &ignored,
+                true,
+                vec![product(Some("not-the-retained-key"), "", "")],
+            ),
+        ] {
+            apply(&mut native, &mut observations, &event);
+            let retained = observations.retained_listing(KEY).unwrap();
+            let current = native.folder(KEY).unwrap();
+            assert_eq!(
+                retained.name, current.name,
+                "ignored wire headers cannot replace retained model headers"
+            );
+            assert_eq!(retained.is_factory, current.is_factory);
+            assert_eq!(retained.name, "Known");
+            assert!(!retained.is_factory);
+            assert_eq!(retained.files.len(), 1);
+            assert_eq!(retained.files[0].product_key.as_deref(), Some("occupied"));
+        }
+        apply(
+            &mut native,
+            &mut observations,
+            &message(
+                pa::message_action::Enum::Update,
+                "Accepted",
+                true,
+                vec![product(Some("occupied"), "New author", "New date")],
+            ),
+        );
+        let accepted = observations.retained_listing(KEY).unwrap();
+        assert_eq!(accepted.name, "Accepted");
+        assert!(accepted.is_factory);
+        assert_eq!(accepted.files[0].author.as_deref(), Some("New author"));
+        assert_eq!(accepted.files[0].date.as_deref(), Some("New date"));
+        assert_eq!(accepted.files, native.folder(KEY).unwrap().files);
     }
 }

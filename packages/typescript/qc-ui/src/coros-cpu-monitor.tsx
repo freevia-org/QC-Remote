@@ -22,7 +22,7 @@ export interface CorOsCpuMonitorPanelProps {
  * so it lands in the same place whether the host is a fixed canvas or a bezel
  * that scales the Grid to its own size.
  */
-export function CorOsCpuMonitorPanel({ onClose, returnFocusTarget, cpuLoad = 0 }: CorOsCpuMonitorPanelProps) {
+export function CorOsCpuMonitorPanel({ onClose, returnFocusTarget, cpuLoad }: CorOsCpuMonitorPanelProps) {
   return (
     <div className="coros-cpu-overlay-frame">
       <div className="coros-cpu-overlay-canvas">
@@ -35,7 +35,7 @@ export function CorOsCpuMonitorPanel({ onClose, returnFocusTarget, cpuLoad = 0 }
           </span>
           <span className="cpu-overlay-input">In</span>
           <small>CPU</small>
-          <strong>{Math.round(Math.max(0, Math.min(1, cpuLoad)) * 100)}%</strong>
+          <strong>{cpuLoad === undefined ? "—" : `${Math.round(Math.max(0, Math.min(1, cpuLoad)) * 100)}%`}</strong>
         </aside>
       </div>
     </div>
@@ -48,7 +48,7 @@ export function CorOsCpuMonitorPanel({ onClose, returnFocusTarget, cpuLoad = 0 }
  */
 export function CorOsCpuMonitor({ snapshot, onClose, returnFocusTarget, cpuLoad = 0, cpuColumns = [] }: { snapshot: PresetSnapshot; onClose: () => void; returnFocusTarget?: "grid-menu"; cpuLoad?: number; cpuColumns?: readonly CpuColumnLoad[] }) {
   return (
-    <CorOsOfficialGrid snapshot={snapshot} cpuColumns={cpuColumns} screenClassName="coros-cpu-screen">
+    <CorOsOfficialGrid referenceOnly snapshot={snapshot} cpuColumns={cpuColumns} screenClassName="coros-cpu-screen">
       <CorOsCpuMonitorPanel cpuLoad={cpuLoad} onClose={onClose} returnFocusTarget={returnFocusTarget} />
     </CorOsOfficialGrid>
   );

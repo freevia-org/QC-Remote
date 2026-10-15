@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { DeviceIdentity } from "@qc-remote/client";
 import { qcDeviceInformation } from "../src/device-information.ts";
+import { bundleTestModule } from "./support/display-page.ts";
 import { corOsVersionFromTree, isCorOsVersion, reconcileCorOsVersion } from "../src/cor-os-version.ts";
-import { bundleModule } from "./support/display-page.ts";
 
 const FULL: DeviceIdentity = {
   serial: "SER-1",
@@ -47,7 +46,6 @@ test("a field the unit did not report stays unreported; blank text is not a valu
 });
 
 type Renderer = { render(information: object): Promise<string> };
-const workDirectory = mkdtempSync(join(tmpdir(), "qc-device-information-"));
 const entry = `
 import { createElement } from "react";
 import { prerenderToNodeStream } from "react-dom/static";
@@ -60,8 +58,7 @@ export async function render(information) {
   return Buffer.concat(chunks).toString("utf8").replaceAll("<!-- -->", "");
 }
 `;
-const { module } = await bundleModule<Renderer>(workDirectory, "device-information", entry).catch((error) => { rmSync(workDirectory, { recursive: true, force: true }); throw error; });
-test.after(() => rmSync(workDirectory, { recursive: true, force: true }));
+const { module } = await bundleTestModule<Renderer>("qc-device-information-", "device-information", entry, (cleanup) => test.after(cleanup));
 
 const row = (markup: string, label: string) => markup.match(new RegExp(`<b>${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</b><i>([^<]*)</i>`))?.[1];
 
@@ -107,7 +104,7 @@ test("no host or window blanks a field of the Device Information screen", () => 
   const settings = read("../src/device-settings-screen.tsx");
   assert.doesNotMatch(settings, /DeviceInformationDetail|corOsVersion: workflow\.identity\?\.appFwVersion/, "Device Settings uses the same pane and mapping");
   const views = read("../src/use-qc-device-views.ts");
-  assert.match(views, /gateway\.identity\(\)[\s\S]*?owner\.apply\(\(\) => setDeviceInformation\(\{ key: owner\.key, value: qcDeviceInformation\(identity, snapshot\.deviceName\)/,
+  assert.match(views, /const identity = await gateway\.identity\(\);\s*if \(!captured\.current\(\)\) return;\s*setDeviceInformation\(\{ key: hostSession\.key, value: qcDeviceInformation\(identity, snapshot\.deviceName\)/,
     "the captured identity read is session-scoped before mapping its original device name");
 });
 

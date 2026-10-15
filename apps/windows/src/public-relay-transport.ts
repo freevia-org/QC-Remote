@@ -18,6 +18,9 @@ export const publicRelay: PublicRelayPort = {
   unpair(): Promise<PublicRelayStatus> {
     return callTauri<PublicRelayStatus>("unpair_public_relay");
   },
+  retryWithdrawal(): Promise<PublicRelayStatus> {
+    return callTauri<PublicRelayStatus>("retry_public_relay_withdrawal");
+  },
   setAccessMode(mode): Promise<PublicRelayStatus> {
     return callTauri<PublicRelayStatus>("set_public_relay_access_mode", { mode });
   },

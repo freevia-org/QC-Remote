@@ -73,6 +73,7 @@ rfd = "0.15"
 reqwest = { version = "0.13", features = ["form", "json"] }
 rmcp = { version = "3.2", features = ["server", "transport-io"] }
 serde = { version = "1", features = ["derive"] }
+semver = "=1.0.28"
 # `preserve_order` keeps `Value::Object` an insertion-ordered map. Without it a
 # pair or unpair rewrites another vendor's whole configuration file with every
 # key at every depth sorted alphabetically, which is a total diff of a file QC
@@ -93,6 +94,7 @@ zip = { version = "8.1", default-features = false }
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 windows-registry = "0.6"
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes"] }
 qc-windows-midi = { path = "../../../packages/rust/qc-windows-midi" }
 # The broker owns the native tray through windows-sys. The GUI has no direct
 # tray-icon, muda or tao API dependency; Tauri owns its own window/menu graph.

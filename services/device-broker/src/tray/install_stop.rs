@@ -42,8 +42,8 @@ pub fn event_name(broker_executable: &Path) -> String {
 /// exists, so a signal sent after this returns cannot be missed.
 #[cfg(windows)]
 pub fn watch(on_request: impl Fn() + Send + 'static) -> Result<(), String> {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
-    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::Threading::CreateEventW;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let name: Vec<u16> = event_name(&executable)
         .encode_utf16()
@@ -56,21 +56,35 @@ pub fn watch(on_request: impl Fn() + Send + 'static) -> Result<(), String> {
     if event.is_null() {
         return Err(std::io::Error::last_os_error().to_string());
     }
-    let event = event as isize;
-    std::thread::Builder::new()
-        .name("qc-broker-install-stop".into())
-        .spawn(move || loop {
-            // SAFETY: the handle is owned by this thread for the process life.
-            let waited = unsafe { WaitForSingleObject(event as _, INFINITE) };
-            if waited != WAIT_OBJECT_0 {
-                // SAFETY: closing the handle this thread owns.
-                unsafe { CloseHandle(event as _) };
-                return;
-            }
-            on_request();
-        })
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    // Acquire ownership before constructing/spawning the watcher. A rejected
+    // spawn drops its closure; callback unwind drops the same owned handle.
+    let event = unsafe { OwnedHandle::from_raw_handle(event.cast()) };
+    watch_event_with(event, on_request, |task| {
+        std::thread::Builder::new()
+            .name("qc-broker-install-stop".into())
+            .spawn(task)
+            .map(|_| ())
+    })
+}
+
+#[cfg(windows)]
+fn watch_event_with(
+    event: std::os::windows::io::OwnedHandle,
+    on_request: impl Fn() + Send + 'static,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+    use windows_sys::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+    spawn(Box::new(move || loop {
+        // SAFETY: the handle is owned by this thread for the process life.
+        let waited = unsafe { WaitForSingleObject(event.as_raw_handle().cast(), INFINITE) };
+        if waited != WAIT_OBJECT_0 {
+            return;
+        }
+        on_request();
+    }))
+    .map_err(|error| error.to_string())
 }
 
 /// The helper side: signal the broker at `broker_executable` and wait, at most
@@ -161,6 +175,62 @@ fn exists(name: &str) -> Result<bool, String> {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn watcher_rejected_spawn_and_callback_unwind_release_the_owned_event() {
+        use std::os::windows::io::{FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::System::Threading::CreateEventW;
+        for callback_unwind in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "qc-install-stop-owner-{:032x}/qc-device-broker.exe",
+                rand::random::<u128>()
+            ));
+            let name = event_name(&path);
+            let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+            assert!(!exists(&name).unwrap(), "fresh fixture namespace");
+            let raw = unsafe {
+                CreateEventW(
+                    std::ptr::null(),
+                    0,
+                    i32::from(callback_unwind),
+                    wide.as_ptr(),
+                )
+            };
+            assert!(!raw.is_null());
+            let event = unsafe { OwnedHandle::from_raw_handle(raw.cast()) };
+            assert!(exists(&name).unwrap());
+            if callback_unwind {
+                let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    watch_event_with(
+                        event,
+                        || panic!("injected callback unwind"),
+                        |task| {
+                            task(); // The already-signalled event enters the actual watcher callback.
+                            Ok(())
+                        },
+                    )
+                }))
+                .expect_err("callback panic is preserved");
+                assert_eq!(
+                    panic.downcast_ref::<&str>(),
+                    Some(&"injected callback unwind")
+                );
+            } else {
+                let error = watch_event_with(
+                    event,
+                    || panic!("refused task cannot run"),
+                    |_task| Err(std::io::Error::other("injected thread admission failure")),
+                )
+                .unwrap_err();
+                assert_eq!(error, "injected thread admission failure");
+            }
+            assert!(
+                !exists(&name).unwrap(),
+                "last owned event handle closed on failure"
+            );
+        }
+    }
+
     #[test]
     fn the_name_is_path_scoped_case_insensitive_and_pinned_across_crates() {
         // The same literal is pinned in tray_native.rs; change both or neither.
@@ -181,8 +251,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_helper_repeats_a_refused_request_and_reports_the_exit() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
         use std::time::{Duration, Instant};
-        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
         use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
         let broker = std::env::temp_dir().join(format!(
             "qc-install-stop-{}-{}/qc-device-broker.exe",
@@ -202,8 +273,9 @@ mod tests {
         // Auto-reset, exactly as `watch` creates it.
         // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call; no security
         // attributes are passed. A null result is caught by the assertion below.
-        let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) } as isize;
-        assert_ne!(event, 0);
+        let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) };
+        assert!(!event.is_null());
+        let event = unsafe { OwnedHandle::from_raw_handle(event.cast()) };
         let waiter = std::thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(3);
             let mut seen = 0;
@@ -211,12 +283,12 @@ mod tests {
                 assert!(Instant::now() < deadline, "the request was not repeated");
                 // SAFETY: `event` is the non-zero handle created above. Only this closure
                 // uses it, and it is not closed until after the loop.
-                if unsafe { WaitForSingleObject(event as _, 10) } == WAIT_OBJECT_0 {
+                if unsafe { WaitForSingleObject(event.as_raw_handle().cast(), 10) } == WAIT_OBJECT_0
+                {
                     seen += 1; // the first is refused (host still closing)
                 }
             }
-            // SAFETY: closes the event created above, once; `event` is not used again.
-            unsafe { CloseHandle(event as _) };
+            // OwnedHandle closes on success and on an assertion unwind alike.
         });
         assert_eq!(
             request_stop(&broker, Duration::from_secs(3), Duration::from_millis(100)),

@@ -14,7 +14,7 @@
  * pressed; its version and operating system this window asks for itself.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { QC_BRAND } from "@qc-remote/theme";
 import { AboutWindowContent } from "./about-dialog";
 import { buildIssueLink, buildIssueUrl, feedbackIssueKind, type HelpWindowKind, type IssueKind, type LegalDocument } from "./about-content";
@@ -87,7 +87,22 @@ function FeedbackContent() {
   // makes one stays disabled until it settles: a second Export press would
   // otherwise open a second save dialog behind the first.
   const [pending, setPending] = useState<"export" | "copy" | "issue">();
-  useEffect(() => onFeedbackIssueKind(setIssueKind), []);
+  const mounted = useRef(true);
+  const mountGeneration = useRef(0);
+  const kindOwner = useRef({ kind: issueKind, generation: 0 });
+  const pendingFlight = useRef<object | undefined>(undefined);
+  const changeIssueKind = (kind: IssueKind) => {
+    if (kindOwner.current.kind !== kind) {
+      kindOwner.current = { kind, generation: kindOwner.current.generation + 1 };
+      setMessage(undefined);
+    }
+    setIssueKind(kind);
+  };
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; mountGeneration.current += 1; };
+  }, []);
+  useEffect(() => onFeedbackIssueKind(changeIssueKind), []);
   useEffect(() => {
     let current = true;
     hostSystem.osVersion()
@@ -102,36 +117,55 @@ function FeedbackContent() {
   // One path for every button: an action either names its own outcome by
   // resolving with it, or takes the caller's `success` line, and either way
   // the text lands in this window's own message line.
-  const report = async (run: () => Promise<string | void>, success?: string) => {
+  const report = async (run: () => Promise<string | void>, current: () => boolean, success?: string) => {
     try {
       const outcome = await run();
       const detail = typeof outcome === "string" ? outcome : success;
-      if (detail) setMessage(detail);
+      if (current() && detail) setMessage(detail);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      if (current()) setMessage(error instanceof Error ? error.message : String(error));
     }
   };
 
   // The main window builds the report; this window writes it, because the
   // clipboard only accepts a write from the document that has focus.
-  const copyDiagnostics = async () => {
+  const copyDiagnostics = async (current: () => boolean) => {
     const text = await requestDiagnostics("copy");
+    if (!current()) return;
     await navigator.clipboard.writeText(text);
   };
 
-  const runDiagnostics = (kind: "export" | "copy") => {
-    if (pending) return;
+  // Kind changes invalidate work that has not reached an external write,
+  // never an already-admitted save. Keep the single-flight lease until the
+  // real request settles, even if its result no longer belongs to this panel.
+  const startReport = (kind: "export" | "copy" | "issue", run: (current: () => boolean) => Promise<string | void>, waiting?: string, success?: string) => {
+    if (!mounted.current || pendingFlight.current || kindOwner.current.kind !== issueKind) return;
+    const token = {};
+    pendingFlight.current = token;
+    const mount = mountGeneration.current;
+    const generation = kindOwner.current.generation;
+    const current = () => mounted.current && mountGeneration.current === mount
+      && kindOwner.current.kind === issueKind && kindOwner.current.generation === generation;
     setPending(kind);
-    setMessage(kind === "export" ? "Waiting for the save dialog…" : "Collecting redacted diagnostics…");
-    void report(kind === "export" ? () => requestDiagnostics("export") : copyDiagnostics, kind === "copy" ? DIAGNOSTICS_COPIED : undefined)
-      .finally(() => setPending(undefined));
+    setMessage(waiting);
+    void report(() => run(current), current, success).finally(() => {
+      if (pendingFlight.current !== token) return;
+      pendingFlight.current = undefined;
+      if (mounted.current) setPending(undefined);
+    });
+  };
+
+  const runDiagnostics = (kind: "export" | "copy") => {
+    startReport(kind, kind === "export" ? () => requestDiagnostics("export") : copyDiagnostics,
+      kind === "export" ? "Waiting for the save dialog…" : "Collecting redacted diagnostics…",
+      kind === "copy" ? DIAGNOSTICS_COPIED : undefined);
   };
 
   // A bug report's diagnostics field is filled with the same redacted report
   // Copy diagnostics copies. When the main window cannot supply it, or it is
   // too long for the link, the issue still opens and the reporter is told to
   // paste it instead.
-  const openIssue = async (): Promise<string | void> => {
+  const openIssue = async (current: () => boolean): Promise<string | void> => {
     let diagnostics: string | undefined;
     let unavailable: string | undefined;
     if (issueReport.kind === "bug") {
@@ -141,6 +175,7 @@ function FeedbackContent() {
         unavailable = `The diagnostics could not be collected (${error instanceof Error ? error.message : String(error)}), so the issue's diagnostics field was left empty. ${PASTE_DIAGNOSTICS}`;
       }
     }
+    if (!current()) return;
     const link = buildIssueLink({ ...issueReport, diagnostics });
     await externalLinks.open(link.url);
     if (link.diagnostics === "omitted") return DIAGNOSTICS_TOO_LONG;
@@ -148,10 +183,8 @@ function FeedbackContent() {
   };
 
   const runOpenIssue = () => {
-    if (pending) return;
-    setPending("issue");
-    setMessage(issueReport.kind === "bug" ? "Collecting redacted diagnostics for the issue…" : undefined);
-    void report(openIssue, "Opened the issue form in your browser.").finally(() => setPending(undefined));
+    startReport("issue", openIssue, issueReport.kind === "bug" ? "Collecting redacted diagnostics for the issue…" : undefined,
+      "Opened the issue form in your browser.");
   };
 
   return <>
@@ -165,7 +198,7 @@ function FeedbackContent() {
           key={entry.kind}
           type="button"
           aria-pressed={issueKind === entry.kind}
-          onClick={() => setIssueKind(entry.kind)}
+          onClick={() => changeIssueKind(entry.kind)}
         >{entry.label}</button>)}
       </div>
       <h3>What to include</h3>

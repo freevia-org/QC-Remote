@@ -45,7 +45,7 @@ export function LooperXScreen({ workflow, activeScene = 0, onParameters, onMenu,
         const key = sceneLetter(index);
         const toggleState = command === "oneShot" ? status?.oneShot : command === "halfSpeed" ? status?.halfSpeed : undefined;
         return <button type="button" key={command} disabled={disabled} aria-pressed={toggleState} onClick={() => void run(command)}>
-          <small>{command === "undoRedo" ? status?.redoAvailable ? "REDO" : "UNDO" : label}</small>
+          <small>{command === "undoRedo" && typeof status?.redoAvailable === "boolean" ? status.redoAvailable ? "REDO" : "UNDO" : label}</small>
           <strong><QcLooperActionGlyph kind={glyph} /></strong><b>{key}</b>
         </button>;
       })}

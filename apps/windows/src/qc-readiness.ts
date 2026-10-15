@@ -103,6 +103,13 @@ export function brokerPhaseDetectsDevice(phase: string): boolean {
   return phase === "connecting" || phase === "handshaking" || phase === "syncing" || phase === "ready";
 }
 
+/** The primary pushed recovery path respects the same deliberate stop as inventory recovery. */
+export function qcShouldFollowDevicePhase(event: { phase: string; deviceId?: string }, selectedDeviceId: string | undefined, userDisconnected: boolean): boolean {
+  return !userDisconnected
+    && !(selectedDeviceId && event.deviceId && event.deviceId !== selectedDeviceId)
+    && brokerPhaseDetectsDevice(event.phase);
+}
+
 /** Translate a live broker phase into the state shown during one connect. */
 export function qcConnectionDuringBrokerPhase(
   phase: string,

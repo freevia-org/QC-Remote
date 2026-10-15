@@ -1,5 +1,6 @@
 use crate::backend::{write_report_delivered, NativeHid, WriteStallPolicy};
 use crate::flight::FlightRecorder;
+use crate::retained_io::{IoReservation, NativeLifetime, OwnedWriter, WriterFinish};
 use hidapi::{HidApi, HidError};
 use quadcortex::commands::{self, OutboundMessage};
 use quadcortex::device::delivery::{DeliveryStop, DeliveryTicket, ReportOutcome};
@@ -16,7 +17,9 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread;
+#[cfg(test)]
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -53,6 +56,10 @@ pub enum UsbError {
     Write(String),
     #[error("USB command was not admitted: {0}")]
     Admission(String),
+    /// The forwarding request expired/cancelled before any report was queued.
+    /// No device bytes were admitted; the current USB session remains healthy.
+    #[error("forwarding request retired before USB admission")]
+    ForwardingRetired,
     #[error("invalid QC frame: {0}")]
     Frame(#[from] framing::FrameError),
     #[error("HID initialization failed: {0}")]
@@ -248,6 +255,8 @@ struct NativeWriteGuard {
     ticket: NativeDispatchTicket,
     clock: Option<Instant>,
     delivery: Option<DeliveryTicket>,
+    forwarding_deadline: Option<Instant>,
+    forwarding_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl NativeWriteGuard {
@@ -269,6 +278,8 @@ impl NativeWriteGuard {
                 .map_err(UsbError::Admission)?,
             clock: admission.map(|(_, clock)| *clock),
             delivery: None,
+            forwarding_deadline: None,
+            forwarding_cancel: None,
         })
     }
 
@@ -277,13 +288,39 @@ impl NativeWriteGuard {
             .map_or(0, |clock| clock.elapsed().as_millis() as u64)
     }
 
+    fn forwarding_retired(&self) -> bool {
+        self.forwarding_cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+            || self
+                .forwarding_deadline
+                .is_some_and(|end| Instant::now() >= end)
+    }
+    fn validate_forwarding(&self) -> Result<(), String> {
+        if self
+            .forwarding_cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+        {
+            return Err("forwarding request cancelled".into());
+        }
+        if self
+            .forwarding_deadline
+            .is_some_and(|end| Instant::now() >= end)
+        {
+            return Err("forwarding request deadline expired".into());
+        }
+        Ok(())
+    }
     fn validate(&self, began: bool) -> Result<(), String> {
+        self.validate_forwarding()?;
         self.owner
             .lock_recover()
             .validate_dispatch(&self.ticket, began, self.now_ms())
     }
 
     fn begin_report(&self, index: usize) -> Result<(), String> {
+        self.validate_forwarding()?;
         if let Some(delivery) = &self.delivery {
             self.owner
                 .lock_recover()
@@ -467,6 +504,7 @@ fn run_hid_writer<F>(
                 stopping.store(true, Ordering::Release);
                 continue 'messages;
             }
+            progress.signal();
             if let Some(delay_ms) = TransportRuntime::report_batch_delay_ms(index + 1) {
                 thread::sleep(Duration::from_millis(delay_ms));
             }
@@ -487,8 +525,8 @@ struct HidIo {
     stopping: Arc<AtomicBool>,
     overflowed: Arc<AtomicBool>,
     terminal_write_error: Arc<Mutex<Option<String>>>,
-    reader: Option<JoinHandle<()>>,
-    writer: Option<JoinHandle<()>>,
+    reader: Option<OwnedWriter>,
+    writer: Option<OwnedWriter>,
 }
 
 // A complete maximum-sized logical frame fits in this queue. The queue is
@@ -500,24 +538,48 @@ const HID_READ_QUEUE_CAPACITY: usize = profile::MAX_FRAME_BYTES / framing::CHUNK
 // the remainder of a frame after the first native write failure.
 const HID_WRITE_QUEUE_CAPACITY: usize = 1;
 
-/// How long `finish_writes` waits for the writer thread before handing its
-/// join to a detached thread instead. Generous against ordinary write
-/// latency (single reports complete in low milliseconds) but short enough
-/// that a wedged teardown does not meaningfully delay the shared worker
-/// thread from serving every other client.
+/// How long graceful teardown observes the original writer before retaining
+/// its exact join owner. Retained native I/O remains lease-owned and prevents
+/// same-device reopen; no OS cancellation or detached watcher is promised.
 const FINISH_WRITES_JOIN_BUDGET: Duration = Duration::from_secs(2);
+
+// Constructed only on the successfully spawned RX thread. Even an early RX
+// return/unwind cannot retire its native clone until TX startup has resolved.
+// This keeps last-handle destruction off the startup caller once I/O started.
+struct ReaderStartupNative<T> {
+    native: T,
+    startup: mpsc::Receiver<()>,
+}
+impl<T> Drop for ReaderStartupNative<T> {
+    fn drop(&mut self) {
+        // The caller owns the sole sender, including unwind. No device response
+        // is required; native destruction remains on this original I/O thread.
+        let _ = self.startup.recv();
+    }
+}
+
+fn complete_writer_startup<T>(
+    result: std::io::Result<T>,
+    startup: mpsc::Sender<()>,
+) -> std::io::Result<T> {
+    drop(startup);
+    result
+}
 
 impl HidIo {
     fn start(
-        device: NativeHid,
+        device: NativeLifetime<NativeHid>,
+        reservation: Arc<IoReservation>,
         owner: Arc<Mutex<SessionRuntime>>,
         connection: u64,
     ) -> Result<Self, UsbError> {
         let device = Arc::new(device);
-        let write_stall_policy = device.write_stall_policy();
+        let write_stall_policy = device.device.write_stall_policy();
         let stopping = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::sync_channel(HID_READ_QUEUE_CAPACITY);
-        let reader_device = Arc::clone(&device);
+        let writer_device = Arc::clone(&device);
+        let reader_device = device;
+        let (startup_sender, startup_receiver) = mpsc::channel();
         let reader_stopping = Arc::clone(&stopping);
         let overflowed = Arc::new(AtomicBool::new(false));
         let reader_overflowed = Arc::clone(&overflowed);
@@ -529,9 +591,13 @@ impl HidIo {
         let reader = thread::Builder::new()
             .name("qc-native-hid-rx".into())
             .spawn(move || {
+                let reader_device = ReaderStartupNative {
+                    native: reader_device,
+                    startup: startup_receiver,
+                };
                 while !reader_stopping.load(Ordering::Acquire) {
                     let mut report = [0_u8; 1024];
-                    match reader_device.read_timeout(&mut report, 200) {
+                    match reader_device.native.device.read_timeout(&mut report, 200) {
                         Ok(0) => match sender.try_send(HidReadEvent::Idle) {
                             Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
                             Err(mpsc::TrySendError::Disconnected(_)) => break,
@@ -598,32 +664,36 @@ impl HidIo {
                 }
             })
             .map_err(|error| UsbError::Hid(format!("could not start HID reader: {error}")))?;
+        // Preserve the original RX owner before any later startup can fail.
+        let reader = OwnedWriter::new(reader, Arc::clone(&reservation));
         let (write_sender, write_receiver) =
             mpsc::sync_channel::<HidWriteMessage>(HID_WRITE_QUEUE_CAPACITY);
-        let writer_device = Arc::clone(&device);
         let writer_telemetry = Arc::clone(&telemetry);
         let terminal_write_error = Arc::new(Mutex::new(None));
         let writer_terminal_write_error = Arc::clone(&terminal_write_error);
         let writer_stopping = Arc::clone(&stopping);
         let write_progress = Arc::new(WriteProgress::default());
         let writer_progress = Arc::clone(&write_progress);
-        let writer = match thread::Builder::new()
-            .name("qc-native-hid-tx".into())
-            .spawn(move || {
-                run_hid_writer(
-                    write_receiver,
-                    writer_telemetry,
-                    writer_stopping,
-                    writer_terminal_write_error,
-                    writer_progress,
-                    write_stall_policy,
-                    |report| writer_device.write(report),
-                );
-            }) {
+        let writer = match complete_writer_startup(
+            thread::Builder::new()
+                .name("qc-native-hid-tx".into())
+                .spawn(move || {
+                    run_hid_writer(
+                        write_receiver,
+                        writer_telemetry,
+                        writer_stopping,
+                        writer_terminal_write_error,
+                        writer_progress,
+                        write_stall_policy,
+                        |report| writer_device.device.write(report),
+                    );
+                }),
+            startup_sender,
+        ) {
             Ok(writer) => writer,
             Err(error) => {
                 stopping.store(true, Ordering::Release);
-                let _ = reader.join();
+                reader.finish(FINISH_WRITES_JOIN_BUDGET);
                 return Err(UsbError::Hid(format!(
                     "could not start HID writer: {error}"
                 )));
@@ -638,7 +708,7 @@ impl HidIo {
             overflowed,
             terminal_write_error,
             reader: Some(reader),
-            writer: Some(writer),
+            writer: Some(OwnedWriter::new(writer, reservation)),
         })
     }
 
@@ -650,7 +720,22 @@ impl HidIo {
         &self,
         message_type: u16,
         reports: Vec<Vec<u8>>,
+        guard: Option<NativeWriteGuard>,
+    ) -> Result<(), UsbError> {
+        self.queue_message_guarded_with_budget(
+            message_type,
+            reports,
+            guard,
+            Duration::from_millis(profile::COMMAND_CONFIRMATION_TIMEOUT_MS),
+        )
+    }
+
+    fn queue_message_guarded_with_budget(
+        &self,
+        message_type: u16,
+        reports: Vec<Vec<u8>>,
         mut guard: Option<NativeWriteGuard>,
+        wait_budget: Duration,
     ) -> Result<(), UsbError> {
         if let Some(error) = self.terminal_write_failure() {
             return Err(UsbError::Write(error));
@@ -680,10 +765,10 @@ impl HidIo {
             reports,
             guard,
         };
-        // This is a host queue budget, not a firmware transfer deadline. User
-        // operations also retain their earlier, usually shorter caller budget.
-        let started = Instant::now();
-        let wait_budget = Duration::from_millis(profile::COMMAND_CONFIRMATION_TIMEOUT_MS);
+        // Bound stalled admission, not an advancing frame ahead of this one.
+        // Caller deadlines remain absolute and are checked on every wake.
+        let mut last_progress = Instant::now();
+        let mut observed_progress = self.write_progress.snapshot();
         let result = (|| {
             loop {
                 if let Some(error) = self.terminal_write_failure() {
@@ -692,19 +777,43 @@ impl HidIo {
                 if self.stopping.load(Ordering::Acquire) {
                     return Err(UsbError::Write("native HID session is stopping".into()));
                 }
-                let mut remaining = wait_budget.saturating_sub(started.elapsed());
+                let current_progress = self.write_progress.snapshot();
+                if current_progress != observed_progress {
+                    observed_progress = current_progress;
+                    last_progress = Instant::now();
+                }
+                let mut remaining = wait_budget.saturating_sub(last_progress.elapsed());
                 if let Some(guard) = &message.guard {
-                    guard.validate(false).map_err(UsbError::Admission)?;
+                    guard.validate(false).map_err(|error| {
+                        if guard.forwarding_retired() {
+                            UsbError::ForwardingRetired
+                        } else {
+                            UsbError::Admission(error)
+                        }
+                    })?;
+                    if let Some(deadline) = guard.forwarding_deadline {
+                        remaining =
+                            remaining.min(deadline.saturating_duration_since(Instant::now()));
+                    }
+                    if guard.forwarding_cancel.is_some() {
+                        remaining = remaining.min(Duration::from_millis(25));
+                    }
                     if let Some(budget_ms) = guard.ticket.remaining_ms(guard.now_ms()) {
                         remaining = remaining.min(Duration::from_millis(budget_ms));
                     }
                 }
                 if remaining.is_zero() {
+                    if message
+                        .guard
+                        .as_ref()
+                        .is_some_and(NativeWriteGuard::forwarding_retired)
+                    {
+                        return Err(UsbError::ForwardingRetired);
+                    }
                     return Err(UsbError::Admission(
                         "native HID write queue budget expired".into(),
                     ));
                 }
-                let progress = self.write_progress.snapshot();
                 // Publish admission before the consumer can publish completion.
                 let mut telemetry = self.telemetry.lock_recover();
                 match sender.try_send(message) {
@@ -718,7 +827,7 @@ impl HidIo {
                     }
                 }
                 drop(telemetry);
-                self.write_progress.wait(progress, remaining);
+                self.write_progress.wait(observed_progress, remaining);
             }
             Ok(())
         })();
@@ -741,50 +850,16 @@ impl HidIo {
     /// Explicit graceful teardown drains the two disconnect frames while RX
     /// remains alive. Drop without this step is cancellation, not a flush.
     ///
-    /// The join is bounded: this runs on the single worker thread that also
-    /// services every other command and device read, and the writer thread
-    /// can be blocked inside an in-flight `HidDevice::write()` with no way
-    /// for `stopping` to unblock it (that flag is only checked between
-    /// reports, never inside the underlying OS call). A device unplugged
-    /// mid-write can leave that call never returning. Past `FINISH_WRITES_JOIN_BUDGET`
-    /// this hands the join to a detached thread instead of continuing to
-    /// wait on it, so a wedged write degrades to a leaked thread rather than
-    /// an unresponsive broker.
-    fn finish_writes(&mut self) {
+    /// The original join remains owned after the graceful observation budget.
+    /// A blocked native write keeps its native handle and host lease capability;
+    /// new admission remains refused until exact task retirement is acknowledged.
+    fn finish_writes(&mut self) -> bool {
         self.write_sender.take();
-        let Some(writer) = self.writer.take() else {
-            return;
-        };
-        let (done_tx, done_rx) = mpsc::channel();
-        let watcher = thread::Builder::new()
-            .name("qc-hid-writer-join".into())
-            .spawn(move || {
-                let _ = writer.join();
-                let _ = done_tx.send(());
-            });
-        let Ok(watcher) = watcher else {
-            // Could not even start the watcher thread. `writer` was already
-            // moved into the closure passed to `spawn`, so a failed spawn
-            // drops it along with that closure - there is no handle left
-            // here to fall back to a direct join with. This is the same
-            // "give up rather than block" outcome as the timeout case below,
-            // just reached without a wait; spawn failure this deep into
-            // teardown is itself a sign of the resource pressure that would
-            // have made the join worth bounding in the first place.
-            return;
-        };
-        if done_rx.recv_timeout(FINISH_WRITES_JOIN_BUDGET).is_err() {
-            eprintln!(
-                "QC device broker: the HID writer thread did not finish within {:?} of teardown \
-                 starting; continuing without it rather than blocking every other client.",
-                FINISH_WRITES_JOIN_BUDGET
-            );
-        }
-        // Whether or not it finished in time, this thread's only job was to
-        // join `writer` and it is safe to detach: it holds no lock this
-        // process needs, and it will end on its own once the OS write call
-        // returns (or the process exits).
-        drop(watcher);
+        let joined = self
+            .writer
+            .take()
+            .is_none_or(|writer| writer.finish(FINISH_WRITES_JOIN_BUDGET) == WriterFinish::Joined);
+        joined && !self.stopping.load(Ordering::Acquire) && self.terminal_write_failure().is_none()
     }
 
     fn abort(&self) {
@@ -841,28 +916,32 @@ impl Drop for HidIo {
     fn drop(&mut self) {
         self.abort();
         self.write_sender.take();
-        // Linux hidraw has no safe userspace cancellation for a write already
-        // inside the kernel. Bound failure teardown too, keeping the handle
-        // and advisory ownership lock in the retained writer's Arc. Windows
-        // retains its existing teardown policy behind its native backend.
-        #[cfg(target_os = "linux")]
+        // Native writes cannot be forcibly canceled safely. Keep their exact
+        // join/native/lease owner retained on failure teardown on either platform.
         self.finish_writes();
         if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
-        if let Some(writer) = self.writer.take() {
-            let _ = writer.join();
+            reader.finish(FINISH_WRITES_JOIN_BUDGET);
         }
     }
 }
 
+#[cfg(test)]
+fn owned_test_writer(handle: JoinHandle<()>) -> OwnedWriter {
+    let admissions = Arc::new(crate::retained_io::Admissions::default());
+    OwnedWriter::new(handle, admissions.reserve("fixture").unwrap())
+}
+
 pub struct QcUsb {
     // Rust drops fields in declaration order. Keep the exclusive I/O owner
-    // ahead of HidApi so shutdown joins both I/O lanes and releases USB first.
+    // ahead of HidApi so shutdown stops both lanes first. Unacknowledged
+    // originals remain owned; a still-live native handle keeps its host lease.
+    // this does not promise kernel cancellation or immediate USB release.
     io: HidIo,
     owner: Arc<Mutex<SessionRuntime>>,
     connection_identity: u64,
     session_clock: Instant,
+    #[cfg(not(target_os = "macos"))]
+    _api: HidApi,
     next_sequence: u64,
     /// Whether the latest `read_message` received no HID report: an idle poll
     /// or the reader's idle marker. A partial frame is not an empty read.
@@ -870,6 +949,8 @@ pub struct QcUsb {
     report_layout: ReportLayout,
     flight: FlightRecorder,
     disconnected_state_sent: bool,
+    teardown_verified: Option<bool>,
+    teardown_observer: Option<Arc<AtomicBool>>,
     /// The id an implicit teardown (`Drop`) puts on its DELETE subscription.
     /// Reserved from the lifecycle sequence when the session connects, because
     /// `Drop` may run after the shared lifecycle has been invalidated and
@@ -1059,13 +1140,14 @@ impl QcUsb {
         owner: Arc<Mutex<SessionRuntime>>,
         session_clock: &Instant,
         device_id: Option<&str>,
+        io_owner: Option<Arc<dyn Send + Sync>>,
+        teardown_observer: Option<Arc<AtomicBool>>,
     ) -> Result<Self, UsbError> {
         #[cfg(target_os = "macos")]
-        let device = {
+        let (device, reservation) = {
             let requested_device_id = device_id.map(str::to_owned);
             crate::backend::with_hid_thread(move || {
                 let api = HidApi::new().map_err(|error| UsbError::Hid(error.to_string()))?;
-                // Keep selection and open on the same HID thread as discovery.
                 let (path, selected_identity) = selected_supported_path(
                     api.device_list().map(|candidate| {
                         (
@@ -1078,11 +1160,18 @@ impl QcUsb {
                     requested_device_id.as_deref(),
                 )
                 .ok_or(UsbError::NotAvailable)?;
-                NativeHid::open(&api, path, &selected_identity)
+                let reservation =
+                    crate::retained_io::reserve(&selected_identity).map_err(UsbError::Admission)?;
+                let device = NativeLifetime {
+                    device: NativeHid::open(&api, path, &selected_identity)?,
+                    _io_owner: io_owner,
+                    _reservation: Arc::clone(&reservation),
+                };
+                Ok((device, reservation))
             })?
         };
         #[cfg(not(target_os = "macos"))]
-        let device = {
+        let (device, reservation, api) = {
             let api = HidApi::new().map_err(|error| UsbError::Hid(error.to_string()))?;
             // Enumerate the entire vendor, admit members of the shared
             // product-ID set, then select the lexicographically first HID path.
@@ -1099,13 +1188,20 @@ impl QcUsb {
                 device_id,
             )
             .ok_or(UsbError::NotAvailable)?;
-            NativeHid::open(&api, path, &selected_identity)?
+            let reservation =
+                crate::retained_io::reserve(&selected_identity).map_err(UsbError::Admission)?;
+            let device = NativeLifetime {
+                device: NativeHid::open(&api, path, &selected_identity)?,
+                _io_owner: io_owner,
+                _reservation: Arc::clone(&reservation),
+            };
+            (device, reservation, api)
         };
         let connection_identity = owner
             .lock_recover()
             .opened(session_clock.elapsed().as_millis() as u64)
             .map_err(UsbError::Initialization)?;
-        let io = match HidIo::start(device, Arc::clone(&owner), connection_identity) {
+        let io = match HidIo::start(device, reservation, Arc::clone(&owner), connection_identity) {
             Ok(io) => io,
             Err(error) => {
                 owner
@@ -1121,11 +1217,15 @@ impl QcUsb {
             owner,
             connection_identity,
             session_clock: *session_clock,
+            #[cfg(not(target_os = "macos"))]
+            _api: api,
             next_sequence: 1,
             last_read_was_empty: false,
             report_layout: ReportLayout::ReportIdPrefixed,
             flight,
             disconnected_state_sent: false,
+            teardown_verified: None,
+            teardown_observer,
             teardown_request_id: 0,
         })
     }
@@ -1174,11 +1274,65 @@ impl QcUsb {
         owner: Arc<Mutex<SessionRuntime>>,
         session_clock: &Instant,
         device_id: Option<&str>,
+        report_handshake_attempt: impl FnMut(u32, UsbTelemetry),
+        observe_state: impl FnMut(IncomingMessage),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ConnectedQc, UsbError> {
+        Self::connect_device_cancellable_with_io_owner(
+            owner,
+            session_clock,
+            device_id,
+            report_handshake_attempt,
+            observe_state,
+            cancelled,
+            None,
+        )
+    }
+
+    /// Host-owned capability must represent the already acquired lease generation.
+    /// It remains held until the actual native handle is destroyed, including
+    /// retained in-flight writes. Existing direct callers may omit the capability.
+    pub fn connect_device_cancellable_with_io_owner(
+        owner: Arc<Mutex<SessionRuntime>>,
+        session_clock: &Instant,
+        device_id: Option<&str>,
+        report_handshake_attempt: impl FnMut(u32, UsbTelemetry),
+        observe_state: impl FnMut(IncomingMessage),
+        cancelled: &dyn Fn() -> bool,
+        io_owner: Option<Arc<dyn Send + Sync>>,
+    ) -> Result<ConnectedQc, UsbError> {
+        Self::connect_device_cancellable_with_io_owner_and_teardown(
+            owner,
+            session_clock,
+            device_id,
+            report_handshake_attempt,
+            observe_state,
+            cancelled,
+            io_owner,
+            None,
+        )
+    }
+
+    /// The optional sticky observer is cleared when native teardown delivery
+    /// cannot be verified. It is not an acknowledgement from the device.
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_device_cancellable_with_io_owner_and_teardown(
+        owner: Arc<Mutex<SessionRuntime>>,
+        session_clock: &Instant,
+        device_id: Option<&str>,
         mut report_handshake_attempt: impl FnMut(u32, UsbTelemetry),
         mut observe_state: impl FnMut(IncomingMessage),
         cancelled: &dyn Fn() -> bool,
+        io_owner: Option<Arc<dyn Send + Sync>>,
+        teardown_observer: Option<Arc<AtomicBool>>,
     ) -> Result<ConnectedQc, UsbError> {
-        let mut usb = Self::open(Arc::clone(&owner), session_clock, device_id)?;
+        let mut usb = Self::open(
+            Arc::clone(&owner),
+            session_clock,
+            device_id,
+            io_owner,
+            teardown_observer,
+        )?;
         loop {
             if cancelled() {
                 // Dropped, not aborted: `Drop` sends the clean disconnect, so
@@ -1429,6 +1583,36 @@ impl QcUsb {
         self.send_command_with_layout(message, self.report_layout)
     }
 
+    /// Forwarded replies carry their originating request's absolute deadline
+    /// through the queue and each subsequent HID report admission.
+    pub fn send_forwarded_command(
+        &mut self,
+        message: OutboundMessage,
+        deadline: Option<Instant>,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<(), UsbError> {
+        let shared = Arc::clone(&self.owner);
+        let owner = shared.lock_recover();
+        if !owner
+            .lifecycle
+            .as_ref()
+            .is_some_and(SessionDriver::is_active)
+        {
+            return Err(UsbError::Initialization(
+                "no active lifecycle for forwarding admission".into(),
+            ));
+        }
+        let mut guard = NativeWriteGuard::capture(&shared, &owner, None, None)?;
+        guard.forwarding_deadline = deadline;
+        guard.forwarding_cancel = Some(cancel);
+        guard
+            .validate_forwarding()
+            .map_err(|_| UsbError::ForwardingRetired)?;
+        let reports = encode_session_reports(&owner.transport, &message, self.report_layout)?;
+        drop(owner);
+        self.queue_reports(message.message_type, reports, guard)
+    }
+
     fn send_command_with_layout(
         &mut self,
         message: OutboundMessage,
@@ -1459,7 +1643,13 @@ impl QcUsb {
         mut guard: NativeWriteGuard,
     ) -> Result<(), UsbError> {
         guard.clock.get_or_insert(self.session_clock);
-        guard.validate(false).map_err(UsbError::Admission)?;
+        guard.validate(false).map_err(|error| {
+            if guard.forwarding_retired() {
+                UsbError::ForwardingRetired
+            } else {
+                UsbError::Admission(error)
+            }
+        })?;
         self.flight.outbound(message_type, reports.len());
         // Windows reports the QC's accepted status-stage STALL only after the
         // data was delivered. Keep the complete frame on the permanent TX lane
@@ -1468,7 +1658,9 @@ impl QcUsb {
             .io
             .queue_message_guarded(message_type, reports, Some(guard))
         {
-            self.flight.event("hid-writer-stopped");
+            if !matches!(error, UsbError::ForwardingRetired) {
+                self.flight.event("hid-writer-stopped");
+            }
             return Err(error);
         }
         Ok(())
@@ -1585,37 +1777,66 @@ impl QcUsb {
     }
 
     pub fn disconnect_exact(&mut self, cpu_load_request_id: u64) {
-        if self.disconnected_state_sent {
-            return;
-        }
-        self.disconnected_state_sent = true;
-        for message in commands::disconnect_initialization_exact(cpu_load_request_id) {
-            if let Ok(reports) = TransportRuntime::encode_reports(&message, self.report_layout) {
-                self.flight.outbound(message.message_type, reports.len());
-                if self
-                    .io
-                    .queue_message(message.message_type, reports)
-                    .is_err()
-                {
-                    self.io.abort();
-                    break;
-                }
-            }
-        }
-        self.io.finish_writes();
+        self.disconnect_exact_checked(cpu_load_request_id);
     }
 
-    /// A failed session must not flush queued commands or append teardown to
-    /// an uncertain frame. The currently executing OS call remains bounded by
-    /// its backend timeout; unsent reports are abandoned without replay.
+    /// Logical closure may finish without acknowledged native delivery. Return
+    /// the cached first outcome, never upgrade a retained writer on a second call.
+    pub fn disconnect_exact_checked(&mut self, cpu_load_request_id: u64) -> bool {
+        if self.disconnected_state_sent {
+            return self.teardown_verified.unwrap_or(false);
+        }
+        self.disconnected_state_sent = true;
+        let queued = queue_disconnect_frames(
+            commands::disconnect_initialization_exact(cpu_load_request_id),
+            |message| {
+                let reports = TransportRuntime::encode_reports(&message, self.report_layout)
+                    .map_err(|error| error.to_string())?;
+                self.flight.outbound(message.message_type, reports.len());
+                self.io
+                    .queue_message(message.message_type, reports)
+                    .map_err(|error| error.to_string())
+            },
+        );
+        if !queued {
+            self.io.abort();
+        }
+        let finished = self.io.finish_writes();
+        let verified =
+            record_teardown_evidence(self.teardown_observer.as_deref(), queued, finished);
+        self.teardown_verified = Some(verified);
+        verified
+    }
+
+    /// Abandon unsent reports without replay. A started native OS call remains
+    /// owned until actual retirement; cancellation is not delivery evidence.
     pub fn abort(&mut self) {
         self.disconnected_state_sent = true;
+        self.teardown_verified = Some(false);
+        record_teardown_evidence(self.teardown_observer.as_deref(), false, false);
         self.io.abort();
     }
 
     pub fn disconnect(&mut self) {
         self.disconnect_exact(self.teardown_request_id);
     }
+}
+
+fn queue_disconnect_frames<T, E>(
+    frames: impl IntoIterator<Item = T>,
+    mut queue: impl FnMut(T) -> Result<(), E>,
+) -> bool {
+    frames.into_iter().all(|frame| queue(frame).is_ok())
+}
+
+fn record_teardown_evidence(observer: Option<&AtomicBool>, queued: bool, finished: bool) -> bool {
+    let verified = queued && finished;
+    if !verified {
+        if let Some(observer) = observer {
+            observer.store(false, Ordering::Release);
+        }
+    }
+    verified
 }
 
 fn encode_session_reports(
@@ -1681,6 +1902,44 @@ mod tests {
             payload: payload.to_vec(),
             received_at_unix_ms: u128::from(sequence),
         }
+    }
+
+    #[test]
+    fn teardown_evidence_requires_every_frame_and_actual_writer_completion() {
+        let frames = quadcortex::commands::disconnect_initialization_exact(77);
+        let expected = frames.len();
+        let mut seen = 0;
+        assert!(super::queue_disconnect_frames(frames, |_| {
+            seen += 1;
+            Ok::<(), ()>(())
+        }));
+        assert_eq!(seen, expected);
+        let mut seen = 0;
+        assert!(!super::queue_disconnect_frames([1, 2], |_| {
+            seen += 1;
+            Err::<(), ()>(())
+        }));
+        assert_eq!(seen, 1, "no later frame after failed admission");
+        let observer = AtomicBool::new(true);
+        assert!(super::record_teardown_evidence(Some(&observer), true, true));
+        assert!(!super::record_teardown_evidence(
+            Some(&observer),
+            true,
+            false
+        ));
+        assert!(!observer.load(Ordering::Acquire));
+        assert!(super::record_teardown_evidence(Some(&observer), true, true));
+        assert!(
+            !observer.load(Ordering::Acquire),
+            "later success cannot erase earlier ambiguity"
+        );
+        let observer = AtomicBool::new(true);
+        assert!(!super::record_teardown_evidence(
+            Some(&observer),
+            false,
+            true
+        ));
+        assert!(!observer.load(Ordering::Acquire));
     }
 
     #[test]
@@ -1968,6 +2227,179 @@ mod tests {
     }
 
     #[test]
+    fn failed_writer_startup_keeps_last_native_drop_on_original_reader() {
+        struct NativeDrop {
+            entered: mpsc::Sender<thread::ThreadId>,
+            release: Mutex<mpsc::Receiver<()>>,
+        }
+        impl Drop for NativeDrop {
+            fn drop(&mut self) {
+                let _ = self.entered.send(thread::current().id());
+                let _ = self
+                    .release
+                    .lock_recover()
+                    .recv_timeout(Duration::from_secs(10));
+            }
+        }
+        struct Release {
+            sender: mpsc::Sender<()>,
+            admissions: Arc<crate::retained_io::Admissions>,
+            reader: Option<super::OwnedWriter>,
+        }
+        impl Drop for Release {
+            fn drop(&mut self) {
+                let _ = self.sender.send(());
+                if let Some(reader) = self.reader.take() {
+                    reader.finish(Duration::from_secs(2));
+                }
+                let until = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < until {
+                    crate::retained_io::reap_retained_for_test();
+                    if self.admissions.reserve("startup").is_ok() {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+        let admissions = Arc::new(crate::retained_io::Admissions::default());
+        let reservation = admissions.reserve("startup").unwrap();
+        let (entered, dropped) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let mut _release = Release {
+            sender: release,
+            admissions: Arc::clone(&admissions),
+            reader: None,
+        };
+        let native = Arc::new(crate::retained_io::NativeLifetime {
+            device: NativeDrop {
+                entered,
+                release: Mutex::new(blocked),
+            },
+            _io_owner: None,
+            _reservation: Arc::clone(&reservation),
+        });
+        let writer_clone = Arc::clone(&native);
+        let (startup, finished_startup) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let _reader = super::ReaderStartupNative {
+                native,
+                startup: finished_startup,
+            };
+            // Model an RX lane that exits before the second spawn resolves.
+        });
+        _release.reader = Some(super::OwnedWriter::new(handle, reservation));
+        // A rejected TX spawn drops its captured native clone before returning.
+        drop(writer_clone);
+        let failure = super::complete_writer_startup(
+            Err::<(), _>(std::io::Error::other("injected writer spawn rejection")),
+            startup,
+        );
+        assert!(failure.is_err());
+        assert_ne!(
+            dropped.recv_timeout(Duration::from_secs(2)).unwrap(),
+            thread::current().id()
+        );
+        assert_eq!(
+            _release
+                .reader
+                .take()
+                .unwrap()
+                .finish(Duration::from_millis(25)),
+            super::WriterFinish::Retained
+        );
+        assert!(admissions.reserve("startup").is_err());
+        _release.sender.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            crate::retained_io::reap_retained_for_test();
+            if admissions.reserve("startup").is_ok() {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "original startup reader did not retire"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn held_hid_reader_drop_retains_native_owner_until_actual_exit() {
+        struct Release(
+            std::sync::mpsc::Sender<()>,
+            Arc<crate::retained_io::Admissions>,
+        );
+        impl Drop for Release {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+                let until = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < until {
+                    crate::retained_io::reap_retained_for_test();
+                    if self.1.reserve("held-reader").is_ok() {
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+        struct Lease(Arc<AtomicBool>);
+        impl Drop for Lease {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let admissions = Arc::new(crate::retained_io::Admissions::default());
+        let reservation = admissions.reserve("held-reader").unwrap();
+        let released = Arc::new(AtomicBool::new(false));
+        let native = crate::retained_io::NativeLifetime {
+            device: (),
+            _io_owner: Some(Arc::new(Lease(Arc::clone(&released)))),
+            _reservation: Arc::clone(&reservation),
+        };
+        let (send, held) = mpsc::channel();
+        let _release = Release(send, Arc::clone(&admissions));
+        let (entered, ready) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let _native = native;
+            let _ = entered.send(());
+            let _ = held.recv_timeout(Duration::from_secs(10));
+        });
+        let reader = super::OwnedWriter::new(reader, reservation);
+        let (_read_sender, read_receiver) = mpsc::channel();
+        let io = HidIo {
+            receiver: read_receiver,
+            write_sender: None,
+            write_progress: Arc::new(super::WriteProgress::default()),
+            telemetry: Arc::new(Mutex::new(UsbTelemetry::default())),
+            stopping: Arc::new(AtomicBool::new(false)),
+            overflowed: Arc::new(AtomicBool::new(false)),
+            terminal_write_error: Arc::new(Mutex::new(None)),
+            reader: Some(reader),
+            writer: None,
+        };
+        // The original is owned by actual HidIo before the first fallible wait.
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        let began = Instant::now();
+        drop(io);
+        assert!(began.elapsed() < Duration::from_secs(4));
+        assert!(!released.load(Ordering::Acquire));
+        assert!(admissions.reserve("held-reader").is_err());
+        _release.0.send(()).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            crate::retained_io::reap_retained_for_test();
+            if let Ok(replacement) = admissions.reserve("held-reader") {
+                drop(replacement);
+                break;
+            }
+            assert!(Instant::now() < until, "original HID reader did not retire");
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(released.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn closed_hid_writer_channel_returns_write_error_without_counting_message() {
         let (write_sender, write_receiver) = mpsc::sync_channel(1);
         drop(write_receiver);
@@ -2037,12 +2469,17 @@ mod tests {
             overflowed: Arc::new(AtomicBool::new(false)),
             terminal_write_error,
             reader: None,
-            writer: Some(writer),
+            writer: Some(super::owned_test_writer(writer)),
         };
 
         io.queue_message(4, vec![vec![0_u8; 129], vec![1_u8; 129]])
             .expect("enqueue completes asynchronously");
+        let observation_deadline = Instant::now() + Duration::from_secs(5);
         let error = loop {
+            assert!(
+                Instant::now() < observation_deadline,
+                "terminal short write was not published within the whole observation budget"
+            );
             match io.read(20) {
                 Err(error @ UsbError::Write(_)) => break error,
                 Ok(_) => continue,
@@ -2169,7 +2606,7 @@ mod tests {
         WriteStallPolicy::WindowsQcError31
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     fn writer_test_stall_policy() -> WriteStallPolicy {
         WriteStallPolicy::Strict
     }
@@ -2209,8 +2646,81 @@ mod tests {
             overflowed: Arc::new(AtomicBool::new(false)),
             terminal_write_error,
             reader: None,
-            writer: Some(writer),
+            writer: Some(super::owned_test_writer(writer)),
         }
+    }
+
+    #[test]
+    fn progressing_native_frame_keeps_queue_admission_alive() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut first_report = Some(started_tx);
+        let writes = Arc::new(AtomicUsize::new(0));
+        let observed_writes = Arc::clone(&writes);
+        let io = writer_test_io(move |report| {
+            if let Some(started) = first_report.take() {
+                started.send(()).unwrap();
+            }
+            if report[0] == 1 {
+                thread::sleep(Duration::from_millis(75));
+            }
+            observed_writes.fetch_add(1, Ordering::SeqCst);
+            Ok(report.len())
+        });
+        io.queue_message(
+            profile::MESSAGE_TYPE_UPDATER_FORWARD,
+            vec![vec![1_u8; 129]; 20],
+        )
+        .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        io.queue_message(profile::MESSAGE_TYPE_UPDATER_FORWARD, vec![vec![2; 129]])
+            .unwrap();
+        let began = Instant::now();
+        let budget = Duration::from_millis(500);
+        io.queue_message_guarded_with_budget(
+            profile::MESSAGE_TYPE_KEEP_ALIVE,
+            vec![vec![3; 129]],
+            None,
+            budget,
+        )
+        .expect("native report progress must extend stalled-admission observation");
+        assert!(began.elapsed() > budget);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while io.telemetry().write_delivery.completed < 3 {
+            assert!(Instant::now() < deadline, "all three frames must complete");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(writes.load(Ordering::SeqCst), 22);
+        assert_eq!(io.telemetry().write_delivery.failed, 0);
+    }
+
+    #[test]
+    fn stalled_native_frame_still_expires_queue_admission() {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut first_report = Some((started_tx, release_rx));
+        let io = writer_test_io(move |report| {
+            if let Some((started, release)) = first_report.take() {
+                started.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            Ok(report.len())
+        });
+        io.queue_message(profile::MESSAGE_TYPE_UPDATER_FORWARD, vec![vec![1; 129]])
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        io.queue_message(profile::MESSAGE_TYPE_UPDATER_FORWARD, vec![vec![2; 129]])
+            .unwrap();
+        let result = io.queue_message_guarded_with_budget(
+            profile::MESSAGE_TYPE_KEEP_ALIVE,
+            vec![vec![3; 129]],
+            None,
+            Duration::from_millis(100),
+        );
+        release_tx.send(()).unwrap();
+        assert!(
+            matches!(result, Err(UsbError::Admission(ref error)) if error == "native HID write queue budget expired")
+        );
+        assert_eq!(io.telemetry().write_delivery.admitted, 2);
     }
 
     fn test_write_guard(expired: bool) -> (Arc<Mutex<SessionRuntime>>, super::NativeWriteGuard) {
@@ -2454,6 +2964,90 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains("partially delivered"));
+    }
+
+    #[test]
+    fn forwarding_cancellation_after_first_fragment_is_still_terminal() {
+        let (_, mut guard) = test_write_guard(false);
+        let cancel = Arc::new(AtomicBool::new(false));
+        guard.forwarding_cancel = Some(Arc::clone(&cancel));
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(HidWriteMessage {
+                message_type: 29,
+                reports: vec![vec![0; 129], vec![1; 129]],
+                guard: Some(guard),
+            })
+            .unwrap();
+        drop(sender);
+        let telemetry = Arc::new(Mutex::new(UsbTelemetry::default()));
+        let stopping = Arc::new(AtomicBool::new(false));
+        let terminal = Arc::new(Mutex::new(None));
+        let writes = AtomicUsize::new(0);
+        super::run_hid_writer(
+            receiver,
+            Arc::clone(&telemetry),
+            Arc::clone(&stopping),
+            Arc::clone(&terminal),
+            Arc::new(super::WriteProgress::default()),
+            WriteStallPolicy::Strict,
+            |report| {
+                writes.fetch_add(1, Ordering::SeqCst);
+                cancel.store(true, Ordering::Release);
+                Ok(report.len())
+            },
+        );
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        assert!(stopping.load(Ordering::Acquire));
+        assert_eq!(telemetry.lock().unwrap().write_delivery.failed, 1);
+        assert!(terminal
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .contains("partially delivered"));
+    }
+
+    #[test]
+    fn forwarding_expiry_is_checked_even_after_a_frame_began() {
+        let (_, mut guard) = test_write_guard(false);
+        guard.forwarding_deadline = Some(Instant::now() + Duration::from_secs(1));
+        guard.forwarding_cancel = Some(Arc::new(AtomicBool::new(false)));
+        assert!(guard.validate_forwarding().is_ok());
+        guard.forwarding_deadline = Some(Instant::now() - Duration::from_millis(1));
+        assert!(guard
+            .begin_report(1)
+            .unwrap_err()
+            .contains("deadline expired"));
+        assert!(guard.validate(true).is_err());
+    }
+
+    #[test]
+    fn advancing_hid_queue_does_not_extend_forwarding_deadline() {
+        let (entered, started) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::clone(&calls);
+        let mut io = writer_test_io(move |report| {
+            if writes.fetch_add(1, Ordering::SeqCst) == 0 {
+                entered.send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(2));
+            }
+            Ok(report.len())
+        });
+        io.queue_message(26, vec![vec![0; 129]]).unwrap();
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        io.queue_message(49, vec![vec![1; 129]]).unwrap();
+        let (_, mut guard) = test_write_guard(false);
+        guard.forwarding_deadline = Some(Instant::now() + Duration::from_millis(30));
+        guard.forwarding_cancel = Some(Arc::new(AtomicBool::new(false)));
+        let result = io.queue_message_guarded(29, vec![vec![2; 129]], Some(guard));
+        release.send(()).unwrap();
+        assert!(matches!(result, Err(UsbError::ForwardingRetired)));
+        assert!(!io.stopping.load(Ordering::Acquire));
+        io.queue_message(26, vec![vec![3; 129]]).unwrap();
+        assert!(io.finish_writes());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
     #[test]

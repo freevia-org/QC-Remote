@@ -3,7 +3,8 @@ import { QC_CATEGORY_COLORS, QC_HARDWARE_COLORS, QC_PRESET_SLOT_COLORS, QC_SCENE
 import { sceneLetter } from "./state.ts";
 
 export interface FootswitchLed {
-  active: boolean;
+  /** Absent when the current assigned block has no observed bypass state. */
+  active?: boolean;
   assigned: boolean;
   color: string;
 }
@@ -67,12 +68,17 @@ function unknownModeLed(): FootswitchLed {
 
 function stompLed(snapshot: PresetSnapshot, index: number): FootswitchLed {
   const reported = snapshot.footswitchStates?.find((state) => state.index === index);
-  if (reported) return { active: reported.active, assigned: reported.assigned, color: reported.color };
   const assigned = snapshot.blocks
     .filter((block) => block.footswitch === index)
     .sort((left, right) => (left.footswitchOrder ?? Number.MAX_SAFE_INTEGER) - (right.footswitchOrder ?? Number.MAX_SAFE_INTEGER));
-  if (!assigned.length) return { active: false, assigned: false, color: QC_HARDWARE_COLORS.idleLed };
-  return { active: !assigned[0].bypassed, assigned: true, color: stompLedColor(assigned) };
+  // The native row is a derived lamp map, not independent LED telemetry.
+  // A newer scene projection may have explicitly withdrawn its bypass evidence.
+  if (assigned.length) {
+    return { active: assigned[0].bypassed === undefined ? undefined : !assigned[0].bypassed,
+      assigned: true, color: reported?.color ?? stompLedColor(assigned) };
+  }
+  if (reported) return { active: reported.active, assigned: reported.assigned, color: reported.color };
+  return { active: false, assigned: false, color: QC_HARDWARE_COLORS.idleLed };
 }
 
 function sceneLed(snapshot: PresetSnapshot, index: number): FootswitchLed {
@@ -97,7 +103,7 @@ function presetLed(snapshot: PresetSnapshot, index: number): FootswitchLed {
 }
 
 export function footswitchLeds(snapshot: PresetSnapshot): FootswitchLed[] {
-  const fallbackMode = snapshot.mode === "HYBRID" ? "SCENE" : snapshot.mode;
+  const fallbackMode = snapshot.mode;
   const rowModes = snapshot.footswitchModes ?? [fallbackMode, fallbackMode];
   return Array.from({ length: QC_SCENE_COUNT }, (_, index) => {
     const mode = rowModes[hybridModeIndex(index)];
@@ -110,7 +116,7 @@ export function footswitchLeds(snapshot: PresetSnapshot): FootswitchLed[] {
 
 export function footswitchIntent(snapshot: PresetSnapshot, index: number): FootswitchIntent {
   if (!Number.isInteger(index) || index < 0 || index >= QC_SCENE_COUNT) return { kind: "none" };
-  const fallbackMode = snapshot.mode === "HYBRID" ? "SCENE" : snapshot.mode;
+  const fallbackMode = snapshot.mode;
   const mode = snapshot.footswitchModes?.[hybridModeIndex(index)] ?? fallbackMode;
   if (mode === "SCENE") return { kind: "select-scene", scene: index };
   if (mode === "PRESET") return { kind: "select-preset", position: Math.floor(snapshot.presetPosition / 8) * 8 + index };
@@ -121,7 +127,10 @@ export function footswitchIntent(snapshot: PresetSnapshot, index: number): Foots
     : { kind: "none" };
 }
 
-export function applyFootswitchPreview(snapshot: PresetSnapshot, index: number): PresetSnapshot {
+/** Explicit simulator policy; the default preserves the existing physical preview. */
+export type QcStompPreviewPolicy = "observed-siblings" | "ordered-group";
+
+export function applyFootswitchPreview(snapshot: PresetSnapshot, index: number, stompPolicy: QcStompPreviewPolicy = "observed-siblings"): PresetSnapshot {
   const intent = footswitchIntent(snapshot, index);
   if (intent.kind === "select-scene") return { ...snapshot, activeScene: intent.scene };
   if (intent.kind === "select-preset") {
@@ -132,19 +141,31 @@ export function applyFootswitchPreview(snapshot: PresetSnapshot, index: number):
       presetLocation: `${Math.floor(presetPosition / 8) + 1}${sceneLetter(presetPosition % 8)}`
     };
   }
-  if (intent.kind === "toggle-stomp") return optimisticallyPressFootswitch(snapshot, intent.index);
+  if (intent.kind === "toggle-stomp") return optimisticallyPressFootswitch(snapshot, intent.index, stompPolicy);
   return snapshot;
 }
 
-export function optimisticallyPressFootswitch(snapshot: PresetSnapshot, index: number): PresetSnapshot {
-  const fallbackMode = snapshot.mode === "HYBRID" ? "SCENE" : snapshot.mode;
+export function optimisticallyPressFootswitch(snapshot: PresetSnapshot, index: number, stompPolicy: QcStompPreviewPolicy = "observed-siblings"): PresetSnapshot {
+  const fallbackMode = snapshot.mode;
   const rowModes = snapshot.footswitchModes ?? [fallbackMode, fallbackMode];
   if (rowModes[hybridModeIndex(index)] !== "STOMP") return snapshot;
   const assignedIds = new Set(snapshot.blocks.filter((block) => block.footswitch === index).map((block) => block.id));
   if (!assignedIds.size) return snapshot;
+  const firstAssigned = snapshot.blocks.filter((block) => assignedIds.has(block.id))
+    .sort((left, right) => (left.footswitchOrder ?? Number.MAX_SAFE_INTEGER) - (right.footswitchOrder ?? Number.MAX_SAFE_INTEGER))[0];
+  const orderedTarget = typeof firstAssigned.bypassed === "boolean" ? !firstAssigned.bypassed : undefined;
   return {
     ...snapshot,
-    blocks: snapshot.blocks.map((block) => assignedIds.has(block.id) ? { ...block, bypassed: !block.bypassed } : block),
-    footswitchStates: snapshot.footswitchStates?.map((state) => state.index === index ? { ...state, active: !state.active } : state)
+    blocks: snapshot.blocks.map((block) => {
+      if (!assignedIds.has(block.id) || block.bypassed === undefined) return block;
+      // Only the explicitly selected Virtual policy follows its known first
+      // assignment. Unknown evidence never becomes a guessed group inverse.
+      if (stompPolicy === "ordered-group") return orderedTarget === undefined ? block : { ...block, bypassed: orderedTarget };
+      return { ...block, bypassed: !block.bypassed };
+    }),
+    // The raw physical press is still dispatched. Only its unprovable local
+    // inverse is withheld; siblings with observed booleans retain their preview.
+    footswitchStates: snapshot.footswitchStates
+      ?.map((state) => state.index === index ? { ...state, active: firstAssigned.bypassed } : state)
   };
 }

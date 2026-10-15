@@ -21,6 +21,8 @@ export interface PublicRelayStatus {
     remoteEnabled?: boolean;
   /** A previous identity system paired this host. It cannot access a Google-owned relay until paired again. */
   needsRepair?: boolean;
+  /** A withdrawn or cancelled credential still needs cloud revocation; a newer active pairing may coexist. */
+  pendingRevocation?: boolean;
   state: PublicRelayState;
   accessMode: ControlAccessMode;
   endpoint?: string;
@@ -115,6 +117,8 @@ export interface PublicRelayPort {
   pair(endpoint: string, pairingCode: string, deviceName?: string): Promise<PublicRelayStatus>;
   start(): Promise<void>;
   unpair(): Promise<PublicRelayStatus>;
+  /** Retry only saved withdrawals, preserving any current active pairing. */
+  retryWithdrawal?(): Promise<PublicRelayStatus>;
   setAccessMode(mode: ControlAccessMode): Promise<PublicRelayStatus>;
   browserPairing?: PublicRelayBrowserPairingPort;
   /** Optional for adapters that target a relay host predating this preference. */

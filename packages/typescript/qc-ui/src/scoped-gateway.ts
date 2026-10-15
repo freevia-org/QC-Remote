@@ -1,17 +1,20 @@
 import { useMemo } from "react";
 import type { GatewayTransport, PresetSnapshot } from "@qc-remote/client";
 import { SupersededPresetOperation, type PresetLifetime, type PresetOperation } from "@qc-remote/core";
+import { captureGatewaySession, registerGatewayWrapper } from "./gateway-session.ts";
 
 const sessionMethods = new Set(["listModels", "listPresets", "listPresetFolders", "listPresetSlots", "setMasterVolume"]);
 
 /** Bind deferred UI callbacks and their results to the context that created them. */
 export function scopedGateway(gateway: GatewayTransport, lifetime: PresetLifetime, origin: PresetOperation, snapshot: Pick<PresetSnapshot, "setlistKey">): GatewayTransport {
   const setlistKey = snapshot.setlistKey;
-  return new Proxy(gateway, {
+  const captured = captureGatewaySession(gateway, () => lifetime.currentSession(origin));
+  const scoped = new Proxy(captured.gateway, {
     get(target, property, receiver) {
       const method = Reflect.get(target, property, receiver);
       if (typeof method !== "function") return method;
       return async (...args: unknown[]) => {
+        captured.assertCurrent();
         const sessionOnly = sessionMethods.has(String(property));
         const valid = (operation: PresetOperation) => sessionOnly ? lifetime.currentSession(operation) : lifetime.current(operation);
         if (!valid(origin)) throw new SupersededPresetOperation();
@@ -23,9 +26,11 @@ export function scopedGateway(gateway: GatewayTransport, lifetime: PresetLifetim
         const operation = lifetime.begin(destination);
         try {
           const result = await Reflect.apply(method, target, args);
+          captured.assertCurrent();
           if (!valid(operation)) throw new SupersededPresetOperation();
           return result;
         } catch (error) {
+          captured.assertCurrent();
           if (!valid(operation)) throw new SupersededPresetOperation();
           throw error;
         } finally {
@@ -34,6 +39,8 @@ export function scopedGateway(gateway: GatewayTransport, lifetime: PresetLifetim
       };
     }
   });
+  registerGatewayWrapper(scoped, gateway, (target) => scopedGateway(target, lifetime, origin, snapshot), captured.current);
+  return scoped;
 }
 
 /**

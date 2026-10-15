@@ -152,7 +152,7 @@ only confirmation, and the paired app does not ask a second time.
 | Node.js and npm | 22.6 or newer (the tests use `--experimental-strip-types`) | TypeScript packages, both apps' web layers, the Tauri and Capacitor CLIs, Wrangler (each installed by `npm install`) |
 | Rust (rustup) | stable, at least 1.90 for the Windows app (see "Rust version floors" below); on Windows the MSVC toolchain (`stable-x86_64-pc-windows-msvc`), which `apps/windows/src-tauri/rust-toolchain.toml` pins | the Rust workspace, the Windows app, the Android native library |
 | Visual Studio Build Tools (Desktop development with C++) and WebView2 | current | the Windows app (MSVC linker, Tauri runtime) |
-| PowerShell 7 (`pwsh`) | any | the Android native build script off Windows; on Windows, Gradle and the Windows-only `android:build:debug` and `branding:generate` scripts use the inbox Windows PowerShell |
+| PowerShell 7 (`pwsh`) | 7 or newer | standalone Windows native validation (`scripts/test-windows-native.mjs`) and the Android native build script off Windows. Windows native validation refuses before Cargo dispatch if PowerShell 7 is unavailable. This is a development/validation prerequisite, not a prerequisite for running QC Remote. Gradle and the Windows-only `android:build:debug` and `branding:generate` scripts still use inbox Windows PowerShell. |
 | JDK | 21 (Temurin in CI) | Android |
 | Android SDK | platform 36, build-tools 36.0.0 | Android |
 | Android NDK | 27.2.12479018, with `ANDROID_NDK_HOME` pointing at it | the Android native library |
@@ -189,6 +189,31 @@ On pull requests, CI builds and tests the Rust workspace on `windows-latest`
 only; several crates are Windows-specific. A second job also tests and documents
 the `quadcortex` crate on `ubuntu-latest`. A push to `master` runs only the
 public-history audit.
+
+### Windows native shell tests
+
+The shell is a separate Cargo workspace. On Windows, run its canonical
+original-process-owned launcher from the repository root:
+
+```sh
+node scripts/test-windows-native.mjs --root .
+```
+
+Besides preparing the exact broker and harness artifacts, this launcher owns
+an exclusive scratch directory for test health records and inherited broker
+stderr. It removes those bytes only after its original process tree and host
+have acknowledged retirement. An unacknowledged descendant retains the same
+attribution and scratch directory rather than letting a thread-local cleanup
+delete a live broker's diagnostics.
+
+Standalone `cargo test` calls that reach Windows gateway/health/stderr
+admission without this owned state now fail with the launcher command before
+dispatch. Pure tests that never request that state are unaffected. A custom
+focused runner must reuse `scripts/windows-owned-producer.mjs` with
+`nativeTestState: true`, as well as the canonical artifact/environment setup;
+merely setting an inherited scratch-path variable is not proof of cleanup.
+This development contract is not an OS security boundary and does not change
+installed application paths or non-Windows test behavior.
 
 ### TypeScript packages and apps
 

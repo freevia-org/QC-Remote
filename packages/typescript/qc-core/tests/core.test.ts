@@ -172,16 +172,31 @@ test("partial native I/O updates merge into the shared snapshot", () => {
 test("native MIDI settings replace the matching preset projections", () => {
   const before = {
     ...demoSnapshot,
-    midiOut: [{ source: 1, messages: [{ type: 1, channel: 1, param1: 2, param2: 3, param3: 4 }] }],
+    midiOut: [
+      { source: 1, messages: [{ type: 1, channel: 1, param1: 2, param2: 3, param3: 4 }] },
+      { source: 4, messages: [{ type: 2, channel: 4, param1: 11, param2: 12, param3: 13 }] }
+    ],
     presetLoadMidiOut: [{ type: 2, channel: 2, param1: 5, param2: 6, param3: 7 }]
   };
+  const unchanged = structuredClone(before);
+  const added = { source: 7, messages: [{ type: 1, channel: 5, param1: 14, param2: 15, param3: 16 }] };
   const after = applyQcStateUpdate(before, {
     kind: "midiOut",
-    midiOut: [{ source: 4, messages: [] }],
+    midiOut: [{ source: 1, messages: [] }, added],
     presetLoadMidiOut: [{ type: 3, channel: 3, param1: 8, param2: 9, param3: 10 }]
   });
-  assert.deepEqual(after.midiOut, [{ source: 4, messages: [] }]);
+  assert.deepEqual(after.midiOut, [before.midiOut[1], added]);
+  assert.equal(after.midiOut?.some((row) => row.source === 1), false,
+    "an explicitly empty source withdraws only its own messages");
   assert.deepEqual(after.presetLoadMidiOut, [{ type: 3, channel: 3, param1: 8, param2: 9, param3: 10 }]);
+  assert.deepEqual(before, unchanged, "a sparse publication never mutates the prior snapshot");
+  const empty = applyQcStateUpdate(after, { kind: "midiOut", midiOut: [] });
+  assert.deepEqual(empty.midiOut, after.midiOut,
+    "an empty collection contains no evidence of an addressed source change");
+  assert.deepEqual(empty.presetLoadMidiOut, after.presetLoadMidiOut);
+  const clearedLoad = applyQcStateUpdate(empty, { kind: "midiOut", presetLoadMidiOut: [] });
+  assert.deepEqual(clearedLoad.midiOut, after.midiOut);
+  assert.deepEqual(clearedLoad.presetLoadMidiOut, []);
 });
 
 test("new optimistic bypass intent cannot be rolled back by an older device echo", () => {

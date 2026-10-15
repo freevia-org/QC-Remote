@@ -24,6 +24,8 @@ use crate::local_stdio::CLIENT_ID_ARGUMENT;
 
 mod device_knowledge_skill;
 use device_knowledge_skill::*;
+#[cfg(windows)]
+mod owned_tool;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::os::unix::fs::MetadataExt;
@@ -125,6 +127,87 @@ const ANTIGRAVITY_STATE_RPC_PATH: &str =
 /// panel's status call with it, for as long as the service stayed wedged.
 #[cfg(windows)]
 const EXTERNAL_TOOL_TIMEOUT: Duration = Duration::from_secs(10);
+const ANTIGRAVITY_OPERATION_BUDGET: Duration = Duration::from_secs(10);
+const ANTIGRAVITY_MAX_PORTS: usize = 16;
+thread_local! { static TOOL_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) }; }
+fn with_tool_deadline<T>(deadline: Instant, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Instant>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TOOL_DEADLINE.with(|current| current.set(self.0));
+        }
+    }
+    let previous = TOOL_DEADLINE.with(|current| current.replace(Some(deadline)));
+    let _restore = Restore(previous);
+    action()
+}
+fn remaining(deadline: Instant) -> Result<Duration, String> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        Err("Google Antigravity refresh reached its total operation deadline.".into())
+    } else {
+        Ok(left)
+    }
+}
+async fn within_antigravity_budget<T>(
+    deadline: Instant,
+    operation: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::time::timeout(remaining(deadline)?, operation)
+        .await
+        .map_err(|_| {
+            "Google Antigravity refresh reached its total operation deadline.".to_string()
+        })?
+}
+fn validate_antigravity_ports(ports: &[u16]) -> Result<(), String> {
+    if ports.is_empty()
+        || ports.len() > ANTIGRAVITY_MAX_PORTS
+        || ports.contains(&0)
+        || ports
+            .iter()
+            .enumerate()
+            .any(|(index, port)| ports[..index].contains(port))
+    {
+        Err("The running Antigravity service returned invalid local endpoints.".into())
+    } else {
+        Ok(())
+    }
+}
+// Five provider rows may refresh together; eight original actors provide
+// bounded headroom without making a healthy initial panel race its own cap.
+// Synchronous OS I/O may outlive its caller, but never its original owner.
+static CLIENT_INSPECTION_BUDGET: qc_native_platform::thread_owner::Budget =
+    qc_native_platform::thread_owner::Budget::new(8);
+const CLIENT_INSPECTION_TIMEOUT: Duration = Duration::from_secs(10);
+async fn inspect_client_until<T: Send + 'static>(
+    deadline: Instant,
+    action: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let result = crate::owned_blocking::run(
+        "qc-client-inspection",
+        &CLIENT_INSPECTION_BUDGET,
+        deadline,
+        move |context| {
+            if !context.current() {
+                return Err("Client inspection expired before discovery".into());
+            }
+            with_tool_deadline(deadline, action)
+        },
+    )
+    .await
+    .map_err(|error| format!("Client inspection failed: {error}"))??;
+    // Discovery helpers historically swallow individual lookup failure as
+    // absence. Never turn a total deadline into a false not-installed answer.
+    if Instant::now() >= deadline {
+        return Err("Client inspection reached its total operation deadline".into());
+    }
+    Ok(result)
+}
+async fn discover_antigravity_until(
+    deadline: Instant,
+) -> Result<RunningAntigravityLanguageServer, String> {
+    inspect_client_until(deadline, running_antigravity_language_server).await
+}
 
 /// Runs `command` to completion like [`Command::output`], but gives up after
 /// `timeout`: the child is killed and the call returns `ErrorKind::TimedOut`,
@@ -132,65 +215,34 @@ const EXTERNAL_TOOL_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// Standard output is always captured. Standard error is captured only when
 /// the caller asked for a pipe; a caller that set it to null keeps it null.
-/// Both pipes are drained on their own threads while the child runs, so a
-/// child that fills a pipe cannot stall itself against the wait.
+/// Windows pipe pumps share the process deadline; no detached reader threads.
+/// Descendants are contained before execution and retired even on normal exit.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn run_with_timeout(command: &mut Command, timeout: Duration) -> std::io::Result<Output> {
-    use std::io::Read;
-    use std::process::Stdio;
-
-    fn drain(pipe: Option<impl Read + Send + 'static>) -> Option<std::thread::JoinHandle<Vec<u8>>> {
-        pipe.map(|mut pipe| {
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let _ = pipe.read_to_end(&mut bytes);
-                bytes
-            })
-        })
+    let timeout = TOOL_DEADLINE.with(|deadline| {
+        deadline
+            .get()
+            .map(|deadline| timeout.min(deadline.saturating_duration_since(Instant::now())))
+            .unwrap_or(timeout)
+    });
+    if timeout.is_zero() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "status-tool operation deadline expired before launch",
+        ));
     }
-
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .spawn()?;
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
-    let deadline = Instant::now() + timeout;
-    // Short at first, because a registry query answers in milliseconds and the
-    // status read makes dozens of them; capped, so a slow tool costs little CPU.
-    let mut pause = Duration::from_millis(1);
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            // The reader threads are left to finish on their own: a grandchild
-            // that inherited a pipe could keep it open, and joining them here
-            // would put back exactly the unbounded wait this function removes.
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!(
-                    "the external tool did not answer within {} seconds",
-                    timeout.as_secs()
-                ),
-            ));
-        }
-        std::thread::sleep(pause.min(deadline - now));
-        pause = (pause * 2).min(Duration::from_millis(25));
-    };
-    let collect = |reader: Option<std::thread::JoinHandle<Vec<u8>>>| {
-        reader
-            .map(|reader| reader.join().unwrap_or_default())
-            .unwrap_or_default()
-    };
-    Ok(Output {
-        status,
-        stdout: collect(stdout),
-        stderr: collect(stderr),
-    })
+    #[cfg(windows)]
+    {
+        owned_tool::run(command, timeout)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (command, timeout);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Windows status-tool inspection is unavailable on this platform",
+        ))
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -201,6 +253,33 @@ struct RunningAntigravityLanguageServer {
     version: String,
     csrf_token: String,
     ports: Vec<u16>,
+}
+
+// A software envelope for local third-party configuration/manifest documents,
+// not a vendor schema or firmware maximum. Bound actual held-stream bytes,
+// including growth after open; metadata alone is not an allocation limit.
+const CLIENT_DOCUMENT_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+fn read_client_document_from(reader: impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    let mut bounded = std::io::Read::take(reader, (CLIENT_DOCUMENT_MAX_BYTES + 1) as u64);
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut bounded, &mut bytes)?;
+    if bytes.len() > CLIENT_DOCUMENT_MAX_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Client configuration exceeded its 16 MiB software document envelope",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn read_client_document_bytes(path: impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+    read_client_document_from(fs::File::open(path)?)
+}
+
+fn read_client_document_text(path: impl AsRef<Path>) -> std::io::Result<String> {
+    String::from_utf8(read_client_document_bytes(path)?)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 const BRIDGE: &[u8] = include_bytes!(concat!(
@@ -377,25 +456,206 @@ fn codex_installer_template() -> &'static str {
 param()
 $ErrorActionPreference = "Stop"
 $serverName = "qc-remote"
+# --- qc-remote owned installer transactions ---
+function Read-QcConfigBytes {
+  param([string]$Path)
+  $stream = $null
+  try {
+    try { $stream = [IO.File]::OpenRead($Path) }
+    catch [IO.FileNotFoundException] { return $null }
+    catch [IO.DirectoryNotFoundException] { return $null }
+    if ($stream.Length -gt 8MB) { throw "Existing configuration exceeds the 8 MiB installer safety budget." }
+    $memory = New-Object IO.MemoryStream
+    try {
+      $buffer = New-Object byte[] 16384
+      while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        if ($memory.Length + $count -gt 8MB) { throw "Existing configuration exceeds the 8 MiB installer safety budget." }
+        $memory.Write($buffer, 0, $count)
+      }
+      return ,$memory.ToArray()
+    } finally { $memory.Dispose() }
+  } finally { if ($null -ne $stream) { $stream.Dispose() } }
+}
+function Test-QcBytesEqual {
+  param($Left, $Right)
+  if ($null -eq $Left -or $null -eq $Right) { return ($null -eq $Left -and $null -eq $Right) }
+  return [Convert]::ToBase64String($Left).Equals([Convert]::ToBase64String($Right), [StringComparison]::Ordinal)
+}
+function Write-QcFileAtomically {
+  param([string]$Path, [byte[]]$Bytes, [bool]$AllowReplace = $true, [scriptblock]$Verify = {
+    param($HeldFile, $ExpectedSid)
+    # Verify the ACTUAL already-held file object before credential bytes exist.
+    # Never reopen the stage path to verify a potentially different object.
+    $actual = if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::GetAccessControl($HeldFile) } else { $HeldFile.GetAccessControl() }
+    $rules = @($actual.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    return ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ceq $ExpectedSid.Value -and
+      $actual.AreAccessRulesProtected -and $rules.Count -eq 1 -and
+      $rules[0].IdentityReference.Value -ceq $ExpectedSid.Value -and -not $rules[0].IsInherited -and
+      $rules[0].AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+      $rules[0].FileSystemRights -eq [Security.AccessControl.FileSystemRights]::FullControl -and
+      $rules[0].InheritanceFlags -eq [Security.AccessControl.InheritanceFlags]::None -and
+      $rules[0].PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None)
+  })
+  $stage = Join-Path ([IO.Path]::GetDirectoryName($Path)) (".qc-install-" + [Guid]::NewGuid().ToString("N") + ".tmp")
+  $file = $null
+  $owned = $false; $failure = $null
+  try {
+    # Owner-private DACL is supplied to exclusive creation BEFORE any config
+    # credential bytes exist. Never trust a custom CODEX_HOME's inheritance.
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = New-Object Security.AccessControl.FileSecurity
+    $acl.SetOwner($sid)
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow)))
+    if ('System.IO.FileSystemAclExtensions' -as [type]) {
+      $file = [IO.FileSystemAclExtensions]::Create((New-Object IO.FileInfo($stage)), [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::FullControl, [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $acl)
+    } else {
+      $file = New-Object IO.FileStream($stage, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::FullControl, [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $acl)
+    }
+    $owned = $true
+    if (-not (& $Verify $file $sid)) { throw "The held stage is not owner-private; no credential bytes were written." }
+    $file.Write($Bytes, 0, $Bytes.Length)
+    $file.Flush($true)
+    $file.Dispose(); $file = $null
+    if ($AllowReplace -and [IO.File]::Exists($Path)) { [IO.File]::Replace($stage, $Path, $null) }
+    else { [IO.File]::Move($stage, $Path) }
+    $owned = $false
+  } catch { $failure = $_; throw }
+  finally {
+    $cleanupFailure = $null
+    try { if ($null -ne $file) { $file.Dispose() } }
+    catch { $cleanupFailure = "Held file close failed: $_" }
+    if ($owned) {
+      try { [IO.File]::Delete($stage) }
+      catch {
+        $cleanupFailure = "$cleanupFailure Owned file stage cleanup failed: $_ Stage retained at '$stage'."
+      }
+    }
+    if ($null -ne $cleanupFailure) { throw "$failure $cleanupFailure" }
+  }
+}
+function Invoke-QcRemoteRouteChange {
+  param([string]$ConfigPath, [scriptblock]$Add)
+  $original = Read-QcConfigBytes $ConfigPath
+  $recovery = $null
+  if ($null -ne $original) {
+    $recovery = Join-Path ([IO.Path]::GetDirectoryName($ConfigPath)) ("qc-remote-recovery-" + [Guid]::NewGuid().ToString("N") + ".toml")
+    Write-QcFileAtomically $recovery $original $false
+  }
+  try {
+    # Verified by the isolated real CLI fixture: mcp-add replaces its named
+    # existing entry. Never remove the working route before a fallible add.
+    & $Add
+  } catch {
+    $primary = $_
+    # Codex does not share this installer's lease. A compare/read followed by
+    # replace is NOT CAS against its ordinary concurrent atomic writes. Never
+    # silently clobber them or claim an unproved automatic rollback.
+    if ($null -ne $recovery) { throw "$primary Automatic rollback was not attempted. Original recovery document retained at '$recovery'." }
+    throw "$primary No original configuration existed; inspect '$ConfigPath' for any partial CLI update."
+  }
+  if ($null -ne $recovery) { [IO.File]::Delete($recovery) }
+}
+function Get-QcSkillInventory {
+  param([string]$Root)
+  if ([IO.File]::GetAttributes($Root) -band [IO.FileAttributes]::ReparsePoint) { throw "Skill root is a reparse entry." }
+  $rows = New-Object 'Collections.Generic.List[string]'
+  $pending = New-Object 'Collections.Generic.Stack[object]'
+  $pending.Push([pscustomobject]@{ Path = $Root; Depth = 0 })
+  $entries = 0; $paths = 0L; $total = 0L
+  $prefix = $Root.TrimEnd('\') + '\'
+  while ($pending.Count -gt 0) {
+    $directory = $pending.Pop()
+    # Lazy enumeration: never materialize an entire oversized directory first.
+    foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($directory.Path)) {
+      $entries++
+      $relative = $path.Substring($prefix.Length)
+      $paths += [Text.Encoding]::UTF8.GetByteCount($relative)
+      if ($entries -gt 16384 -or $paths -gt 4MB) { throw "Skill inventory exceeds the installer safety budget." }
+      $attributes = [IO.File]::GetAttributes($path)
+      if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Skill contains a reparse entry." }
+      if ($attributes -band [IO.FileAttributes]::Directory) {
+        if ($directory.Depth -ge 64) { throw "Skill directory depth exceeds the installer safety budget." }
+        $rows.Add("D:$relative")
+        $pending.Push([pscustomobject]@{ Path = $path; Depth = ($directory.Depth + 1) })
+      } else {
+        $stream = [IO.File]::OpenRead($path)
+        $hash = $null
+        try {
+          $hash = [Security.Cryptography.SHA256]::Create()
+          if ($stream.Length -gt 64MB) { throw "Skill file exceeds the installer safety budget." }
+          $bytes = 0L; $buffer = New-Object byte[] 16384
+          while (($count = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $bytes += $count; $total += $count
+            if ($bytes -gt 64MB -or $total -gt 256MB) { throw "Skill bytes exceed the installer safety budget." }
+            $null = $hash.TransformBlock($buffer, 0, $count, $buffer, 0)
+          }
+          $null = $hash.TransformFinalBlock((New-Object byte[] 0), 0, 0)
+          $rows.Add("F:$relative`:" + ([BitConverter]::ToString($hash.Hash).Replace('-', '')))
+        } finally { if ($null -ne $hash) { $hash.Dispose() }; $stream.Dispose() }
+      }
+    }
+  }
+  return @($rows | Sort-Object)
+}
+function Install-QcSkillTransaction {
+  param([string]$Source, [string]$Target, [string]$BackupRoot, [scriptblock]$Copy, [scriptblock]$Move)
+  $stage = Join-Path ([IO.Path]::GetDirectoryName($Target)) (".qc-skill-install-" + [Guid]::NewGuid().ToString("N"))
+  $owned = $false; $backup = $null; $retired = $false; $failure = $null
+  try {
+    New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null
+    $owned = $true
+    $before = @(Get-QcSkillInventory $Source)
+    & $Copy $Source $stage
+    $after = @(Get-QcSkillInventory $stage)
+    if (($before -join "`n") -cne ($after -join "`n")) { throw "The staged skill does not match the complete source inventory." }
+    if (Test-Path -LiteralPath $Target) {
+      New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null
+      $backup = Join-Path $BackupRoot ("qc-device-knowledge-" + [Guid]::NewGuid().ToString("N"))
+      & $Move $Target $backup
+      $retired = $true
+    }
+    try { & $Move $stage $Target; $owned = $false }
+    catch {
+      $primary = $_
+      if ($retired) {
+        try { & $Move $backup $Target; $retired = $false }
+        catch { throw "$primary Skill rollback failed: $_ Original skill retained at '$backup'." }
+      }
+      throw $primary
+    }
+    if ($retired) { Write-Host "The previous device knowledge skill was backed up at '$backup'." }
+  } catch { $failure = $_; throw }
+  finally {
+    if ($owned) {
+      try { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction Stop }
+      catch {
+        if ($null -ne $failure) { throw "$failure Owned skill stage cleanup failed: $_ Stage retained at '$stage'." }
+        throw
+      }
+    }
+  }
+}
+# --- end qc-remote owned installer transactions ---
 $bridgeSource = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\claude\server\index.cjs")).Path
 $skillSource = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\skills\qc-device-knowledge")).Path
 $integrationDirectory = Join-Path $env:LOCALAPPDATA "{{bridgeDirectory}}"
 $bridgeTarget = Join-Path $integrationDirectory "{{bridgeFileName}}"
-$skillRoot = Join-Path $env:USERPROFILE ".codex\skills"
+$codexHome = if ([string]::IsNullOrWhiteSpace($env:CODEX_HOME)) { Join-Path $env:USERPROFILE ".codex" } else { $env:CODEX_HOME }
+$skillRoot = Join-Path $codexHome "skills"
 $skillTarget = Join-Path $skillRoot "qc-device-knowledge"
 $skillBackupRoot = Join-Path $integrationDirectory "skill-backups\codex"
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw "Node.js 18 or newer is required." }
 # Install the canonical bridge first so every instruction below names a file that exists.
 New-Item -ItemType Directory -Force -Path $integrationDirectory | Out-Null
-Copy-Item -LiteralPath $bridgeSource -Destination $bridgeTarget -Force
+Write-QcFileAtomically $bridgeTarget ([IO.File]::ReadAllBytes($bridgeSource))
 New-Item -ItemType Directory -Force -Path $skillRoot | Out-Null
-if (Test-Path -LiteralPath $skillTarget) {
-  New-Item -ItemType Directory -Force -Path $skillBackupRoot | Out-Null
-  $skillBackup = Join-Path $skillBackupRoot ("qc-device-knowledge-" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
-  Move-Item -LiteralPath $skillTarget -Destination $skillBackup
-  Write-Host "The previous device knowledge skill was backed up at '$skillBackup'."
-}
-Copy-Item -LiteralPath $skillSource -Destination $skillTarget -Recurse
+Install-QcSkillTransaction $skillSource $skillTarget $skillBackupRoot {
+  param($source, $stage)
+  Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $stage -Recurse -Force -ErrorAction Stop
+  }
+} { param($source, $target) [IO.Directory]::Move($source, $target) }
 if (-not (Get-Command codex -ErrorAction SilentlyContinue)) { throw "The Codex CLI is not on PATH. The bridge is installed at '$bridgeTarget'; add an STDIO MCP server manually with command 'node' and that path as its argument." }
 $configuredServers = & codex mcp list --json | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw "Codex could not read the existing MCP configuration." }
@@ -422,15 +682,17 @@ switch (Get-QcRemoteEntryAction -Entry $existing -BridgeFileName "{{bridgeFileNa
     return
   }
   "replace" {
-    & codex mcp remove $serverName
-    if ($LASTEXITCODE -ne 0) { throw "Codex could not replace the previous QC Remote MCP configuration." }
+    # mcp-add updates this managed existing entry without a destructive remove.
   }
   "foreign" {
     throw "An MCP server named '$serverName' already exists, was not installed by QC Remote, and was left unchanged. The bridge at '$bridgeTarget' is now up to date; run 'codex mcp remove qc-remote' and re-run this installer to point Codex at it."
   }
 }
-& codex mcp add $serverName -- node $bridgeTarget '{{clientArgument}}' '{{clientId}}'
-if ($LASTEXITCODE -ne 0) { throw "Codex could not add the QC Remote MCP configuration." }
+$configPath = Join-Path $codexHome "config.toml"
+Invoke-QcRemoteRouteChange $configPath {
+  & codex mcp add $serverName -- node $bridgeTarget '{{clientArgument}}' '{{clientId}}'
+  if ($LASTEXITCODE -ne 0) { throw "Codex could not add the QC Remote MCP configuration." }
+}
 Write-Host "QC Remote MCP was added. Restart the client, then keep QC Remote open."
 "#
 }
@@ -540,9 +802,17 @@ fn save_package(
     {
         path.set_extension(extension);
     }
-    fs::write(&path, contents)
+    write_package_bytes_with(&path, &contents, |file, bytes| file.write_all(bytes))
         .map_err(|error| format!("Could not save {}: {error}", display_path(&path)))?;
     Ok(json!({ "cancelled": false, "fileName": file_name }))
+}
+
+fn write_package_bytes_with(
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&mut fs::File, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    crate::workspace::write_document_with(path, |file| write(file, bytes))
 }
 
 fn display_path(path: &Path) -> String {
@@ -1166,7 +1436,7 @@ fn self_recorded_executable(contents: &str, member: &str) -> Option<PathBuf> {
 
 fn self_recorded_path(user_profile: &Path, records: &[SelfInstallRecord]) -> Option<PathBuf> {
     records.iter().find_map(|record| {
-        let contents = fs::read_to_string(user_profile.join(record.relative_path)).ok()?;
+        let contents = read_client_document_text(user_profile.join(record.relative_path)).ok()?;
         self_recorded_executable(&contents, record.member)
     })
 }
@@ -1356,7 +1626,7 @@ const INSTALLATION_LOOKUP_WINDOW: Duration = Duration::from_secs(5);
 
 fn uninstall_index() -> Vec<(String, String)> {
     static INDEX: OnceLock<Mutex<Option<UninstallIndex>>> = OnceLock::new();
-    let Ok(mut held) = INDEX.get_or_init(|| Mutex::new(None)).lock() else {
+    let Ok(held) = INDEX.get_or_init(|| Mutex::new(None)).lock() else {
         return read_uninstall_index();
     };
     if let Some(index) = held
@@ -1365,11 +1635,17 @@ fn uninstall_index() -> Vec<(String, String)> {
     {
         return index.entries.clone();
     }
+    // Never hold this shared cache mutex across registry/OS work. Concurrent
+    // cold lookups may duplicate a bounded sweep, but cannot queue every
+    // provider behind another actor's stalled synchronous I/O.
+    drop(held);
     let entries = read_uninstall_index();
-    *held = Some(UninstallIndex {
-        entries: entries.clone(),
-        read_at: Instant::now(),
-    });
+    if let Ok(mut held) = INDEX.get_or_init(|| Mutex::new(None)).lock() {
+        *held = Some(UninstallIndex {
+            entries: entries.clone(),
+            read_at: Instant::now(),
+        });
+    }
     entries
 }
 
@@ -2159,6 +2435,7 @@ fn running_antigravity_language_server() -> Result<RunningAntigravityLanguageSer
 fn validate_antigravity_language_server(
     server: &RunningAntigravityLanguageServer,
 ) -> Result<(), String> {
+    validate_antigravity_ports(&server.ports)?;
     let app_executable = antigravity_installation()
         .and_then(|installation| installation.executable)
         .ok_or_else(|| "Google Antigravity is not installed for this user account.".to_string())?;
@@ -2194,9 +2471,6 @@ fn validate_antigravity_language_server(
             .all(|value| value.is_ascii_alphanumeric() || value == b'-' || value == b'_')
     {
         return Err("The running Antigravity service returned an invalid security token.".into());
-    }
-    if server.ports.is_empty() {
-        return Err("The running Antigravity service has no local endpoint.".into());
     }
     Ok(())
 }
@@ -2256,26 +2530,18 @@ fn validate_antigravity_language_server(
 /// UI, and keep it incapable of producing a `Connected` row: only a heartbeat
 /// does that.
 async fn refresh_running_antigravity_mcp() -> Value {
-    let server =
-        match tauri::async_runtime::spawn_blocking(running_antigravity_language_server).await {
-            Ok(Ok(server)) => server,
-            Ok(Err(error)) => {
-                return json!({
-                    "refreshAttempted": false,
-                    "refreshSucceeded": false,
-                    "connectionActive": antigravity_bridge_connected(),
-                    "refreshError": error,
-                })
-            }
-            Err(error) => {
-                return json!({
-                    "refreshAttempted": false,
-                    "refreshSucceeded": false,
-                    "connectionActive": antigravity_bridge_connected(),
-                    "refreshError": format!("Could not inspect Google Antigravity: {error}"),
-                })
-            }
-        };
+    let deadline = Instant::now() + ANTIGRAVITY_OPERATION_BUDGET;
+    let server = match discover_antigravity_until(deadline).await {
+        Ok(server) => server,
+        Err(error) => {
+            return json!({
+                "refreshAttempted": false,
+                "refreshSucceeded": false,
+                "connectionActive": antigravity_bridge_connected(),
+                "refreshError": error,
+            });
+        }
+    };
 
     // Antigravity's local certificate is generated per session. The endpoint is
     // accepted only after discovery has tied its owning process and token to the
@@ -2292,7 +2558,7 @@ async fn refresh_running_antigravity_mcp() -> Value {
                 "refreshSucceeded": false,
                 "connectionActive": antigravity_bridge_connected(),
                 "refreshError": format!("Could not prepare the Antigravity refresh: {error}"),
-            })
+            });
         }
     };
 
@@ -2301,12 +2567,24 @@ async fn refresh_running_antigravity_mcp() -> Value {
     'ports: for port in &server.ports {
         let url = format!("https://127.0.0.1:{port}{ANTIGRAVITY_REFRESH_RPC_PATH}");
         for attempt in 0..2 {
+            let budget = match remaining(deadline) {
+                Ok(budget) => budget,
+                Err(error) => {
+                    last_error = error;
+                    break 'ports;
+                }
+            };
             let request = client
                 .post(&url)
+                .timeout(budget)
                 .header("x-codeium-csrf-token", &server.csrf_token)
                 .header("connect-protocol-version", "1")
                 .json(&json!({ "shallow": false, "serverName": "qc-remote" }));
-            match request.send().await {
+            match within_antigravity_budget(deadline, async {
+                request.send().await.map_err(|error| error.to_string())
+            })
+            .await
+            {
                 Ok(response) if response.status().is_success() => {
                     refreshed = true;
                     break 'ports;
@@ -2323,15 +2601,17 @@ async fn refresh_running_antigravity_mcp() -> Value {
                 }
             }
             if attempt == 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                if let Ok(left) = remaining(deadline) {
+                    tokio::time::sleep(left.min(Duration::from_millis(250))).await;
+                }
             }
         }
     }
 
     if refreshed {
-        for _ in 0..40 {
+        while remaining(deadline).is_ok() {
             if antigravity_bridge_connected()
-                || antigravity_server_reports_ready(&server, &client)
+                || antigravity_server_reports_ready(&server, &client, deadline)
                     .await
                     .unwrap_or(false)
             {
@@ -2341,7 +2621,9 @@ async fn refresh_running_antigravity_mcp() -> Value {
                     "connectionActive": true,
                 });
             }
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if let Ok(left) = remaining(deadline) {
+                tokio::time::sleep(left.min(Duration::from_millis(250))).await;
+            }
         }
         return json!({
             "refreshAttempted": true,
@@ -2357,6 +2639,43 @@ async fn refresh_running_antigravity_mcp() -> Value {
         "connectionActive": antigravity_bridge_connected(),
         "refreshError": last_error,
     })
+}
+
+// Antigravity state uses the same local-document software envelope as its
+// persisted configuration; this is not a vendor schema or firmware maximum.
+async fn read_antigravity_state_response(
+    mut response: reqwest::Response,
+    deadline: Instant,
+    max_bytes: usize,
+) -> Result<Value, String> {
+    let oversized =
+        || "Antigravity's MCP state exceeded its software document envelope.".to_string();
+    remaining(deadline)?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(oversized());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = within_antigravity_budget(deadline, async {
+        response.chunk().await.map_err(|error| error.to_string())
+    })
+    .await?
+    {
+        // Metadata is only an early refusal. Bound every actual chunk BEFORE
+        // retaining it, including chunked/close-delimited bodies and growth.
+        if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
+            return Err(oversized());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    remaining(deadline)?;
+    let document = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    // Parsing is synchronous; do not turn work completed after the ordinary
+    // total deadline into a fresh ready observation. No hard CPU cancellation.
+    remaining(deadline)?;
+    Ok(document)
 }
 
 /// Whether Antigravity's own MCP state names this app's route as ready.
@@ -2397,30 +2716,37 @@ fn antigravity_state_has_current_qc_remote(document: &Value, expected_executable
 async fn antigravity_server_reports_ready(
     server: &RunningAntigravityLanguageServer,
     client: &reqwest::Client,
+    deadline: Instant,
 ) -> Result<bool, String> {
     let expected_executable = antigravity_bridge_path()?;
     let mut accepted_response = false;
     let mut last_error = "The running Antigravity service did not report MCP state.".to_string();
     for port in &server.ports {
+        let budget = remaining(deadline)?;
         let url = format!("https://127.0.0.1:{port}{ANTIGRAVITY_STATE_RPC_PATH}");
-        match client
+        let request = client
             .post(url)
+            .timeout(budget)
             .header("x-codeium-csrf-token", &server.csrf_token)
             .header("connect-protocol-version", "1")
-            .json(&json!({}))
-            .send()
-            .await
+            .json(&json!({}));
+        match within_antigravity_budget(deadline, async {
+            request.send().await.map_err(|error| error.to_string())
+        })
+        .await
         {
             Ok(response) if response.status().is_success() => {
                 accepted_response = true;
-                match response.json::<Value>().await {
+                match read_antigravity_state_response(response, deadline, CLIENT_DOCUMENT_MAX_BYTES)
+                    .await
+                {
                     Ok(document)
                         if antigravity_state_has_current_qc_remote(
                             &document,
                             &expected_executable,
                         ) =>
                     {
-                        return Ok(true)
+                        return Ok(true);
                     }
                     Ok(_) => {}
                     Err(error) => {
@@ -2449,15 +2775,14 @@ async fn antigravity_server_reports_ready(
 /// The heartbeat first, because it costs nothing and covers every host.  Only
 /// when it is silent is Antigravity asked directly, and only the LOCAL panel
 /// polls this - the process scan behind it must not run on the app's own clock.
-async fn antigravity_runtime_connected() -> bool {
+async fn antigravity_runtime_connected_until(deadline: Instant) -> bool {
     if antigravity_bridge_connected() {
         return true;
     }
-    let server =
-        match tauri::async_runtime::spawn_blocking(running_antigravity_language_server).await {
-            Ok(Ok(server)) => server,
-            _ => return false,
-        };
+    let server = match discover_antigravity_until(deadline).await {
+        Ok(server) => server,
+        _ => return false,
+    };
     let client = match crate::loopback_http::loopback_self_signed_client_builder()
         .connect_timeout(std::time::Duration::from_secs(2))
         .timeout(std::time::Duration::from_secs(5))
@@ -2466,7 +2791,7 @@ async fn antigravity_runtime_connected() -> bool {
         Ok(client) => client,
         Err(_) => return false,
     };
-    antigravity_server_reports_ready(&server, &client)
+    antigravity_server_reports_ready(&server, &client, deadline)
         .await
         .unwrap_or(false)
 }
@@ -2614,7 +2939,7 @@ fn lm_studio_mcp_document(
 fn jan_data_directory() -> Option<PathBuf> {
     let app_data = std::env::var_os("APPDATA").map(PathBuf::from)?;
     let settings = app_data.join("Jan").join("settings.json");
-    if let Ok(contents) = fs::read_to_string(settings) {
+    if let Ok(contents) = read_client_document_text(settings) {
         if let Ok(document) = serde_json::from_str::<Value>(&contents) {
             if let Some(path) = document.get("data_folder").and_then(Value::as_str) {
                 let path = PathBuf::from(path);
@@ -2637,7 +2962,7 @@ fn jan_data_directory() -> Option<PathBuf> {
 #[cfg(target_os = "linux")]
 fn jan_data_directory_in(config_home: &Path, data_home: &Path) -> PathBuf {
     let settings = config_home.join("Jan").join("settings.json");
-    if let Ok(contents) = fs::read_to_string(settings) {
+    if let Ok(contents) = read_client_document_text(settings) {
         if let Ok(document) = serde_json::from_str::<Value>(&contents) {
             if let Some(path) = document.get("data_folder").and_then(Value::as_str) {
                 let path = PathBuf::from(path);
@@ -2654,7 +2979,7 @@ fn jan_data_directory_in(config_home: &Path, data_home: &Path) -> PathBuf {
 fn jan_data_directory() -> Option<PathBuf> {
     let data_home = xdg_data_home()?;
     let settings = data_home.join("Jan").join("settings.json");
-    if let Ok(contents) = fs::read_to_string(settings) {
+    if let Ok(contents) = read_client_document_text(settings) {
         if let Ok(document) = serde_json::from_str::<Value>(&contents) {
             if let Some(path) = document.get("data_folder").and_then(Value::as_str) {
                 let path = PathBuf::from(path);
@@ -2765,7 +3090,7 @@ fn configured_chatgpt_route(
     if !config_path.is_file() {
         return Ok(ConfiguredChatgptRoute::default());
     }
-    let contents = fs::read_to_string(config_path)
+    let contents = read_client_document_text(config_path)
         .map_err(|error| format!("Could not read ChatGPT's MCP configuration: {error}"))?;
     let document = contents
         .parse::<DocumentMut>()
@@ -2941,7 +3266,7 @@ fn configured_json_mcp_route(
     if !config_path.is_file() {
         return Ok(unconfigured_json_mcp_route());
     }
-    let contents = fs::read_to_string(config_path)
+    let contents = read_client_document_text(config_path)
         .map_err(|error| format!("Could not read {label}'s MCP configuration: {error}"))?;
     let document = parse_json_mcp_config(&contents, label)?;
     let Some(server) = document
@@ -3026,7 +3351,7 @@ fn configured_bionic_route(
     if !config_path.is_file() {
         return Ok(unconfigured_json_mcp_route());
     }
-    let contents = fs::read_to_string(config_path)
+    let contents = read_client_document_text(config_path)
         .map_err(|error| format!("Could not read {label}'s MCP configuration: {error}"))?;
     let document = parse_json_mcp_config(&contents, label)?;
     let Some(entry) = bionic_managed_entry(&document, label)? else {
@@ -3119,7 +3444,7 @@ fn configured_antigravity_route(
             enabled: true,
         });
     }
-    let contents = fs::read_to_string(config_path)
+    let contents = read_client_document_text(config_path)
         .map_err(|error| format!("Could not read Antigravity's MCP configuration: {error}"))?;
     let document = parse_antigravity_config(&contents)?;
     let server = document
@@ -3225,7 +3550,7 @@ fn antigravity_permission_configured(settings_path: &Path) -> Result<bool, Strin
     if !settings_path.is_file() {
         return Ok(false);
     }
-    let contents = fs::read_to_string(settings_path)
+    let contents = read_client_document_text(settings_path)
         .map_err(|error| format!("Could not read Antigravity's settings: {error}"))?;
     let document = parse_antigravity_config(&contents)?;
     Ok(document
@@ -3356,9 +3681,70 @@ fn config_backups(config_path: &Path) -> Vec<(u128, PathBuf)> {
     backups
 }
 
-/// Copies the live configuration aside under a fresh timestamp.  The live file
-/// is never moved or deleted, so there is no window in which the vendor's
-/// configuration is missing from its own path.
+/// Exclusive per-invocation staging; close the handle before failure cleanup.
+struct OwnedConfigStage {
+    path: PathBuf,
+    file: Option<fs::File>,
+    owned: bool,
+}
+
+impl OwnedConfigStage {
+    fn create_with(
+        path: PathBuf,
+        write: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
+    ) -> std::io::Result<Self> {
+        let file = qc_owner_only_file::create_new_owner_only(&path)?;
+        let mut owned = Self {
+            path,
+            file: Some(file),
+            owned: true,
+        };
+        let file = owned.file.as_mut().expect("owned staging handle");
+        let result = write(file).and_then(|()| file.sync_all());
+        owned.file.take();
+        result?;
+        Ok(owned)
+    }
+
+    fn write(path: PathBuf, bytes: &[u8]) -> std::io::Result<Self> {
+        Self::create_with(path, |file| file.write_all(bytes))
+    }
+
+    fn install(self, destination: &Path) -> std::io::Result<()> {
+        self.install_with(destination, || {})
+    }
+
+    fn install_with(
+        mut self,
+        destination: &Path,
+        after_transfer: impl FnOnce(),
+    ) -> std::io::Result<()> {
+        fs::rename(&self.path, destination)?;
+        self.owned = false;
+        after_transfer();
+        Ok(())
+    }
+}
+
+impl Drop for OwnedConfigStage {
+    fn drop(&mut self) {
+        self.file.take();
+        if !self.owned {
+            return;
+        }
+        if let Err(error) = fs::remove_file(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "QC Remote config staging cleanup {}: {error}",
+                    self.path.display()
+                );
+            }
+        }
+    }
+}
+
+/// Copies the live configuration aside under a fresh timestamp. The live file
+/// is never moved or deleted; only complete bytes enter backup history.
 fn back_up_config_file(config_path: &Path, label: &str) -> Result<PathBuf, String> {
     let parent = config_path
         .parent()
@@ -3368,17 +3754,32 @@ fn back_up_config_file(config_path: &Path, label: &str) -> Result<PathBuf, Strin
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "The system clock is before the Unix epoch.".to_string())?
         .as_millis();
+    let stage = OwnedConfigStage::create_with(
+        staged_config_path(parent, config_path, "qc-remote-backup"),
+        |destination| {
+            let bytes = read_client_document_bytes(config_path)?;
+            destination.write_all(&bytes)
+        },
+    )
+    .map_err(|error| format!("Could not back up {label}'s configuration: {error}"))?;
     let backup = loop {
         let candidate = parent.join(format!("{prefix}{stamp}"));
-        if !candidate.exists() {
-            break candidate;
+        // Publish only complete bytes, exclusively. A contender cannot be
+        // overwritten, and incomplete copies never enter backup history.
+        match fs::hard_link(&stage.path, &candidate) {
+            Ok(()) => break candidate,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not publish {label}'s configuration backup: {error}"
+                ));
+            }
         }
         // Two writes inside one millisecond must not share a name, and the
         // numeric suffix is what orders the history.
         stamp += 1;
     };
-    fs::copy(config_path, &backup)
-        .map_err(|error| format!("Could not back up {label}'s configuration: {error}"))?;
+    drop(stage);
     // The oldest backup is the only copy of the configuration as it stood
     // before QC Remote ever wrote to it, so pruning skips it. Everything after
     // it is a generation QC Remote produced; only the newest few earn a place.
@@ -3402,18 +3803,14 @@ fn write_json_document(config_path: &Path, document: &Value, label: &str) -> Res
     let staged = staged_config_path(parent, config_path, "qc-remote");
     let serialized = serde_json::to_vec_pretty(document)
         .map_err(|error| format!("Could not serialize {label}'s settings: {error}"))?;
-    fs::write(&staged, serialized)
+    let staged = OwnedConfigStage::write(staged, &serialized)
         .map_err(|error| format!("Could not stage {label}'s settings: {error}"))?;
     if config_path.is_file() {
-        if let Err(error) = back_up_config_file(config_path, label) {
-            let _ = fs::remove_file(&staged);
-            return Err(error);
-        }
+        back_up_config_file(config_path, label)?;
     }
     // Renaming over the live file replaces it in one step, so a crash can only
     // leave the old contents or the new ones, never a missing file.
-    if let Err(error) = fs::rename(&staged, config_path) {
-        let _ = fs::remove_file(&staged);
+    if let Err(error) = staged.install(config_path) {
         return Err(format!("Could not install {label}'s settings: {error}"));
     }
     Ok(())
@@ -3428,7 +3825,7 @@ fn write_json_mcp_route(
 ) -> Result<(), String> {
     let _config_write = config_write_lock();
     let mut document = if config_path.is_file() {
-        let contents = fs::read_to_string(config_path)
+        let contents = read_client_document_text(config_path)
             .map_err(|error| format!("Could not read {label}'s MCP configuration: {error}"))?;
         parse_json_mcp_config(&contents, label)?
     } else {
@@ -3533,7 +3930,7 @@ fn write_bionic_mcp_route(
 ) -> Result<(), String> {
     let _config_write = config_write_lock();
     let mut document = if config_path.is_file() {
-        let contents = fs::read_to_string(config_path)
+        let contents = read_client_document_text(config_path)
             .map_err(|error| format!("Could not read {label}'s MCP configuration: {error}"))?;
         parse_json_mcp_config(&contents, label)?
     } else {
@@ -3587,7 +3984,7 @@ fn remove_bionic_mcp_route(config_path: &Path, label: &str) -> Result<bool, Stri
     if !config_path.is_file() {
         return Ok(false);
     }
-    let contents = fs::read_to_string(config_path)
+    let contents = read_client_document_text(config_path)
         .map_err(|error| format!("Could not read {label}'s MCP configuration: {error}"))?;
     let mut document = parse_json_mcp_config(&contents, label)?;
     bionic_servers(&document, label)?;
@@ -3608,7 +4005,7 @@ fn remove_json_mcp_route(config_path: &Path, label: &str) -> Result<bool, String
     if !config_path.is_file() {
         return Ok(false);
     }
-    let contents = fs::read_to_string(config_path)
+    let contents = read_client_document_text(config_path)
         .map_err(|error| format!("Could not read {label}'s MCP configuration: {error}"))?;
     let mut document = parse_json_mcp_config(&contents, label)?;
     let removed = document
@@ -3651,7 +4048,7 @@ fn write_antigravity_config(
 ) -> Result<(), String> {
     let _config_write = config_write_lock();
     let mut document = if config_path.is_file() {
-        let contents = fs::read_to_string(config_path)
+        let contents = read_client_document_text(config_path)
             .map_err(|error| format!("Could not read Antigravity's MCP configuration: {error}"))?;
         parse_antigravity_config(&contents)?
     } else {
@@ -3703,7 +4100,7 @@ fn legacy_gemini_route_present(settings_path: &Path) -> Result<bool, String> {
     if !settings_path.is_file() {
         return Ok(false);
     }
-    let contents = fs::read_to_string(settings_path)
+    let contents = read_client_document_text(settings_path)
         .map_err(|error| format!("Could not read legacy Gemini settings: {error}"))?;
     let document = parse_antigravity_config(&contents)?;
     Ok(document
@@ -3717,7 +4114,7 @@ fn remove_legacy_gemini_route(settings_path: &Path) -> Result<bool, String> {
     if !settings_path.is_file() {
         return Ok(false);
     }
-    let contents = fs::read_to_string(settings_path)
+    let contents = read_client_document_text(settings_path)
         .map_err(|error| format!("Could not read legacy Gemini settings: {error}"))?;
     let mut document = parse_antigravity_config(&contents)?;
     let mut removed = false;
@@ -3736,7 +4133,7 @@ fn remove_legacy_gemini_route(settings_path: &Path) -> Result<bool, String> {
 fn write_antigravity_permission(settings_path: &Path) -> Result<(), String> {
     let _config_write = config_write_lock();
     let mut document = if settings_path.is_file() {
-        let contents = fs::read_to_string(settings_path)
+        let contents = read_client_document_text(settings_path)
             .map_err(|error| format!("Could not read Antigravity's settings: {error}"))?;
         parse_antigravity_config(&contents)?
     } else {
@@ -3773,7 +4170,7 @@ fn write_antigravity_permission(settings_path: &Path) -> Result<(), String> {
 fn remove_antigravity_route(config_path: &Path) -> Result<bool, String> {
     let _config_write = config_write_lock();
     if config_path.is_file() {
-        let contents = fs::read_to_string(config_path)
+        let contents = read_client_document_text(config_path)
             .map_err(|error| format!("Could not read Antigravity's MCP configuration: {error}"))?;
         let mut document = parse_antigravity_config(&contents)?;
         let mut removed = false;
@@ -3796,7 +4193,7 @@ fn remove_antigravity_permission(settings_path: &Path) -> Result<bool, String> {
     if !settings_path.is_file() {
         return Ok(false);
     }
-    let contents = fs::read_to_string(settings_path)
+    let contents = read_client_document_text(settings_path)
         .map_err(|error| format!("Could not read Antigravity's settings: {error}"))?;
     let mut document = parse_antigravity_config(&contents)?;
     let Some(allow) = document
@@ -3978,7 +4375,7 @@ fn write_codex_config(
 ) -> Result<(), String> {
     let _config_write = config_write_lock();
     let existing = if config_path.is_file() {
-        fs::read_to_string(config_path)
+        read_client_document_text(config_path)
             .map_err(|error| format!("Could not read ChatGPT's MCP configuration: {error}"))?
     } else {
         String::new()
@@ -4007,16 +4404,12 @@ fn write_codex_config(
     fs::create_dir_all(parent)
         .map_err(|error| format!("Could not create ChatGPT's configuration directory: {error}"))?;
     let staged = staged_config_path(parent, config_path, "qc-remote");
-    fs::write(&staged, document.to_string())
+    let staged = OwnedConfigStage::write(staged, document.to_string().as_bytes())
         .map_err(|error| format!("Could not stage ChatGPT's MCP configuration: {error}"))?;
     if config_path.is_file() {
-        if let Err(error) = back_up_config_file(config_path, "ChatGPT") {
-            let _ = fs::remove_file(&staged);
-            return Err(error);
-        }
+        back_up_config_file(config_path, "ChatGPT")?;
     }
-    if let Err(error) = fs::rename(&staged, config_path) {
-        let _ = fs::remove_file(&staged);
+    if let Err(error) = staged.install(config_path) {
         return Err(format!(
             "Could not install ChatGPT's MCP configuration: {error}"
         ));
@@ -4029,7 +4422,7 @@ fn remove_codex_route(config_path: &Path) -> Result<bool, String> {
     if !config_path.is_file() {
         return Ok(false);
     }
-    let existing = fs::read_to_string(config_path)
+    let existing = read_client_document_text(config_path)
         .map_err(|error| format!("Could not read ChatGPT's MCP configuration: {error}"))?;
     let mut document = existing
         .parse::<DocumentMut>()
@@ -4051,16 +4444,12 @@ fn remove_codex_route(config_path: &Path) -> Result<bool, String> {
     // The staging name is unique per call like its sibling writer's: two QC
     // Remote processes unpairing at once used to stage over each other.
     let staged = staged_config_path(parent, config_path, "qc-remote-remove");
-    fs::write(&staged, document.to_string())
+    let staged = OwnedConfigStage::write(staged, document.to_string().as_bytes())
         .map_err(|error| format!("Could not stage ChatGPT's MCP configuration: {error}"))?;
-    if let Err(error) = back_up_config_file(config_path, "ChatGPT") {
-        let _ = fs::remove_file(&staged);
-        return Err(error);
-    }
+    back_up_config_file(config_path, "ChatGPT")?;
     // No delete-then-rename: the live configuration is replaced in one step, so
     // a crash mid-unpair can never leave the user without a config.toml.
-    if let Err(error) = fs::rename(&staged, config_path) {
-        let _ = fs::remove_file(&staged);
+    if let Err(error) = staged.install(config_path) {
         return Err(format!(
             "Could not remove ChatGPT's QC Remote configuration: {error}"
         ));
@@ -4152,7 +4541,7 @@ fn installed_claude_extension_version(path: &Path) -> Result<Option<String>, Str
     if !path.is_file() {
         return Ok(None);
     }
-    let contents = fs::read(path)
+    let contents = read_client_document_bytes(path)
         .map_err(|error| format!("Could not read Claude Desktop's extension registry: {error}"))?;
     let document: Value = serde_json::from_slice(&contents)
         .map_err(|error| format!("Claude Desktop's extension registry is invalid: {error}"))?;
@@ -4181,7 +4570,7 @@ fn installed_claude_extension_version(path: &Path) -> Result<Option<String>, Str
 }
 
 fn installed_claude_extension_manifest_version(path: &Path) -> Result<Option<String>, String> {
-    let contents = fs::read(path)
+    let contents = read_client_document_bytes(path)
         .map_err(|error| format!("Could not read Claude Desktop's extension manifest: {error}"))?;
     let manifest: Value = serde_json::from_slice(&contents)
         .map_err(|error| format!("Claude Desktop's extension manifest is invalid: {error}"))?;
@@ -4314,9 +4703,10 @@ fn claude_desktop_extension_status_blocking(
 #[tauri::command]
 pub async fn claude_desktop_extension_status() -> Result<Value, String> {
     let evidence = local_client_evidence(CLAUDE_CLIENT_ID);
-    tauri::async_runtime::spawn_blocking(move || claude_desktop_extension_status_blocking(evidence))
-        .await
-        .map_err(|error| format!("Could not inspect Claude Desktop: {error}"))?
+    inspect_client_until(Instant::now() + CLIENT_INSPECTION_TIMEOUT, move || {
+        claude_desktop_extension_status_blocking(evidence)
+    })
+    .await
 }
 
 fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
@@ -4412,6 +4802,11 @@ pub async fn open_claude_desktop() -> Result<(), String> {
         .map_err(|error| format!("Could not launch Claude Desktop: {error}"))?
 }
 
+// Same skill evidence policy as the other managed hosts; route health is independent.
+fn apply_chatgpt_device_knowledge_skill_status(status: &mut Value, skill_status: &Value) {
+    apply_device_knowledge_skill_status(status, skill_status);
+}
+
 fn chatgpt_local_integration_status_blocking(
     evidence: LocalClientEvidence,
 ) -> Result<Value, String> {
@@ -4468,31 +4863,7 @@ fn chatgpt_local_integration_status_blocking(
     } else {
         "ChatGPT".to_owned()
     });
-    status["skillInstalled"] = skill_status["installed"].clone();
-    status["installedSkillVersion"] = skill_status
-        .get("installedVersion")
-        .cloned()
-        .unwrap_or(Value::Null);
-    status["availableSkillVersion"] = skill_status["availableVersion"].clone();
-    status["skillState"] = skill_status["state"].clone();
-    status["skillStatusError"] = skill_status
-        .get("statusError")
-        .cloned()
-        .unwrap_or(Value::Null);
-    if matches!(
-        status["state"].as_str(),
-        Some("current" | "newer-installed")
-    ) {
-        match skill_status["state"].as_str() {
-            Some("current" | "newer-installed") => {}
-            Some("not-installed" | "update-available") => {
-                status["state"] = Value::String("update-available".into());
-            }
-            _ => {
-                status["state"] = Value::String("different-configuration".into());
-            }
-        }
-    }
+    apply_chatgpt_device_knowledge_skill_status(&mut status, &skill_status);
     status["routeRefresh"] = route_refresh_report(CHATGPT_ROUTE);
     Ok(status)
 }
@@ -4506,11 +4877,10 @@ pub async fn chatgpt_local_integration_status() -> Result<Value, String> {
     // instant they are describing. The prompt is no longer a row state; the
     // rule now only selects which sentence the paired row uses.
     let evidence = local_client_evidence(CODEX_CLIENT_ID);
-    tauri::async_runtime::spawn_blocking(move || {
+    inspect_client_until(Instant::now() + CLIENT_INSPECTION_TIMEOUT, move || {
         chatgpt_local_integration_status_blocking(evidence)
     })
     .await
-    .map_err(|error| format!("Could not inspect ChatGPT Desktop: {error}"))?
 }
 
 fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
@@ -4583,7 +4953,7 @@ fn merge_object(target: &mut Value, source: Value) {
 /// own state still said `current`, which is a row that shows Open and never
 /// installs the skill.
 ///
-/// Only `current` and `update-available` fold. Any other row state is already
+/// Only `current`, `newer-installed` and `update-available` fold. Any other row state is already
 /// describing something worse than a skill being out of date - not installed,
 /// a configuration this app does not own - and a skill cannot improve it.
 fn apply_device_knowledge_skill_status(status: &mut Value, skill_status: &Value) {
@@ -4592,7 +4962,10 @@ fn apply_device_knowledge_skill_status(status: &mut Value, skill_status: &Value)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    if matches!(row_state.as_str(), "current" | "update-available") {
+    if matches!(
+        row_state.as_str(),
+        "current" | "newer-installed" | "update-available"
+    ) {
         let folded = match skill_status["state"].as_str() {
             Some("current" | "newer-installed") => row_state.as_str(),
             Some("not-installed" | "update-available") => "update-available",
@@ -4939,13 +5312,13 @@ fn antigravity_local_integration_status_blocking(
 
 #[tauri::command]
 pub async fn antigravity_local_integration_status() -> Result<Value, String> {
+    let deadline = Instant::now() + CLIENT_INSPECTION_TIMEOUT;
     let evidence = antigravity_bridge_evidence();
-    let connection_active = antigravity_runtime_connected().await;
-    tauri::async_runtime::spawn_blocking(move || {
+    let connection_active = antigravity_runtime_connected_until(deadline).await;
+    inspect_client_until(deadline, move || {
         antigravity_local_integration_status_blocking(connection_active, evidence)
     })
     .await
-    .map_err(|error| format!("Could not inspect Google Antigravity: {error}"))?
 }
 
 fn open_antigravity_blocking() -> Result<(), String> {
@@ -5232,9 +5605,11 @@ fn lm_studio_status_blocking() -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn lm_studio_local_integration_status() -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(lm_studio_status_blocking)
-        .await
-        .map_err(|error| format!("Could not inspect LM Studio: {error}"))?
+    inspect_client_until(
+        Instant::now() + CLIENT_INSPECTION_TIMEOUT,
+        lm_studio_status_blocking,
+    )
+    .await
 }
 
 fn install_lm_studio_local_integration_blocking() -> Result<Value, String> {
@@ -5351,9 +5726,11 @@ fn jan_status_blocking() -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn jan_local_integration_status() -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(jan_status_blocking)
-        .await
-        .map_err(|error| format!("Could not inspect Jan: {error}"))?
+    inspect_client_until(
+        Instant::now() + CLIENT_INSPECTION_TIMEOUT,
+        jan_status_blocking,
+    )
+    .await
 }
 
 fn install_jan_local_integration_blocking() -> Result<Value, String> {
@@ -5782,7 +6159,7 @@ impl ManagedRouteTarget {
         if !self.config_path.is_file() {
             return Ok(None);
         }
-        let contents = fs::read_to_string(&self.config_path).map_err(|error| {
+        let contents = read_client_document_text(&self.config_path).map_err(|error| {
             format!("Could not read {}'s MCP configuration: {error}", self.label)
         })?;
         Ok(match self.format {
@@ -5915,7 +6292,7 @@ fn refresh_managed_route(target: &ManagedRouteTarget) -> RouteRefreshOutcome {
             return RouteRefreshOutcome {
                 decision: RouteRefreshDecision::Unreadable,
                 failure: Some(error),
-            }
+            };
         }
     };
     let decision = classify_route_refresh(
@@ -6020,10 +6397,9 @@ fn refresh_managed_routes_blocking() -> Vec<(&'static str, RouteRefreshOutcome)>
 /// Repairs every recognizable QC Remote route to this build, once per app start.
 ///
 /// Off the start-up path entirely: the work runs on its own detached thread,
-/// the way `record_local_client_attach` defers its durable write and the way
-/// the window-event pump runs, so a configuration file on a slow or contended
-/// disk - or one another process is holding open - can delay nothing but this
-/// thread. Nothing waits on it and no command blocks behind it.
+/// owned by the shared original-thread family. A slow file does not block
+/// the async UI runtime. Pair/Unpair share CONFIG_WRITE and may still wait
+/// behind filesystem I/O; no hard OS-I/O cancellation guarantee is implied.
 ///
 /// One run per app start, enforced here rather than by the caller, so a second
 /// call returns immediately. The pass itself is sequential, so there is never
@@ -6035,9 +6411,15 @@ pub fn refresh_managed_routes_on_start() {
         Ok(mut state) if !state.started => state.started = true,
         _ => return,
     }
-    if let Err(error) = std::thread::Builder::new()
-        .name("qc-route-refresh".into())
-        .spawn(|| {
+    // One original is retained process-wide, including filesystem stalls and
+    // native TLS after the body returns. No GUI shutdown hard-deadline claim.
+    static REFRESH_BUDGET: qc_native_platform::thread_owner::Budget =
+        qc_native_platform::thread_owner::Budget::new(1);
+    let original = qc_native_platform::thread_owner::Owned::spawn(
+        "qc-route-refresh",
+        &REFRESH_BUDGET,
+        (),
+        || {
             let outcomes = refresh_managed_routes_blocking();
             // Antigravity is the one host that can be told, and it is worth
             // telling. ChatGPT/Codex spawns its MCP servers per chat and does
@@ -6065,11 +6447,14 @@ pub fn refresh_managed_routes_on_start() {
                     }
                 }
             }
-        })
-    {
-        // A thread this process cannot start is not worth failing start-up
-        // over, and the explicit Update control still does the whole job.
-        eprintln!("QC Remote could not check its own connections: {error}");
+        },
+    );
+    match original {
+        Ok(original) => drop(original), // retained by the shared original reaper
+        Err(error) => {
+            // Explicit Update remains available after failed startup admission.
+            eprintln!("QC Remote could not check its own connections: {error}");
+        }
     }
 }
 

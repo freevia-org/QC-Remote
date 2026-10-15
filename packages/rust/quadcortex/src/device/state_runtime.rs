@@ -104,8 +104,20 @@ impl DeviceStateRuntime {
         if message_type == profile::MESSAGE_TYPE_MODEL_REPO {
             return Err("ModelRepo must be parsed off-lane and installed atomically".into());
         }
+        // These precondition families decode collections before the normal
+        // decoder. Preserve other families' existing failure/invalidation
+        // policies (notably File, ModelPreset, and I/O retention).
+        if matches!(
+            message_type,
+            profile::MESSAGE_TYPE_GLOBAL_TEMPO
+                | profile::MESSAGE_TYPE_PINNED_MODELS
+                | profile::MESSAGE_TYPE_RECENTS_FAVORITES
+        ) && payload.len() > crate::compression::max_delivered_payload_bytes_for(message_type)
+        {
+            return Err(crate::state::StateDecodeError::PayloadLimit.to_string());
+        }
         self.observe_external_preflight(message_type, payload);
-        self.retain_settings_publication(message_type, payload);
+        self.retain_settings_publication(message_type, payload)?;
         if message_type == profile::MESSAGE_TYPE_FILE {
             let message = decode_file_message(payload).map_err(|error| {
                 let error = error.to_string();
@@ -151,17 +163,22 @@ impl DeviceStateRuntime {
         let states = match self.decoder.decode(message_type, payload) {
             Ok(states) => states,
             Err(error) => {
-                if matches!(error, StateDecodeError::ParameterRetentionLimit) {
-                    // The decoder discarded the preset, so its public projection must not
-                    // retain proof or operands from the last successful observation.
+                if self.decoder.sparse_state_invalidated()
+                    || matches!(error, StateDecodeError::ParameterRetentionLimit)
+                {
+                    // The decoder deliberately discarded incomplete retained
+                    // Grid evidence. Its old published snapshot cannot remain
+                    // authoritative, and resetting the decoder here would
+                    // incorrectly remove the sticky overflow refusal.
                     self.snapshot.has_preset = false;
-                    self.snapshot.preset_identity = None;
                     self.snapshot.grid_layout_complete = false;
                     self.snapshot.blocks.clear();
                     self.snapshot.routes.clear();
+                    self.snapshot.preset_identity = None;
                     self.snapshot.preset_revision = self.snapshot.preset_revision.saturating_add(1);
                     let mut update = StateUpdate::empty("gridTopology");
                     update.grid_layout_complete = Some(false);
+                    update.refresh_required = Some(true);
                     self.failed_preset_invalidation = Some(update);
                 }
                 return Err(error.to_string());
@@ -175,6 +192,9 @@ impl DeviceStateRuntime {
         {
             self.snapshot.full_preset_revision =
                 self.snapshot.full_preset_revision.saturating_add(1);
+        }
+        if message_type == profile::MESSAGE_TYPE_IO_SETTINGS {
+            self.assert_io_settings_healthy()?;
         }
         self.reconcile_current_preset_identity();
         let tempo_clock = if message_type == profile::MESSAGE_TYPE_GLOBAL_TEMPO {
@@ -213,6 +233,12 @@ impl DeviceStateRuntime {
     /// and is unavailable again after [`Self::reset`].
     pub fn model_preset_catalog(&self) -> &crate::state::ModelPresetCatalog {
         self.decoder.model_preset_catalog()
+    }
+
+    /// Retained sparse Grid state was discarded after its resource ceiling.
+    /// Only an authoritative full preset or session reset may restore it.
+    pub fn sparse_state_invalidated(&self) -> bool {
+        self.decoder.sparse_state_invalidated()
     }
 
     /// Records the transport's loss total as this runtime starts a session, before any ingress.
@@ -277,28 +303,71 @@ impl DeviceStateRuntime {
     /// serve `device.generalSettings` and `device.ioSettings` without putting
     /// a READ on the wire that the QC is believed never to answer (BELIEVED, no
     /// dated record in the repository).
-    fn retain_settings_publication(&mut self, message_type: u16, payload: &[u8]) {
-        // A tagged type-3 is not this host's settings: keep the last good one.
+    fn retain_settings_publication(
+        &mut self,
+        message_type: u16,
+        payload: &[u8],
+    ) -> Result<(), String> {
         if !settings_publication_is_retainable(message_type, payload) {
-            return;
+            return Ok(());
+        }
+        if message_type == profile::MESSAGE_TYPE_GENERAL_SETTINGS {
+            // Refuse malformed storage scalars before first retention or sparse merge.
+            // Other settings and the last valid publication remain authoritative.
+            crate::responses::validate_general_settings_retention(payload)
+                .map_err(|error| error.to_string())?;
+        }
+        if message_type == profile::MESSAGE_TYPE_IO_SETTINGS {
+            self.assert_io_settings_healthy()?;
+            match crate::responses::validate_io_settings_retention(payload) {
+                Ok(()) => {}
+                Err(crate::responses::ResponseDecodeError::RetainedIoBudget) => {
+                    return Err(self.invalidate_io_settings());
+                }
+                // Invalid numeric or malformed input cannot replace retained
+                // settings or publish a partial plugged-port update.
+                Err(error) => return Err(error.to_string()),
+            }
         }
         let merge = match message_type {
             profile::MESSAGE_TYPE_GENERAL_SETTINGS => merge_general_settings_publication,
             profile::MESSAGE_TYPE_IO_SETTINGS => merge_io_settings_publication,
-            _ => return,
+            _ => return Ok(()),
         };
         match self.settings_publications.get(&message_type) {
-            Some(previous) => {
-                // A frame that will not fold is not evidence; keep the last
-                // good publication rather than replacing it with a partial.
-                if let Ok(merged) = merge(previous, payload) {
+            Some(previous) => match merge(previous, payload) {
+                Ok(merged) => {
                     self.settings_publications.insert(message_type, merged);
                 }
-            }
+                Err(crate::responses::ResponseDecodeError::RetainedIoBudget) => {
+                    return Err(self.invalidate_io_settings());
+                }
+                // Malformed sparse input remains keep-last-good, not a budget failure.
+                Err(_) => {}
+            },
             None => {
                 self.settings_publications
                     .insert(message_type, payload.to_vec());
             }
+        }
+        Ok(())
+    }
+
+    fn invalidate_io_settings(&mut self) -> String {
+        let error = crate::responses::ResponseDecodeError::RetainedIoBudget.to_string();
+        self.settings_publications
+            .remove(&profile::MESSAGE_TYPE_IO_SETTINGS);
+        self.snapshot.io_ports = None;
+        self.snapshot.io_settings_error = error.clone();
+        error
+    }
+
+    /// Refuse reads and writes based on invalidated I/O observations until session reset.
+    pub fn assert_io_settings_healthy(&self) -> Result<(), String> {
+        if self.snapshot.io_settings_error.is_empty() {
+            Ok(())
+        } else {
+            Err(self.snapshot.io_settings_error.clone())
         }
     }
 
@@ -409,19 +478,24 @@ impl DeviceStateRuntime {
     /// whether the buffer has been edited away from the stored preset, so
     /// adopting the stored name here never claims unsaved work is saved.
     fn reconcile_current_preset_identity(&mut self) {
-        if !self.snapshot.has_preset || !is_unnamed_preset(&self.snapshot.preset_name) {
+        if !self.snapshot.has_preset {
             return;
         }
-        let Some(entry) = self
-            .presets
-            .entry(&self.snapshot.setlist_key, self.snapshot.preset_position)
-        else {
-            return;
-        };
-        if is_unnamed_preset(&entry.name) {
-            return;
-        }
-        self.snapshot.preset_name = entry.name;
+        // Presentation is not provenance: a previous catalog fallback must not
+        // become an explicitly named buffer when position/File frames follow.
+        // Re-derive it from the retained raw buffer on every reconciliation.
+        self.snapshot.preset_name = self
+            .decoder
+            .preset_buffer_name()
+            .filter(|name| !is_unnamed_preset(name))
+            .map(str::to_owned)
+            .or_else(|| {
+                self.presets
+                    .entry(&self.snapshot.setlist_key, self.snapshot.preset_position)
+                    .map(|entry| entry.name)
+                    .filter(|name| !is_unnamed_preset(name))
+            })
+            .unwrap_or_else(|| "Unsaved".into());
     }
 
     /// Returns the current gateway snapshot.
@@ -884,7 +958,22 @@ mod tests {
             .ingest(profile::MESSAGE_TYPE_RECALL_PRESET, &unnamed_preset())
             .expect("preset ingest");
         on_slot_52(&mut runtime);
-        runtime.snapshot_mut().preset_name = "Something Else".into();
+        let named = pa::RecallPresetMessage {
+            action: pa::message_action::Enum::Update as i32,
+            preset: Some(pa::recall_preset_message::Preset::Preset(
+                crate::proto::BinaryPreset {
+                    name: Some(crate::proto::binary_preset::Name::Name(
+                        "Something Else".into(),
+                    )),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        runtime
+            .ingest(profile::MESSAGE_TYPE_RECALL_PRESET, &named)
+            .unwrap();
         runtime.ingest_preset_listing(listing_with_numb_at_52());
         assert_eq!(runtime.snapshot().preset_name, "Something Else");
 
@@ -907,6 +996,75 @@ mod tests {
         bare.ingest_preset_listing(listing_with_numb_at_52());
         assert!(!bare.snapshot().has_preset);
         assert_eq!(bare.snapshot().preset_name, "Unsaved");
+    }
+
+    #[test]
+    fn unnamed_buffer_identity_tracks_current_address_and_catalog_without_promoting_fallback() {
+        for explicit_empty in [false, true] {
+            for full_first in [false, true] {
+                let mut runtime = DeviceStateRuntime::new();
+                let mut listing = listing_with_numb_at_52();
+                listing.files[53].name = "Destination".into();
+                runtime.ingest_preset_listing(listing.clone());
+                on_slot_52(&mut runtime);
+                let frame = |name| {
+                    pa::RecallPresetMessage {
+                        action: pa::message_action::Enum::Update as i32,
+                        preset: Some(pa::recall_preset_message::Preset::Preset(
+                            crate::proto::BinaryPreset {
+                                name,
+                                ..Default::default()
+                            },
+                        )),
+                        ..Default::default()
+                    }
+                    .encode_to_vec()
+                };
+                runtime
+                    .ingest(
+                        15,
+                        &frame(Some(crate::proto::binary_preset::Name::Name(
+                            "Previous buffer".into(),
+                        ))),
+                    )
+                    .unwrap();
+                assert_eq!(runtime.snapshot().preset_name, "Previous buffer");
+                let unnamed = frame(
+                    explicit_empty.then(|| crate::proto::binary_preset::Name::Name(String::new())),
+                );
+                let position = pa::SetlistPositionMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    position: Some(pa::setlist_position_message::Position::Position(53)),
+                    folder_key: Some(pa::setlist_position_message::FolderKey::FolderKey(
+                        SETLIST.into(),
+                    )),
+                    ..Default::default()
+                }
+                .encode_to_vec();
+                if full_first {
+                    runtime.ingest(15, &unnamed).unwrap();
+                }
+                runtime.ingest(2, &position).unwrap();
+                if !full_first {
+                    runtime.ingest(15, &unnamed).unwrap();
+                }
+                assert_eq!(
+                    runtime.snapshot().preset_name,
+                    "Destination",
+                    "empty={explicit_empty}, full_first={full_first}"
+                );
+                listing.files[53].name = "Renamed destination".into();
+                runtime.ingest_preset_listing(listing.clone());
+                assert_eq!(runtime.snapshot().preset_name, "Renamed destination");
+                listing.files[53].name.clear();
+                runtime.ingest_preset_listing(listing);
+                assert_eq!(
+                    runtime.snapshot().preset_name,
+                    "Unsaved",
+                    "removed catalog name must not retain an old fallback"
+                );
+            }
+        }
     }
 
     /// The loaded preset's TempoControl block as a full preset read carries
@@ -1002,6 +1160,7 @@ mod tests {
 
     #[test]
     fn preset_tempo_survives_the_global_tempo_publication_that_follows_it() {
+        // Existing normal connect-order oracle remains unchanged below.
         // Connect order: full preset first, the GlobalTempo block ~10 ms later.
         let mut runtime = DeviceStateRuntime::new();
         runtime.ingest(15, &full_preset_with_tempo(None)).unwrap();
@@ -1012,6 +1171,51 @@ mod tests {
         assert_eq!(
             global_observation(&runtime),
             serde_json::json!({"mode": "PRESET", "globalBpm": GLOBAL_BPM})
+        );
+    }
+
+    #[test]
+    fn oversized_runtime_ingress_cannot_mutate_preconditions_before_its_refusal() {
+        let mut runtime = DeviceStateRuntime::new();
+        runtime
+            .ingest(profile::MESSAGE_TYPE_GLOBAL_TEMPO, &full_global_tempo(0.0))
+            .unwrap();
+        let before = global_observation(&runtime);
+        let maximum =
+            crate::compression::max_delivered_payload_bytes_for(profile::MESSAGE_TYPE_GLOBAL_TEMPO);
+        let mut oversized = pa::GlobalTempoMessage::decode(
+            global_tempo_publication(&[(0, 0.9), (1, 1.0)]).as_slice(),
+        )
+        .unwrap();
+        oversized.params.push(crate::proto::Param {
+            index: Some(param::Index::Index(99)),
+            dynamic_steps: vec!["p".repeat(maximum + 1)],
+            ..Default::default()
+        });
+        let oversized = oversized.encode_to_vec();
+        assert!(oversized.len() > maximum);
+        assert!(
+            pa::GlobalTempoMessage::decode(oversized.as_slice()).is_ok(),
+            "the actual counterexample is valid protobuf, not a malformed decode"
+        );
+        assert!(runtime
+            .ingest(profile::MESSAGE_TYPE_GLOBAL_TEMPO, &oversized)
+            .is_err());
+        assert_eq!(
+            runtime.external_preflight_observation("device.setGlobalTempo"),
+            Some(before),
+            "an oversized rejected envelope must not change BPM or discard the prior mode"
+        );
+        runtime
+            .ingest(
+                profile::MESSAGE_TYPE_GLOBAL_TEMPO,
+                &global_tempo_publication(&[(0, 0.5), (1, 1.0)]),
+            )
+            .unwrap();
+        assert_eq!(
+            global_observation(&runtime),
+            serde_json::json!({"mode":"GLOBAL","globalBpm":140}),
+            "a subsequent healthy publication still updates both preconditions"
         );
     }
 
@@ -1244,6 +1448,310 @@ mod tests {
             .unwrap_err()
             .message()
             .starts_with("STATE_UNAVAILABLE:"));
+    }
+
+    #[test]
+    fn derived_stomp_activity_follows_scene_and_sparse_evidence_without_losing_assignment_metadata()
+    {
+        use crate::proto::{
+            chain, col_bypass, model, BinaryPreset, Bypass, Chain, ColBypass, Model, SceneBypass,
+            StompModeAssignment,
+        };
+        let mut runtime = DeviceStateRuntime::new();
+        let bypass = |values: Vec<bool>| Bypass {
+            row: Some(crate::proto::bypass::Row::Row(0)),
+            col_bypass: vec![ColBypass {
+                column: Some(col_bypass::Column::Column(0)),
+                scene_mode: Some(col_bypass::SceneMode::SceneMode(true)),
+                scene_bypass: values
+                    .into_iter()
+                    .map(|bypass| SceneBypass { bypass })
+                    .collect(),
+            }],
+        };
+        let mut values = vec![false; 8];
+        values[7] = true;
+        let preset = BinaryPreset {
+            chains: vec![Chain {
+                row: Some(chain::Row::Row(0)),
+                models: vec![Model {
+                    hash: Some(model::Hash::Hash(1234)),
+                    column: Some(model::Column::Column(0)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            bypass: vec![bypass(values)],
+            stomp_mode_assignments: vec![StompModeAssignment {
+                row: 0,
+                column: 0,
+                stomp_index: 2,
+                ..Default::default()
+            }],
+            single_stomp_labels: std::collections::HashMap::from([(2, "Gate".into())]),
+            stomp_is_momentary: std::collections::HashMap::from([(2, true)]),
+            ..Default::default()
+        };
+        let full = pa::RecallPresetMessage {
+            action: pa::message_action::Enum::Update as i32,
+            preset: Some(pa::recall_preset_message::Preset::Preset(preset)),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        runtime
+            .ingest(profile::MESSAGE_TYPE_RECALL_PRESET, &full)
+            .unwrap();
+        let row = |runtime: &DeviceStateRuntime| {
+            serde_json::to_value(
+                runtime
+                    .snapshot()
+                    .footswitch_states
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row.index == 2)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let metadata = row(&runtime);
+        assert_eq!(metadata["active"], true);
+        assert_eq!(metadata["label"], "Gate");
+        assert_eq!(metadata["momentary"], true);
+        let assert_row = |runtime: &DeviceStateRuntime, expected: Option<bool>| {
+            let current = row(runtime);
+            assert_eq!(current.get("active").cloned(), expected.map(Value::Bool));
+            for field in ["index", "assigned", "color", "momentary", "label"] {
+                assert_eq!(current[field], metadata[field], "metadata changed: {field}");
+            }
+        };
+        for (scene, active) in [(7, false), (0, true), (7, false)] {
+            let observed = runtime
+                .ingest(
+                    profile::MESSAGE_TYPE_SCENE,
+                    &pa::SceneMessage {
+                        action: pa::message_action::Enum::Update as i32,
+                        selected_scene: Some(pa::scene_message::SelectedScene::SelectedScene(
+                            scene,
+                        )),
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                )
+                .unwrap();
+            assert_row(&runtime, Some(active));
+            assert_eq!(
+                observed.states[0].footswitch_states,
+                runtime.snapshot().footswitch_states,
+                "published scene evidence equals the cached snapshot"
+            );
+        }
+        let sparse = |values| {
+            pa::GridMessage {
+                action: pa::message_action::Enum::Update as i32,
+                preset: Some(pa::grid_message::Preset::Preset(BinaryPreset {
+                    bypass: vec![bypass(values)],
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }
+            .encode_to_vec()
+        };
+        let observed = runtime
+            .ingest(profile::MESSAGE_TYPE_GRID, &sparse(vec![false]))
+            .unwrap();
+        assert_row(&runtime, Some(true));
+        assert_eq!(
+            observed
+                .states
+                .iter()
+                .find(|state| state.kind == "bypassBatch")
+                .unwrap()
+                .footswitch_states,
+            runtime.snapshot().footswitch_states
+        );
+        let observed = runtime
+            .ingest(profile::MESSAGE_TYPE_GRID, &sparse(vec![false, false]))
+            .unwrap();
+        assert_eq!(runtime.snapshot().blocks[0].bypassed, None);
+        assert_row(&runtime, None);
+        assert_eq!(
+            observed
+                .states
+                .iter()
+                .find(|state| state.kind == "bypassBatch")
+                .unwrap()
+                .footswitch_states,
+            runtime.snapshot().footswitch_states
+        );
+        runtime
+            .ingest(
+                profile::MESSAGE_TYPE_SCENE,
+                &pa::SceneMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    selected_scene: Some(pa::scene_message::SelectedScene::SelectedScene(0)),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        assert_row(&runtime, Some(true));
+    }
+
+    #[test]
+    fn native_block_deletion_reprojects_remaining_and_final_stomp_assignments() {
+        use crate::proto::{
+            bypass, chain, col_bypass, model, BinaryPreset, Bypass, Chain, ColBypass, Model,
+            SceneBypass, StompModeAssignment,
+        };
+        let mut runtime = DeviceStateRuntime::new();
+        let preset = BinaryPreset {
+            chains: vec![Chain {
+                row: Some(chain::Row::Row(0)),
+                models: (0..2)
+                    .map(|column| Model {
+                        hash: Some(model::Hash::Hash(1234)),
+                        column: Some(model::Column::Column(column)),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            bypass: vec![Bypass {
+                row: Some(bypass::Row::Row(0)),
+                col_bypass: (0..2)
+                    .map(|column| ColBypass {
+                        column: Some(col_bypass::Column::Column(column)),
+                        scene_bypass: vec![SceneBypass { bypass: false }],
+                        ..Default::default()
+                    })
+                    .collect(),
+            }],
+            stomp_mode_assignments: (0..2)
+                .map(|column| StompModeAssignment {
+                    row: 0,
+                    column,
+                    stomp_index: 2,
+                    ..Default::default()
+                })
+                .collect(),
+            single_stomp_labels: std::collections::HashMap::from([(2, "Retained label".into())]),
+            stomp_is_momentary: std::collections::HashMap::from([(2, true)]),
+            ..Default::default()
+        };
+        runtime
+            .ingest(
+                profile::MESSAGE_TYPE_RECALL_PRESET,
+                &pa::RecallPresetMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    preset: Some(pa::recall_preset_message::Preset::Preset(preset)),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        let row = |runtime: &DeviceStateRuntime| {
+            serde_json::to_value(
+                runtime
+                    .snapshot()
+                    .footswitch_states
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row.index == 2)
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(row(&runtime)["assigned"], true);
+        assert_eq!(row(&runtime)["active"], true);
+        for (column, remaining, assigned, active) in [(0, 1, true, true), (1, 0, false, false)] {
+            let observed = runtime
+                .ingest(
+                    profile::MESSAGE_TYPE_GRID,
+                    &pa::GridMessage {
+                        action: pa::message_action::Enum::Delete as i32,
+                        preset: Some(pa::grid_message::Preset::Preset(BinaryPreset {
+                            chains: vec![Chain {
+                                row: Some(chain::Row::Row(0)),
+                                models: vec![Model {
+                                    column: Some(model::Column::Column(column)),
+                                    ..Default::default()
+                                }],
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                )
+                .unwrap();
+            assert_eq!(runtime.snapshot().blocks.len(), remaining);
+            let current = row(&runtime);
+            assert_eq!(
+                current["assigned"], assigned,
+                "remaining current targets determine assignment"
+            );
+            assert_eq!(
+                current["active"], active,
+                "an empty current assignment is inactive, not the previous lamp"
+            );
+            assert_eq!(current["label"], "Retained label");
+            assert_eq!(current["momentary"], true);
+            assert_eq!(observed.states.len(), 1);
+            assert_eq!(observed.states[0].kind, "blockRemoved");
+            assert_eq!(
+                observed.states[0].footswitch_states,
+                runtime.snapshot().footswitch_states,
+                "published removal and cached snapshot carry the same derived rows"
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_file_ingress_keeps_existing_catalog_invalidation_policy() {
+        let mut runtime = DeviceStateRuntime::new();
+        let seed = pa::FileMessage {
+            action: pa::message_action::Enum::Create as i32,
+            folder: Some(pa::file_message::Folder::Folder(pa::FolderInfo {
+                key: Some(pa::folder_info::Key::Key(SETLIST.into())),
+                name: Some(pa::folder_info::Name::Name("My Presets".into())),
+                files: vec![pa::ProductData {
+                    index: Some(pa::product_data::Index::Index(1)),
+                    key: Some(pa::product_data::Key::Key("native-key".into())),
+                    name: Some(pa::product_data::Name::Name("Native".into())),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        runtime
+            .ingest(profile::MESSAGE_TYPE_FILE, &seed.encode_to_vec())
+            .unwrap();
+        assert!(runtime.native_preset_catalog().health().is_ok());
+        assert!(runtime.preset_entry(SETLIST, 1).is_some());
+        let mut oversized = seed.clone();
+        let Some(pa::file_message::Folder::Folder(folder)) = oversized.folder.as_mut() else {
+            unreachable!("seed includes the actual folder");
+        };
+        folder.name = Some(pa::folder_info::Name::Name("p".repeat(
+            crate::compression::max_delivered_payload_bytes_for(profile::MESSAGE_TYPE_FILE) + 1,
+        )));
+        let oversized = oversized.encode_to_vec();
+        assert!(runtime
+            .ingest(profile::MESSAGE_TYPE_FILE, &oversized)
+            .is_err());
+        assert!(
+            runtime.native_preset_catalog().health().is_err(),
+            "the preflight-family guard must not skip existing FILE failure invalidation"
+        );
+        runtime.reset();
+        runtime
+            .ingest(profile::MESSAGE_TYPE_FILE, &seed.encode_to_vec())
+            .unwrap();
+        assert!(runtime.native_preset_catalog().health().is_ok());
     }
 
     #[test]

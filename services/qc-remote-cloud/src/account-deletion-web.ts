@@ -202,14 +202,33 @@ export async function confirmAccountDeletion(request: Request, env: GoogleOAuthE
   }
   let outcome: AccountDeletionOutcome | null = null;
   try { outcome = await deps.authorityFor(intent.s).requestAccountDeletion(); }
-  catch (cause) { describeClientFailure(cause, { status: 503, fallback: "", context: "account-deletion-start", log: deps.log }); }
+  catch (cause) {
+    describeClientFailure(cause, { status: 503, fallback: "", context: "account-deletion-start", log: deps.log });
+    // The mutation may already have revoked access before the RPC failed.
+    // Recover the account's receipt without submitting a second mutation.
+    try {
+      const current = await deps.authorityFor(intent.s).accountDeletionStatus();
+      // Only these pending steps still fence account reuse. Completed and
+      // legacy-reconciliation receipts can predate this failed request while
+      // new-generation access already exists. Without the RPC result we
+      // cannot claim those receipts belong to this confirmation.
+      if (current.status === "pending" && ["provider-writes", "grants", "directory"].includes(current.step) && isOperationId(current.operationId)) {
+        return statusRedirect([
+          `${INTENT_COOKIE}=; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age=0`,
+          await statusCookie(intent.s, current.operationId, env, now),
+        ]);
+      }
+    } catch (statusCause) {
+      describeClientFailure(statusCause, { status: 503, fallback: "", context: "account-deletion-start-status", log: deps.log });
+    }
+  }
   return outcomeResponse(outcome, intent.s, env, deps, now);
 }
 
 async function outcomeResponse(outcome: AccountDeletionOutcome | null, sub: string, env: GoogleOAuthEnv, deps: AccountDeletionWebDeps, now: number): Promise<Response> {
   const expire = `${INTENT_COOKIE}=; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age=0`;
   if (!outcome) {
-    return page("Deletion not started", `<h1>Deletion not started</h1><p>The relay could not start the deletion. Nothing has changed. Try again in a minute.</p><form method="get" action="/account/delete"><button class="button" type="submit">Start again</button></form>`, deps.styles, 503, [expire]);
+    return page("Deletion status unavailable", `<h1>Deletion status unavailable</h1><p>The relay could not confirm the deletion result. Remote access may already be revoked and cleanup may be in progress. Return to the deletion page to try again.</p><form method="get" action="/account/delete"><button class="button" type="submit">Return to deletion page</button></form>`, deps.styles, 503, [expire]);
   }
   return statusRedirect([expire, await statusCookie(sub, outcome.operationId, env, now)]);
 }
@@ -220,8 +239,9 @@ async function readStatusToken(request: Request, env: GoogleOAuthEnv, now: numbe
   return token;
 }
 
-/** `accessRevoked` is the first level (true from the start of any deletion);
- * `status:"deleted"` is the second (cleanup complete). */
+/** `accessRevoked` describes credentials issued before this deletion, not
+ * the current-generation fence: legacy reconciliation permits account reuse.
+ * `status:"deleted"` is the second level (cleanup complete). */
 export type OperationStatus = { operationId: string; status: "pending" | "deleted" | "superseded"; deletedAt?: number; startedAt?: number; step?: string; accessRevoked?: true; until?: number | null };
 
 /** What the account reports about exactly this operation. */
@@ -266,7 +286,7 @@ export async function showAccountDeletionStatus(request: Request, env: GoogleOAu
         : status.step === "directory"
           ? "Some relay directory entries are still being removed. The relay keeps trying on its own."
           : `Everything this relay version recorded is deleted, and you can use remote access again with a fresh account. AI-app authorizations that an older relay version may have stored outside that record are being removed and checked again${status.until ? `; this can finish no earlier than ${escapeHtml(new Date(status.until).toISOString().slice(0, 10))}` : "; this cannot finish until Freevia can establish that no older relay version can still write one and that every one it may have written has expired, which is not yet established"}.`;
-    return page("Cleanup in progress", `<h1>Remote access removed. Cleanup in progress</h1><p>Every paired device and AI app has lost access to this account. ${why} Nothing is reported as deleted until the relay has confirmed all of it.</p>
+    return page("Cleanup in progress", `<h1>Remote access removed. Cleanup in progress</h1><p>Devices and AI apps linked before this deletion have lost access. ${why} Nothing is reported as deleted until the relay has confirmed all of it.</p>
 <form method="post" action="/account/delete/continue"><input type="hidden" name="operation" value="${escapeHtml(token.o)}"><button class="button danger" type="submit">Continue deletion</button></form>${reference}`, deps.styles, 202);
   }
   return page("Deletion replaced", `<h1>No record of this deletion</h1><p>The relay has no receipt for this operation; a later deletion may have replaced it. Start a new deletion to be sure.</p><form method="get" action="/account/delete"><button class="button" type="submit">Open the deletion page</button></form>${reference}`, deps.styles, 409);

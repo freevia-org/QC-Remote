@@ -163,6 +163,123 @@ fn grid_addressed_writes_refuse_incomplete_topology_but_preset_controls_remain_a
     assert!(!gateway_method_requires_exact_grid("device.setTempo"));
 }
 
+#[test]
+fn malformed_required_guards_cannot_disable_authoritative_planner_comparisons() {
+    let snapshot = GatewaySnapshot {
+        has_preset: true,
+        preset_name: "Guard fixture".into(),
+        master_volume: 80,
+        tempo: 120,
+        active_scene: 0,
+        mode: "STOMP".into(),
+        grid_layout_complete: true,
+        blocks: vec![fixture_block(0, 0, 41)],
+        ..Default::default()
+    };
+    let requests = [
+        (
+            "device.setMasterVolume",
+            json!({"value":20,"expectedValue":80}),
+            "expectedValue",
+        ),
+        (
+            "device.setTempo",
+            json!({"bpm":130,"expectedTempo":120,"expectedPresetName":"Guard fixture"}),
+            "expectedTempo",
+        ),
+        (
+            "device.toggleBypass",
+            json!({"row":0,"column":0,"desiredBypassed":true,"expectedBypassed":false,"expectedModelId":41,"expectedScene":0,"expectedPresetName":"Guard fixture"}),
+            "expectedBypassed",
+        ),
+        (
+            "device.toggleBypass",
+            json!({"row":0,"column":0,"desiredBypassed":true,"expectedBypassed":false,"expectedModelId":41,"expectedScene":0,"expectedPresetName":"Guard fixture"}),
+            "expectedScene",
+        ),
+        (
+            "device.tapTempo",
+            json!({"expectedMode":"STOMP","expectedPresetName":"Guard fixture"}),
+            "expectedMode",
+        ),
+    ];
+    for (method, request, field) in requests {
+        assert!(
+            plan_gateway_write(method, &request, Some(&snapshot)).is_ok(),
+            "{method}"
+        );
+        for invalid in [
+            Value::Null,
+            json!("wrong"),
+            json!([]),
+            json!({}),
+            json!(4_294_967_296_u64),
+            json!(-1),
+            json!(0.5),
+        ] {
+            let mut malformed = request.clone();
+            malformed[field] = invalid;
+            let error = plan_gateway_write(method, &malformed, Some(&snapshot))
+                .expect_err("malformed guard must reject before transport planning");
+            assert!(error.contains(field), "{method}: {error}");
+        }
+    }
+    let wrapped = json!({"value":20,"expectedValue":4_294_967_376_u64});
+    assert!(plan_gateway_write("device.setMasterVolume", &wrapped, Some(&snapshot)).is_err());
+    let wrapped =
+        json!({"bpm":130,"expectedTempo":4_294_967_416_u64,"expectedPresetName":"Guard fixture"});
+    assert!(plan_gateway_write("device.setTempo", &wrapped, Some(&snapshot)).is_err());
+}
+
+#[test]
+fn required_guard_validation_preserves_intentional_nullable_and_text_domains() {
+    for (method, field, params) in [
+        (
+            "device.addBlock",
+            "expectedModelId",
+            json!({"expectedModelId":null}),
+        ),
+        (
+            "device.setBlockFootswitch",
+            "expectedFootswitch",
+            json!({"expectedFootswitch":null}),
+        ),
+        (
+            "device.setBlockFootswitch",
+            "expectedAssignmentType",
+            json!({"expectedAssignmentType":null}),
+        ),
+        (
+            "device.setChainInput",
+            "expectedInputId",
+            json!({"expectedInputId":null}),
+        ),
+        (
+            "device.setChainOutput",
+            "expectedOutputId",
+            json!({"expectedOutputId":null}),
+        ),
+        (
+            "device.setChainSplit",
+            "expectedMixColumn",
+            json!({"expectedMixColumn":null}),
+        ),
+        (
+            "device.setParameter",
+            "expectedValue",
+            json!({"expectedValue":null,"value":"capture/key"}),
+        ),
+    ] {
+        validate_required_guard(method, field, &params).unwrap();
+    }
+    assert!(validate_required_guard(
+        "device.setParameter",
+        "expectedValue",
+        &json!({"expectedValue":null,"value":0.5})
+    )
+    .is_err());
+}
+
 fn fixture_block(row: u32, column: u32, model_id: u32) -> GridBlock {
     GridBlock {
         id: format!("{row}:{column}"),
@@ -2465,7 +2582,7 @@ fn parameter_assignments_are_validated_and_planned_in_shared_rust() {
                 split_column: Some(4),
                 mix_column: Some(7),
                 splitter_model_id: Some(10004),
-                split_muted: false,
+                split_muted: Some(false),
                 ..Default::default()
             },
             GridRoute {
@@ -2477,7 +2594,7 @@ fn parameter_assignments_are_validated_and_planned_in_shared_rust() {
                 split_column: Some(4),
                 mix_column: Some(7),
                 splitter_model_id: Some(10_004),
-                split_muted: false,
+                split_muted: Some(false),
                 ..Default::default()
             },
         ],
@@ -2662,7 +2779,7 @@ fn parameter_scene_mode_orders_stale_route_and_readback_failures() {
             split_column: Some(4),
             mix_column: Some(7),
             splitter_model_id: Some(10_000),
-            split_muted: false,
+            split_muted: Some(false),
             ..Default::default()
         }],
         grid_layout_complete: true,
@@ -2712,7 +2829,7 @@ fn parameter_expression_preserves_range_and_uses_push_readback_without_elision()
             split_column: Some(4),
             mix_column: Some(7),
             splitter_model_id: Some(10004),
-            split_muted: false,
+            split_muted: Some(false),
             ..Default::default()
         }],
         grid_layout_complete: true,
@@ -2867,7 +2984,7 @@ fn splitter_writes_follow_authoritative_container_identity_and_fail_closed() {
         split_column: Some(4),
         mix_column: Some(7),
         splitter_model_id: model_id,
-        split_muted: false,
+        split_muted: Some(false),
         ..Default::default()
     };
     let snapshot = |model_id| GatewaySnapshot {
@@ -2980,7 +3097,7 @@ fn stomp_metadata_uses_assignment_count_and_authoritative_readback() {
         }],
         footswitch_states: Some(vec![crate::state::FootswitchState {
             index: 4,
-            active: true,
+            active: Some(true),
             assigned: true,
             color: "#f4f4f4".into(),
             momentary: Some(false),
@@ -3465,7 +3582,7 @@ fn optimistic_tokens_guard_blocks_routes_and_global_state() {
             output: "Out 1/2".into(),
             split_column: Some(4),
             mix_column: Some(8),
-            split_muted: false,
+            split_muted: Some(false),
             splitter_model_id: None,
             ..Default::default()
         }],
@@ -3988,7 +4105,7 @@ fn chain_input_is_domain_bounded_stale_guarded_and_still_sends_same_value() {
             split_column: None,
             mix_column: None,
             splitter_model_id: None,
-            split_muted: false,
+            split_muted: Some(false),
             ..Default::default()
         }],
         grid_layout_complete: true,
@@ -4040,7 +4157,7 @@ fn chain_output_is_qc_bounded_and_authoritatively_verified() {
             output: "Out 2".into(),
             split_column: None,
             mix_column: None,
-            split_muted: false,
+            split_muted: Some(false),
             splitter_model_id: None,
             ..Default::default()
         }],
@@ -4591,7 +4708,7 @@ fn nullable_gateway_assignments_are_preserved_as_explicit_clears() {
                     output: String::new(),
                     split_column: None,
                     mix_column: None,
-                    split_muted: false,
+            split_muted: Some(false),
                     splitter_model_id: None,
                     ..Default::default()
                 }],
@@ -4620,7 +4737,7 @@ fn nullable_gateway_assignments_are_preserved_as_explicit_clears() {
             output: "Out 1/2".into(),
             split_column: Some(2),
             mix_column: Some(7),
-            split_muted: false,
+            split_muted: Some(false),
             splitter_model_id: None,
             ..Default::default()
         }],
@@ -4643,12 +4760,35 @@ fn nullable_gateway_assignments_are_preserved_as_explicit_clears() {
     assert!(!mute.verification.matches(&snapshot, None));
     let muted = GatewaySnapshot {
         routes: vec![GridRoute {
-            split_muted: true,
+            split_muted: Some(true),
             ..snapshot.routes[0].clone()
         }],
         ..snapshot.clone()
     };
     assert!(mute.verification.matches(&muted, None));
+    let unavailable = GatewaySnapshot {
+        routes: vec![GridRoute {
+            split_muted: None,
+            ..snapshot.routes[0].clone()
+        }],
+        ..snapshot.clone()
+    };
+    assert!(!mute.verification.matches(&unavailable, None));
+    let unmute = plan_gateway_write(
+        "device.setSplitMute",
+        &json!({"row": 2, "muted": false, "expectedMuted": true, "expectedScene": 3, "expectedPresetName": "Live"}),
+        Some(&muted),
+    ).unwrap();
+    assert!(!unmute.verification.matches(&unavailable, None));
+    let unavailable_error = plan_gateway_write(
+        "device.setSplitMute",
+        &json!({"row": 2, "muted": true, "expectedMuted": false, "expectedScene": 3, "expectedPresetName": "Live"}),
+        Some(&unavailable),
+    ).unwrap_err();
+    assert!(
+        unavailable_error.starts_with("STATE_UNAVAILABLE:"),
+        "{unavailable_error}"
+    );
     assert!(!mute.verification.matches(
         &GatewaySnapshot {
             active_scene: 2,
@@ -4687,7 +4827,7 @@ fn nullable_gateway_assignments_are_preserved_as_explicit_clears() {
                     split_column: None,
                     mix_column: None,
                     splitter_model_id: None,
-                    split_muted: false,
+            split_muted: Some(false),
                     ..Default::default()
                 }],
                 preset_name: "Live".into(),
@@ -4747,7 +4887,7 @@ fn planned_write_readback_predicates_are_host_independent() {
             split_column: Some(4),
             mix_column: Some(7),
             splitter_model_id: Some(10_004),
-            split_muted: false,
+            split_muted: Some(false),
             ..Default::default()
         }],
         grid_layout_complete: true,
@@ -8450,7 +8590,10 @@ fn recall_details_name_the_request_and_unverified_details_never_claim_verificati
         ),
     ] {
         let plan = plan_preset_recall(method, &params, Some(&before)).unwrap();
-        assert_eq!(plan.detail, detail, "{method}: the plan names the requested action");
+        assert_eq!(
+            plan.detail, detail,
+            "{method}: the plan names the requested action"
+        );
         assert!(!detail_claims_verification(&plan.detail), "{method}");
         let timeout = plan.timeout_detail(2500);
         assert_eq!(timeout, timeout_text, "{method}");

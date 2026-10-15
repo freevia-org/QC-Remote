@@ -37,29 +37,33 @@ async fn post(
     body: Value,
     session: Option<&str>,
 ) -> (Option<String>, String) {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri("/mcp")
-        .header(header::HOST, "127.0.0.1:41000")
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::ACCEPT, "application/json, text/event-stream");
-    if let Some(id) = session {
-        builder = builder.header("mcp-session-id", id);
-    }
-    let response = router
-        .clone()
-        .oneshot(builder.body(Body::from(body.to_string())).expect("request"))
-        .await
-        .expect("response");
-    let id = response
-        .headers()
-        .get("mcp-session-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let bytes = to_bytes(response.into_body(), 16 * 1024 * 1024)
-        .await
-        .expect("body");
-    (id, String::from_utf8_lossy(&bytes).into_owned())
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header(header::HOST, "127.0.0.1:41000")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json, text/event-stream");
+        if let Some(id) = session {
+            builder = builder.header("mcp-session-id", id);
+        }
+        let response = router
+            .clone()
+            .oneshot(builder.body(Body::from(body.to_string())).expect("request"))
+            .await
+            .expect("response");
+        let id = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let bytes = to_bytes(response.into_body(), 16 * 1024 * 1024)
+            .await
+            .expect("body");
+        (id, String::from_utf8_lossy(&bytes).into_owned())
+    })
+    .await
+    .expect("whole MCP fixture observation timed out")
 }
 
 /// Streamable HTTP answers as an SSE stream, so pull the JSON-RPC payload out.

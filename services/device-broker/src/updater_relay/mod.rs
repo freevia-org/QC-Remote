@@ -1,78 +1,34 @@
-//! The update-only HTTP relay.
-//!
-//! A Quad Cortex connected over USB to this broker has no network of its own
-//! to reach Neural DSP's firmware server, so it asks its host to fetch for it:
-//! type 61 (`UpdaterForward`) carries the HTTP request the unit built, and the
-//! reply, in the same message type, carries the response. This module answers
-//! those requests, and only those. It carries no other message family: the
-//! account, cloud-library, backup and log forwards (types 29, 30, 31) and the
-//! cloud login (type 18) ride an encrypted envelope this build does not
-//! implement, and nothing here decodes, executes or answers them.
-//!
-//! The unit supplies the URL, the headers (including its own credentials) and
-//! the timeout. Only HTTPS requests to `neuraldsp.com` and its subdomains (and
-//! to any extra domain the settings name) are carried, at any path; a request
-//! for another domain is refused, answered with an error and recorded by host
-//! name. The relay adds no header of its own to the unit's set (the HTTP client
-//! adds only `Host` and, when the unit sent no `Accept`, its default
-//! `Accept: */*`), stores no credential and inspects nothing in a body. Header
-//! values and query values never reach a log, a status field or an error: the
-//! audit record is the time, the request type, the host, the path shape, the
-//! status and the byte counts. That record goes to the broker's error output
-//! and the device flight recorder; the status that AI apps can read carries
-//! only counts and the outcome of the last request (see [`RelayStatus`]).
-//!
-//! The switch is the `updaterRelayEnabled` key of the broker settings file
-//! (`tray_settings`). It is on unless it is set to `false`; when it is off the
-//! broker behaves as if this module did not exist (type 60 and 61 frames are
-//! decoded, counted and dropped) and the status says the unit asked.
-
+//! Transparent QC HTTP forwarding. Protocol adapters preserve device requests
+//! and upstream responses; the USB pump only frames and paces those bytes.
+mod cloud_forward;
 pub mod executor;
 pub mod fetch;
-mod http;
+pub(crate) use cloud_forward::CloudForwardRelay;
+pub(crate) mod http;
 pub mod policy;
 pub mod pump;
 pub mod request;
+pub(crate) mod resolver_helper;
 pub mod response;
-
 use crate::tray_settings::{self, UpdaterRelaySettings};
-use executor::{ChunkSink, ExecutionLimits, Failure, Outcome, SinkClosed};
-use fetch::{FetchFailure, HttpFetcher};
-use policy::RelayPolicy;
+use executor::{ChunkSink, Failure, Outcome, SinkClosed};
+use fetch::HttpFetcher;
 use prost::Message as _;
-use quadcortex::commands::OutboundMessage;
-use quadcortex::proto::cortex_protobuf_v2 as pa;
-use quadcortex::sync::RecoverPoison;
+use quadcortex::{proto::cortex_protobuf_v2 as pa, sync::RecoverPoison};
+use quadcortex_forwarder::ForwardedMessage;
 use request::RelayRequest;
 use serde::Serialize;
-use std::collections::VecDeque;
-use std::fmt;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-/// How often the settings file is read again.
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex, OnceLock,
+    },
+    thread,
+    time::{Duration, Instant},
+};
 const SETTINGS_RECHECK: Duration = Duration::from_secs(2);
-/// Reply chunks that may wait for the USB writer. The HTTP side blocks when
-/// this is full, so the image is never held in memory beyond a few chunks and
-/// the server is read no faster than the device takes it.
-const CHUNK_QUEUE: usize = 4;
-/// How long the HTTP side waits for the USB writer to take a chunk before it
-/// gives up. A wedged device lane must not leave a thread running for ever.
-const SINK_STALL_LIMIT: Duration = Duration::from_secs(120);
-const AUDIT_KEEP: usize = 16;
-const EVENTS_KEEP: usize = 32;
-
-fn unix_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
-        .unwrap_or(0)
-}
-
-/// One finished request, as far as it is ever recorded.
+/// Legacy status schema; production forwarding does not populate history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditEntry {
@@ -87,37 +43,8 @@ pub struct AuditEntry {
     pub hops: u8,
 }
 
-impl fmt::Display for AuditEntry {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "updater-relay request={} host={} path={} outcome={} status={} in={} out={} hops={}",
-            self.request,
-            self.host,
-            self.path_shape,
-            self.outcome,
-            self.status
-                .map_or_else(|| "none".to_owned(), |status| status.to_string()),
-            self.bytes_from_server,
-            self.bytes_to_device,
-            self.hops
-        )
-    }
-}
-
-/// The relay's part of the broker status (`usbDiagnostics.updaterRelay`).
-///
-/// `system.status` carries this object, and `system.status` is readable by the
-/// AI apps attached to the broker (it backs the `qc://status` resource). What
-/// it may show them is therefore limited to what the Settings row needs: the
-/// switch, counts, whether a request is running, and the outcome word of the
-/// last finished one. Everything that names a place or a time is marked
-/// `skip_serializing`: host names (the unit's, the refused one), the allowed
-/// list the user edited, the audit list and its path shapes, the free-text note
-/// and the timestamps. They stay in the struct for the broker's own code and
-/// tests, and reach the user through the broker's log and the device flight
-/// recorder. No QC Remote tool or resource serves that recorder, but it is a
-/// plain local file that any program running as the user can read.
+/// Relay switch and aggregate transfer status for existing clients.
+/// Legacy request-history fields remain empty and are not serialized.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayStatus {
@@ -138,13 +65,9 @@ pub struct RelayStatus {
     pub requests_refused: u64,
     #[serde(skip_serializing)]
     pub last_request_at_unix_ms: Option<u128>,
-    /// Requests for a domain that is not allowed. They were not carried.
+    /// Legacy status counter; transparent forwarding never refuses a domain.
     pub refused_domain_requests: u64,
-    /// The host name (never a path or query) of the most recent request for a
-    /// domain that is not allowed, and when it was made. A download served from
-    /// another domain shows up here first; add the domain to
-    /// `updaterRelayExtraDomains` to allow it. Not in `system.status`; it is in
-    /// the broker's log and the flight recorder.
+    /// Legacy status fields retained for compatibility; always empty.
     #[serde(skip_serializing)]
     pub last_refused_host: Option<String>,
     #[serde(skip_serializing)]
@@ -153,10 +76,10 @@ pub struct RelayStatus {
     pub bytes_to_device: u64,
     pub in_flight: bool,
     /// How the latest finished request ended, as the audit's outcome word
-    /// (`completed`, `timeout`, `refused:domain-not-allowed`, ...). Never a
+    /// (`completed`, `network`, `http-status`, ...). Never a
     /// host, a path or a value.
     pub last_outcome: Option<String>,
-    /// The domains the relay will connect to, each with its subdomains.
+    /// Legacy status field; empty means no destination allowlist.
     #[serde(skip_serializing)]
     pub allowed_domains: Vec<String>,
     /// Set while the relay is off and the unit has asked for it.
@@ -186,7 +109,7 @@ impl Default for RelayStatus {
             bytes_to_device: 0,
             in_flight: false,
             last_outcome: None,
-            allowed_domains: vec![policy::NEURALDSP_DOMAIN.to_owned()],
+            allowed_domains: Vec::new(),
             note: None,
             recent: Vec::new(),
         }
@@ -210,143 +133,84 @@ pub enum Disposition {
     SpawnFailed,
 }
 
-/// Where the relay reads its switch from.
 enum SettingsSource {
-    /// No settings directory is known: the defaults apply.
     Defaults,
     Directory(PathBuf),
-    /// Tests only: a fixed value, so a test can switch the relay without a file.
     #[cfg(test)]
     Fixed(UpdaterRelaySettings),
 }
-
 struct SettingsCache {
     source: SettingsSource,
-    /// The last value read, or the defaults before the first read succeeds.
     settings: UpdaterRelaySettings,
     read_at: Option<Instant>,
-    /// Whether the latest read of the settings file failed. Logged once per
-    /// run of failures, not once per read.
-    read_failing: bool,
 }
-
-struct Active {
-    updater_request_id: u64,
-    cancel: Arc<AtomicBool>,
-    /// Set by the request's thread, after it has given the permit back, once
-    /// its last frame is queued or it has ended: from then on the request is
-    /// over, whatever frames are still queued.
-    done: Arc<AtomicBool>,
-    replies: mpsc::Receiver<OutboundMessage>,
-}
-
+#[derive(Default)]
 struct State {
     stats: RelayStatus,
-    audit: VecDeque<AuditEntry>,
-    events: Vec<String>,
-    /// Replies that need no HTTP work (a busy answer), sent before any chunk.
-    immediate: VecDeque<OutboundMessage>,
-    /// The queued frames of requests that are over but not yet written to the
-    /// unit, oldest first. They go out before anything a newer request makes.
-    draining: VecDeque<mpsc::Receiver<OutboundMessage>>,
-    active: Option<Active>,
 }
-
-impl State {
-    fn push_event(&mut self, event: String) {
-        if self.events.len() >= EVENTS_KEEP {
-            self.events.remove(0);
+struct Task {
+    cancel: Arc<AtomicBool>,
+    replies: mpsc::Receiver<ForwardedMessage>,
+    thread: thread::JoinHandle<()>,
+}
+fn retired() -> &'static Mutex<Vec<thread::JoinHandle<()>>> {
+    static TASKS: OnceLock<Mutex<Vec<thread::JoinHandle<()>>>> = OnceLock::new();
+    TASKS.get_or_init(|| Mutex::new(Vec::new()))
+}
+fn reap() {
+    let mut tasks = retired().lock_recover();
+    let mut i = 0;
+    while i < tasks.len() {
+        if crate::platform::process::thread_signalled(&tasks[i]) {
+            let _ = tasks.swap_remove(i).join();
+        } else {
+            i += 1;
         }
-        self.events.push(event);
     }
 }
-
-/// Holds the process-wide right to run one request. Dropping it gives the
-/// right back, on every path out of the request.
-struct Permit(Arc<AtomicBool>);
-
-impl Permit {
-    fn acquire(flag: &Arc<AtomicBool>) -> Option<Self> {
-        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()
-            .map(|_| Self(Arc::clone(flag)))
-    }
-}
-
-impl Drop for Permit {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
-fn process_limiter() -> Arc<AtomicBool> {
-    static LIMITER: OnceLock<Arc<AtomicBool>> = OnceLock::new();
-    Arc::clone(LIMITER.get_or_init(|| Arc::new(AtomicBool::new(false))))
-}
-
-/// The relay for one device session. Cheap to create: no thread starts and no
-/// network stack loads until the unit sends a request while the relay is on.
 pub struct UpdaterRelay {
     settings: Mutex<SettingsCache>,
-    fetcher: Arc<dyn HttpFetcher>,
-    limiter: Arc<AtomicBool>,
     state: Arc<Mutex<State>>,
+    tasks: Mutex<Vec<Task>>,
+    response_cancellations: Mutex<Vec<std::sync::Weak<AtomicBool>>>,
+    fetcher: Arc<dyn HttpFetcher>,
 }
-
 impl Default for UpdaterRelay {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl UpdaterRelay {
     pub fn new() -> Self {
-        Self::with_parts(Arc::new(http::ReqwestFetcher::default()), process_limiter())
+        Self::with_parts(
+            Arc::new(http::direct_fetcher()),
+            Arc::new(AtomicBool::new(false)),
+        )
     }
-
-    /// A relay over another fetcher and its own concurrency limiter. The
-    /// limiter is shared by every relay of a process in production, so two
-    /// device sessions never run two requests at once.
-    pub fn with_parts(fetcher: Arc<dyn HttpFetcher>, limiter: Arc<AtomicBool>) -> Self {
+    pub fn with_parts(fetcher: Arc<dyn HttpFetcher>, _legacy_limiter: Arc<AtomicBool>) -> Self {
         Self {
             settings: Mutex::new(SettingsCache {
                 source: SettingsSource::Defaults,
                 settings: UpdaterRelaySettings::default(),
                 read_at: None,
-                read_failing: false,
             }),
+            state: Arc::new(Mutex::new(State::default())),
+            tasks: Mutex::new(Vec::new()),
+            response_cancellations: Mutex::new(Vec::new()),
             fetcher,
-            limiter,
-            state: Arc::new(Mutex::new(State {
-                stats: RelayStatus::default(),
-                audit: VecDeque::new(),
-                events: Vec::new(),
-                immediate: VecDeque::new(),
-                draining: VecDeque::new(),
-                active: None,
-            })),
         }
     }
-
-    /// Read the switch from `directory`'s broker settings file from now on.
-    /// This is where a settings screen's toggle takes effect: it writes
-    /// `updaterRelayEnabled` through `tray_settings::set_updater_relay_enabled_in`
-    /// and the relay notices within [`SETTINGS_RECHECK`].
     pub fn set_settings_directory(&self, directory: PathBuf) {
-        let mut cache = self.settings.lock_recover();
-        cache.source = SettingsSource::Directory(directory);
-        cache.read_at = None;
-        cache.read_failing = false;
+        let mut settings = self.settings.lock_recover();
+        settings.source = SettingsSource::Directory(directory);
+        settings.read_at = None;
     }
-
     #[cfg(test)]
-    pub(crate) fn use_fixed_settings(&self, settings: UpdaterRelaySettings) {
-        let mut cache = self.settings.lock_recover();
-        cache.source = SettingsSource::Fixed(settings);
-        cache.read_at = None;
-        cache.read_failing = false;
+    pub(crate) fn use_fixed_settings(&self, fixed: UpdaterRelaySettings) {
+        let mut settings = self.settings.lock_recover();
+        settings.source = SettingsSource::Fixed(fixed);
+        settings.read_at = None;
     }
-
     fn settings(&self, now: Instant) -> UpdaterRelaySettings {
         let mut cache = self.settings.lock_recover();
         let stale = cache
@@ -361,26 +225,13 @@ impl UpdaterRelay {
                 #[cfg(test)]
                 SettingsSource::Fixed(settings) => Ok(settings.clone()),
             };
-            match read {
-                Ok(fresh) => {
-                    cache.settings = fresh;
-                    cache.read_failing = false;
-                }
-                // A file that is there and cannot be used (locked for a moment
-                // while the app replaces it, or damaged) says nothing about
-                // the switch, so the last value stands: a cleared switch must
-                // not come back on because a read failed at the wrong moment.
-                // Only an absent file is the default, and that is not an error.
-                Err(error) => {
-                    if !cache.read_failing {
-                        cache.read_failing = true;
-                        eprintln!(
-                            "updater-relay: the broker settings file could not be used ({error:?}); \
-                             keeping the last known setting, update relay {}",
-                            if cache.settings.enabled { "on" } else { "off" }
-                        );
-                    }
-                }
+            // A file that is there and cannot be used (locked for a moment
+            // while the app replaces it, or damaged) says nothing about
+            // the switch, so the last value stands: a cleared switch must
+            // not come back on because a read failed at the wrong moment.
+            // Only an absent file is the default, and that is not an error.
+            if let Ok(fresh) = read {
+                cache.settings = fresh;
             }
             cache.read_at = Some(now);
         }
@@ -388,413 +239,206 @@ impl UpdaterRelay {
     }
 
     pub fn status(&self) -> RelayStatus {
-        let settings = self.settings(Instant::now());
-        let state = self.state.lock_recover();
-        let mut status = state.stats.clone();
-        status.enabled = settings.enabled;
-        status.allowed_domains = RelayPolicy::new(&settings.extra_domains).domains().to_vec();
-        status.in_flight = state
-            .active
-            .as_ref()
-            .is_some_and(|active| !active.done.load(Ordering::Acquire));
-        status.recent = state.audit.iter().cloned().collect();
-        status.last_outcome = state.audit.back().map(|entry| entry.outcome.clone());
-        status.note = (!settings.enabled && status.requests_while_disabled > 0).then(|| {
-            format!(
-                "The Quad Cortex asked {} time(s) to use this PC's internet connection for a \
-                 firmware update, and the update relay is turned off; the requests were dropped",
-                status.requests_while_disabled
-            )
-        });
+        let enabled = self.settings(Instant::now()).enabled;
+        let mut status = self.state.lock_recover().stats.clone();
+        status.enabled = enabled;
+        status.in_flight = self.is_active();
         status
     }
-
-    /// Feed one received type-61 frame. Called from the device loop; it never
-    /// waits on the network.
     pub fn on_forward_frame(&self, payload: &[u8], now: Instant) -> Disposition {
+        reap();
         let settings = self.settings(now);
-        let decoded = request::decode_request(payload);
-        let mut state = self.state.lock_recover();
-        state.stats.requests_seen += 1;
-        state.stats.last_request_at_unix_ms = Some(unix_ms());
-        if !settings.enabled {
-            state.stats.requests_while_disabled += 1;
-            state.stats.last_disabled_request_at_unix_ms = Some(unix_ms());
-            if let Ok(request) = &decoded {
-                state.stats.last_disabled_request_kind = request
-                    .kind
-                    .map(|kind| kind.label().to_owned())
-                    .or_else(|| Some("unknown".to_owned()));
-                state.stats.last_disabled_request_host = reqwest::Url::parse(&request.url)
-                    .ok()
-                    .and_then(|url| url.host_str().map(str::to_owned));
+        {
+            let mut state = self.state.lock_recover();
+            state.stats.requests_seen += 1;
+            if !settings.enabled {
+                state.stats.requests_while_disabled += 1;
+                return Disposition::Disabled;
             }
-            return Disposition::Disabled;
         }
-        let request = match decoded {
-            Ok(request) => request,
-            Err(error) => {
-                state.stats.requests_failed += 1;
-                state.push_event(format!("updater-relay undecodable request: {error:?}"));
+        let request = match request::decode_request(payload) {
+            Ok(r) => r,
+            Err(_) => {
+                self.state.lock_recover().stats.requests_failed += 1;
                 return Disposition::Undecodable;
             }
         };
-        if state.active.as_ref().is_some_and(|active| {
-            active.updater_request_id == request.updater_request_id
-                && !active.done.load(Ordering::Acquire)
-        }) {
-            return Disposition::Duplicate;
-        }
-        // The process-wide permit says whether a request is running. The
-        // request's thread gives it back when its network work is over (as it
-        // starts to queue its last frame), and marks itself done once that frame
-        // is queued, so a unit that answers a reply with its next request as
-        // soon as that frame is on the wire finds the right to run free and is
-        // not turned away as busy.
-        let Some(permit) = Permit::acquire(&self.limiter) else {
-            state.stats.requests_refused += 1;
-            state.push_event("updater-relay busy: a request is already running".to_owned());
-            state.immediate.push_back(response::forward_response(
-                request.request_id,
-                request.updater_request_id,
-                Vec::new(),
-                true,
-                Some(response::error_code::BUSY),
-            ));
-            return Disposition::Busy;
-        };
-        // The previous request of this relay, if it still has an entry, has
-        // given the permit back and is over. Its frames that the loop has not
-        // written yet stay queued, in order, ahead of anything this one makes.
-        if let Some(finished) = state.active.take() {
-            state.draining.push_back(finished.replies);
-        }
-
-        let (replies, queue) = mpsc::sync_channel(CHUNK_QUEUE);
+        let (sender, replies) = mpsc::sync_channel(4); // USB backpressure; never a refusal.
         let cancel = Arc::new(AtomicBool::new(false));
-        let done = Arc::new(AtomicBool::new(false));
-        let limits = ExecutionLimits {
-            max_image_bytes: settings.max_download_bytes,
-            ..ExecutionLimits::default()
-        };
-        let job = Job {
-            policy: RelayPolicy::new(&settings.extra_domains),
-            limits,
-            fetcher: Arc::clone(&self.fetcher),
-            cancel: Arc::clone(&cancel),
-            done: Arc::clone(&done),
-            shared: Arc::clone(&self.state),
-            permit,
-            request: request.clone(),
-        };
-        let kind = request.kind.map_or("unknown", |kind| kind.label());
+        {
+            let mut cancellations = self.response_cancellations.lock_recover();
+            cancellations.retain(|cancel| cancel.strong_count() > 0);
+            cancellations.push(Arc::downgrade(&cancel));
+        }
+        let task_cancel = Arc::clone(&cancel);
+        let fetcher = Arc::clone(&self.fetcher);
+        let state = Arc::clone(&self.state);
         let spawned = thread::Builder::new()
-            .name("qc-updater-relay".into())
-            .spawn(move || job.run(replies));
-        match spawned {
-            Ok(_) => {
-                state.active = Some(Active {
+            .name("qc-http-updater".into())
+            .spawn(move || {
+                let mut sink = UsbSink {
+                    sender,
+                    request_id: request.request_id,
                     updater_request_id: request.updater_request_id,
+                    cancel: Arc::clone(&task_cancel),
+                    deadline: None,
+                };
+                let outcome =
+                    executor::execute_at(fetcher.as_ref(), &request, &task_cancel, &mut sink, now);
+                record_finish(&state, &request, &outcome);
+            });
+        match spawned {
+            Ok(thread) => {
+                self.tasks.lock_recover().push(Task {
                     cancel,
-                    done,
-                    replies: queue,
+                    replies,
+                    thread,
                 });
-                state.push_event(format!("updater-relay started request={kind}"));
                 Disposition::Started
             }
             Err(_) => {
-                state.stats.requests_failed += 1;
-                state.push_event("updater-relay could not start its worker thread".to_owned());
-                state.immediate.push_back(response::forward_response(
-                    request.request_id,
-                    request.updater_request_id,
-                    Vec::new(),
-                    true,
-                    Some(response::error_code::NETWORK),
-                ));
+                self.state.lock_recover().stats.requests_failed += 1;
                 Disposition::SpawnFailed
             }
         }
     }
-
-    /// Feed one received type-60 (`Updater`) frame. A unit that reports its
-    /// updater failed has abandoned whatever it asked for.
-    pub fn on_updater_state(&self, payload: &[u8]) {
-        let Ok(message) = pa::UpdaterMessage::decode(payload) else {
-            return;
-        };
-        let failed = matches!(
-            message.state,
-            Some(pa::updater_message::State::State(value))
-                if pa::updater_state::Enum::try_from(value).ok()
-                    == Some(pa::updater_state::Enum::Failed)
-        );
-        if failed {
-            self.cancel("the unit reported its updater failed");
-        }
-    }
-
-    /// Switch-off and housekeeping, once per device-loop pass.
-    pub fn maintain(&self, now: Instant) {
-        if !self.settings(now).enabled && self.is_active() {
-            self.cancel("the update relay was switched off");
-        }
-    }
-
-    /// The next frame to send the unit, if one is ready. Never blocks.
-    pub fn poll_outbound(&self) -> Option<OutboundMessage> {
-        let mut state = self.state.lock_recover();
-        if let Some(message) = state.immediate.pop_front() {
-            return Some(message);
-        }
-        // Frames of requests that are over go first, in order.
-        loop {
-            let next = state.draining.front().map(|queue| queue.try_recv());
-            match next {
-                None => break,
-                Some(Ok(message)) => return Some(message),
-                Some(Err(mpsc::TryRecvError::Empty)) => return None,
-                Some(Err(mpsc::TryRecvError::Disconnected)) => {
-                    state.draining.pop_front();
+    pub fn poll_outbound(&self) -> Option<ForwardedMessage> {
+        let mut tasks = self.tasks.lock_recover();
+        let mut i = 0;
+        while i < tasks.len() {
+            match tasks[i].replies.try_recv() {
+                Ok(message) => {
+                    if message.current() {
+                        return Some(message);
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => i += 1,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let task = tasks.remove(i);
+                    if crate::platform::process::thread_signalled(&task.thread) {
+                        let _ = task.thread.join();
+                    } else {
+                        retired().lock_recover().push(task.thread);
+                    }
                 }
             }
         }
-        let active = state.active.as_ref()?;
-        match active.replies.try_recv() {
-            Ok(message) => Some(message),
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                state.active = None;
-                None
+        None
+    }
+    pub fn is_active(&self) -> bool {
+        !self.tasks.lock_recover().is_empty()
+    }
+    pub fn maintain(&self, now: Instant) {
+        reap();
+        if !self.settings(now).enabled {
+            self.cancel_if_active("relay disabled");
+        }
+    }
+    pub fn cancel(&self, _reason: &str) {
+        {
+            let mut cancellations = self.response_cancellations.lock_recover();
+            for cancel in cancellations.iter().filter_map(std::sync::Weak::upgrade) {
+                cancel.store(true, Ordering::Release);
+            }
+            cancellations.retain(|cancel| cancel.strong_count() > 0);
+        }
+        let tasks = std::mem::take(&mut *self.tasks.lock_recover());
+        for task in &tasks {
+            task.cancel.store(true, Ordering::Release);
+        }
+        for task in tasks {
+            drop(task.replies);
+            if crate::platform::process::thread_signalled(&task.thread) {
+                let _ = task.thread.join();
+            } else {
+                retired().lock_recover().push(task.thread);
+            }
+        }
+        reap();
+    }
+    pub fn cancel_if_active(&self, reason: &str) {
+        self.cancel(reason)
+    }
+    pub fn on_updater_state(&self, payload: &[u8]) {
+        if let Ok(message) = pa::UpdaterMessage::decode(payload) {
+            if matches!(message.state,Some(pa::updater_message::State::State(state)) if pa::updater_state::Enum::try_from(state).ok()==Some(pa::updater_state::Enum::Failed))
+            {
+                self.cancel_if_active("device abandoned update");
             }
         }
     }
-
-    /// Whether a request is running or a reply is waiting to be sent. The
-    /// device loop keeps its own unconditional keepalive clock while this is true.
-    pub fn is_active(&self) -> bool {
-        let state = self.state.lock_recover();
-        state.active.is_some() || !state.draining.is_empty() || !state.immediate.is_empty()
-    }
-
-    /// End whatever is running: the session it belonged to is gone, the unit
-    /// gave up, or the switch went off. Nothing is retried.
-    pub fn cancel(&self, reason: &str) {
-        let mut state = self.state.lock_recover();
-        state.immediate.clear();
-        state.draining.clear();
-        if let Some(active) = state.active.take() {
-            active.cancel.store(true, Ordering::Release);
-            state.push_event(format!("updater-relay cancelled: {reason}"));
-        }
-    }
-
-    /// Cancel only if something is running; for the loop's no-session branch.
-    pub fn cancel_if_active(&self, reason: &str) {
-        if self.is_active() {
-            self.cancel(reason);
-        }
-    }
-
-    /// Lines for the device flight recorder, oldest first.
     pub fn take_events(&self) -> Vec<String> {
-        std::mem::take(&mut self.state.lock_recover().events)
+        Vec::new()
     }
 }
-
-/// Everything one request's thread owns.
-struct Job {
-    policy: RelayPolicy,
-    limits: ExecutionLimits,
-    fetcher: Arc<dyn HttpFetcher>,
-    cancel: Arc<AtomicBool>,
-    done: Arc<AtomicBool>,
-    shared: Arc<Mutex<State>>,
-    permit: Permit,
-    request: RelayRequest,
-}
-
-impl Job {
-    fn run(self, replies: mpsc::SyncSender<OutboundMessage>) {
-        let Job {
-            policy,
-            limits,
-            fetcher,
-            cancel,
-            done,
-            shared,
-            permit,
-            request,
-        } = self;
-        let mut sink = ChannelSink {
-            replies,
-            request_id: request.request_id,
-            updater_request_id: request.updater_request_id,
-            cancel: Arc::clone(&cancel),
-            done,
-            permit: Some(permit),
-        };
-        let outcome = executor::execute(
-            fetcher.as_ref(),
-            &policy,
-            &request,
-            &limits,
-            &cancel,
-            &mut sink,
-        );
-        // Over, whichever way it ended; any frames still queued are drained.
-        // The right to run is given back before the audit line is written
-        // (stderr can block), so the log never holds up the unit's next request.
-        sink.finish();
-        record_finish(&shared, &request, &outcome);
-        drop(sink);
+impl Drop for UpdaterRelay {
+    fn drop(&mut self) {
+        self.cancel("relay dropped");
     }
 }
-
-/// Delivers reply chunks to the device loop through the bounded queue.
-struct ChannelSink {
-    replies: mpsc::SyncSender<OutboundMessage>,
+struct UsbSink {
+    sender: mpsc::SyncSender<ForwardedMessage>,
     request_id: Option<u64>,
     updater_request_id: u64,
     cancel: Arc<AtomicBool>,
-    done: Arc<AtomicBool>,
-    /// The process-wide right to run, held until the request is over.
-    permit: Option<Permit>,
+    deadline: Option<Instant>,
 }
-
-impl ChannelSink {
-    /// The request is over: give the right to run back (a no-op if the last
-    /// frame already did), then say so. In that order, so that whoever sees
-    /// `done` finds the right already free.
-    fn finish(&mut self) {
-        self.permit = None;
-        self.done.store(true, Ordering::Release);
+impl ChunkSink for UsbSink {
+    fn set_deadline(&mut self, deadline: Option<Instant>) {
+        self.deadline = deadline;
     }
-}
-
-impl ChunkSink for ChannelSink {
     fn emit(
         &mut self,
         payload: Vec<u8>,
         last: bool,
-        error_code: Option<i32>,
+        status: Option<i32>,
     ) -> Result<(), SinkClosed> {
-        let mut message = Some(response::forward_response(
-            self.request_id,
-            self.updater_request_id,
-            payload,
-            last,
-            error_code,
-        ));
-        if last {
-            // The network work is over; only the queueing is left. Give the
-            // right to run back now, so no moment remains, between queueing
-            // this frame and `finish`, in which the unit's next request could
-            // be turned away. `done` still waits for the frame to be queued, and
-            // the old frames stay ahead of the new request's in `draining`.
-            self.permit = None;
-        }
-        let started = Instant::now();
+        let mut message = ForwardedMessage {
+            message: response::forward_response(
+                self.request_id,
+                self.updater_request_id,
+                payload,
+                last,
+                status,
+            ),
+            deadline: self.deadline,
+            cancel: Arc::clone(&self.cancel),
+        };
         loop {
-            if self.cancel.load(Ordering::Acquire) || started.elapsed() >= SINK_STALL_LIMIT {
+            if self.cancel.load(Ordering::Acquire)
+                || self.deadline.is_some_and(|end| Instant::now() >= end)
+            {
                 return Err(SinkClosed);
             }
-            let Some(pending) = message.take() else {
-                return Err(SinkClosed);
-            };
-            match self.replies.try_send(pending) {
-                Ok(()) => {
-                    if last {
-                        // Nothing follows: the request is over now, with its
-                        // last frame still to be written by the loop.
-                        self.finish();
-                    }
-                    return Ok(());
-                }
-                Err(mpsc::TrySendError::Full(pending)) => {
-                    message = Some(pending);
-                    thread::sleep(Duration::from_millis(5));
-                }
+            match self.sender.try_send(message) {
+                Ok(()) => return Ok(()),
                 Err(mpsc::TrySendError::Disconnected(_)) => return Err(SinkClosed),
+                Err(mpsc::TrySendError::Full(pending)) => {
+                    message = pending;
+                    thread::sleep(Duration::from_millis(2));
+                }
             }
         }
     }
 }
-
-fn failure_label(failure: Option<&Failure>) -> String {
-    match failure {
+fn record_finish(shared: &Mutex<State>, _request: &RelayRequest, outcome: &Outcome) {
+    let label = match outcome.failure {
         None => "completed".to_owned(),
-        Some(Failure::Refused(rule)) => format!("refused:{rule}"),
-        Some(Failure::BadRequest(rule)) => format!("bad-request:{rule}"),
-        Some(Failure::TooLarge) => "too-large".to_owned(),
-        Some(Failure::Timeout) => "timeout".to_owned(),
-        Some(Failure::TooManyRedirects) => "too-many-redirects".to_owned(),
-        Some(Failure::Network(kind)) => format!("network:{}", network_label(*kind)),
         Some(Failure::HttpStatus(_)) => "http-status".to_owned(),
+        Some(Failure::Network(_)) => "network".to_owned(),
         Some(Failure::Cancelled) => "cancelled".to_owned(),
         Some(Failure::DeviceGone) => "device-gone".to_owned(),
-    }
-}
-
-fn network_label(kind: FetchFailure) -> &'static str {
-    match kind {
-        FetchFailure::Timeout => "timeout",
-        FetchFailure::Dns => "dns",
-        FetchFailure::BlockedAddress => "blocked-address",
-        FetchFailure::Connect => "connect",
-        FetchFailure::Tls => "tls",
-        FetchFailure::Protocol => "protocol",
-        FetchFailure::Io => "io",
-    }
-}
-
-fn record_finish(shared: &Mutex<State>, request: &RelayRequest, outcome: &Outcome) {
-    let entry = AuditEntry {
-        at_unix_ms: unix_ms(),
-        request: request
-            .kind
-            .map_or("unknown", |kind| kind.label())
-            .to_owned(),
-        host: outcome.host.clone(),
-        path_shape: outcome.path_shape.clone(),
-        outcome: failure_label(outcome.failure.as_ref()),
-        status: outcome.status,
-        bytes_from_server: outcome.bytes_from_server,
-        bytes_to_device: outcome.bytes_to_device,
-        hops: outcome.hops,
+        Some(Failure::BadRequest) => "protocol".to_owned(),
     };
-    let line = entry.to_string();
-    eprintln!("{line}");
     let mut state = shared.lock_recover();
-    match &outcome.failure {
-        None => state.stats.requests_completed += 1,
-        Some(Failure::Refused(rule)) => {
-            state.stats.requests_refused += 1;
-            if *rule == "domain-not-allowed" {
-                state.stats.refused_domain_requests += 1;
-                state.stats.last_refused_host = Some(outcome.host.clone());
-                state.stats.last_refused_at_unix_ms = Some(entry.at_unix_ms);
-                // Prominent on purpose: the owner decides from this line
-                // whether the domain belongs in `updaterRelayExtraDomains`.
-                let notice = format!(
-                    "updater-relay REFUSED a request for domain {} (not in an allowed domain); \
-                     add it to updaterRelayExtraDomains to allow it",
-                    outcome.host
-                );
-                eprintln!("{notice}");
-                state.push_event(notice);
-            }
-        }
-        Some(_) => state.stats.requests_failed += 1,
+    if outcome.failure.is_none() {
+        state.stats.requests_completed += 1
+    } else {
+        state.stats.requests_failed += 1
     }
     state.stats.bytes_from_server += outcome.bytes_from_server;
     state.stats.bytes_to_device += outcome.bytes_to_device;
-    if state.audit.len() >= AUDIT_KEEP {
-        state.audit.pop_front();
-    }
-    state.audit.push_back(entry);
-    state.push_event(line);
+    state.stats.last_outcome = Some(label);
 }
-
 #[cfg(test)]
 mod tests;

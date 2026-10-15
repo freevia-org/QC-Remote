@@ -23,8 +23,8 @@ export type QcBrightnessMode = typeof QC_BRIGHTNESS_MODES[number];
 
 /**
  * The state the unit's own captured frame shows (corpus settings-system.png):
- * PRESET and SCENE faint, STOMP lit. Used until the device has reported its
- * own, and by the static fixture.
+ * PRESET and SCENE faint, STOMP lit. Used by noninteractive static references
+ * only; live settings must report their own flags.
  */
 export const QC_BRIGHTNESS_MODE_DEFAULTS: Readonly<Record<QcBrightnessMode, boolean>> = { PRESET: false, SCENE: false, STOMP: true };
 
@@ -51,8 +51,8 @@ export function QcBrightnessInstructions({ lines }: { lines: readonly [string, s
   </p>;
 }
 
-export function QcBrightnessModeRow({ dimmed = QC_BRIGHTNESS_MODE_DEFAULTS, disabled, onToggle }: {
-  /** Whether each mode dims its LEDs. Absent entries fall back to the unit's captured state. */
+export function QcBrightnessModeRow({ dimmed, disabled, onToggle }: {
+  /** Observed live flags; only noninteractive reference calls use captured defaults. */
   dimmed?: Partial<Record<QcBrightnessMode, boolean | undefined>>;
   disabled?: boolean;
   /** Omit for the static fixture, which draws the marks without a control behind them. */
@@ -60,16 +60,17 @@ export function QcBrightnessModeRow({ dimmed = QC_BRIGHTNESS_MODE_DEFAULTS, disa
 }) {
   return <footer>
     {QC_BRIGHTNESS_MODES.map((mode) => {
-      const on = dimmed[mode] ?? QC_BRIGHTNESS_MODE_DEFAULTS[mode];
+      const on = onToggle ? dimmed?.[mode] : dimmed?.[mode] ?? QC_BRIGHTNESS_MODE_DEFAULTS[mode];
       return <button
         key={mode}
         type="button"
-        className={on ? "is-lit" : "is-faint"}
-        disabled={disabled}
+        className={on === undefined ? "is-unavailable" : on ? "is-lit" : "is-faint"}
+        disabled={disabled || (onToggle !== undefined && on === undefined)}
         tabIndex={onToggle ? undefined : -1}
         aria-pressed={on}
         aria-label={`Dim LEDs in ${MODE_LABELS[mode]} mode`}
-        onClick={() => onToggle?.(mode, !on)}
+        title={on === undefined ? "Mode dimming has not been observed in this session." : undefined}
+        onClick={() => { if (on !== undefined) onToggle?.(mode, !on); }}
       ><QcModeGlyph mode={mode} /></button>;
     })}
   </footer>;

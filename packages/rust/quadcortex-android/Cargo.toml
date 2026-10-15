@@ -12,8 +12,14 @@ crate-type = ["cdylib"]
 
 [dependencies]
 jni = "0.21"
-quadcortex = { path = "../quadcortex" }
+quadcortex = { path = "../quadcortex", features = ["cloud-forward"] }
 serde_json.workspace = true
+quadcortex-forwarder = { path = "../quadcortex-forwarder" }
+zeroize = "1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni-platform = { package = "jni", version = "0.22.4" }
+rustls-platform-verifier = "0.7"
 
 [dev-dependencies]
 prost.workspace = true

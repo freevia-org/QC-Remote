@@ -5,7 +5,7 @@ import { OwnedAttemptLatch } from "./owned-attempt-latch.ts";
 import { pasteOwnedDemoLibrary } from "./demo-library-paste.ts";
 import { refreshOwnedNativeSnapshot } from "./native-session-refresh.ts";
 import { createBrowserPairingPoll } from "./browser-pairing-poll.ts";
-import { createControlAccessChange } from "./control-access-change.ts";
+import { createControlAccessChange, controlAccessPresentation } from "./control-access-change.ts";
 import { openOwnedLooper } from "./open-owned-looper.ts";
 
 test("Android Grid Looper opening shows only accepted work in its original session and preset", async () => {
@@ -237,7 +237,7 @@ test("USB attachment connects automatically and reports synchronization separate
   assert.match(appSource, /qcConnectionIndicatorPhase\(connection, hardwareConnected && !demoActive, null, \{ actionRequired: usbWritesQuarantined \}\)/, "the device pill uses the global indicator contract, including write quarantine state");
   assert.doesNotMatch(appSource, /hardwareConnected \? "ready" : usbIndicatorPhase/, "a merely open USB handle cannot force any active-device status dot green");
   assert.match(appSource, /usbIndicatorPhase === "ready"[\s\S]{0,320}"Quad Cortex disconnected"/, "the USB panel words and colors share the same readiness phase");
-  assert.match(appSource, /demoActive \? "DEMO" : "USB"/, "the compact pill names the active device source");
+  assert.match(appSource, /demoActive \? "DEMO" : iosPlatform \? "HOST" : "USB"/, "the compact pill names the active device source on Android and iOS");
   assert.doesNotMatch(appSource, /qcReadyLabel\(connection\)/, "Android does not repeat the verbose desktop readiness label");
 });
 
@@ -275,7 +275,11 @@ test("A through H use the reported hardware mode and assignments", () => {
   assert.match(coreFootswitchSource, /mode === "PRESET"/);
   assert.match(coreFootswitchSource, /block\.footswitch === index/);
   assert.match(rustHostMidiSource, /"device\.pressFootswitch"[\s\S]*profile::FOOTSWITCH_BASE_CONTROLLER/);
-  assert.match(performanceWorkflowSource, /controller\.runFootswitch\(transport, index\)/);
+  assert.match(performanceWorkflowSource, /controller\.runFootswitch\(transport, index, stompPreviewPolicy\)/,
+    "the shared controller receives the selected source's explicit STOMP preview policy");
+  const workflows = readFileSync(new URL("../../../packages/typescript/qc-ui/src/use-qc-workflows.ts", import.meta.url), "utf8");
+  assert.match(workflows, /stompPreviewPolicy: source === "virtual" \? "ordered-group" : undefined/,
+    "persisted Demo uses ordered groups while physical sessions retain the observed-siblings default");
 });
 
 test("mode slots A through C use the shared native HID route", () => {
@@ -303,7 +307,8 @@ test("native USB remains open and command traffic is never blocked by startup", 
   assert.doesNotMatch(javaSource, /Thread\.sleep\(2000\)/);
   assert.match(javaSource, /submitRelayTask\(midiIo, relayDeadline, \(\) ->/);
   assert.match(javaSource, /midiConnection = publishMidiConnection/);
-  assert.match(javaSource, /activeMidiConnection\.bulkTransfer\(midiOutputEndpoint/);
+  assert.match(javaSource, /QcMidiWritePolicy\.writeIfCurrent\(admittedGeneration, connectionGeneration\.get\(\)/);
+  assert.match(javaSource, /admittedConnection\.bulkTransfer\(admittedEndpoint/);
   assert.match(javaSource, /hostStartedAtUnixMs/);
   assert.match(javaSource, /dispatchLatencyMs/);
   assert.match(javaSource, /midiConnection\.releaseInterface\(midiInterface\)/);
@@ -1117,9 +1122,20 @@ test("live QC parameter frames update the open shared editor", () => {
   // splitter/mixer) share record_parameter_overrides(), which takes the
   // StateUpdate kind as a parameter rather than each sweep inlining its own
   // literal StateUpdate::new("parameter") call.
-  assert.match(rustStateSource, /fn record_parameter_overrides[\s\S]{0,900}StateUpdate::new\(kind\)/);
-  assert.match(rustStateSource, /"parameter",\s*&mut states,/);
-  assert.match(rustStateSource, /parameter_overrides[\s\S]{0,100}\.insert/);
+  const start = rustStateSource.indexOf("    fn record_parameter_overrides(");
+  assert.ok(start >= 0, "the shared parameter-override helper exists");
+  const end = rustStateSource.indexOf("    fn decode_grid(", start);
+  assert.ok(end > start, "the following Grid decoder bounds the helper body");
+  const recordOverrides = rustStateSource.slice(start, end);
+  assert.match(recordOverrides, /StateUpdate::new\(kind\)/);
+  assert.equal((rustStateSource.match(/self\.record_parameter_overrides\((?:model|target), row, column, "parameter", &mut states\)/g) ?? []).length, 2,
+    "both model and splitter/mixer sweeps emit parameter updates through the shared helper");
+  assert.match(rustStateSource, /self\.record_parameter_overrides\(\s*control,\s*row,\s*discriminator,\s*"laneControlParameter",\s*&mut states,/);
+  assert.match(recordOverrides, /parameter_overrides\s*\.insert\(\(row, column, index\), value as f64\)/);
+  for (const field of ["row", "column", "parameter_index", "normalized_value"]) {
+    assert.ok(recordOverrides.includes(`update.${field} = Some(`), `the emitted update retains ${field}`);
+  }
+  assert.match(recordOverrides, /states\.push\(update\)/);
   assert.match(appSource, /useQcLiveState/);
   assert.match(liveStateSource, /state\.kind === "parameter"[\s\S]*editor\.updateParameters/);
 });
@@ -1421,4 +1437,40 @@ test("critical Android flight-recorder events persist asynchronously with coales
   assert.doesNotMatch(push, /synchronized \(fileLock\) \{ persist\(snapshot\); \}/);
   assert.match(flightRecorder, /AtomicReference<byte\[\]> pendingSnapshot/);
   assert.match(flightRecorder, /AtomicBoolean persistenceScheduled/);
+});
+
+
+test("MCP access presentation stays unconfirmed after ambiguous failure and recovers on authoritative refresh", async () => {
+  const state = { mode: "full" as const, verified: false, pending: false, busy: false };
+  let view = controlAccessPresentation(state);
+  assert.equal(view.disabled, true, "cold-start stored access is not authoritative");
+  assert.match(view.readout, /Not confirmed.*Refresh remote status/);
+  let rejectWrite!: (error: Error) => void;
+  const write = new Promise<{ accessMode: "full" }>((_resolve, reject) => { rejectWrite = reject; });
+  const change = createControlAccessChange({
+    write: () => write,
+    read: async () => { throw new Error("native status unavailable"); },
+    observed: () => { state.verified = true; },
+    uncertain: () => { state.verified = false; },
+    pending: (value) => { state.pending = value; }, failed: () => undefined
+  });
+  state.verified = true;
+  const changing = change("read-only");
+  view = controlAccessPresentation(state);
+  assert.equal(view.disabled, true);
+  assert.equal(view.readout, "Updating access...");
+  rejectWrite(new Error("native mutation outcome unknown"));
+  await changing;
+  view = controlAccessPresentation(state);
+  assert.equal(view.disabled, true);
+  assert.match(view.readout, /Not confirmed.*Refresh remote status/);
+  assert.doesNotMatch(view.readout, /^full$/);
+  // The independent Refresh remote status action can still yield a fresh
+  // authoritative observation, without requiring a permission mutation.
+  const refresh = async () => ({ accessMode: "full" as const });
+  const status = await refresh(); state.verified = true;
+  view = controlAccessPresentation({ ...state, mode: status.accessMode });
+  assert.equal(view.disabled, false);
+  assert.equal(view.readout, "full");
+  assert.equal(controlAccessPresentation({ ...state, busy: true }).disabled, true);
 });

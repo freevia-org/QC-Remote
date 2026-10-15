@@ -489,7 +489,7 @@ export function CorOsReferenceSettingsPane({ view, deviceInformation, stateUnkno
         <p className="update-version">
           {DEVICE_UPDATES_RUNNING}
           <br />
-          <strong>{deviceInformation?.corOsVersion ? `CorOS: ${deviceInformation.corOsVersion}` : COROS_REFERENCE_VERSION_LINE}</strong>
+          <strong>{deviceInformation?.corOsVersion ? `CorOS: ${deviceInformation.corOsVersion}` : deviceInformation !== undefined || stateUnknown ? `CorOS: ${NOT_REPORTED}` : COROS_REFERENCE_VERSION_LINE}</strong>
         </p>
         <hr />
         <button className="update-check">CHECK FOR UPDATES</button>

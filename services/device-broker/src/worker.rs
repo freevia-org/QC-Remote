@@ -2,11 +2,13 @@ mod raw_events;
 pub use raw_events::RawSubscription;
 use raw_events::{fan_out_raw_event, subscribe_raw, RawEventBus};
 mod preset_workflow;
+mod retired_worker;
+use retired_worker::{WorkerLifetime, WorkerRetirement};
 mod retention;
 mod session_identity;
 mod state_journal;
 use crate::updater_relay::pump::{RelayPump, RelaySink};
-use crate::updater_relay::{RelayStatus, UpdaterRelay};
+use crate::updater_relay::{CloudForwardRelay, RelayStatus, UpdaterRelay};
 #[cfg(test)]
 use prost::Message as _;
 use quadcortex::commands::{self, DeviceCommand, DeviceOperation, OutboundMessage};
@@ -50,6 +52,7 @@ use std::sync::{
 };
 use std::thread;
 use std::time::{Duration, Instant};
+use zeroize::Zeroize;
 
 const SUBSCRIBER_QUEUE_CAPACITY: usize = quadcortex::domain::STATE_EVENT_DEFAULT_LIMIT;
 
@@ -170,7 +173,35 @@ pub struct DecodedStateFrame {
 }
 
 /// A live decoded-state subscription, bounded by entry count and bytes.
-pub type StateSubscription = BudgetedReceiver<DecodedStateFrame>;
+pub struct StateSubscription {
+    receiver: BudgetedReceiver<DecodedStateFrame>,
+    identity: Arc<()>,
+    subscribers: std::sync::Weak<Mutex<Vec<StateSubscriber>>>,
+}
+
+struct StateSubscriber {
+    identity: Arc<()>,
+    sender: BudgetedSender<DecodedStateFrame>,
+}
+
+impl std::ops::Deref for StateSubscription {
+    type Target = BudgetedReceiver<DecodedStateFrame>;
+    fn deref(&self) -> &Self::Target {
+        &self.receiver
+    }
+}
+
+impl Drop for StateSubscription {
+    fn drop(&mut self) {
+        // Membership belongs to the waiter, not the next USB publication.
+        // A disconnected/silent unit must not retain abandoned TCP queues.
+        if let Some(subscribers) = self.subscribers.upgrade() {
+            subscribers
+                .lock_recover()
+                .retain(|subscriber| !Arc::ptr_eq(&subscriber.identity, &self.identity));
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -267,7 +298,10 @@ enum Command {
         reply: mpsc::Sender<ReconnectOutcome>,
     },
     Disconnect {
-        reply: mpsc::Sender<()>,
+        reply: mpsc::Sender<Result<(), String>>,
+        /// A sharing-safe close keeps new participant admission reserved until
+        /// the worker actually finishes, even if the caller stops waiting.
+        _admission: Option<Box<dyn Send>>,
     },
     Send(
         u16,
@@ -397,6 +431,22 @@ fn submit_read_batch(
 // process memory. The decoder queue is larger because one legitimate catalog
 // burst can contain more than a thousand frames.
 const DEVICE_COMMAND_QUEUE_CAPACITY: usize = quadcortex::domain::STATE_EVENT_DEFAULT_LIMIT;
+// A bounded queue limits retained commands, not a continuously replenished drain.
+// Yield to inbound state, relay progress and lifecycle deadlines after each batch.
+const DEVICE_COMMAND_BATCH_LIMIT: usize = 32;
+
+fn next_command_in_batch<T>(
+    commands: &mpsc::Receiver<T>,
+    remaining: &mut usize,
+    not_before: Instant,
+) -> Option<T> {
+    if *remaining == 0 || Instant::now() < not_before {
+        return None;
+    }
+    let command = commands.try_recv().ok()?;
+    *remaining -= 1;
+    Some(command)
+}
 const STATE_DECODER_QUEUE_CAPACITY: usize = quadcortex::domain::STATE_EVENT_MAXIMUM_LIMIT;
 // The USB reader itself blocks on a permanent native RX thread. This short
 // broker-side receive poll only multiplexes completed reports with outbound
@@ -425,7 +475,30 @@ fn reserve_request_id_before(
         .map_err(|_| "QC request budget expired while reserving a request ID".to_string())?
 }
 
+/// Discovery belongs to this controller and its worker, never a process-wide
+/// test override. Production instances always use the native HID enumerator.
+#[cfg(test)]
+type DiscoveryFixture =
+    Arc<dyn Fn() -> Result<Vec<quadcortex_hid::usb::QcUsbDevice>, String> + Send + Sync>;
+
+#[derive(Clone, Default)]
+struct DeviceDiscovery {
+    #[cfg(test)]
+    enumerate: Option<DiscoveryFixture>,
+}
+
+impl DeviceDiscovery {
+    fn devices(&self) -> Result<Vec<quadcortex_hid::usb::QcUsbDevice>, String> {
+        #[cfg(test)]
+        if let Some(enumerate) = &self.enumerate {
+            return enumerate();
+        }
+        quadcortex_hid::usb::connected_devices().map_err(|error| error.to_string())
+    }
+}
+
 pub struct DeviceController {
+    discovery: DeviceDiscovery,
     device_id: Arc<Mutex<Option<String>>>,
     identity_observation_enabled: Arc<AtomicBool>,
     state_stream_id: String,
@@ -436,7 +509,7 @@ pub struct DeviceController {
     latest_tempo_clock: Arc<Mutex<Option<DecodedStateFrame>>>,
     latest_master_volume: Arc<Mutex<Option<DecodedStateFrame>>>,
     state_event_sequence: Arc<AtomicU64>,
-    state_subscribers: Arc<Mutex<Vec<BudgetedSender<DecodedStateFrame>>>>,
+    state_subscribers: Arc<Mutex<Vec<StateSubscriber>>>,
     session_owner: Arc<Mutex<SessionRuntime>>,
     session_clock: Instant,
     commands: mpsc::SyncSender<Command>,
@@ -460,7 +533,8 @@ pub struct DeviceController {
 
 /// Where the USB worker thread is in its life, shared with every
 /// [`WorkerShutdown`]. Explicit so a worker one shutdown has joined, or given
-/// up on, is never waited on again by another: a controller that
+/// up on, is never waited on again by another. Timed-out original handles
+/// remain owned and may be acknowledged after actual completion: a controller that
 /// `finish_shutdown` already stopped returns at once from its own Drop.
 #[derive(Default)]
 enum WorkerSlot {
@@ -471,12 +545,64 @@ enum WorkerSlot {
     Running(thread::JoinHandle<()>),
     /// Another caller holds the handle and is waiting for it right now.
     Joining,
-    /// A shutdown already ended with this outcome. Never wait again.
+    /// A shutdown already ended. Never wait again; exact retained completion
+    /// may upgrade this outcome after the original handle has actually joined.
     Stopped(WorkerExit),
 }
 
 /// The worker slot, shared between a controller and its shutdown handles.
-type WorkerThread = Arc<Mutex<WorkerSlot>>;
+type WorkerThread = Arc<WorkerThreadState>;
+
+struct WorkerThreadState {
+    slot: Mutex<WorkerSlot>,
+    retirement: Arc<WorkerRetirement>,
+    lifetime: Mutex<Option<Arc<WorkerLifetime>>>,
+    teardown_verified: Arc<AtomicBool>,
+}
+
+impl std::ops::Deref for WorkerThreadState {
+    type Target = Mutex<WorkerSlot>;
+    fn deref(&self) -> &Self::Target {
+        &self.slot
+    }
+}
+
+impl Default for WorkerThreadState {
+    fn default() -> Self {
+        Self {
+            slot: Mutex::new(WorkerSlot::Absent),
+            retirement: WorkerRetirement::production(),
+            lifetime: Mutex::new(None),
+            teardown_verified: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
+impl WorkerThreadState {
+    fn running(
+        handle: thread::JoinHandle<()>,
+        retirement: Arc<WorkerRetirement>,
+        lifetime: Arc<WorkerLifetime>,
+        teardown_verified: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            slot: Mutex::new(WorkerSlot::Running(handle)),
+            retirement,
+            lifetime: Mutex::new(Some(lifetime)),
+            teardown_verified,
+        }
+    }
+}
+
+impl WorkerThreadState {
+    fn joined_exit(&self) -> WorkerExit {
+        if self.teardown_verified.load(Ordering::Acquire) {
+            WorkerExit::Joined
+        } else {
+            WorkerExit::TeardownUnverified
+        }
+    }
+}
 
 /// ONE shared budget for stopping and joining the device workers: how long
 /// a shutdown waits, in total across all of them, for the USB workers to
@@ -496,9 +622,12 @@ pub const WORKER_EXIT_BUDGET: Duration = Duration::from_secs(3);
 /// How stopping one USB worker ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerExit {
-    /// The worker returned, so its connection, and the teardown write it
-    /// makes, are done. The only verified clean disconnect.
+    /// The worker returned and native teardown delivery was verified.
+    /// This does not promise a separate acknowledgement from the device.
     Joined,
+    /// The worker returned, but a native writer was retained, failed or canceled.
+    /// Its original native handle and host lease may still remain owned.
+    TeardownUnverified,
     /// No worker thread was ever started; there was no device to release.
     NoWorker,
     /// The worker did not return by the deadline; it was left running and
@@ -604,6 +733,21 @@ pub struct WorkerShutdown {
 }
 
 impl WorkerShutdown {
+    #[cfg(test)]
+    fn fixture_original_acknowledged(&self) -> bool {
+        self.worker.retirement.reap();
+        matches!(
+            *self.worker.lock_recover(),
+            WorkerSlot::Absent
+                | WorkerSlot::Stopped(
+                    WorkerExit::Joined
+                        | WorkerExit::TeardownUnverified
+                        | WorkerExit::Panicked
+                        | WorkerExit::NoWorker
+                )
+        )
+    }
+
     /// Stop this one worker: queue `Stop`, then wait for it until `budget`
     /// from now. A worker another shutdown already stopped, or is joining, is
     /// not stopped or waited on again. Never holds a lock while it waits.
@@ -632,13 +776,19 @@ impl WorkerShutdown {
             .saturating_duration_since(Instant::now())
             .min(CONTROL_COMMAND_ADMISSION);
         // Already gone is fine: the join then returns at once.
-        let _ = send_control(&self.commands, Command::Stop, admission);
+        let _ = send_control(
+            &self.commands,
+            Command::Stop,
+            admission,
+            Some(&self.connect_interrupt),
+        );
     }
 
     /// Phase two: wait for the worker until `deadline`, not at all once it
     /// has passed. The handle is taken out under the slot lock and waited on
     /// after releasing it; the outcome is recorded so nobody waits again.
     fn join_until(&self, deadline: Instant) -> WorkerExit {
+        self.worker.retirement.reap();
         let handle = {
             let mut slot = self.worker.lock_recover();
             match std::mem::replace(&mut *slot, WorkerSlot::Joining) {
@@ -655,15 +805,41 @@ impl WorkerShutdown {
                 }
             }
         };
-        let exit = wait_for_worker(handle, deadline);
+        let (exit, retained) = wait_for_worker(handle, deadline);
+        let exit = if exit == WorkerExit::Joined {
+            self.worker.joined_exit()
+        } else {
+            exit
+        };
         *self.worker.lock_recover() = WorkerSlot::Stopped(exit);
+        if let Some(handle) = retained {
+            let lifetime = self
+                .worker
+                .lifetime
+                .lock_recover()
+                .take()
+                .expect("original worker owns its admission");
+            self.worker
+                .retirement
+                .retain(handle, Arc::downgrade(&self.worker), lifetime);
+        } else {
+            self.worker.lifetime.lock_recover().take();
+        }
         exit
     }
 }
 
-/// Join `handle` if it returns by `deadline`; otherwise leave it running and
+pub(crate) fn thread_signalled<T>(handle: &thread::JoinHandle<T>) -> bool {
+    crate::platform::process::thread_signalled(handle)
+}
+
+/// Join `handle` if it returns by `deadline`; otherwise return its exact original
+/// handle for retained ownership while it keeps running, and
 /// say so. Logs every outcome that is not a verified clean disconnect.
-fn wait_for_worker(handle: thread::JoinHandle<()>, deadline: Instant) -> WorkerExit {
+fn wait_for_worker(
+    handle: thread::JoinHandle<()>,
+    deadline: Instant,
+) -> (WorkerExit, Option<thread::JoinHandle<()>>) {
     if handle.thread().id() == thread::current().id() {
         // The worker can never own a controller, but if it ever drops one it
         // must not wait for itself. It is already on its way out.
@@ -671,27 +847,27 @@ fn wait_for_worker(handle: thread::JoinHandle<()>, deadline: Instant) -> WorkerE
             "QC device broker: worker shutdown requested from the worker itself; not waiting \
              (clean disconnect not verified)"
         );
-        return WorkerExit::OnWorkerThread;
+        return (WorkerExit::OnWorkerThread, Some(handle));
     }
-    while !handle.is_finished() {
+    while !thread_signalled(&handle) {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             eprintln!(
-                "QC device broker: the USB worker did not stop by the shutdown deadline; exiting \
-                 without its device teardown (clean disconnect not verified)"
+                "QC device broker: the USB worker did not stop by the shutdown deadline; retaining \
+                 its original thread (clean disconnect not verified)"
             );
-            return WorkerExit::TimedOut;
+            return (WorkerExit::TimedOut, Some(handle));
         }
         thread::sleep(remaining.min(Duration::from_millis(5)));
     }
     match handle.join() {
-        Ok(()) => WorkerExit::Joined,
+        Ok(()) => (WorkerExit::Joined, None),
         Err(_) => {
             eprintln!(
                 "QC device broker: the USB worker panicked during shutdown (clean disconnect \
                  not verified)"
             );
-            WorkerExit::Panicked
+            (WorkerExit::Panicked, None)
         }
     }
 }
@@ -733,11 +909,21 @@ fn send_control(
     commands: &mpsc::SyncSender<Command>,
     mut command: Command,
     budget: Duration,
+    interrupt: Option<&ConnectInterrupt>,
 ) -> Result<(), String> {
     let deadline = Instant::now() + budget;
     loop {
         match commands.try_send(command) {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                // The initial raise makes room in a full queue. Repeat only
+                // after the command is visible, so a worker that registered
+                // its watch between that raise and queue insertion cannot
+                // start an uncancellable handshake ahead of the command.
+                if let Some(interrupt) = interrupt {
+                    interrupt.raise();
+                }
+                return Ok(());
+            }
             Err(mpsc::TrySendError::Disconnected(_)) => {
                 return Err("Native QC worker is not available".into())
             }
@@ -833,6 +1019,51 @@ impl DeviceController {
         auto_connect: bool,
         lease_path: std::path::PathBuf,
     ) -> Result<Self, String> {
+        Self::start_for_device_with_discovery(
+            id,
+            auto_connect,
+            lease_path,
+            DeviceDiscovery::default(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_for_device_with_test_discovery(
+        id: Option<String>,
+        auto_connect: bool,
+        lease_path: std::path::PathBuf,
+        enumerate: impl Fn() -> Result<Vec<quadcortex_hid::usb::QcUsbDevice>, String>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Result<Self, String> {
+        Self::start_for_device_with_discovery(
+            id,
+            auto_connect,
+            lease_path,
+            DeviceDiscovery {
+                enumerate: Some(Arc::new(enumerate)),
+            },
+        )
+    }
+
+    pub(crate) fn connected_devices(
+        &self,
+    ) -> Result<Vec<quadcortex_hid::usb::QcUsbDevice>, String> {
+        self.discovery.devices()
+    }
+
+    fn start_for_device_with_discovery(
+        id: Option<String>,
+        auto_connect: bool,
+        lease_path: std::path::PathBuf,
+        discovery: DeviceDiscovery,
+    ) -> Result<Self, String> {
+        let retirement = WorkerRetirement::production();
+        // Refuse before creating decoder/USB threads or performing device effects.
+        let lifetime = retirement.reserve()?;
+        let decoder_lifetime = Arc::clone(&lifetime);
+        let metadata_lifetime = Arc::clone(&lifetime);
         let device_id = Arc::new(Mutex::new(id));
         let worker_device_id = Arc::clone(&device_id);
         let identity_observation_enabled = Arc::new(AtomicBool::new(false));
@@ -863,10 +1094,16 @@ impl DeviceController {
             session_owner: Arc::clone(&session_owner),
             subscribers: Arc::clone(&state_subscribers),
         };
-        thread::Builder::new()
-            .name("qc-native-state".into())
-            .spawn(move || {
-                run_state_decoder(decoded, state_catalogs, state_receiver, session_clock)
+        let decoder =
+            start_owned_decoder_with_lifetime("qc-native-state", decoder_lifetime, move |stop| {
+                run_state_decoder_with_lifetime(
+                    decoded,
+                    state_catalogs,
+                    state_receiver,
+                    session_clock,
+                    stop,
+                    metadata_lifetime,
+                )
             })
             .map_err(|error| format!("Could not start native QC state decoder: {error}"))?;
         let (commands, receiver) = mpsc::sync_channel(DEVICE_COMMAND_QUEUE_CAPACITY);
@@ -879,11 +1116,18 @@ impl DeviceController {
         let worker_identity_observation = Arc::clone(&identity_observation_enabled);
         let updater_relay = Arc::new(UpdaterRelay::new());
         let worker_updater_relay = Arc::clone(&updater_relay);
+        let worker_lifetime = Arc::clone(&lifetime);
+        let teardown_verified = Arc::new(AtomicBool::new(true));
+        let worker_teardown_verified = Arc::clone(&teardown_verified);
+        let worker_discovery = discovery.clone();
         let worker = thread::Builder::new()
             .name("qc-native-usb".into())
             .spawn(move || {
+                let _lifetime = lifetime;
                 run(
                     WorkerContext {
+                        discovery: worker_discovery,
+                        _decoder: decoder,
                         device_id: worker_device_id,
                         identity_observation_enabled: worker_identity_observation,
                         session: worker_owner,
@@ -895,6 +1139,7 @@ impl DeviceController {
                         connect_interrupt: worker_interrupt,
                         lease_path,
                         updater_relay: worker_updater_relay,
+                        teardown_verified: worker_teardown_verified,
                     },
                     receiver,
                     auto_connect,
@@ -902,7 +1147,13 @@ impl DeviceController {
             })
             .map_err(|error| format!("Could not start native QC USB worker: {error}"))?;
         Ok(Self {
-            worker: Arc::new(Mutex::new(WorkerSlot::Running(worker))),
+            discovery,
+            worker: Arc::new(WorkerThreadState::running(
+                worker,
+                retirement,
+                worker_lifetime,
+                teardown_verified,
+            )),
             device_id,
             identity_observation_enabled,
             state_stream_id,
@@ -948,6 +1199,13 @@ impl DeviceController {
         self.state.lock_recover()
     }
 
+    /// Test-only: hold the retained session state exactly as a long device
+    /// operation can while cached status and USB keepalives remain healthy.
+    #[cfg(test)]
+    pub(crate) fn hold_session_lock_for_test(&self) -> std::sync::MutexGuard<'_, SessionRuntime> {
+        self.session_owner.lock_recover()
+    }
+
     pub fn status(&self) -> BrokerStatus {
         let mut status = self.state.lock_recover().clone();
         // Before the session-owner lock is taken, not under it: this may read
@@ -970,17 +1228,48 @@ impl DeviceController {
         status
     }
 
+    /// The tray's display projection. Unlike [`Self::status`], this never
+    /// waits for either worker lock: the tray's own liveness indicator must
+    /// not call a healthy broker unresponsive merely because a device
+    /// operation is updating retained session state.
+    ///
+    /// The short status record already carries every field the tray renders.
+    /// When the session owner is immediately available, use its authoritative
+    /// preset address and name too. When either lock is busy, return promptly;
+    /// the tray state loop retains its last projection and tries again on its
+    /// next 250 ms tick.
+    pub(crate) fn try_tray_status(&self) -> Option<BrokerStatus> {
+        let mut status = match self.state.try_lock() {
+            Ok(status) => status.clone(),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner().clone(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        if status.synchronized {
+            match self.session_owner.try_lock() {
+                Ok(owner) => {
+                    if let Some(preset) = owner.current_preset() {
+                        status.active_preset_location = Some(preset.preset_location.clone());
+                        status.active_preset_name = Some(preset.preset_name.clone());
+                    }
+                }
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                    if let Some(preset) = poisoned.into_inner().current_preset() {
+                        status.active_preset_location = Some(preset.preset_location.clone());
+                        status.active_preset_name = Some(preset.preset_name.clone());
+                    }
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {}
+            }
+        }
+        Some(status)
+    }
+
     /// Read the update relay's switch from the broker settings in `directory`
     /// (the app's local data directory, where the broker descriptor sits).
     /// Without this the relay runs on its defaults and nothing can turn it
     /// off; every broker mode that can carry the unit's requests calls it.
     pub fn configure_updater_relay(&self, directory: std::path::PathBuf) {
         self.updater_relay.set_settings_directory(directory);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn updater_relay(&self) -> &Arc<UpdaterRelay> {
-        &self.updater_relay
     }
 
     /// The refusal for a client request that would reach the device, while the
@@ -1106,6 +1395,7 @@ impl DeviceController {
             &self.commands,
             Command::Reconnect { force, reply },
             CONTROL_COMMAND_ADMISSION,
+            force.then_some(&self.connect_interrupt),
         )?;
         response
             .recv_timeout(Duration::from_millis(
@@ -1114,16 +1404,27 @@ impl DeviceController {
             .map_err(|_| "Native QC worker did not acknowledge the reconnect request".to_string())
     }
     pub fn disconnect(&self) -> Result<(), String> {
+        self.disconnect_with_admission(None)
+    }
+
+    pub(crate) fn disconnect_with_admission(
+        &self,
+        admission: Option<Box<dyn Send>>,
+    ) -> Result<(), String> {
         self.connect_interrupt.raise();
         let (reply, response) = mpsc::channel();
         send_control(
             &self.commands,
-            Command::Disconnect { reply },
+            Command::Disconnect {
+                reply,
+                _admission: admission,
+            },
             CONTROL_COMMAND_ADMISSION,
+            Some(&self.connect_interrupt),
         )?;
-        response
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(|_| "Native QC worker did not acknowledge the disconnect request".to_string())
+        response.recv_timeout(Duration::from_secs(1)).map_err(|_| {
+            "Native QC worker did not acknowledge the disconnect request".to_string()
+        })?
     }
 
     pub fn latest_message(&self, message_type: u16) -> Option<IncomingMessage> {
@@ -1170,8 +1471,16 @@ impl DeviceController {
             STATE_SUBSCRIBER_QUEUE_MAX_BYTES,
             Arc::clone(&self.raw_events.retention),
         );
-        self.state_subscribers.lock_recover().push(sender);
-        receiver
+        let identity = Arc::new(());
+        self.state_subscribers.lock_recover().push(StateSubscriber {
+            identity: Arc::clone(&identity),
+            sender,
+        });
+        StateSubscription {
+            receiver,
+            identity,
+            subscribers: Arc::downgrade(&self.state_subscribers),
+        }
     }
 
     /// Test-only hook that fans a synthetic frame out to every subscriber
@@ -1291,6 +1600,32 @@ impl DeviceController {
         self.session_owner.lock_recover().current_preset().cloned()
     }
 
+    /// Project details only from the exact native revision certified by a write.
+    /// The comparison and projection share the session-owner lock: a reconnect,
+    /// preset change, or later update cannot be combined with an older result.
+    pub(crate) fn verified_write_details(
+        &self,
+        result: &serde_json::Value,
+        row: u32,
+        column: Option<u32>,
+        control: Option<&str>,
+    ) -> Result<Option<BlockDetails>, String> {
+        let owner = self.session_owner.lock_recover();
+        let Some(current) = owner.current_preset() else {
+            return Ok(None);
+        };
+        if validate_verified_projection_version(current, result).is_err() {
+            // Keep the already-verified evidence, but do not supplement it with
+            // details from a later revision or claim the landed write failed.
+            return Ok(None);
+        }
+        match (column, control) {
+            (Some(column), None) => Ok(owner.state.block_details(row, column)),
+            (None, Some(control)) => Ok(owner.state.lane_control_details(row, control)),
+            _ => Err("A verified projection requires one block or lane target".into()),
+        }
+    }
+
     pub fn gateway_preflight_observation(&self, method: &str) -> Option<serde_json::Value> {
         self.session_owner
             .lock_recover()
@@ -1318,6 +1653,22 @@ impl DeviceController {
         owner
             .plan_operation_in_context(fence, now_ms, 2_000)
             .map(|_| ())
+    }
+
+    /// Validate a no-op plan and copy its observation in the same owner lease.
+    /// A separate validation followed by an unfenced snapshot could certify a
+    /// replacement session's state as this original plan's preflight result.
+    pub(crate) fn gateway_snapshot_for_plan(
+        &self,
+        fence: &DispatchContext,
+    ) -> Result<GatewaySnapshot, String> {
+        let mut owner = self.session_owner.lock_recover();
+        let now_ms = self.session_clock.elapsed().as_millis() as u64;
+        owner.plan_operation_in_context(fence, now_ms, 2_000)?;
+        owner
+            .current_preset()
+            .cloned()
+            .ok_or_else(|| "No retained snapshot for no-op preflight".into())
     }
 
     /// Capture a session fence for revalidation by the host-MIDI worker just
@@ -1686,6 +2037,18 @@ impl DeviceController {
         wait: bool,
         budget: Duration,
     ) -> Result<(), String> {
+        self.send_for_with_budget_and_admission(message_type, payload, fence, wait, budget, || {})
+    }
+
+    fn send_for_with_budget_and_admission(
+        &self,
+        message_type: u16,
+        payload: Vec<u8>,
+        fence: Option<&DispatchContext>,
+        wait: bool,
+        budget: Duration,
+        on_admitted: impl FnOnce(),
+    ) -> Result<(), String> {
         let admission = self.write_admission_for(budget, fence)?;
         let delivery_events = if wait {
             Some(self.session_owner.lock_recover().watch_deliveries()?)
@@ -1701,6 +2064,7 @@ impl DeviceController {
                 sender,
             ))
             .map_err(|error| error.to_string())?;
+        on_admitted();
         if !wait {
             return Ok(());
         }
@@ -1874,6 +2238,41 @@ impl DeviceController {
         fence: Option<&DispatchContext>,
         wait: bool,
     ) -> Result<(), String> {
+        if let DeviceOperation::ScreenMouseFrame {
+            kind: commands::ScreenMouseType::Press,
+            x,
+            y,
+            ..
+        } = &operation
+        {
+            let (x, y) = (*x, *y);
+            let mut messages = operation
+                .clone()
+                .try_encode()
+                .map_err(|error| error.to_string())?;
+            if messages.len() != 1 {
+                return Err("Raw screen press must encode one frame".into());
+            }
+            let message = messages.remove(0);
+            let mut guard = self.touch_guard.lock_recover();
+            guard.admit(&operation, self.session_clock.elapsed().as_millis() as u64)?;
+            return self.send_for_with_budget_and_admission(
+                message.message_type,
+                message.payload,
+                fence,
+                wait,
+                Duration::from_secs(2),
+                move || {
+                    // Before successful queue admission, no bytes can have
+                    // been sent: preserve the prior guard on any refusal.
+                    // After admission, even an uncertain native outcome must
+                    // retain the held-pointer protection. Release this mutex
+                    // before waiting for native delivery.
+                    guard.note_press(x, y, self.session_clock.elapsed().as_millis() as u64);
+                    drop(guard);
+                },
+            );
+        }
         let touch = self.admit_touch(&operation)?;
         let result = self.send_operation_unguarded(operation, fence, wait);
         self.settle_touch(touch, &result);
@@ -1885,27 +2284,9 @@ impl DeviceController {
     /// is sent here.
     fn admit_touch(&self, operation: &DeviceOperation) -> Result<TouchEffect, String> {
         let now_ms = self.session_clock.elapsed().as_millis() as u64;
-        let mut guard = self.touch_guard.lock_recover();
+        let guard = self.touch_guard.lock_recover();
         guard.admit(operation, now_ms)?;
         match operation {
-            DeviceOperation::ScreenMouseFrame {
-                kind: commands::ScreenMouseType::Press,
-                x,
-                y,
-                ..
-            } => {
-                // Refuse an unsendable press before it is recorded as held.
-                operation
-                    .clone()
-                    .try_encode()
-                    .map_err(|error| error.to_string())?;
-                // Recorded before the write goes out: if its outcome is unknown the
-                // pointer may be down, so it must be treated as down. Nothing lifts
-                // it but an explicit release (or raw tap): the host sends no frame
-                // of its own, because a release is itself a click.
-                guard.note_press(*x, *y, now_ms);
-                Ok(TouchEffect::None)
-            }
             // A release lifts the pointer. So does a raw tap: it is a pointer-position
             // update plus a release in one frame (observed on CorOS 4.1.0,
             // 2026-10-06), which is how a long press on a Grid block is finished.
@@ -2081,6 +2462,28 @@ impl DeviceController {
         )
     }
 
+    /// Copy authoritative I/O settings only within the original read session.
+    pub fn retained_io_settings_in_scope(
+        &self,
+        scope: &GatewayReadScope,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let owner = self.session_owner.lock_recover();
+        owner
+            .gateway_read_scope_remaining(scope, self.session_clock.elapsed().as_millis() as u64)?;
+        owner.state.assert_io_settings_healthy()?;
+        Ok(owner
+            .state
+            .published_settings(profile::MESSAGE_TYPE_IO_SETTINGS)
+            .map(<[u8]>::to_vec))
+    }
+
+    pub fn validate_io_settings_read(&self, scope: &GatewayReadScope) -> Result<(), String> {
+        let owner = self.session_owner.lock_recover();
+        owner
+            .gateway_read_scope_remaining(scope, self.session_clock.elapsed().as_millis() as u64)?;
+        owner.state.assert_io_settings_healthy()
+    }
+
     /// Read a session publication without allowing a replacement cache to
     /// certify the original write. Decode outside the lock; revalidate below.
     pub fn published_gateway_read_in_scope(
@@ -2089,13 +2492,27 @@ impl DeviceController {
         message_type: u16,
         projection: runtime_request::GatewayResponseProjection,
     ) -> Result<serde_json::Value, String> {
+        self.published_gateway_read_in_scope_with(scope, message_type, |payload| {
+            projection.decode(payload)
+        })
+    }
+
+    pub(crate) fn published_gateway_read_in_scope_with(
+        &self,
+        scope: &GatewayReadScope,
+        message_type: u16,
+        decode: impl FnOnce(&[u8]) -> Result<serde_json::Value, String>,
+    ) -> Result<serde_json::Value, String> {
         let message = self
             .latest_message(message_type)
             .ok_or("QC session has not published the requested settings")?;
-        let value = projection.decode(&message.payload)?;
+        let value = decode(&message.payload)?;
         let owner = self.session_owner.lock_recover();
         owner
             .gateway_read_scope_remaining(scope, self.session_clock.elapsed().as_millis() as u64)?;
+        if message_type == profile::MESSAGE_TYPE_IO_SETTINGS {
+            owner.state.assert_io_settings_healthy()?;
+        }
         if !message.observation.as_ref().is_some_and(|ticket| {
             owner.accepts_observation_for(scope.context().session_fence(), ticket)
         }) {
@@ -2253,7 +2670,21 @@ impl DeviceController {
         Ok(request_id)
     }
 
+    /// Capture the physical session before a host opens a save dialog. This is
+    /// an expected-state fence, not authorization, and does not open USB.
+    pub fn backup_context(&self) -> Result<DispatchContext, String> {
+        self.session_owner.lock_recover().session_context()
+    }
+
     pub fn create_backup(&self, timeout: Duration) -> Result<String, String> {
+        self.create_backup_in_context(timeout, None)
+    }
+
+    pub fn create_backup_in_context(
+        &self,
+        timeout: Duration,
+        expected: Option<&DispatchContext>,
+    ) -> Result<String, String> {
         let started = Instant::now();
         let started_ms = started
             .saturating_duration_since(self.session_clock)
@@ -2266,7 +2697,12 @@ impl DeviceController {
         let recovery_budget = Duration::from_millis(profile::READY_WAIT_TIMEOUT_MS);
         let (admission, scope) = {
             let mut owner = self.session_owner.lock_recover();
-            let context = owner.session_context()?;
+            // Planning and validation share the owner lock. The worker checks
+            // this same ticket again immediately before its USB effect.
+            let context = match expected {
+                Some(context) => context.clone(),
+                None => owner.session_context()?,
+            };
             let scope = owner.begin_gateway_read_scope_for(
                 &context,
                 started_ms,
@@ -2405,11 +2841,22 @@ impl DeviceController {
     #[cfg(test)]
     fn with_worker_for_test(worker: impl FnOnce(mpsc::Receiver<Command>) + Send + 'static) -> Self {
         let (mut controller, receiver) = tests::refresh_controller();
+        let retirement = WorkerRetirement::new(retired_worker::MAX_WORKER_LIFETIMES);
+        let lifetime = retirement.reserve().unwrap();
+        let worker_lifetime = Arc::clone(&lifetime);
         let handle = thread::Builder::new()
             .name("qc-native-usb-fake".into())
-            .spawn(move || worker(receiver))
+            .spawn(move || {
+                let _lifetime = lifetime;
+                worker(receiver)
+            })
             .unwrap();
-        controller.worker = Arc::new(Mutex::new(WorkerSlot::Running(handle)));
+        controller.worker = Arc::new(WorkerThreadState::running(
+            handle,
+            retirement,
+            worker_lifetime,
+            Arc::new(AtomicBool::new(true)),
+        ));
         controller
     }
 
@@ -2455,6 +2902,19 @@ struct PendingRequest {
 struct ConnectedRelaySink<'a>(&'a mut ConnectedQc);
 
 impl RelaySink for ConnectedRelaySink<'_> {
+    fn send_forwarded(
+        &mut self,
+        frame: quadcortex_forwarder::ForwardedMessage,
+    ) -> Result<(), String> {
+        if !frame.current() {
+            return Ok(());
+        }
+        let (message, deadline, cancel) = frame.into_parts();
+        match self.0.usb.send_forwarded_command(message, deadline, cancel) {
+            Ok(()) | Err(UsbError::ForwardingRetired) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
     fn send(&mut self, message: OutboundMessage) -> Result<(), String> {
         self.0
             .send_command(message)
@@ -2498,6 +2958,76 @@ enum StateDecoderCommand {
     Stop,
 }
 
+/// An independently cancellable decoder owner. It is armed before the USB
+/// worker is spawned, so rejected startup cannot strand a sender/receiver cycle.
+/// A stalled parser/lock is retained by exact JoinHandle until it acknowledges;
+/// the caller's deadline does not claim it stopped or detach its ownership.
+struct DecoderThreadOwner {
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+    lifetime: Option<Arc<WorkerLifetime>>,
+}
+
+impl DecoderThreadOwner {
+    fn request_stop(&self, messages: &mpsc::SyncSender<StateDecoderCommand>) {
+        self.stop.store(true, Ordering::Release);
+        let _ = messages.try_send(StateDecoderCommand::Stop);
+    }
+}
+
+#[cfg(test)]
+fn start_owned_decoder(
+    name: &str,
+    run: impl FnOnce(Arc<AtomicBool>) + Send + 'static,
+) -> std::io::Result<DecoderThreadOwner> {
+    let lifetime = WorkerRetirement::production()
+        .reserve()
+        .map_err(std::io::Error::other)?;
+    start_owned_decoder_with_lifetime(name, lifetime, run)
+}
+
+fn start_owned_decoder_with_lifetime(
+    name: &str,
+    lifetime: Arc<WorkerLifetime>,
+    run: impl FnOnce(Arc<AtomicBool>) + Send + 'static,
+) -> std::io::Result<DecoderThreadOwner> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let signal = Arc::clone(&stop);
+    let thread = thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || run(signal))?;
+    Ok(DecoderThreadOwner {
+        stop,
+        thread: Some(thread),
+        lifetime: Some(lifetime),
+    })
+}
+
+impl Drop for DecoderThreadOwner {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        let deadline = Instant::now() + WORKER_EXIT_BUDGET;
+        while !thread_signalled(&thread) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let lifetime = self
+            .lifetime
+            .take()
+            .expect("original decoder owns its admission");
+        if thread_signalled(&thread) {
+            let _ = thread.join();
+            drop(lifetime);
+        } else {
+            let retirement = Arc::clone(&lifetime.0);
+            retirement.retain(thread, std::sync::Weak::new(), lifetime);
+            eprintln!("QC device broker: retaining a decoder that did not acknowledge shutdown");
+        }
+    }
+}
+
 struct StateDecoderShared {
     stream_id: String,
     event_log: Arc<Mutex<StateEventJournal>>,
@@ -2505,7 +3035,7 @@ struct StateDecoderShared {
     latest_master_volume: Arc<Mutex<Option<DecodedStateFrame>>>,
     latest_sequence: Arc<AtomicU64>,
     session_owner: Arc<Mutex<SessionRuntime>>,
-    subscribers: Arc<Mutex<Vec<BudgetedSender<DecodedStateFrame>>>>,
+    subscribers: Arc<Mutex<Vec<StateSubscriber>>>,
 }
 
 fn clear_revoked_state_publications(
@@ -2564,19 +3094,55 @@ fn queue_state_observation(
     }
 }
 
+#[cfg(test)]
 fn run_state_decoder(
     shared: StateDecoderShared,
     sender: mpsc::SyncSender<StateDecoderCommand>,
     messages: mpsc::Receiver<StateDecoderCommand>,
     session_clock: Instant,
 ) {
+    run_state_decoder_with_stop(
+        shared,
+        sender,
+        messages,
+        session_clock,
+        Arc::new(AtomicBool::new(false)),
+    );
+}
+
+#[cfg(test)]
+fn run_state_decoder_with_stop(
+    shared: StateDecoderShared,
+    sender: mpsc::SyncSender<StateDecoderCommand>,
+    messages: mpsc::Receiver<StateDecoderCommand>,
+    session_clock: Instant,
+    stop: Arc<AtomicBool>,
+) {
+    let lifetime = WorkerRetirement::production()
+        .reserve()
+        .expect("fixture decoder admission");
+    run_state_decoder_with_lifetime(shared, sender, messages, session_clock, stop, lifetime);
+}
+
+fn run_state_decoder_with_lifetime(
+    shared: StateDecoderShared,
+    sender: mpsc::SyncSender<StateDecoderCommand>,
+    messages: mpsc::Receiver<StateDecoderCommand>,
+    session_clock: Instant,
+    stop: Arc<AtomicBool>,
+    lifetime: Arc<WorkerLifetime>,
+) {
     let (metadata_tx, metadata_rx) = mpsc::sync_channel::<()>(1);
     let metadata_results = sender.clone();
     let metadata_owner = Arc::clone(&shared.session_owner);
-    let metadata_worker = thread::Builder::new()
-        .name("qc-native-metadata".into())
-        .spawn(move || {
-            while metadata_rx.recv().is_ok() {
+    let metadata_worker =
+        start_owned_decoder_with_lifetime("qc-native-metadata", lifetime, move |stop| {
+            while !stop.load(Ordering::Acquire) {
+                match metadata_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(()) => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
                 let work = metadata_owner.lock_recover().take_model_repo();
                 let Some(work) = work else {
                     continue;
@@ -2593,7 +3159,12 @@ fn run_state_decoder(
         .ok();
     let mut next_sequence = 1_u64;
     let mut published = None;
-    while let Ok(command) = messages.recv() {
+    while !stop.load(Ordering::Acquire) {
+        let command = match messages.recv_timeout(Duration::from_millis(100)) {
+            Ok(command) => command,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         match command {
             StateDecoderCommand::Reset => {
                 // The owner already revoked the old session. Do not clear its
@@ -2630,7 +3201,7 @@ fn run_state_decoder(
                 // The owner releases the active parse even when it fails.
                 let _ = metadata_tx.try_send(());
             }
-            StateDecoderCommand::Stop => return,
+            StateDecoderCommand::Stop => break,
         }
         let publications = shared
             .session_owner
@@ -2676,12 +3247,18 @@ fn run_state_decoder(
             next_sequence = next_sequence.saturating_add(1);
         }
     }
+    // Retire both channel ends before waiting for the metadata owner. A parser
+    // finishing into a full result queue must be woken with Disconnected.
+    drop(messages);
+    drop(sender);
+    drop(metadata_tx);
+    drop(metadata_worker);
 }
 
 fn publish_state_frame(
     event_log: &Arc<Mutex<StateEventJournal>>,
     latest_sequence: &Arc<AtomicU64>,
-    subscribers: &Arc<Mutex<Vec<BudgetedSender<DecodedStateFrame>>>>,
+    subscribers: &Arc<Mutex<Vec<StateSubscriber>>>,
     frame: DecodedStateFrame,
 ) {
     let retained = {
@@ -2696,7 +3273,7 @@ fn publish_state_frame(
     // Never blocks: a slow subscriber loses this frame (logged and counted)
     // and catches up from the journal, which readers already do on a gap.
     subscribers.lock_recover().retain(|subscriber| {
-        subscriber.offer(frame.clone(), encoded_bytes) != OfferOutcome::Disconnected
+        subscriber.sender.offer(frame.clone(), encoded_bytes) != OfferOutcome::Disconnected
     });
 }
 
@@ -2721,7 +3298,7 @@ fn clear_session_caches(
 /// closed once, at a sibling call site) previously had to be applied at
 /// each copy by hand.
 #[allow(clippy::too_many_arguments)]
-fn teardown_after_lifecycle_failure(
+fn teardown_after_session_failure(
     error: impl std::fmt::Display,
     now_ms: u64,
     incident: &'static str,
@@ -2732,7 +3309,7 @@ fn teardown_after_lifecycle_failure(
     session: &Arc<Mutex<SessionRuntime>>,
     connection: &mut Option<ConnectedQc>,
 ) {
-    let detail = format!("QC session lifecycle failed: {error}");
+    let detail = format!("QC session failed: {error}");
     if let Some(connected) = connection.as_mut() {
         connected.usb.record_incident(incident);
     }
@@ -2761,9 +3338,13 @@ fn ingest_incoming(
     raw_events: &Arc<RawEventBus>,
     state_messages: &mpsc::SyncSender<StateDecoderCommand>,
     pending_requests: &mut Vec<PendingRequest>,
-    message: IncomingMessage,
+    mut message: IncomingMessage,
     now_ms: u64,
 ) {
+    if quadcortex_hid::latest_cache::is_private_cloud_message(message.message_type) {
+        message.payload.zeroize();
+        return;
+    }
     update_message(state, &mut connected.latest_messages, message.clone());
     if let Some(bytes) = cache_latest_message(&mut latest_messages.lock_recover(), message.clone())
     {
@@ -2777,6 +3358,28 @@ fn ingest_incoming(
         now_ms,
         state.lock_recover().session_epoch,
     );
+}
+
+#[cfg(test)]
+mod forwarding_privacy_tests {
+    use super::*;
+
+    #[test]
+    fn account_and_update_requests_are_not_retained_as_readable_state() {
+        let mut latest = HashMap::new();
+        for message_type in [18, 29, 30, 31, 41, 58, 61] {
+            let message = IncomingMessage {
+                observation: None,
+                sequence: 0,
+                message_type,
+                payload: b"synthetic-private-cloud-payload".to_vec(),
+                received_at_unix_ms: 0,
+            };
+            latest.insert(message_type, message.clone());
+            assert_eq!(cache_latest_message(&mut latest, message), None);
+            assert!(!latest.contains_key(&message_type));
+        }
+    }
 }
 
 const RETAINED_PAYLOAD_MAX_BYTES: usize =
@@ -2829,6 +3432,11 @@ fn cache_latest_message(
     latest: &mut HashMap<u16, IncomingMessage>,
     mut incoming: IncomingMessage,
 ) -> Option<usize> {
+    if quadcortex_hid::latest_cache::is_private_cloud_message(incoming.message_type) {
+        latest.remove(&incoming.message_type);
+        incoming.payload.zeroize();
+        return None;
+    }
     if !retain_latest_message_payload(latest, &incoming) {
         return Some(incoming.payload.len());
     }
@@ -2839,6 +3447,15 @@ fn cache_latest_message(
         &incoming.payload,
     ) {
         return None;
+    }
+    if incoming.message_type == profile::MESSAGE_TYPE_IO_SETTINGS
+        && matches!(
+            quadcortex::responses::validate_io_settings_retention(&incoming.payload),
+            Err(quadcortex::responses::ResponseDecodeError::RetainedIoBudget)
+        )
+    {
+        latest.remove(&incoming.message_type);
+        return Some(incoming.payload.len());
     }
     if matches!(
         incoming.message_type,
@@ -2856,8 +3473,14 @@ fn cache_latest_message(
             } else {
                 quadcortex::responses::merge_io_settings_publication
             };
-            let Ok(merged) = merge(&previous.payload, &incoming.payload) else {
-                return None;
+            let merged = match merge(&previous.payload, &incoming.payload) {
+                Ok(merged) => merged,
+                Err(quadcortex::responses::ResponseDecodeError::RetainedIoBudget) => {
+                    let bytes = incoming.payload.len();
+                    latest.remove(&incoming.message_type);
+                    return Some(bytes);
+                }
+                Err(_) => return None,
             };
             incoming.payload = merged;
         }
@@ -2873,6 +3496,8 @@ fn cache_latest_message(
 }
 
 struct WorkerContext {
+    discovery: DeviceDiscovery,
+    _decoder: DecoderThreadOwner,
     device_id: Arc<Mutex<Option<String>>>,
     identity_observation_enabled: Arc<AtomicBool>,
     session: Arc<Mutex<SessionRuntime>>,
@@ -2884,10 +3509,53 @@ struct WorkerContext {
     connect_interrupt: ConnectInterrupt,
     lease_path: std::path::PathBuf,
     updater_relay: Arc<UpdaterRelay>,
+    teardown_verified: Arc<AtomicBool>,
 }
 
 fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_connect: bool) {
+    // Keep ownership outside the transport's entire scope. A ConnectedQc drop
+    // may still be closing native HID handles when the caller's bounded join
+    // expires; another opener must not receive the lease before that finishes.
+    let lease = if context.lease_path == crate::device_lease::default_path()
+        && std::env::var_os("QC_DEVICE_LEASE_PATH").is_none()
+    {
+        crate::device_lease::LeaseHolder::with_locations(
+            crate::device_lease::Locations::from_environment(),
+            crate::device_lease::own_role(),
+            true,
+        )
+    } else {
+        crate::device_lease::LeaseHolder::new(
+            context.lease_path.clone(),
+            crate::device_lease::own_role(),
+        )
+    };
+    with_transport_lease(lease, |lease| {
+        run_leased(context, commands, initial_auto_connect, lease)
+    });
+}
+
+fn native_disconnect_result(verified: bool) -> Result<(), String> {
+    if verified {
+        Ok(())
+    } else {
+        Err("Device session closed; native teardown delivery/release is not verified; original native work remains owned until retirement".into())
+    }
+}
+
+fn with_transport_lease<L>(mut lease: L, run: impl FnOnce(&mut L)) {
+    run(&mut lease);
+}
+
+fn run_leased(
+    context: WorkerContext,
+    commands: mpsc::Receiver<Command>,
+    initial_auto_connect: bool,
+    lease: &mut crate::device_lease::LeaseHolder,
+) {
     let WorkerContext {
+        discovery,
+        _decoder,
         device_id,
         identity_observation_enabled,
         session,
@@ -2897,8 +3565,9 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
         raw_events,
         state_messages,
         connect_interrupt,
-        lease_path,
+        lease_path: _,
         updater_relay,
+        teardown_verified,
     } = context;
     let mut connection: Option<ConnectedQc> = None;
     let mut identity_read =
@@ -2907,29 +3576,29 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
     let mut pending_requests: Vec<PendingRequest> = Vec::new();
     let mut backup: Option<BackupInProgress> = None;
     let mut relay_pump = RelayPump::new();
+    let mut cloud_forward =
+        CloudForwardRelay::with_fetcher(crate::updater_relay::http::direct_fetcher());
     let mut command_not_before = Instant::now();
     // The inbound-telemetry revision this loop has already published. A
     // connection epoch resets the session's tally to zero, which is a change
     // like any other, so no separate reset is needed here.
     let mut published_inbound_revision = 0_u64;
     let mut startup_watch = StartupWatch::default();
-    // Ownership record every opener consults before touching the HID handle;
-    // released when the connection ends and, through `Drop`, when this worker
-    // exits. See `device_lease`.
-    // The default location is the machine-shared one with mirror, peer and
-    // process-scan discovery; an explicit path (tests) stays self-contained.
-    let mut lease = if lease_path == crate::device_lease::default_path()
-        && std::env::var_os("QC_DEVICE_LEASE_PATH").is_none()
-    {
-        crate::device_lease::LeaseHolder::with_locations(
-            crate::device_lease::Locations::from_environment(),
-            crate::device_lease::own_role(),
-            true,
-        )
-    } else {
-        crate::device_lease::LeaseHolder::new(lease_path, crate::device_lease::own_role())
-    };
     loop {
+        // Register before lease maintenance, command draining and HID
+        // enumeration: a control request during any pre-open work must still
+        // cancel this attempt, rather than become its new baseline.
+        let interrupted = connect_interrupt.watch();
+        // ProductForward credentials use the same user-visible internet-relay
+        // switch as the plaintext firmware relay. Set this before a new USB
+        // connection enters its version handshake so the session key is
+        // installed before any encrypted account request can arrive.
+        let internet_relay_enabled = updater_relay.status().enabled;
+        cloud_forward.set_enabled(internet_relay_enabled);
+        session
+            .lock_recover()
+            .transport
+            .set_cloud_forward_enabled(internet_relay_enabled);
         if connection.is_some() {
             lease.tick();
         } else {
@@ -2938,10 +3607,10 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
         // The post-handshake settle window holds commands without sleeping on
         // this thread. Sleeping here used to stall the read path for the whole
         // window, which is exactly when the QC pushes its initial state burst.
-        while Instant::now() >= command_not_before {
-            let Ok(command) = commands.try_recv() else {
-                break;
-            };
+        let mut commands_remaining = DEVICE_COMMAND_BATCH_LIMIT;
+        while let Some(command) =
+            next_command_in_batch(&commands, &mut commands_remaining, command_not_before)
+        {
             match command {
                 Command::RecordFlight { event, incident } => {
                     if let Some(connected) = connection.as_mut() {
@@ -2970,6 +3639,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     // Before the connection goes: the reconnect below can be due
                     // at once, so the no-session branch may never get a pass.
                     updater_relay.cancel("the device session was restarted");
+                    cloud_forward.cancel_all();
                     connection.take();
                     fail_pending(&mut pending_requests, "Device session restarted");
                     fail_backup(&mut backup, "Device session restarted");
@@ -2982,12 +3652,15 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     set_phase(&state, "searching", "Reconnect requested", false, false);
                     let _ = reply.send(ReconnectOutcome::Restarted);
                 }
-                Command::Disconnect { reply } => {
+                Command::Disconnect { reply, _admission } => {
                     updater_relay.cancel("the device session was closed");
-                    if let Some(mut connected) = connection.take() {
+                    cloud_forward.cancel_all();
+                    let verified = if let Some(mut connected) = connection.take() {
                         let request_id = connected.reserve_request_id();
-                        connected.usb.disconnect_exact(request_id);
-                    }
+                        connected.usb.disconnect_exact_checked(request_id)
+                    } else {
+                        teardown_verified.load(Ordering::Acquire)
+                    };
                     fail_pending(&mut pending_requests, "Device session closed");
                     fail_backup(&mut backup, "Device session closed");
                     clear_session_caches(&state, &latest_messages);
@@ -2999,11 +3672,15 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     set_phase(
                         &state,
                         "disconnected",
-                        "Device session closed",
+                        if verified {
+                            "Device session closed"
+                        } else {
+                            "Device session closed; native teardown delivery/release is not verified"
+                        },
                         false,
                         false,
                     );
-                    let _ = reply.send(());
+                    let _ = reply.send(native_disconnect_result(verified));
                 }
                 Command::Send(message_type, payload, admission, reply) => {
                     let result = if let Some(connected) = connection.as_mut() {
@@ -3253,7 +3930,10 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     fail_pending(&mut pending_requests, "Native broker stopped");
                     fail_backup(&mut backup, "Native broker stopped");
                     updater_relay.cancel("the broker is stopping");
-                    let _ = state_messages.send(StateDecoderCommand::Stop);
+                    cloud_forward.cancel_all();
+                    // A full publication queue must not park the USB worker
+                    // before its decoder owner can signal cancellation.
+                    _decoder.request_stop(&state_messages);
                     return;
                 }
             }
@@ -3264,6 +3944,9 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
             && auto_connect
             && session.lock_recover().transport.reconnect_due(now_ms)
         {
+            if interrupted() {
+                continue;
+            }
             session.lock_recover().transport.reconnect_attempted(now_ms);
             // Another live process owns the unit: do not open it. Opening a
             // device a hardware run holds made both openers fight for ~45 s on
@@ -3284,7 +3967,10 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
             // used to flash an opening phase every retry even though HID had
             // already proved there was nothing to open. Hosts may now treat
             // `connecting` as evidence that a matching USB device exists.
-            let devices = quadcortex_hid::usb::connected_devices().unwrap_or_default();
+            let devices = discovery.devices().unwrap_or_default();
+            if interrupted() {
+                continue;
+            }
             let selected = {
                 let mut selected = device_id.lock_recover();
                 let detected = devices
@@ -3308,8 +3994,47 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
             let _ = state_messages.send(StateDecoderCommand::Reset);
             // Once chosen, a missing unit never falls through to another one.
             let prior_failures = session.lock_recover().transport.connect_failures();
-            let interrupted = connect_interrupt.watch();
-            let opened = QcUsb::connect_device_cancellable(
+            let io_owner = match lease.io_owner() {
+                Ok(owner) => owner,
+                Err(holder) => {
+                    set_phase(
+                        &state,
+                        "searching",
+                        &crate::device_lease::waiting_detail(&holder),
+                        false,
+                        false,
+                    );
+                    continue;
+                }
+            };
+            if interrupted() {
+                continue;
+            }
+            // The outer startup watchdog cannot run while connect is inside
+            // staged initialization. Bound that entire call too, including
+            // repeated startup rebuilds, using its existing cancellation lane.
+            let attempt_budget = ConnectAttemptBudget::new(started, STARTUP_PROGRESS_STALL_LIMIT);
+            let cancelled = || {
+                if interrupted() {
+                    return true;
+                }
+                let now = Instant::now();
+                // This watchdog must never wait for the lock it is watching.
+                let phase = match session.try_lock() {
+                    Ok(owner) => owner.lifecycle.as_ref().map(|lifecycle| lifecycle.phase()),
+                    Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned
+                        .into_inner()
+                        .lifecycle
+                        .as_ref()
+                        .map(|lifecycle| lifecycle.phase()),
+                    Err(std::sync::TryLockError::WouldBlock) => None,
+                };
+                if let Some(phase) = phase {
+                    attempt_budget.observe_phase(phase, now);
+                }
+                attempt_budget.expired(now)
+            };
+            let opened = QcUsb::connect_device_cancellable_with_io_owner_and_teardown(
                 Arc::clone(&session),
                 &session_clock,
                 Some(&selected),
@@ -3333,8 +4058,13 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     let _ = queue_state_observation(&state_messages, &session, message);
                     refresh_startup_detail(&state, &session);
                 },
-                &interrupted,
+                &cancelled,
+                Some(io_owner),
+                Some(Arc::clone(&teardown_verified)),
             );
+            // A watchdog cancellation is a failed attempt, not a user request:
+            // route it through the normal teardown/backoff/error reporting.
+            let opened = attempt_budget.classify(opened, Instant::now(), interrupted());
             match opened {
                 Ok(connected) => {
                     session.lock_recover().transport.connect_succeeded();
@@ -3371,6 +4101,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     // Whatever the relay still holds belongs to a session that
                     // ended; none of it may be written into this one.
                     updater_relay.cancel("a new device session started");
+                    cloud_forward.cancel_all();
                     connection = Some(connected);
                 }
                 Err(UsbError::NotAvailable) => {
@@ -3414,6 +4145,30 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
         }
 
         if let Some(connected) = connection.as_mut() {
+            let session_epoch = state.lock_recover().session_epoch;
+            if let Some(mut replies) = cloud_forward.take_response(session_epoch) {
+                let mut write_failed = false;
+                for reply in std::mem::take(&mut replies.messages) {
+                    match connected.usb.send_forwarded_command(
+                        reply,
+                        replies.deadline,
+                        Arc::clone(&replies.cancel),
+                    ) {
+                        Ok(()) => {}
+                        Err(UsbError::ForwardingRetired) => continue,
+                        Err(_) => {
+                            connected.usb.record_incident("cloud-forward-write-failure");
+                            connected.usb.abort();
+                            write_failed = true;
+                            break;
+                        }
+                    }
+                    update_usb_telemetry(&state, connected);
+                }
+                if write_failed {
+                    continue;
+                }
+            }
             // Preserve staged startup and its settle window. This latch is reset
             // only after a successful transport open, never by a status poll.
             if Instant::now() >= command_not_before
@@ -3452,13 +4207,13 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     .record_event(format!("inbound-unacted: {reason}"));
             }
             match read {
-                Ok(Some(message)) => {
+                Ok(Some(mut message)) => {
                     let now_ms = session_clock.elapsed().as_millis() as u64;
                     let was_synchronized = session.lock_recover().transport.synchronized();
                     match connected.observe_lifecycle(&message, now_ms) {
                         Ok(_) => {}
                         Err(error) => {
-                            teardown_after_lifecycle_failure(
+                            teardown_after_session_failure(
                                 error,
                                 now_ms,
                                 "session-lifecycle-failure",
@@ -3482,6 +4237,9 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                         .as_ref()
                         .is_some_and(|ticket| session.lock_recover().accepts_observation(ticket));
                     if !current {
+                        if matches!(message.message_type, 18 | 29) {
+                            message.payload.zeroize();
+                        }
                         clear_session_caches(&state, &latest_messages);
                         connected.latest_messages.clear();
                         let _ = state_messages.send(StateDecoderCommand::Reset);
@@ -3495,15 +4253,35 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                         // Stop streaming to it, as the pending requests and the
                         // backup above are stopped.
                         updater_relay.cancel("the QC lifecycle epoch changed");
+                        cloud_forward.cancel_all();
+                        continue;
+                    }
+
+                    // These encrypted cloud frames contain account credentials
+                    // or credential-lifecycle state. They never enter the
+                    // general cache, raw-event stream, or state decoder.
+                    if message.message_type == profile::MESSAGE_TYPE_PRODUCT_FORWARD {
+                        let epoch = state.lock_recover().session_epoch;
+                        cloud_forward.on_product_forward(&mut message.payload, epoch);
+                        continue;
+                    }
+                    if message.message_type == profile::MESSAGE_TYPE_CLOUD_LOGIN {
+                        cloud_forward.on_cloud_login(&mut message.payload);
+                        continue;
+                    }
+                    if matches!(message.message_type, 30 | 31 | 41 | 58) {
+                        // These credential-bearing operations have no broker
+                        // handler and must not enter general state publication.
+                        message.payload.zeroize();
                         continue;
                     }
 
                     identity_read.observe(&session, &state, &message, now_ms);
-                    // The relay only looks: the frame still goes through the
-                    // ordinary path below, so every counter and the
-                    // no-state-handler record stay exactly as they were.
+                    // Signed updater URLs and headers stay within the relay.
                     if message.message_type == profile::MESSAGE_TYPE_UPDATER_FORWARD {
                         updater_relay.on_forward_frame(&message.payload, Instant::now());
+                        message.payload.zeroize();
+                        continue;
                     } else if message.message_type == profile::MESSAGE_TYPE_UPDATER {
                         updater_relay.on_updater_state(&message.payload);
                     }
@@ -3560,6 +4338,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                             &session_clock,
                             &state_messages,
                             &updater_relay,
+                            &mut cloud_forward,
                         );
                         auto_connect = true;
                         continue;
@@ -3610,25 +4389,17 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                         )
                         .is_err()
                     {
-                        connected
-                            .usb
-                            .record_incident("backup-keepalive-write-failure");
-                        clear_session_caches(&state, &latest_messages);
-                        // Every sibling teardown branch resolves `backup` before
-                        // disconnecting. Without this, `backup` stays `Some`
-                        // forever: `fail_backup`/`finish_backup` are the only
-                        // things that ever clear it, the original
-                        // device.createBackup caller's reply channel is never
-                        // sent, and CreateBackup's own `backup.is_some()` guard
-                        // then refuses every future backup until the process
-                        // restarts.
-                        fail_backup(&mut backup, "Backup keepalive write failed");
-                        session
-                            .lock_recover()
-                            .disconnect(session_clock.elapsed().as_millis() as u64, true);
-                        if let Some(mut failed) = connection.take() {
-                            failed.usb.abort();
-                        }
+                        teardown_after_session_failure(
+                            "Backup keepalive write failed",
+                            session_clock.elapsed().as_millis() as u64,
+                            "backup-keepalive-write-failure",
+                            &state,
+                            &latest_messages,
+                            &mut pending_requests,
+                            &mut backup,
+                            &session,
+                            &mut connection,
+                        );
                         continue;
                     }
                     update_usb_telemetry(&state, connected);
@@ -3668,16 +4439,19 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     .defer_keepalive(session_clock.elapsed().as_millis() as u64);
             }
             if relay_report.write_error.is_some() {
-                connected.usb.record_incident("updater-relay-write-failure");
                 updater_relay.cancel("a write to the unit failed");
-                clear_session_caches(&state, &latest_messages);
-                fail_backup(&mut backup, "Update relay write failed");
-                session
-                    .lock_recover()
-                    .disconnect(session_clock.elapsed().as_millis() as u64, true);
-                if let Some(mut failed) = connection.take() {
-                    failed.usb.abort();
-                }
+                cloud_forward.cancel_all();
+                teardown_after_session_failure(
+                    "Update relay write failed",
+                    session_clock.elapsed().as_millis() as u64,
+                    "updater-relay-write-failure",
+                    &state,
+                    &latest_messages,
+                    &mut pending_requests,
+                    &mut backup,
+                    &session,
+                    &mut connection,
+                );
                 continue;
             }
             let now_ms = session_clock.elapsed().as_millis() as u64;
@@ -3685,7 +4459,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
             match connected.advance_lifecycle(now_ms) {
                 Ok(_) => {}
                 Err(error) => {
-                    teardown_after_lifecycle_failure(
+                    teardown_after_session_failure(
                         error,
                         now_ms,
                         "session-lifecycle-failure",
@@ -3709,7 +4483,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                 .as_ref()
                 .is_some_and(|lifecycle| lifecycle.is_connected());
             if startup_watch.stalled(startup_connected, Instant::now(), STARTUP_STALL_LIMIT) {
-                teardown_after_lifecycle_failure(
+                teardown_after_session_failure(
                     format!(
                         "startup did not reach Connected within {} s; restarting the session",
                         STARTUP_STALL_LIMIT.as_secs()
@@ -3749,12 +4523,17 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
                     // once. A Version READ is answered, so the link looks
                     // alive, but it does not hold the session open.
                     if connected.usb.send_command(keepalive).is_err() {
-                        connected.usb.record_incident("keepalive-write-failure");
-                        clear_session_caches(&state, &latest_messages);
-                        session.lock_recover().disconnect(now_ms, true);
-                        if let Some(mut failed) = connection.take() {
-                            failed.usb.abort();
-                        }
+                        teardown_after_session_failure(
+                            "Keepalive write failed",
+                            now_ms,
+                            "keepalive-write-failure",
+                            &state,
+                            &latest_messages,
+                            &mut pending_requests,
+                            &mut backup,
+                            &session,
+                            &mut connection,
+                        );
                         continue;
                     }
                     update_usb_telemetry(&state, connected);
@@ -3763,6 +4542,7 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
         } else {
             // Whatever the relay was running belonged to a session that is gone.
             updater_relay.cancel_if_active("no device session");
+            cloud_forward.cancel_all();
             thread::sleep(Duration::from_millis(100));
         }
         expire_pending(
@@ -3776,6 +4556,32 @@ fn run(context: WorkerContext, commands: mpsc::Receiver<Command>, initial_auto_c
 /// The one answer both exits of [`DeviceController::wait_for_gateway_snapshot`]
 /// give. Keeping it in one place is what stops a timeout path from returning
 /// the success path's value: a deadline is never itself an answer.
+pub(crate) fn validate_verified_projection_version(
+    current: &GatewaySnapshot,
+    result: &serde_json::Value,
+) -> Result<(), String> {
+    let expected = result
+        .get("snapshot")
+        .and_then(|snapshot| snapshot.get("stateVersion"))
+        .filter(|version| version.is_object())
+        .ok_or_else(|| {
+            "The verified write has no native revision for its detail projection".to_owned()
+        })?;
+    let actual = current
+        .state_version
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    if actual.as_ref() != Some(expected) {
+        return Err(
+            "The verified write belongs to an earlier native revision; refresh device details"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 fn matching_snapshot(
     snapshot: Option<GatewaySnapshot>,
     predicate: &impl Fn(&GatewaySnapshot) -> bool,
@@ -3830,10 +4636,12 @@ fn restart_session(
     session_clock: &Instant,
     state_messages: &mpsc::SyncSender<StateDecoderCommand>,
     updater_relay: &UpdaterRelay,
+    cloud_forward: &mut CloudForwardRelay,
 ) {
     // The reconnect is due at once, so the loop's no-session branch may never
     // run: end the relay's request here, before the old session is dropped.
     updater_relay.cancel("the device session was restarted");
+    cloud_forward.cancel_all();
     connection.take();
     fail_pending(pending_requests, "Device session restarted");
     fail_backup(backup, "Device session restarted");
@@ -4027,6 +4835,89 @@ fn startup_progress_detail(phase: &str, rebuilds: u32) -> String {
 /// Host policy (not a Cortex Control frame); the 60 s figure is BELIEVED, no
 /// measurement in the repository.
 const STARTUP_STALL_LIMIT: Duration = Duration::from_secs(60);
+
+// Host policy, not protocol timers. A live successful startup measured 220,561
+// ms on 2026-10-14 under machine contention, so 60 s over the entire attempt
+// incorrectly resets progressing sessions. Allow time per forward phase while
+// retaining an absolute ceiling against rebuild loops. Neither value claims a
+// measured firmware limit.
+const STARTUP_PROGRESS_STALL_LIMIT: Duration = Duration::from_secs(120);
+const STARTUP_ATTEMPT_LIMIT: Duration = Duration::from_secs(600);
+
+/// Watch one open/handshake/initialization attempt. Only a new highest startup
+/// phase renews the progress clock: traffic, retry attempts and repeated rebuild
+/// phases do not. A ready session's backup or update never uses this watchdog.
+struct ConnectAttemptBudget {
+    deadline: Instant,
+    last_progress: std::cell::Cell<Instant>,
+    highest_phase: std::cell::Cell<u8>,
+    stall_limit: Duration,
+}
+
+impl ConnectAttemptBudget {
+    fn new(started: Instant, stall_limit: Duration) -> Self {
+        Self {
+            deadline: started + STARTUP_ATTEMPT_LIMIT,
+            last_progress: std::cell::Cell::new(started),
+            highest_phase: std::cell::Cell::new(0),
+            stall_limit,
+        }
+    }
+
+    fn observe_phase(
+        &self,
+        phase: quadcortex::device::initialization::DeviceStartupPhase,
+        now: Instant,
+    ) {
+        use quadcortex::device::initialization::DeviceStartupPhase;
+        let rank = match phase {
+            DeviceStartupPhase::SessionValidating => 0,
+            DeviceStartupPhase::VersionValidating => 1,
+            DeviceStartupPhase::Disconnected => 2,
+            DeviceStartupPhase::Building => 3,
+            DeviceStartupPhase::Initializing => 4,
+            DeviceStartupPhase::Booting => 5,
+            DeviceStartupPhase::Connected => 6,
+            DeviceStartupPhase::Invalid | DeviceStartupPhase::Failed => 0,
+        };
+        if rank > self.highest_phase.get() {
+            self.highest_phase.set(rank);
+            self.last_progress.set(now);
+        }
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        now >= self.deadline
+            || now.saturating_duration_since(self.last_progress.get()) >= self.stall_limit
+    }
+
+    fn classify<T>(
+        &self,
+        result: Result<T, UsbError>,
+        now: Instant,
+        interrupted: bool,
+    ) -> Result<T, UsbError> {
+        match result {
+            Err(UsbError::Cancelled) if !interrupted && self.expired(now) => {
+                let reason = if now >= self.deadline {
+                    format!(
+                        "connection startup exceeded {} s",
+                        STARTUP_ATTEMPT_LIMIT.as_secs()
+                    )
+                } else {
+                    format!(
+                        "no forward startup progress for {} s",
+                        self.stall_limit.as_secs()
+                    )
+                };
+                Err(UsbError::Initialization(format!(
+                    "{reason}; automatically reopening the USB session"
+                )))
+            }
+            other => other,
+        }
+    }
+}
 
 /// Measures how long a connection has gone without reaching `Connected`.
 #[derive(Default)]

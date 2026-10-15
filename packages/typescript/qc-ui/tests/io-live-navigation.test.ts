@@ -142,4 +142,3 @@ test("live I/O screen navigation forwards the physical tap without duplicating s
   await act(async()=>{bezel().props.onPointerDownCapture(edgeEvent);bezel().props.onPointerMoveCapture({...edgeEvent,clientY:100});bezel().props.onPointerUpCapture({...edgeEvent,clientY:100});});
   assert.equal(edgeOpen,1,"new session still accepts its own edge swipe");
 });
-

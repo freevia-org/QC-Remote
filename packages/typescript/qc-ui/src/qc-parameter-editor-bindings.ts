@@ -19,6 +19,7 @@ export interface QcParameterEditorBindingOptions {
   pending: boolean;
   initialMenuOpen?: boolean;
   titlePresetMark?: boolean;
+  referenceOnly?: boolean;
   editorContextKey?: unknown;
   notice(message: string): void;
   openExpression(): void;
@@ -54,24 +55,27 @@ export function qcParameterEditorBindings(options: QcParameterEditorBindingOptio
       : officialBlockVisual(selected ?? { id: "editor", name: details.name, kind: "utility", category: details.category, row: details.row, column: details.column }).color;
 
   return {
-    editorContextKey: options.editorContextKey,
+    editorContextKey: options.editorContextKey ?? `${snapshot.presetIdentity ?? snapshot.setlistKey}:${selectedBlockId}:${snapshot.activeScene}`,
     titlePresetMark: options.titlePresetMark,
+    referenceOnly: options.referenceOnly,
     details,
     drafts: editor.drafts,
     accent,
     activeScene: snapshot.activeScene,
     scenes: snapshot.scenes,
-    bypassed: Boolean(selected?.bypassed),
+    bypassed: selected?.bypassed,
     footswitch: selected?.footswitch,
     routingNode,
-    disabled: pending,
+    // The admitted parameter writer keeps accepting its own coalesced gesture.
+    // Other mutations and all destructive menu actions still see host busy.
+    disabled: pending && !parameter.ownsMutation?.(),
     page: editor.page,
     onPageChange: editor.setPage,
     onDraftChange: parameter.draft,
     onCommit: parameter.commit,
     onToggleSceneMode: (parameterItem) => void parameter.toggleSceneMode(parameterItem),
     onCommitBatch: (changes) => void parameter.commitBatch(changes),
-    onToggleBypass: () => { if (selected) void performance.toggleBlockBypass(selected); },
+    onToggleBypass: () => { if (selected && typeof selected.bypassed === "boolean") void performance.toggleBlockBypass(selected); },
     onSceneSelect: (scene) => void performance.selectScene(scene),
     footswitchAssignmentPending: grid.footswitchAssignmentPending,
     onFootswitchAssignmentStart: (assignmentPending) => {

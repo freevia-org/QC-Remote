@@ -31,7 +31,9 @@ pub fn device_broker_descriptor_path(app_local_data_dir: &Path) -> PathBuf {
 /// - The file is not valid JSON
 /// - The descriptor is older than `now_ms - 150_000` (stale)
 pub fn read_descriptor(path: &Path, now_ms: u64) -> Option<DeviceBrokerDescriptor> {
-    let bytes = fs::read(path).ok()?;
+    // Small local discovery metadata, not a firmware payload. Reuse the
+    // same held-file 128 KiB envelope as the local MCP discovery reader.
+    let bytes = crate::local_stdio::read_local_document(path).ok()?;
     let descriptor: DeviceBrokerDescriptor = serde_json::from_slice(&bytes).ok()?;
 
     // Check if descriptor is stale
@@ -94,7 +96,7 @@ pub(crate) fn user_quit_path(descriptor: &Path) -> PathBuf {
 /// The record, if any. `Some(Err(_))` cannot be read: it still stands (fail
 /// closed) but names no generation.
 pub(crate) fn read_user_quit(descriptor: &Path) -> Option<Result<UserQuitRecord, String>> {
-    match fs::read(user_quit_path(descriptor)) {
+    match crate::local_stdio::read_local_document(&user_quit_path(descriptor)) {
         Ok(bytes) => Some(serde_json::from_slice(&bytes).map_err(|error| error.to_string())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => Some(Err(error.to_string())),
@@ -168,13 +170,87 @@ mod tests {
     /// that removes it. Bind the guard before any file taken from the
     /// directory, so it drops last.
     fn scratch_path(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "qc-broker-descriptor-test-{name}-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::tests::unique_fixture_directory(&format!("broker-descriptor-{name}"));
         let path = dir.join("device-broker.json");
         (crate::tests::RemoveDirOnDrop::new(dir), path)
+    }
+
+    #[test]
+    fn descriptor_scratch_owners_with_the_same_label_do_not_share_or_remove_each_others_bytes() {
+        // Random label keeps historical baseline-owned paths isolated too.
+        let label = format!("same-label-{:032x}", rand::random::<u128>());
+        let (first_guard, first) = scratch_path(&label);
+        let (second_guard, second) = scratch_path(&label);
+        assert_ne!(
+            first.parent(),
+            second.parent(),
+            "two owners reused one scratch directory"
+        );
+        fs::write(&first, b"first owner").unwrap();
+        fs::write(&second, b"second owner").unwrap();
+        drop(first_guard);
+        assert!(!first.exists());
+        assert_eq!(fs::read(&second).unwrap(), b"second owner");
+        let second_root = second.parent().unwrap().to_path_buf();
+        drop(second_guard);
+        assert!(!second_root.exists());
+    }
+
+    #[test]
+    fn discovery_and_quit_documents_enforce_the_same_local_byte_envelope() {
+        let directory = std::env::temp_dir().join(format!(
+            "qc-broker-document-envelope-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir(&directory).expect("exclusive scratch directory");
+        let _root = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let descriptor = directory.join("device-broker.json");
+        let quit = user_quit_path(&descriptor);
+        let now = unix_time_ms();
+        let descriptor_bytes = serde_json::to_vec(&serde_json::json!({
+            "port": 1234, "bearerToken": "fixture-token", "instanceId": "generation",
+            "processId": std::process::id(), "publishedAtUnixMs": now,
+            "unknownFutureField": "preserved"
+        }))
+        .unwrap();
+        let quit_bytes = br#"{"instanceId":"generation","unknownFutureField":"preserved"}"#;
+        for (path, bytes) in [
+            (&descriptor, descriptor_bytes.as_slice()),
+            (&quit, quit_bytes.as_slice()),
+        ] {
+            let mut exact = bytes.to_vec();
+            exact.resize(128 * 1024, b' ');
+            fs::write(path, &exact).unwrap();
+            if path == &descriptor {
+                assert_eq!(
+                    read_descriptor(path, now).unwrap().instance_id,
+                    "generation"
+                );
+            } else {
+                assert_eq!(
+                    read_user_quit(&descriptor).unwrap().unwrap().instance_id,
+                    "generation"
+                );
+            }
+            exact.push(b' ');
+            fs::write(path, &exact).unwrap();
+            if path == &descriptor {
+                assert!(
+                    read_descriptor(path, now).is_none(),
+                    "overbudget discovery cannot be admitted"
+                );
+            } else {
+                assert!(
+                    matches!(read_user_quit(&descriptor), Some(Err(_))),
+                    "overbudget Quit still stands fail-closed, never absent"
+                );
+            }
+            assert_eq!(
+                fs::read(path).unwrap(),
+                exact,
+                "reader refusal preserves all original bytes"
+            );
+        }
     }
 
     #[test]
@@ -240,16 +316,12 @@ mod tests {
     #[test]
     fn read_descriptor_returns_none_when_file_is_absent() {
         let (_guard, path) = scratch_path("absent");
-        // Clean up from any previous run
-        let _ = fs::remove_file(&path);
         assert!(read_descriptor(&path, unix_time_ms()).is_none());
     }
 
     #[test]
     fn write_then_read_round_trips() {
         let (_guard, path) = scratch_path("round-trip");
-        // Clean up from any previous run
-        let _ = fs::remove_file(&path);
 
         let mut file = try_claim_descriptor_slot(&path).expect("first claim succeeds");
         let now = unix_time_ms();
@@ -300,8 +372,6 @@ mod tests {
     #[test]
     fn read_descriptor_treats_a_descriptor_older_than_150s_as_stale() {
         let (_guard, path) = scratch_path("stale");
-        // Clean up from any previous run
-        let _ = fs::remove_file(&path);
 
         let mut file = try_claim_descriptor_slot(&path).unwrap();
         let old_timestamp = unix_time_ms() - 151_000;
@@ -324,8 +394,6 @@ mod tests {
     #[test]
     fn second_claim_of_the_same_path_fails() {
         let (_guard, path) = scratch_path("race");
-        // Clean up from any previous run
-        let _ = fs::remove_file(&path);
 
         let _first = try_claim_descriptor_slot(&path).expect("first claim succeeds");
         assert!(
@@ -337,8 +405,6 @@ mod tests {
     #[test]
     fn release_removes_the_file_so_the_next_launcher_does_not_wait_out_staleness() {
         let (_guard, path) = scratch_path("release");
-        // Clean up from any previous run
-        let _ = fs::remove_file(&path);
 
         let mut file = try_claim_descriptor_slot(&path).unwrap();
         write_fixture(

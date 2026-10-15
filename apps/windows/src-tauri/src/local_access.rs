@@ -61,6 +61,9 @@ const DESCRIPTOR_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// its buffers on the listener's single thread. Every legitimate client here
 /// is on this machine and sends its whole head at once.
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(15);
+/// Software headroom for simultaneous local HTTP connections, including
+/// long-lived MCP streams. This is not a device or firmware limit.
+const MAX_LOCAL_HTTP_CONNECTIONS: usize = 128;
 
 /// Serve `router` on `listener` like `axum::serve`, but with a request-head
 /// deadline and the same graceful shutdown: once `shutdown` completes no new
@@ -71,15 +74,34 @@ async fn serve_loopback(
     header_read_timeout: Duration,
     shutdown: impl std::future::Future<Output = ()>,
 ) -> std::io::Result<()> {
+    serve_loopback_with_limit(
+        listener,
+        router,
+        header_read_timeout,
+        shutdown,
+        MAX_LOCAL_HTTP_CONNECTIONS,
+    )
+    .await
+}
+
+async fn serve_loopback_with_limit(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    header_read_timeout: Duration,
+    shutdown: impl std::future::Future<Output = ()>,
+    max_connections: usize,
+) -> std::io::Result<()> {
     use hyper_util::rt::{TokioIo, TokioTimer};
     let mut http = hyper::server::conn::http1::Builder::new();
     http.timer(TokioTimer::new())
         .header_read_timeout(header_read_timeout);
     let graceful = hyper_util::server::graceful::GracefulShutdown::new();
+    let mut connections = tokio::task::JoinSet::new();
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             () = &mut shutdown => break,
+            _ = connections.join_next(), if !connections.is_empty() => {},
             accepted = listener.accept() => {
                 let stream = match accepted {
                     Ok((stream, _)) => stream,
@@ -90,9 +112,17 @@ async fn serve_loopback(
                         continue;
                     }
                 };
+                // No response is promised before request parsing. Close only
+                // this excess accepted socket; do not allocate another actor
+                // or stall admission trying to write to an untrusted peer.
+                while connections.try_join_next().is_some() {}
+                if connections.len() >= max_connections {
+                    drop(stream);
+                    continue;
+                }
                 let service = hyper_util::service::TowerToHyperService::new(router.clone());
                 let connection = graceful.watch(http.serve_connection(TokioIo::new(stream), service));
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     let _ = connection.await;
                 });
             }
@@ -100,6 +130,7 @@ async fn serve_loopback(
     }
     drop(listener);
     graceful.shutdown().await;
+    while connections.join_next().await.is_some() {}
     Ok(())
 }
 /// The reader-side half of that contract, declared here because this is the
@@ -107,6 +138,7 @@ async fn serve_loopback(
 /// `descriptorRevision` 4 onwards; revision 3 and earlier stamped once at
 /// startup and are exempt.
 const DESCRIPTOR_STALE_AFTER: Duration = Duration::from_secs(150);
+
 /// How long a stop waits for in-flight connections to finish before the
 /// listener is dropped underneath them. An MCP streamable-HTTP session can be
 /// held open indefinitely by its client, so a graceful shutdown alone would
@@ -116,6 +148,12 @@ const LISTENER_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 /// Upper bound on how long a stop blocks its caller, including application
 /// exit. A wedged listener must not keep the app on screen.
 const LISTENER_STOP_TIMEOUT: Duration = Duration::from_millis(1_500);
+const LISTENER_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
+// One active GUI/headless surface is normal; unknown originals must not
+// accumulate indefinitely on repeated stop/start. Test harnesses deliberately
+// exercise many disjoint publishers concurrently under their own 64-slot cap.
+static LISTENER_THREADS: qc_native_platform::thread_owner::Budget =
+    qc_native_platform::thread_owner::Budget::new(if cfg!(test) { 64 } else { 4 });
 /// How long the publication guard waits for the owner of an existing
 /// descriptor to answer `/health`.
 ///
@@ -135,8 +173,7 @@ const LOCAL_TEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 /// Recorded in [`LocalAccessStatus::last_error`] when this process refused to
 /// publish because another copy of QC Remote is still serving. It is the one
 /// start-up failure whose remedy is not "restart QC Remote".
-const ANOTHER_COPY_IS_SERVING: &str =
-    "Another copy of QC Remote is already serving AI apps on this PC. Close the other copy, then reopen this one to serve them from here.";
+const ANOTHER_COPY_IS_SERVING: &str = "Another copy of QC Remote is already serving AI apps on this PC. Close the other copy, then reopen this one to serve them from here.";
 const NATIVE_BRIDGE_ACTIVITY_WINDOW: Duration = Duration::from_secs(12);
 const ANTIGRAVITY_BRIDGE_CLIENT: &str = concat!("antigravity:", env!("CARGO_PKG_VERSION"));
 static LOCAL_CLIENT_LAST_SEEN: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
@@ -339,6 +376,7 @@ fn safe_device_error_details(wire_code: &str, details: &Value) -> Option<Value> 
 struct LocalAuth {
     token: Arc<str>,
     allowed_hosts: Arc<[String]>,
+    body_timeout: Duration,
 }
 
 #[derive(Clone)]
@@ -391,9 +429,26 @@ fn local_router(
     token: Arc<str>,
     allowed_hosts: Vec<String>,
 ) -> Router {
+    local_router_with_body_timeout(
+        backend,
+        health,
+        token,
+        allowed_hosts,
+        Duration::from_secs(15),
+    )
+}
+
+fn local_router_with_body_timeout(
+    backend: Arc<dyn QcBackend>,
+    health: LocalHealth,
+    token: Arc<str>,
+    allowed_hosts: Vec<String>,
+    body_timeout: Duration,
+) -> Router {
     let auth = LocalAuth {
         token,
         allowed_hosts: allowed_hosts.clone().into(),
+        body_timeout,
     };
     let rpc_backend = backend.clone();
     let endpoint = format!("http://{}/mcp", allowed_hosts[0]);
@@ -402,6 +457,7 @@ fn local_router(
         token: auth.token.clone(),
         instance_id: health.instance_id.clone(),
         allowed_hosts: auth.allowed_hosts.clone(),
+        body_timeout,
     };
     qc_remote_mcp::mcp_router_with_allowed_hosts(
         move || {
@@ -434,6 +490,54 @@ struct LocalIdentity {
     token: Arc<str>,
     instance_id: Arc<str>,
     allowed_hosts: Arc<[String]>,
+    body_timeout: Duration,
+}
+
+// These match the existing consumers: rmcp3.4.1 POST4MiB,
+// Axum JSON2MiB, and the identity challenge1KiB. They are software
+// request-envelope limits, not device/firmware data limits.
+const LOCAL_MCP_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+const LOCAL_RPC_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+async fn read_local_request_body(
+    mut body: Body,
+    limit: usize,
+    within: Duration,
+) -> Result<axum::body::Bytes, Box<Response>> {
+    use hyper::body::Body as _;
+    let collect = async move {
+        let mut bytes = Vec::new();
+        while let Some(frame) =
+            std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+        {
+            let frame = frame.map_err(|_| {
+                Box::new(local_error(
+                    StatusCode::BAD_REQUEST,
+                    "LOCAL_INVALID_REQUEST",
+                    "invalid_request",
+                ))
+            })?;
+            if let Ok(data) = frame.into_data() {
+                if data.len() > limit.saturating_sub(bytes.len()) {
+                    return Err(Box::new(local_error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "LOCAL_REQUEST_TOO_LARGE",
+                        "request_too_large",
+                    )));
+                }
+                bytes.extend_from_slice(&data);
+            }
+        }
+        Ok(axum::body::Bytes::from(bytes))
+    };
+    tokio::time::timeout(within, collect)
+        .await
+        .unwrap_or_else(|_| {
+            Err(Box::new(local_error(
+                StatusCode::REQUEST_TIMEOUT,
+                "LOCAL_REQUEST_TIMEOUT",
+                "request_body_timeout",
+            )))
+        })
 }
 
 async fn local_identity(State(state): State<LocalIdentity>, request: Request<Body>) -> Response {
@@ -456,12 +560,9 @@ async fn local_identity(State(state): State<LocalIdentity>, request: Request<Bod
             "invalid_host",
         );
     }
-    let Ok(body) = axum::body::to_bytes(request.into_body(), 1024).await else {
-        return local_error(
-            StatusCode::BAD_REQUEST,
-            "LOCAL_INVALID_REQUEST",
-            "invalid_request",
-        );
+    let body = match read_local_request_body(request.into_body(), 1024, state.body_timeout).await {
+        Ok(body) => body,
+        Err(response) => return *response,
     };
     let proof = serde_json::from_slice::<crate::local_identity::IdentityChallenge>(&body)
         .ok()
@@ -770,6 +871,19 @@ async fn authenticate_local(
     request
         .extensions_mut()
         .insert(PrincipalRoute::new(LOCAL_PRINCIPAL, LOCAL_DEVICE));
+    // Admission is bounded before a handler/device call begins. Do not put a
+    // timeout around Next: legitimate tools and SSE responses may be long-lived.
+    let limit = if request.uri().path() == "/mcp" {
+        LOCAL_MCP_REQUEST_BYTES
+    } else {
+        LOCAL_RPC_REQUEST_BYTES
+    };
+    let (parts, body) = request.into_parts();
+    let body = match read_local_request_body(body, limit, state.body_timeout).await {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
+    let request = Request::from_parts(parts, Body::from(body));
     next.run(request).await
 }
 
@@ -978,7 +1092,9 @@ async fn live_descriptor_owner(paths: &[PathBuf], now_ms: u64) -> Option<Descrip
         .ok()?;
     // `/health` answers 503 with the same identity document when the Quad
     // Cortex is unplugged. A copy serving without a device is still serving.
-    let document = response.json::<Value>().await.ok()?;
+    let document = qc_relay_client::bounded_response_json::<Value>(response)
+        .await
+        .ok()?;
     if document.get("instanceId").and_then(Value::as_str) != Some(existing.instance_id.as_str()) {
         return None;
     }
@@ -994,7 +1110,7 @@ async fn live_descriptor_owner(paths: &[PathBuf], now_ms: u64) -> Option<Descrip
 
 fn remove_published_descriptors(paths: &[PathBuf], instance_id: &str) {
     for path in paths {
-        let owned = fs::read(path)
+        let owned = crate::local_stdio::read_local_document(path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .is_some_and(|document| document["instanceId"] == instance_id);
@@ -1131,10 +1247,29 @@ pub(crate) struct RunningLocalAccess {
     /// first, while the port was not accepting connections yet.  A dedicated
     /// thread lets us publish only after the listener belongs to a running IO
     /// runtime and keeps local integrations independent of USB/broker startup.
-    _task: std::thread::JoinHandle<()>,
+    _task: Mutex<Option<qc_native_platform::thread_owner::Owned>>,
 }
 
 impl RunningLocalAccess {
+    pub(crate) fn native_finished(&self) -> bool {
+        lock_recover(&self._task)
+            .as_ref()
+            .is_none_or(|task| task.native_finished())
+    }
+    /// Consume this exact original. Only the owned background thread uses
+    /// an unbounded wait here; its external caller retains a bounded stop and
+    /// the background lease/admission until that thread actually retires.
+    pub(crate) fn join_original(mut self) -> std::thread::Result<()> {
+        let task = self
+            ._task
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        match task {
+            Some(task) => task.join_original(),
+            None => Ok(()),
+        }
+    }
     pub(crate) fn endpoint(&self) -> String {
         format!("http://127.0.0.1:{}/mcp", self.port)
     }
@@ -1144,22 +1279,30 @@ impl RunningLocalAccess {
     ///
     /// Bounded, because this also runs on the application exit path.
     pub(crate) fn stop(&self) -> bool {
+        let deadline = std::time::Instant::now() + LISTENER_STOP_TIMEOUT;
         let _ = self.shutdown.send(true);
         let acknowledged = if self.stop_acknowledged.load(Ordering::Acquire) {
             true
         } else {
             self.stopped
                 .lock()
-                .map(|stopped| stopped.recv_timeout(LISTENER_STOP_TIMEOUT).is_ok())
+                .map(|stopped| {
+                    stopped
+                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                        .is_ok()
+                })
                 .unwrap_or(false)
         };
+        let joined = lock_recover(&self._task).as_mut().is_none_or(|task| {
+            task.wait_within(deadline.saturating_duration_since(std::time::Instant::now()))
+        });
         if acknowledged {
             self.stop_acknowledged.store(true, Ordering::Release);
         }
         // The thread removes them itself; repeating it covers a wedged
         // listener that never reached its own cleanup.
         remove_published_descriptors(&self.state_files, &self.instance_id);
-        acknowledged
+        acknowledged && joined
     }
 
     /// The instance id this process just published, so a caller that started
@@ -1180,6 +1323,42 @@ pub(crate) fn start_listener(
     adapter: Arc<dyn DeviceAdapter>,
     access: watch::Receiver<AccessMode>,
 ) -> Result<RunningLocalAccess, LocalAccessFailure> {
+    start_listener_with_budget(state_files, adapter, access, &LISTENER_THREADS)
+}
+
+impl Drop for RunningLocalAccess {
+    fn drop(&mut self) {
+        if !self.stop() {
+            eprintln!(
+                "Local MCP listener retirement is unknown; exact original, publication leases, and admission remain retained"
+            );
+        }
+        // Owned's Drop transfers the exact unresolved original into the shared
+        // bounded family registry; it never forgets a thread on timeout/unwind.
+    }
+}
+
+fn start_listener_with_budget(
+    state_files: Vec<PathBuf>,
+    adapter: Arc<dyn DeviceAdapter>,
+    access: watch::Receiver<AccessMode>,
+    budget: &'static qc_native_platform::thread_owner::Budget,
+) -> Result<RunningLocalAccess, LocalAccessFailure> {
+    // Admission precedes lease creation, bind, token minting, and publication.
+    let permit = budget.reserve().map_err(LocalAccessFailure::other)?;
+    // Serialize the probe AND publication across GUI/headless processes. A
+    // successful owner keeps these leases until its listener has stopped.
+    let mut lease_paths = state_files.clone();
+    lease_paths.sort();
+    lease_paths.dedup();
+    let publication_leases = lease_paths
+        .iter()
+        .map(|path| acquire_document_lease(path, "publisher", Duration::ZERO))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|message| LocalAccessFailure {
+            served_by_another_instance: message.starts_with("Another process owns"),
+            message,
+        })?;
     let listener = StdTcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("Could not bind the local MCP listener: {error}"))?;
     listener
@@ -1221,6 +1400,8 @@ pub(crate) fn start_listener(
         allowed_hosts(port),
     );
     let task_state_files = state_files.clone();
+    #[cfg(test)]
+    let fixture_path = state_files.first().cloned();
     let (shutdown, shutdown_rx) = watch::channel(false);
     // Publication happens on the listener thread, after the listener belongs to
     // a running IO runtime, but its outcome belongs to the caller: `start`
@@ -1228,9 +1409,8 @@ pub(crate) fn start_listener(
     // was about to be dropped.
     let (published_tx, published_rx) = mpsc::sync_channel::<Result<(), LocalAccessFailure>>(1);
     let (stopped_tx, stopped) = mpsc::sync_channel::<()>(1);
-    let task = std::thread::Builder::new()
-        .name("qc-local-mcp".into())
-        .spawn(move || {
+    let mut task = qc_native_platform::thread_owner::Owned::spawn_reserved(
+        "qc-local-mcp", permit, publication_leases, move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_io()
                 .enable_time()
@@ -1275,7 +1455,10 @@ pub(crate) fn start_listener(
                     let _ = published_tx.send(Err(LocalAccessFailure::other(error)));
                     return;
                 }
-                let _ = published_tx.send(Ok(()));
+                if published_tx.send(Ok(())).is_err() {
+                    remove_published_descriptors(&task_state_files, &descriptor.instance_id);
+                    return;
+                }
 
                 let mut graceful_rx = shutdown_rx.clone();
                 let mut forced_rx = shutdown_rx.clone();
@@ -1313,11 +1496,17 @@ pub(crate) fn start_listener(
                     ) => {}
                 }
                 remove_published_descriptors(&task_state_files,&descriptor.instance_id);
-                let _ = stopped_tx.send(());
             });
+            // Runtime/socket retirement precedes acknowledgement. The original
+            // owner additionally retains publication leases through native TLS
+            // exit and join; a successor cannot be admitted before that proof.
+            drop(runtime);
+            let _ = stopped_tx.send(());
+            #[cfg(test)]
+            tests::run_listener_exit_hook(fixture_path.as_deref());
         })
         .map_err(|error| format!("Could not start the local MCP listener thread: {error}"))?;
-    match published_rx.recv() {
+    match published_rx.recv_timeout(LISTENER_PUBLICATION_TIMEOUT) {
         Ok(Ok(())) => {
             begin_observing_local_clients();
             Ok(RunningLocalAccess {
@@ -1327,13 +1516,29 @@ pub(crate) fn start_listener(
                 stop_acknowledged: AtomicBool::new(false),
                 port,
                 instance_id,
-                _task: task,
+                _task: Mutex::new(Some(task)),
             })
         }
-        Ok(Err(failure)) => Err(failure),
-        Err(_) => Err(LocalAccessFailure::other(
-            "The local MCP listener stopped before it published a descriptor",
-        )),
+        Ok(Err(failure)) => {
+            let _ = shutdown.send(true);
+            if task.wait_within(LISTENER_STOP_TIMEOUT) {
+                Err(failure)
+            } else {
+                Err(LocalAccessFailure::other(format!(
+                    "{}; listener retirement is unknown, exact original and leases retained",
+                    failure.message
+                )))
+            }
+        }
+        Err(_) => {
+            let _ = shutdown.send(true);
+            let joined = task.wait_within(LISTENER_STOP_TIMEOUT);
+            Err(LocalAccessFailure::other(if joined {
+                "The local MCP listener did not publish within its startup observation budget"
+            } else {
+                "Local MCP publication timed out; listener retirement is unknown, exact original and leases retained"
+            }))
+        }
     }
 }
 
@@ -1455,7 +1660,7 @@ pub(crate) async fn probe_local_mcp(
                 LocalMcpTestState::NotAnswering,
                 None,
                 Some(error.to_string()),
-            )
+            );
         }
     };
     if let Err(failure) = endpoint.prove_identity(&client).await {
@@ -1484,7 +1689,7 @@ pub(crate) async fn probe_local_mcp(
                 LocalMcpTestState::NotAnswering,
                 None,
                 Some(format!("{address}: {error}")),
-            )
+            );
         }
     };
     let code = response.status().as_u16();
@@ -1495,14 +1700,16 @@ pub(crate) async fn probe_local_mcp(
             Some(format!("{address} answered {code}")),
         );
     }
-    let body = match response.json::<Value>().await {
+    let body = match qc_relay_client::bounded_response_json::<Value>(response).await {
         Ok(body) => body,
-        Err(error) => {
+        Err(_) => {
             return local_test_result(
                 LocalMcpTestState::NotAnswering,
                 None,
-                Some(format!("{address} answered {code}: {error}")),
-            )
+                Some(format!(
+                    "{address} answered {code}: invalid, oversized, or incomplete response"
+                )),
+            );
         }
     };
     if body["ok"] == Value::Bool(true) {
@@ -1573,7 +1780,7 @@ struct LocalAccessPreference {
 /// Local MCP ships on, and stays on until this user turns it off: an absent,
 /// unreadable or malformed preference is "on", never a silent opt-out.
 fn load_enabled(path: &Path) -> bool {
-    fs::read(path)
+    crate::local_stdio::read_local_document(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<LocalAccessPreference>(&bytes).ok())
         .map(|preference| preference.enabled)
@@ -1599,6 +1806,16 @@ pub(crate) fn store_local_mcp_enabled_in(
 }
 
 fn store_enabled(path: &Path, enabled: bool) -> Result<(), String> {
+    store_enabled_with(path, enabled, |path, parent, encoded| {
+        publish_atomically(path, parent, "the local MCP preference", encoded)
+    })
+}
+
+fn store_enabled_with(
+    path: &Path,
+    enabled: bool,
+    publish: impl FnOnce(&Path, &Path, &[u8]) -> Result<(), String>,
+) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or("The local MCP preference path has no parent directory")?;
@@ -1606,12 +1823,137 @@ fn store_enabled(path: &Path, enabled: bool) -> Result<(), String> {
         .map_err(|error| format!("Could not create the local MCP state directory: {error}"))?;
     let encoded = serde_json::to_vec(&LocalAccessPreference { enabled })
         .map_err(|error| format!("Could not encode the local MCP preference: {error}"))?;
-    fs::write(path, encoded)
-        .map_err(|error| format!("Could not store the local MCP preference: {error}"))
+    publish(path, parent, &encoded)
 }
 
 fn preference_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_local_data_directory(app)?.join(ENABLED_FILE_NAME))
+}
+
+// The running slot also serializes preference changes and fresh preference
+// reads. Factories remain under that same lock and must not reenter it.
+fn listener_policy_transaction<T>(
+    slot: &Mutex<Option<RunningLocalAccess>>,
+    action: impl FnOnce(&mut Option<RunningLocalAccess>) -> T,
+) -> T {
+    action(&mut lock_recover(slot))
+}
+
+fn listener_policy_result_transaction<T>(
+    slot: &Mutex<Option<RunningLocalAccess>>,
+    action: impl FnOnce(&mut Option<RunningLocalAccess>) -> Result<T, String>,
+    publish_error: impl FnOnce(&str),
+) -> Result<T, String> {
+    listener_policy_transaction(slot, |running| {
+        let result = action(running);
+        if let Err(error) = &result {
+            publish_error(error);
+        }
+        result
+    })
+}
+
+#[cfg(test)]
+fn start_listener_slot(
+    slot: &Mutex<Option<RunningLocalAccess>>,
+    last_error: &Mutex<Option<String>>,
+    served_by_another: &AtomicBool,
+    factory: impl FnOnce() -> Result<RunningLocalAccess, LocalAccessFailure>,
+) -> Result<(), String> {
+    listener_policy_transaction(slot, |running| {
+        start_listener_slot_locked(running, last_error, served_by_another, || true, factory)
+    })
+}
+
+fn start_listener_slot_locked(
+    running: &mut Option<RunningLocalAccess>,
+    last_error: &Mutex<Option<String>>,
+    served_by_another: &AtomicBool,
+    current: impl FnOnce() -> bool,
+    factory: impl FnOnce() -> Result<RunningLocalAccess, LocalAccessFailure>,
+) -> Result<(), String> {
+    // Admission is checked only after the policy/slot transaction was acquired.
+    // A stale preflight may never publish after a completed disable.
+    if !current() {
+        return Ok(());
+    }
+    if running
+        .as_ref()
+        .is_some_and(RunningLocalAccess::native_finished)
+    {
+        // OS-signalled original only: never GUI-join a pending native thread.
+        let _ = running.take().expect("finished original").join_original();
+    }
+    let started = if let Some(listener) = running.as_ref() {
+        if !*listener.shutdown.borrow() {
+            return Ok(());
+        }
+        Err(LocalAccessFailure::other(
+            "The previous local MCP listener is still retiring; retry after native shutdown completes",
+        ))
+    } else {
+        factory()
+    };
+    match started {
+        Ok(listener) => {
+            *running = Some(listener);
+            *lock_recover(last_error) = None;
+            served_by_another.store(false, Ordering::Release);
+            begin_observing_local_clients();
+            Ok(())
+        }
+        Err(failure) => {
+            *lock_recover(last_error) = Some(failure.message.clone());
+            served_by_another.store(failure.served_by_another_instance, Ordering::Release);
+            Err(failure.message)
+        }
+    }
+}
+
+fn stop_listener_slot(
+    slot: &Mutex<Option<RunningLocalAccess>>,
+    last_error: &Mutex<Option<String>>,
+) {
+    listener_policy_transaction(slot, |running| {
+        stop_listener_slot_locked(running, last_error)
+    });
+}
+
+fn stop_listener_slot_locked(
+    running: &mut Option<RunningLocalAccess>,
+    last_error: &Mutex<Option<String>>,
+) {
+    if let Some(listener) = running.take() {
+        if !listener.stop() {
+            *lock_recover(last_error) = Some(
+                "Local MCP shutdown is not acknowledged; exact listener remains owned and retiring"
+                    .into(),
+            );
+            *running = Some(listener);
+        }
+    }
+}
+
+fn reconcile_listener_slot(
+    slot: &Mutex<Option<RunningLocalAccess>>,
+    last_error: &Mutex<Option<String>>,
+    served_by_another: &AtomicBool,
+    enabled: &AtomicBool,
+    read_policy: impl FnOnce() -> (bool, bool),
+    factory: impl FnOnce() -> Result<RunningLocalAccess, LocalAccessFailure>,
+) -> Result<(), String> {
+    listener_policy_transaction(slot, |running| {
+        // Fresh preference read, its atomic publication and the corresponding
+        // start/stop all belong to this one existing supervisor transaction.
+        let (requested, permitted) = read_policy();
+        enabled.store(requested, Ordering::Release);
+        if !requested || !permitted {
+            stop_listener_slot_locked(running, last_error);
+            Ok(())
+        } else {
+            start_listener_slot_locked(running, last_error, served_by_another, || true, factory)
+        }
+    })
 }
 
 /// Owns only the loopback listener and discovery document. The existing
@@ -1637,13 +1979,26 @@ impl LocalAccess {
         let Ok(directory) = app_local_data_directory(&self.app) else {
             return;
         };
-        let enabled = local_mcp_enabled_in(&directory);
-        self.enabled.store(enabled, Ordering::Release);
-        if !enabled || crate::external_host::delegated(&directory) {
-            self.stop_now();
-        } else if let Err(error) = self.start_now() {
-            *lock_recover(&self.last_error) = Some(error);
-        }
+        let _ = reconcile_listener_slot(
+            &self.running,
+            &self.last_error,
+            &self.served_by_another_instance,
+            &self.enabled,
+            || {
+                (
+                    local_mcp_enabled_in(&directory),
+                    !crate::external_host::stopping()
+                        && !crate::external_host::delegated(&directory),
+                )
+            },
+            || {
+                state_file_paths(&self.app)
+                    .map_err(LocalAccessFailure::other)
+                    .and_then(|state_files| {
+                        start_listener(state_files, self.adapter.clone(), self.access.clone())
+                    })
+            },
+        );
     }
     /// Builds the supervisor and reads the persisted on/off choice. Starting is
     /// a separate, fallible step so its failure can reach the UI.
@@ -1681,80 +2036,70 @@ impl LocalAccess {
     }
 
     fn start_now(&self) -> Result<(), String> {
-        if crate::external_host::stopping() {
-            return Ok(());
-        }
-        if app_local_data_directory(&self.app)
-            .is_ok_and(|directory| crate::external_host::delegated(&directory))
-        {
-            return Ok(());
-        }
-        let mut running = lock_recover(&self.running);
-        if running.is_some() {
-            return Ok(());
-        }
-        let started = state_file_paths(&self.app)
-            .map_err(LocalAccessFailure::other)
-            .and_then(|state_files| {
-                start_listener(state_files, self.adapter.clone(), self.access.clone())
-            });
-        match started {
-            Ok(listener) => {
-                *running = Some(listener);
-                *lock_recover(&self.last_error) = None;
-                self.served_by_another_instance
-                    .store(false, Ordering::Release);
-                // From here a bridge that is already running can announce
-                // itself. Anything asked before the first announcement is
-                // answered "still checking", never "not connected".
-                begin_observing_local_clients();
-                Ok(())
-            }
-            Err(failure) => {
-                *lock_recover(&self.last_error) = Some(failure.message.clone());
-                self.served_by_another_instance
-                    .store(failure.served_by_another_instance, Ordering::Release);
-                Err(failure.message)
-            }
-        }
+        listener_policy_transaction(&self.running, |running| self.start_now_locked(running))
+    }
+
+    fn start_now_locked(&self, running: &mut Option<RunningLocalAccess>) -> Result<(), String> {
+        start_listener_slot_locked(
+            running,
+            &self.last_error,
+            &self.served_by_another_instance,
+            || {
+                self.enabled.load(Ordering::Acquire)
+                    && !crate::external_host::stopping()
+                    && !app_local_data_directory(&self.app)
+                        .is_ok_and(|directory| crate::external_host::delegated(&directory))
+            },
+            || {
+                state_file_paths(&self.app)
+                    .map_err(LocalAccessFailure::other)
+                    .and_then(|state_files| {
+                        start_listener(state_files, self.adapter.clone(), self.access.clone())
+                    })
+            },
+        )
     }
 
     fn stop_now(&self) {
-        let mut running = lock_recover(&self.running);
-        if let Some(listener) = running.take() {
-            listener.stop();
-        }
+        stop_listener_slot(&self.running, &self.last_error);
     }
 
     /// Turns the loopback MCP surface back on and remembers the choice.
     pub fn enable(&self) -> Result<LocalAccessStatus, String> {
-        self.enabled.store(true, Ordering::Release);
-        let stored = preference_path(&self.app).and_then(|path| store_enabled(&path, true));
-        let started = self.start_now();
-        match stored.and(started) {
+        let result = listener_policy_result_transaction(
+            &self.running,
+            |running| {
+                self.enabled.store(true, Ordering::Release);
+                let stored = preference_path(&self.app).and_then(|path| store_enabled(&path, true));
+                let started = self.start_now_locked(running);
+                stored.and(started)
+            },
+            |error| *lock_recover(&self.last_error) = Some(error.to_owned()),
+        );
+        match result {
             Ok(()) => Ok(self.status()),
-            Err(error) => {
-                *lock_recover(&self.last_error) = Some(error.clone());
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 
     /// Stops the listener, cancels live sessions and removes every descriptor
     /// this process published, then remembers that the user asked for it.
     pub fn disable(&self) -> Result<LocalAccessStatus, String> {
-        self.enabled.store(false, Ordering::Release);
-        self.stop_now();
-        // Off by request is not "displaced by another copy", and the panel
-        // must not keep saying so once the user has turned the surface off.
-        self.served_by_another_instance
-            .store(false, Ordering::Release);
-        match preference_path(&self.app).and_then(|path| store_enabled(&path, false)) {
+        let stored = listener_policy_result_transaction(
+            &self.running,
+            |running| {
+                self.enabled.store(false, Ordering::Release);
+                stop_listener_slot_locked(running, &self.last_error);
+                // Off by request is not displacement by another copy.
+                self.served_by_another_instance
+                    .store(false, Ordering::Release);
+                preference_path(&self.app).and_then(|path| store_enabled(&path, false))
+            },
+            |error| *lock_recover(&self.last_error) = Some(error.to_owned()),
+        );
+        match stored {
             Ok(()) => Ok(self.status()),
-            Err(error) => {
-                *lock_recover(&self.last_error) = Some(error.clone());
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 
@@ -1986,6 +2331,7 @@ pub fn local_client_connected(client: &str) -> bool {
 /// it reaches disk.
 #[derive(Default)]
 struct ClientAttachHistory {
+    generation: u64,
     /// Where the durable copy lives, once the app has resolved its own local
     /// data directory. `None` before start-up, and in any test that does not
     /// ask for a file: the record is then in-memory only and nothing is
@@ -2021,6 +2367,110 @@ fn attach_history() -> &'static Mutex<ClientAttachHistory> {
     LOCAL_CLIENT_ATTACH_HISTORY.get_or_init(|| Mutex::new(ClientAttachHistory::default()))
 }
 
+struct HistoryWrite {
+    path: PathBuf,
+    clients: BTreeMap<String, u64>,
+    generation: u64,
+}
+enum HistoryCommand {
+    Write(HistoryWrite),
+    Stop,
+}
+struct HistoryWriter {
+    sender: HistorySender,
+    task: std::thread::JoinHandle<()>,
+}
+#[derive(Default)]
+struct HistoryQueue {
+    latest: Option<HistoryWrite>,
+    stopping: bool,
+}
+struct HistorySender {
+    wake: mpsc::SyncSender<()>,
+    queue: Arc<Mutex<HistoryQueue>>,
+}
+impl HistorySender {
+    fn send(&self, command: HistoryCommand) -> Result<(), String> {
+        let mut queue = lock_recover(&self.queue);
+        if queue.stopping {
+            return Err("The local MCP history writer is stopping".into());
+        }
+        match command {
+            HistoryCommand::Write(snapshot) => queue.latest = Some(snapshot),
+            HistoryCommand::Stop => queue.stopping = true,
+        }
+        match self.wake.try_send(()) {
+            Ok(()) | Err(mpsc::TrySendError::Full(())) => Ok(()),
+            Err(mpsc::TrySendError::Disconnected(())) => {
+                Err("The local MCP history writer stopped".into())
+            }
+        }
+    }
+}
+static HISTORY_WRITER: OnceLock<Mutex<Option<HistoryWriter>>> = OnceLock::new();
+fn history_writer() -> &'static Mutex<Option<HistoryWriter>> {
+    HISTORY_WRITER.get_or_init(|| Mutex::new(None))
+}
+
+fn start_history_writer(
+    persist: impl Fn(&HistoryWrite) -> Result<(), String> + Send + 'static,
+    completed: impl Fn(&HistoryWrite, Result<(), String>) + Send + 'static,
+) -> Result<HistoryWriter, String> {
+    let (wake, receiver) = mpsc::sync_channel(1);
+    let queue = Arc::new(Mutex::new(HistoryQueue::default()));
+    let sender = HistorySender {
+        wake,
+        queue: queue.clone(),
+    };
+    let task = std::thread::Builder::new()
+        .name("qc-local-client-history".into())
+        .spawn(move || {
+            while receiver.recv().is_ok() {
+                let (snapshot, stop) = {
+                    let mut queue = lock_recover(&queue);
+                    (queue.latest.take(), queue.stopping)
+                };
+                if let Some(snapshot) = snapshot {
+                    let result = persist(&snapshot);
+                    completed(&snapshot, result);
+                }
+                if stop {
+                    break;
+                }
+            }
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(HistoryWriter { sender, task })
+}
+
+fn enqueue_history(snapshot: HistoryWrite) -> Result<(), String> {
+    let mut writer = lock_recover(history_writer());
+    if writer.is_none() {
+        *writer = Some(start_history_writer(
+            |snapshot| store_attach_history(&snapshot.path, &snapshot.clients),
+            |snapshot, result| {
+                if result.is_ok() {
+                    if let Ok(mut history) = attach_history().lock() {
+                        if history.generation == snapshot.generation
+                            && history.path.as_ref() == Some(&snapshot.path)
+                        {
+                            history.unwritten = false;
+                        }
+                    }
+                } else if let Err(error) = result {
+                    report_history_failure(&error);
+                }
+            },
+        )?);
+    }
+    writer
+        .as_ref()
+        .expect("writer started")
+        .sender
+        .send(HistoryCommand::Write(snapshot))
+        .map_err(|error| error.to_string())
+}
+
 /// Reads the durable record.
 ///
 /// Absent, unreadable, truncated, not JSON at all, or written under a schema
@@ -2028,7 +2478,14 @@ fn attach_history() -> &'static Mutex<ClientAttachHistory> {
 /// which is what every release before this one had permanently. Nothing here
 /// can panic and nothing here can fail a launch.
 fn load_attach_history(path: &Path) -> BTreeMap<String, u64> {
-    let Some(document) = fs::read(path)
+    let mut clients = load_attach_history_document(path);
+    retain_current_clients(&mut clients);
+    evict_oldest_clients(&mut clients);
+    clients
+}
+
+fn load_attach_history_document(path: &Path) -> BTreeMap<String, u64> {
+    let Some(document) = crate::local_stdio::read_local_document(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<ClientAttachHistoryFile>(&bytes).ok())
     else {
@@ -2037,17 +2494,7 @@ fn load_attach_history(path: &Path) -> BTreeMap<String, u64> {
     if document.schema_version != CLIENT_HISTORY_SCHEMA_VERSION {
         return BTreeMap::new();
     }
-    let mut clients = document.clients;
-    // Every release before this one wrote its own ids and left its
-    // predecessors' behind, so the file on an upgraded machine opens holding
-    // mostly rows nothing can read. They go here, which is the whole migration:
-    // the shape on disk is unchanged, so a build either side of this one reads
-    // the file it expects.
-    retain_current_clients(&mut clients);
-    // A file that grew past the cap under some older rule, or that was edited
-    // by hand, is trimmed on the way in rather than trusted.
-    evict_oldest_clients(&mut clients);
-    clients
+    document.clients
 }
 
 fn store_attach_history(path: &Path, clients: &BTreeMap<String, u64>) -> Result<(), String> {
@@ -2056,9 +2503,25 @@ fn store_attach_history(path: &Path, clients: &BTreeMap<String, u64>) -> Result<
         .ok_or("The local MCP client history path has no parent directory")?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("Could not create the local MCP state directory: {error}"))?;
+    let _lease = acquire_document_lease(path, "history", Duration::from_secs(2))?;
+    // A different process can have recorded another provider since we loaded
+    // our snapshot. Union under the cross-process lease, never overwrite it.
+    // A prior build may flush after the successor publishes. It must not
+    // apply its current-only consumer filter to the successor's disk facts.
+    let mut merged = load_attach_history_document(path);
+    for (client, timestamp) in clients {
+        merged
+            .entry(client.clone())
+            .and_modify(|previous| *previous = (*previous).max(*timestamp))
+            .or_insert(*timestamp);
+    }
+    merged.retain(|client, _| {
+        client_id_is_current(client) || client_id_is_newer(client, env!("CARGO_PKG_VERSION"))
+    });
+    evict_oldest_clients(&mut merged);
     let encoded = serde_json::to_vec(&ClientAttachHistoryFile {
         schema_version: CLIENT_HISTORY_SCHEMA_VERSION,
-        clients: clients.clone(),
+        clients: merged,
     })
     .map_err(|error| format!("Could not encode the local MCP client history: {error}"))?;
     publish_atomically(path, parent, "the local MCP client history", &encoded)
@@ -2079,6 +2542,22 @@ fn client_id_is_current(client: &str) -> bool {
     client
         .rsplit_once(':')
         .is_some_and(|(_, version)| version == env!("CARGO_PKG_VERSION"))
+}
+
+fn client_id_is_newer(client: &str, current: &str) -> bool {
+    let Some((provider, version)) = client.rsplit_once(':') else {
+        return false;
+    };
+    if provider.is_empty() || client.len() > 64 || client.chars().any(char::is_control) {
+        return false;
+    }
+    match (
+        semver::Version::parse(version),
+        semver::Version::parse(current),
+    ) {
+        (Ok(version), Ok(current)) => version.cmp_precedence(&current).is_gt(),
+        _ => false,
+    }
 }
 
 /// Drops every id this build cannot ask about.
@@ -2163,28 +2642,28 @@ pub(crate) fn should_report_failure(reported: Option<&str>, failure: &str) -> bo
 /// no remembered instant can reach [`native_bridge_is_recent`] and no row can
 /// go green on a bridge that is not running now.
 fn restore_attach_history(path: &Path) {
-    let clients = load_attach_history(path);
     if let Ok(mut history) = attach_history().lock() {
+        let clients = load_attach_history(path);
         history.clients = clients;
         history.path = Some(path.to_path_buf());
         history.last_written = 0;
         history.unwritten = false;
+        history.generation = history.generation.wrapping_add(1);
     }
 }
 
 /// Records that a bridge carrying `client` has announced itself, and writes
 /// the record when the throttle says one is owed.
 ///
-/// The write never happens on this thread. An announcement arrives every five
-/// seconds on the listener's own runtime, and a stalled disk must not hold one
-/// up - the announcement is what keeps the row honest, and the durable record
-/// is only what keeps it honest across a restart.
+/// One owned worker serializes/coalesces commits without holding this map
+/// during filesystem IO. Shutdown sends the newest generation and joins it.
 fn record_local_client_attach(client: &str, now: u64) {
     let Ok(mut history) = attach_history().lock() else {
         return;
     };
     let last_written = history.last_written;
     let owed = note_attach(&mut history.clients, client, now, last_written);
+    history.generation = history.generation.wrapping_add(1);
     if !owed {
         history.unwritten = true;
         return;
@@ -2196,24 +2675,17 @@ fn record_local_client_attach(client: &str, now: u64) {
         return;
     };
     history.last_written = now;
-    history.unwritten = false;
-    let snapshot = history.clients.clone();
+    history.unwritten = true;
+    // Enqueue while holding the map so another announcement cannot enqueue
+    // an older/newer snapshot in the reverse order. No IO is done here.
+    let outcome = enqueue_history(HistoryWrite {
+        path,
+        clients: history.clients.clone(),
+        generation: history.generation,
+    });
     drop(history);
-    if std::thread::Builder::new()
-        .name("qc-local-client-history".into())
-        .spawn(move || {
-            if let Err(error) = store_attach_history(&path, &snapshot) {
-                report_history_failure(&error);
-            }
-        })
-        .is_err()
-    {
-        // A thread this process cannot start is not worth blocking an
-        // announcement over. The fact stays in memory and the clean-shutdown
-        // flush is still owed it.
-        if let Ok(mut history) = attach_history().lock() {
-            history.unwritten = true;
-        }
+    if let Err(error) = outcome {
+        report_history_failure(&error);
     }
 }
 
@@ -2231,20 +2703,39 @@ fn report_history_failure(failure: &str) {
 /// Writes anything the throttle deferred. Called on the way out, where a
 /// blocking write is what the caller is asking for.
 fn flush_attach_history() {
-    let Ok(mut history) = attach_history().lock() else {
-        return;
+    // Even an earlier unwinding producer must not bypass owned-worker cleanup.
+    let history = lock_recover(attach_history());
+    let outcome = if history.unwritten {
+        history
+            .path
+            .clone()
+            .map(|path| {
+                enqueue_history(HistoryWrite {
+                    path,
+                    clients: history.clients.clone(),
+                    generation: history.generation,
+                })
+            })
+            .transpose()
+            .map(|_| ())
+    } else {
+        Ok(())
     };
-    if !history.unwritten {
-        return;
-    }
-    let Some(path) = history.path.clone() else {
-        return;
-    };
-    let snapshot = history.clients.clone();
-    history.unwritten = false;
     drop(history);
-    if let Err(error) = store_attach_history(&path, &snapshot) {
+    if let Err(error) = outcome {
         report_history_failure(&error);
+    }
+    // Retain ownership through its final commit; no detached writer survives
+    // a clean shutdown. As before, exit explicitly requests blocking IO.
+    let writer = lock_recover(history_writer()).take();
+    if let Some(writer) = writer {
+        let _ = writer.sender.send(HistoryCommand::Stop);
+        // Disconnect is also a wake/termination path if Stop could not reach
+        // a failed worker; retaining its sender while joining can deadlock.
+        drop(writer.sender);
+        if writer.task.join().is_err() {
+            report_history_failure("The local MCP history writer stopped unexpectedly");
+        }
     }
 }
 
@@ -2279,6 +2770,66 @@ pub fn antigravity_bridge_evidence() -> LocalClientEvidence {
     local_client_evidence(ANTIGRAVITY_BRIDGE_CLIENT)
 }
 const REPLACE_ATTEMPTS: u32 = 10;
+
+/// Persistent sidecars must never be unlinked: replacing a lock inode while a
+/// contender holds/waits on it would split ownership between two publishers.
+/// The OS releases these locks on process death; no PID guessing or reaping.
+fn acquire_document_lease(path: &Path, role: &str, timeout: Duration) -> Result<fs::File, String> {
+    let parent = path
+        .parent()
+        .ok_or("The local MCP state path has no parent")?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let lease_path = path.with_file_name(format!(
+        "{}.{}.lock",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("Invalid local MCP state name")?,
+        role
+    ));
+    if !lease_path.exists() {
+        if let Err(error) = owner_only_file::write_staged(&lease_path, b"") {
+            // A racing creator is fine; its protection is checked below.
+            if !lease_path.exists() {
+                return Err(error);
+            }
+        }
+    }
+    if !qc_owner_only_file::is_owner_only(&lease_path)? {
+        return Err("The local MCP publication lease is not owner-private".into());
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+    }
+    let file = options
+        .open(&lease_path)
+        .map_err(|error| error.to_string())?;
+    let started = std::time::Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(error) if started.elapsed() >= timeout => {
+                return Err(format!(
+                    "Another process owns the local MCP {role} lease: {error}"
+                ));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
+struct StagedDocument(Option<qc_owner_only_file::ClaimedFile>);
+impl Drop for StagedDocument {
+    fn drop(&mut self) {
+        if let Some(claim) = self.0.take() {
+            let _ = claim.release();
+        }
+    }
+}
 
 /// The bridge re-reads this descriptor on every request, so an in-place
 /// truncate-then-write hands concurrent readers a partial document. Writing a
@@ -2316,7 +2867,15 @@ fn publish_atomically(
     // and the limiter would write a line per attempt for ever. That is exactly
     // how an earlier version of this limiter went wrong: an age was folded
     // into a detail first, and the limiter was built on top of it afterwards.
-    owner_only_file::write_staged(&temporary, contents)
+    let mut stage = StagedDocument(Some(
+        qc_owner_only_file::ClaimedFile::try_claim(&temporary)
+            .map_err(|error| format!("Could not reserve {what}: {error}"))?,
+    ));
+    stage
+        .0
+        .as_mut()
+        .expect("stage claim")
+        .write(contents)
         .map_err(|error| format!("Could not stage {what}: {error}"))?;
     for attempt in 1..=REPLACE_ATTEMPTS {
         match fs::rename(&temporary, path) {
@@ -2350,7 +2909,9 @@ fn remove_orphaned_stage_files(path: &Path, parent: &Path) {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
         if name.starts_with(&prefix) && name.ends_with(".tmp") {
-            let _ = fs::remove_file(entry.path());
+            // A live publisher retains its claim; only dead/legacy stages
+            // can be removed, with the claim pinned through deletion.
+            let _ = qc_owner_only_file::release_if_unclaimed(&entry.path());
         }
     }
 }
@@ -2372,10 +2933,1072 @@ pub(crate) fn tool_contract_sha256() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_listener_policy_publishes_result_before_releasing_actual_transaction() {
+        let slot = Mutex::new(None);
+        let last_error = Mutex::new(None);
+        let calls = std::cell::Cell::new(0);
+        // This is the same result transaction called by enable and disable,
+        // not a recreation of their preference or listener policy.
+        let old_result: Result<(), String> = listener_policy_result_transaction(
+            &slot,
+            |_| Err("older preference write failed".to_owned()),
+            |error| {
+                assert!(
+                    matches!(slot.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
+                    "result publication escaped the actual listener transaction"
+                );
+                calls.set(calls.get() + 1);
+                *lock_recover(&last_error) = Some(error.to_owned());
+            },
+        );
+        assert_eq!(
+            old_result.as_ref().map_err(String::as_str),
+            Err("older preference write failed")
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            lock_recover(&last_error).as_deref(),
+            Some("older preference write failed")
+        );
+
+        // A later successful transaction clears the diagnostic. Merely handling
+        // the old returned error cannot publish it again after this boundary.
+        let healthy: Result<(), String> = listener_policy_result_transaction(
+            &slot,
+            |_| {
+                assert!(matches!(
+                    slot.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                *lock_recover(&last_error) = None;
+                Ok(())
+            },
+            |_| panic!("successful transaction must not publish an error"),
+        );
+        assert!(healthy.is_ok());
+        assert!(old_result.is_err());
+        assert_eq!(calls.get(), 1);
+        assert!(lock_recover(&last_error).is_none());
+        assert!(slot.try_lock().is_ok());
+    }
+
+    #[test]
+    fn local_listener_policy_refuses_stale_start_after_completed_disable() {
+        let slot = Mutex::new(None);
+        let last_error = Mutex::new(Some("preserved diagnostic".to_string()));
+        let served = AtomicBool::new(true);
+        let enabled = AtomicBool::new(true);
+        let factories = std::sync::atomic::AtomicUsize::new(0);
+        // Deterministic scheduling: the contender passed the old outer preflight,
+        // then a complete disable transaction linearized before its slot entry.
+        assert!(enabled.load(Ordering::Acquire));
+        listener_policy_transaction(&slot, |running| {
+            enabled.store(false, Ordering::Release);
+            stop_listener_slot_locked_for_policy_fixture(running, &last_error);
+        });
+        let result = listener_policy_transaction(&slot, |running| {
+            start_listener_slot_locked(
+                running,
+                &last_error,
+                &served,
+                || enabled.load(Ordering::Acquire),
+                || {
+                    factories.fetch_add(1, Ordering::AcqRel);
+                    Err(LocalAccessFailure::other("obsolete factory ran"))
+                },
+            )
+        });
+        assert_eq!(
+            factories.load(Ordering::Acquire),
+            0,
+            "completed disable must refuse the stale factory before any listener effects"
+        );
+        assert!(result.is_ok());
+        assert!(!enabled.load(Ordering::Acquire));
+        assert!(lock_recover(&slot).is_none());
+        assert_eq!(
+            lock_recover(&last_error).as_deref(),
+            Some("preserved diagnostic")
+        );
+        assert!(served.load(Ordering::Acquire));
+
+        // A permitted fresh start still executes the real factory/error path.
+        enabled.store(true, Ordering::Release);
+        let result = listener_policy_transaction(&slot, |running| {
+            start_listener_slot_locked(
+                running,
+                &last_error,
+                &served,
+                || true,
+                || {
+                    factories.fetch_add(1, Ordering::AcqRel);
+                    Err(LocalAccessFailure::other("healthy admitted factory"))
+                },
+            )
+        });
+        assert_eq!(factories.load(Ordering::Acquire), 1);
+        assert_eq!(result.unwrap_err(), "healthy admitted factory");
+        assert_eq!(
+            lock_recover(&last_error).as_deref(),
+            Some("healthy admitted factory")
+        );
+        assert!(!served.load(Ordering::Acquire));
+    }
+
+    // Keep the fixture's disable step on the existing exact stop transaction on
+    // the baseline; production source supplies its same locked core afterward.
+    fn stop_listener_slot_locked_for_policy_fixture(
+        running: &mut Option<RunningLocalAccess>,
+        last_error: &Mutex<Option<String>>,
+    ) {
+        let slot = Mutex::new(running.take());
+        stop_listener_slot(&slot, last_error);
+        *running = lock_recover(&slot).take();
+    }
+
+    #[test]
+    fn local_listener_policy_reads_current_preference_inside_serialized_slot() {
+        let slot = Mutex::new(None);
+        let enabled = AtomicBool::new(true);
+        let persisted = AtomicBool::new(true);
+        let served = AtomicBool::new(false);
+        let last_error = Mutex::new(None);
+        let factories = std::sync::atomic::AtomicUsize::new(0);
+        // A previously scheduled observer saw "on"; it must not retain that
+        // value across a completed disable/persistence transaction.
+        assert!(persisted.load(Ordering::Acquire));
+        listener_policy_transaction(&slot, |_| {
+            enabled.store(false, Ordering::Release);
+            persisted.store(false, Ordering::Release);
+        });
+        reconcile_listener_slot(
+            &slot, &last_error, &served, &enabled,
+            || {
+                assert!(matches!(slot.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
+                    "the ACTUAL reconciliation core must acquire the running-slot lock before reading policy");
+                (persisted.load(Ordering::Acquire), true)
+            },
+            || {
+                factories.fetch_add(1, Ordering::AcqRel);
+                Err(LocalAccessFailure::other("stale reconcile factory"))
+            },
+        ).unwrap();
+        assert_eq!(factories.load(Ordering::Acquire), 0);
+        assert!(!enabled.load(Ordering::Acquire));
+        assert!(!persisted.load(Ordering::Acquire));
+        assert!(lock_recover(&slot).is_none());
+    }
+
+    #[test]
+    fn local_http_connection_headroom_is_bounded_owned_and_recovers_after_completion() {
+        use qc_native_platform::thread_owner::{Budget, Owned};
+        use std::io::{Read, Write};
+        static BUDGET: Budget = Budget::new(1);
+        struct Finish {
+            stop: watch::Sender<bool>,
+            release: watch::Sender<bool>,
+            original: Option<Owned>,
+        }
+        impl Drop for Finish {
+            fn drop(&mut self) {
+                let _ = self.release.send(true);
+                let _ = self.stop.send(true);
+                if self
+                    .original
+                    .as_mut()
+                    .is_some_and(|actor| !actor.wait_within(Duration::from_secs(3)))
+                {
+                    eprintln!("HTTP connection fixture exact original remains retained");
+                }
+            }
+        }
+        let permit = BUDGET.reserve().unwrap();
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, mut stopped) = watch::channel(false);
+        let (release, released) = watch::channel(false);
+        let (entered, observed) = mpsc::channel();
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed_actor = completed.clone();
+        let router = Router::new()
+            .route(
+                "/held",
+                get(move || {
+                    let entered = entered.clone();
+                    let mut released = released.clone();
+                    async move {
+                        let _ = entered.send(());
+                        while !*released.borrow_and_update() {
+                            if released.changed().await.is_err() {
+                                break;
+                            }
+                        }
+                        "released"
+                    }
+                }),
+            )
+            .route("/ready", get(|| async { "ready" }));
+        let original =
+            Owned::spawn_reserved("local-http-headroom-fixture", permit, (), move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime.block_on(async move {
+                    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                    serve_loopback_with_limit(
+                        listener,
+                        router,
+                        Duration::from_secs(10),
+                        async move {
+                            while !*stopped.borrow_and_update() {
+                                if stopped.changed().await.is_err() {
+                                    break;
+                                }
+                            }
+                        },
+                        2,
+                    )
+                    .await
+                    .unwrap();
+                });
+                completed_actor.store(true, Ordering::Release);
+            })
+            .unwrap();
+        // Own the original and both release gates before any fallible wait.
+        let finish = Finish {
+            stop,
+            release,
+            original: Some(original),
+        };
+        let connect = || {
+            let stream =
+                std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+        };
+        let mut first = connect();
+        first
+            .write_all(b"GET /held HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        let mut second = connect();
+        second
+            .write_all(b"GET /held HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        let mut excess = connect();
+        let mut byte = [0_u8; 1];
+        let closed = excess.read(&mut byte);
+        assert!(
+            matches!(&closed, Ok(0))
+                || matches!(
+                    &closed, Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset
+                ),
+            "excess connection must close, not retain a third task"
+        );
+        assert!(observed.try_recv().is_err());
+        finish.release.send(true).unwrap();
+        for stream in [&mut first, &mut second] {
+            let mut response = Vec::new();
+            stream.take(4096).read_to_end(&mut response).unwrap();
+            assert!(String::from_utf8_lossy(&response).contains("released"));
+        }
+        // FIN observation can precede the connection task's final return.
+        // Poll only this harmless read until actual capacity is released;
+        // this does not retry a write or reset the observation deadline.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut healthy = connect();
+            let mut response = Vec::new();
+            let answered = healthy
+                .write_all(b"GET /ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .is_ok()
+                && healthy.take(4096).read_to_end(&mut response).is_ok()
+                && String::from_utf8_lossy(&response).contains("ready");
+            if answered {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "completed connections did not release headroom"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        drop(finish);
+        assert!(completed.load(Ordering::Acquire));
+        assert_eq!(
+            BUDGET.count(),
+            0,
+            "actual listener original and its owned connection tasks retired"
+        );
+    }
     use axum::{body::to_bytes, http::Request};
     use qc_relay_client::DeviceError;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tower::ServiceExt;
+
+    struct OwnedTestDirectory(PathBuf);
+    type ListenerExitHook = Arc<dyn Fn() + Send + Sync>;
+    static LISTENER_EXIT_HOOKS: Mutex<Vec<(PathBuf, ListenerExitHook)>> = Mutex::new(Vec::new());
+    pub(super) fn run_listener_exit_hook(path: Option<&Path>) {
+        let hook = lock_recover(&LISTENER_EXIT_HOOKS)
+            .iter()
+            .find(|(owned, _)| Some(owned.as_path()) == path)
+            .map(|(_, hook)| hook.clone());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+    struct ListenerExitHookGuard(PathBuf);
+    impl Drop for ListenerExitHookGuard {
+        fn drop(&mut self) {
+            lock_recover(&LISTENER_EXIT_HOOKS).retain(|(path, _)| path != &self.0);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn actual_listener_native_tls_retains_exact_original_publication_lease_and_capacity_until_join()
+    {
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        static ROOT_BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        static RETAINED: Mutex<
+            Vec<(
+                RunningLocalAccess,
+                PathBuf,
+                qc_native_platform::thread_owner::Reservation,
+            )>,
+        > = Mutex::new(Vec::new());
+        struct TlsGate {
+            entered: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+        }
+        impl Drop for TlsGate {
+            fn drop(&mut self) {
+                let _ = self.entered.send(());
+                let _ = self.release.recv_timeout(Duration::from_secs(30));
+            }
+        }
+        thread_local! { static TLS: std::cell::RefCell<Option<TlsGate>> = const { std::cell::RefCell::new(None) }; }
+        struct Cleanup {
+            root: PathBuf,
+            release: Option<mpsc::Sender<()>>,
+            hook: Option<ListenerExitHookGuard>,
+            listener: Option<RunningLocalAccess>,
+            supervisor_slot: Option<Arc<Mutex<Option<RunningLocalAccess>>>>,
+            root_permit: Option<qc_native_platform::thread_owner::Reservation>,
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                if let Some(release) = self.release.take() {
+                    let _ = release.send(());
+                }
+                self.hook.take();
+                if let Some(slot) = self.supervisor_slot.take() {
+                    self.listener = lock_recover(&slot).take();
+                }
+                if let Some(listener) = self.listener.take() {
+                    let _ = listener.stop();
+                    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                    while !listener.native_finished() && std::time::Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    if listener.native_finished() {
+                        let _ = listener.join_original();
+                    } else {
+                        lock_recover(&RETAINED).push((
+                            listener,
+                            self.root.clone(),
+                            self.root_permit.take().unwrap(),
+                        ));
+                        eprintln!(
+                            "retaining exact listener fixture original/root/admission after unknown native retirement: {}",
+                            self.root.display()
+                        );
+                        return;
+                    }
+                }
+                let _ = fs::remove_dir_all(&self.root);
+                self.root_permit.take();
+            }
+        }
+        let retained = std::mem::take(&mut *lock_recover(&RETAINED));
+        for (listener, root, permit) in retained {
+            if listener.native_finished() {
+                let _ = listener.join_original();
+                let _ = fs::remove_dir_all(root);
+                drop(permit);
+            } else {
+                lock_recover(&RETAINED).push((listener, root, permit));
+            }
+        }
+        let root_permit = ROOT_BUDGET.reserve().unwrap();
+        let root = scratch_directory("actual-listener-tls");
+        let path = root.join(STATE_FILE_NAME);
+        let (entered, observed) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        let held = Mutex::new(Some(held));
+        let hook: ListenerExitHook = Arc::new(move || {
+            TLS.with(|slot| {
+                *slot.borrow_mut() = Some(TlsGate {
+                    entered: entered.clone(),
+                    release: held.lock().unwrap().take().unwrap(),
+                })
+            });
+        });
+        let mut cleanup = Cleanup {
+            root: root.clone(),
+            release: Some(release),
+            hook: None,
+            listener: None,
+            supervisor_slot: None,
+            root_permit: Some(root_permit),
+        };
+        lock_recover(&LISTENER_EXIT_HOOKS).push((path.clone(), hook));
+        cleanup.hook = Some(ListenerExitHookGuard(path.clone()));
+        cleanup.listener = Some(
+            super::start_listener_with_budget(
+                vec![path.clone()],
+                Arc::new(FakeAdapter {
+                    ready: AtomicBool::new(false),
+                }),
+                full_access(),
+                &BUDGET,
+            )
+            .unwrap(),
+        );
+        let started = std::time::Instant::now();
+        assert!(
+            !cleanup.listener.as_ref().unwrap().stop(),
+            "runtime acknowledgement alone cannot certify native retirement"
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!cleanup.listener.as_ref().unwrap().native_finished());
+        assert_eq!(BUDGET.count(), 1);
+        assert!(
+            acquire_document_lease(&path, "publisher", Duration::ZERO).is_err(),
+            "exact old publisher retains cross-process lease"
+        );
+        let refused = root.join("refused").join(STATE_FILE_NAME);
+        assert!(super::start_listener_with_budget(
+            vec![refused.clone()],
+            Arc::new(FakeAdapter {
+                ready: AtomicBool::new(false)
+            }),
+            full_access(),
+            &BUDGET,
+        )
+        .is_err());
+        assert!(
+            !refused.parent().unwrap().exists(),
+            "refusal precedes every path/bind effect"
+        );
+        let slot = Arc::new(Mutex::new(cleanup.listener.take()));
+        cleanup.supervisor_slot = Some(slot.clone());
+        let last_error = Mutex::new(None);
+        let served_by_other = AtomicBool::new(true);
+        let factories = AtomicU64::new(0);
+        // Exact production transactions called by LocalAccess::stop_now and
+        // start_now; no Wry app or copied test-only state machine is created.
+        stop_listener_slot(&slot, &last_error);
+        assert!(lock_recover(&slot).is_some());
+        assert!(lock_recover(&last_error)
+            .as_deref()
+            .unwrap()
+            .contains("not acknowledged"));
+        let error = start_listener_slot(&slot, &last_error, &served_by_other, || {
+            factories.fetch_add(1, Ordering::AcqRel);
+            panic!("a retiring original must refuse before factory admission")
+        })
+        .unwrap_err();
+        assert!(error.contains("still retiring"));
+        assert_eq!(factories.load(Ordering::Acquire), 0);
+        assert!(!served_by_other.load(Ordering::Acquire));
+        cleanup.release.take().unwrap().send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !lock_recover(&slot).as_ref().unwrap().native_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "exact native TLS original did not retire"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        cleanup.hook.take();
+        let error = start_listener_slot(&slot, &last_error, &served_by_other, || {
+            assert!(
+                slot.try_lock().is_err(),
+                "startup factory remains serialized under its original slot lock"
+            );
+            factories.fetch_add(1, Ordering::AcqRel);
+            Err(LocalAccessFailure {
+                message: "actual factory refusal fixture".into(),
+                served_by_another_instance: true,
+            })
+        })
+        .unwrap_err();
+        assert_eq!(error, "actual factory refusal fixture");
+        assert_eq!(
+            lock_recover(&last_error).as_deref(),
+            Some("actual factory refusal fixture")
+        );
+        assert!(served_by_other.load(Ordering::Acquire));
+        assert!(lock_recover(&slot).is_none());
+        assert_eq!(
+            BUDGET.count(),
+            0,
+            "finished predecessor was actually joined before replacement factory"
+        );
+        start_listener_slot(&slot, &last_error, &served_by_other, || {
+            assert!(slot.try_lock().is_err());
+            factories.fetch_add(1, Ordering::AcqRel);
+            super::start_listener_with_budget(
+                vec![path],
+                Arc::new(FakeAdapter {
+                    ready: AtomicBool::new(false),
+                }),
+                full_access(),
+                &BUDGET,
+            )
+        })
+        .unwrap();
+        assert!(lock_recover(&last_error).is_none());
+        assert!(!served_by_other.load(Ordering::Acquire));
+        assert_eq!(factories.load(Ordering::Acquire), 2);
+        start_listener_slot(&slot, &last_error, &served_by_other, || {
+            panic!("healthy existing listener does not run another factory")
+        })
+        .unwrap();
+        stop_listener_slot(&slot, &last_error);
+        assert!(lock_recover(&slot).is_none());
+        assert_eq!(BUDGET.count(), 0);
+    }
+    impl Drop for OwnedTestDirectory {
+        fn drop(&mut self) {
+            if stop_fixture_listeners_beneath(&self.0) && fixture_readers_retired_beneath(&self.0) {
+                let _ = fs::remove_dir_all(&self.0);
+            } else {
+                eprintln!(
+                    "local MCP fixture retained its exact listener and root after unknown retirement: {}",
+                    self.0.display()
+                );
+            }
+        }
+    }
+    // Test-only strong ownership is acquired before the caller can assert.
+    // An unwound caller cannot detach a live publisher/JoinHandle.
+    static FIXTURE_LISTENERS_IN_USE: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    struct FixtureListenerPermit;
+    impl Drop for FixtureListenerPermit {
+        fn drop(&mut self) {
+            FIXTURE_LISTENERS_IN_USE.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+    struct TestRunningLocalAccess {
+        running: RunningLocalAccess,
+        _permit: FixtureListenerPermit,
+    }
+    impl std::ops::Deref for TestRunningLocalAccess {
+        type Target = RunningLocalAccess;
+        fn deref(&self) -> &RunningLocalAccess {
+            &self.running
+        }
+    }
+    static TEST_LISTENERS: Mutex<Vec<Arc<TestRunningLocalAccess>>> = Mutex::new(Vec::new());
+    fn reap_fixture_listeners() {
+        let mut finished = Vec::new();
+        let mut listeners = TEST_LISTENERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut index = 0;
+        while index < listeners.len() {
+            if listeners[index].native_finished() && Arc::strong_count(&listeners[index]) == 1 {
+                let listener = listeners.swap_remove(index);
+                finished.push(listener);
+            } else {
+                index += 1;
+            }
+        }
+        drop(listeners);
+        for listener in finished {
+            let TestRunningLocalAccess { running, _permit } = Arc::try_unwrap(listener)
+                .ok()
+                .expect("unique finished fixture listener");
+            let _ = running.join_original();
+            drop(_permit);
+        }
+    }
+    fn stop_fixture_listeners_beneath(root: &Path) -> bool {
+        let acknowledged = {
+            let listeners: Vec<_> = TEST_LISTENERS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter(|listener| {
+                    listener
+                        .state_files
+                        .iter()
+                        .any(|path| path.starts_with(root))
+                })
+                .cloned()
+                .collect();
+            // Visit every listener even when an earlier one cannot acknowledge.
+            listeners.iter().fold(true, |all, listener| {
+                let stopped = listener.stop() || listener.native_finished();
+                stopped && all
+            })
+        };
+        reap_fixture_listeners();
+        acknowledged
+    }
+    // Shadows the production name ONLY within this test module. All calls
+    // still invoke the real production listener, then retain its exact owner.
+    fn start_listener(
+        state_files: Vec<PathBuf>,
+        adapter: Arc<dyn DeviceAdapter>,
+        access: watch::Receiver<AccessMode>,
+    ) -> Result<Arc<TestRunningLocalAccess>, LocalAccessFailure> {
+        reap_fixture_listeners();
+        if FIXTURE_LISTENERS_IN_USE
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < 64).then_some(count + 1)
+            })
+            .is_err()
+        {
+            return Err(LocalAccessFailure {
+                message: "Fixture listener capacity reached; no new listener was admitted".into(),
+                served_by_another_instance: false,
+            });
+        }
+        let permit = FixtureListenerPermit;
+        let listener = Arc::new(TestRunningLocalAccess {
+            running: super::start_listener(state_files, adapter, access)?,
+            _permit: permit,
+        });
+        TEST_LISTENERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(listener.clone());
+        Ok(listener)
+    }
+    struct OwnedTestListener(Arc<TestRunningLocalAccess>);
+    impl Drop for OwnedTestListener {
+        fn drop(&mut self) {
+            self.0.stop();
+        }
+    }
+    struct FixtureStartRelease(Arc<AtomicBool>);
+    impl Drop for FixtureStartRelease {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    type ReaderAnswer = (u32, u32, u32);
+    static FIXTURE_READERS_IN_USE: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    struct FixtureReaderPermit;
+    impl FixtureReaderPermit {
+        fn acquire() -> Self {
+            assert!(
+                FIXTURE_READERS_IN_USE
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| (count < 4)
+                        .then_some(count + 1))
+                    .is_ok(),
+                "fixture reader capacity reached; no new reader admitted"
+            );
+            Self
+        }
+    }
+    impl Drop for FixtureReaderPermit {
+        fn drop(&mut self) {
+            FIXTURE_READERS_IN_USE.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+    static RETAINED_FIXTURE_READERS: Mutex<
+        Vec<(
+            PathBuf,
+            std::thread::JoinHandle<ReaderAnswer>,
+            FixtureReaderPermit,
+        )>,
+    > = Mutex::new(Vec::new());
+    fn fixture_readers_retired_beneath(root: &Path) -> bool {
+        let mut finished = Vec::new();
+        let mut readers = RETAINED_FIXTURE_READERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut index = 0;
+        while index < readers.len() {
+            if qc_native_platform::process::thread_signalled(&readers[index].1) {
+                finished.push(readers.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        let retired = !readers.iter().any(|(directory, _, _)| directory == root);
+        drop(readers);
+        for (_, reader, permit) in finished {
+            let _ = reader.join();
+            drop(permit);
+        }
+        retired
+    }
+    struct FixtureReader {
+        root: PathBuf,
+        stop: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<ReaderAnswer>>,
+        permit: Option<FixtureReaderPermit>,
+    }
+    impl FixtureReader {
+        fn finish(&mut self) -> Result<ReaderAnswer, String> {
+            self.stop.store(true, Ordering::Release);
+            let Some(worker) = self.worker.take() else {
+                return Err("reader already settled".into());
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !qc_native_platform::process::thread_signalled(&worker)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            if qc_native_platform::process::thread_signalled(&worker) {
+                let result = worker
+                    .join()
+                    .map_err(|_| "descriptor reader panicked".into());
+                self.permit.take();
+                result
+            } else {
+                RETAINED_FIXTURE_READERS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((
+                        self.root.clone(),
+                        worker,
+                        self.permit.take().expect("owned reader permit"),
+                    ));
+                Err("descriptor reader retirement unknown; exact thread and root retained".into())
+            }
+        }
+    }
+    impl Drop for FixtureReader {
+        fn drop(&mut self) {
+            if self.worker.is_some() {
+                if let Err(error) = self.finish() {
+                    eprintln!("local MCP fixture cleanup: {error}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn live_staging_claim_survives_other_publisher_sweep_and_failure_cleans_ours() {
+        let directory = scratch_directory("live-stage");
+        let _directory = OwnedTestDirectory(directory.clone());
+        let path = directory.join(STATE_FILE_NAME);
+        let stage_path = directory.join(format!(".{STATE_FILE_NAME}.123.0.tmp"));
+        let mut stage = StagedDocument(Some(
+            qc_owner_only_file::ClaimedFile::try_claim(&stage_path).unwrap(),
+        ));
+        stage.0.as_mut().unwrap().write(b"live credential").unwrap();
+        test_descriptor("new").publish(&path).unwrap();
+        assert_eq!(fs::read(&stage_path).unwrap(), b"live credential");
+        drop(stage);
+        assert!(!stage_path.exists());
+        assert!(!qc_owner_only_file::claim_path(&stage_path).exists());
+        let bad_target = directory.join("not-a-file");
+        fs::create_dir(&bad_target).unwrap();
+        assert!(publish_atomically(&bad_target, &directory, "test", b"payload").is_err());
+        assert!(!fs::read_dir(&directory).unwrap().flatten().any(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with(".not-a-file.")
+        }));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    struct TestHistoryWorker {
+        writer: Option<HistoryWriter>,
+        release: Option<mpsc::SyncSender<()>>,
+    }
+    impl Drop for TestHistoryWorker {
+        fn drop(&mut self) {
+            if let Some(release) = self.release.take() {
+                let _ = release.send(());
+            }
+            if let Some(writer) = self.writer.take() {
+                let _ = writer.sender.send(HistoryCommand::Stop);
+                drop(writer.sender);
+                let _ = writer.task.join();
+            }
+        }
+    }
+
+    #[test]
+    fn owned_history_worker_coalesces_without_blocking_state_and_joins_latest_on_exit() {
+        let (entered, observed) = mpsc::sync_channel(1);
+        let (release, blocked) = mpsc::sync_channel(1);
+        let blocked = Mutex::new(blocked);
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let records = writes.clone();
+        let state = Arc::new(Mutex::new((1_u64, true)));
+        let completion = state.clone();
+        let writer = start_history_writer(
+            move |snapshot| {
+                if snapshot.generation == 1 {
+                    entered.send(()).unwrap();
+                    blocked.lock().unwrap().recv().unwrap();
+                }
+                records.lock().unwrap().push(snapshot.generation);
+                Ok(())
+            },
+            move |snapshot, result| {
+                let mut state = completion.lock().unwrap();
+                if result.is_ok() && state.0 == snapshot.generation {
+                    state.1 = false;
+                }
+            },
+        )
+        .unwrap();
+        let mut owned = TestHistoryWorker {
+            writer: Some(writer),
+            release: Some(release),
+        };
+        let send = |generation| {
+            HistoryCommand::Write(HistoryWrite {
+                path: PathBuf::from("unused"),
+                clients: BTreeMap::new(),
+                generation,
+            })
+        };
+        owned.writer.as_ref().unwrap().sender.send(send(1)).unwrap();
+        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        // A stalled disk worker owns no state/status mutex or listener thread.
+        *state
+            .try_lock()
+            .expect("heartbeat/status remains responsive") = (3, true);
+        owned.writer.as_ref().unwrap().sender.send(send(2)).unwrap();
+        owned.writer.as_ref().unwrap().sender.send(send(3)).unwrap();
+        owned.release.take().unwrap().send(()).unwrap();
+        let writer = owned.writer.take().unwrap();
+        writer.sender.send(HistoryCommand::Stop).unwrap();
+        writer.task.join().unwrap();
+        assert_eq!(*writes.lock().unwrap(), vec![1, 3]);
+        assert_eq!(*state.lock().unwrap(), (3, false));
+    }
+
+    #[test]
+    fn owned_history_worker_failed_commit_remains_owed_and_stops_cleanly() {
+        let state = Arc::new(Mutex::new(true));
+        let completion = state.clone();
+        let writer = start_history_writer(
+            |_| Err("disk unavailable".into()),
+            move |_, result| {
+                *completion.lock().unwrap() = result.is_err();
+            },
+        )
+        .unwrap();
+        let mut owned = TestHistoryWorker {
+            writer: Some(writer),
+            release: None,
+        };
+        let writer = owned.writer.take().unwrap();
+        writer
+            .sender
+            .send(HistoryCommand::Write(HistoryWrite {
+                path: PathBuf::from("unused"),
+                clients: BTreeMap::new(),
+                generation: 1,
+            }))
+            .unwrap();
+        writer.sender.send(HistoryCommand::Stop).unwrap();
+        writer.task.join().unwrap();
+        assert!(*state.lock().unwrap());
+    }
+
+    #[test]
+    fn poisoned_history_queue_recovers_latest_flush_and_joins_owned_worker() {
+        let (completed, observed) = mpsc::sync_channel(1);
+        let writer = start_history_writer(
+            |_| Ok(()),
+            move |snapshot, result| {
+                completed
+                    .send((snapshot.generation, result.is_ok()))
+                    .unwrap();
+            },
+        )
+        .unwrap();
+        let mut owned = TestHistoryWorker {
+            writer: Some(writer),
+            release: None,
+        };
+        let queue = owned.writer.as_ref().unwrap().sender.queue.clone();
+        assert!(std::panic::catch_unwind(move || {
+            let mut queue = queue.lock().unwrap();
+            queue.latest = Some(HistoryWrite {
+                path: PathBuf::from("unused"),
+                clients: BTreeMap::new(),
+                generation: 1,
+            });
+            panic!("injected producer panic");
+        })
+        .is_err());
+        let writer = owned.writer.as_ref().unwrap();
+        writer
+            .sender
+            .send(HistoryCommand::Write(HistoryWrite {
+                path: PathBuf::from("unused"),
+                clients: BTreeMap::new(),
+                generation: 2,
+            }))
+            .unwrap();
+        writer.sender.send(HistoryCommand::Stop).unwrap();
+        assert_eq!(
+            observed.recv_timeout(Duration::from_secs(2)).unwrap(),
+            (2, true)
+        );
+        let writer = owned.writer.take().unwrap();
+        drop(writer.sender);
+        writer.task.join().unwrap();
+    }
+
+    #[test]
+    fn history_forward_version_fence_uses_semver_precedence_not_lexical_or_build_metadata() {
+        assert!(client_id_is_newer("claude:1.0.0", "1.0.0-rc.9"));
+        assert!(client_id_is_newer("claude:1.0.0-rc.10", "1.0.0-rc.9"));
+        assert!(client_id_is_newer("claude:1.10.0", "1.9.0"));
+        assert!(!client_id_is_newer("claude:1.0.0-rc.1", "1.0.0"));
+        assert!(!client_id_is_newer(
+            "claude:1.0.0+newer-build",
+            "1.0.0+older-build"
+        ));
+        for invalid in [
+            "claude:garbage",
+            "claude:1.02.0",
+            "claude:1.0",
+            ":2.0.0",
+            "claude\n:2.0.0",
+        ] {
+            assert!(!client_id_is_newer(invalid, "1.0.0"));
+        }
+        assert!(!client_id_is_newer("claude:2.0.0", "invalid-current"));
+    }
+
+    #[test]
+    fn old_history_writer_preserves_successor_disk_ids_without_exposing_them_as_current() {
+        let directory = scratch_directory("successor-history");
+        let _directory = OwnedTestDirectory(directory.clone());
+        let path = directory.join(CLIENT_HISTORY_FILE_NAME);
+        let mut future = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        future.major += 1;
+        future.pre = semver::Prerelease::EMPTY;
+        future.build = semver::BuildMetadata::EMPTY;
+        let successor = format!("claude:{future}");
+        fs::write(
+            &path,
+            serde_json::to_vec(&ClientAttachHistoryFile {
+                schema_version: CLIENT_HISTORY_SCHEMA_VERSION,
+                clients: BTreeMap::from([
+                    (successor.clone(), 500),
+                    ("claude:0.0.1".into(), 99),
+                    ("claude:invalid".into(), 999),
+                ]),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let current = current_client_id("jan");
+        store_attach_history(&path, &BTreeMap::from([(current.clone(), 300)])).unwrap();
+        let durable = load_attach_history_document(&path);
+        assert_eq!(durable[&successor], 500);
+        assert_eq!(durable[&current], 300);
+        assert!(!durable.contains_key("claude:0.0.1"));
+        assert!(!durable.contains_key("claude:invalid"));
+        let reader = load_attach_history(&path);
+        assert_eq!(reader, BTreeMap::from([(current, 300)]));
+        assert!(
+            !client_id_is_current(&successor),
+            "future history cannot feed current liveness"
+        );
+    }
+
+    #[test]
+    #[ignore = "owned subprocess fixture, invoked only by document_leases_and_history_merge_are_cross_process"]
+    fn document_lease_process_fixture() {
+        let path = PathBuf::from(std::env::var_os("QC_LOCAL_LEASE_FIXTURE").unwrap());
+        if std::env::var_os("QC_LOCAL_LEASE_BUSY").is_some() {
+            assert!(acquire_document_lease(&path, "publisher", Duration::ZERO).is_err());
+        } else {
+            let clients = BTreeMap::from([(current_client_id("jan"), 200)]);
+            store_attach_history(&path, &clients).unwrap();
+        }
+    }
+
+    #[test]
+    fn document_leases_and_history_merge_are_cross_process() {
+        let directory = scratch_directory("multiprocess-lease");
+        let directory_owner = Arc::new(OwnedTestDirectory(directory.clone()));
+        let path = directory.join(STATE_FILE_NAME);
+        let invoke = |busy| {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "local_access::tests::document_lease_process_fixture",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("QC_LOCAL_LEASE_FIXTURE", &path)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+            }
+            if busy {
+                command.env("QC_LOCAL_LEASE_BUSY", "1");
+            } else {
+                command.env_remove("QC_LOCAL_LEASE_BUSY");
+            }
+            let output = crate::tests::run_owned_test_binary_fixture_with_resource(
+                &mut command,
+                directory_owner.clone(),
+            )
+            .expect("owned lease fixture completed within its budget");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let lease = acquire_document_lease(&path, "publisher", Duration::ZERO).unwrap();
+        invoke(true);
+        drop(lease);
+        let after_death = acquire_document_lease(&path, "publisher", Duration::ZERO).unwrap();
+        drop(after_death);
+        store_attach_history(&path, &BTreeMap::from([(current_client_id("claude"), 300)])).unwrap();
+        invoke(false);
+        // A delayed old snapshot cannot erase another process's newer facts.
+        store_attach_history(&path, &BTreeMap::from([(current_client_id("claude"), 100)])).unwrap();
+        let merged = load_attach_history(&path);
+        assert_eq!(merged[&current_client_id("claude")], 300);
+        assert_eq!(merged[&current_client_id("jan")], 200);
+        drop(directory_owner);
+        assert!(
+            !directory.exists(),
+            "acknowledged fixture originals released the root"
+        );
+    }
 
     struct FakeAdapter {
         ready: AtomicBool,
@@ -2713,20 +4336,9 @@ mod tests {
     }
 
     /// A directory of this test's own, so a failing run cannot take another
-    /// test's descriptors with it, and the guard that removes it when the
-    /// test ends or unwinds.
-    fn scratch_directory(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
-        let directory = std::env::temp_dir().join(format!(
-            "qc-remote-local-access-{name}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).expect("scratch directory");
-        (
-            crate::tests::RemoveDirOnDrop::new(directory.clone()),
-            directory,
-        )
+    /// test's descriptors with it.
+    fn scratch_directory(name: &str) -> PathBuf {
+        crate::tests::unique_fixture_directory(&format!("qc-remote-local-access-{name}"))
     }
 
     async fn error_body(response: Response) -> Value {
@@ -2915,7 +4527,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_published_listener_proves_it_holds_the_token_without_receiving_it() {
-        let (_scratch, directory) = scratch_directory("identity-proof");
+        let directory = scratch_directory("identity-proof");
+        let _directory = OwnedTestDirectory(directory.clone());
         let paths = vec![directory.join(STATE_FILE_NAME)];
         let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
             ready: AtomicBool::new(true),
@@ -2968,11 +4581,13 @@ mod tests {
             .unwrap();
         assert_eq!(browser.status(), StatusCode::FORBIDDEN);
         listener.stop();
+        drop(_directory);
     }
 
     #[test]
     fn publisher_handoff_survives_delayed_cleanup_from_the_previous_owner() {
-        let (_scratch, directory) = scratch_directory("publisher-handoff");
+        let directory = scratch_directory("publisher-handoff");
+        let _directory = OwnedTestDirectory(directory.clone());
         let paths = vec![directory.join(STATE_FILE_NAME)];
         let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
             ready: AtomicBool::new(false),
@@ -2990,6 +4605,267 @@ mod tests {
         second.stop();
         assert!(!paths[0].exists());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn simultaneous_listener_start_has_one_publisher_and_releases_lease_on_stop_or_error() {
+        let directory = scratch_directory("simultaneous-listeners");
+        let _directory = OwnedTestDirectory(directory.clone());
+        let paths = vec![directory.join(STATE_FILE_NAME)];
+        let (first, second) = std::thread::scope(|scope| {
+            let gate = Arc::new(AtomicBool::new(false));
+            let arrived = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let _release_on_unwind = FixtureStartRelease(gate.clone());
+            let spawn = || {
+                let paths = paths.clone();
+                let gate = gate.clone();
+                let arrived = arrived.clone();
+                scope.spawn(move || {
+                    arrived.fetch_add(1, Ordering::AcqRel);
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while !gate.load(Ordering::Acquire) {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "listener fixture gate not released"
+                        );
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    start_listener(
+                        paths,
+                        Arc::new(FakeAdapter {
+                            ready: AtomicBool::new(false),
+                        }),
+                        full_access(),
+                    )
+                })
+            };
+            let first = spawn();
+            let second = spawn();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while arrived.load(Ordering::Acquire) != 2 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "listener fixture workers did not arrive"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            gate.store(true, Ordering::Release);
+            (
+                first.join().unwrap().map(OwnedTestListener),
+                second.join().unwrap().map(OwnedTestListener),
+            )
+        });
+        assert_ne!(
+            first.is_ok(),
+            second.is_ok(),
+            "exactly one process/thread may publish"
+        );
+        let winner = first.ok().or_else(|| second.ok()).unwrap();
+        assert_eq!(published_instance(&paths[0]), winner.0.instance_id());
+        assert!(winner.0.stop());
+        let successor = OwnedTestListener(
+            start_listener(
+                paths.clone(),
+                Arc::new(FakeAdapter {
+                    ready: AtomicBool::new(false),
+                }),
+                full_access(),
+            )
+            .unwrap(),
+        );
+        assert!(successor.0.stop());
+        let blocked_path = directory.join("blocked");
+        fs::create_dir(&blocked_path).unwrap();
+        assert!(start_listener(
+            vec![blocked_path.clone()],
+            Arc::new(FakeAdapter {
+                ready: AtomicBool::new(false)
+            }),
+            full_access()
+        )
+        .is_err());
+        let released = acquire_document_lease(&blocked_path, "publisher", Duration::ZERO).unwrap();
+        drop(released);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn actual_listener_fixture_unwind_retires_publisher_before_its_owned_root() {
+        let directory = scratch_directory("listener-unwind");
+        let port = AtomicU64::new(0);
+        let failed = std::panic::catch_unwind(|| {
+            let _directory = OwnedTestDirectory(directory.clone());
+            let listener = start_listener(
+                vec![directory.join(STATE_FILE_NAME)],
+                Arc::new(FakeAdapter {
+                    ready: AtomicBool::new(false),
+                }),
+                full_access(),
+            )
+            .unwrap();
+            port.store(listener.port.into(), Ordering::Release);
+            panic!("injected failure after production listener acquisition");
+        });
+        assert!(failed.is_err());
+        assert!(
+            !directory.exists(),
+            "root removed only after listener retirement"
+        );
+        let port = u16::try_from(port.load(Ordering::Acquire)).unwrap();
+        assert!(port != 0);
+        assert!(
+            std::net::TcpStream::connect_timeout(
+                &([127, 0, 0, 1], port).into(),
+                Duration::from_millis(100),
+            )
+            .is_err(),
+            "the actual listener still serves after fixture unwind"
+        );
+        reap_fixture_listeners();
+    }
+
+    struct PendingReceiptBody {
+        polled: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+    impl hyper::body::Body for PendingReceiptBody {
+        type Data = axum::body::Bytes;
+        type Error = std::convert::Infallible;
+        fn poll_frame(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+            self.polled.store(true, Ordering::Release);
+            std::task::Poll::Pending
+        }
+    }
+    impl Drop for PendingReceiptBody {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Release);
+        }
+    }
+    fn bounded_body_router(adapter: Arc<RecordingAdapter>) -> Router {
+        let adapter_trait: Arc<dyn DeviceAdapter> = adapter.clone();
+        let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+            adapter: adapter_trait.clone(),
+            access: full_access(),
+        });
+        local_router_with_body_timeout(
+            backend,
+            LocalHealth {
+                adapter: adapter_trait,
+                instance_id: Arc::from("test-instance"),
+                tool_contract_sha256: Arc::from(tool_contract_sha256()),
+                process_id: 42,
+            },
+            Arc::from("test-token"),
+            allowed_hosts(41000),
+            Duration::from_millis(40),
+        )
+    }
+    fn body_request(path: &str, token: Option<&str>, body: Body) -> Request<Body> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(HOST, "127.0.0.1:41000")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream");
+        if let Some(token) = token {
+            request = request.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        request.body(body).unwrap()
+    }
+    #[tokio::test]
+    async fn identity_rpc_and_mcp_receipt_deadlines_drop_pending_bodies_before_device_dispatch() {
+        for path in ["/identity", "/rpc", "/mcp"] {
+            let adapter = Arc::new(RecordingAdapter::new(true));
+            let polled = Arc::new(AtomicBool::new(false));
+            let dropped = Arc::new(AtomicBool::new(false));
+            let body = Body::new(PendingReceiptBody {
+                polled: polled.clone(),
+                dropped: dropped.clone(),
+            });
+            // No spawned task: timeout/unwind drops the exact owned service
+            // future and its body inline, with observable destructor receipt.
+            let response = tokio::time::timeout(
+                Duration::from_secs(2),
+                bounded_body_router(adapter.clone()).oneshot(body_request(
+                    path,
+                    Some("test-token"),
+                    body,
+                )),
+            )
+            .await
+            .expect("body receipt exceeded its own deadline")
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT, "{path}");
+            let error = error_body(response).await;
+            assert_eq!(error["code"], "LOCAL_REQUEST_TIMEOUT");
+            assert!(polled.load(Ordering::Acquire));
+            assert!(
+                dropped.load(Ordering::Acquire),
+                "pending body remains owned after refusal"
+            );
+            assert!(
+                adapter.calls().is_empty(),
+                "incomplete receipt dispatched device IO"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn receipt_budget_preserves_auth_precedence_byte_limits_and_healthy_dispatch() {
+        let adapter = Arc::new(RecordingAdapter::new(true));
+        let polled = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let denied = bounded_body_router(adapter.clone())
+            .oneshot(body_request(
+                "/rpc",
+                None,
+                Body::new(PendingReceiptBody {
+                    polled: polled.clone(),
+                    dropped: dropped.clone(),
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            !polled.load(Ordering::Acquire),
+            "unauthorized body must not be consumed"
+        );
+        assert!(dropped.load(Ordering::Acquire));
+        for (path, limit) in [
+            ("/identity", 1024),
+            ("/rpc", 2 * 1024 * 1024),
+            ("/mcp", 4 * 1024 * 1024),
+        ] {
+            let refused = bounded_body_router(adapter.clone())
+                .oneshot(body_request(
+                    path,
+                    Some("test-token"),
+                    Body::from(vec![b'x'; limit + 1]),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(refused.status(), StatusCode::PAYLOAD_TOO_LARGE, "{path}");
+            assert_eq!(error_body(refused).await["code"], "LOCAL_REQUEST_TOO_LARGE");
+        }
+        assert!(adapter.calls().is_empty());
+        let identity = bounded_body_router(adapter.clone())
+            .oneshot(body_request(
+                "/identity",
+                None,
+                Body::from(r#"{"nonce":"complete-fixture"}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(identity.status(), StatusCode::OK);
+        let healthy = bounded_body_router(adapter.clone())
+            .oneshot(rpc_request("system.status", Some("test-token")))
+            .await
+            .unwrap();
+        assert_eq!(healthy.status(), StatusCode::OK);
+        assert_eq!(adapter.calls(), vec!["system.status"]);
     }
 
     #[tokio::test]
@@ -3623,7 +5499,8 @@ mod tests {
 
     #[test]
     fn a_host_that_worked_before_reads_as_idle_after_a_restart_not_as_never_connected() {
-        let (_scratch, directory) = scratch_directory("client-history");
+        let directory = scratch_directory("client-history");
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join(CLIENT_HISTORY_FILE_NAME);
         let client = &current_client_id("codex");
         let attached_at = 1_700_000_000_000_u64;
@@ -3641,6 +5518,7 @@ mod tests {
         let observing_since = attached_at + 24 * 60 * 60 * 1_000;
         let now = observing_since + NATIVE_BRIDGE_ACTIVITY_WINDOW.as_millis() as u64 + 1;
         let evidence = local_client_evidence_at(0, attached_before, observing_since, now);
+        drop(_directory);
 
         assert!(owed, "the first attach for a client id is written at once");
         assert!(attached_before, "the record did not survive the restart");
@@ -3698,7 +5576,8 @@ mod tests {
 
     #[test]
     fn an_unreadable_client_history_degrades_to_no_history() {
-        let (_scratch, directory) = scratch_directory("client-history-damage");
+        let directory = scratch_directory("client-history-damage");
+        let _directory = OwnedTestDirectory(directory.clone());
         let absent = load_attach_history(&directory.join("never-written.json"));
 
         let garbage = directory.join("garbage.json");
@@ -3717,6 +5596,7 @@ mod tests {
         )
         .expect("write future schema");
         let unknown_schema = load_attach_history(&future);
+        drop(_directory);
 
         assert!(absent.is_empty(), "a first launch has no history");
         assert!(unparsable.is_empty());
@@ -3768,7 +5648,8 @@ mod tests {
 
     #[test]
     fn a_record_written_by_earlier_releases_keeps_only_the_ids_this_build_reads() {
-        let (_scratch, directory) = scratch_directory("client-history-upgrade");
+        let directory = scratch_directory("client-history-upgrade");
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join(CLIENT_HISTORY_FILE_NAME);
         let live = current_client_id("claude");
         // A legacy record can contain several versions of each supported host.
@@ -3785,6 +5666,7 @@ mod tests {
         store_attach_history(&path, &carried).expect("store history");
 
         let restored = load_attach_history(&path);
+        drop(_directory);
 
         assert_eq!(
             restored.keys().collect::<Vec<_>>(),
@@ -3904,7 +5786,8 @@ mod tests {
 
     #[test]
     fn publishing_clears_an_orphaned_staged_descriptor() {
-        let (_scratch, directory) = scratch_directory("stale");
+        let directory = scratch_directory("stale");
+        let _directory = OwnedTestDirectory(directory.clone());
         let orphan = directory.join(format!(".{STATE_FILE_NAME}.999999.0.tmp"));
         fs::write(&orphan, b"{\"bearerToken\":\"live-looking\"}").expect("orphan");
         let path = directory.join(STATE_FILE_NAME);
@@ -3912,6 +5795,7 @@ mod tests {
             .publish(&path)
             .expect("endpoint document");
         let remaining = orphan.exists();
+        drop(_directory);
         assert!(
             !remaining,
             "an abandoned staged descriptor still holds a live-looking credential"
@@ -3926,7 +5810,8 @@ mod tests {
         // the parent directory happened to grant - `%APPDATA%` redirected onto
         // a file server, say. What this cannot do is stop a process running as
         // *this* user; see the module comment on `owner_only_file`.
-        let (_scratch, directory) = scratch_directory("owner-only");
+        let directory = scratch_directory("owner-only");
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join(STATE_FILE_NAME);
         test_descriptor("token")
             .publish(&path)
@@ -3943,6 +5828,7 @@ mod tests {
         test_descriptor("token").publish(&path).expect("refresh");
         let refreshed = owner_only_file::is_owner_only(&path).expect("inspect the refreshed DACL");
 
+        drop(_directory);
         assert!(
             published,
             "the published descriptor still inherits Administrators and SYSTEM access"
@@ -3959,7 +5845,8 @@ mod tests {
 
     #[test]
     fn descriptor_publication_never_exposes_a_partial_document() {
-        let (_scratch, directory) = scratch_directory("atomic");
+        let directory = scratch_directory("atomic");
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join("local-mcp.json");
         let publish = |token: &str| {
             test_descriptor(token)
@@ -3971,6 +5858,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let reader_path = path.clone();
         let reader_stop = stop.clone();
+        let permit = FixtureReaderPermit::acquire();
         let reader = std::thread::spawn(move || {
             let mut observed = 0_u32;
             let mut torn = 0_u32;
@@ -3993,13 +5881,20 @@ mod tests {
             }
             (observed, torn, refused)
         });
+        let mut reader = FixtureReader {
+            root: directory.clone(),
+            stop: stop.clone(),
+            worker: Some(reader),
+            permit: Some(permit),
+        };
 
         for index in 0..600 {
             publish(&format!("rotated-token-{index:0>30}"));
         }
         stop.store(true, Ordering::Relaxed);
-        let (observed, torn, refused) = reader.join().expect("reader thread");
+        let (observed, torn, refused) = reader.finish().expect("reader thread");
 
+        drop(_directory);
         assert!(observed > 0, "the reader never saw the descriptor");
         // The invariant that matters: a reader that gets bytes never gets a
         // half-written document. The app publishes three copies and renames
@@ -4017,7 +5912,8 @@ mod tests {
 
     #[test]
     fn descriptor_is_additive_revision_four() {
-        let (_scratch, directory) = scratch_directory("revision");
+        let directory = scratch_directory("revision");
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join("local-mcp.json");
         test_descriptor("token")
             .publish(&path)
@@ -4031,6 +5927,7 @@ mod tests {
         assert_eq!(document["rpcUrl"], "http://127.0.0.1:41000/rpc");
         assert_eq!(document["instanceId"], "instance");
         assert!(document["publishedAtUnixMs"].as_u64().is_some());
+        drop(_directory);
     }
 
     #[test]
@@ -4038,7 +5935,8 @@ mod tests {
         // The whole liveness contract rests on this: a refresh that changed the
         // token, the port or the instance id would read as a restart, and a
         // reader would be right to throw away the session it had.
-        let (_scratch, directory) = scratch_directory("refresh");
+        let directory = scratch_directory("refresh");
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join(STATE_FILE_NAME);
         let descriptor = test_descriptor("stable-token");
         descriptor
@@ -4051,6 +5949,7 @@ mod tests {
             .expect("refresh");
         let second: Value = serde_json::from_slice(&fs::read(&path).expect("refreshed bytes"))
             .expect("refreshed document");
+        drop(_directory);
 
         assert_eq!(first["publishedAtUnixMs"], 1_700_000_000_000_u64);
         assert_eq!(second["publishedAtUnixMs"], 1_700_000_030_000_u64);
@@ -4146,7 +6045,8 @@ mod tests {
         // a valid-looking descriptor advertising a port that was dropped on the
         // next line; the other branch removed all three copies, including ones
         // a live instance had published to the shared mirror paths.
-        let (_scratch, directory) = scratch_directory("partial");
+        let directory = scratch_directory("partial");
+        let _directory = OwnedTestDirectory(directory.clone());
         let mine = directory.join(STATE_FILE_NAME);
         // `create_dir_all` cannot make a directory where a file already is.
         let blocker = directory.join("blocked");
@@ -4164,6 +6064,7 @@ mod tests {
 
         let mine_remains = mine.exists();
         let other_remains = fs::read(&another_instance).expect("other bytes");
+        drop(_directory);
         assert!(error.contains("local MCP state directory"), "{error}");
         assert!(
             !mine_remains,
@@ -4177,7 +6078,8 @@ mod tests {
 
     #[test]
     fn a_complete_publication_writes_every_copy() {
-        let (_scratch, directory) = scratch_directory("complete");
+        let directory = scratch_directory("complete");
+        let _directory = OwnedTestDirectory(directory.clone());
         let paths = vec![
             directory.join(STATE_FILE_NAME),
             directory.join("second").join(STATE_FILE_NAME),
@@ -4187,6 +6089,7 @@ mod tests {
         let published: Vec<bool> = paths.iter().map(|path| path.exists()).collect();
         remove_published_descriptors(&paths, "instance");
         let removed: Vec<bool> = paths.iter().map(|path| path.exists()).collect();
+        drop(_directory);
         assert_eq!(published, vec![true, true, true]);
         assert_eq!(removed, vec![false, false, false]);
     }
@@ -4196,7 +6099,8 @@ mod tests {
         // The descriptor outliving the process is what makes clients dial dead
         // ports: two were found on disk from separate app runs, because
         // `Drop` never ran and no `RunEvent::Exit` handler existed.
-        let (_scratch, directory) = scratch_directory("lifecycle");
+        let directory = scratch_directory("lifecycle");
+        let _directory = OwnedTestDirectory(directory.clone());
         let paths = vec![
             directory.join(STATE_FILE_NAME),
             directory.join("mirror").join(STATE_FILE_NAME),
@@ -4213,6 +6117,7 @@ mod tests {
         listener.stop();
         let remaining: Vec<bool> = paths.iter().map(|path| path.exists()).collect();
         let refused = std::net::TcpStream::connect(&address).is_err();
+        drop(_directory);
 
         assert_eq!(published, vec![true, true]);
         assert!(
@@ -4233,7 +6138,8 @@ mod tests {
         // listener must still arbitrate races with the headless bridge and
         // direct hosts. A second publisher must not bind its own ephemeral
         // port, mint its own token, or overwrite the live descriptor.
-        let (_scratch, directory) = scratch_directory("second-instance");
+        let directory = scratch_directory("second-instance");
+        let _directory = OwnedTestDirectory(directory.clone());
         let paths = vec![
             directory.join(STATE_FILE_NAME),
             directory.join("mirror").join(STATE_FILE_NAME),
@@ -4261,6 +6167,7 @@ mod tests {
         let first_still_answers =
             std::net::TcpStream::connect(format!("127.0.0.1:{}", first.port)).is_ok();
         first.stop();
+        drop(_directory);
 
         assert_eq!(
             after, published,
@@ -4279,7 +6186,9 @@ mod tests {
             failure.message
         );
         assert!(
-            failure.message.contains("Another copy of QC Remote"),
+            failure
+                .message
+                .contains("Another process owns the local MCP publisher lease"),
             "lastError does not say what happened: {}",
             failure.message
         );
@@ -4295,7 +6204,8 @@ mod tests {
         // descriptor that is still inside the reader's 150s window and still
         // names a plausible pid. Refusing on either of those would keep the
         // app from ever starting again for two and a half minutes.
-        let (_scratch, directory) = scratch_directory("owner-gone");
+        let directory = scratch_directory("owner-gone");
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join(STATE_FILE_NAME);
         let dead_port = {
             let bound = StdTcpListener::bind("127.0.0.1:0").expect("a port to abandon");
@@ -4320,6 +6230,7 @@ mod tests {
         if let Ok(listener) = listener {
             listener.stop();
         }
+        drop(_directory);
 
         assert_eq!(outcome, None, "a dead owner blocked a fresh start");
         let (started, on_disk) = republished.expect("the fresh instance published");
@@ -4331,7 +6242,8 @@ mod tests {
 
     #[test]
     fn an_expired_or_unreadable_descriptor_is_republished() {
-        let (_scratch, directory) = scratch_directory("expired-or-unreadable");
+        let directory = scratch_directory("expired-or-unreadable");
+        let _directory = OwnedTestDirectory(directory.clone());
         let expired = directory.join(STATE_FILE_NAME);
         let unreadable = directory.join("unreadable").join(STATE_FILE_NAME);
         fs::create_dir_all(unreadable.parent().expect("parent")).expect("unreadable directory");
@@ -4364,6 +6276,7 @@ mod tests {
         if let Ok(listener) = listener {
             listener.stop();
         }
+        drop(_directory);
 
         assert_eq!(refused, None, "a stale file locked a fresh start out");
         let (started, expired_now, unreadable_now) = republished.expect("the fresh instance");
@@ -4376,34 +6289,54 @@ mod tests {
         // Windows hands the ephemeral port out again, so "something is
         // listening there" is not evidence that QC Remote is. Only an answer
         // carrying the descriptor's own instance id is.
-        let (_scratch, directory) = scratch_directory("recycled-port");
+        let directory = scratch_directory("recycled-port");
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join(STATE_FILE_NAME);
         let stranger = StdTcpListener::bind("127.0.0.1:0").expect("a stranger's port");
         let port = stranger.local_addr().expect("stranger address").port();
-        let accepting = std::thread::spawn(move || {
-            // Accept and drop: a connection succeeds, no QC Remote answers.
-            let _ = stranger.accept();
-        });
-        descriptor_for_port(port, "an-instance-that-is-gone")
-            .publish(&path)
-            .expect("descriptor naming the recycled port");
+        stranger.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let accepting = std::thread::scope(|scope| {
+            let _release_on_unwind = FixtureStartRelease(stop.clone());
+            let stopping = stop.clone();
+            let accepting = scope.spawn(move || {
+                // Accept and drop: a connection succeeds, no QC Remote answers.
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while !stopping.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+                    match stranger.accept() {
+                        Ok(_) => return,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2))
+                        }
+                        Err(_) => return,
+                    }
+                }
+            });
+            descriptor_for_port(port, "an-instance-that-is-gone")
+                .publish(&path)
+                .expect("descriptor naming the recycled port");
 
-        let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
-            ready: AtomicBool::new(true),
+            let adapter: Arc<dyn DeviceAdapter> = Arc::new(FakeAdapter {
+                ready: AtomicBool::new(true),
+            });
+            let listener = start_listener(vec![path.clone()], adapter, full_access());
+            let refused = listener
+                .as_ref()
+                .err()
+                .map(|failure| failure.message.clone());
+            let republished = listener
+                .as_ref()
+                .ok()
+                .map(|listener| (listener.instance_id.clone(), published_instance(&path)));
+            if let Ok(listener) = listener {
+                listener.stop();
+            }
+            stop.store(true, Ordering::Release);
+            let _ = accepting.join();
+            (refused, republished)
         });
-        let listener = start_listener(vec![path.clone()], adapter, full_access());
-        let refused = listener
-            .as_ref()
-            .err()
-            .map(|failure| failure.message.clone());
-        let republished = listener
-            .as_ref()
-            .ok()
-            .map(|listener| (listener.instance_id.clone(), published_instance(&path)));
-        if let Ok(listener) = listener {
-            listener.stop();
-        }
-        let _ = accepting.join();
+        let (refused, republished) = accepting;
+        drop(_directory);
 
         assert_eq!(
             refused, None,
@@ -4415,7 +6348,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_connection_test_makes_one_read_only_call_and_names_what_it_found() {
-        let (_scratch, directory) = scratch_directory("connection-test");
+        let directory = scratch_directory("connection-test");
+        let _directory = OwnedTestDirectory(directory.clone());
         let paths = vec![directory.join(STATE_FILE_NAME)];
         let adapter = Arc::new(RecordingAdapter::new(true));
         let listener =
@@ -4425,6 +6359,7 @@ mod tests {
         let outcome = probe_local_mcp(&paths, &status, unix_time_ms()).await;
         let calls = adapter.calls();
         listener.stop();
+        drop(_directory);
 
         assert_eq!(outcome.state, LocalMcpTestState::Ready);
         assert_eq!(
@@ -4441,7 +6376,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_connection_test_separates_the_faults_that_have_different_remedies() {
-        let (_scratch, directory) = scratch_directory("connection-test-faults");
+        let directory = scratch_directory("connection-test-faults");
+        let _directory = OwnedTestDirectory(directory.clone());
         let paths = vec![directory.join(STATE_FILE_NAME)];
 
         let off = probe_local_mcp(
@@ -4487,6 +6423,7 @@ mod tests {
         .expect("republish");
         let gone = probe_local_mcp(&paths, &status, unix_time_ms()).await;
         let calls = adapter.calls();
+        drop(_directory);
 
         assert_eq!(off.state, LocalMcpTestState::Disabled);
         assert_eq!(nothing_published.state, LocalMcpTestState::NotPublished);
@@ -4568,7 +6505,8 @@ mod tests {
 
     #[test]
     fn local_mcp_is_on_until_this_user_turns_it_off() {
-        let (_scratch, directory) = scratch_directory("preference");
+        let directory = scratch_directory("preference");
+        let _directory = OwnedTestDirectory(directory.clone());
         let path = directory.join(ENABLED_FILE_NAME);
         let fresh_install = load_enabled(&path);
         store_enabled(&path, false).expect("store off");
@@ -4577,6 +6515,7 @@ mod tests {
         let after_on = load_enabled(&path);
         fs::write(&path, b"{ this is not json").expect("corrupt preference");
         let after_corruption = load_enabled(&path);
+        drop(_directory);
 
         assert!(fresh_install, "local MCP must ship on");
         assert!(!after_off, "the off switch did not survive a reload");
@@ -4585,6 +6524,38 @@ mod tests {
             after_corruption,
             "an unreadable preference must not silently opt a user out"
         );
+    }
+
+    #[test]
+    fn failed_preference_publication_preserves_the_durable_disabled_choice() {
+        let directory = scratch_directory("preference-publication-failure");
+        let _directory = OwnedTestDirectory(directory.clone());
+        let path = directory.join(ENABLED_FILE_NAME);
+        store_enabled(&path, false).unwrap();
+        let previous = fs::read(&path).unwrap();
+        let error = store_enabled_with(&path, true, |destination, parent, bytes| {
+            assert_eq!(destination, path);
+            assert_eq!(parent, directory);
+            assert_eq!(
+                serde_json::from_slice::<Value>(bytes).unwrap()["enabled"],
+                true
+            );
+            // Drive the real owned publisher through a failed rename, rather
+            // than deleting/truncating the live preference to manufacture an error.
+            let blocked = parent.join("blocked-preference");
+            fs::create_dir(&blocked).unwrap();
+            publish_atomically(&blocked, parent, "the local MCP preference", bytes)
+        })
+        .unwrap_err();
+        assert!(error.contains("Could not publish"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert!(!load_enabled(&path));
+        assert!(!fs::read_dir(&directory).unwrap().flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".blocked-preference.")
+        }));
     }
 
     /// The background host inside `qc-device-broker.exe`, with no MCP client

@@ -247,7 +247,7 @@ mod tests {
         }
         let worker_fixture = fixture.clone();
         let clock = controller.session_clock;
-        let worker = thread::spawn(move || {
+        let worker = super::super::tests::FixtureThread::spawn(move || {
             let mut persistent_ticket = None;
             // Startup has already supplied the catalog; only the mutation is
             // sent. Verification is passive first, so the unit's own publication
@@ -359,7 +359,7 @@ mod tests {
             let error = result.unwrap_err();
             assert!(error.contains("Persistent USB reports were delivered"));
             assert!(error.contains("after its deadline"));
-            worker.join().unwrap();
+            worker.join();
             return;
         }
         let result = result.unwrap();
@@ -381,7 +381,7 @@ mod tests {
                 .any(|f| f.name == fixture["name"].as_str().unwrap()),
             !deletion
         );
-        worker.join().unwrap();
+        worker.join();
     }
 
     #[test]
@@ -477,7 +477,7 @@ mod tests {
         let method = device.method();
         let params = device.params();
         let clock = controller.session_clock;
-        let worker = thread::spawn(move || {
+        let worker = super::super::tests::FixtureThread::spawn(move || {
             for _ in 0..device.command_count() {
                 let Command::SendSequence {
                     admission,
@@ -522,7 +522,7 @@ mod tests {
             device
         });
         let result = controller.execute_preset_workflow(method, &params).unwrap();
-        let device = worker.join().unwrap();
+        let device = worker.join();
         device.assert_result(&result, &controller.session_owner.lock_recover());
     }
     #[test]

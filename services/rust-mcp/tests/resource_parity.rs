@@ -6,7 +6,9 @@
 //! tool read `device.currentPreset` (which refreshes), so after the device moved
 //! the resource kept handing out the old identity and guarded writes built from
 //! it were refused, or aimed at state that no longer existed.
+mod common;
 use async_trait::async_trait;
+use common::OwnedTask;
 use qc_remote_mcp::{ACTIONS, BackendError, PrincipalRoute, QcBackend, QcMcp};
 use rmcp::ServiceExt;
 use serde_json::{Map, Value, json};
@@ -76,55 +78,82 @@ struct Client {
     lines: Lines<BufReader<ReadHalf<DuplexStream>>>,
     write: WriteHalf<DuplexStream>,
     next_id: u64,
+    server_task: OwnedTask<()>,
 }
 
 impl Client {
     async fn start(device: Arc<LaggingDevice>) -> Self {
-        let server = QcMcp::for_route(device, PrincipalRoute::new("local-user", "local-device"));
-        let (server_io, client_io) = tokio::io::duplex(256 * 1024);
-        tokio::spawn(async move {
-            if let Ok(running) = server.serve(server_io).await {
-                let _ = running.waiting().await;
-            }
-        });
-        let (read, write) = tokio::io::split(client_io);
-        let mut client = Self {
-            lines: BufReader::new(read).lines(),
-            write,
-            next_id: 1,
-        };
-        client
-            .call(
-                "initialize",
-                json!({"protocolVersion":"2025-06-18","capabilities":{},
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let server =
+                QcMcp::for_route(device, PrincipalRoute::new("local-user", "local-device"));
+            let (server_io, client_io) = tokio::io::duplex(256 * 1024);
+            let server_task = OwnedTask(tokio::spawn(async move {
+                if let Ok(running) = server.serve(server_io).await {
+                    let _ = running.waiting().await;
+                }
+            }));
+            let (read, write) = tokio::io::split(client_io);
+            let mut client = Self {
+                lines: BufReader::new(read).lines(),
+                write,
+                next_id: 1,
+                server_task,
+            };
+            client
+                .call(
+                    "initialize",
+                    json!({"protocolVersion":"2025-06-18","capabilities":{},
                        "clientInfo":{"name":"resource-parity","version":"1"}}),
-            )
-            .await;
-        client
-            .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
-            .await;
-        client
+                )
+                .await;
+            client
+                .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+                .await;
+            client
+        })
+        .await
+        .expect("whole MCP fixture observation timed out")
     }
 
     async fn send(&mut self, message: Value) {
-        let mut line = message.to_string();
-        line.push('\n');
-        self.write.write_all(line.as_bytes()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let mut line = message.to_string();
+            line.push('\n');
+            self.write.write_all(line.as_bytes()).await.unwrap();
+        })
+        .await
+        .expect("whole MCP fixture observation timed out")
     }
 
     async fn call(&mut self, method: &str, params: Value) -> Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
-            .await;
-        loop {
-            let line = self.lines.next_line().await.unwrap().expect("server reply");
-            let value: Value = serde_json::from_str(&line).unwrap();
-            if value["id"] == id {
-                assert!(value.get("error").is_none(), "{method}: {value}");
-                return value["result"].clone();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
+                .await;
+            loop {
+                let line = self.lines.next_line().await.unwrap().expect("server reply");
+                let value: Value = serde_json::from_str(&line).unwrap();
+                if value["id"] == id {
+                    assert!(value.get("error").is_none(), "{method}: {value}");
+                    return value["result"].clone();
+                }
             }
-        }
+        })
+        .await
+        .expect("whole MCP fixture observation timed out")
+    }
+
+    async fn close(self) {
+        let Self {
+            lines,
+            write,
+            server_task,
+            ..
+        } = self;
+        drop(lines);
+        drop(write);
+        server_task.join().await;
     }
 
     async fn resource(&mut self, uri: &str) -> Value {
@@ -166,6 +195,7 @@ async fn current_preset_resource_and_tool_agree_after_the_device_moves() {
         !requests.contains(&"device.snapshot"),
         "the resource read the cached snapshot: {requests:?}"
     );
+    client.close().await;
 }
 
 #[test]
@@ -191,20 +221,22 @@ async fn search_tool_refuses_bad_arguments_as_a_tool_error_like_every_other_tool
             .await;
         assert_eq!(result["isError"], true, "{name}: {result}");
     }
+    client.close().await;
 }
 
 #[tokio::test]
 async fn server_reports_the_product_name() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
     let server = QcMcp::for_route(
         Arc::new(LaggingDevice::new()),
         PrincipalRoute::new("local-user", "local-device"),
     );
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(async move {
+    let server_task = OwnedTask(tokio::spawn(async move {
         if let Ok(running) = server.serve(server_io).await {
             let _ = running.waiting().await;
         }
-    });
+    }));
     let (read, mut write) = tokio::io::split(client_io);
     write
         .write_all(
@@ -220,6 +252,9 @@ async fn server_reports_the_product_name() {
         .unwrap();
     let reply: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(reply["result"]["serverInfo"]["name"], "QC Remote");
+    drop(write);
+    server_task.join().await;
+    }).await.expect("whole MCP fixture observation timed out")
 }
 
 #[tokio::test]
@@ -229,6 +264,7 @@ async fn models_resource_matches_the_unfiltered_tool() {
     let resource = client.resource("qc://models").await;
     let tool = client.tool("list_models", json!({"query": null})).await;
     assert_eq!(resource, tool);
+    client.close().await;
 }
 
 #[tokio::test]
@@ -280,6 +316,7 @@ async fn tool_and_resource_preserve_snapshot_and_catalog_session() {
             }
             assert_eq!(tool, resource);
         }
+        client.close().await;
     })
     .await
     .expect("actual MCP tool/resource serialization timed out");

@@ -231,9 +231,9 @@ pub fn refusal_message(quarantine: &WriteQuarantine, now_unix_ms: u64) -> String
     format!(
         "Device writes are quarantined after an ambiguous mutation: {reason}. \
          {method} was transmitted {age_s} s ago and its delivery could not be established; \
-         {affected}. It clears {clears}. Next step: read the current preset to see what the \
-         device actually holds, then retry with fresh expected-state guards; if it does not \
-         clear, call reset_device_session.",
+         {affected}. It clears {clears}. Next step: inspect the current device state; do not \
+         repeat the ambiguous mutation blindly. Establish a new device session or call \
+         reset_device_session before retrying affected writes with fresh expected-state guards.",
         reason = quarantine.reason,
         method = quarantine.method,
         clears = quarantine.clears_by,
@@ -388,5 +388,13 @@ mod tests {
             );
         }
         assert!(!message.contains("resync"), "{message}");
+        assert!(
+            message.contains("before retrying affected writes"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("then retry"),
+            "reading alone does not clear the quarantine: {message}"
+        );
     }
 }

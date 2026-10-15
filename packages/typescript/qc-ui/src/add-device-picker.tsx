@@ -53,21 +53,13 @@ export function CorOsAddDevicePicker({ picker, cellCenter }: { picker: CorOsAddD
   const [captureSearchOpen, setCaptureSearchOpen] = useState(false);
   const [captureFilterOpen, setCaptureFilterOpen] = useState(false);
   const consumedModelTap = useRef<number | undefined>(undefined);
-  const consumedTapClearTimer = useRef<number | undefined>(undefined);
-  useEffect(() => () => {
-    if (consumedTapClearTimer.current !== undefined) window.clearTimeout(consumedTapClearTimer.current);
-  }, []);
   // Holding a model pins it; a press that travels more than 8 px is a scroll.
-  // The release click after a pin is swallowed for that model, for up to 1 s.
+  // Suppression belongs to this press through its release click, regardless
+  // of how long the user keeps holding after the pin operation completes.
   const modelHold = useHoldGesture<number>({
     moveTolerancePx: 8,
     onHold: (modelId) => {
       consumedModelTap.current = modelId;
-      if (consumedTapClearTimer.current !== undefined) window.clearTimeout(consumedTapClearTimer.current);
-      consumedTapClearTimer.current = window.setTimeout(() => {
-        if (consumedModelTap.current === modelId) consumedModelTap.current = undefined;
-        consumedTapClearTimer.current = undefined;
-      }, 1_000);
       onTogglePinned(modelId);
     }
   });
@@ -124,10 +116,14 @@ export function CorOsAddDevicePicker({ picker, cellCenter }: { picker: CorOsAddD
   };
   const beginModelHold = (event: PointerEvent<HTMLButtonElement>, modelId: number) => {
     if (event.button !== 0 || pending) return;
+    consumedModelTap.current = undefined;
     modelHold.start(modelId, event);
   };
   const moveModelHold = (event: PointerEvent<HTMLButtonElement>) => modelHold.move(event);
   const finishModelHold = (event: PointerEvent<HTMLButtonElement>) => modelHold.cancel(event);
+  const resetModelTapForKeyboard = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Enter" || event.key === " ") consumedModelTap.current = undefined;
+  };
   if (captureCategory) {
     const visibleCaptures = sortedCaptures;
     const libraryCount = captures.length;
@@ -159,10 +155,12 @@ export function CorOsAddDevicePicker({ picker, cellCenter }: { picker: CorOsAddD
         </button>)}
       </aside>
       <main className="qc-scroll-rail">
-        {captureFilterOpen && <div className="capture-picker-filters" role="group" aria-label="Filter captures">
-          {(["all", "factory", "user", "v1", "v2"] as const).map((filter) => <button type="button" key={filter} className={captureFilter === filter ? "is-active" : ""} aria-pressed={captureFilter === filter} onClick={() => setCaptureFilter(filter)}>{filter === "all" ? "All" : filter === "v1" || filter === "v2" ? filter.toUpperCase() : filter === "user" ? "User" : "Factory"}</button>)}
+        {(captureFilterOpen || captureSearchOpen) && <div className="capture-picker-sticky-toolbar">
+          {captureFilterOpen && <div className="capture-picker-filters" role="group" aria-label="Filter captures">
+            {(["all", "factory", "user", "v1", "v2"] as const).map((filter) => <button type="button" key={filter} className={captureFilter === filter ? "is-active" : ""} aria-pressed={captureFilter === filter} onClick={() => setCaptureFilter(filter)}>{filter === "all" ? "All" : filter === "v1" || filter === "v2" ? filter.toUpperCase() : filter === "user" ? "User" : "Factory"}</button>)}
+          </div>}
+          {captureSearchOpen && <label className="device-browser-search is-capture-search"><QcDirectoryIcon kind="search" /><input type="search" value={query} placeholder="Search captures" aria-label="Search captures" autoFocus onChange={(event) => onQueryChange(event.target.value)} />{query && <button type="button" aria-label="Clear search" onClick={() => onQueryChange("")}><QcUiIcon kind="close" /></button>}</label>}
         </div>}
-        {captureSearchOpen && <label className="device-browser-search is-capture-search"><QcDirectoryIcon kind="search" /><input type="search" value={query} placeholder="Search captures" aria-label="Search captures" autoFocus onChange={(event) => onQueryChange(event.target.value)} />{query && <button type="button" aria-label="Clear search" onClick={() => onQueryChange("")}><QcUiIcon kind="close" /></button>}</label>}
         {loading ? <p className="device-browser-status">Reading existing Neural Captures…</p>
           : captureError ? <p className="device-browser-status" role="alert">{captureError}</p>
             : <div className="capture-library-rows">
@@ -182,7 +180,7 @@ export function CorOsAddDevicePicker({ picker, cellCenter }: { picker: CorOsAddD
     <div className={`coros-add-device-wash is-${side === "right" ? "left" : "right"}`} aria-hidden="true" />
     <button type="button" className={`coros-add-device-dismiss is-${side === "right" ? "left" : "right"}`} aria-label="Close device browser" onClick={onClose} />
     <div className="coros-add-device-target" style={target} aria-hidden="true"><QcUiIcon kind="add" /></div>
-    <section className={`device-browser-official is-live-picker is-${side}${activeCategory === "Plugins" ? " is-plugins" : ""}`} aria-label={`Add device to row ${row + 1}, column ${column + 1}`} onKeyDown={closeOnEscape}>
+    <section className={`device-browser-official is-live-picker is-${side}${activeCategory === "Plugins" ? " is-plugins" : ""}`} aria-label={`Add device to row ${row + 1}, column ${column + 1}`} onKeyDown={(event) => { resetModelTapForKeyboard(event); closeOnEscape(event); }}>
       <main>
         <nav className="qc-scroll-rail" aria-label="Device categories">
           {COROS_DEVICE_CATEGORIES.map(([label, color]) => (
@@ -272,8 +270,6 @@ export function CorOsAddDevicePicker({ picker, cellCenter }: { picker: CorOsAddD
                 return <button key={model.id} type="button" className={`${model.id === selectedModelId ? "is-selected" : ""}${unavailable ? " is-unavailable" : ""}${pinned ? " is-pinned" : ""}`.trim() || undefined} aria-current={model.id === selectedModelId || undefined} disabled={pending || unavailable} title={unavailable ? `${model.name} · Unavailable on this QC` : `${pinned ? "Pinned · " : "Hold to pin · "}${model.basedOn ? `Based on ${model.basedOn}` : model.name}`} onPointerDown={(event) => beginModelHold(event, model.id)} onPointerMove={moveModelHold} onPointerUp={finishModelHold} onPointerCancel={finishModelHold} onClick={() => {
                   if (consumedModelTap.current === model.id) {
                     consumedModelTap.current = undefined;
-                    if (consumedTapClearTimer.current !== undefined) window.clearTimeout(consumedTapClearTimer.current);
-                    consumedTapClearTimer.current = undefined;
                     return;
                   }
                   onSelect(model.id);

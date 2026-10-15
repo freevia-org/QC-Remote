@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,7 +26,6 @@ const LOCK_NAME: &str = "relay-access-policy.lock";
 const MAX_BYTES: u64 = 1024;
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_RETRY: Duration = Duration::from_millis(10);
-static NEXT_LOCK_STAGE: AtomicU64 = AtomicU64::new(0);
 
 /// A validated snapshot. Revisions are opaque and change on each successful
 /// write; callers should compare them for equality, not order them.
@@ -427,51 +427,100 @@ fn acquire_writer(directory: &Path) -> Result<File, String> {
 /// Publish the persistent lock inode with a non-replacing hard link. The
 /// staging directory is exclusively created for this attempt, so staging and
 /// cleanup can never remove another writer's files.
-fn create_lock_file(lock_path: &Path) -> Result<(), String> {
-    for _ in 0..32 {
-        let parent = lock_path
-            .parent()
-            .ok_or("Relay policy lock has no parent directory")?;
-        let staging_directory = parent.join(format!(
-            ".relay-policy-lock-stage-{}-{}-{:032x}",
-            std::process::id(),
-            NEXT_LOCK_STAGE.fetch_add(1, Ordering::Relaxed),
-            rand::random::<u128>()
-        ));
-        match qc_owner_only_file::create_owner_only_directory(&staging_directory)
-            .map_err(|error| format!("Could not create a private lock stage: {error}"))?
+fn pending_private_lock_stage(parent: &Path) -> Result<Option<PathBuf>, String> {
+    for entry in fs::read_dir(parent)
+        .map_err(|error| format!("Could not inspect retained lock stages: {error}"))?
+    {
+        let entry = entry
+            .map_err(|error| format!("Could not inspect retained lock stage entry: {error}"))?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".relay-policy-lock-stage")
         {
-            true => {}
-            // A random-name collision is not ours to clean or overwrite.
-            false => continue,
+            return Ok(Some(entry.path()));
         }
-        let staged_file = staging_directory.join("lock");
-        if let Err(error) = qc_owner_only_file::write_staged(&staged_file, b"") {
-            let _ = fs::remove_file(&staged_file);
-            let _ = fs::remove_dir(&staging_directory);
-            return Err(format!("Could not stage the relay policy lock: {error}"));
-        }
-        match fs::hard_link(&staged_file, lock_path) {
-            Ok(()) => {}
-            // Another initializer published the stable lock first. This
-            // attempt still owns its stage and can remove only that stage.
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                let _ = fs::remove_file(&staged_file);
-                let _ = fs::remove_dir(&staging_directory);
-                return Err(format!("Could not publish the relay policy lock: {error}"));
-            }
-        };
-        let stage_removed = fs::remove_file(&staged_file).is_ok();
-        let directory_removed = fs::remove_dir(&staging_directory).is_ok();
-        if !stage_removed || !directory_removed {
-            return Err("Could not clean up the owned relay policy lock stage".into());
-        }
-        return Ok(());
     }
-    Err("Could not reserve a unique relay policy lock stage".into())
+    Ok(None)
 }
 
+fn create_lock_file(lock_path: &Path) -> Result<(), String> {
+    create_lock_file_with(
+        lock_path,
+        LOCK_WAIT,
+        qc_owner_only_file::create_owner_only_directory,
+    )
+}
+
+fn create_lock_file_with(
+    lock_path: &Path,
+    budget: Duration,
+    mut create_private: impl FnMut(&Path) -> Result<bool, String>,
+) -> Result<(), String> {
+    let parent = lock_path
+        .parent()
+        .ok_or("Relay policy lock has no parent directory")?;
+    // One fixed, exclusively-created stage bounds new artifacts even across
+    // process restarts. Unknown legacy GUID stages are preserved and block
+    // further stage allocation; a cooperating initializer may finish normally.
+    let staging_directory = parent.join(".relay-policy-lock-stage");
+    let deadline = Instant::now() + budget;
+    loop {
+        if lock_path
+            .try_exists()
+            .map_err(|error| format!("Could not inspect relay policy lock: {error}"))?
+        {
+            return Ok(()); // acquire_writer verifies permissions before opening.
+        }
+        let pending = pending_private_lock_stage(parent)?;
+        if let Some(path) = pending {
+            if Instant::now() >= deadline {
+                return Err(format!("A relay policy lock stage remains at {}; it was preserved and no new stage was allocated. Inspect the stage's ownership and permissions before explicitly retrying.", path.display()));
+            }
+            thread::sleep(LOCK_RETRY.min(deadline.saturating_duration_since(Instant::now())));
+            continue;
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                "Relay policy lock staging admission timed out before creating a directory".into(),
+            );
+        }
+        match create_private(&staging_directory).map_err(|error| {
+            format!(
+                "Could not create a private lock stage at {}: {error}",
+                staging_directory.display()
+            )
+        })? {
+            true => break,
+            false => {
+                // A concurrent initializer or unknown artifact owns this name.
+                // Never remove it or allocate another name to evade admission.
+                thread::sleep(LOCK_RETRY.min(deadline.saturating_duration_since(Instant::now())));
+            }
+        }
+    }
+    let staged_file = staging_directory.join("lock");
+    if let Err(error) = qc_owner_only_file::write_staged(&staged_file, b"") {
+        let _ = fs::remove_file(&staged_file);
+        let _ = fs::remove_dir(&staging_directory);
+        return Err(format!("Could not stage the relay policy lock: {error}; any unretired stage at {} is preserved for inspection", staging_directory.display()));
+    }
+    match fs::hard_link(&staged_file, lock_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            let _ = fs::remove_file(&staged_file);
+            let _ = fs::remove_dir(&staging_directory);
+            return Err(format!("Could not publish the relay policy lock: {error}; any unretired stage at {} is preserved for inspection", staging_directory.display()));
+        }
+    };
+    let stage_removed = fs::remove_file(&staged_file).is_ok();
+    let directory_removed = fs::remove_dir(&staging_directory).is_ok();
+    if !stage_removed || !directory_removed {
+        return Err(format!("Could not clean up the owned relay policy lock stage at {}; inspect its ownership and permissions before explicitly retrying", staging_directory.display()));
+    }
+    Ok(())
+}
 fn publish(directory: &Path, mode: AccessMode, remote_enabled: bool) -> Result<Record, String> {
     let record = Record::new(mode, remote_enabled);
     qc_owner_only_file::publish_atomically(&policy_path(directory), &record.encode()?)?;
@@ -549,7 +598,112 @@ pub(crate) fn initialize_if_absent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn private_lock_stage_inspection_failure_blocks_repeated_allocations_and_preserves_bytes() {
+        let scratch = Scratch::new("failed-stage-admission");
+        ensure_directory(&scratch.0).unwrap();
+        let parent = store_directory(&scratch.0);
+        let lock = parent.join(LOCK_NAME);
+        let mut calls = 0;
+        let failed = create_lock_file_with(&lock, LOCK_WAIT, |path| {
+            calls += 1;
+            fs::create_dir(path).unwrap();
+            fs::write(path.join("sentinel"), b"unverified artifact").unwrap();
+            Err("injected post-create inspection failure; directory retained".into())
+        });
+        assert!(failed.unwrap_err().contains("private lock stage at"));
+        assert_eq!(calls, 1);
+        let stage = parent.join(".relay-policy-lock-stage");
+        for _ in 0..3 {
+            let refused = create_lock_file_with(&lock, Duration::ZERO, |_| {
+                panic!("retained artifact must prevent another allocation")
+            })
+            .unwrap_err();
+            assert!(refused.contains("was preserved and no new stage"));
+            assert_eq!(
+                fs::read(stage.join("sentinel")).unwrap(),
+                b"unverified artifact"
+            );
+            assert!(!lock.exists());
+        }
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_legacy_guid_stage_is_preserved_and_refuses_new_fixed_stage_allocation() {
+        let scratch = Scratch::new("legacy-stage-admission");
+        ensure_directory(&scratch.0).unwrap();
+        let parent = store_directory(&scratch.0);
+        let old = parent.join(".relay-policy-lock-stage-123-4-legacy");
+        fs::create_dir(&old).unwrap();
+        fs::write(old.join("sentinel"), b"another initializer's bytes").unwrap();
+        let refused = create_lock_file_with(&parent.join(LOCK_NAME), Duration::ZERO, |_| {
+            panic!("unknown legacy stage must prevent new allocation")
+        })
+        .unwrap_err();
+        assert!(refused.contains("was preserved"));
+        assert_eq!(
+            fs::read(old.join("sentinel")).unwrap(),
+            b"another initializer's bytes"
+        );
+        assert!(!parent.join(".relay-policy-lock-stage").exists());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    }
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::sync::Arc;
+
+    // Scoped children borrow the root; release on unwind precedes scope's join.
+    // Ordinary filesystem IO may still wait for the OS, but admission cannot strand them.
+    struct ReleaseGate(Arc<AtomicBool>);
+    impl Drop for ReleaseGate {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    fn concurrent_records(
+        path: &Path,
+        modes: [AccessMode; 8],
+        operation: fn(&Path, AccessMode) -> Result<Record, String>,
+    ) -> Vec<Record> {
+        thread::scope(|scope| {
+            let released = Arc::new(AtomicBool::new(false));
+            let arrived = Arc::new(AtomicUsize::new(0));
+            let _release_on_unwind = ReleaseGate(Arc::clone(&released));
+            let workers: Vec<_> = modes
+                .into_iter()
+                .map(|mode| {
+                    let released = Arc::clone(&released);
+                    let arrived = Arc::clone(&arrived);
+                    scope.spawn(move || {
+                        arrived.fetch_add(1, Ordering::AcqRel);
+                        let deadline = Instant::now() + Duration::from_secs(5);
+                        while !released.load(Ordering::Acquire) {
+                            assert!(
+                                Instant::now() < deadline,
+                                "policy fixture gate not released"
+                            );
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        operation(path, mode).unwrap()
+                    })
+                })
+                .collect();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while arrived.load(Ordering::Acquire) != 8 {
+                assert!(
+                    Instant::now() < deadline,
+                    "policy fixture workers did not arrive"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            released.store(true, Ordering::Release);
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect()
+        })
+    }
 
     struct Scratch(PathBuf);
     impl Scratch {
@@ -713,7 +867,6 @@ mod tests {
     #[test]
     fn concurrent_writes_publish_complete_distinct_revisions() {
         let scratch = Scratch::new("concurrent-writes");
-        let barrier = Arc::new(Barrier::new(9));
         let modes = [
             AccessMode::Full,
             AccessMode::Modify,
@@ -724,22 +877,7 @@ mod tests {
             AccessMode::Performance,
             AccessMode::ReadOnly,
         ];
-        let writers: Vec<_> = modes
-            .into_iter()
-            .map(|mode| {
-                let path = scratch.0.clone();
-                let barrier = barrier.clone();
-                thread::spawn(move || {
-                    barrier.wait();
-                    write(&path, mode).unwrap()
-                })
-            })
-            .collect();
-        barrier.wait();
-        let records: Vec<_> = writers
-            .into_iter()
-            .map(|writer| writer.join().unwrap())
-            .collect();
+        let records = concurrent_records(&scratch.0, modes, write);
         let revisions: std::collections::BTreeSet<_> = records
             .iter()
             .map(|record| record.revision.clone())
@@ -752,7 +890,6 @@ mod tests {
     #[test]
     fn concurrent_first_initializers_share_one_published_revision() {
         let scratch = Scratch::new("concurrent-initialize");
-        let barrier = Arc::new(Barrier::new(9));
         let modes = [
             AccessMode::Full,
             AccessMode::Modify,
@@ -763,22 +900,7 @@ mod tests {
             AccessMode::Performance,
             AccessMode::ReadOnly,
         ];
-        let initializers: Vec<_> = modes
-            .into_iter()
-            .map(|mode| {
-                let path = scratch.0.clone();
-                let barrier = barrier.clone();
-                thread::spawn(move || {
-                    barrier.wait();
-                    initialize_if_absent(&path, mode).unwrap()
-                })
-            })
-            .collect();
-        barrier.wait();
-        let records: Vec<_> = initializers
-            .into_iter()
-            .map(|initializer| initializer.join().unwrap())
-            .collect();
+        let records = concurrent_records(&scratch.0, modes, initialize_if_absent);
         assert!(records.iter().all(|record| *record == records[0]));
         assert_eq!(read(&scratch.0).unwrap(), Some(records[0].clone()));
     }
@@ -816,5 +938,31 @@ mod tests {
             assert!(read(&scratch.0).is_err());
             assert_eq!(effective_mode(&scratch.0), AccessMode::ReadOnly);
         }
+    }
+
+    #[test]
+    fn partial_policy_fixture_start_unwind_releases_and_joins_the_started_worker() {
+        let finished = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&finished);
+        let result = std::panic::catch_unwind(move || {
+            thread::scope(|scope| {
+                let released = Arc::new(AtomicBool::new(false));
+                let _release_on_unwind = ReleaseGate(Arc::clone(&released));
+                scope.spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !released.load(Ordering::Acquire) {
+                        assert!(Instant::now() < deadline, "started fixture was stranded");
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    observed.store(true, Ordering::Release);
+                });
+                panic!("injected next worker setup failure");
+            })
+        });
+        assert!(result.is_err());
+        assert!(
+            finished.load(Ordering::Acquire),
+            "scope returned before owned worker exit"
+        );
     }
 }

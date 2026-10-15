@@ -2,6 +2,16 @@ type PendingSetter = (pending: boolean) => void;
 const aliases = new WeakMap<PendingSetter, PendingSetter>();
 const owners = new WeakMap<PendingSetter, object>();
 const sessions = new WeakMap<PendingSetter, { key: unknown; managed: boolean }>();
+const physicalKeys = new WeakMap<object, { session: unknown; key: object }>();
+/** Sibling workflows on one physical lifetime share a key, not per-hook objects. */
+export function devicePhysicalCommandKey(lifetime: object, session: unknown): object {
+  let held = physicalKeys.get(lifetime);
+  if (!held || !Object.is(held.session, session)) {
+    held = { session, key: {} };
+    physicalKeys.set(lifetime, held);
+  }
+  return held.key;
+}
 function scope(setter: PendingSetter): PendingSetter {
   let next = aliases.get(setter);
   while (next && next !== setter) { setter = next; next = aliases.get(setter); }

@@ -158,7 +158,6 @@ and are not published to a registry.
   runtime resources.
 - Windows and Android remain on v0.1.182; Linux 0.1.186 is independently
   versioned and does not change those platform downloads.
-
 ## Linux preview 0.1.185 — 12 October 2026
 
 - Linux release builds now generate signed GitHub build attestations for the

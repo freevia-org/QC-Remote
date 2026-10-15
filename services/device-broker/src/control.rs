@@ -363,26 +363,27 @@ fn find(directory: &Path, env: &dyn Env) -> Found {
     let path = descriptor_path(directory);
     let read = || match read_descriptor(&path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(_) => Some(None),
-        Ok(bytes) => Some(serde_json::from_slice::<Descriptor>(&bytes).ok()),
+        Err(error) => Some(Err(if error.kind() == io::ErrorKind::PermissionDenied {
+            "notOwnerOnly"
+        } else {
+            "unreadable"
+        })),
+        Ok(bytes) => Some(serde_json::from_slice::<Descriptor>(&bytes).map_err(|_| "unreadable")),
     };
     let parsed = match read() {
         None => return Found::Absent,
-        Some(Some(parsed)) => parsed,
+        Some(Ok(parsed)) => parsed,
         // A live broker atomically republishes the complete document. Retry
         // once to cover a transient filesystem read/replace failure.
-        Some(None) => {
+        Some(Err(_)) => {
             std::thread::sleep(Duration::from_millis(100));
             match read() {
                 None => return Found::Absent,
-                Some(Some(parsed)) => parsed,
-                Some(None) => return Found::Unusable("unreadable"),
+                Some(Ok(parsed)) => parsed,
+                Some(Err(reason)) => return Found::Unusable(reason),
             }
         }
     };
-    if !qc_owner_only_file::is_owner_only(&path).unwrap_or(false) {
-        return Found::Unusable("notOwnerOnly");
-    }
     if parsed.process_id == 0 || parsed.process_created_at.is_none() {
         return Found::Unusable("unverifiable");
     }
@@ -394,14 +395,9 @@ fn find(directory: &Path, env: &dyn Env) -> Found {
 }
 
 fn read_descriptor(path: &Path) -> io::Result<Vec<u8>> {
-    #[cfg(unix)]
-    {
-        qc_owner_only_file::read_owner_only(path)
-    }
-    #[cfg(not(unix))]
-    {
-        fs::read(path)
-    }
+    // Validate and bound the same held file. A second path-based ACL probe
+    // cannot establish that the bytes read belonged to the checked object.
+    qc_owner_only_file::read_owner_only_bounded(path, 128 * 1024)
 }
 
 /// A resident sets its session marker only after it publishes, so a marker

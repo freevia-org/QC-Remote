@@ -160,6 +160,21 @@ public class QcUsbPlugin extends Plugin {
     private final AtomicLong automaticReconnectGeneration = new AtomicLong();
     private final QcPendingOperations pendingOperations = new QcPendingOperations();
     private final QcNativeStateDecoder stateDecoder = new QcNativeStateDecoder();
+    private static final String INTERNET_FORWARDING_SETTING = "internetForwarding";
+    private volatile boolean internetForwardingEnabled;
+    private final Object internetForwardingSettingLock = new Object();
+    private final QcInternetForwarder internetForwarder = new QcInternetForwarder(
+        new QcInternetForwarder.Engine() {
+            public long start(int type, byte[] payload, String observation) {
+                return stateDecoder.startForwarding(type, payload, observation);
+            }
+            public QcNativeStateDecoder.EncodedMessage next(long task) throws Exception {
+                return stateDecoder.nextForwarding(task);
+            }
+            public boolean finished(long task) { return stateDecoder.forwardingFinished(task); }
+            public void cancel(long task) { stateDecoder.cancelForwarding(task); }
+            public void release(long task) { stateDecoder.closeForwarding(task); }
+        }, this::writeForwardingMessage);
     private static volatile QcUsbPlugin relaySession;
     private static final ThreadLocal<RelayDeadline> CURRENT_RELAY_DEADLINE = new ThreadLocal<>();
     private static final ConcurrentHashMap<CompletableFuture<org.json.JSONObject>, RelayDeadline> RELAY_DEADLINES = new ConcurrentHashMap<>();
@@ -220,6 +235,11 @@ public class QcUsbPlugin extends Plugin {
 
     @Override
     public void load() {
+        stateDecoder.initializeForwarding(getContext().getApplicationContext());
+        internetForwardingEnabled = getContext().getSharedPreferences("qc-usb", Context.MODE_PRIVATE)
+            .getBoolean(INTERNET_FORWARDING_SETTING, true);
+        stateDecoder.setCloudForwardEnabled(internetForwardingEnabled);
+        internetForwarder.setEnabled(internetForwardingEnabled);
         flight = new QcUsbFlightRecorder(getContext());
         flight.event("plugin-loaded");
         relaySession = this;
@@ -1364,7 +1384,16 @@ public class QcUsbPlugin extends Plugin {
     private CompletableFuture<org.json.JSONObject> relayMidi(int controller, int value,
             RelayDeadline relayDeadline, String admission) {
         if (value < 0 || value > 127) return failedRelay("INVALID_ARGUMENT", "MIDI value is outside the supported range.");
-        if (midiOutputEndpoint == null) return failedRelay("MIDI_NOT_AVAILABLE", "Quad Cortex USB-MIDI is unavailable.");
+        final long admittedGeneration;
+        final UsbDeviceConnection admittedConnection;
+        final UsbEndpoint admittedEndpoint;
+        synchronized (this) {
+            admittedGeneration = connectionGeneration.get();
+            admittedConnection = midiConnection;
+            admittedEndpoint = midiOutputEndpoint;
+            if (admittedConnection == null || admittedEndpoint == null)
+                return failedRelay("MIDI_NOT_AVAILABLE", "Quad Cortex USB-MIDI is unavailable.");
+        }
         CompletableFuture<org.json.JSONObject> result = new CompletableFuture<>();
         long queuedAtUnixMs = System.currentTimeMillis();
         long queuedAtMonotonicMs = monotonicMillis();
@@ -1393,7 +1422,9 @@ public class QcUsbPlugin extends Plugin {
                 // A queued performance command must retain its native plan's
                 // provenance instead of borrowing a replacement connection.
                 synchronized (this) {
-                    written = QcMidiWriteGate.send(queuedGeneration, connectionGeneration.get(),
+                    written = QcMidiWritePolicy.writeIfCurrent(admittedGeneration, connectionGeneration.get(),
+                        admittedConnection, midiConnection, admittedEndpoint, midiOutputEndpoint,
+                        () -> QcMidiWriteGate.send(queuedGeneration, connectionGeneration.get(),
                         isReady() && stateDecoder.sessionSynchronized(), stateDecoder.suspensionRefusal(),
                         () -> stateDecoder.prepareDispatch(admission, monotonicMillis()),
                         () -> {
@@ -1406,8 +1437,8 @@ public class QcUsbPlugin extends Plugin {
                             UsbDeviceConnection activeMidiConnection = midiConnection;
                             if (activeMidiConnection == null || midiOutputEndpoint == null)
                                 throw new RelayException("MIDI_NOT_AVAILABLE", "Quad Cortex USB-MIDI disconnected before the write.");
-                            return activeMidiConnection.bulkTransfer(midiOutputEndpoint, packet, packet.length, MIDI_WRITE_TIMEOUT_MS);
-                        });
+                            return admittedConnection.bulkTransfer(admittedEndpoint, packet, packet.length, MIDI_WRITE_TIMEOUT_MS);
+                        }));
                 }
                 lastMidiCommandAt = monotonicMillis();
                 if (written != packet.length) throw new RelayException("MIDI_WRITE_FAILED", "The complete MIDI packet was not written.");
@@ -1536,6 +1567,31 @@ public class QcUsbPlugin extends Plugin {
         result.put("synchronized", isReady() && stateDecoder.sessionSynchronized() && currentSetlist != null);
         if (flight != null) flight.event(found.length() == 0 ? "scan-absent" : "scan-available");
         call.resolve(result);
+    }
+
+    @PluginMethod
+    public synchronized void internetForwarding(PluginCall call) {
+        call.resolve(new JSObject().put("enabled", internetForwardingEnabled));
+    }
+
+    @PluginMethod
+    public void setInternetForwarding(PluginCall call) {
+        synchronized (internetForwardingSettingLock) {
+        Boolean enabled = call.getBoolean("enabled");
+        if (enabled == null) { call.reject("An enabled value is required."); return; }
+        if (!getContext().getSharedPreferences("qc-usb", Context.MODE_PRIVATE).edit()
+                .putBoolean(INTERNET_FORWARDING_SETTING, enabled).commit()) {
+            call.reject("Could not save Internet forwarding setting.");
+            return;
+        }
+        if (!enabled) internetForwarder.setEnabled(false);
+        synchronized (this) {
+            stateDecoder.setCloudForwardEnabled(enabled);
+            if (enabled) internetForwarder.setEnabled(true);
+            internetForwardingEnabled = enabled;
+        }
+        call.resolve(new JSObject().put("enabled", enabled));
+        }
     }
 
     @PluginMethod
@@ -2216,6 +2272,18 @@ public class QcUsbPlugin extends Plugin {
     private synchronized void writeMessage(
         QcNativeStateDecoder.EncodedMessage message, boolean withReportId, String dispatchTicket
     ) {
+        writeMessage(message, withReportId, dispatchTicket, 0);
+    }
+
+    private synchronized void writeForwardingMessage(long task, QcNativeStateDecoder.EncodedMessage message) {
+        if (!internetForwarder.current(task) || !reading || transportClosing || connection == null)
+            throw new IllegalStateException("Internet forwarding session ended.");
+        writeMessage(message, includeReportId, null, task);
+    }
+
+    private synchronized void writeMessage(
+        QcNativeStateDecoder.EncodedMessage message, boolean withReportId, String dispatchTicket, long forwardingTask
+    ) {
         long diagnosticEpoch = usbDiagnostics.snapshot().sessionEpoch;
         long stabilizationDelayMs = commandNotBeforeMs - monotonicMillis();
         if (stabilizationDelayMs > 0) {
@@ -2227,14 +2295,23 @@ public class QcUsbPlugin extends Plugin {
             }
         }
         commandNotBeforeMs = 0;
-        List<byte[]> framedReports = stateDecoder.encodeReports(message, withReportId, dispatchTicket, monotonicMillis());
+        List<byte[]> framedReports = forwardingTask == 0
+            ? stateDecoder.encodeReports(message, withReportId, dispatchTicket, monotonicMillis())
+            : stateDecoder.encodeForwardingReports(forwardingTask, message, withReportId, monotonicMillis());
         String delivery = dispatchTicket == null ? null : stateDecoder.prepareDelivery(
             dispatchTicket, message.messageType, framedReports.size(), monotonicMillis());
         try {
             if (delivery != null) stateDecoder.deliveryAdmitted(delivery, monotonicMillis());
-            if (flight != null) flight.outbound(message.messageType, framedReports.size());
+            if (flight != null && forwardingTask == 0) flight.outbound(message.messageType, framedReports.size());
             for (int reportIndex = 0; reportIndex < framedReports.size(); reportIndex++) {
                 byte[] report = framedReports.get(reportIndex);
+                int reportTimeout = HID_WRITE_TIMEOUT_MS;
+                if (forwardingTask != 0) {
+                    reportTimeout = QcHidWritePolicy.forwardingWriteBudget(reportIndex > 0,
+                        internetForwarder.current(forwardingTask),
+                        () -> stateDecoder.forwardingWriteBudgetMs(forwardingTask),
+                        detail -> terminalTransportFailed(detail, "forwarding-dispatch-revoked"));
+                }
                 if (connection == null || hidInterface == null) throw new IllegalStateException("Quad Cortex USB disconnected during write.");
                 if (dispatchTicket != null) {
                     boolean began = reportIndex > 0;
@@ -2251,7 +2328,7 @@ public class QcUsbPlugin extends Plugin {
                 try {
                     written = activeConnection.controlTransfer(
                         0x21, 0x09, (2 << 8) | QcNativeStateDecoder.OUT_REPORT_ID,
-                        hidInterface.getId(), report, report.length, HID_WRITE_TIMEOUT_MS);
+                        hidInterface.getId(), report, report.length, reportTimeout);
                 } catch (RuntimeException error) {
                     String detail = "USB HID write failed: "
                         + (error.getMessage() == null
@@ -2288,16 +2365,21 @@ public class QcUsbPlugin extends Plugin {
                         Thread.sleep(QcUsbProfile.HID_REPORT_BATCH_DELAY_MS);
                     } catch (InterruptedException error) {
                         Thread.currentThread().interrupt();
-                        throw new IllegalStateException(
+                        IllegalStateException interrupted = new IllegalStateException(
                             "The QC HID report batch was interrupted.", error);
+                        if (forwardingTask != 0) QcHidWritePolicy.rejectInterruptedForwardingFrame(
+                            reportIndex + 1 == framedReports.size(), interrupted,
+                            detail -> terminalTransportFailed(detail, "forwarding-write-interrupted"));
+                        throw interrupted;
                     }
                 }
             }
             if (delivery != null) stateDecoder.requireDeliveryComplete(delivery, monotonicMillis());
         } finally {
             if (delivery != null) stateDecoder.stopPendingDelivery(delivery, monotonicMillis());
+            if (forwardingTask != 0) for (byte[] report : framedReports) Arrays.fill(report, (byte) 0);
         }
-        usbDiagnostics.messageSent(diagnosticEpoch, message.messageType);
+        if (forwardingTask == 0) usbDiagnostics.messageSent(diagnosticEpoch, message.messageType);
     }
 
     private void startReader() {
@@ -2497,6 +2579,16 @@ public class QcUsbPlugin extends Plugin {
         byte[] report = Arrays.copyOf(buffer, count);
         QcNativeStateDecoder.DecodedFrame decoded = decodeMessage(report, nativeConnection, reportEpoch, receivedAtMs);
         if (decoded == null) return;
+        if (decoded.forwardingOnly) {
+            synchronized (this) {
+                if (reading && !transportClosing && stateDecoder.observationCurrent(decoded.observationTicket)) {
+                    internetForwarder.accept(decoded.messageType, decoded.payload, decoded.observationTicket);
+                } else {
+                    Arrays.fill(decoded.payload, (byte) 0);
+                }
+            }
+            return;
+        }
         // A suspension that ended in a reset leaves every retained device state
         // suspect: rebuild the whole session, as a session reset does.
         scheduleSuspensionResync(readerGeneration);
@@ -2933,6 +3025,7 @@ public class QcUsbPlugin extends Plugin {
         QcPendingOperations.Entry<?> preservedOperation, boolean sendDisconnectCommands
     ) {
         transportClosing = true;
+        internetForwarder.cancelAll();
         boolean hadSession = connection != null || reading;
         if (flight != null && hadSession) flight.event("transport-closing");
         if (sendDisconnectCommands && connection != null && stateDecoder.startupActive()) {
@@ -2993,6 +3086,7 @@ public class QcUsbPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         automaticReconnectGeneration.incrementAndGet();
+        internetForwarder.close();
         relayAdmissionGuard.markTerminal();
         rejectPendingConnect("QC Remote stopped before USB permission was answered.");
         statePublicationDrain.close();
@@ -3034,6 +3128,8 @@ public class QcUsbPlugin extends Plugin {
                 workersStopped &= awaitExecutor(backupFileIo);
                 workersStopped &= awaitExecutor(readResponseIo);
                 workersStopped &= awaitExecutor(keepalive);
+                try { workersStopped &= internetForwarder.awaitTermination(); }
+                catch (InterruptedException error) { Thread.currentThread().interrupt(); workersStopped = false; }
                 readerStopped = readerStopped && workersStopped;
                 if (readerStopped) {
                     try { stateDecoder.close(); }

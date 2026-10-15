@@ -13,6 +13,7 @@ export interface ContinuousControlWorkflowOptions {
   controller: QcController;
   gateway: GatewayTransport;
   connected: boolean;
+  /** Snapshot-only reference preview, not the persisted virtual Demo device. */
   demo: boolean;
   reconcile(snapshot: PresetSnapshot): void;
   recordHistory?(entry: DeviceHistoryEntry): void;
@@ -275,7 +276,19 @@ export function useContinuousControlWorkflow(options: ContinuousControlWorkflowO
     try {
       const result = await gateway.setMasterVolume(target, expected);
       if (!lifetime.currentSession(origin)) throw new SupersededPresetOperation();
+      const authoritative = result.verified === true && result.verification === "authoritative_readback"
+        && result.snapshot?.masterVolume === target
+        && canAdoptNativeState(snapshotRef.current.stateVersion, result.snapshot.stateVersion);
       if (result.snapshot) adoptVolumeReadback(result.snapshot);
+      // The persisted virtual device commits its store before returning a
+      // verified snapshot. It has no USB event stream to confirm this again.
+      // An accepted-unverified physical send still needs the pushed echo.
+      if (authoritative && queue.awaiting === target) {
+        queue.confirmed = target;
+        queue.awaiting = undefined;
+        queue.lastAccepted = target;
+        queue.lastDetail = result.detail;
+      }
       // Realtime RPC completion means only that the native transport accepted
       // the bytes. The next guarded write must wait for the QC's own type-17
       // echo, otherwise it races the native snapshot and is rejected against
@@ -295,7 +308,7 @@ export function useContinuousControlWorkflow(options: ContinuousControlWorkflowO
       if (queue.awaiting === undefined && queue.target !== undefined) void drainVolume();
       else publishVolumeCompletion();
     }
-  }, [adoptVolumeReadback, lifetime, failVolume, gateway, origin, publishVolumeCompletion]);
+  }, [adoptVolumeReadback, lifetime, failVolume, gateway, origin, publishVolumeCompletion, snapshotRef]);
 
   useEffect(() => subscribeInteractionObservation({kind: "master-volume"}, (observed) => {
     const queue = volume.current;
@@ -312,6 +325,7 @@ export function useContinuousControlWorkflow(options: ContinuousControlWorkflowO
   }), [drainVolume, publishVolumeCompletion, subscribeInteractionObservation]);
 
   const adjustMasterVolume = useCallback((delta: number) => {
+    if (!demo && !connected) { notice("Connect the Quad Cortex before changing Master Volume."); return; }
     const queue = volume.current;
     const observed = snapshotRef.current.masterVolume;
     const value = Math.max(0, Math.min(100, Math.round((queue.desired ?? observed) + delta)));
@@ -329,7 +343,6 @@ export function useContinuousControlWorkflow(options: ContinuousControlWorkflowO
       scheduleVolumeInteractionRelease();
       return;
     }
-    if (!connected) { notice("Connect the Quad Cortex before changing Master Volume."); return; }
     if (queue.confirmed === undefined) queue.confirmed = observed;
     queue.gestureActive = true;
     updateInteraction({ kind: "master-volume" }, value);
@@ -361,9 +374,13 @@ export function useContinuousControlWorkflow(options: ContinuousControlWorkflowO
     return lifetime.subscribe(() => {
       if (!lifetime.currentSession(session)) { cancel(); return; }
       const old = tempo.current;
+      if (old.noticeTimer !== undefined) window.clearTimeout(old.noticeTimer);
+      if (tempoReleaseTimer.current !== undefined) window.clearTimeout(tempoReleaseTimer.current);
+      tempoReleaseTimer.current = undefined;
+      cancelInteraction({ kind: "tempo" });
       old.target = undefined;
       tempo.current = {running: false, source: "Encoder"};
     });
-  }, [cancel, lifetime, origin.session]);
+  }, [cancel, cancelInteraction, lifetime, origin.session]);
   return { queueTempo, adjustTempo, adjustMasterVolume, beginMasterVolumeInteraction, endMasterVolumeInteraction, cancel };
 }

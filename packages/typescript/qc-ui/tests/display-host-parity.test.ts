@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { bundleModule } from "./support/display-page.ts";
+import { bundleTestModule } from "./support/display-page.ts";
 
 /*
  * The owner's rule: the display is identical on Windows and Android. Both
@@ -18,10 +16,8 @@ type Flavour = "windows" | "android";
 interface Scenario { popup?: "grid-menu" | "scene-menu" | "mode-menu" | null; view: string | null; open?: "deviceSettings" | "tempo"; presentation?: "hardware" | "display"; cpuOpen?: boolean; information?: boolean }
 type Renderer = { render(flavour: Flavour, scenario: Scenario): Promise<string>; surfaceKeys(flavour: Flavour): Promise<string[]> };
 
-const workDirectory = mkdtempSync(join(tmpdir(), "qc-display-parity-"));
 const entry = fileURLToPath(new URL("./support/display-host-entry.tsx", import.meta.url));
-const { module } = await bundleModule<Renderer>(workDirectory, "parity", `export * from ${JSON.stringify(entry)};`).catch((error) => { rmSync(workDirectory, { recursive: true, force: true }); throw error; });
-test.after(() => rmSync(workDirectory, { recursive: true, force: true }));
+const { module } = await bundleTestModule<Renderer>("qc-display-parity-", "parity", `export * from ${JSON.stringify(entry)};`, (cleanup) => test.after(cleanup));
 
 const SCREENS: [string, Scenario][] = [
   ["live grid", { view: null }],
@@ -74,5 +70,5 @@ test("the assembled display sets exactly the display props of the surface, and n
   assert.deepEqual(await module.surfaceKeys("windows"), declared, "createQcDeviceDisplay must set every display prop, so adding one to the surface fails here until the display assembles it");
   assert.deepEqual(await module.surfaceKeys("android"), declared);
   const host = source.slice(source.indexOf("export interface QcHostSurfaceProps {"), source.indexOf("/** Everything the display shows and does."));
-  assert.deepEqual([...host.matchAll(/^  (\w+)\??:/gm)].map((match) => match[1]).sort(), ["formFactor", "onAction", "onMasterVolumeInteractionEnd", "onMasterVolumeInteractionStart", "presentation", "skin"], "a host chooses only the frame, the hardware controls and how hardware input reaches its workflows");
+  assert.deepEqual([...host.matchAll(/^  (\w+)\??:/gm)].map((match) => match[1]).sort(), ["formFactor", "hardwareGestureContextKey", "onAction", "onMasterVolumeInteractionEnd", "onMasterVolumeInteractionStart", "presentation", "skin"], "a host chooses only the frame, the hardware controls, their physical-session ownership and how hardware input reaches its workflows");
 });

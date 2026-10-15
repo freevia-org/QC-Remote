@@ -1,6 +1,7 @@
 package org.freevia.qcremote;
 
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 
 /** Classifies Android SET_REPORT outcomes without treating the QC's status STALL as failure. */
 final class QcHidWritePolicy {
@@ -16,6 +17,24 @@ final class QcHidWritePolicy {
                 "QC native frame was partially delivered before dispatch was revoked: " + error.getMessage());
             throw error;
         }
+    }
+
+    static int forwardingWriteBudget(boolean began, boolean current, IntSupplier budget,
+            Consumer<String> terminalFailure) {
+        try {
+            if (!current) throw new IllegalStateException("Internet forwarding was cancelled.");
+            int timeout = budget.getAsInt();
+            if (timeout <= 0) throw new IllegalStateException("Internet forwarding request ended.");
+            return timeout;
+        } catch (RuntimeException error) {
+            validateDispatch(began, () -> { throw error; }, terminalFailure);
+            throw error;
+        }
+    }
+
+    static void rejectInterruptedForwardingFrame(boolean complete, RuntimeException error,
+            Consumer<String> terminalFailure) {
+        validateDispatch(!complete, () -> { throw error; }, terminalFailure);
     }
 
     static Outcome classify(

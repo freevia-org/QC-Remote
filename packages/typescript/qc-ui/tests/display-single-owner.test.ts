@@ -29,7 +29,7 @@ test("both hosts mount the shared display from one assembled model", () => {
     // The mount takes the model and only the host's own frame and hardware controls.
     const mount = source.slice(source.indexOf("<QcDeviceDisplay "), source.indexOf("/>", source.indexOf("<QcDeviceDisplay ")));
     const props = [...mount.matchAll(/\s([a-zA-Z]+)=/g)].map((match) => match[1]).sort();
-    const allowed = ["display", "formFactor", "onAction", "onMasterVolumeInteractionEnd", "onMasterVolumeInteractionStart", "presentation", "skin"];
+    const allowed = ["display", "formFactor", "hardwareGestureContextKey", "onAction", "onMasterVolumeInteractionEnd", "onMasterVolumeInteractionStart", "presentation", "skin"];
     assert.deepEqual(props.filter((prop) => !allowed.includes(prop)), [], `${name} passes no display prop to the display`);
   }
 });

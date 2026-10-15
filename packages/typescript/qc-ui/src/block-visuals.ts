@@ -75,7 +75,7 @@ export function officialBlockVisual(block: GridBlock): OfficialBlockVisual {
 /** *NormalPlugin block icons use a 30% category-color interior fill. */
 export function blockUsesActiveFill(block: GridBlock): boolean {
   const category = `${block.category ?? ""}`.toLowerCase();
-  return block.bypassed !== true && (block.plugin === true || category.includes("plugin"));
+  return block.bypassed === false && (block.plugin === true || category.includes("plugin"));
 }
 
 export { pluginBadge, PUBLISHED_PLUGIN_BADGES } from "./plugin-badges.ts";

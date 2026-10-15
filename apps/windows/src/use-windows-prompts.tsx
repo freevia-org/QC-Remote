@@ -1,5 +1,6 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { QcConfirm, QcTextPrompt, type WorkflowPrompts } from "@qc-remote/ui";
+import { createWindowPromptSession, type WindowPromptRequest } from "./window-prompt-session";
 
 /** Windows' replacement for `window.prompt` and `window.confirm`, kept in its
  * own file for the same reason browser-workflow-prompts.ts is: App.tsx itself
@@ -22,17 +23,17 @@ import { QcConfirm, QcTextPrompt, type WorkflowPrompts } from "@qc-remote/ui";
  * what is on it, so the sentence is the whole point, and the OS dialog was the
  * one place it could not be read comfortably.
  */
-export function useWindowsPrompts(): { prompts: WorkflowPrompts; overlay: ReactNode } {
-  const [textPrompt, setTextPrompt] = useState<{ title: string; message?: string; initialValue: string; submitLabel?: string; resolve: (value: string | null) => void }>();
-  const [confirmation, setConfirmation] = useState<{ message: string; resolve: (value: boolean) => void }>();
+export function useWindowsPrompts(): { prompts: WorkflowPrompts; overlay: ReactNode; active: boolean } {
+  const session = useMemo(createWindowPromptSession, []);
+  const [request, setRequest] = useState<WindowPromptRequest>();
+  useEffect(() => session.attach(setRequest), [session]);
   const prompts = useMemo<WorkflowPrompts>(() => ({
-    confirm: (message) => new Promise<boolean>((resolve) => setConfirmation({ message, resolve })),
-    prompt: (message, initialValue) => new Promise<string | null>((resolve) => setTextPrompt({ title: message, initialValue, resolve }))
-  }), []);
-  const answer = (accepted: boolean) => { confirmation?.resolve(accepted); setConfirmation(undefined); };
+    confirm: session.confirm,
+    prompt: session.prompt
+  }), [session]);
   const overlay = <>
-    {confirmation && <QcConfirm message={confirmation.message} onConfirm={() => answer(true)} onCancel={() => answer(false)} />}
-    {textPrompt && <QcTextPrompt title={textPrompt.title} message={textPrompt.message} initialValue={textPrompt.initialValue} submitLabel={textPrompt.submitLabel} onSubmit={(value) => { textPrompt.resolve(value); setTextPrompt(undefined); }} onCancel={() => { textPrompt.resolve(null); setTextPrompt(undefined); }} />}
+    {request?.kind === "confirm" && <QcConfirm key={request.id} message={request.message} onConfirm={() => session.answer(request.id, true)} onCancel={() => session.answer(request.id, false)} />}
+    {request?.kind === "text" && <QcTextPrompt key={request.id} title={request.title} initialValue={request.initialValue} onSubmit={(value) => session.answer(request.id, value)} onCancel={() => session.answer(request.id, null)} />}
   </>;
-  return { prompts, overlay };
+  return { prompts, overlay, active: request !== undefined };
 }

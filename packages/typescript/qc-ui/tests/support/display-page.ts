@@ -52,6 +52,32 @@ export async function bundleModule<T>(workDirectory: string, name: string, sourc
   return { module, css: existsSync(cssFile) ? readFileSync(cssFile, "utf8") : "" };
 }
 
+/** Own fixture bytes before asynchronous module initialization can fail. */
+export async function bundleTestModule<T>(
+  prefix: string,
+  name: string,
+  source: string,
+  registerCleanup: (cleanup: () => void) => void,
+  bundle: (directory: string, name: string, source: string) => Promise<{ module: T; css: string }> = bundleModule<T>
+): Promise<{ module: T; css: string }> {
+  const directory = mkdtempSync(join(tmpdir(), prefix));
+  const cleanup = () => rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  try {
+    // Catch owns initialization failure. A root test.after registered before
+    // this await can run while module evaluation is suspended and delete the
+    // entry file out from under esbuild, so transfer cleanup only once ready.
+    const result = await bundle(directory, name, source);
+    registerCleanup(cleanup);
+    return result;
+  } catch (error) {
+    try { cleanup(); }
+    catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], `Bundle fixture retirement failed; owned directory retained: ${directory}`, { cause: error });
+    }
+    throw error;
+  }
+}
+
 /**
  * Bundles the real QuadCortexSurface (and every stylesheet it pulls in) with
  * esbuild, renders it to static markup for each screen and presentation, and

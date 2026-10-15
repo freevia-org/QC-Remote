@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createQcScreenLatch, type QcPopupName, type QcScreenLatch } from "./qc-unit-screens.ts";
 import { corOsUnavailableContextActionMessage, type CorOsContextAction } from "./coros-ui.ts";
 import type { CorOsScreenView } from "./coros-screen-fixture-data.ts";
@@ -22,6 +22,7 @@ export interface QcScreenDestination {
   setPopup(popup: QcPopupName | null): void;
   /** The loop guard shared by everything that moves the app's screen or the unit's. */
   latch: QcScreenLatch;
+  captureCurrent(): () => boolean;
   /** The context menu of the open block editor, which the editor owns and reports here so the unit can follow it. */
   blockMenuOpen: boolean;
   setBlockMenuOpen(open: boolean): void;
@@ -35,23 +36,36 @@ export interface QcScreenDestination {
  * `setView` calls forget the return-focus target; only `open` carries one.
  */
 export function useQcScreenDestination(): QcScreenDestination {
+  const generation = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++; }; }, []);
+  const captureCurrent = useCallback(() => { const origin = generation.current; return () => mounted.current && origin === generation.current; }, []);
   const [state, setState] = useState<{ view: CorOsScreenView | null; returnFocusTarget?: QcScreenReturnFocus }>({ view: null });
+  const latestView = useRef<CorOsScreenView | null>(null);
   const setView = useCallback((next: QcScreenViewUpdate) => {
-    setState((current) => {
-      const view = typeof next === "function" ? next(current.view) : next;
-      // Preserve a functional no-op from an unrelated gig-state publication.
-      if (typeof next === "function" && view === current.view) return current;
-      return { view };
-    });
+    const view = typeof next === "function" ? next(latestView.current) : next;
+    if (typeof next === "function" && view === latestView.current) return;
+    generation.current++;
+    latestView.current = view;
+    setState({ view });
   }, []);
   const open = useCallback((view: CorOsScreenView, returnFocusTarget?: QcScreenReturnFocus) => {
+    generation.current++;
+    latestView.current = view;
     setState({ view, returnFocusTarget });
   }, []);
-  const [popup, setPopup] = useState<QcPopupName | null>(null);
+  const [popup, publishPopup] = useState<QcPopupName | null>(null);
+  const latestPopup = useRef<QcPopupName | null>(null);
+  const setPopup = useCallback((next: QcPopupName | null) => {
+    if (next === latestPopup.current) return;
+    generation.current++;
+    latestPopup.current = next;
+    publishPopup(next);
+  }, []);
   const latch = useMemo(() => createQcScreenLatch(), []);
   const [blockMenuOpen, setBlockMenuOpen] = useState(false);
   const [directorySearchOpen, setDirectorySearchOpen] = useState(false);
-  return { view: state.view, returnFocusTarget: state.returnFocusTarget, setView, open, popup, setPopup, latch, blockMenuOpen, setBlockMenuOpen, directorySearchOpen, setDirectorySearchOpen };
+  return { view: state.view, returnFocusTarget: state.returnFocusTarget, setView, open, popup, setPopup, latch, captureCurrent, blockMenuOpen, setBlockMenuOpen, directorySearchOpen, setDirectorySearchOpen };
 }
 
 /** Grid-menu entries the device cannot honour through the semantic gateway, with the reason shown on the entry. */

@@ -23,6 +23,587 @@ fn create_file_symlink_for_test(source: &Path, target: &Path) -> bool {
 }
 
 #[test]
+fn package_export_preserves_existing_file_after_partial_write_and_unwind() {
+    let directory = crate::tests::unique_fixture_directory("package-export-atomic");
+    let _guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let path = directory.join("clients.zip");
+    let previous = b"previous complete client package";
+    for unwind in [false, true] {
+        fs::write(&path, previous).unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            write_package_bytes_with(
+                &path,
+                b"replacement complete client package",
+                |file, bytes| {
+                    file.write_all(&bytes[..7])?;
+                    if unwind {
+                        panic!("injected package export writer unwind");
+                    }
+                    Err(std::io::Error::other(
+                        "injected package export partial write",
+                    ))
+                },
+            )
+        }));
+        if unwind {
+            assert!(outcome.is_err(), "the injected unwind remains an unwind");
+        } else {
+            assert!(
+                outcome.unwrap().is_err(),
+                "a partial write must not report success"
+            );
+        }
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            previous,
+            "the selected previous export must survive an unsuccessful replacement"
+        );
+        let entries = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            vec![path.clone()],
+            "failed writer must retire only its owned stage"
+        );
+    }
+    let healthy = vec![0x5a; 128 * 1024];
+    write_package_bytes_with(&path, &healthy, |file, bytes| file.write_all(bytes)).unwrap();
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        healthy,
+        "healthy replacement remains byte-exact"
+    );
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn antigravity_state_response_envelope_bounds_actual_http_bytes_and_preserves_route_truth() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const LIMIT: usize = 256;
+    for mode in [
+        "known-exact",
+        "chunked-exact",
+        "close-exact",
+        "chunked-growth",
+        "declared-over",
+        "deadline",
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/fixture-state", listener.local_addr().unwrap());
+        let client = crate::loopback_http::loopback_client_builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let executable = Path::new("C:/fixture/qc-remote.exe");
+        let expected = json!({"states":[{
+            "status":"MCP_SERVER_STATUS_READY",
+            "spec":{"serverName":"qc-remote","command":executable.to_string_lossy(),
+                "args":["--local-mcp-bridge"]}
+        }]});
+        let mut payload = serde_json::to_vec(&expected).unwrap();
+        assert!(payload.len() < LIMIT);
+        payload.resize(LIMIT + usize::from(mode == "chunked-growth"), b' ');
+        let (headers_seen, headers_received) = tokio::sync::oneshot::channel();
+        let (done, completed) = tokio::sync::oneshot::channel();
+        let server = async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 8192];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            let framing = match mode {
+                "known-exact" => format!("Content-Length: {LIMIT}\r\n"),
+                "declared-over" => format!("Content-Length: {}\r\n", LIMIT + 1),
+                "deadline" => "Content-Length: 2\r\n".to_owned(),
+                "close-exact" => String::new(),
+                _ => "Transfer-Encoding: chunked\r\n".to_owned(),
+            };
+            socket
+                .write_all(
+                    format!("HTTP/1.1 200 OK\r\n{framing}Connection: close\r\n\r\n").as_bytes(),
+                )
+                .await
+                .unwrap();
+            // No body existed when reqwest returned the actual response. This
+            // gates later chunk growth, rather than trusting Content-Length.
+            let _ = headers_received.await;
+            match mode {
+                "declared-over" | "deadline" => {
+                    let _ = completed.await;
+                }
+                "chunked-exact" | "chunked-growth" => {
+                    let split = LIMIT / 2;
+                    for part in [&payload[..split], &payload[split..]] {
+                        let chunk = format!("{:x}\r\n", part.len());
+                        if socket.write_all(chunk.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        if socket.write_all(part).await.is_err() {
+                            return;
+                        }
+                        if socket.write_all(b"\r\n").await.is_err() {
+                            return;
+                        }
+                    }
+                    let _ = socket.write_all(b"0\r\n\r\n").await;
+                }
+                _ => {
+                    let _ = socket.write_all(&payload).await;
+                }
+            }
+        };
+        let collect = async {
+            let response = client.get(url).send().await.unwrap();
+            let _ = headers_seen.send(());
+            if matches!(mode, "chunked-exact" | "chunked-growth" | "close-exact") {
+                assert_eq!(response.content_length(), None);
+            }
+            let deadline = Instant::now()
+                + if mode == "deadline" {
+                    Duration::from_millis(60)
+                } else {
+                    Duration::from_secs(2)
+                };
+            let result = read_antigravity_state_response(response, deadline, LIMIT).await;
+            let _ = done.send(());
+            result
+        };
+        // Exact joined futures own both sockets; failure/timeout drops them
+        // together. No task, native thread, process or scratch root is detached.
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(collect, server)
+        })
+        .await
+        .expect("bounded actual HTTP fixture");
+        if matches!(mode, "chunked-growth" | "declared-over") {
+            assert!(
+                result.unwrap_err().contains("software document envelope"),
+                "{mode}"
+            );
+        } else if mode == "deadline" {
+            assert!(result.unwrap_err().contains("total operation deadline"));
+        } else {
+            let document = result.unwrap_or_else(|error| panic!("{mode}: {error}"));
+            assert_eq!(document, expected);
+            assert!(antigravity_state_has_current_qc_remote(
+                &document, executable
+            ));
+            assert!(
+                !antigravity_state_has_current_qc_remote(
+                    &document,
+                    Path::new("C:/other/qc-remote.exe")
+                ),
+                "a healthy body must not manufacture matching route authority"
+            );
+        }
+    }
+}
+
+#[test]
+fn held_client_document_reader_accepts_exact_limit_and_refuses_growth_after_open() {
+    let directory = crate::tests::unique_fixture_directory("client-document-held-growth");
+    let _guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let path = directory.join("document.json");
+    fs::write(&path, b"{}").unwrap();
+    let exact = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    exact.set_len(CLIENT_DOCUMENT_MAX_BYTES as u64).unwrap();
+    drop(exact);
+    assert_eq!(
+        read_client_document_bytes(&path).unwrap().len(),
+        CLIENT_DOCUMENT_MAX_BYTES
+    );
+    let held = fs::File::open(&path).unwrap();
+    let grow = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    grow.set_len((CLIENT_DOCUMENT_MAX_BYTES + 1) as u64)
+        .unwrap();
+    drop(grow);
+    let error = read_client_document_from(held).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(
+        fs::metadata(&path).unwrap().len(),
+        (CLIENT_DOCUMENT_MAX_BYTES + 1) as u64
+    );
+    assert!(staged_leftovers(&directory).is_empty());
+}
+
+#[test]
+fn oversized_valid_client_configuration_is_refused_without_overwrite_or_backup() {
+    let directory = crate::tests::unique_fixture_directory("client-document-envelope");
+    let _guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let config = directory.join("mcp.json");
+    let mut bytes = br#"{"foreign":{"preserved":true},"mcpServers":{}}"#.to_vec();
+    bytes.resize(16 * 1024 * 1024 + 1, b' ');
+    fs::write(&config, &bytes).unwrap();
+    let result = write_json_mcp_route(
+        &config,
+        Path::new("C:/fixture/qc-remote.exe"),
+        JAN_CLIENT_ID,
+        "fixture",
+        true,
+    );
+    assert!(
+        result.is_err(),
+        "Oversized valid JSON must be refused before route replacement"
+    );
+    assert_eq!(
+        fs::read(&config).unwrap(),
+        bytes,
+        "Prior complete bytes remain unchanged"
+    );
+    assert!(
+        config_backups(&config).is_empty(),
+        "No write transaction was admitted"
+    );
+    assert!(staged_leftovers(&directory).is_empty());
+}
+
+#[test]
+fn ordinary_client_configuration_keeps_unknown_fields_through_the_shared_reader() {
+    let directory = crate::tests::unique_fixture_directory("client-document-healthy");
+    let _guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let config = directory.join("mcp.json");
+    fs::write(
+        &config,
+        br#"{"foreign":{"preserved":[1,2,3]},"mcpServers":{"other":{"command":"elsewhere"}}}"#,
+    )
+    .unwrap();
+    write_json_mcp_route(
+        &config,
+        Path::new("C:/fixture/qc-remote.exe"),
+        JAN_CLIENT_ID,
+        "fixture",
+        true,
+    )
+    .unwrap();
+    let result: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(result["foreign"], json!({"preserved":[1,2,3]}));
+    assert_eq!(result["mcpServers"]["other"]["command"], "elsewhere");
+    assert_eq!(result["mcpServers"][CLAUDE_EXTENSION_NAME]["active"], true);
+    assert_eq!(config_backups(&config).len(), 1);
+    assert!(staged_leftovers(&directory).is_empty());
+}
+
+#[test]
+fn client_fixture_root_is_removed_on_partial_setup_and_assertion_unwind() {
+    for populated in [false, true] {
+        let mut root = None;
+        let primary = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let directory = crate::tests::unique_fixture_directory("client-unwind");
+            root = Some(directory.clone());
+            let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+            if populated {
+                fs::create_dir_all(directory.join("nested")).unwrap();
+                fs::write(directory.join("nested/config.json"), b"partial").unwrap();
+            }
+            panic!("injected client fixture failure");
+        }));
+        assert!(primary.is_err(), "primary failure is not swallowed");
+        assert!(
+            !root.expect("exclusive fixture allocated").exists(),
+            "owned fixture removed even before happy-path cleanup"
+        );
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn non_windows_node_syntax_fixture_preserves_real_success_and_parser_failure() {
+    let directory = crate::tests::unique_fixture_directory("node-parser-contract");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let file = directory.join("fixture.cjs");
+    fs::write(&file, b"const valid = 1;\n").unwrap();
+    let valid = crate::tests::run_node_syntax_fixture(&file).expect("actual Node parser");
+    assert!(valid.status.success());
+    fs::write(&file, b"const = ;\n").unwrap();
+    let invalid = crate::tests::run_node_syntax_fixture(&file).expect("actual Node parser failure");
+    assert!(
+        !invalid.status.success(),
+        "invalid JavaScript is not treated as success"
+    );
+    assert!(
+        !invalid.stderr.is_empty(),
+        "parser diagnostics remain available"
+    );
+}
+
+#[test]
+fn owned_config_stage_cleans_partial_failure_unwind_and_preserves_collisions() {
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let fixture = Fixture(crate::tests::unique_fixture_directory("owned-stage"));
+    let path = fixture.0.join("stage");
+    let result = OwnedConfigStage::create_with(path.clone(), |file| {
+        assert_eq!(file.metadata()?.len(), 0);
+        assert!(
+            qc_owner_only_file::is_owner_only(&path).unwrap(),
+            "stage must be private before any secret byte"
+        );
+        file.write_all(b"partial")?;
+        Err(std::io::Error::other("injected write fault"))
+    });
+    assert!(result.is_err());
+    assert!(!path.exists());
+    let panic = std::panic::catch_unwind(|| {
+        let _ = OwnedConfigStage::create_with(path.clone(), |file| {
+            file.write_all(b"partial")?;
+            panic!("injected unwind");
+        });
+    });
+    assert!(panic.is_err());
+    assert!(!path.exists());
+    fs::write(&path, b"contender").unwrap();
+    assert!(OwnedConfigStage::write(path.clone(), b"replacement").is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"contender");
+    fs::remove_file(&path).unwrap();
+    let destination = fixture.0.join("blocked");
+    fs::create_dir(&destination).unwrap();
+    assert!(OwnedConfigStage::write(path.clone(), b"complete")
+        .unwrap()
+        .install(&destination)
+        .is_err());
+    assert!(!path.exists());
+    assert!(destination.is_dir());
+    let installed = fixture.0.join("installed");
+    OwnedConfigStage::write(path.clone(), b"complete")
+        .unwrap()
+        .install_with(&installed, || fs::write(&path, b"new occupant").unwrap())
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"new occupant");
+    assert_eq!(fs::read(&installed).unwrap(), b"complete");
+}
+
+#[test]
+fn config_backup_publishes_complete_exclusive_bytes_and_cleans_failed_copy() {
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let fixture = Fixture(crate::tests::unique_fixture_directory("owned-backup"));
+    let config = fixture.0.join("config.json");
+    assert!(back_up_config_file(&config, "fixture").is_err());
+    assert!(config_backups(&config).is_empty());
+    assert!(staged_leftovers(&fixture.0).is_empty());
+    fs::write(&config, b"original").unwrap();
+    let first = back_up_config_file(&config, "fixture").unwrap();
+    assert!(qc_owner_only_file::is_owner_only(&first).unwrap());
+    fs::write(&config, b"updated").unwrap();
+    let second = back_up_config_file(&config, "fixture").unwrap();
+    assert!(qc_owner_only_file::is_owner_only(&second).unwrap());
+    assert_ne!(first, second);
+    assert_eq!(fs::read(first).unwrap(), b"original");
+    assert_eq!(fs::read(second).unwrap(), b"updated");
+    assert_eq!(fs::read(config).unwrap(), b"updated");
+    assert!(staged_leftovers(&fixture.0).is_empty());
+}
+
+#[test]
+fn native_json_and_toml_config_publication_and_backups_remain_owner_private() {
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let fixture = Fixture(crate::tests::unique_fixture_directory(
+        "private-config-publication",
+    ));
+    let json_path = fixture.0.join("config.json");
+    fs::write(&json_path, br#"{"foreign":{"token":"retained-secret"}}"#).unwrap();
+    write_json_document(
+        &json_path,
+        &json!({"foreign":{"token":"retained-secret"},"qc":true}),
+        "fixture",
+    )
+    .unwrap();
+    assert!(qc_owner_only_file::is_owner_only(&json_path).unwrap());
+    assert!(fs::read_to_string(&json_path)
+        .unwrap()
+        .contains("retained-secret"));
+    let toml_path = fixture.0.join("config.toml");
+    fs::write(&toml_path, "[mcp_servers.foreign]\ncommand = 'foreign'\n[mcp_servers.foreign.env]\nTOKEN = 'retained-secret'\n").unwrap();
+    write_codex_config(
+        &toml_path,
+        &fixture.0.join("QC Remote.exe"),
+        CODEX_CLIENT_ID,
+    )
+    .unwrap();
+    assert!(qc_owner_only_file::is_owner_only(&toml_path).unwrap());
+    assert!(fs::read_to_string(&toml_path)
+        .unwrap()
+        .contains("retained-secret"));
+    let backups = config_backups(&toml_path)
+        .into_iter()
+        .chain(config_backups(&json_path))
+        .collect::<Vec<_>>();
+    assert!(
+        !backups.is_empty(),
+        "the existing foreign configuration must be backed up"
+    );
+    for (_, backup) in backups {
+        assert!(
+            qc_owner_only_file::is_owner_only(&backup).unwrap(),
+            "backup {}",
+            backup.display()
+        );
+    }
+}
+
+#[test]
+fn all_config_document_writers_preserve_live_bytes_on_staging_collision() {
+    struct Fixture(PathBuf);
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let fixture = Fixture(crate::tests::unique_fixture_directory("writer-collision"));
+    let config = fixture.0.join("config");
+    let executable = fixture.0.join("QC Remote.exe");
+    for operation in 0..3 {
+        let original = if operation == 0 {
+            "{\"user\":true}"
+        } else {
+            "[mcp_servers.qc-remote]\ncommand = 'original'\n"
+        };
+        fs::write(&config, original).unwrap();
+        let _fixed = PinnedStageSequence::new();
+        let stage = staged_config_path(
+            &fixture.0,
+            &config,
+            if operation == 2 {
+                "qc-remote-remove"
+            } else {
+                "qc-remote"
+            },
+        );
+        fs::write(&stage, b"contender").unwrap();
+        let result = match operation {
+            0 => write_json_document(&config, &json!({"user":false}), "fixture"),
+            1 => write_codex_config(&config, &executable, CODEX_CLIENT_ID),
+            _ => remove_codex_route(&config).map(|_| ()),
+        };
+        assert!(result.is_err(), "operation {operation}");
+        assert_eq!(fs::read(&config).unwrap(), original.as_bytes());
+        assert_eq!(fs::read(&stage).unwrap(), b"contender");
+        assert!(config_backups(&config).is_empty());
+        fs::remove_file(stage).unwrap();
+    }
+}
+
+#[test]
+fn antigravity_total_budget_is_not_restarted_by_another_port_or_body() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let deadline = Instant::now() + Duration::from_millis(40);
+        within_antigravity_budget(deadline, async {
+            tokio::time::sleep(Duration::from_millis(15)).await;
+            Ok::<_, String>(())
+        })
+        .await
+        .unwrap();
+        let late =
+            within_antigravity_budget(deadline, std::future::pending::<Result<(), String>>()).await;
+        assert!(late.unwrap_err().contains("total operation deadline"));
+        let mut dispatched = false;
+        let expired = within_antigravity_budget(deadline, async {
+            dispatched = true;
+            Ok::<_, String>(())
+        })
+        .await;
+        assert!(expired.is_err());
+        assert!(!dispatched, "expired port/body must not be polled");
+    });
+    for ports in [
+        vec![],
+        vec![0],
+        vec![123, 123],
+        vec![1; ANTIGRAVITY_MAX_PORTS + 1],
+    ] {
+        assert!(validate_antigravity_ports(&ports).is_err());
+    }
+    assert!(validate_antigravity_ports(&[123, 456]).is_ok());
+}
+
+#[test]
+fn antigravity_discovery_tool_budget_restores_on_success_and_unwind() {
+    let original = TOOL_DEADLINE.with(Cell::get);
+    let deadline = Instant::now() + Duration::from_millis(20);
+    with_tool_deadline(deadline, || {
+        assert_eq!(TOOL_DEADLINE.with(Cell::get), Some(deadline))
+    });
+    assert_eq!(TOOL_DEADLINE.with(Cell::get), original);
+    assert!(
+        std::panic::catch_unwind(|| with_tool_deadline(deadline, || panic!(
+            "injected discovery fault"
+        )))
+        .is_err()
+    );
+    assert_eq!(TOOL_DEADLINE.with(Cell::get), original);
+    // An expired scope refuses before trying to start even an invalid executable.
+    let error = with_tool_deadline(Instant::now() - Duration::from_millis(1), || {
+        run_with_timeout(
+            &mut Command::new("qc-no-executable-ever"),
+            Duration::from_secs(10),
+        )
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[test]
+fn expired_client_inspection_cannot_start_discovery() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = dispatched.clone();
+    let result = runtime.block_on(inspect_client_until(
+        Instant::now() - Duration::from_millis(1),
+        move || {
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok::<_, String>(())
+        },
+    ));
+    assert!(result.is_err());
+    assert!(!dispatched.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn started_read_only_discovery_can_finish_but_cannot_admit_rpc_after_deadline() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (ended, finished) = std::sync::mpsc::channel();
+    let rpc = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dispatched = rpc.clone();
+    let deadline = Instant::now() + Duration::from_millis(100);
+    let result = runtime.block_on(inspect_client_until(deadline, move || {
+        // Controlled already-started read-only OS stand-in. The owned original
+        // may outlive awaiting, but cannot launch a later RPC past deadline.
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = ended.send(());
+        remaining(deadline)?;
+        dispatched.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok::<_, String>(())
+    }));
+    assert!(result.is_err());
+    finished.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(!rpc.load(std::sync::atomic::Ordering::SeqCst));
+    qc_native_platform::thread_owner::reap();
+}
+
+#[test]
 fn chatgpt_reload_is_not_blocked_by_an_older_codex_process() {
     let configured_at = 1_000_u128;
     assert!(chatgpt_restart_required_for_processes(configured_at, [900]));
@@ -364,16 +945,19 @@ fn the_bundled_bridge_passes_a_node_syntax_check() {
     ))
     .expect("MCPB zip");
     let bridge = archive_text(&mut archive, "server/index.cjs");
-    let directory =
-        std::env::temp_dir().join(format!("qc-remote-bridge-syntax-{}", std::process::id()));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("syntax check directory");
     let file = directory.join("index.cjs");
     fs::write(&file, bridge).expect("bridge copy");
-    let checked = std::process::Command::new("node")
-        .arg("--check")
-        .arg(&file)
-        .output()
+    #[cfg(windows)]
+    let checked = run_with_timeout(
+        Command::new("node").arg("--check").arg(&file),
+        Duration::from_secs(10),
+    )
+    .expect("node is required to verify the bundled bridge");
+    #[cfg(not(windows))]
+    let checked = crate::tests::run_node_syntax_fixture(&file)
         .expect("node is required to verify the bundled bridge");
     assert!(
         checked.status.success(),
@@ -533,9 +1117,8 @@ fn device_knowledge_skill_install_is_versioned_and_backs_up_modifications() {
         .expect("bundled SKILL.md is UTF-8");
     assert!(skill_document.contains(&format!("version: \"{DEVICE_KNOWLEDGE_SKILL_VERSION}\"")));
 
-    let directory =
-        std::env::temp_dir().join(format!("qc-remote-tone-skill-test-{}", std::process::id()));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let skill = directory
         .join("codex")
         .join("skills")
@@ -608,9 +1191,8 @@ fn claude_status_detects_install_and_update_versions() {
 #[test]
 #[cfg(windows)]
 fn claude_path_falls_back_to_the_newest_squirrel_version_directory() {
-    let directory =
-        std::env::temp_dir().join(format!("qc-remote-claude-path-test-{}", std::process::id()));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let old = directory.join("AnthropicClaude").join("app-1.9.0");
     let current = directory.join("AnthropicClaude").join("app-1.10.0");
     fs::create_dir_all(&old).expect("old Claude directory");
@@ -662,9 +1244,8 @@ fn package_version_extracts_only_known_package_families() {
 #[test]
 #[cfg(windows)]
 fn claude_msix_path_uses_the_package_install_location() {
-    let directory =
-        std::env::temp_dir().join(format!("qc-remote-claude-msix-test-{}", std::process::id()));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let app = directory.join("app");
     fs::create_dir_all(&app).expect("Claude MSIX app directory");
     fs::write(app.join("claude.exe"), b"Claude").expect("Claude MSIX executable");
@@ -684,11 +1265,8 @@ fn claude_msix_path_uses_the_package_install_location() {
 #[test]
 #[cfg(windows)]
 fn chatgpt_msix_path_uses_the_package_install_location() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-chatgpt-msix-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let app = directory.join("app");
     fs::create_dir_all(&app).expect("ChatGPT MSIX app directory");
     fs::write(app.join("ChatGPT.exe"), b"ChatGPT").expect("ChatGPT MSIX executable");
@@ -727,11 +1305,8 @@ fn chatgpt_desktop_search_does_not_launch_codex_cli() {
 
 #[test]
 fn chatgpt_package_detection_accepts_supported_package_families() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-chatgpt-package-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(directory.join("OpenAI.Codex_test-family")).expect("Codex package fixture");
     assert!(package_directory_contains(
         &directory,
@@ -739,6 +1314,85 @@ fn chatgpt_package_detection_accepts_supported_package_families() {
     ));
     assert!(!package_directory_contains(&directory, &["Claude_"]));
     fs::remove_dir_all(directory).expect("remove package fixture");
+}
+
+#[test]
+fn chatgpt_skill_read_failure_preserves_the_independent_route_and_actual_evidence() {
+    let skill_error = json!({
+        "installed": false,
+        "availableVersion": "1.0.0",
+        "state": "status-error",
+        "statusError": "The skill marker could not be read",
+    });
+    let cases = [
+        (env!("CARGO_PKG_VERSION"), "current"),
+        ("99.0.0", "newer-installed"),
+    ];
+    assert_eq!(cases.len(), 2);
+    for (version, expected) in cases {
+        let mut row = chatgpt_status_document(
+            true,
+            true,
+            true,
+            true,
+            Some(version.into()),
+            None,
+            false,
+            observed(true, true),
+        );
+        assert_eq!(
+            row["state"], expected,
+            "the actual native constructor establishes the route state"
+        );
+        apply_chatgpt_device_knowledge_skill_status(&mut row, &skill_error);
+        assert_eq!(
+            row["state"], expected,
+            "an unreadable skill is not a mismatched MCP route"
+        );
+        assert_eq!(row["connectionActive"], true);
+        assert_eq!(row["integrationInstalled"], true);
+        assert_eq!(row["skillInstalled"], false);
+        assert_eq!(row["skillState"], "status-error");
+        assert_eq!(row["skillStatusError"], skill_error["statusError"]);
+
+        let known = json!({"installed": true, "installedVersion": "1.0.0", "availableVersion": "1.0.0", "state": "current"});
+        apply_chatgpt_device_knowledge_skill_status(&mut row, &known);
+        assert_eq!(row["state"], expected);
+        assert_eq!(row["skillInstalled"], true);
+        assert_eq!(row["installedSkillVersion"], "1.0.0");
+        assert!(row["skillStatusError"].is_null());
+    }
+
+    let states = [
+        (false, true, None, "not-installed"),
+        (true, false, None, "different-configuration"),
+        (
+            true,
+            true,
+            Some("The MCP config could not be read".to_owned()),
+            "status-error",
+        ),
+    ];
+    assert_eq!(states.len(), 3);
+    for (configured, launcher, error, expected) in states {
+        let mut row = chatgpt_status_document(
+            true,
+            configured,
+            launcher,
+            true,
+            None,
+            error,
+            false,
+            observed(false, false),
+        );
+        assert_eq!(row["state"], expected);
+        apply_chatgpt_device_knowledge_skill_status(&mut row, &skill_error);
+        assert_eq!(
+            row["state"], expected,
+            "skill health cannot improve an unpaired, foreign or unreadable route"
+        );
+        assert_eq!(row["skillStatusError"], skill_error["statusError"]);
+    }
 }
 
 #[test]
@@ -838,11 +1492,8 @@ fn chatgpt_status_distinguishes_setup_update_and_mismatched_routes() {
 
 #[test]
 fn chatgpt_install_preserves_unrelated_codex_configuration() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-chatgpt-config-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("ChatGPT config directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -914,11 +1565,8 @@ fn chatgpt_install_preserves_unrelated_codex_configuration() {
 /// written still held the configuration the user started with.
 #[test]
 fn repeated_chatgpt_pairing_never_loses_the_original_configuration() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-chatgpt-backup-history-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("ChatGPT config directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -961,11 +1609,8 @@ fn repeated_chatgpt_pairing_never_loses_the_original_configuration() {
 /// so a directory in its place fails the write deterministically.
 #[test]
 fn chatgpt_install_keeps_the_live_config_when_staging_fails() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-chatgpt-config-failure-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("ChatGPT config directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -991,11 +1636,8 @@ fn chatgpt_install_keeps_the_live_config_when_staging_fails() {
 
 #[test]
 fn chatgpt_remove_preserves_unrelated_codex_configuration() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-chatgpt-remove-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("ChatGPT config directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -1029,11 +1671,8 @@ fn chatgpt_remove_preserves_unrelated_codex_configuration() {
 
 #[test]
 fn claude_registry_version_comes_from_the_qc_remote_manifest() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-claude-registry-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("test directory");
     let registry = directory.join("extensions-installations.json");
     fs::write(
@@ -1053,11 +1692,8 @@ fn claude_registry_version_comes_from_the_qc_remote_manifest() {
 
 #[test]
 fn claude_registry_paths_cover_classic_and_store_installations() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-claude-registry-paths-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let roaming = directory.join("Roaming");
     let local = directory.join("Local");
     let store = local.join("Packages").join("Claude_pzs8sxrjxfjjc");
@@ -1083,11 +1719,8 @@ fn claude_registry_paths_cover_classic_and_store_installations() {
 
 #[test]
 fn claude_registry_uses_newest_install_across_classic_and_store_paths() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-claude-registry-versions-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("test directory");
     let classic = directory.join("classic.json");
     let store = directory.join("store.json");
@@ -1114,11 +1747,8 @@ fn claude_registry_uses_newest_install_across_classic_and_store_paths() {
 
 #[test]
 fn claude_install_is_detected_from_its_manifest_before_registry_refresh() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-claude-manifest-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let extension = directory
         .join("Claude Extensions")
         .join("local.mcpb.freevia.qc-remote");
@@ -1200,11 +1830,8 @@ fn antigravity_paths_cover_per_user_and_machine_installations() {
 
 #[test]
 fn antigravity_versioned_installation_chooses_the_newest_executable() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-antigravity-version-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     for version in ["2.9.0", "2.12.2"] {
         let app = directory.join(format!("app-{version}"));
         fs::create_dir_all(&app).expect("Antigravity version directory");
@@ -1218,17 +1845,9 @@ fn antigravity_versioned_installation_chooses_the_newest_executable() {
 }
 
 /// A scratch directory named after the test that owns it, so the suite can
-/// run its cases in parallel without them colliding, and a guard that
-/// removes it if the test fails before its own checked removal.
-fn installation_fixture(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
-    let directory =
-        std::env::temp_dir().join(format!("qc-remote-install-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&directory);
-    fs::create_dir_all(&directory).expect("installation fixture directory");
-    (
-        crate::tests::RemoveDirOnDrop::new(directory.clone()),
-        directory,
-    )
+/// run its cases in parallel without them colliding.
+fn installation_fixture(name: &str) -> PathBuf {
+    crate::tests::unique_fixture_directory(&format!("client-installation-{name}"))
 }
 
 fn executable_at(path: &Path) -> PathBuf {
@@ -1243,7 +1862,8 @@ fn executable_at(path: &Path) -> PathBuf {
 fn an_uninstall_entry_resolves_a_quoted_install_location_and_display_icon() {
     // Both values arrive with the quotation marks inside them, which is
     // how Jan registers itself.
-    let (_cleanup, directory) = installation_fixture("quoted-entry");
+    let directory = installation_fixture("quoted-entry");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let installed = directory.join("Programs").join("Jan");
     let executable = executable_at(&installed.join("jan.exe"));
 
@@ -1272,7 +1892,8 @@ fn an_uninstall_entry_resolves_a_quoted_install_location_and_display_icon() {
 
 #[test]
 fn an_uninstall_entry_resolves_a_display_icon_carrying_an_icon_index() {
-    let (_cleanup, directory) = installation_fixture("icon-index");
+    let directory = installation_fixture("icon-index");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let executable = executable_at(&directory.join("Bionic").join("Bionic.exe"));
     let icon = directory.join("Bionic").join("Bionic.ico");
     fs::write(&icon, []).expect("fixture icon");
@@ -1310,7 +1931,8 @@ fn an_uninstall_entry_resolves_a_display_icon_carrying_an_icon_index() {
 
 #[test]
 fn an_uninstall_entry_whose_paths_are_gone_is_not_an_installation() {
-    let (_cleanup, directory) = installation_fixture("stale-entry");
+    let directory = installation_fixture("stale-entry");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let missing = directory.join("Programs").join("Jan");
     let entry = UninstallEntry {
         display_version: Some("0.8.4".into()),
@@ -1352,7 +1974,8 @@ fn a_relative_registry_path_is_never_searched() {
 
 #[test]
 fn an_install_record_is_used_only_when_it_names_a_file_that_is_there() {
-    let (_cleanup, directory) = installation_fixture("self-record");
+    let directory = installation_fixture("self-record");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let executable = executable_at(&directory.join("Programs").join("Bionic").join("Bionic.exe"));
     let record = directory.join(LM_STUDIO_SEARCH.self_records[0].relative_path);
     fs::create_dir_all(record.parent().expect("record parent")).expect("record directory");
@@ -1421,7 +2044,8 @@ fn an_install_record_is_used_only_when_it_names_a_file_that_is_there() {
 #[test]
 #[cfg(windows)]
 fn lm_studio_resolves_from_bionic_and_from_its_legacy_layout() {
-    let (_cleanup, directory) = installation_fixture("lm-studio-layouts");
+    let directory = installation_fixture("lm-studio-layouts");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let bionic = executable_at(&directory.join("Bionic").join("Bionic.exe"));
     assert_eq!(
         desktop_app_paths_in(std::slice::from_ref(&directory), &LM_STUDIO_SEARCH),
@@ -1452,7 +2076,8 @@ fn a_store_execution_alias_is_accepted_although_it_is_zero_length() {
     // `is_file()` is true, `metadata()` succeeds with length 0. So the
     // probe must accept an empty file, and this case fails the moment
     // anybody adds a "and is not empty" clause to it.
-    let (_cleanup, directory) = installation_fixture("store-alias");
+    let directory = installation_fixture("store-alias");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let alias = executable_at(
         &directory
             .join("Microsoft")
@@ -1495,7 +2120,8 @@ fn a_default_path_answers_before_the_slower_mechanisms() {
         package_prefixes: &[],
         package_executables: &[],
     };
-    let (_cleanup, directory) = installation_fixture("mechanism-order");
+    let directory = installation_fixture("mechanism-order");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let default_path = executable_at(
         &directory
             .join("Probe")
@@ -1620,11 +2246,8 @@ fn a_path_field_that_only_looks_like_an_icon_index_is_left_alone() {
 
 #[test]
 fn antigravity_pair_and_unpair_preserve_unrelated_mcp_servers() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-antigravity-config-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity config directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("QC Remote.exe");
@@ -1723,11 +2346,8 @@ fn antigravity_ready_state_requires_the_current_qc_remote_launcher() {
 
 #[test]
 fn antigravity_empty_config_is_available_and_pairable() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-antigravity-empty-config-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity config directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("QC Remote.exe");
@@ -1763,11 +2383,8 @@ fn antigravity_empty_config_is_available_and_pairable() {
 
 #[test]
 fn antigravity_older_managed_bridge_is_an_update() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-antigravity-managed-update-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity config directory");
     let config = directory.join("mcp_config.json");
     let current = directory.join(format!(
@@ -1823,11 +2440,8 @@ fn antigravity_stable_launcher_with_older_client_is_an_update() {
     // Every release writes the same command now, so the route's version
     // has to come from its own client identity or an older pairing reads
     // as current and is never offered an update.
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-antigravity-stable-launcher-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity stable launcher directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("qc-remote.exe");
@@ -1858,11 +2472,8 @@ fn antigravity_stable_launcher_with_older_client_is_an_update() {
 
 #[test]
 fn antigravity_missing_current_bridge_requires_repair() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-antigravity-missing-bridge-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity config directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join(format!(
@@ -2016,11 +2627,8 @@ fn antigravity_status_distinguishes_unavailable_available_and_connected() {
 
 #[test]
 fn antigravity_permission_pair_and_unpair_preserve_other_settings() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-antigravity-permission-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Antigravity settings directory");
     let settings = directory.join("config.json");
     let original = json!({
@@ -2078,11 +2686,8 @@ fn antigravity_permission_pair_and_unpair_preserve_other_settings() {
 
 #[test]
 fn antigravity_pair_removes_only_the_stale_legacy_gemini_route() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-antigravity-legacy-config-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("legacy Gemini settings directory");
     let settings = directory.join("settings.json");
     let original = json!({
@@ -2116,11 +2721,8 @@ fn antigravity_pair_removes_only_the_stale_legacy_gemini_route() {
 
 #[test]
 fn managed_json_mcp_pair_update_and_unpair_preserve_other_servers() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-managed-json-mcp-test-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("managed MCP fixture directory");
     let config = directory.join("mcp.json");
     let executable = directory.join("qc-remote.exe");
@@ -2177,11 +2779,8 @@ fn managed_json_mcp_pair_update_and_unpair_preserve_other_servers() {
 /// skill - and the copy it had taken of the user's own - on disk forever.
 #[test]
 fn unpair_removes_only_a_skill_that_is_still_ours_and_restores_the_backup() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-tone-skill-removal-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let skill = directory.join("skills").join(DEVICE_KNOWLEDGE_SKILL_NAME);
     let backups = directory.join("backups");
 
@@ -2241,11 +2840,8 @@ fn unpair_removes_only_a_skill_that_is_still_ours_and_restores_the_backup() {
 /// other had taken aside.
 #[test]
 fn each_host_restores_its_own_skill_backup() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-skill-backup-hosts-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let hosts = [
         (CODEX_SKILL_HOST, b"the codex skill".as_slice()),
         (ANTIGRAVITY_SKILL_HOST, b"the gemini skill".as_slice()),
@@ -2284,11 +2880,8 @@ fn each_host_restores_its_own_skill_backup() {
 /// aside, and the caller holding nothing but an `Err`.
 #[test]
 fn pairing_writes_the_route_before_it_touches_the_users_skill() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-chatgpt-pair-order-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -2328,10 +2921,10 @@ fn pairing_writes_the_route_before_it_touches_the_users_skill() {
         .expect("pair with a working backup root");
     assert_eq!(complete["skillInstalled"], true);
     assert_eq!(complete["skillError"], Value::Null);
-    assert!(complete["skillBackupPath"]
-        .as_str()
-        .is_some_and(|path| fs::read(Path::new(path).join("SKILL.md"))
-            .is_ok_and(|contents| contents == b"the user's own skill")));
+    assert!(complete["skillBackupPath"].as_str().is_some_and(|path| {
+        fs::read(Path::new(path).join("SKILL.md"))
+            .is_ok_and(|contents| contents == b"the user's own skill")
+    }));
     assert_eq!(device_knowledge_skill_status_at(&skill)["state"], "current");
 
     fs::remove_dir_all(directory).expect("remove pair order fixture");
@@ -2339,11 +2932,8 @@ fn pairing_writes_the_route_before_it_touches_the_users_skill() {
 
 #[test]
 fn a_failed_skill_install_is_reported_without_losing_the_paired_route() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-skill-partial-install-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let skill = directory.join("skills").join(DEVICE_KNOWLEDGE_SKILL_NAME);
     let backups = directory.join("backups");
     fs::create_dir_all(&skill).expect("user skill directory");
@@ -2387,9 +2977,8 @@ fn a_failed_skill_install_is_reported_without_losing_the_paired_route() {
 /// every depth sorted and reindented.
 #[test]
 fn pairing_leaves_another_vendors_key_order_alone() {
-    let directory =
-        std::env::temp_dir().join(format!("qc-remote-json-key-order-{}", std::process::id()));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("key order fixture directory");
     let config = directory.join("mcp.json");
     let executable = directory.join("qc-remote.exe");
@@ -2429,9 +3018,8 @@ fn pairing_leaves_another_vendors_key_order_alone() {
 /// when the user had written an empty `mcpServers` themselves.
 #[test]
 fn unpairing_leaves_an_empty_server_map_the_user_already_had() {
-    let directory =
-        std::env::temp_dir().join(format!("qc-remote-empty-server-map-{}", std::process::id()));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("mcp.json");
     let executable = directory.join("qc-remote.exe");
@@ -2463,11 +3051,8 @@ fn unpairing_leaves_an_empty_server_map_the_user_already_had() {
 /// global `/rpc` slot that every other host writes to as well.
 #[test]
 fn the_chatgpt_route_names_itself_and_reports_its_own_version() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-chatgpt-client-id-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("config.toml");
     let executable = directory.join("QC Remote.exe");
@@ -2562,11 +3147,8 @@ fn the_manual_antigravity_example_passes_the_apps_own_route_check() {
         .as_str()
         .expect("example command");
 
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-antigravity-example-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("qc-remote.exe");
@@ -2602,11 +3184,8 @@ fn the_codex_installer_classifies_an_existing_qc_remote_entry() {
         .split_once("# --- end qc-remote entry classification ---")
         .expect("classification block end")
         .0;
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-installer-classify-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("classifier fixture directory");
     let script = directory.join("classify.ps1");
     fs::write(
@@ -2624,11 +3203,13 @@ fn the_codex_installer_classifies_an_existing_qc_remote_entry() {
             ),
         )
         .expect("write classifier script");
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
-        .output()
-        .expect("PowerShell is required to verify the bundled installer");
+    let output = run_with_timeout(
+        Command::new("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script),
+        Duration::from_secs(10),
+    )
+    .expect("PowerShell is required to verify the bundled installer");
     assert!(
         output.status.success(),
         "the installer's classifier failed: {}",
@@ -2654,14 +3235,137 @@ fn the_codex_installer_classifies_an_existing_qc_remote_entry() {
     fs::remove_dir_all(directory).expect("remove classifier fixture");
 }
 
+#[test]
+#[cfg(windows)]
+fn exported_installer_transactions_preserve_actual_user_bytes_on_failures() {
+    let installer = codex_installer();
+    let helpers = installer
+        .split_once("# --- qc-remote owned installer transactions ---")
+        .unwrap()
+        .1
+        .split_once("# --- end qc-remote owned installer transactions ---")
+        .unwrap()
+        .0;
+    let directory = crate::tests::unique_fixture_directory("installer-transactions");
+    let _guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let script = directory.join("transactions.ps1");
+    fs::write(&script, format!("param([string]$Root)\n$ErrorActionPreference = 'Stop'\n{helpers}\n{}", r###"
+$config = Join-Path $Root 'config.toml'
+$original = [Text.Encoding]::UTF8.GetBytes("# custom approvals remain byte-identical`n[mcp_servers.qc-remote]`ncommand='node'`n[unrelated]`nvalue=123`n")
+[IO.File]::WriteAllBytes($config, $original)
+$script:deniedStage = $null
+try {
+  Write-QcFileAtomically (Join-Path $Root 'denied.toml') $original $false {
+    param($held, $sid)
+    $script:deniedStage = $held.Name
+    if ($held.Length -ne 0) { throw 'credential bytes preceded security verification' }
+    return $false
+  }
+  throw 'false held security accepted'
+} catch { if (-not $_.ToString().Contains('held stage is not owner-private')) { throw } }
+if ($null -eq $script:deniedStage -or (Test-Path -LiteralPath $script:deniedStage) -or (Test-Path -LiteralPath (Join-Path $Root 'denied.toml'))) { throw 'denied stage leaked or destination published' }
+try {
+  Invoke-QcRemoteRouteChange $config { throw 'injected add failure' }
+  throw 'failure not surfaced'
+} catch {
+  if (-not $_.ToString().Contains('injected add failure')) { throw }
+}
+if (-not (Test-QcBytesEqual (Read-QcConfigBytes $config) $original)) { throw 'failed add retired the original working route' }
+$firstRecovery = @(Get-ChildItem -LiteralPath $Root -Filter 'qc-remote-recovery-*')
+if ($firstRecovery.Count -ne 1 -or -not (Test-QcBytesEqual (Read-QcConfigBytes $firstRecovery[0].FullName) $original)) { throw 'exact original recovery document missing' }
+$acl = (New-Object IO.FileInfo($firstRecovery[0].FullName)).GetAccessControl()
+$userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -cne $userSid) { throw 'recovery document leaked credentials through inherited permissions' }
+[IO.File]::Delete($firstRecovery[0].FullName)
+Write-Output 'failed add preserves working route'
+$partial = [Text.Encoding]::UTF8.GetBytes("# another writer or partially failing CLI`ncustom=456`n")
+[IO.File]::WriteAllBytes($config, $original)
+try {
+  Invoke-QcRemoteRouteChange $config { [IO.File]::WriteAllBytes($config, $partial); throw 'injected partial add' }
+  throw 'failure not surfaced'
+} catch {
+  if (-not $_.ToString().Contains('injected partial add') -or -not $_.ToString().Contains('recovery document retained')) { throw }
+}
+if (-not (Test-QcBytesEqual (Read-QcConfigBytes $config) $partial)) { throw 'rollback overwrote changed configuration' }
+$recovery = @(Get-ChildItem -LiteralPath $Root -Filter 'qc-remote-recovery-*')
+if ($recovery.Count -ne 1 -or -not (Test-QcBytesEqual (Read-QcConfigBytes $recovery[0].FullName) $original)) { throw 'exact recovery document missing' }
+Write-Output 'partial change preserved'
+$source = Join-Path $Root 'source'
+$target = Join-Path $Root 'skill'
+$backups = Join-Path $Root 'backups'
+New-Item -ItemType Directory -Path $source,$target | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $source 'empty') | Out-Null
+[IO.File]::WriteAllText((Join-Path $source 'SKILL.md'), 'new complete skill')
+[IO.File]::WriteAllText((Join-Path $target 'SKILL.md'), 'old user skill')
+try {
+  Install-QcSkillTransaction $source $target $backups { param($from,$stage); [IO.File]::WriteAllText((Join-Path $stage 'partial'), 'partial'); throw 'injected copy failure' } { param($from,$to); [IO.Directory]::Move($from,$to) }
+  throw 'failure not surfaced'
+} catch { if (-not $_.ToString().Contains('injected copy failure')) { throw } }
+if ([IO.File]::ReadAllText((Join-Path $target 'SKILL.md')) -cne 'old user skill') { throw 'copy failure retired original skill' }
+if (Test-Path -LiteralPath $backups) { throw 'copy failure moved original into backup' }
+if (@(Get-ChildItem -LiteralPath $Root -Filter '.qc-skill-install-*').Count -ne 0) { throw 'partial skill stage leaked' }
+Write-Output 'copy failure preserves original'
+try {
+  Install-QcSkillTransaction $source $target $backups {
+    param($from,$stage); Get-ChildItem -LiteralPath $from -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $stage -Recurse -Force }
+  } {
+    param($from,$to); if ([IO.Path]::GetFileName($from).StartsWith('.qc-skill-install-')) { throw 'injected activation failure' }; [IO.Directory]::Move($from,$to)
+  }
+  throw 'failure not surfaced'
+} catch { if (-not $_.ToString().Contains('injected activation failure')) { throw } }
+if ([IO.File]::ReadAllText((Join-Path $target 'SKILL.md')) -cne 'old user skill') { throw 'activation failure did not restore exact original' }
+if (@(Get-ChildItem -LiteralPath $Root -Filter '.qc-skill-install-*').Count -ne 0) { throw 'activation failure stage leaked' }
+if (@(Get-ChildItem -LiteralPath $Root -Filter '.qc-install-*').Count -ne 0) { throw 'atomic config stage leaked' }
+Write-Output 'activation failure rolls back'
+$oversized = Join-Path $source 'oversized'
+$large = [IO.File]::Create($oversized)
+try { $large.SetLength(64MB + 1) } finally { $large.Dispose() }
+try {
+  Install-QcSkillTransaction $source $target $backups { throw 'copy admitted despite oversized source' } { throw 'move admitted despite oversized source' }
+  throw 'oversized source accepted'
+} catch { if (-not $_.ToString().Contains('Skill file exceeds')) { throw } }
+if ([IO.File]::ReadAllText((Join-Path $target 'SKILL.md')) -cne 'old user skill') { throw 'inventory refusal changed active user skill' }
+if (@(Get-ChildItem -LiteralPath $Root -Filter '.qc-skill-install-*').Count -ne 0) { throw 'inventory refusal stage leaked' }
+Write-Output 'bounded inventory refuses before copy'
+"###)).unwrap();
+    let output = run_with_timeout(
+        Command::new("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&script)
+            .arg(&directory),
+        Duration::from_secs(10),
+    )
+    .expect("bounded installer transaction fixture");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows,
+        [
+            "failed add preserves working route",
+            "partial change preserved",
+            "copy failure preserves original",
+            "activation failure rolls back",
+            "bounded inventory refuses before copy"
+        ]
+    );
+}
+
 /// A backup must not fail the pair over a link in the user's own skill
 /// directory.  Creating a symlink needs Developer Mode or elevation on
 /// Windows; where that is unavailable the copy itself is still exercised.
 #[test]
 fn a_skill_backup_copies_the_tree_and_skips_links() {
-    let directory =
-        std::env::temp_dir().join(format!("qc-remote-copy-directory-{}", std::process::id()));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let source = directory.join("source");
     let nested = source.join("references").join("data");
     fs::create_dir_all(&nested).expect("nested source directory");
@@ -2729,12 +3433,8 @@ fn a_skill_backup_copies_the_tree_and_skips_links() {
 /// becoming a test that quietly checks nothing on most machines.
 #[test]
 fn a_pair_refuses_rather_than_deleting_a_skill_it_cannot_back_up() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-refuse-unbackupable-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&directory);
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let skill = directory.join("skills").join(DEVICE_KNOWLEDGE_SKILL_NAME);
     let backups = directory.join("backups");
     fs::create_dir_all(&skill).expect("an existing skill directory");
@@ -2787,9 +3487,8 @@ fn a_pair_refuses_rather_than_deleting_a_skill_it_cannot_back_up() {
 
 #[test]
 fn jan_pair_marks_the_server_active() {
-    let directory =
-        std::env::temp_dir().join(format!("qc-remote-jan-mcp-test-{}", std::process::id()));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("Jan MCP fixture directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("qc-remote.exe");
@@ -2838,11 +3537,8 @@ fn current_device_knowledge_skill() -> Value {
 /// the first reachable for somebody who paired before the argument existed.
 #[test]
 fn the_chatgpt_route_names_its_host_where_the_host_cannot_drop_it() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-chatgpt-identity-argument-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("config.toml");
     let executable = directory.join("qc-remote.exe");
@@ -2915,11 +3611,8 @@ fn the_chatgpt_route_names_its_host_where_the_host_cannot_drop_it() {
 
 #[test]
 fn the_lm_studio_route_names_its_host_where_the_host_cannot_drop_it() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-lm-studio-identity-argument-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("mcp.json");
     let executable = directory.join("qc-remote.exe");
@@ -2995,17 +3688,9 @@ fn the_lm_studio_route_names_its_host_where_the_host_cannot_drop_it() {
     fs::remove_dir_all(directory).expect("remove LM Studio identity fixture");
 }
 
-/// A scratch directory for one of the Bionic document tests, and a guard that
-/// removes it if the test fails before its own checked removal.
-fn bionic_fixture(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
-    let directory =
-        std::env::temp_dir().join(format!("qc-remote-bionic-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&directory);
-    fs::create_dir_all(&directory).expect("Bionic fixture directory");
-    (
-        crate::tests::RemoveDirOnDrop::new(directory.clone()),
-        directory,
-    )
+/// A scratch directory for one of the Bionic document tests.
+fn bionic_fixture(name: &str) -> PathBuf {
+    crate::tests::unique_fixture_directory(&format!("client-bionic-{name}"))
 }
 
 /// A user-authored Bionic MCP server entry, unrelated to this app. Nothing
@@ -3118,12 +3803,8 @@ fn read_bionic_route(config: &Path, executable: &Path) -> ConfiguredJsonMcpRoute
 /// a skill that is never loaded and reports success for it.
 #[test]
 fn the_bionic_skill_path_prefers_the_location_bionic_documents() {
-    let home = std::env::temp_dir().join(format!(
-        "qc-remote-bionic-skill-path-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&home);
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(home.clone());
+    let home = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(home.clone());
     std::fs::create_dir_all(&home).expect("temp home");
     let current = home
         .join(".lmstudio")
@@ -3169,10 +3850,12 @@ fn the_bionic_skill_path_prefers_the_location_bionic_documents() {
     std::fs::create_dir_all(&legacy).expect("an installed legacy skill");
     std::fs::create_dir_all(home.join(".lmstudio")).expect("current root appears");
     assert_eq!(
-            bionic_device_knowledge_skill_path_in(&home),
-            legacy,
-            "a skill already installed under the legacy root stays the answer once the current root appears",
-        );
+        bionic_device_knowledge_skill_path_in(&home),
+        legacy,
+        "a skill already installed under the legacy root stays the answer once the current root appears",
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// A paired row whose skill is missing or stale must offer Update, and a
@@ -3273,7 +3956,8 @@ fn the_bionic_route_is_written_where_bionic_reads_it_in_the_shape_bionic_writes(
         "the correct path is the only one Bionic reads"
     );
 
-    let (_cleanup, directory) = bionic_fixture("shape");
+    let directory = bionic_fixture("shape");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let config = directory.join("ng-mcp.json");
     let executable = directory.join("QC Remote.exe");
     pair_bionic(&config, &executable);
@@ -3328,7 +4012,8 @@ fn the_bionic_route_is_written_where_bionic_reads_it_in_the_shape_bionic_writes(
 /// model still on them.
 #[test]
 fn a_server_the_owner_added_survives_a_pair_a_refresh_and_an_unpair() {
-    let (_cleanup, directory) = bionic_fixture("neighbours");
+    let directory = bionic_fixture("neighbours");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let config = directory.join("ng-mcp.json");
     let executable = directory.join("QC Remote.exe");
     let theirs = their_own_bionic_server();
@@ -3416,7 +4101,8 @@ fn a_server_the_owner_added_survives_a_pair_a_refresh_and_an_unpair() {
 /// configuration.
 #[test]
 fn pairing_twice_leaves_one_qc_remote_server_rather_than_two() {
-    let (_cleanup, directory) = bionic_fixture("duplicates");
+    let directory = bionic_fixture("duplicates");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let config = directory.join("ng-mcp.json");
     let executable = directory.join("QC Remote.exe");
     seed_bionic_document(&config, vec![their_own_bionic_server()]);
@@ -3446,7 +4132,8 @@ fn pairing_twice_leaves_one_qc_remote_server_rather_than_two() {
 /// guard leaves behind - is collapsed rather than added to.
 #[test]
 fn a_document_already_holding_two_of_our_servers_is_collapsed_to_one() {
-    let (_cleanup, directory) = bionic_fixture("collapse");
+    let directory = bionic_fixture("collapse");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let config = directory.join("ng-mcp.json");
     let executable = directory.join("QC Remote.exe");
     let theirs = their_own_bionic_server();
@@ -3490,7 +4177,8 @@ fn a_document_already_holding_two_of_our_servers_is_collapsed_to_one() {
 /// its own freshly written route as a stranger's.
 #[test]
 fn an_id_this_app_did_not_choose_is_kept_and_the_refresh_still_recognises_the_route() {
-    let (_cleanup, directory) = bionic_fixture("identity");
+    let directory = bionic_fixture("identity");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let config = directory.join("ng-mcp.json");
     let executable = directory.join("QC Remote.exe");
     const THEIR_ID: &str = "c41f7b02-5d18-4ee9-9a37-6f0d2e58b1c4";
@@ -3592,7 +4280,8 @@ fn a_bionic_install_and_a_legacy_install_read_different_documents() {
 /// A pre-rename install still gets the document it reads, unchanged.
 #[test]
 fn a_legacy_lm_studio_is_still_written_the_mcp_servers_document_it_reads() {
-    let (_cleanup, directory) = bionic_fixture("legacy");
+    let directory = bionic_fixture("legacy");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let executable = directory.join("QC Remote.exe");
     let legacy = LmStudioMcpDocument {
         path: directory.join("mcp.json"),
@@ -3649,7 +4338,8 @@ fn a_legacy_lm_studio_is_still_written_the_mcp_servers_document_it_reads() {
 /// copies the live file aside before replacing it.
 #[test]
 fn a_bionic_document_this_app_cannot_account_for_is_refused_rather_than_replaced() {
-    let (_cleanup, directory) = bionic_fixture("malformed");
+    let directory = bionic_fixture("malformed");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let executable = directory.join("QC Remote.exe");
     for (name, contents) in [
         ("not-json", "{ \"servers\": [ "),
@@ -3755,12 +4445,12 @@ fn renaming_the_row_must_not_rename_the_client_identity_pairings_are_keyed_by() 
         rows += series.len();
         for pair in series.windows(2) {
             assert_eq!(
-                    compare_versions(pair[0].series_begins_at, pair[1].series_begins_at),
-                    Some(Ordering::Greater),
-                    "{} must be declared before {}: app_version_series takes the first row a version reaches",
-                    pair[0].name,
-                    pair[1].name,
-                );
+                compare_versions(pair[0].series_begins_at, pair[1].series_begins_at),
+                Some(Ordering::Greater),
+                "{} must be declared before {}: app_version_series takes the first row a version reaches",
+                pair[0].name,
+                pair[1].name,
+            );
             compared += 1;
         }
     }
@@ -3781,7 +4471,8 @@ fn renaming_the_row_must_not_rename_the_client_identity_pairings_are_keyed_by() 
              followed the label: {LM_STUDIO_CLIENT_ID}"
     );
 
-    let (_cleanup, directory) = installation_fixture("lm-studio-identity-outlives-the-label");
+    let directory = installation_fixture("lm-studio-identity-outlives-the-label");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let executable = directory.join("qc-remote.exe");
 
     // A pairing exactly as a shipped build left it on disk, written out
@@ -4050,11 +4741,8 @@ fn jan_is_gated_on_its_single_numbering_series() {
 
 #[test]
 fn the_jan_route_names_its_host_where_the_host_cannot_drop_it() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-jan-identity-argument-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("qc-remote.exe");
@@ -4115,11 +4803,8 @@ fn the_jan_route_names_its_host_where_the_host_cannot_drop_it() {
 /// writer read as current forever and was never offered the rewrite.
 #[test]
 fn the_antigravity_route_names_its_host_where_the_host_cannot_drop_it() {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-antigravity-identity-argument-{}",
-        std::process::id()
-    ));
-    let _cleanup = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let directory = crate::tests::unique_fixture_directory("client-package");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     fs::create_dir_all(&directory).expect("fixture directory");
     let config = directory.join("mcp_config.json");
     let executable = directory.join("qc-remote.exe");
@@ -4207,19 +4892,9 @@ fn the_pasted_stdio_setup_names_its_host_where_the_host_cannot_drop_it() {
         "the environment copy stays for the hosts that do propagate it"
     );
 }
-/// A scratch directory for one of the route-refresh tests, and a guard that
-/// removes it if the test fails before its own checked removal.
-fn refresh_fixture(name: &str) -> (crate::tests::RemoveDirOnDrop, PathBuf) {
-    let directory = std::env::temp_dir().join(format!(
-        "qc-remote-route-refresh-{name}-{}",
-        std::process::id()
-    ));
-    let _ = fs::remove_dir_all(&directory);
-    fs::create_dir_all(&directory).expect("route refresh fixture directory");
-    (
-        crate::tests::RemoveDirOnDrop::new(directory.clone()),
-        directory,
-    )
+/// A scratch directory for one of the route-refresh tests.
+fn refresh_fixture(name: &str) -> PathBuf {
+    crate::tests::unique_fixture_directory(&format!("client-refresh-{name}"))
 }
 
 #[cfg(target_os = "linux")]
@@ -4259,7 +4934,8 @@ fn linux_jan_pairing_remains_unavailable_even_if_flatpak_is_installed() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_jan_uses_documented_xdg_data_location_and_custom_settings_path() {
-    let (_cleanup, root) = refresh_fixture("linux-jan-path");
+    let root = refresh_fixture("linux-jan-path");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(root.clone());
     let config_home = root.join("config");
     let data_home = root.join("data");
     assert_eq!(
@@ -4298,7 +4974,8 @@ fn linux_jan_uses_documented_xdg_data_location_and_custom_settings_path() {
 fn linux_codex_detection_only_accepts_executable_absolute_path_entries() {
     use std::os::unix::fs::PermissionsExt;
 
-    let (_cleanup, root) = refresh_fixture("linux-path-detection");
+    let root = refresh_fixture("linux-path-detection");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(root.clone());
     let first = root.join("first");
     let second = root.join("second");
     fs::create_dir_all(&first).expect("create first PATH fixture");
@@ -4439,7 +5116,8 @@ fn assert_a_freshly_paired_route_is_left_alone(target: &ManagedRouteTarget) {
 
 #[test]
 fn a_route_that_already_names_this_build_is_never_rewritten() {
-    let (_cleanup, directory) = refresh_fixture("current");
+    let directory = refresh_fixture("current");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     assert_a_freshly_paired_route_is_left_alone(&chatgpt_target(&directory.join("codex")));
     assert_a_freshly_paired_route_is_left_alone(&antigravity_target(
         &directory.join("antigravity"),
@@ -4452,7 +5130,8 @@ fn a_route_that_already_names_this_build_is_never_rewritten() {
 
 #[test]
 fn a_stale_route_this_app_wrote_is_brought_up_to_date_without_being_asked() {
-    let (_cleanup, directory) = refresh_fixture("stale");
+    let directory = refresh_fixture("stale");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let target = lm_studio_target(&directory);
     seed_json_route(
         &target.config_path,
@@ -4501,7 +5180,8 @@ fn a_stale_route_this_app_wrote_is_brought_up_to_date_without_being_asked() {
 
 #[test]
 fn a_stale_chatgpt_route_is_freshened_through_its_own_toml_writer() {
-    let (_cleanup, directory) = refresh_fixture("stale-chatgpt");
+    let directory = refresh_fixture("stale-chatgpt");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let target = chatgpt_target(&directory);
     fs::write(&target.config_path, "model = \"keep-me\"\n").expect("seed Codex configuration");
     write_codex_config(
@@ -4537,7 +5217,8 @@ fn a_stale_chatgpt_route_is_freshened_through_its_own_toml_writer() {
 
 #[test]
 fn a_stale_antigravity_route_is_freshened_through_its_own_writer() {
-    let (_cleanup, directory) = refresh_fixture("stale-antigravity");
+    let directory = refresh_fixture("stale-antigravity");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let target = antigravity_target(&directory);
     seed_json_route(
         &target.config_path,
@@ -4566,7 +5247,8 @@ fn a_stale_antigravity_route_is_freshened_through_its_own_writer() {
 
 #[test]
 fn a_route_pointing_at_another_command_is_left_completely_alone() {
-    let (_cleanup, directory) = refresh_fixture("foreign-command");
+    let directory = refresh_fixture("foreign-command");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
 
     // Ours in every other respect - our arguments, our identity, a version
     // this build is newer than - and a command that is not this app.
@@ -4610,7 +5292,8 @@ fn a_route_pointing_at_another_command_is_left_completely_alone() {
 
 #[test]
 fn a_managed_route_with_edited_arguments_is_repaired_and_other_servers_survive() {
-    let (_cleanup, directory) = refresh_fixture("customised-args");
+    let directory = refresh_fixture("customised-args");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let target = lm_studio_target(&directory);
     let mut server = json_mcp_route_server(&target.executable_path, "lm-studio:0.1.100", false);
     server["args"] = json!([
@@ -4644,7 +5327,8 @@ fn a_managed_route_with_edited_arguments_is_repaired_and_other_servers_survive()
 
 #[test]
 fn a_managed_route_disabled_in_the_host_is_restored_by_startup_repair() {
-    let (_cleanup, directory) = refresh_fixture("disabled");
+    let directory = refresh_fixture("disabled");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let target = lm_studio_target(&directory);
     let mut server = json_mcp_route_server(&target.executable_path, "lm-studio:0.1.100", false);
     server["disabled"] = Value::Bool(true);
@@ -4668,7 +5352,8 @@ fn a_managed_route_disabled_in_the_host_is_restored_by_startup_repair() {
 
 #[test]
 fn a_managed_route_with_a_moved_executable_path_is_repaired_at_the_same_version() {
-    let (_cleanup, directory) = refresh_fixture("moved-executable-path");
+    let directory = refresh_fixture("moved-executable-path");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let target = lm_studio_target(&directory);
     let old_path = PathBuf::from("E:\\QC Remote\\QC Remote.exe");
     seed_json_route(
@@ -4703,7 +5388,8 @@ fn a_managed_route_with_a_moved_executable_path_is_repaired_at_the_same_version(
 
 #[test]
 fn an_unpaired_provider_is_not_paired_by_the_unattended_pass() {
-    let (_cleanup, directory) = refresh_fixture("unpaired");
+    let directory = refresh_fixture("unpaired");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
 
     // A host that has never been paired has no configuration at all.
     let missing = lm_studio_target(&directory.join("missing"));
@@ -4742,7 +5428,8 @@ fn an_unpaired_provider_is_not_paired_by_the_unattended_pass() {
 
 #[test]
 fn a_route_naming_a_newer_build_than_this_one_is_not_downgraded() {
-    let (_cleanup, directory) = refresh_fixture("newer");
+    let directory = refresh_fixture("newer");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let target = lm_studio_target(&directory);
     seed_json_route(
         &target.config_path,
@@ -4795,7 +5482,8 @@ fn the_unattended_pass_never_reaches_claude_desktop() {
 
 #[test]
 fn a_refused_rewrite_leaves_the_previous_route_working_and_is_reported_once_per_reason() {
-    let (_cleanup, directory) = refresh_fixture("refused-write");
+    let directory = refresh_fixture("refused-write");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let target = ManagedRouteTarget {
         // A key of this pass's own, so recording an outcome here cannot
         // disturb another test's reading of the shared status record.
@@ -4862,7 +5550,8 @@ fn a_refused_rewrite_leaves_the_previous_route_working_and_is_reported_once_per_
 
 #[test]
 fn a_configuration_this_app_cannot_read_is_reported_and_left_untouched() {
-    let (_cleanup, directory) = refresh_fixture("unreadable");
+    let directory = refresh_fixture("unreadable");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let target = lm_studio_target(&directory);
     let invalid = "{ this is not JSON";
     fs::write(&target.config_path, invalid).expect("seed an invalid configuration");
@@ -4916,7 +5605,8 @@ fn staged_leftovers(directory: &Path) -> Vec<String> {
 /// renames interleaved freely.
 #[test]
 fn concurrent_route_writers_in_one_process_never_collide() {
-    let (_cleanup, directory) = refresh_fixture("concurrent-writers");
+    let directory = refresh_fixture("concurrent-writers");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let config = directory.join("mcp.json");
     let executable = directory.join("QC Remote.exe");
     seed_json_route(
@@ -4925,37 +5615,53 @@ fn concurrent_route_writers_in_one_process_never_collide() {
     );
     const WRITERS: usize = 8;
     const ROUNDS: usize = 25;
-    let start = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
-    let writers = (0..WRITERS)
-        .map(|index| {
-            let start = start.clone();
-            let config = config.clone();
-            let executable = executable.clone();
-            std::thread::spawn(move || {
-                start.wait();
-                (0..ROUNDS)
-                    .filter_map(|round| {
-                        let result = if (index + round) % 3 == 0 {
-                            remove_json_mcp_route(&config, "Test").map(|_| ())
-                        } else {
-                            write_json_mcp_route(
-                                &config,
-                                &executable,
-                                LM_STUDIO_CLIENT_ID,
-                                "Test",
-                                false,
-                            )
-                        };
-                        result.err()
-                    })
-                    .collect::<Vec<_>>()
+    let failures = std::thread::scope(|scope| {
+        let start = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let arrived = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // Declared inside the scope so unwind releases workers BEFORE its join.
+        let _release_on_unwind = ClientFixtureRelease(start.clone());
+        let writers = (0..WRITERS)
+            .map(|index| {
+                let start = start.clone();
+                let arrived = arrived.clone();
+                let config = config.clone();
+                let executable = executable.clone();
+                scope.spawn(move || {
+                    arrived.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    wait_client_fixture_gate(&start);
+                    (0..ROUNDS)
+                        .filter_map(|round| {
+                            let result = if (index + round) % 3 == 0 {
+                                remove_json_mcp_route(&config, "Test").map(|_| ())
+                            } else {
+                                write_json_mcp_route(
+                                    &config,
+                                    &executable,
+                                    LM_STUDIO_CLIENT_ID,
+                                    "Test",
+                                    false,
+                                )
+                            };
+                            result.err()
+                        })
+                        .collect::<Vec<_>>()
+                })
             })
-        })
-        .collect::<Vec<_>>();
-    let failures = writers
-        .into_iter()
-        .flat_map(|writer| writer.join().expect("writer thread"))
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while arrived.load(std::sync::atomic::Ordering::Acquire) != WRITERS {
+            assert!(
+                Instant::now() < deadline,
+                "client fixture workers did not arrive"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        start.store(true, std::sync::atomic::Ordering::Release);
+        writers
+            .into_iter()
+            .flat_map(|writer| writer.join().expect("writer thread"))
+            .collect::<Vec<_>>()
+    });
     assert!(
         failures.is_empty(),
         "concurrent writers reported failures over writes that had landed: {failures:?}"
@@ -4986,7 +5692,8 @@ fn concurrent_route_writers_in_one_process_never_collide() {
 /// nothing to freshen.
 #[test]
 fn an_unpair_in_flight_is_never_undone_by_the_start_up_refresh() {
-    let (_cleanup, directory) = refresh_fixture("unpair-during-refresh");
+    let directory = refresh_fixture("unpair-during-refresh");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
     let config = lm_studio_target(&directory).config_path;
     seed_json_route(
         &config,
@@ -4998,27 +5705,31 @@ fn an_unpair_in_flight_is_never_undone_by_the_start_up_refresh() {
     );
 
     // The owner's Unpair is mid-flight: it holds the lock while it works.
-    let unpair = config_write_lock();
-    let refresh = std::thread::spawn({
-        let directory = directory.clone();
-        move || {
-            let target = ManagedRouteTarget {
-                provider: "test-only-unpair-during-refresh",
-                ..lm_studio_target(&directory)
-            };
-            refresh_managed_route(&target)
-        }
-    });
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(
-        !refresh.is_finished(),
-        "the refresh must wait for an Unpair already in flight"
-    );
-    // Re-entrant on this thread, as the refresh's own rewrite is.
-    assert!(remove_json_mcp_route(&config, LM_STUDIO_CONFIG_OWNER).expect("unpair"));
-    drop(unpair);
+    let outcome = std::thread::scope(|scope| {
+        // This lock must live inside the scope: an assertion panic drops it
+        // before scope joins the refresh waiting for that same lock.
+        let unpair = config_write_lock();
+        let refresh = scope.spawn({
+            let directory = directory.clone();
+            move || {
+                let target = ManagedRouteTarget {
+                    provider: "test-only-unpair-during-refresh",
+                    ..lm_studio_target(&directory)
+                };
+                refresh_managed_route(&target)
+            }
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !refresh.is_finished(),
+            "the refresh must wait for an Unpair already in flight"
+        );
+        // Re-entrant on this thread, as the refresh's own rewrite is.
+        assert!(remove_json_mcp_route(&config, LM_STUDIO_CONFIG_OWNER).expect("unpair"));
+        drop(unpair);
 
-    let outcome = refresh.join().expect("refresh thread");
+        refresh.join().expect("refresh thread")
+    });
     assert_eq!(outcome.decision, RouteRefreshDecision::NotPaired);
     assert_eq!(outcome.failure, None);
     let document = parse_json_mcp_config(
@@ -5031,6 +5742,42 @@ fn an_unpair_in_flight_is_never_undone_by_the_start_up_refresh() {
         "the refresh wrote a removed route back: {document}"
     );
     fs::remove_dir_all(directory).expect("remove unpair-during-refresh fixture");
+}
+
+struct ClientFixtureRelease(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl Drop for ClientFixtureRelease {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+fn wait_client_fixture_gate(start: &std::sync::atomic::AtomicBool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !start.load(std::sync::atomic::Ordering::Acquire) {
+        assert!(
+            Instant::now() < deadline,
+            "client fixture gate was not released"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+#[test]
+fn partial_client_fixture_setup_unwind_releases_and_joins_its_started_writer() {
+    let completed = std::sync::atomic::AtomicBool::new(false);
+    let failed = std::panic::catch_unwind(|| {
+        std::thread::scope(|scope| {
+            let start = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let _release_on_unwind = ClientFixtureRelease(start.clone());
+            let started = start.clone();
+            let completed = &completed;
+            scope.spawn(move || {
+                wait_client_fixture_gate(&started);
+                completed.store(true, std::sync::atomic::Ordering::Release);
+            });
+            panic!("injected next client worker setup failure");
+        });
+    });
+    assert!(failed.is_err());
+    assert!(completed.load(std::sync::atomic::Ordering::Acquire));
 }
 
 /// A wedged tool is killed at the deadline instead of holding

@@ -3,6 +3,415 @@
 use super::*;
 use crate::updater_relay::fetch::{FetchFailure, FetchRequest, FetchedHop, HttpFetcher};
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicUsize;
+
+#[test]
+fn discovery_fixtures_are_instance_scoped_and_preserve_errors() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let empty = DeviceDiscovery {
+        enumerate: Some(Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        })),
+    };
+    let unavailable = DeviceDiscovery {
+        enumerate: Some(Arc::new(|| Err("injected HID enumeration failure".into()))),
+    };
+    assert!(empty.devices().unwrap().is_empty());
+    assert!(empty.clone().devices().unwrap().is_empty());
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        unavailable.devices().unwrap_err(),
+        "injected HID enumeration failure"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "another instance cannot use this callback"
+    );
+}
+
+#[test]
+fn a_continuously_replenished_command_queue_yields_after_one_bounded_batch() {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    sender.send(0_usize).unwrap();
+    let mut remaining = DEVICE_COMMAND_BATCH_LIMIT;
+    let mut processed = Vec::new();
+    let ready = Instant::now();
+    while let Some(command) = next_command_in_batch(&receiver, &mut remaining, ready) {
+        processed.push(command);
+        sender.try_send(command + 1).unwrap();
+    }
+    assert_eq!(
+        processed,
+        (0..DEVICE_COMMAND_BATCH_LIMIT).collect::<Vec<_>>()
+    );
+    assert_eq!(remaining, 0);
+    // The producer never left an empty queue: termination is the service bound,
+    // leaving the next item for the next outer iteration's inbound/clock work.
+    assert_eq!(receiver.try_recv().unwrap(), DEVICE_COMMAND_BATCH_LIMIT);
+}
+
+#[test]
+fn command_batch_boundaries_preserve_disconnect_stop_fifo_and_settle_admission() {
+    let (sender, receiver) = mpsc::sync_channel(DEVICE_COMMAND_BATCH_LIMIT + 2);
+    for index in 0..DEVICE_COMMAND_BATCH_LIMIT {
+        sender
+            .send(Command::RecordFlight {
+                event: index.to_string(),
+                incident: false,
+            })
+            .unwrap();
+    }
+    let (reply, _response) = mpsc::channel();
+    sender
+        .send(Command::Disconnect {
+            reply,
+            _admission: None,
+        })
+        .unwrap();
+    sender.send(Command::Stop).unwrap();
+    let mut remaining = DEVICE_COMMAND_BATCH_LIMIT;
+    assert!(next_command_in_batch(
+        &receiver,
+        &mut remaining,
+        Instant::now() + Duration::from_secs(60)
+    )
+    .is_none());
+    assert_eq!(remaining, DEVICE_COMMAND_BATCH_LIMIT);
+    let ready = Instant::now();
+    for index in 0..DEVICE_COMMAND_BATCH_LIMIT {
+        let Some(Command::RecordFlight { event, .. }) =
+            next_command_in_batch(&receiver, &mut remaining, ready)
+        else {
+            panic!("FIFO flight command was skipped");
+        };
+        assert_eq!(event, index.to_string());
+    }
+    assert!(next_command_in_batch(&receiver, &mut remaining, ready).is_none());
+    remaining = DEVICE_COMMAND_BATCH_LIMIT;
+    assert!(matches!(
+        next_command_in_batch(&receiver, &mut remaining, ready),
+        Some(Command::Disconnect { .. })
+    ));
+    assert!(matches!(
+        next_command_in_batch(&receiver, &mut remaining, ready),
+        Some(Command::Stop)
+    ));
+    assert!(next_command_in_batch(&receiver, &mut remaining, ready).is_none());
+}
+
+/// Release a deliberately stalled fixture even when an assertion unwinds.
+struct ReleaseOnDrop(Arc<AtomicBool>);
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+const FIXTURE_OWNER_LIMIT: usize = 32;
+
+trait RetiredFixture: Send {
+    fn finished(&self) -> bool;
+    fn join(self: Box<Self>);
+}
+
+struct FixtureAdmissions {
+    limit: usize,
+    count: std::sync::atomic::AtomicUsize,
+    retained: Mutex<Vec<Box<dyn RetiredFixture>>>,
+}
+struct FixturePermit(Arc<FixtureAdmissions>);
+impl Drop for FixturePermit {
+    fn drop(&mut self) {
+        self.0.count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+impl FixtureAdmissions {
+    fn new(limit: usize) -> Arc<Self> {
+        Arc::new(Self {
+            limit,
+            count: std::sync::atomic::AtomicUsize::new(0),
+            retained: Mutex::new(Vec::new()),
+        })
+    }
+    fn global() -> Arc<Self> {
+        static OWNER: std::sync::OnceLock<Arc<FixtureAdmissions>> = std::sync::OnceLock::new();
+        Arc::clone(OWNER.get_or_init(|| Self::new(FIXTURE_OWNER_LIMIT)))
+    }
+    fn reserve(self: &Arc<Self>) -> Result<Arc<FixturePermit>, &'static str> {
+        self.reap();
+        self.count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < self.limit).then_some(count + 1)
+            })
+            .map_err(|_| "fixture owner capacity exhausted")?;
+        Ok(Arc::new(FixturePermit(Arc::clone(self))))
+    }
+    fn reap(&self) {
+        // Both the predicate (which may reap a worker) and exact joins run
+        // outside this mutex. Admission stays held while records are taken.
+        let records = std::mem::take(&mut *self.retained.lock_recover());
+        let mut pending = Vec::new();
+        for record in records {
+            if record.finished() {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| record.join()));
+            } else {
+                pending.push(record);
+            }
+        }
+        self.retained.lock_recover().extend(pending);
+    }
+    fn retain(&self, record: Box<dyn RetiredFixture>) {
+        self.reap();
+        if record.finished() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| record.join()));
+        } else {
+            self.retained.lock_recover().push(record);
+        }
+    }
+}
+
+struct RetiredFixtureThread<T: Send + 'static> {
+    handle: thread::JoinHandle<T>,
+    _permit: Arc<FixturePermit>,
+}
+impl<T: Send + 'static> RetiredFixture for RetiredFixtureThread<T> {
+    fn finished(&self) -> bool {
+        crate::platform::process::thread_signalled(&self.handle)
+    }
+    fn join(self: Box<Self>) {
+        let _ = self.handle.join();
+    }
+}
+
+pub(super) struct FixtureThread<T: Send + 'static> {
+    handle: Option<thread::JoinHandle<T>>,
+    permit: Option<Arc<FixturePermit>>,
+}
+impl<T: Send + 'static> FixtureThread<T> {
+    pub(super) fn spawn(run: impl FnOnce() -> T + Send + 'static) -> Self {
+        Self::spawn_in(FixtureAdmissions::global(), run)
+    }
+    fn spawn_in(
+        admissions: Arc<FixtureAdmissions>,
+        run: impl FnOnce() -> T + Send + 'static,
+    ) -> Self {
+        // Admission and original ownership precede every readiness/assertion.
+        let permit = admissions.reserve().expect("fixture thread admission");
+        let handle = thread::Builder::new()
+            .spawn(run)
+            .expect("fixture thread spawn");
+        Self {
+            handle: Some(handle),
+            permit: Some(permit),
+        }
+    }
+    pub(super) fn join(mut self) -> T {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !crate::platform::process::thread_signalled(self.handle.as_ref().unwrap()) {
+            assert!(Instant::now() < deadline, "fixture thread did not retire");
+            thread::sleep(Duration::from_millis(1));
+        }
+        let outcome = self.handle.take().unwrap().join();
+        self.permit.take();
+        outcome.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
+    fn retire_within(&mut self, budget: Duration) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
+        let deadline = Instant::now() + budget;
+        while !crate::platform::process::thread_signalled(&handle) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let permit = self.permit.take().unwrap();
+        if crate::platform::process::thread_signalled(&handle) {
+            let _ = handle.join();
+            drop(permit);
+        } else {
+            let admissions = Arc::clone(&permit.0);
+            admissions.retain(Box::new(RetiredFixtureThread {
+                handle,
+                _permit: permit,
+            }));
+            eprintln!("fixture thread did not acknowledge exit; bounded original owner retained");
+        }
+    }
+}
+impl<T: Send + 'static> Drop for FixtureThread<T> {
+    fn drop(&mut self) {
+        self.retire_within(Duration::from_secs(2));
+    }
+}
+
+/// Temporary bytes outlive the exact worker and every cloned native lease.
+struct WorkerRootGuard {
+    shutdown: WorkerShutdown,
+    root: Arc<crate::device_lease::testing::FixtureRoot>,
+    permit: Option<Arc<FixturePermit>>,
+}
+struct RetiredWorkerRoot {
+    shutdown: WorkerShutdown,
+    root: Arc<crate::device_lease::testing::FixtureRoot>,
+    _permit: Arc<FixturePermit>,
+}
+impl RetiredFixture for RetiredWorkerRoot {
+    fn finished(&self) -> bool {
+        self.shutdown.fixture_original_acknowledged()
+            && !crate::device_lease::testing::root_has_lease_activity(&self.root.0)
+    }
+    fn join(self: Box<Self>) {
+        drop(self);
+    }
+}
+impl Drop for WorkerRootGuard {
+    fn drop(&mut self) {
+        let outcome = self.shutdown.stop_and_join(WORKER_EXIT_BUDGET);
+        let permit = self.permit.take().expect("fixture root admission");
+        let admissions = Arc::clone(&permit.0);
+        let record = RetiredWorkerRoot {
+            shutdown: self.shutdown.clone(),
+            root: Arc::clone(&self.root),
+            _permit: permit,
+        };
+        if record.finished() {
+            drop(record);
+        } else {
+            admissions.retain(Box::new(record));
+            eprintln!("fixture worker exit {outcome:?}; bounded exact root owner retained");
+        }
+    }
+}
+
+struct FixtureSweepOnDrop(Arc<FixtureAdmissions>);
+impl Drop for FixtureSweepOnDrop {
+    fn drop(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            self.0.reap();
+            if self.0.count.load(Ordering::Acquire) == 0 || Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+#[test]
+fn retained_fixture_root_waits_for_exact_worker_and_native_lease_retirement() {
+    let admissions = FixtureAdmissions::new(1);
+    let _cleanup = FixtureSweepOnDrop(Arc::clone(&admissions));
+    let permit = admissions.reserve().unwrap();
+    let root = crate::device_lease::testing::fresh_root("native-root-retirement");
+    let path = root.0.clone();
+    let mut lease =
+        crate::device_lease::LeaseHolder::new(path.join("device-owner.json"), "fixture".into());
+    lease.acquire().unwrap();
+    let native = lease.io_owner().unwrap();
+    lease.release();
+    let wire = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&wire);
+    let controller = controller_with_worker(move |receiver| fake_run(receiver, recorded));
+    let guard = WorkerRootGuard {
+        shutdown: controller.shutdown_handle(),
+        root: Arc::clone(&root),
+        permit: Some(permit),
+    };
+    drop(guard);
+    drop(controller);
+    drop(root);
+    assert!(
+        path.exists(),
+        "an exact native lease still owns these bytes"
+    );
+    assert!(admissions.reserve().is_err());
+    drop(native);
+    admissions.reap();
+    assert!(
+        !path.exists(),
+        "actual native retirement releases the retained root"
+    );
+    assert_eq!(admissions.count.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn fixture_admission_waits_for_original_join_and_reaps_after_acknowledgement() {
+    let admissions = FixtureAdmissions::new(1);
+    let _cleanup = FixtureSweepOnDrop(Arc::clone(&admissions));
+    let (entered, ready) = mpsc::channel();
+    let (release, held) = mpsc::channel();
+    let mut owner = FixtureThread::spawn_in(Arc::clone(&admissions), move || {
+        entered.send(()).unwrap();
+        let _ = held.recv_timeout(Duration::from_secs(2));
+    });
+    ready.recv_timeout(Duration::from_secs(1)).unwrap();
+    owner.retire_within(Duration::ZERO);
+    assert!(
+        admissions.reserve().is_err(),
+        "retention still consumes admission"
+    );
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while admissions.count.load(Ordering::Acquire) != 0 {
+        admissions.reap();
+        assert!(
+            Instant::now() < deadline,
+            "controlled original did not acknowledge"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(admissions.retained.lock_recover().is_empty());
+    let fresh = admissions.reserve().unwrap();
+    drop(fresh);
+}
+
+#[test]
+fn fixture_unwind_releases_its_stall_and_joins_the_admitted_thread() {
+    let release = Arc::new(AtomicBool::new(false));
+    let released = Arc::clone(&release);
+    let completed = Arc::new(AtomicBool::new(false));
+    let worker_completed = Arc::clone(&completed);
+    let worker = FixtureThread::spawn(move || {
+        while !released.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        worker_completed.store(true, Ordering::Release);
+    });
+    let outcome = std::panic::catch_unwind(|| {
+        let _release_on_unwind = ReleaseOnDrop(release);
+        panic!("injected stalled fixture assertion failure");
+    });
+    assert!(outcome.is_err());
+    worker.join();
+    assert!(completed.load(Ordering::Acquire));
+}
+
+#[test]
+fn fixture_root_unwind_waits_for_its_worker_before_removing_owned_bytes() {
+    let wire = Arc::new(Mutex::new(Vec::new()));
+    let mut path = None;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let permit = FixtureAdmissions::global()
+            .reserve()
+            .expect("fixture root admission");
+        let root = crate::device_lease::testing::fresh_root("worker-root-unwind");
+        path = Some(root.0.clone());
+        std::fs::write(root.0.join("owned"), b"fixture").unwrap();
+        let recorded = Arc::clone(&wire);
+        let controller = controller_with_worker(move |receiver| fake_run(receiver, recorded));
+        let _root_guard = WorkerRootGuard {
+            shutdown: controller.shutdown_handle(),
+            root,
+            permit: Some(permit),
+        };
+        panic!("injected worker fixture assertion failure");
+    }));
+    assert!(outcome.is_err());
+    assert_eq!(*wire.lock_recover(), ["connection(false)"]);
+    assert!(!path.unwrap().exists());
+}
 
 fn wait_for_status(
     controller: &DeviceController,
@@ -31,26 +440,35 @@ fn wait_for_status(
 /// alone, and proceed by itself once the owner is gone.
 #[test]
 fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
-    use crate::device_lease::testing::{write_record, OwnedTestDirectory, Sleeper};
-    let dir = crate::device_lease::testing::temp_directory()
-        .join(format!("qc-contested-{}", std::process::id()));
-    crate::device_lease::testing::create_directory(&dir).unwrap();
-    // Removed even when an assertion fails. The owner process and the
-    // controller are declared later, so they are killed and stopped first.
-    let _dir = OwnedTestDirectory(dir.clone());
-    let path = dir.join("device-owner.json");
+    use crate::device_lease::testing::{write_record, Sleeper};
+    let permit = FixtureAdmissions::global()
+        .reserve()
+        .expect("fixture root admission");
+    let root = crate::device_lease::testing::fresh_root("contested");
+    let path = root.0.join("device-owner.json");
     let mut owner = Sleeper::start();
     write_record(&path, &owner.record());
     let record_bytes = std::fs::read(&path).unwrap();
 
     // A device id that matches nothing, so this test can never open a real
     // Quad Cortex even if the gate under test regressed.
-    let controller = DeviceController::start_for_device_with_lease(
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&discoveries);
+    let controller = DeviceController::start_for_device_with_test_discovery(
         Some("no-such-device".into()),
         true,
         path.clone(),
+        move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        },
     )
     .expect("controller starts");
+    let _root_guard = WorkerRootGuard {
+        shutdown: controller.shutdown_handle(),
+        root,
+        permit: Some(permit),
+    };
 
     let expected = format!(
             "The Quad Cortex is in use by a hardware or conformance run (device broker --stdio) \
@@ -68,6 +486,11 @@ fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
     let still = controller.status();
     assert_eq!(still.detail, expected);
     assert_eq!(std::fs::read(&path).unwrap(), record_bytes);
+    assert_eq!(
+        discoveries.load(Ordering::SeqCst),
+        0,
+        "a live lease forbids discovery"
+    );
 
     owner.kill();
     let taken = wait_for_status(&controller, "the takeover", |status| {
@@ -78,6 +501,7 @@ fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
         "after the owner died: {}",
         taken.detail
     );
+    assert!(discoveries.load(Ordering::SeqCst) > 0);
     drop(controller);
 }
 
@@ -175,10 +599,7 @@ fn metadata_payload(name: &str) -> Vec<u8> {
 
 fn decoder_lane(
     owner: &Arc<Mutex<SessionRuntime>>,
-) -> (
-    mpsc::SyncSender<StateDecoderCommand>,
-    thread::JoinHandle<()>,
-) {
+) -> (mpsc::SyncSender<StateDecoderCommand>, DecoderThreadOwner) {
     let shared = StateDecoderShared {
         stream_id: "test-stream".into(),
         session_owner: Arc::clone(owner),
@@ -190,9 +611,119 @@ fn decoder_lane(
     };
     let (sender, receiver) = mpsc::sync_channel(16);
     let results = sender.clone();
-    let worker =
-        thread::spawn(move || run_state_decoder(shared, results, receiver, Instant::now()));
+    let worker = start_owned_decoder("fixture-state-decoder", move |stop| {
+        run_state_decoder_with_stop(shared, results, receiver, Instant::now(), stop)
+    })
+    .unwrap();
     (sender, worker)
+}
+
+impl DecoderThreadOwner {
+    /// Preserve the queued Stop test ordering; unwind still uses the owner's stop flag.
+    fn join(mut self) -> thread::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !crate::platform::process::thread_signalled(self.thread.as_ref().unwrap()) {
+            assert!(Instant::now() < deadline, "fixture decoder did not retire");
+            thread::sleep(Duration::from_millis(1));
+        }
+        self.thread.take().unwrap().join()
+    }
+}
+
+#[test]
+fn decoder_owner_retires_its_sender_cycle_when_the_next_spawn_is_refused() {
+    let owner = Arc::new(Mutex::new(SessionRuntime::new(0)));
+    let (sender, worker) = decoder_lane(&owner);
+    // This mirrors a failed USB-worker admission: the closure owning the
+    // already-running decoder is dropped rather than executed.
+    let rejected_next_spawn = move || drop(worker);
+    let started = Instant::now();
+    drop(rejected_next_spawn);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(matches!(
+        sender.try_send(StateDecoderCommand::StateWake),
+        Err(mpsc::TrySendError::Disconnected(_))
+    ));
+}
+
+#[test]
+fn decoder_stop_flag_retires_a_full_queue_after_a_stalled_receiver_is_released() {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    sender.try_send(StateDecoderCommand::StateWake).unwrap();
+    let (entered, entered_rx) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let worker_stopped = Arc::clone(&stopped);
+    let worker = start_owned_decoder("fixture-stalled-decoder", move |stop| {
+        entered.send(()).unwrap();
+        // A bounded independent gate cannot strand this fixture on unwind.
+        let _ = released.recv_timeout(Duration::from_secs(1));
+        worker_stopped.store(stop.load(Ordering::Acquire), Ordering::Release);
+        drop(receiver);
+    })
+    .unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    worker.request_stop(&sender);
+    assert!(worker.stop.load(Ordering::Acquire));
+    release.send(()).unwrap();
+    worker.join().unwrap();
+    assert!(stopped.load(Ordering::Acquire));
+    assert!(matches!(
+        sender.try_send(StateDecoderCommand::StateWake),
+        Err(mpsc::TrySendError::Disconnected(_))
+    ));
+}
+
+#[test]
+fn transport_destructor_completes_before_its_lease_is_released_on_return_or_unwind() {
+    struct Lease(Arc<AtomicBool>);
+    impl Drop for Lease {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    struct Transport {
+        entered: mpsc::Sender<()>,
+        released: mpsc::Receiver<()>,
+        completed: Arc<AtomicBool>,
+    }
+    impl Drop for Transport {
+        fn drop(&mut self) {
+            let _ = self.entered.send(());
+            if self.released.recv_timeout(Duration::from_secs(1)).is_ok() {
+                self.completed.store(true, Ordering::Release);
+            }
+        }
+    }
+    for unwind in [false, true] {
+        let lease_dropped = Arc::new(AtomicBool::new(false));
+        let transport_completed = Arc::new(AtomicBool::new(false));
+        let (entered, entered_rx) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let lease = Lease(Arc::clone(&lease_dropped));
+        let completed = Arc::clone(&transport_completed);
+        let worker = FixtureThread::spawn(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_transport_lease(lease, |_| {
+                    let _transport = Transport {
+                        entered,
+                        released,
+                        completed,
+                    };
+                    if unwind {
+                        panic!("injected transport owner unwind");
+                    }
+                });
+            }))
+            .is_err()
+        });
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(!lease_dropped.load(Ordering::Acquire));
+        release.send(()).unwrap();
+        assert_eq!(worker.join(), unwind);
+        assert!(transport_completed.load(Ordering::Acquire));
+        assert!(lease_dropped.load(Ordering::Acquire));
+    }
 }
 
 #[test]
@@ -201,7 +732,7 @@ fn backup_completion_cannot_adopt_a_replacement_ready_session() {
     let owner = Arc::clone(&controller.session_owner);
     let state = Arc::clone(&controller.state);
     let worker =
-        thread::spawn(move || {
+        FixtureThread::spawn(move || {
             let Command::CreateBackup { reply, .. } =
                 receiver.recv_timeout(Duration::from_secs(1)).unwrap()
             else {
@@ -219,7 +750,42 @@ fn backup_completion_cannot_adopt_a_replacement_ready_session() {
         .create_backup(Duration::from_secs(1))
         .unwrap_err();
     assert!(error.contains("session changed"), "{error}");
-    worker.join().unwrap();
+    worker.join();
+}
+
+#[test]
+fn dialog_bound_backup_refuses_a_reconnected_session_before_queueing() {
+    let (controller, receiver) = refresh_controller();
+    let context = controller.backup_context().unwrap();
+    controller.session_owner.lock_recover().lifecycle = Some(
+        quadcortex::device::session::SessionDriver::start(8, "replacement".into(), 1),
+    );
+    let error = controller
+        .create_backup_in_context(Duration::from_secs(1), Some(&context))
+        .unwrap_err();
+    assert!(error.contains("session changed"), "{error}");
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+}
+
+#[test]
+fn dialog_bound_backup_refuses_another_device_before_queueing() {
+    let (original, _original_receiver) = refresh_controller();
+    let context = original.backup_context().unwrap();
+    let (selected, receiver) = refresh_controller();
+    selected.session_owner.lock_recover().lifecycle = Some(
+        quadcortex::device::session::SessionDriver::start(7, "another-device".into(), 0),
+    );
+    let error = selected
+        .create_backup_in_context(Duration::from_secs(1), Some(&context))
+        .unwrap_err();
+    assert!(error.contains("session changed"), "{error}");
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
 }
 
 #[test]
@@ -228,7 +794,7 @@ fn backup_completion_preserves_the_original_document_and_transfer_budget() {
     let owner = Arc::clone(&controller.session_owner);
     let state = Arc::clone(&controller.state);
     let clock = controller.session_clock;
-    let worker = thread::spawn(move || {
+    let worker = FixtureThread::spawn(move || {
         let Command::CreateBackup { admission, reply } =
             receiver.recv_timeout(Duration::from_secs(1)).unwrap()
         else {
@@ -249,7 +815,7 @@ fn backup_completion_preserves_the_original_document_and_transfer_budget() {
         controller.create_backup(Duration::from_secs(1)).unwrap(),
         "completed original document"
     );
-    worker.join().unwrap();
+    worker.join();
 }
 
 #[test]
@@ -281,6 +847,7 @@ pub(super) fn refresh_controller() -> (DeviceController, mpsc::Receiver<Command>
     let (commands, receiver) = mpsc::sync_channel(4);
     (
         DeviceController {
+            discovery: DeviceDiscovery::default(),
             device_id: Arc::new(Mutex::new(None)),
             identity_observation_enabled: Arc::new(AtomicBool::new(false)),
             state_stream_id: "test-stream".into(),
@@ -312,12 +879,14 @@ fn finishes_within<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> T {
     let (done, finished) = mpsc::channel();
-    thread::spawn(move || {
+    let worker = FixtureThread::spawn(move || {
         let _ = done.send(work());
     });
-    finished
+    let result = finished
         .recv_timeout(budget)
-        .expect("the call blocked instead of returning")
+        .expect("the call blocked instead of returning");
+    worker.join();
+    result
 }
 
 #[test]
@@ -350,7 +919,7 @@ fn a_forced_reset_interrupts_a_running_connect_and_is_queued_behind_nothing() {
     assert!(!interrupted());
     let controller = Arc::new(controller);
     let caller = Arc::clone(&controller);
-    let call = thread::spawn(move || caller.reset_session());
+    let call = FixtureThread::spawn(move || caller.reset_session());
     match receiver.recv_timeout(Duration::from_secs(2)).unwrap() {
         Command::Reconnect { force, reply } => {
             assert!(force);
@@ -359,7 +928,7 @@ fn a_forced_reset_interrupts_a_running_connect_and_is_queued_behind_nothing() {
         }
         _ => panic!("expected the reset command"),
     }
-    assert_eq!(call.join().unwrap(), Ok(ReconnectOutcome::Restarted));
+    assert_eq!(call.join(), Ok(ReconnectOutcome::Restarted));
 }
 
 #[test]
@@ -370,7 +939,7 @@ fn a_reset_reaches_the_worker_even_when_its_queue_is_full() {
     }
     let controller = Arc::new(controller);
     let caller = Arc::clone(&controller);
-    let call = thread::spawn(move || caller.reset_session());
+    let call = FixtureThread::spawn(move || caller.reset_session());
     // The worker leaves the connect and drains: the reset is admitted.
     thread::sleep(Duration::from_millis(100));
     let mut reset = None;
@@ -386,7 +955,7 @@ fn a_reset_reaches_the_worker_even_when_its_queue_is_full() {
         .expect("the reset was admitted once the queue drained")
         .send(ReconnectOutcome::Restarted)
         .unwrap();
-    assert_eq!(call.join().unwrap(), Ok(ReconnectOutcome::Restarted));
+    assert_eq!(call.join(), Ok(ReconnectOutcome::Restarted));
 }
 
 #[test]
@@ -402,12 +971,67 @@ fn control_commands_give_up_with_a_reason_instead_of_blocking_for_ever() {
     let (reply, _) = mpsc::channel();
     let error = send_control(
         &commands,
-        Command::Disconnect { reply },
+        Command::Disconnect {
+            reply,
+            _admission: None,
+        },
         Duration::from_millis(60),
+        None,
     )
     .unwrap_err();
     assert!(error.contains("busy"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn disconnect_admission_survives_the_callers_timeout_until_the_worker_command_is_retired() {
+    struct Admission(Arc<AtomicBool>);
+    impl Drop for Admission {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let (controller, receiver) = refresh_controller();
+    let controller = Arc::new(controller);
+    let released = Arc::new(AtomicBool::new(false));
+    let admission = Admission(Arc::clone(&released));
+    let caller = Arc::clone(&controller);
+    let call =
+        FixtureThread::spawn(move || caller.disconnect_with_admission(Some(Box::new(admission))));
+    let Command::Disconnect {
+        reply,
+        _admission: held_admission,
+    } = receiver.recv_timeout(Duration::from_secs(1)).unwrap()
+    else {
+        panic!("expected one disconnect command");
+    };
+    assert!(!released.load(Ordering::Acquire));
+    assert!(call.join().unwrap_err().contains("did not acknowledge"));
+    assert!(
+        !released.load(Ordering::Acquire),
+        "caller timeout must not admit a new holder"
+    );
+    drop(held_admission);
+    assert!(
+        released.load(Ordering::Acquire),
+        "worker command retirement releases admission"
+    );
+    assert!(
+        reply.send(Ok(())).is_err(),
+        "the original timed-out caller is gone"
+    );
+
+    let rejected = Arc::new(AtomicBool::new(false));
+    for index in 0..4 {
+        controller.record_flight_event(format!("full-{index}"));
+    }
+    assert!(controller
+        .disconnect_with_admission(Some(Box::new(Admission(Arc::clone(&rejected)))))
+        .is_err());
+    assert!(
+        rejected.load(Ordering::Acquire),
+        "a never-admitted command releases its reservation"
+    );
 }
 
 #[test]
@@ -427,6 +1051,78 @@ fn an_unforced_reconnect_during_a_handshake_is_answered_without_queueing() {
 }
 
 #[test]
+fn connect_watchdog_expires_without_progress_and_uses_failure_backoff() {
+    let start = Instant::now();
+    let budget = ConnectAttemptBudget::new(start, STARTUP_PROGRESS_STALL_LIMIT);
+    assert!(!budget.expired(start + STARTUP_PROGRESS_STALL_LIMIT - Duration::from_millis(1)));
+    let now = start + STARTUP_PROGRESS_STALL_LIMIT;
+    assert!(budget.expired(now));
+    let result: Result<(), _> = budget.classify(Err(UsbError::Cancelled), now, false);
+    let error = result.unwrap_err();
+    assert!(error.to_string().contains("automatically reopening"));
+    assert!(!matches!(error, UsbError::Cancelled));
+
+    // The failure path schedules the same bounded retry as any failed open.
+    let mut owner = SessionRuntime::new(0);
+    owner.disconnect(60_000, true);
+    owner.transport.connect_failed(60_000);
+    assert_eq!(owner.transport.connect_failures(), 1);
+    assert!(!owner.transport.reconnect_due(60_000));
+    assert!(owner.transport.reconnect_due(120_000));
+}
+
+#[test]
+fn connect_watchdog_preserves_user_cancellation_success_and_native_errors() {
+    let start = Instant::now();
+    let budget = ConnectAttemptBudget::new(start, STARTUP_PROGRESS_STALL_LIMIT);
+    let now = start + STARTUP_PROGRESS_STALL_LIMIT;
+    let cancelled: Result<(), _> = budget.classify(Err(UsbError::Cancelled), now, true);
+    assert!(matches!(cancelled, Err(UsbError::Cancelled)));
+    assert_eq!(budget.classify(Ok(42), now, false).unwrap(), 42);
+    let native: Result<(), _> = budget.classify(Err(UsbError::HandshakeTimeout), now, false);
+    assert!(matches!(native, Err(UsbError::HandshakeTimeout)));
+    // A subsequent attempt receives its own full budget.
+    let next = ConnectAttemptBudget::new(now, STARTUP_PROGRESS_STALL_LIMIT);
+    assert!(!next.expired(now));
+}
+
+#[test]
+fn connect_watchdog_allows_slow_forward_startup_but_not_rebuild_livelock() {
+    use quadcortex::device::initialization::DeviceStartupPhase::*;
+    let start = Instant::now();
+    let budget = ConnectAttemptBudget::new(start, STARTUP_PROGRESS_STALL_LIMIT);
+    // Beyond the observed 221 s startup: each forward protocol gate is real
+    // progress even when contention makes the complete startup take minutes.
+    for (seconds, phase) in [
+        (50, VersionValidating),
+        (100, Building),
+        (150, Initializing),
+        (200, Booting),
+        (250, Connected),
+    ] {
+        let now = start + Duration::from_secs(seconds);
+        assert!(!budget.expired(now));
+        budget.observe_phase(phase, now);
+        assert!(!budget.expired(now));
+    }
+    let stuck = ConnectAttemptBudget::new(start, STARTUP_PROGRESS_STALL_LIMIT);
+    stuck.observe_phase(Building, start + Duration::from_secs(30));
+    for seconds in [60, 90, 120] {
+        stuck.observe_phase(Disconnected, start + Duration::from_secs(seconds));
+        stuck.observe_phase(Building, start + Duration::from_secs(seconds));
+    }
+    assert!(stuck.expired(start + Duration::from_secs(150)));
+    // Even fresh forward progress cannot move the absolute ceiling.
+    let capped = ConnectAttemptBudget::new(start, STARTUP_ATTEMPT_LIMIT * 2);
+    capped.observe_phase(
+        Connected,
+        start + STARTUP_ATTEMPT_LIMIT - Duration::from_secs(1),
+    );
+    assert!(!capped.expired(start + STARTUP_ATTEMPT_LIMIT - Duration::from_millis(1)));
+    assert!(capped.expired(start + STARTUP_ATTEMPT_LIMIT));
+}
+
+#[test]
 fn a_session_stuck_outside_connected_is_restarted_but_a_healthy_one_never_is() {
     let limit = Duration::from_secs(60);
     let start = Instant::now();
@@ -441,6 +1137,22 @@ fn a_session_stuck_outside_connected_is_restarted_but_a_healthy_one_never_is() {
     assert!(!healthy.stalled(false, start, limit));
     assert!(!healthy.stalled(true, start + Duration::from_secs(50), limit));
     assert!(!healthy.stalled(false, start + Duration::from_secs(100), limit));
+}
+
+#[test]
+fn a_control_queued_after_a_connect_watch_still_interrupts_that_attempt() {
+    let interrupt = ConnectInterrupt::default();
+    interrupt.raise();
+    // The producer was preempted after its initial raise, before enqueue.
+    let watch = interrupt.watch();
+    assert!(!watch());
+    let (sender, receiver) = mpsc::sync_channel(1);
+    send_control(&sender, Command::Stop, Duration::ZERO, Some(&interrupt)).unwrap();
+    assert!(
+        watch(),
+        "queue admission must close the raise-before-enqueue window"
+    );
+    assert!(matches!(receiver.try_recv(), Ok(Command::Stop)));
 }
 
 #[test]
@@ -477,7 +1189,7 @@ fn status_text_says_how_often_connecting_has_failed_and_what_happens_next() {
 #[test]
 fn native_write_guard_sees_received_state_before_event_publication() {
     let owner = Arc::new(Mutex::new(SessionRuntime::new(0)));
-    let (operation, observation) = {
+    let (operation, observation, address_revision) = {
         let mut runtime = owner.lock_recover();
         let connection = runtime.opened(0).unwrap();
         runtime.lifecycle = Some(quadcortex::device::session::SessionDriver::start(
@@ -485,9 +1197,27 @@ fn native_write_guard_sees_received_state_before_event_publication() {
             "session".into(),
             0,
         ));
+        let observation = runtime.capture_observation(connection).unwrap();
+        runtime
+            .observe_state(
+                &observation,
+                profile::MESSAGE_TYPE_RECALL_PRESET,
+                &pa::RecallPresetMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    preset: Some(pa::recall_preset_message::Preset::Preset(
+                        quadcortex::proto::BinaryPreset {
+                            name: Some(quadcortex::proto::binary_preset::Name::Name(
+                                "Preset".into(),
+                            )),
+                            ..Default::default()
+                        },
+                    )),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
         let snapshot = runtime.state.snapshot_mut();
-        snapshot.has_preset = true;
-        snapshot.preset_name = "Preset".into();
         snapshot.preset_position = 1;
         snapshot.setlist_key = "/media/p4/Presets/Live".into();
         let context = runtime
@@ -508,11 +1238,14 @@ fn native_write_guard_sees_received_state_before_event_publication() {
                 0,
             )
             .unwrap();
+        let operation = runtime
+            .plan_operation_in_context(&context, 0, 3000)
+            .unwrap();
+        runtime.validate_operation(&operation, 0).unwrap();
         (
-            runtime
-                .plan_operation_in_context(&context, 0, 3000)
-                .unwrap(),
-            runtime.capture_observation(connection).unwrap(),
+            operation,
+            observation,
+            runtime.state.snapshot().address_revision,
         )
     };
     let (sender, queued) = mpsc::sync_channel(2);
@@ -535,11 +1268,13 @@ fn native_write_guard_sees_received_state_before_event_publication() {
     .unwrap();
     // No event-publication thread has run or consumed this queue.
     let runtime = owner.lock_recover();
+    assert_eq!(runtime.state.snapshot().preset_name, "Preset");
     assert_eq!(runtime.state.snapshot().preset_position, 4);
-    assert!(runtime
-        .validate_operation(&operation, 1)
-        .unwrap_err()
-        .contains("target changed"));
+    assert!(runtime.state.snapshot().address_revision > address_revision);
+    assert_eq!(
+        runtime.validate_operation(&operation, 1).unwrap_err(),
+        "QC write target changed after planning; refresh before starting a new operation"
+    );
     assert!(matches!(
         queued.try_recv(),
         Ok(StateDecoderCommand::StateWake)
@@ -1257,6 +1992,65 @@ fn queued_frame(
     match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
         Command::Send(message_type, payload, _, reply) => (message_type, payload, reply),
         _ => panic!("a single raw frame must be queued as one plain write"),
+    }
+}
+
+#[test]
+fn a_definitely_unqueued_raw_press_preserves_the_previous_touch_guard() {
+    use commands::ScreenMouseType::Press;
+    for previously_held in [false, true] {
+        for refusal in ["full", "disconnected", "stale"] {
+            let (controller, receiver) = refresh_controller();
+            let fence = controller
+                .session_owner
+                .lock_recover()
+                .session_context()
+                .unwrap();
+            if previously_held {
+                controller.touch_guard.lock_recover().note_unreleased_hold(
+                    9.0,
+                    11.0,
+                    0,
+                    "existing uncertain press".into(),
+                );
+            }
+            let previous = controller.touch_guard.lock_recover().held();
+            match refusal {
+                "full" => {
+                    for index in 0..4 {
+                        controller.record_flight_event(format!("full-{index}"));
+                    }
+                }
+                "disconnected" => {
+                    controller.session_owner.lock_recover().disconnect(1, false);
+                }
+                "stale" => {
+                    let mut owner = controller.session_owner.lock_recover();
+                    owner.disconnect(1, false);
+                    owner.opened(2).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(controller
+                .queue_operation_for_plan(raw_mouse_frame(Press, 40.0, 50.0), &fence)
+                .is_err());
+            let guard = controller.touch_guard.lock_recover();
+            assert_eq!(
+                guard.held(),
+                previous,
+                "{refusal}, previously held={previously_held}"
+            );
+            assert_eq!(
+                guard
+                    .admit(&DeviceOperation::ScreenTap { x: 1.0, y: 2.0 }, 3)
+                    .is_err(),
+                previously_held
+            );
+            drop(guard);
+            assert!(receiver
+                .try_iter()
+                .all(|command| matches!(command, Command::RecordFlight { .. })));
+        }
     }
 }
 
@@ -1995,7 +2789,7 @@ fn sparse_io_echo_retains_input_ports_for_output_write_readback() {
 #[test]
 fn scoped_id_reservation_does_not_retry_a_dropped_worker_reply() {
     let (commands, receiver) = mpsc::sync_channel::<Command>(4);
-    let worker = thread::spawn(move || {
+    let worker = FixtureThread::spawn(move || {
         let Command::ReserveRequestId { reply } =
             receiver.recv_timeout(Duration::from_secs(1)).unwrap()
         else {
@@ -2008,7 +2802,7 @@ fn scoped_id_reservation_does_not_retry_a_dropped_worker_reply() {
         );
     });
     assert!(reserve_request_id_before(&commands, Instant::now() + Duration::from_secs(1)).is_err());
-    worker.join().unwrap();
+    worker.join();
 }
 
 fn started_backup(
@@ -2236,7 +3030,7 @@ fn library_publication_wait_rejects_replacement_and_expired_cached_reads() {
         let controller = Arc::new(controller);
         let waiting = Arc::clone(&controller);
         let (done, result) = mpsc::channel();
-        let waiter = thread::spawn(move || {
+        let waiter = FixtureThread::spawn(move || {
             done.send(waiting.wait_for_library_folder(kind, root, Duration::from_secs(2)))
                 .unwrap();
         });
@@ -2287,7 +3081,7 @@ fn library_publication_wait_rejects_replacement_and_expired_cached_reads() {
             .unwrap()
             .unwrap_err()
             .contains("session changed"));
-        waiter.join().unwrap();
+        waiter.join();
         assert!(controller
             .wait_for_library_folder(kind, root, Duration::ZERO)
             .unwrap()
@@ -2357,6 +3151,49 @@ fn dropping_the_controller_returns_only_after_the_disconnect_write() {
 }
 
 #[test]
+fn a_joined_worker_does_not_certify_an_unverified_native_teardown() {
+    let wire = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&wire);
+    let controller = controller_with_worker(move |receiver| fake_run(receiver, recorded));
+    controller
+        .worker
+        .teardown_verified
+        .store(false, Ordering::Release);
+    assert_eq!(
+        controller.stop_worker_for_exit(WORKER_EXIT_BUDGET),
+        WorkerExit::TeardownUnverified,
+    );
+    assert_eq!(*wire.lock_recover(), ["connection(false)"]);
+    assert!(!WorkerExit::TeardownUnverified.verified_clean_disconnect());
+    assert_eq!(
+        controller.stop_worker_for_exit(Duration::ZERO),
+        WorkerExit::TeardownUnverified,
+    );
+}
+
+#[test]
+fn explicit_disconnect_propagates_native_teardown_evidence_without_claiming_release() {
+    for verified in [true, false] {
+        let (controller, commands) = refresh_controller();
+        thread::scope(|scope| {
+            let caller = scope.spawn(|| controller.disconnect());
+            let Command::Disconnect { reply, .. } =
+                commands.recv_timeout(Duration::from_secs(1)).unwrap()
+            else {
+                panic!("expected disconnect");
+            };
+            reply.send(native_disconnect_result(verified)).unwrap();
+            let outcome = caller.join().unwrap();
+            if verified {
+                assert!(outcome.is_ok());
+            } else {
+                assert!(outcome.unwrap_err().contains("not verified"));
+            }
+        });
+    }
+}
+
+#[test]
 fn stop_worker_for_exit_writes_the_disconnect_and_is_idempotent() {
     let wire = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&wire);
@@ -2386,6 +3223,7 @@ fn stop_worker_for_exit_writes_the_disconnect_and_is_idempotent() {
 #[test]
 fn a_stuck_worker_cannot_hold_drop_past_its_budget() {
     let release = Arc::new(AtomicBool::new(false));
+    let _release_on_unwind = ReleaseOnDrop(Arc::clone(&release));
     let stuck = Arc::clone(&release);
     let controller = controller_with_worker(move |_receiver| {
         // Never reads `Stop`: a worker wedged inside the OS.
@@ -2409,6 +3247,76 @@ fn a_stuck_worker_cannot_hold_drop_past_its_budget() {
     );
 }
 
+#[test]
+fn a_timed_out_original_worker_is_later_joined_without_repeating_its_wait_budget() {
+    struct RetireOnDrop {
+        release: Arc<AtomicBool>,
+        shutdown: WorkerShutdown,
+    }
+    impl Drop for RetireOnDrop {
+        fn drop(&mut self) {
+            self.release.store(true, Ordering::Release);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !self
+                .shutdown
+                .stop_and_join(Duration::ZERO)
+                .verified_clean_disconnect()
+            {
+                if Instant::now() >= deadline {
+                    eprintln!(
+                        "controlled worker cleanup not acknowledged; original remains retained"
+                    );
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+    let release = Arc::new(AtomicBool::new(false));
+    let _release_on_unwind = ReleaseOnDrop(Arc::clone(&release));
+    let (entered, ready) = mpsc::channel();
+    let held = Arc::clone(&release);
+    let controller = controller_with_worker(move |_receiver| {
+        entered.send(()).unwrap();
+        while !held.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let shutdown = controller.shutdown_handle();
+    let _retire_on_unwind = RetireOnDrop {
+        release: Arc::clone(&release),
+        shutdown: shutdown.clone(),
+    };
+    ready.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        shutdown.stop_and_join(Duration::from_millis(20)),
+        WorkerExit::TimedOut
+    );
+    let repeated = Instant::now();
+    assert_eq!(
+        shutdown.stop_and_join(Duration::from_secs(5)),
+        WorkerExit::TimedOut
+    );
+    assert!(repeated.elapsed() < Duration::from_millis(100));
+    drop(controller);
+    release.store(true, Ordering::Release);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match shutdown.stop_and_join(Duration::ZERO) {
+            WorkerExit::Joined => break,
+            WorkerExit::TimedOut => {
+                assert!(
+                    Instant::now() < deadline,
+                    "exact original never acknowledged retirement"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            exit => panic!("unexpected original worker retirement: {exit:?}"),
+        }
+    }
+    assert_eq!(shutdown.stop_and_join(Duration::ZERO), WorkerExit::Joined);
+}
+
 /// A worker wedged inside the OS: never reads `Stop`, returns only when
 /// the test releases it.
 fn stuck_worker(release: &Arc<AtomicBool>) -> DeviceController {
@@ -2419,6 +3327,7 @@ fn stuck_worker(release: &Arc<AtomicBool>) -> DeviceController {
 fn several_stuck_workers_share_one_shutdown_deadline() {
     let budget = Duration::from_millis(600);
     let release = Arc::new(AtomicBool::new(false));
+    let _release_on_unwind = ReleaseOnDrop(Arc::clone(&release));
     let controllers: Vec<_> = (0..4).map(|_| stuck_worker(&release)).collect();
     let started = Instant::now();
     let report = stop_workers_within(controllers.iter(), budget);
@@ -2455,6 +3364,7 @@ fn several_stuck_workers_share_one_shutdown_deadline() {
 fn a_fast_and_a_stuck_worker_are_told_apart_within_one_budget() {
     let budget = Duration::from_millis(800);
     let release = Arc::new(AtomicBool::new(false));
+    let _release_on_unwind = ReleaseOnDrop(Arc::clone(&release));
     let wire = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&wire);
     let fast = controller_with_worker(move |receiver| fake_run(receiver, recorded));
@@ -2746,7 +3656,7 @@ fn slot_publication_waits_for_coverage_without_usb_and_rejects_replacement() {
         }
         let waiting = Arc::clone(&controller);
         let (done, result) = mpsc::channel();
-        let waiter = thread::spawn(move || {
+        let waiter = FixtureThread::spawn(move || {
             done.send(waiting.wait_for_preset_catalog(
                 "device.listPresetSlots",
                 None,
@@ -2788,7 +3698,7 @@ fn slot_publication_waits_for_coverage_without_usb_and_rejects_replacement() {
             );
         }
         assert!(commands.try_recv().is_err());
-        waiter.join().unwrap();
+        waiter.join();
     }
 }
 
@@ -2848,6 +3758,68 @@ fn authoritative_saved_catalog_entry_updates_the_active_snapshot_name() {
 }
 
 #[test]
+fn terminal_session_write_failures_clear_ready_status_before_reconnect() {
+    for incident in [
+        "keepalive-write-failure",
+        "backup-keepalive-write-failure",
+        "updater-relay-write-failure",
+    ] {
+        let (controller, _commands) = refresh_controller();
+        {
+            let mut status = controller.state.lock_recover();
+            status.phase = "ready".into();
+            status.connected = true;
+            status.synchronized = true;
+            status.device_name = Some("Previously connected device".into());
+        }
+        teardown_after_session_failure(
+            "controlled write failure",
+            100,
+            incident,
+            &controller.state,
+            &controller.latest_messages,
+            &mut Vec::new(),
+            &mut None,
+            &controller.session_owner,
+            &mut None,
+        );
+        let status = controller.status();
+        assert_eq!(status.phase, "searching");
+        assert!(!status.connected);
+        assert!(!status.synchronized);
+        assert!(status.device_name.is_none());
+        assert!(status.detail.contains("controlled write failure"));
+        assert!(!controller
+            .session_owner
+            .lock_recover()
+            .transport
+            .is_connected());
+    }
+}
+
+#[test]
+fn dropped_state_subscriptions_release_membership_without_device_traffic() {
+    let (controller, _commands) = refresh_controller();
+    let baseline = controller.state_subscribers.lock_recover().len();
+    let retained = controller.subscribe_state_events();
+    for _ in 0..512 {
+        let subscription = controller.subscribe_state_events();
+        assert_eq!(
+            controller.state_subscribers.lock_recover().len(),
+            baseline + 2
+        );
+        drop(subscription);
+        assert_eq!(
+            controller.state_subscribers.lock_recover().len(),
+            baseline + 1
+        );
+    }
+    drop(retained);
+    assert_eq!(controller.state_subscribers.lock_recover().len(), baseline);
+    assert_eq!(controller.state_event_sequence.load(Ordering::Acquire), 0);
+}
+
+#[test]
 fn stalled_state_subscribers_are_bounded_and_do_not_block_publication() {
     let event_log = Arc::new(Mutex::new(StateEventJournal::default()));
     let latest_sequence = Arc::new(AtomicU64::new(0));
@@ -2857,7 +3829,10 @@ fn stalled_state_subscribers_are_bounded_and_do_not_block_publication() {
         STATE_SUBSCRIBER_QUEUE_MAX_BYTES,
         Arc::default(),
     );
-    let subscribers = Arc::new(Mutex::new(vec![subscriber]));
+    let subscribers = Arc::new(Mutex::new(vec![StateSubscriber {
+        identity: Arc::new(()),
+        sender: subscriber,
+    }]));
     let frame = DecodedStateFrame {
         stream_id: "test-stream".into(),
         sequence: 1,
@@ -3333,6 +4308,96 @@ fn realtime_queue_rejects_a_disconnected_session_before_acceptance() {
 }
 
 #[test]
+fn verified_detail_projection_requires_the_complete_original_native_stamp() {
+    use quadcortex::generated_payloads::NativeStateVersion;
+    let mut current = GatewaySnapshot {
+        state_version: Some(NativeStateVersion {
+            session: "owner-session:epoch-1".into(),
+            revision: 7,
+        }),
+        ..Default::default()
+    };
+    let result = serde_json::json!({"snapshot":{"stateVersion":current.state_version}});
+    assert!(validate_verified_projection_version(&current, &result).is_ok());
+    for (session, revision) in [
+        ("replacement-session:epoch-1", 7),
+        ("owner-session:epoch-2", 7),
+        ("owner-session:epoch-1", 8),
+    ] {
+        current.state_version = Some(NativeStateVersion {
+            session: session.into(),
+            revision,
+        });
+        assert!(validate_verified_projection_version(&current, &result).is_err());
+    }
+    current.state_version = None;
+    assert!(validate_verified_projection_version(&current, &result).is_err());
+    current.state_version = Some(NativeStateVersion {
+        session: "owner-session:epoch-1".into(),
+        revision: 7,
+    });
+    for missing in [
+        serde_json::json!({}),
+        serde_json::json!({"snapshot":{"stateVersion":null}}),
+        serde_json::json!({"snapshot":{"stateVersion":{"session":"owner-session:epoch-1"}}}),
+    ] {
+        assert!(validate_verified_projection_version(&current, &missing).is_err());
+    }
+}
+
+#[test]
+fn no_op_copy_returns_only_the_preset_from_its_captured_owner_context() {
+    use prost::Message;
+    use quadcortex::proto::cortex_protobuf_v2 as pa;
+    let (controller, _commands) = refresh_controller();
+    let seed = |owner: &mut SessionRuntime, connection: u64, name: &str| {
+        let ticket = owner.capture_observation(connection).unwrap();
+        let bytes = pa::RecallPresetMessage {
+            action: pa::message_action::Enum::Update as i32,
+            preset: Some(pa::recall_preset_message::Preset::Preset(Default::default())),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        owner.observe_state(&ticket, 15, &bytes).unwrap();
+        owner.state.snapshot_mut().preset_name = name.into();
+        owner.state.snapshot_mut().has_preset = true;
+    };
+    let original = {
+        let mut owner = controller.session_owner.lock_recover();
+        seed(&mut owner, 1, "Original no-op preset");
+        owner.session_context().unwrap()
+    };
+    assert_eq!(
+        controller
+            .gateway_snapshot_for_plan(&original)
+            .unwrap()
+            .preset_name,
+        "Original no-op preset"
+    );
+    controller.session_owner.lock_recover().reset_state();
+    assert!(controller.gateway_snapshot_for_plan(&original).is_err());
+    let replacement = {
+        let mut owner = controller.session_owner.lock_recover();
+        let connection = owner.opened(0).unwrap();
+        owner.lifecycle = Some(quadcortex::device::session::SessionDriver::start(
+            8,
+            "replacement".into(),
+            0,
+        ));
+        seed(&mut owner, connection, "Replacement preset");
+        owner.session_context().unwrap()
+    };
+    assert!(controller.gateway_snapshot_for_plan(&original).is_err());
+    assert_eq!(
+        controller
+            .gateway_snapshot_for_plan(&replacement)
+            .unwrap()
+            .preset_name,
+        "Replacement preset"
+    );
+}
+
+#[test]
 fn gateway_snapshot_reduces_native_updates_without_python() {
     let mut snapshot = GatewaySnapshot::default();
     let mut position = StateUpdate::empty("position");
@@ -3429,6 +4494,7 @@ fn a_reset_resume_restarts_the_session_and_reports_why() {
         &controller.session_clock,
         &state_messages,
         &controller.updater_relay,
+        &mut CloudForwardRelay::default(),
     );
     let status = controller.status();
     assert_eq!(status.phase, "searching");
@@ -3476,6 +4542,7 @@ fn a_restarted_session_ends_the_update_relay_request_it_was_carrying() {
     // branch, which used to be the only place the relay was cancelled, never
     // runs: the old request kept streaming into the new session.
     let release = Arc::new(AtomicBool::new(false));
+    let _release_on_unwind = ReleaseOnDrop(Arc::clone(&release));
     let relay = UpdaterRelay::with_parts(
         Arc::new(StalledFetcher(Arc::clone(&release))),
         Arc::new(AtomicBool::new(false)),
@@ -3502,6 +4569,7 @@ fn a_restarted_session_ends_the_update_relay_request_it_was_carrying() {
         &controller.session_clock,
         &state_messages,
         &relay,
+        &mut CloudForwardRelay::default(),
     );
     assert!(!relay.is_active(), "the old request outlived its session");
     assert!(
@@ -3650,27 +4718,32 @@ fn opening_a_transport_still_advances_the_status_epoch() {
 /// no unit HID can enumerate, so no hardware attached to the machine can make
 /// these tests open a device. The status is seeded with a finished connection's
 /// counters before the first retry is armed, so nothing races the seed.
-/// The lease directory comes back as a guard, first in the tuple so the
-/// caller's controller drops before it; it is removed even when a test fails.
-fn controller_searching_for_an_absent_qc(
-    tag: &str,
-) -> (
-    crate::device_lease::testing::OwnedTestDirectory,
-    DeviceController,
-    String,
-) {
-    let dir = crate::device_lease::testing::temp_directory()
-        .join(format!("qc-absent-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    crate::device_lease::testing::create_directory(&dir).unwrap();
-    let directory = crate::device_lease::testing::OwnedTestDirectory(dir.clone());
-    let path = dir.join("device-owner.json");
-    let controller = DeviceController::start_for_device_with_lease(
+fn controller_searching_for_an_absent_qc(tag: &str) -> (DeviceController, WorkerRootGuard, String) {
+    let permit = FixtureAdmissions::global()
+        .reserve()
+        .expect("fixture root admission");
+    let root = crate::device_lease::testing::fresh_root(&format!("absent-{tag}"));
+    let path = root.0.join("device-owner.json");
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&discoveries);
+    let controller = DeviceController::start_for_device_with_test_discovery(
         Some("no-such-device".into()),
         false,
         path.clone(),
+        move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![quadcortex_hid::usb::QcUsbDevice {
+                id: "other-test-device".into(),
+                name: "Different test device".into(),
+            }])
+        },
     )
     .expect("controller starts");
+    let root_guard = WorkerRootGuard {
+        shutdown: controller.shutdown_handle(),
+        root,
+        permit: Some(permit),
+    };
     {
         let mut status = controller.hold_status_lock_for_test();
         status.handshake_ms = Some(456);
@@ -3686,12 +4759,13 @@ fn controller_searching_for_an_absent_qc(
     wait_for_status(&controller, "the no-device search", |status| {
         status.detail == expected
     });
-    (directory, controller, expected)
+    assert!(discoveries.load(Ordering::SeqCst) > 0);
+    (controller, root_guard, expected)
 }
 
 #[test]
 fn a_retry_that_finds_no_qc_stays_searching_and_opens_no_connection_epoch() {
-    let (_dir, controller, expected) = controller_searching_for_an_absent_qc("phase");
+    let (controller, _root_guard, expected) = controller_searching_for_an_absent_qc("phase");
     // Several retry cadences (RECONNECT_INTERVAL_MS is 750 ms) pass; the worker
     // enumerates on each and finds nothing, so it never publishes `connecting`
     // and never starts a connection epoch.
@@ -3721,7 +4795,7 @@ fn a_retry_that_finds_no_qc_stays_searching_and_opens_no_connection_epoch() {
 /// assertion to turn around.
 #[test]
 fn a_retry_that_finds_no_qc_leaves_the_previous_connections_counters_in_place() {
-    let (_dir, controller, _) = controller_searching_for_an_absent_qc("counters");
+    let (controller, _root_guard, _) = controller_searching_for_an_absent_qc("counters");
     thread::sleep(Duration::from_millis(2_000));
     let status = controller.status();
     assert_eq!(status.phase, "searching");
@@ -3818,4 +4892,259 @@ fn installed_navigation_coordinates_cross_real_rpc_as_one_drag_frame() {
             });
         }
     }
+}
+
+#[test]
+fn retained_general_gateway_rejects_replacement_during_decode_and_accepts_fresh_ticket() {
+    use prost::Message;
+    let (controller, _commands) = DeviceController::live_session_for_test();
+    let payload = pa::GeneralSettingsMessage {
+        action: pa::message_action::Enum::Update as i32,
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let publish = || {
+        let ticket = {
+            let mut owner = controller.session_owner.lock_recover();
+            let connection = serde_json::to_value(owner.session_fence().unwrap()).unwrap()
+                ["connection"]
+                .as_u64()
+                .unwrap();
+            owner.capture_observation(connection).unwrap()
+        };
+        controller.latest_messages.lock_recover().insert(
+            profile::MESSAGE_TYPE_GENERAL_SETTINGS,
+            IncomingMessage {
+                observation: Some(ticket),
+                sequence: 1,
+                message_type: profile::MESSAGE_TYPE_GENERAL_SETTINGS,
+                payload: payload.clone(),
+                received_at_unix_ms: 0,
+            },
+        );
+    };
+    publish();
+    let expected = runtime_request::GatewayResponseProjection::GeneralSettings
+        .decode(&payload)
+        .unwrap();
+    assert_eq!(
+        crate::rpc::gateway_general_settings_with(&controller, |bytes| {
+            runtime_request::GatewayResponseProjection::GeneralSettings.decode(bytes)
+        })
+        .unwrap(),
+        expected
+    );
+    let result = crate::rpc::gateway_general_settings_with(&controller, |bytes| {
+        let decoded = runtime_request::GatewayResponseProjection::GeneralSettings.decode(bytes)?;
+        let mut owner = controller.session_owner.lock_recover();
+        owner.disconnect(0, false);
+        owner.opened(0).unwrap();
+        owner.lifecycle = Some(quadcortex::device::session::SessionDriver::start(
+            8,
+            "replacement-general-session".into(),
+            0,
+        ));
+        drop(owner);
+        publish();
+        Ok(decoded)
+    });
+    assert!(
+        result.is_err(),
+        "a replacement's fresh publication cannot certify the old decoded result"
+    );
+    assert_eq!(
+        crate::rpc::gateway_general_settings_with(&controller, |bytes| {
+            runtime_request::GatewayResponseProjection::GeneralSettings.decode(bytes)
+        })
+        .unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn retained_general_gateway_rejects_ancillary_old_ticket_and_invalidated_owner() {
+    use prost::Message;
+    let (controller, _commands) = DeviceController::live_session_for_test();
+    let (connection, ticket) = {
+        let mut owner = controller.session_owner.lock_recover();
+        let connection = serde_json::to_value(owner.session_fence().unwrap()).unwrap()
+            ["connection"]
+            .as_u64()
+            .unwrap();
+        (connection, owner.capture_observation(connection).unwrap())
+    };
+    controller.latest_messages.lock_recover().insert(
+        profile::MESSAGE_TYPE_GENERAL_SETTINGS,
+        IncomingMessage {
+            observation: Some(ticket),
+            sequence: 1,
+            message_type: profile::MESSAGE_TYPE_GENERAL_SETTINGS,
+            payload: pa::GeneralSettingsMessage {
+                action: pa::message_action::Enum::Update as i32,
+                ..Default::default()
+            }
+            .encode_to_vec(),
+            received_at_unix_ms: 0,
+        },
+    );
+    {
+        let mut owner = controller.session_owner.lock_recover();
+        owner.lifecycle = Some(quadcortex::device::session::SessionDriver::start(
+            9,
+            "replacement-with-stale-cache".into(),
+            0,
+        ));
+        assert!(owner.capture_observation(connection).is_ok());
+    }
+    assert!(
+        controller
+            .latest_message(profile::MESSAGE_TYPE_GENERAL_SETTINGS)
+            .is_some(),
+        "old ancillary bytes remain deliberately present"
+    );
+    assert!(
+        crate::rpc::gateway_general_settings_with(&controller, |bytes| {
+            runtime_request::GatewayResponseProjection::GeneralSettings.decode(bytes)
+        })
+        .is_err(),
+        "new scope cannot certify old observation ticket"
+    );
+    controller.session_owner.lock_recover().reset_state();
+    let mut decoded = false;
+    let result = crate::rpc::gateway_general_settings_with(&controller, |_| {
+        decoded = true;
+        Ok(serde_json::Value::Null)
+    });
+    assert!(result.is_err());
+    assert!(
+        !decoded,
+        "invalidated owner refuses read admission before decoding the stale cache"
+    );
+}
+
+#[test]
+fn retained_io_gateway_rejects_replacement_during_decode_and_accepts_fresh_reads() {
+    use prost::Message;
+    use quadcortex::proto::cortex_protobuf_v2 as pa;
+    let (controller, _commands) = DeviceController::live_session_for_test();
+    let payload = pa::IoSettingsMessage {
+        action: 1,
+        settings: Some(pa::io_settings_message::Settings::Settings(
+            pa::PortSettings {
+                in_port: vec![pa::InputPortSettings {
+                    input_port_id: 1,
+                    plugged: Some(pa::input_port_settings::Plugged::Plugged(true)),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    controller.observe_device_frame_for_test(profile::MESSAGE_TYPE_IO_SETTINGS, &payload);
+    let expected = runtime_request::GatewayResponseProjection::IoSettings
+        .decode(&payload)
+        .unwrap();
+    assert_eq!(
+        crate::rpc::gateway_io_settings_with(&controller, |bytes| {
+            runtime_request::GatewayResponseProjection::IoSettings.decode(bytes)
+        })
+        .unwrap(),
+        expected
+    );
+    let result = crate::rpc::gateway_io_settings_with(&controller, |bytes| {
+        let decoded = runtime_request::GatewayResponseProjection::IoSettings.decode(bytes)?;
+        let mut owner = controller.session_owner.lock_recover();
+        owner.disconnect(0, false);
+        owner.opened(0).unwrap();
+        owner.lifecycle = Some(quadcortex::device::session::SessionDriver::start(
+            7,
+            "replacement-io-session".into(),
+            0,
+        ));
+        drop(owner);
+        controller.observe_device_frame_for_test(profile::MESSAGE_TYPE_IO_SETTINGS, &payload);
+        Ok(decoded)
+    });
+    assert!(result.unwrap_err().contains("session changed"));
+    assert_eq!(
+        crate::rpc::gateway_io_settings_with(&controller, |bytes| {
+            runtime_request::GatewayResponseProjection::IoSettings.decode(bytes)
+        })
+        .unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn retained_io_gateway_refuses_invalidated_owner_even_when_latest_cache_has_old_bytes() {
+    use prost::Message;
+    use quadcortex::proto::cortex_protobuf_v2 as pa;
+    let (controller, _commands) = DeviceController::live_session_for_test();
+    let payload = |count: usize| {
+        pa::IoSettingsMessage {
+            action: 1,
+            settings: Some(pa::io_settings_message::Settings::Settings(
+                pa::PortSettings {
+                    in_port: (0..count)
+                        .map(|id| pa::InputPortSettings {
+                            input_port_id: id as u32,
+                            plugged: Some(pa::input_port_settings::Plugged::Plugged(true)),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    };
+    controller.observe_device_frame_for_test(profile::MESSAGE_TYPE_IO_SETTINGS, &payload(1));
+    let mut cached = raw_frame(1, 0);
+    cached.message_type = profile::MESSAGE_TYPE_IO_SETTINGS;
+    cached.payload = payload(1);
+    assert_eq!(
+        cache_latest_message(&mut controller.latest_messages.lock_recover(), cached),
+        None
+    );
+    assert!(controller
+        .latest_message(profile::MESSAGE_TYPE_IO_SETTINGS)
+        .is_some());
+    assert!(crate::rpc::gateway_io_settings_with(&controller, |bytes| {
+        runtime_request::GatewayResponseProjection::IoSettings.decode(bytes)
+    })
+    .is_ok());
+    {
+        let mut owner = controller.session_owner.lock_recover();
+        let connection = serde_json::to_value(owner.session_fence().unwrap()).unwrap()
+            ["connection"]
+            .as_u64()
+            .unwrap();
+        let ticket = owner.capture_observation(connection).unwrap();
+        assert!(owner
+            .observe_state(
+                &ticket,
+                profile::MESSAGE_TYPE_IO_SETTINGS,
+                &payload(quadcortex::responses::MAX_RETAINED_IO_RECORDS + 1),
+            )
+            .is_err());
+    }
+    assert!(
+        controller
+            .latest_message(profile::MESSAGE_TYPE_IO_SETTINGS)
+            .is_some(),
+        "fixture deliberately retains stale ancillary cache evidence"
+    );
+    let mut decoded = false;
+    let result = crate::rpc::gateway_io_settings_with(&controller, |_| {
+        decoded = true;
+        Ok(serde_json::Value::Null)
+    });
+    assert!(result.unwrap_err().contains("software observation budget"));
+    assert!(
+        !decoded,
+        "unavailable retained IO must be refused before decoding cached bytes"
+    );
 }

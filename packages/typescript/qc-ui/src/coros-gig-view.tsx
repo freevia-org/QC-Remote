@@ -1,5 +1,5 @@
 import { useState, type CSSProperties, type MouseEvent } from "react";
-import { QC_PRESET_SLOT_COLORS } from "@qc-remote/core";
+import { modeSlotIsActive, QC_PRESET_SLOT_COLORS } from "@qc-remote/core";
 import type { PresetEntry, PresetList, PresetSnapshot } from "@qc-remote/client";
 import { officialBlockVisual } from "./block-visuals";
 import { gigPresetTileColor, gigSceneTileColor, gigSceneToolColor } from "./gig-view-colors";
@@ -35,12 +35,13 @@ export function SceneTileTools({ scene, onEdit, onCopy, onSwap }: { scene?: numb
   );
 }
 
-function GigHybridModeGlyph({ modes = ["PRESET", "SCENE"] }: { modes?: Array<"PRESET" | "SCENE" | "STOMP"> }) {
+function GigHybridModeGlyph({ modes }: { modes?: Array<"PRESET" | "SCENE" | "STOMP"> }) {
+  if (modes?.length !== 2 || !modes.every(mode => ["PRESET", "SCENE", "STOMP"].includes(mode))) return null;
   return (
     <span className="gig-hybrid-mode-glyph" aria-hidden="true">
-      <QcModeGlyph mode={modes[0] ?? "PRESET"} />
+      <QcModeGlyph mode={modes[0]} />
       <i>+</i>
-      <QcModeGlyph mode={modes[1] ?? "SCENE"} />
+      <QcModeGlyph mode={modes[1]} />
     </span>
   );
 }
@@ -70,7 +71,6 @@ export function CorOsGigView({ snapshot, presetList, onClose, onEditScene, onSel
   // onOpen keeps the two menus exclusive on every opening path, keyboard included.
   const modeMenu = useMenuButton({ open: modeMenuOpen, setOpen: setModeMenuOpen, onOpen: () => setSceneMenuOpen(false) });
   const sceneMenu = useMenuButton({ open: sceneMenuOpen, setOpen: setSceneMenuOpen, onOpen: () => setModeMenuOpen(false) });
-  const gridBlocks = snapshot.blocks.filter((block) => block.column >= 0 && block.column < 8);
   const assignments = Array.from({ length: 8 }, (_, index) => snapshot.blocks.filter((block) => block.footswitch === index).sort((left, right) => (left.footswitchOrder ?? 0) - (right.footswitchOrder ?? 0))[0]);
   const sceneColors = ["var(--qc-palette-ff2421)", "var(--qc-palette-101c21)", "var(--qc-palette-292410)", "var(--qc-palette-291021)", "var(--qc-palette-102818)", "var(--qc-palette-291810)", "var(--qc-palette-181829)", "var(--qc-palette-102821)"];
   const sceneLetterColors = ["var(--qc-palette-e72018)", "var(--qc-palette-082029)", "var(--qc-palette-393408)", "var(--qc-palette-390c29)", "var(--qc-palette-083818)", "var(--qc-palette-391c08)", "var(--qc-palette-181c39)", "var(--qc-palette-083c29)"];
@@ -121,11 +121,14 @@ export function CorOsGigView({ snapshot, presetList, onClose, onEditScene, onSel
     </article>
   ));
   const stompTiles = assignments.map((assigned, index) => {
-    const block = assigned ?? gridBlocks[index];
-    const color = !block ? "var(--qc-route-glyph-surface)" : block.bypassed ? "var(--qc-palette-101c21)" : officialBlockVisual(block).color;
+    // Grid order is not a footswitch assignment. An unassigned tile must
+    // remain empty; fixture snapshots carry explicit observed assignments.
+    const block = assigned;
+    const unavailable = !!block && typeof block.bypassed !== "boolean";
+    const color = !block || unavailable ? "var(--qc-route-glyph-surface)" : block.bypassed ? "var(--qc-palette-101c21)" : officialBlockVisual(block).color;
     return (
-      <article key={index} className={`gig-stomp-tile${!block ? " is-empty" : block.bypassed ? " is-bypassed" : ""}`} style={{ "--gig-color": color } as CSSProperties}>
-        <button type="button" className="gig-stomp-select" onClick={() => onPressFootswitch?.(index)} aria-label={`Footswitch ${String.fromCharCode(65 + index)}${block ? `, ${block.name}` : ", empty"}`}>
+      <article key={index} className={`gig-stomp-tile${!block ? " is-empty" : unavailable ? " is-unavailable" : block.bypassed ? " is-bypassed" : ""}`} style={{ "--gig-color": color } as CSSProperties}>
+        <button type="button" className="gig-stomp-select" onClick={() => onPressFootswitch?.(index)} aria-label={`Footswitch ${String.fromCharCode(65 + index)}${block ? `, ${block.name}${unavailable ? ", bypass unavailable" : ""}` : ", empty"}`}>
           {block && (
             <span className="gig-device-icon">
               {/* The span is the whole 70px block item, margin included: on
@@ -147,8 +150,9 @@ export function CorOsGigView({ snapshot, presetList, onClose, onEditScene, onSel
       </article>
     );
   });
-  const tileForMode = (mode: "PRESET" | "SCENE" | "STOMP", index: number) => (mode === "PRESET" ? presetTiles[index] : mode === "SCENE" ? sceneTiles[index] : stompTiles[index]);
-  const tiles = snapshot.mode === "HYBRID" ? Array.from({ length: 8 }, (_, index) => tileForMode(snapshot.footswitchModes?.[index < 4 ? 0 : 1] ?? (index < 4 ? "SCENE" : "STOMP"), index)) : Array.from({ length: 8 }, (_, index) => tileForMode(snapshot.mode as Exclude<PresetSnapshot["mode"], "HYBRID" | "UNKNOWN">, index));
+  // A kind without observed hybrid roles, or UNKNOWN, is not a STOMP mapping.
+  const tileForMode = (mode: PresetSnapshot["mode"] | undefined, index: number) => mode === "PRESET" ? presetTiles[index] : mode === "SCENE" ? sceneTiles[index] : mode === "STOMP" ? stompTiles[index] : null;
+  const tiles = Array.from({ length: 8 }, (_, index) => tileForMode(snapshot.mode === "HYBRID" ? snapshot.footswitchModes?.[index < 4 ? 0 : 1] : snapshot.mode, index));
   return (
     <section className={`coros-gig-view${liveTuner ? " has-live-tuner" : ""}`} aria-label={liveTuner ? "Gig View with Live Tuner" : "Gig View"}>
       <header>
@@ -174,10 +178,10 @@ export function CorOsGigView({ snapshot, presetList, onClose, onEditScene, onSel
           <QcUiIcon kind="check" />
         </button>
       </header>
-      {modeMenuOpen && <div className="gig-selector-popover gig-mode-selector" {...modeMenu.menuProps} aria-label="Modes">{(snapshot.modeSlots ?? (["PRESET", "SCENE", "STOMP"] as const).map((mode, slot) => ({ slot: slot as 0 | 1 | 2, label: mode, mode }))).map((entry) => <button type="button" key={`${entry.slot}-${entry.label}`} className={snapshot.mode === entry.mode ? "is-active" : ""} {...modeMenu.itemProps(() => onSelectModeSlot?.(entry.slot))}><QcModeGlyph mode={entry.mode} /><span>{entry.label}</span></button>)}</div>}
+      {modeMenuOpen && <div className="gig-selector-popover gig-mode-selector" {...modeMenu.menuProps} aria-label="Modes">{(snapshot.modeSlots ?? []).map((entry) => <button type="button" key={`${entry.slot}-${entry.label}`} className={modeSlotIsActive(snapshot, entry.slot) ? "is-active" : ""} {...modeMenu.itemProps(() => onSelectModeSlot?.(entry.slot))}><QcModeGlyph mode={entry.mode} /><span>{entry.label}</span></button>)}{!snapshot.modeSlots?.length && <p role="status">Mode slots unavailable.</p>}</div>}
       {sceneMenuOpen && <div className="gig-selector-popover gig-scene-selector" {...sceneMenu.menuProps} aria-label="Scenes">{snapshot.scenes.map((scene, index) => <button type="button" key={`${index}-${scene}`} className={snapshot.activeScene === index ? "is-active" : ""} {...sceneMenu.itemProps(() => onSelectScene?.(index))}><QcSceneBadge letter={String.fromCharCode(65 + index)} /><span>{sceneDisplayLabel(scene, index)}</span></button>)}</div>}
       {liveTuner && <div className="live-tuner-strip" aria-label="Live Tuner dormant" />}
-      <div className={`gig-tiles is-${snapshot.mode.toLowerCase()}`}>{tiles}</div>
+      <div className={`gig-tiles is-${snapshot.mode.toLowerCase()}`}>{tiles.every(tile => tile === null) ? <p role="status">Footswitch roles unavailable.</p> : tiles}</div>
     </section>
   );
 }

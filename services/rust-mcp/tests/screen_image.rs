@@ -6,7 +6,9 @@
 //! standard MCP image content block so a client that renders content blocks can
 //! show the screen. Every other tool must be unaffected.
 
+mod common;
 use async_trait::async_trait;
+use common::OwnedTask;
 use qc_remote_mcp::{BackendError, PrincipalRoute, QcBackend, QcMcp};
 use rmcp::ServiceExt;
 use serde_json::{Map, Value, json};
@@ -37,57 +39,58 @@ impl QcBackend for ScreenBackend {
 }
 
 async fn call(name: &str, arguments: Value) -> Value {
-    let server = QcMcp::for_route(
-        Arc::new(ScreenBackend),
-        PrincipalRoute::new("local-user", "local-device"),
-    );
-    let (server_io, client_io) = tokio::io::duplex(256 * 1024);
-    let task = tokio::spawn(async move {
-        server
-            .serve(server_io)
-            .await
-            .expect("serve stdio")
-            .waiting()
-            .await
-            .expect("stdio completion");
-    });
-    let (read, mut write) = tokio::io::split(client_io);
-    let mut lines = BufReader::new(read).lines();
-    let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let server = QcMcp::for_route(
+            Arc::new(ScreenBackend),
+            PrincipalRoute::new("local-user", "local-device"),
+        );
+        let (server_io, client_io) = tokio::io::duplex(256 * 1024);
+        let task = OwnedTask(tokio::spawn(async move {
+            server
+                .serve(server_io)
+                .await
+                .expect("serve stdio")
+                .waiting()
+                .await
+                .expect("stdio completion");
+        }));
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut lines = BufReader::new(read).lines();
+        let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
         "protocolVersion": "2025-06-18", "capabilities": {},
         "clientInfo": {"name": "screen-image-test", "version": "1"}}});
-    write
-        .write_all(format!("{init}\n").as_bytes())
-        .await
-        .expect("initialize");
-    lines.next_line().await.expect("read").expect("init reply");
-    let request = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        write
+            .write_all(format!("{init}\n").as_bytes())
+            .await
+            .expect("initialize");
+        lines.next_line().await.expect("read").expect("init reply");
+        let request = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
         "params": {"name": name, "arguments": arguments}});
-    write
-        .write_all(
-            format!(
-                "{}\n{request}\n",
-                json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        write
+            .write_all(
+                format!(
+                    "{}\n{request}\n",
+                    json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
+                )
+                .as_bytes(),
             )
-            .as_bytes(),
-        )
-        .await
-        .expect("call");
-    let response = loop {
-        let value: Value =
-            serde_json::from_str(&lines.next_line().await.expect("read").expect("response"))
-                .expect("JSON");
-        if value["id"] == 2 {
-            break value;
-        }
-    };
-    drop(lines);
-    drop(write);
-    tokio::time::timeout(std::time::Duration::from_secs(2), task)
-        .await
-        .expect("stdio server stopped")
-        .expect("task joined");
-    response["result"].clone()
+            .await
+            .expect("call");
+        let response = loop {
+            let value: Value =
+                serde_json::from_str(&lines.next_line().await.expect("read").expect("response"))
+                    .expect("JSON");
+            if value["id"] == 2 {
+                break value;
+            }
+        };
+        drop(lines);
+        drop(write);
+        task.join().await;
+        response["result"].clone()
+    })
+    .await
+    .expect("whole MCP fixture observation timed out")
 }
 
 fn images(result: &Value) -> Vec<&Value> {

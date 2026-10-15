@@ -19,6 +19,7 @@ members = [
     "packages/rust/qc-windows-process",
     "packages/rust/qc-native-platform",
     "packages/rust/quadcortex-android",
+    "packages/rust/quadcortex-forwarder",
     "packages/rust/quadcortex-windows",
     "packages/rust/quadcortex-hid",
     "services/device-broker",

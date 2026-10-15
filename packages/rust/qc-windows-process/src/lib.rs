@@ -5,6 +5,32 @@
 //! process-table walk is centralized here so both hosts use the same snapshot
 //! and cleanup rules.
 
+#[cfg(windows)]
+pub mod owned_tool;
+
+/// Whether the original native thread has completely exited.
+///
+/// On Windows Rust's body-completion flag can precede native TLS cleanup.
+/// Only the retained thread HANDLE's signal permits a nonblocking join;
+/// failed or unexpected waits conservatively leave its owner retained.
+pub fn thread_signalled<T>(handle: &std::thread::JoinHandle<T>) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        // SAFETY: JoinHandle retains this original thread handle for the call.
+        unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(
+                handle.as_raw_handle() as _,
+                0,
+            ) == windows_sys::Win32::Foundation::WAIT_OBJECT_0
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        handle.is_finished()
+    }
+}
+
 /// Whether a process with this id currently exists, asked of the OS.
 ///
 /// Errs towards "alive": every caller uses a `false` to justify treating the
@@ -13,9 +39,7 @@
 /// as dead.
 #[cfg(windows)]
 pub fn os_process_is_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, WAIT_TIMEOUT,
-    };
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
     use windows_sys::Win32::System::Threading::{
         OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
     };
@@ -31,10 +55,17 @@ pub fn os_process_is_alive(pid: u32) -> bool {
     // A process that has exited but whose handle someone still holds can be
     // opened; its handle is signalled. A running process's is not.
     // SAFETY: `process` is a valid handle returned by OpenProcess.
-    let running = unsafe { WaitForSingleObject(process, 0) } == WAIT_TIMEOUT;
+    let running = process_wait_means_alive(unsafe { WaitForSingleObject(process, 0) });
     // SAFETY: `process` is a valid handle returned by OpenProcess.
     unsafe { CloseHandle(process) };
     running
+}
+
+#[cfg(windows)]
+fn process_wait_means_alive(result: u32) -> bool {
+    // Only a signalled process handle proves exit. Failure or an unexpected
+    // wait state must not authorize replacing a live owner or exiting its child.
+    result != windows_sys::Win32::Foundation::WAIT_OBJECT_0
 }
 
 #[cfg(not(windows))]
@@ -278,6 +309,13 @@ pub fn processes_by_image(_image_name: &str) -> Vec<ProcessInfo> {
     Vec::new()
 }
 
+/// Validate untrusted UTF-16 byte lengths before reserving the read buffer.
+#[cfg(any(windows, test))]
+fn validated_command_line_length(length: u16, maximum_length: u16) -> Option<usize> {
+    (length != 0 && length.is_multiple_of(2) && length <= 32_768 && length <= maximum_length)
+        .then_some(usize::from(length))
+}
+
 /// Reads a process's command line from its PEB. Same-bitness only; any
 /// failure yields `None`.
 #[cfg(windows)]
@@ -343,7 +381,7 @@ fn process_command_line(pid: u32) -> Option<String> {
         }
         let mut parameters = 0_usize;
         if !read(
-            basic.peb + PARAMETERS_AT,
+            basic.peb.checked_add(PARAMETERS_AT)?,
             (&raw mut parameters).cast(),
             POINTER,
         ) || parameters == 0
@@ -353,21 +391,18 @@ fn process_command_line(pid: u32) -> Option<String> {
         // SAFETY: zeroed plain-old-data.
         let mut text: UNICODE_STRING = unsafe { std::mem::zeroed() };
         if !read(
-            parameters + COMMAND_LINE_AT,
+            parameters.checked_add(COMMAND_LINE_AT)?,
             (&raw mut text).cast(),
             std::mem::size_of::<UNICODE_STRING>(),
-        ) || text.Length == 0
-            || text.Buffer.is_null()
-            || text.Length > 32_768
+        ) || text.Buffer.is_null()
         {
             return None;
         }
-        let mut units = vec![0_u16; usize::from(text.Length) / 2];
-        if !read(
-            text.Buffer as usize,
-            units.as_mut_ptr().cast(),
-            usize::from(text.Length),
-        ) {
+        // The remote UNICODE_STRING is untrusted. An odd byte length would
+        // otherwise allocate floor(length / 2) units but write length bytes.
+        let byte_length = validated_command_line_length(text.Length, text.MaximumLength)?;
+        let mut units = vec![0_u16; byte_length / 2];
+        if !read(text.Buffer as usize, units.as_mut_ptr().cast(), byte_length) {
             return None;
         }
         Some(String::from_utf16_lossy(&units))
@@ -380,6 +415,174 @@ fn process_command_line(pid: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    static FIXTURE_CHILD_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    #[cfg(windows)]
+    struct FixtureChildPermit;
+    #[cfg(windows)]
+    impl Drop for FixtureChildPermit {
+        fn drop(&mut self) {
+            FIXTURE_CHILD_COUNT.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+    #[cfg(windows)]
+    struct RetainedFixtureChild {
+        child: std::process::Child,
+        _permit: FixtureChildPermit,
+    }
+    #[cfg(windows)]
+    fn retained_fixture_children() -> &'static std::sync::Mutex<Vec<RetainedFixtureChild>> {
+        static RETAINED: std::sync::Mutex<Vec<RetainedFixtureChild>> =
+            std::sync::Mutex::new(Vec::new());
+        &RETAINED
+    }
+    #[cfg(windows)]
+    fn reap_fixture_children() {
+        let records = std::mem::take(
+            &mut *retained_fixture_children()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+        );
+        let pending = records
+            .into_iter()
+            .filter_map(|mut record| {
+                if matches!(record.child.try_wait(), Ok(Some(_))) {
+                    None // Exact original acknowledges exit before admission drops.
+                } else {
+                    Some(record)
+                }
+            })
+            .collect::<Vec<_>>();
+        retained_fixture_children()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend(pending);
+    }
+    #[cfg(windows)]
+    struct FixtureChild {
+        child: Option<std::process::Child>,
+        permit: Option<FixtureChildPermit>,
+    }
+    #[cfg(windows)]
+    impl FixtureChild {
+        fn spawn(mode: &str) -> Self {
+            reap_fixture_children();
+            FIXTURE_CHILD_COUNT
+                .fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |count| (count < 4).then_some(count + 1),
+                )
+                .expect("bounded process-fixture admission");
+            let permit = FixtureChildPermit;
+            let child =
+                std::process::Command::new(std::env::current_exe().expect("test executable path"))
+                    .args(["--exact", "tests::process_fixture_child", "--ignored"])
+                    .env("QC_WINDOWS_PROCESS_FIXTURE_CHILD", mode)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .expect("controlled test executable spawns");
+            Self {
+                child: Some(child),
+                permit: Some(permit),
+            }
+        }
+        fn pid(&self) -> u32 {
+            self.child.as_ref().unwrap().id()
+        }
+        fn wait_until(
+            &mut self,
+            deadline: std::time::Instant,
+        ) -> std::io::Result<std::process::ExitStatus> {
+            loop {
+                if let Some(status) = self.child.as_mut().unwrap().try_wait()? {
+                    return Ok(status);
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "process fixture did not exit",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    }
+    #[cfg(windows)]
+    impl Drop for FixtureChild {
+        fn drop(&mut self) {
+            let Some(mut child) = self.child.take() else {
+                return;
+            };
+            let permit = self.permit.take().unwrap();
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            let _ = child.kill();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            loop {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            // Never drop an unacknowledged original merely to regain capacity.
+            retained_fixture_children()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(RetainedFixtureChild {
+                    child,
+                    _permit: permit,
+                });
+            eprintln!(
+                "process fixture cleanup unacknowledged; exact original and admission retained"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_command_line_lengths_never_exceed_the_utf16_allocation() {
+        let mut visited = 0_usize;
+        let mut accepted = 0_usize;
+        for length in 0..=u16::MAX {
+            visited += 1;
+            if let Some(bytes) = validated_command_line_length(length, u16::MAX) {
+                accepted += 1;
+                assert_eq!((bytes / 2) * std::mem::size_of::<u16>(), bytes);
+                assert!(bytes > 0 && bytes <= 32_768);
+            } else {
+                assert!(length == 0 || !length.is_multiple_of(2) || length > 32_768);
+            }
+        }
+        assert_eq!(visited, 65_536, "every u16 length was checked");
+        assert_eq!(
+            accepted, 16_384,
+            "every nonzero even supported length passed"
+        );
+        assert_eq!(validated_command_line_length(12, 10), None);
+        assert_eq!(validated_command_line_length(12, 12), Some(12));
+        assert_eq!(validated_command_line_length(32_768, 32_768), Some(32_768));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_a_signalled_process_wait_proves_exit() {
+        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+        assert!(!process_wait_means_alive(WAIT_OBJECT_0));
+        assert!(process_wait_means_alive(WAIT_TIMEOUT));
+        assert!(process_wait_means_alive(WAIT_FAILED));
+        assert!(
+            process_wait_means_alive(0x1234),
+            "unknown is not proof of exit"
+        );
+    }
 
     #[cfg(windows)]
     #[test]
@@ -407,13 +610,65 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn an_exited_process_is_not_read_as_alive() {
-        let mut child = std::process::Command::new("cmd")
-            .args(["/C", "exit", "0"])
-            .spawn()
-            .expect("cmd spawns");
-        let pid = child.id();
-        child.wait().expect("cmd exits");
+        let mut child = FixtureChild::spawn("exit");
+        let pid = child.pid();
+        assert!(child
+            .wait_until(std::time::Instant::now() + std::time::Duration::from_secs(5))
+            .expect("controlled child exits")
+            .success());
         assert!(!os_process_is_alive(pid));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn process_fixture_child() {
+        match std::env::var("QC_WINDOWS_PROCESS_FIXTURE_CHILD").as_deref() {
+            Ok("exit") => {}
+            Ok("wait") => {
+                use std::io::Read;
+                // Only the explicitly filtered owned helper blocks here.
+                let mut byte = [0_u8; 1];
+                let _ = std::io::stdin().read(&mut byte);
+            }
+            _ => panic!("controlled process fixture requires an explicit child mode"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn process_fixture_unwind_reaps_its_original_before_releasing_admission() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{
+            DuplicateHandle, DUPLICATE_SAME_ACCESS, WAIT_OBJECT_0,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, WaitForSingleObject};
+        let mut process = None;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let child = FixtureChild::spawn("wait");
+            let mut duplicate = std::ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    DuplicateHandle(
+                        GetCurrentProcess(),
+                        child.child.as_ref().unwrap().as_raw_handle(),
+                        GetCurrentProcess(),
+                        &mut duplicate,
+                        0,
+                        0,
+                        DUPLICATE_SAME_ACCESS,
+                    )
+                },
+                0
+            );
+            process = Some(unsafe { OwnedHandle::from_raw_handle(duplicate) });
+            panic!("injected assertion before child observation");
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.unwrap().as_raw_handle(), 0) },
+            WAIT_OBJECT_0
+        );
     }
 
     #[cfg(windows)]

@@ -3,6 +3,10 @@
 
 mod library;
 pub use library::*;
+#[cfg(test)]
+mod io_retention_tests;
+#[cfg(test)]
+mod numeric_settings_tests;
 
 use crate::{
     commands::is_tuner_reference_offset_hz,
@@ -29,6 +33,9 @@ pub enum ResponseDecodeError {
     /// nested in it is larger than the 1 MiB frame-size limit.
     #[error("the QC protobuf reply exceeded its size limit")]
     OversizedReply,
+    /// Cumulative I/O observations exceeded this host software retention budget.
+    #[error("Retained QC I/O settings exceeded the software observation budget; reconnect to reset the session")]
+    RetainedIoBudget,
     /// The payload is not a valid protobuf message of the expected type.
     #[error("QC protobuf reply could not be decoded: {0}")]
     Protobuf(#[from] prost::DecodeError),
@@ -122,6 +129,36 @@ fn require_update_action(action: i32, family: &'static str) -> Result<(), Respon
     }
 }
 
+fn check_general_settings_numeric_fields(
+    message: &pa::GeneralSettingsMessage,
+) -> Result<(), ResponseDecodeError> {
+    let available = message
+        .available_disk_space
+        .as_ref()
+        .map(|pa::general_settings_message::AvailableDiskSpace::AvailableDiskSpace(value)| *value);
+    let total = message
+        .total_disk_space
+        .as_ref()
+        .map(|pa::general_settings_message::TotalDiskSpace::TotalDiskSpace(value)| *value);
+    if [available, total]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.is_finite())
+    {
+        return Err(ResponseDecodeError::Mismatch(
+            "general settings storage numeric field is not finite",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_general_settings_retention(
+    payload: &[u8],
+) -> Result<(), ResponseDecodeError> {
+    let message: pa::GeneralSettingsMessage = decode_reply(payload)?;
+    check_general_settings_numeric_fields(&message)
+}
+
 /// Fold a sparse publication while replacing complete nested value groups.
 /// Protobuf's recursive merge would retain old true values when the sender
 /// omits proto3 false scalars inside an explicitly present assignment/row group.
@@ -132,6 +169,8 @@ pub fn merge_general_settings_publication(
     let mut retained: pa::GeneralSettingsMessage = decode_reply(previous)?;
     let update: pa::GeneralSettingsMessage = decode_reply(incoming)?;
     require_update_action(update.action, "GeneralSettings")?;
+    check_general_settings_numeric_fields(&retained)?;
+    check_general_settings_numeric_fields(&update)?;
     if update.master_volume_assignment.is_some() {
         retained.master_volume_assignment = None;
     }
@@ -187,6 +226,140 @@ pub fn settings_publication_is_retainable(message_type: u16, payload: &[u8]) -> 
             .is_ok_and(|message| message.request_id.is_some())
 }
 
+/// Software memory ceilings, not firmware port namespace limits.
+pub const MAX_RETAINED_IO_RECORDS: usize = 256;
+/// Maximum encoded bytes retained for cumulative I/O observations by host software.
+pub const MAX_RETAINED_IO_BYTES: usize = 1024 * 1024;
+
+fn check_io_numeric_fields(message: &pa::IoSettingsMessage) -> Result<(), ResponseDecodeError> {
+    let Some(pa::io_settings_message::Settings::Settings(settings)) = message.settings.as_ref()
+    else {
+        return Ok(());
+    };
+    let mut values = Vec::new();
+    for port in &settings.in_port {
+        values.extend([
+            port.level
+                .as_ref()
+                .map(|pa::input_port_settings::Level::Level(v)| *v),
+            port.input_zmode
+                .as_ref()
+                .map(|pa::input_port_settings::InputZmode::InputZmode(v)| *v),
+            port.input_type
+                .as_ref()
+                .map(|pa::input_port_settings::InputType::InputType(v)| *v),
+            port.ground_lift
+                .as_ref()
+                .map(|pa::input_port_settings::GroundLift::GroundLift(v)| *v),
+        ]);
+    }
+    for port in &settings.out_port {
+        values.extend([
+            port.level
+                .as_ref()
+                .map(|pa::output_port_settings::Level::Level(v)| *v),
+            port.ground_lift
+                .as_ref()
+                .map(|pa::output_port_settings::GroundLift::GroundLift(v)| *v),
+        ]);
+    }
+    for port in &settings.exp_port {
+        values.push(
+            port.level
+                .as_ref()
+                .map(|pa::exp_port_settings::Level::Level(v)| *v),
+        );
+    }
+    if let Some(pa::port_settings::HpPort::HpPort(port)) = &settings.hp_port {
+        values.push(
+            port.level
+                .as_ref()
+                .map(|pa::headphones_settings::Level::Level(v)| *v),
+        );
+        values.extend(port.hp_feed.iter().map(|feed| Some(feed.level)));
+    }
+    if let Some(pa::port_settings::UsbPort::UsbPort(port)) = &settings.usb_port {
+        values.extend([
+            port.level
+                .as_ref()
+                .map(|pa::usb_port_settings::Level::Level(v)| *v),
+            port.hp_select
+                .as_ref()
+                .map(|pa::usb_port_settings::HpSelect::HpSelect(v)| *v),
+            port.dry_wet
+                .as_ref()
+                .map(|pa::usb_port_settings::DryWet::DryWet(v)| *v),
+        ]);
+    }
+    if let Some(pa::port_settings::MidiPort::MidiPort(port)) = &settings.midi_port {
+        values.push(
+            port.midi_thru
+                .as_ref()
+                .map(|pa::midi_port_settings::MidiThru::MidiThru(v)| *v),
+        );
+    }
+    if values.into_iter().flatten().any(|value| !value.is_finite()) {
+        return Err(ResponseDecodeError::Mismatch(
+            "I/O settings numeric field is not finite",
+        ));
+    }
+    // Finite wire values can still overflow the public f32 dB projection.
+    // This is representability validation, not a firmware normalized-range clamp.
+    let input_overflow = settings.in_port.iter().any(|port| {
+        port.level
+            .as_ref()
+            .is_some_and(|pa::input_port_settings::Level::Level(value)| {
+                !(-12.0 + 72.0 * value).is_finite()
+            })
+    });
+    let output_overflow = settings.out_port.iter().any(|port| {
+        port.level
+            .as_ref()
+            .is_some_and(|pa::output_port_settings::Level::Level(value)| {
+                !crate::commands::output_level_wire_to_db(*value).is_finite()
+            })
+    });
+    if input_overflow || output_overflow {
+        return Err(ResponseDecodeError::Mismatch(
+            "I/O settings derived level is not finite",
+        ));
+    }
+    Ok(())
+}
+
+fn check_io_retention(message: &pa::IoSettingsMessage) -> Result<(), ResponseDecodeError> {
+    let records = message.settings.as_ref().map_or(0, |settings| {
+        let pa::io_settings_message::Settings::Settings(settings) = settings;
+        settings
+            .in_port
+            .len()
+            .saturating_add(settings.out_port.len())
+            .saturating_add(settings.exp_port.len())
+            .saturating_add(settings.hp_port.as_ref().map_or(0, |port| {
+                let pa::port_settings::HpPort::HpPort(port) = port;
+                port.hp_feed.len().saturating_add(1)
+            }))
+            .saturating_add(usize::from(settings.usb_port.is_some()))
+            .saturating_add(usize::from(settings.midi_port.is_some()))
+    });
+    if records > MAX_RETAINED_IO_RECORDS || message.encoded_len() > MAX_RETAINED_IO_BYTES {
+        return Err(ResponseDecodeError::RetainedIoBudget);
+    }
+    Ok(())
+}
+
+/// Validate even the first I/O publication before retaining its bytes.
+pub fn validate_io_settings_retention(payload: &[u8]) -> Result<(), ResponseDecodeError> {
+    // Unknown protobuf fields are discarded by decoding, but the first retained
+    // publication is still its original wire bytes.
+    if payload.len() > MAX_RETAINED_IO_BYTES {
+        return Err(ResponseDecodeError::RetainedIoBudget);
+    }
+    let message = decode_reply::<pa::IoSettingsMessage>(payload)?;
+    check_io_retention(&message)?;
+    check_io_numeric_fields(&message)
+}
+
 /// I/O publications update addressed ports; repeated records are not a new
 /// inventory and must not erase other ports or append duplicate identities.
 pub fn merge_io_settings_publication(
@@ -196,8 +369,15 @@ pub fn merge_io_settings_publication(
     if !settings_publication_is_retainable(profile::MESSAGE_TYPE_IO_SETTINGS, incoming) {
         return Err(ResponseDecodeError::Incomplete("I/O settings request_id"));
     }
+    if previous.len() > MAX_RETAINED_IO_BYTES || incoming.len() > MAX_RETAINED_IO_BYTES {
+        return Err(ResponseDecodeError::RetainedIoBudget);
+    }
     let mut retained: pa::IoSettingsMessage = decode_reply(previous)?;
     let mut update: pa::IoSettingsMessage = decode_reply(incoming)?;
+    check_io_retention(&retained)?;
+    check_io_retention(&update)?;
+    check_io_numeric_fields(&retained)?;
+    check_io_numeric_fields(&update)?;
     require_update_action(update.action, "IOSettings")?;
     if let Some(pa::io_settings_message::Settings::Settings(mut delta)) = update.settings.take() {
         let mut settings = retained
@@ -241,6 +421,7 @@ pub fn merge_io_settings_publication(
         retained.settings = Some(pa::io_settings_message::Settings::Settings(settings));
     }
     retained.merge(update.encode_to_vec().as_slice())?;
+    check_io_retention(&retained)?;
     Ok(retained.encode_to_vec())
 }
 
@@ -658,7 +839,13 @@ impl BackupAssembler {
         &mut self,
         payload: &[u8],
     ) -> Result<(Option<String>, BackupFrameShape), ResponseDecodeError> {
-        let message: pa::LocalBackupMessage = decode_reply(payload)?;
+        let message: pa::LocalBackupMessage = match decode_reply(payload) {
+            Ok(message) => message,
+            Err(error) => {
+                self.reset();
+                return Err(error);
+            }
+        };
         let action = message.action;
         let request_id_present = message.request_id.is_some();
         let terminal = message
@@ -800,9 +987,15 @@ pub fn decode_recalled_preset_name(payload: &[u8]) -> Result<Option<String>, Res
 pub fn decode_selected_scene(payload: &[u8]) -> Result<Option<u32>, ResponseDecodeError> {
     let message: pa::SceneMessage = decode_reply(payload)?;
     require_update_action(message.action, "selected-scene action is not UPDATE")?;
-    Ok(message
+    let scene = message
         .selected_scene
-        .map(|pa::scene_message::SelectedScene::SelectedScene(scene)| scene))
+        .map(|pa::scene_message::SelectedScene::SelectedScene(scene)| scene);
+    if scene.is_some_and(|value| value >= crate::domain::SCENE_COUNT) {
+        return Err(ResponseDecodeError::Incomplete(
+            "selected scene is outside the declared scene domain",
+        ));
+    }
+    Ok(scene)
 }
 
 /// Decodes the device's version reply into a [`DeviceIdentity`].
@@ -967,6 +1160,7 @@ pub fn decode_tuner_settings(payload: &[u8]) -> Result<TunerSettings, ResponseDe
 pub fn decode_general_settings(payload: &[u8]) -> Result<GeneralSettings, ResponseDecodeError> {
     let message: pa::GeneralSettingsMessage = decode_reply(payload)?;
     require_update_action(message.action, "general-settings action is not UPDATE")?;
+    check_general_settings_numeric_fields(&message)?;
     let scene_bypass_behavior = match message.scene_block_bypass {
         Some(pa::general_settings_message::SceneBlockBypass::SceneBlockBypass(value)) => Some(
             match value {
@@ -1149,6 +1343,7 @@ fn decode_io_settings_fields(
     if message.request_id.is_some() {
         return Err(ResponseDecodeError::Incomplete("I/O settings request_id"));
     }
+    check_io_numeric_fields(&message)?;
     let has_linked_flag = message.xlr1_2_linked.is_some() || message.out3_4_linked.is_some();
     let settings = match message.settings {
         Some(pa::io_settings_message::Settings::Settings(value)) => value,
@@ -1294,6 +1489,13 @@ fn decode_io_settings_fields(
 pub fn decode_global_eq(payload: &[u8]) -> Result<GlobalEqSettings, ResponseDecodeError> {
     let message: pa::GlobalEqMessage = decode_reply(payload)?;
     require_update_action(message.action, "Global EQ action is not UPDATE")?;
+    if message.parameters.iter().any(|parameter| {
+        (0..=27).contains(&parameter.parameter_index) && !parameter.value.is_finite()
+    }) {
+        return Err(ResponseDecodeError::Mismatch(
+            "Global EQ numeric field is not finite",
+        ));
+    }
     Ok(GlobalEqSettings {
         parameters: message
             .parameters
@@ -1337,6 +1539,19 @@ pub fn decode_looper_status(payload: &[u8]) -> Result<LooperStatus, ResponseDeco
         .status
         .map(|pa::looper_message::Status::Status(value)| value)
         .ok_or(ResponseDecodeError::Incomplete("looper status"))?;
+    if [
+        status.progress,
+        status.undo_progress,
+        status.max_write_displacement,
+        status.min_write_displacement,
+    ]
+    .into_iter()
+    .any(|value| !value.is_finite())
+    {
+        return Err(ResponseDecodeError::Mismatch(
+            "looper numeric field is not finite",
+        ));
+    }
     Ok(LooperStatus {
         state: Some(status.state),
         progress: Some(status.progress),
@@ -4926,5 +5141,37 @@ mod tests {
             let mut backup = BackupAssembler::default();
             let _ = backup.push(&payload);
         }
+    }
+    #[test]
+    fn backup_decode_failure_resets_partial_evidence_before_a_new_document() {
+        let frame = |chunk: &str, terminal| {
+            pa::LocalBackupMessage {
+                action: 1,
+                backup_json: Some(pa::local_backup_message::BackupJson::BackupJson(
+                    chunk.into(),
+                )),
+                is_last_chunk: Some(pa::local_backup_message::IsLastChunk::IsLastChunk(terminal)),
+                ..Default::default()
+            }
+            .encode_to_vec()
+        };
+        let mut backup = BackupAssembler::default();
+        assert!(backup
+            .push(&frame("{\"type\":\"backup\",", false))
+            .unwrap()
+            .is_none());
+        assert!(backup.started());
+        assert_eq!(backup.chunks(), 1);
+        assert!(backup.push(&[0x80]).is_err());
+        assert!(
+            !backup.started(),
+            "a failed decode must not retain partial evidence"
+        );
+        assert_eq!(backup.chunks(), 0);
+        let complete = "{\"type\":\"backup\",\"creator\":\"quad\"}";
+        assert_eq!(
+            backup.push(&frame(complete, true)).unwrap().as_deref(),
+            Some(complete)
+        );
     }
 }

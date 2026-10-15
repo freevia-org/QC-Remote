@@ -76,12 +76,19 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
 
   assert.equal(domain.limits.scenes, 8);
   assert.match(appSource, /Array\.from\(\{ length: QC_SCENE_COUNT \}/, "A through H must come from the shared scene definition");
-  assert.match(appSource, /QcMasterVolumeKnob value=\{snapshot\.masterVolume\} readout=\{`\$\{snapshot\.masterVolume\}`\}/);
+  const volumeControl = appSource.match(/<QcMasterVolumeKnob\b[^>]*\/>/)?.[0];
+  assert.ok(volumeControl, "the mobile deck mounts the shared Master Volume control");
+  assert.match(volumeControl, /gestureContextKey=\{hardwareGestureContextKey\}/);
+  assert.match(volumeControl, /value=\{snapshot\.masterVolume\}/);
+  assert.match(volumeControl, /readout=\{`\$\{snapshot\.masterVolume\}`\}/);
+  assert.match(volumeControl, /onAction=\{handleSurfaceAction\}/);
+  assert.match(volumeControl, /onInteractionStart=\{continuousControls\.beginMasterVolumeInteraction\}/);
+  assert.match(volumeControl, /onInteractionEnd=\{continuousControls\.endMasterVolumeInteraction\}/);
   assert.match(appSource, /<small>v\{appPackage\.version\}<\/small>/, "the compact header identifies the app version instead of duplicating the QC preset title");
   assert.match(appSource, /openUsbStatusPanel/, "USB status opens a live details panel rather than immediately reconnecting");
   assert.match(appSource, /openRemoteStatusPanel/, "Remote status opens a live details panel rather than immediately unpairing");
   assert.match(appSource, /DEVICE CONNECTION[\s\S]*mobile-device-tabs/);
-  assert.match(appSource, /workflowPanel === "remote" && <div className="mobile-connection-panel mobile-remote-panel">[\s\S]*?<h2 id="dialog-title">Quad Cortex pairing/);
+  assert.match(appSource, /workflowPanel === "remote" && <div className="mobile-connection-panel mobile-remote-panel">[\s\S]*?<h2 id="dialog-title">\{iosPlatform \? "QC Remote sign-in" : "Quad Cortex pairing"\}/, "iOS signs in to the paired host while Android keeps its direct pairing flow");
   assert.match(appSource, /Remote service: \{relayWorkflow\.status\.endpoint\}/);
   assert.match(appSource, /mobile-status-notice/, "the compact control deck keeps operational feedback visible");
   assert.doesNotMatch(appSource, /mobile-chat|Chat settings|Assistant status/);
@@ -131,13 +138,13 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   assert.match(deviceSettingsScreen, /<CorOsReferenceSettingsPane view="settings-info" deviceInformation=\{info\} \/>/, "Device Information is the shared pane fed the unit's real values");
   assert.match(appSource, /createQcDeviceDisplay\(\{[\s\S]*?tempo: tempoWorkflow/);
   assert.match(screenContent, /<CorOsTempoScreen workflow=\{workflows\.tempo\}/);
-  assert.match(appSource, /QcHardwareSwitch role="bank:up" label=\{<QcUiIcon kind="up" \/>\}/);
-  assert.match(appSource, /QcHardwareSwitch role="bank:down" label=\{<span className="mobile-down-glyph"><QcUiIcon kind="up" \/><\/span>\}/);
+  assert.match(appSource, /QcHardwareSwitch gestureContextKey=\{hardwareSwitchGestureKey\} role="bank:up" label=\{<QcUiIcon kind="up" \/>\}/);
+  assert.match(appSource, /QcHardwareSwitch gestureContextKey=\{hardwareSwitchGestureKey\} role="bank:down" label=\{<span className="mobile-down-glyph"><QcUiIcon kind="up" \/><\/span>\}/);
   assert.doesNotMatch(appSource, />SCENE</);
   assert.match(appSource, /footswitchLeds\(snapshot\)/);
   assert.match(appSource, /useQcWorkflows\(\{/);
   assert.match(performanceWorkflow, /controller\.beginFootswitch/);
-  assert.match(appSource, /QcHardwareSwitch role="tempo" label="" ariaLabel="TEMPO" readout=\{`\$\{snapshot\.tempo\}`\}/);
+  assert.match(appSource, /QcHardwareSwitch gestureContextKey=\{hardwareSwitchGestureKey\} role="tempo" label="" ariaLabel="TEMPO" readout=\{`\$\{snapshot\.tempo\}`\}/);
   assert.match(appSource, /useContinuousControlWorkflow\(\{/);
   assert.match(appSource, /rotation: \{ editor: adjustEditorParameter, tempo: continuousControls\.adjustTempo, masterVolume: continuousControls\.adjustMasterVolume \}/, "encoder turns reach the editor first, then Tempo and Master Volume, through the shared router");
   assert.doesNotMatch(appSource, /> BLOCK<\/button>/);
@@ -167,7 +174,11 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   assert.match(styles, /\.mobile-volume-control \{ grid-column: 1; grid-row: 1;/);
   assert.match(styles, /@media \(orientation: landscape\)[\s\S]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/);
   assert.match(styles, /@media \(orientation: landscape\)[\s\S]*\.mobile-screen \{[^}]*container-type: size; --qc-display-max-height: 100cqh; \}/, "landscape only changes the box the display may fill; the display frame keeps its own 5:3 shape");
-  assert.match(appSource, /<QcDeviceDisplay display=\{display\} presentation="display" /, "the phone shows the shared display frame without the hardware panel");
+  const deviceDisplay = appSource.match(/<QcDeviceDisplay\b[^>]*\/>/)?.[0];
+  assert.ok(deviceDisplay, "the phone mounts the shared device display");
+  assert.match(deviceDisplay, /display=\{display\}/);
+  assert.match(deviceDisplay, /hardwareGestureContextKey=\{hardwareGestureContextKey\}/);
+  assert.match(deviceDisplay, /presentation="display"/, "the phone shows the shared display frame without the hardware panel");
 });
 
 test("tapping a live Grid block opens the shared parameter editor and commits over USB", () => {
@@ -301,4 +312,76 @@ test("Android replacement clears previous-session suspension and bulk blocking w
   assert.equal(state.deviceBulkBlocking, false, "the current operation's terminal event restores controls");
   await act(async () => state.setDeviceSuspended(true));
   assert.equal(state.deviceSuspended, true, "a genuine current suspension remains effective");
+});
+
+
+test("state-only relay events cannot confirm stale MCP permissions after an ambiguous mutation", async (t) => {
+  const { build } = await import("esbuild");
+  const { createRequire } = await import("node:module");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const { fileURLToPath, pathToFileURL } = await import("node:url");
+  const rendererRequire = createRequire(createRequire(import.meta.url).resolve("react-test-renderer"));
+  const React = rendererRequire("react");
+  const { act, create } = rendererRequire("react-test-renderer");
+  const work = mkdtempSync(join(tmpdir(), "qc-access-observation-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const outfile = join(work, "access.mjs");
+  const hook = fileURLToPath(new URL("../../../packages/typescript/qc-ui/src/use-public-relay-workflow.ts", import.meta.url));
+  const helper = fileURLToPath(new URL("./control-access-change.ts", import.meta.url));
+  await build({
+    stdin: { contents: `export { usePublicRelayWorkflow } from ${JSON.stringify(hook)}; export { createControlAccessChange, controlAccessPresentation } from ${JSON.stringify(helper)};`, resolveDir: work },
+    outfile, bundle: true, format: "esm", platform: "node", logLevel: "error",
+    plugins: [{ name: "access-test-react", setup(builder) {
+      builder.onResolve({ filter: /^react$/ }, ({ path }) => ({ path: pathToFileURL(rendererRequire.resolve(path)).href, external: true }));
+    } }]
+  });
+  const { usePublicRelayWorkflow, createControlAccessChange, controlAccessPresentation } = await import(pathToFileURL(outfile).href);
+  const originals = new Map(["window", "document"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const eventTarget = { addEventListener() {}, removeEventListener() {} };
+  Object.defineProperty(globalThis, "window", { configurable: true, value: eventTarget });
+  Object.defineProperty(globalThis, "document", { configurable: true, value: { ...eventTarget, visibilityState: "visible" } });
+  const restoreGlobals = () => { for (const [key, descriptor] of originals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); } };
+  let failStatus = false;
+  let publishState!: (state: string) => void;
+  const relay = {
+    async status() { if (failStatus) throw new Error("status unavailable"); return { accessMode: "full", paired: false, state: "stopped" }; },
+    async setAccessMode() { throw new Error("ambiguous write"); }
+  };
+  const subscribe = async (listener: typeof publishState) => { publishState = listener; return { remove() {} }; };
+  let current: any;
+  function Probe() {
+    const workflow = usePublicRelayWorkflow({ relay, enabled: true, pollIntervalMs: 0, subscribe });
+    const [verified, setVerified] = React.useState(false);
+    const [pending, setPending] = React.useState(false);
+    React.useEffect(() => { if (workflow.accessModeObservation) setVerified(true); }, [workflow.accessModeObservation]);
+    const change = React.useMemo(() => createControlAccessChange({
+      write: workflow.setAccessMode, read: workflow.refresh,
+      observed: () => setVerified(true), uncertain: () => setVerified(false), pending: setPending, failed() {}
+    }), [workflow.setAccessMode, workflow.refresh]);
+    current = { workflow, change, verified, view: controlAccessPresentation({ mode: "full", verified, pending, busy: false }) };
+    return null;
+  }
+  let renderer: ReturnType<typeof create>;
+  await act(async () => { renderer = create(React.createElement(Probe)); });
+  t.after(async () => { try { await act(async () => renderer.unmount()); } finally { restoreGlobals(); } });
+  assert.equal(current.view.disabled, false, "the initial full native status confirms the mode");
+  const originalObservation = current.workflow.accessModeObservation;
+  failStatus = true;
+  await act(async () => { await current.change("read-only"); });
+  assert.equal(current.verified, false);
+  await act(async () => { publishState("connecting"); });
+  await act(async () => { publishState("connected"); });
+  assert.equal(current.workflow.status.state, "connected", "state events still update connectivity");
+  assert.equal(current.workflow.accessModeObservation, originalObservation, "no permissions were observed by a state-only event");
+  assert.equal(current.verified, false);
+  assert.equal(current.view.disabled, true);
+  assert.match(current.view.readout, /Not confirmed/);
+  failStatus = false;
+  await act(async () => { await current.workflow.refresh(); });
+  assert.notEqual(current.workflow.accessModeObservation, originalObservation, "a new full native read is authoritative even with the same access-mode value");
+  assert.equal(current.verified, true);
+  assert.equal(current.view.disabled, false);
+  assert.equal(current.view.readout, "full");
 });

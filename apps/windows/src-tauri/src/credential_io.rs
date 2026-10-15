@@ -80,12 +80,32 @@ impl CredentialIo {
     where
         F: FnOnce() -> Result<(), String> + Send + 'static,
     {
+        self.try_write_with_reporter(operation, |message| {
+            use std::io::Write as _;
+            // Diagnostics cannot make the process-wide credential worker
+            // permanently unavailable when a console/redirected pipe closes.
+            let _ = writeln!(std::io::stderr().lock(), "{message}");
+        })
+    }
+
+    fn try_write_with_reporter<F, R>(&self, operation: F, report: R) -> Result<(), String>
+    where
+        F: FnOnce() -> Result<(), String> + Send + 'static,
+        R: FnOnce(&str) + Send + 'static,
+    {
         let job = Job {
             state: Arc::new(AtomicU8::new(PENDING)),
-            operation: Box::new(move || match catch_unwind(AssertUnwindSafe(operation)) {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => eprintln!("Credential-store callback failed: {error}"),
-                Err(_) => eprintln!("Credential-store callback panicked"),
+            operation: Box::new(move || {
+                let failure = match catch_unwind(AssertUnwindSafe(operation)) {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(format!("Credential-store callback failed: {error}")),
+                    Err(_) => Some("Credential-store callback panicked".to_owned()),
+                };
+                if let Some(message) = failure {
+                    // Reporting is best effort too, independently of the
+                    // operation outcome; no diagnostic unwind ends the worker.
+                    let _ = catch_unwind(AssertUnwindSafe(|| report(&message)));
+                }
             }),
         };
         self.enqueue(job)
@@ -330,5 +350,42 @@ mod tests {
             Err("Credential-store operation panicked".into())
         );
         assert_eq!(io.read(Duration::from_secs(1), || Ok(7)).await, Ok(7));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_callback_reporter_failure_cannot_kill_the_actual_credential_worker() {
+        for operation_panics in [false, true] {
+            let io = CredentialIo::new(2).unwrap();
+            let (reported, observed) = mpsc::channel();
+            io.try_write_with_reporter(
+                move || {
+                    if operation_panics {
+                        panic!("controlled callback operation panic");
+                    }
+                    Err("controlled callback operation failure".into())
+                },
+                move |message| {
+                    reported.send(message.to_owned()).unwrap();
+                    panic!("controlled diagnostic reporter failure");
+                },
+            )
+            .unwrap();
+            let message = observed.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(
+                message,
+                if operation_panics {
+                    "Credential-store callback panicked"
+                } else {
+                    "Credential-store callback failed: controlled callback operation failure"
+                }
+            );
+            // This is the SAME worker and queue, not a synthetic report-only
+            // helper. The next mutation still gets its definitive result.
+            let healthy = tokio::time::timeout(Duration::from_secs(1), io.write(|| Ok(73u32)))
+                .await
+                .expect("diagnostic failure stranded the following mutation");
+            assert_eq!(healthy, Ok(73));
+            assert_eq!(io.read(Duration::from_secs(1), || Ok(19u32)).await, Ok(19));
+        }
     }
 }

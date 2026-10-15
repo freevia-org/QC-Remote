@@ -16,6 +16,9 @@ public class RelayPairingFailureTest {
         String plugin=new String(Files.readAllBytes(directory.resolve("QcRelayPlugin.java")), StandardCharsets.UTF_8);
         String pair=between(plugin,"    private void pairWithCode(","    @PluginMethod public void start(");
         String response=between(plugin,"    static String pairingResponseError(","    static OkHttpClient pairingHttpClient(");
+        String discard=between(plugin,"    static String discardForbiddenPendingRevocation(","    private void startService(");
+        String endpointPolicy=new String(Files.readAllBytes(directory.resolve("RelayEndpointPolicy.java")), StandardCharsets.UTF_8)
+            .replaceAll("(?m)^package .*;\\s*","").replaceAll("(?m)^import .*;\\s*","");
         String store=new String(Files.readAllBytes(directory.resolve("RelayCredentialStore.java")), StandardCharsets.UTF_8).replaceAll("(?m)^package .*;\\s*","").replaceAll("(?m)^import .*;\\s*","");
         int key=store.indexOf("    private SecretKey key()");assertTrue("production key boundary",key>=0);
         store=store.substring(0,key)+"    private Object key() { return new Object(); }\\n}\\n".replace("\\n","\n");
@@ -23,7 +26,7 @@ public class RelayPairingFailureTest {
         output=Files.createTempDirectory("qc-pairing-failure-");boolean complete=false;
         try {
             Path source=output.resolve("PairingFailureHarness.java");
-            Files.write(source,(HARNESS_PREFIX+pair+response+"}\n"+store+profile+STORE_STUBS).getBytes(StandardCharsets.UTF_8));
+            Files.write(source,(HARNESS_PREFIX+pair+response+discard+"}\n"+store+profile+endpointPolicy+"\nclass BuildConfig { static final boolean DEBUG=false; }\n"+STORE_STUBS).getBytes(StandardCharsets.UTF_8));
             Path log=output.resolve("android/util/Log.java");Files.createDirectories(log.getParent());
             Files.write(log,"package android.util; public class Log { public static int e(String tag,String message,Throwable error){return 0;} }".getBytes(StandardCharsets.UTF_8));
             Object compiler=Class.forName("javax.tools.ToolProvider").getMethod("getSystemJavaCompiler").invoke(null);
@@ -116,6 +119,16 @@ public class RelayPairingFailureTest {
         harness.getMethod("begin",boolean.class).invoke(value,false);
         assertEquals(2,report(value).getInt("posts"));
     }
+    @Test public void forbiddenLegacyWithdrawalCanBeLocallyDiscardedWithoutContactAndThenPairAgain() throws Exception {
+        Object value=harness.getConstructor().newInstance();
+        JSONObject facts=new JSONObject((String)harness.getMethod("discardForbiddenWithdrawal").invoke(value));
+        assertTrue(facts.getString("warning").contains("Remote revocation could not be confirmed"));
+        assertFalse(facts.getBoolean("pending"));
+        assertTrue(facts.getBoolean("paired"));
+        assertEquals(0,facts.getInt("posts"));
+        assertEquals(0,facts.getInt("withdrawals"));
+        assertTrue(facts.getBoolean("permittedRetained"));
+    }
     @AfterClass public static void cleanup() throws Exception {
         if(loader!=null){loader.close();loader=null;}
         if(output!=null&&Files.exists(output))try(java.util.stream.Stream<Path> paths=Files.walk(output)){for(Path p:(Iterable<Path>)paths.sorted(Comparator.reverseOrder())::iterator)Files.delete(p);}
@@ -127,6 +140,7 @@ public class RelayPairingFailureTest {
         "import java.nio.charset.StandardCharsets;",
         "import java.io.IOException;",
         "import java.util.*;",
+        "import java.net.URI;",
         "public class PairingFailureHarness {",
         "    final Context context=new Context(); final Http http=new Http();",
         "    Object browserPairing=new Object(); boolean browserPairingCompleting=true;",
@@ -154,6 +168,18 @@ public class RelayPairingFailureTest {
         "    public boolean directOverwriteRefused() throws Exception {",
         "        try {new RelayCredentialStore(context).save(\"https://qcrc.freevia.org\",\"t\".repeat(32),\"fixture-third\",\"owner@example.test\");return false;}",
         "        catch(IllegalStateException expected){return true;}",
+        "    }",
+        "    public String discardForbiddenWithdrawal() throws Exception {",
+        "        RelayCredentialStore store=new RelayCredentialStore(context);",
+        "        context.prefs.edit().putString(\"endpoint\",\"https://legacy.example\").commit();",
+        "        RelayCredentialStore.Snapshot old=store.beginUnpair(store.snapshot());",
+        "        String warning=discardForbiddenPendingRevocation(store,old);",
+        "        boolean pending=store.hasPendingRevocation();",
+        "        store.save(\"https://qcrc.freevia.org\",\"n\".repeat(32),\"fixture-new\",\"owner@example.test\");",
+        "        boolean paired=store.paired();RelayCredentialStore.Snapshot allowed=store.beginUnpair(store.snapshot());",
+        "        boolean permittedRetained=!store.discardForbiddenRevocation(allowed,false) && store.hasPendingRevocation();",
+        "        return new JSONObject().put(\"warning\",warning).put(\"pending\",pending).put(\"paired\",paired)",
+        "            .put(\"posts\",http.posts).put(\"withdrawals\",withdrawals).put(\"permittedRetained\",permittedRetained).toString();",
         "    }",
         "    public String report() throws Exception {",
         "        return new JSONObject().put(\"posts\",http.posts).put(\"starts\",starts).put(\"withdrawals\",withdrawals)",

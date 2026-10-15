@@ -339,24 +339,147 @@ mod tests {
         );
     }
 
+    // Fixture originals use the same bounded retained family as the host.
+    // Unknown join keeps the original; no detached accept worker on unwind.
+    struct Squatter {
+        original: Option<qc_native_platform::thread_owner::Owned>,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        received: std::sync::mpsc::Receiver<Vec<u8>>,
+        retired: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Squatter {
+        fn start(listener: std::net::TcpListener) -> Self {
+            static BUDGET: qc_native_platform::thread_owner::Budget =
+                qc_native_platform::thread_owner::Budget::new(4);
+            listener.set_nonblocking(true).unwrap();
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker_stop = stop.clone();
+            let (sender, received) = std::sync::mpsc::sync_channel(1);
+            let original = qc_native_platform::thread_owner::Owned::spawn(
+                "broker-attach-squatter-fixture",
+                &BUDGET,
+                (),
+                move || {
+                    let (mut stream, _) = loop {
+                        if worker_stop.load(std::sync::atomic::Ordering::Acquire) {
+                            return;
+                        }
+                        match listener.accept() {
+                            Ok(accepted) => break accepted,
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(error) => panic!("fixture accept failed: {error}"),
+                        }
+                    };
+                    // Windows accepted sockets can inherit listener mode.
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_millis(50)))
+                        .unwrap();
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let mut bytes = [0u8; 64];
+                    loop {
+                        if worker_stop.load(std::sync::atomic::Ordering::Acquire) {
+                            return;
+                        }
+                        match stream.read(&mut bytes) {
+                            // Any received byte violates this test. Observing EOF
+                            // after REAL accept, not cancellation, proves empty.
+                            Ok(read) => {
+                                let _ = sender.send(bytes[..read].to_vec());
+                                return;
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::ConnectionReset
+                                        | io::ErrorKind::ConnectionAborted
+                                ) =>
+                            {
+                                let _ = sender.send(Vec::new());
+                                return;
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::WouldBlock
+                                        | io::ErrorKind::TimedOut
+                                        | io::ErrorKind::Interrupted
+                                ) && Instant::now() < deadline => {}
+                            Err(error) => panic!("fixture read failed: {error}"),
+                        }
+                    }
+                },
+            )
+            .unwrap();
+            Self {
+                original: Some(original),
+                stop,
+                received,
+                retired: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            }
+        }
+        fn stop_and_join(&mut self) -> bool {
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
+            let acknowledged = self
+                .original
+                .as_mut()
+                .is_none_or(|original| original.wait_within(Duration::from_secs(3)));
+            // Unknown transfers exact original to the existing retained family.
+            self.original.take();
+            self.retired
+                .store(acknowledged, std::sync::atomic::Ordering::Release);
+            acknowledged
+        }
+        fn finish(mut self) -> Vec<u8> {
+            // Healthy oracle waits for a real accepted connection/read result.
+            // Stop cannot synthesize an empty result and make this test pass.
+            let bytes = self
+                .received
+                .recv_timeout(Duration::from_secs(6))
+                .expect("fixture did not observe an actual accepted connection");
+            assert!(self.stop_and_join(), "fixture original did not retire");
+            bytes
+        }
+    }
+    impl Drop for Squatter {
+        fn drop(&mut self) {
+            if self.original.is_some() {
+                let _ = self.stop_and_join();
+            }
+        }
+    }
+
+    #[test]
+    fn squatter_setup_unwind_stops_and_joins_its_actual_accept_original() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut retired = None;
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let accepting = Squatter::start(listener);
+            retired = Some(accepting.retired.clone());
+            panic!("injected assertion before attach");
+        }));
+        assert!(failed.is_err());
+        assert!(
+            retired.unwrap().load(std::sync::atomic::Ordering::Acquire),
+            "stop flag alone is not original retirement"
+        );
+        // Only after exact original join, prove its listener was closed.
+        let rebound = std::net::TcpListener::bind(address).expect("owned listener released");
+        drop(rebound);
+    }
+
     #[test]
     fn a_squatting_listener_is_refused_before_any_byte_is_sent() {
-        use std::io::Read as _;
         // This process listens, but the descriptor names another pid.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let mut published = descriptor();
         published.port = listener.local_addr().unwrap().port();
         published.process_id = std::process::id().wrapping_add(1);
         published.process_created_at = None;
-        let accepting = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut received = Vec::new();
-            let _ = stream.read_to_end(&mut received);
-            received
-        });
+        let accepting = Squatter::start(listener);
         let failure = attach_to_device_broker(&published).expect_err("a squatter is refused");
         #[cfg(windows)]
         assert!(
@@ -373,6 +496,6 @@ mod tests {
         );
         #[cfg(not(any(windows, target_os = "linux")))]
         assert!(!failure.message().is_empty());
-        assert!(accepting.join().unwrap().is_empty(), "the token was sent");
+        assert!(accepting.finish().is_empty(), "the token was sent");
     }
 }

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire, register } from "node:module";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bundleTestModule } from "./support/display-page.ts";
+import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { CONNECTING_PLACEHOLDER_SNAPSHOT, IDLE_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, isConnectingPlaceholder } from "../src/device-placeholder.ts";
@@ -14,6 +15,41 @@ import type { QcSurfaceActionOptions } from "../src/use-qc-surface-actions.ts";
 register("./support/react-singleton-loader.mjs", import.meta.url);
 const { createElement } = (await import("react")).default;
 const { useQcSurfaceActions } = await import("../src/use-qc-surface-actions.ts");
+
+test("bundle fixture retires partial bytes when initialization rejects before tests load", async (t) => {
+  const original = new Error("fixture bundle/import failed");
+  let directory = "";
+  let cleanup: (() => void) | undefined;
+  t.after(() => { if (directory) rmSync(directory, { recursive: true, force: true }); });
+  await assert.rejects(bundleTestModule("qc-bundle-failure-", "fixture", "source", (retire) => {
+    cleanup = retire;
+  }, async (root) => {
+    assert.equal(cleanup, undefined, "test hooks must not retire a still-initializing module");
+    directory = root;
+    writeFileSync(join(root, "partial.bundle.mjs"), "partial");
+    throw original;
+  }), (error) => error === original);
+  assert.notEqual(directory, "");
+  assert.equal(existsSync(directory), false, "rejection retires bytes without waiting for root test hooks");
+});
+
+test("bundle fixture retains successful bytes until its registered cleanup", async (t) => {
+  let directory = "";
+  let cleanup: (() => void) | undefined;
+  t.after(() => cleanup?.());
+  const result = await bundleTestModule("qc-bundle-success-", "fixture", "source", (retire) => {
+    cleanup = retire;
+  }, async (root) => {
+    directory = root;
+    writeFileSync(join(root, "fixture.bundle.mjs"), "fixture");
+    return { module: { value: 42 }, css: "fixture" };
+  });
+  assert.equal(result.module.value, 42);
+  assert.equal(existsSync(directory), true);
+  assert.ok(cleanup);
+  cleanup();
+  assert.equal(existsSync(directory), false);
+});
 
 test("the connecting placeholder carries one wording per phase, and is told apart from a real preset", () => {
   assert.equal(connectingPlaceholderSnapshot("opening").presetName, "Opening the Quad Cortex…");

@@ -41,6 +41,25 @@ public class RelayPairingReplacementTest {
         assertFalse(QcRelayService.currentConnection(2,2,prior,held("two","fixture-one","owner@example.test",false)));
         assertFalse(QcRelayService.currentConnection(2,2,prior,held("one","fixture-two","owner@example.test",false)));
     }
+    private static okhttp3.Response connectResponse(String url,int code) {
+        return new okhttp3.Response.Builder().request(new okhttp3.Request.Builder().url(url).build())
+            .protocol(okhttp3.Protocol.HTTP_1_1).code(code).message("fixture").build();
+    }
+    @Test public void replacementHandshakeAndRejectionMatchTheExactRequestedUrl() {
+        RelayCredentialStore.Snapshot current=held("one","fixture-token","owner@example.test",false);
+        String ordinary=current.endpoint + GeneratedRelayProfile.DEVICE_CONNECT_PATH + "?deviceId=" + current.deviceId;
+        String replacement=ordinary + "&" + GeneratedRelayProfile.REPLACEMENT_ACK_QUERY_PARAMETER + "=1";
+        assertTrue(QcRelayService.connectResponseMatches(current,connectResponse(ordinary,101),null));
+        assertTrue(QcRelayService.connectResponseMatches(current,connectResponse(replacement,101),"fixture-old"));
+        assertTrue(QcRelayService.connectResponseMatches(current,connectResponse(replacement,401),"fixture-old"));
+        assertFalse(QcRelayService.connectResponseMatches(current,connectResponse(ordinary,101),"fixture-old"));
+        assertFalse(QcRelayService.connectResponseMatches(current,connectResponse(replacement,101),null));
+        assertFalse(QcRelayService.connectResponseMatches(current,connectResponse(replacement.replace("qcrc.freevia.org","other.example"),101),"fixture-old"));
+        assertFalse(QcRelayService.connectResponseMatches(current,connectResponse(replacement.replace("/connect?","/other?"),101),"fixture-old"));
+        assertFalse(QcRelayService.connectResponseMatches(current,connectResponse(replacement.replace("deviceId=fixture-device","deviceId=other-device"),101),"fixture-old"));
+        assertFalse(QcRelayService.connectResponseMatches(current,connectResponse(replacement + "&extra=1",101),"fixture-old"));
+        assertFalse(QcRelayService.connectResponseMatches(current,connectResponse(replacement.replace("replacementAck=1","replacementAck=0"),101),"fixture-old"));
+    }
     @Test public void replacementAcknowledgementRequiresExactPriorIdentityAndBooleanFalse() throws Exception {
         JSONObject frame=new JSONObject().put("type",GeneratedRelayProfile.REPLACEMENT_ACK_FRAME_TYPE)
             .put("previousDeviceId","fixture-old").put("previousCredentialAccepted",false);

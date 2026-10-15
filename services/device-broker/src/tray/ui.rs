@@ -42,6 +42,53 @@ static WINDOW: AtomicIsize = AtomicIsize::new(0);
 /// Per-thread UI state, reached from the window procedure.
 static STATE: OnceLock<Mutex<UiState>> = OnceLock::new();
 
+struct UiThreadLifetime {
+    window: isize,
+    alive: Arc<AtomicBool>,
+    shared: Arc<Shared>,
+}
+impl Drop for UiThreadLifetime {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Release);
+        self.shared.registered.store(false, Ordering::Release);
+        let window = self.window as HWND;
+        if let Some(state) = STATE.get() {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.remove(window);
+            if !state.icon.is_null() {
+                // SAFETY: this guard drops on the UI thread that owns the icon.
+                unsafe { DestroyIcon(state.icon) };
+                state.icon = std::ptr::null_mut();
+            }
+        }
+        // SAFETY: this guard owns the hidden window on its creating thread.
+        unsafe {
+            KillTimer(window, STALE_TIMER);
+            KillTimer(window, SYNC_TIMER);
+            windows_sys::Win32::UI::WindowsAndMessaging::DestroyWindow(window);
+        }
+        let _ = WINDOW.compare_exchange(self.window, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
+fn notify_window(window: isize, alive: &AtomicBool) -> NotifyStatus {
+    if !alive.load(Ordering::Acquire) {
+        return NotifyStatus::Retired;
+    }
+    // SAFETY: these APIs accept a stale handle. A full queue is not retirement;
+    // only a gone window or an ended owner thread releases the tray lifecycle.
+    let posted = unsafe { PostMessageW(window as HWND, REFRESH, 0, 0) } != 0;
+    if !posted
+        && unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(window as HWND) } == 0
+    {
+        NotifyStatus::Retired
+    } else {
+        NotifyStatus::Alive
+    }
+}
+
 struct UiState {
     shared: Arc<Shared>,
     actions: mpsc::Sender<MenuAction>,
@@ -251,12 +298,12 @@ fn show_menu(window: HWND, model: &Presentation, actions: &mpsc::Sender<MenuActi
         let mut commands: Vec<MenuAction> = Vec::new();
         // SAFETY: every menu handle is created, used and destroyed here.
         unsafe {
-            let menu = CreatePopupMenu();
-            if menu.is_null() {
-                return;
-            }
+            let Ok(menu) = OwnedMenu::new() else { return };
             for row in &model.rows {
-                append_row(menu, row, &mut commands);
+                if let Err(error) = append_row(menu.0, row, &mut commands) {
+                    eprintln!("Could not construct tray menu: {error}");
+                    return;
+                }
             }
             // The ids handed to Windows are exactly the model's numbering.
             debug_assert_eq!(commands, model::commands(&model.rows));
@@ -265,7 +312,7 @@ fn show_menu(window: HWND, model: &Presentation, actions: &mpsc::Sender<MenuActi
             // Without the foreground the menu does not dismiss on click-away.
             SetForegroundWindow(window);
             let chosen = TrackPopupMenuEx(
-                menu,
+                menu.0,
                 TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
                 point.x,
                 point.y,
@@ -273,7 +320,7 @@ fn show_menu(window: HWND, model: &Presentation, actions: &mpsc::Sender<MenuActi
                 std::ptr::null(),
             );
             PostMessageW(window, WM_NULL, 0, 0);
-            DestroyMenu(menu);
+            drop(menu);
             if let Some(action) = usize::try_from(chosen)
                 .ok()
                 .and_then(|id| id.checked_sub(1))
@@ -320,15 +367,58 @@ fn menu_text(label: &str) -> Vec<u16> {
     wide(&label.replace('&', "&&"))
 }
 
+struct OwnedMenu(HMENU);
+impl OwnedMenu {
+    fn new() -> Result<Self, String> {
+        let menu = unsafe { CreatePopupMenu() };
+        if menu.is_null() {
+            Err(std::io::Error::last_os_error().to_string())
+        } else {
+            Ok(Self(menu))
+        }
+    }
+
+    fn attach_with(
+        mut self,
+        attach: impl FnOnce(HMENU) -> Result<(), String>,
+    ) -> Result<(), String> {
+        attach(self.0)?;
+        // Only a successful AppendMenuW transfers the entire descendant tree.
+        self.0 = std::ptr::null_mut();
+        Ok(())
+    }
+}
+impl Drop for OwnedMenu {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                DestroyMenu(self.0);
+            }
+        }
+    }
+}
+
+unsafe fn append(menu: HMENU, flags: u32, id: usize, text: *const u16) -> Result<(), String> {
+    if AppendMenuW(menu, flags, id, text) == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// # Safety
 /// `menu` must be a live menu handle owned by the caller.
-unsafe fn append_row(menu: HMENU, row: &MenuRow, commands: &mut Vec<MenuAction>) {
+unsafe fn append_row(
+    menu: HMENU,
+    row: &MenuRow,
+    commands: &mut Vec<MenuAction>,
+) -> Result<(), String> {
     match row {
         MenuRow::Separator => {
-            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            append(menu, MF_SEPARATOR, 0, std::ptr::null())?;
         }
         MenuRow::Text(label) => {
-            AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, menu_text(label).as_ptr());
+            append(menu, MF_STRING | MF_GRAYED, 0, menu_text(label).as_ptr())?;
         }
         MenuRow::Action {
             label,
@@ -341,14 +431,10 @@ unsafe fn append_row(menu: HMENU, row: &MenuRow, commands: &mut Vec<MenuAction>)
             } else {
                 MF_STRING | MF_GRAYED
             };
-            AppendMenuW(menu, flags, commands.len(), menu_text(label).as_ptr());
+            append(menu, flags, commands.len(), menu_text(label).as_ptr())?;
         }
         MenuRow::Choices { label, choices } => {
-            let submenu = CreatePopupMenu();
-            if submenu.is_null() {
-                commands.extend(choices.iter().map(|(_, _, action)| action.clone()));
-                return;
-            }
+            let submenu = OwnedMenu::new()?;
             for (name, checked, action) in choices {
                 commands.push(action.clone());
                 let flags = if *checked {
@@ -356,34 +442,33 @@ unsafe fn append_row(menu: HMENU, row: &MenuRow, commands: &mut Vec<MenuAction>)
                 } else {
                     MF_STRING
                 };
-                AppendMenuW(submenu, flags, commands.len(), menu_text(name).as_ptr());
+                append(submenu.0, flags, commands.len(), menu_text(name).as_ptr())?;
             }
-            AppendMenuW(
-                menu,
-                MF_STRING | MF_POPUP,
-                submenu as usize,
-                menu_text(label).as_ptr(),
-            );
+            submenu.attach_with(|submenu| {
+                append(
+                    menu,
+                    MF_STRING | MF_POPUP,
+                    submenu as usize,
+                    menu_text(label).as_ptr(),
+                )
+            })?;
         }
         MenuRow::Submenu { label, rows } => {
-            let submenu = CreatePopupMenu();
-            if submenu.is_null() {
-                // Keep the numbering the model expects even without the item.
-                commands.extend(model::commands(rows));
-                return;
-            }
+            let submenu = OwnedMenu::new()?;
             for row in rows {
-                append_row(submenu, row, commands);
+                append_row(submenu.0, row, commands)?;
             }
-            // Owned by `menu` from here: DestroyMenu on the root frees it.
-            AppendMenuW(
-                menu,
-                MF_STRING | MF_POPUP,
-                submenu as usize,
-                menu_text(label).as_ptr(),
-            );
+            submenu.attach_with(|submenu| {
+                append(
+                    menu,
+                    MF_STRING | MF_POPUP,
+                    submenu as usize,
+                    menu_text(label).as_ptr(),
+                )
+            })?;
         }
     }
+    Ok(())
 }
 
 // SAFETY: the system calls this as the window procedure registered in `start`, always on the
@@ -456,6 +541,9 @@ unsafe extern "system" fn window_proc(
 /// ask for a re-render.
 pub fn start(shared: Arc<Shared>, actions: mpsc::Sender<MenuAction>) -> Result<Notify, String> {
     let (ready_tx, ready_rx) = mpsc::channel::<Result<isize, String>>();
+    let alive = Arc::new(AtomicBool::new(true));
+    let owner_alive = alive.clone();
+    let owner_shared = shared.clone();
     std::thread::Builder::new()
         .name("qc-broker-tray-ui".into())
         .spawn(move || {
@@ -507,6 +595,11 @@ pub fn start(shared: Arc<Shared>, actions: mpsc::Sender<MenuAction>) -> Result<N
                 return;
             }
             WINDOW.store(window as isize, Ordering::Release);
+            let _lifetime = UiThreadLifetime {
+                window: window as isize,
+                alive: owner_alive,
+                shared: owner_shared,
+            };
             // SAFETY: the timer belongs to the window this thread just created.
             unsafe { SetTimer(window, STALE_TIMER, STALE_CHECK_MS, None) };
             let _ = ready_tx.send(Ok(window as isize));
@@ -523,11 +616,7 @@ pub fn start(shared: Arc<Shared>, actions: mpsc::Sender<MenuAction>) -> Result<N
     let window = ready_rx
         .recv()
         .map_err(|_| "The broker icon thread ended during startup".to_owned())??;
-    Ok(Box::new(move || {
-        // SAFETY: posting to a window handle is safe even after it is gone.
-        unsafe { PostMessageW(window as HWND, REFRESH, 0, 0) };
-        NotifyStatus::Alive
-    }))
+    Ok(Box::new(move || notify_window(window, &alive)))
 }
 
 /// Remove the icon from any thread just before the process exits, so Windows
@@ -544,6 +633,104 @@ pub fn remove_icon_now() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_reports_a_retired_thread_or_gone_window_instead_of_false_liveness() {
+        let alive = AtomicBool::new(false);
+        assert_eq!(notify_window(-2, &alive), NotifyStatus::Retired);
+        alive.store(true, Ordering::Release);
+        // -2 is not an HWND (nor the HWND_BROADCAST pseudo-handle).
+        assert_eq!(notify_window(-2, &alive), NotifyStatus::Retired);
+    }
+
+    #[test]
+    fn ui_thread_unwind_retires_its_exact_hidden_window_and_lifecycle() {
+        let alive = Arc::new(AtomicBool::new(true));
+        let shared = Arc::new(Shared {
+            snapshot: Mutex::new(Snapshot::default()),
+            wanted: AtomicBool::new(true),
+            registered: AtomicBool::new(true),
+            refreshed: Mutex::new(std::time::Instant::now()),
+        });
+        // The stock STATIC class gives this test its own invisible window,
+        // without starting the installed tray or setting its global UI state.
+        let window = unsafe {
+            CreateWindowExW(
+                0,
+                wide("STATIC").as_ptr(),
+                wide("owned lifecycle fixture").as_ptr(),
+                WS_OVERLAPPED,
+                0,
+                0,
+                0,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                GetModuleHandleW(std::ptr::null()),
+                std::ptr::null(),
+            )
+        };
+        assert!(!window.is_null());
+        let guard = UiThreadLifetime {
+            window: window as isize,
+            alive: alive.clone(),
+            shared: shared.clone(),
+        };
+        assert_eq!(notify_window(window as isize, &alive), NotifyStatus::Alive);
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = guard;
+            panic!("injected owner thread unwind");
+        }));
+        assert!(failed.is_err());
+        assert!(!alive.load(Ordering::Acquire));
+        assert!(!shared.registered.load(Ordering::Acquire));
+        assert_eq!(
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(window) },
+            0
+        );
+    }
+
+    #[test]
+    fn rejected_submenu_attachment_destroys_owned_tree_and_success_transfers_it() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsMenu;
+        for refused in [true, false] {
+            let root = OwnedMenu::new().unwrap();
+            let branch = OwnedMenu::new().unwrap();
+            let nested = OwnedMenu::new().unwrap();
+            let branch_handle = branch.0;
+            let nested_handle = nested.0;
+            nested
+                .attach_with(|handle| unsafe {
+                    append(
+                        branch.0,
+                        MF_POPUP | MF_STRING,
+                        handle as usize,
+                        wide("nested").as_ptr(),
+                    )
+                })
+                .unwrap();
+            let result = branch.attach_with(|handle| {
+                if refused {
+                    Err("injected append refusal".into())
+                } else {
+                    unsafe {
+                        append(
+                            root.0,
+                            MF_POPUP | MF_STRING,
+                            handle as usize,
+                            wide("branch").as_ptr(),
+                        )
+                    }
+                }
+            });
+            assert_eq!(result.is_err(), refused);
+            assert_eq!(unsafe { IsMenu(branch_handle) } != 0, !refused);
+            assert_eq!(unsafe { IsMenu(nested_handle) } != 0, !refused);
+            drop(root);
+            assert_eq!(unsafe { IsMenu(branch_handle) }, 0);
+            assert_eq!(unsafe { IsMenu(nested_handle) }, 0);
+        }
+    }
 
     #[test]
     fn tooltips_are_terminated_inside_the_shells_buffer() {

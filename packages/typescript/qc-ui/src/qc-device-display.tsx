@@ -43,6 +43,7 @@ export interface QcDeviceDisplayHost {
   };
   /** The unit, to mirror the screens the app has none of. */
   mirror: QcDeviceScreenContentOptions["mirror"];
+  mirrorLifetime?: QcDeviceScreenContentOptions["mirrorLifetime"];
   selectScene: QcDeviceScreenContentOptions["selectScene"];
   queueTempo: QcDeviceScreenContentOptions["queueTempo"];
   setParameterMenuInitiallyOpen: QcDeviceScreenContentOptions["setParameterMenuInitiallyOpen"];
@@ -82,7 +83,7 @@ export function createQcDeviceDisplay(host: QcDeviceDisplayHost): QcDeviceDispla
   // The CPU Monitor is laid over the normal Grid, as on the unit, rather than replacing it.
   const cpuMonitor = cpu.monitor(cpuMonitorOpen, destination.returnFocusTarget, () => destination.setView(null));
   const screenContent = host.auditContent ?? qcDeviceScreenContent({
-    captureSessionCurrent: host.captureSessionCurrent, screenGestureContextKey: host.screenGestureContextKey, snapshot, destination, workflows, mirror: host.mirror, selectScene: host.selectScene, queueTempo: host.queueTempo,
+    captureSessionCurrent: host.captureSessionCurrent, screenGestureContextKey: host.screenGestureContextKey, snapshot, destination, workflows, mirror: host.mirror, mirrorLifetime: host.mirrorLifetime, selectScene: host.selectScene, queueTempo: host.queueTempo,
     setParameterMenuInitiallyOpen: host.setParameterMenuInitiallyOpen, closeScreen: views.close, notice: host.notice
   });
   const contextAction = qcContextActionHandler({
@@ -92,10 +93,10 @@ export function createQcDeviceDisplay(host: QcDeviceDisplayHost): QcDeviceDispla
   const sceneCommand = scene.command ? <CorOsSceneCommand scenes={snapshot.scenes} sourceScene={scene.sourceScene} swap={scene.command === "swap"} pending={pending} mirrorsUnit={scene.commandMirrorsUnit} onSelect={(destinationScene) => void scene.chooseDestination(destinationScene)} onCancel={scene.closeCommand} returnFocusTarget={scene.commandReturnTarget} /> : null;
   const surface: QcDisplaySurfaceProps = {
     snapshot,
+    screenGestureContextKey: host.screenGestureContextKey,
     selectedBlockId: host.selectedBlockId,
     screenView: host.fixtureScreenView ?? (cpuMonitorOpen ? undefined : destination.view) ?? undefined,
     screenContent,
-    screenGestureContextKey: host.screenGestureContextKey,
     cpuMonitor,
     deviceInformation: views.deviceInformation,
     onCloseScreen: () => void views.close(),

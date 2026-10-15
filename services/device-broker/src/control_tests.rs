@@ -13,52 +13,244 @@ use std::io::Read;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-struct Scratch(PathBuf);
+struct Scratch(PathBuf, Arc<ScratchRoot>);
+struct ScratchRoot(PathBuf);
+impl Drop for ScratchRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let directory = crate::device_lease::testing::temp_directory().join(format!(
-            "qc-broker-control-{label}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let directory = (0..64)
+            .find_map(|_| {
+                let path = std::env::temp_dir()
+                    .canonicalize()
+                    .expect("canonical fixture parent")
+                    .join(format!(
+                        "qc-broker-control-{label}-{:032x}",
+                        rand::random::<u128>()
+                    ));
+                match fs::create_dir(&path) {
+                    Ok(()) => Some(path),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
+                    Err(error) => panic!("reserve control fixture root: {error}"),
+                }
+            })
+            .expect("exclusive control fixture root after at most 64 collisions");
+        let owner = Arc::new(ScratchRoot(directory.clone()));
         crate::device_lease::testing::create_directory(&directory).unwrap();
-        Self(directory)
+        Self(directory, owner)
     }
     fn descriptor(&self) -> PathBuf {
         self.0.join(DESCRIPTOR_FILE)
     }
 }
 
-/// Declared before the test's broker (`Served`), so that broker releases its
-/// claim on the directory first; a removal that still fails is only reported.
-impl Drop for Scratch {
+type RetainedOldBroker = (
+    std::thread::JoinHandle<Vec<String>>,
+    Arc<ScratchRoot>,
+    Arc<OldBrokerPermit>,
+);
+static RETAINED_OLD_BROKERS: Mutex<Vec<RetainedOldBroker>> = Mutex::new(Vec::new());
+static OLD_BROKER_OWNERS: AtomicUsize = AtomicUsize::new(0);
+struct OldBrokerPermit;
+impl OldBrokerPermit {
+    fn acquire() -> Arc<Self> {
+        let finished = {
+            let mut retained = RETAINED_OLD_BROKERS
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let mut finished = Vec::new();
+            let mut index = 0;
+            while index < retained.len() {
+                if crate::platform::process::thread_signalled(&retained[index].0) {
+                    finished.push(retained.swap_remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            finished
+        };
+        // Never join or release ownership under the registry mutex.
+        for (worker, root, permit) in finished {
+            let _ = worker.join();
+            drop(root);
+            drop(permit);
+        }
+        OLD_BROKER_OWNERS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < 4).then_some(count + 1)
+            })
+            .expect("old broker fixture capacity exhausted; exact prior owners remain retained");
+        Arc::new(Self)
+    }
+}
+impl Drop for OldBrokerPermit {
     fn drop(&mut self) {
-        if let Err(error) = crate::device_lease::testing::remove_test_directory(&self.0) {
-            eprintln!(
-                "test cleanup: could not remove {}: {error}",
-                self.0.display()
+        OLD_BROKER_OWNERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+struct OldBroker {
+    stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<Vec<String>>>,
+    root: Arc<ScratchRoot>,
+    permit: Option<Arc<OldBrokerPermit>>,
+}
+impl OldBroker {
+    fn start(listener: std::net::TcpListener, root: Arc<ScratchRoot>) -> Self {
+        // Admit before any worker spawn; setup errors/panics release this.
+        let permit = OldBrokerPermit::acquire();
+        listener.set_nonblocking(true).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let requested = stop.clone();
+        let owned_root = root.clone();
+        let worker = std::thread::spawn(move || {
+            let _root = owned_root;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                if requested.load(Ordering::Acquire) || Instant::now() >= deadline {
+                    return Vec::new();
+                }
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        // Windows may inherit the listener's nonblocking mode.
+                        // Framing deadlines operate on blocking accepted sockets.
+                        stream.set_nonblocking(false).unwrap();
+                        break stream;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("accept old broker fixture: {error}"),
+                }
+            };
+            let mut frames = Vec::new();
+            while !requested.load(Ordering::Acquire) {
+                let body = match qc_broker_framing::read_tcp_frame_before_deadline(
+                    &mut stream,
+                    MAX_FRAME_BYTES,
+                    deadline,
+                ) {
+                    Ok(body) => body,
+                    Err(_) => break,
+                };
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                if frames.is_empty() {
+                    let reply =
+                        serde_json::to_vec(&json!({"id":0,"result":{"instanceId":"old"}})).unwrap();
+                    qc_broker_framing::write_tcp_frame_before_deadline(
+                        &mut stream,
+                        &reply,
+                        MAX_FRAME_BYTES,
+                        deadline,
+                    )
+                    .unwrap();
+                }
+                frames.push(request["method"].as_str().unwrap_or_default().to_owned());
+            }
+            frames
+        });
+        Self {
+            stop,
+            worker: Some(worker),
+            root,
+            permit: Some(permit),
+        }
+    }
+    fn finish(mut self) -> Vec<String> {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !crate::platform::process::thread_signalled(self.worker.as_ref().unwrap()) {
+            assert!(
+                Instant::now() < deadline,
+                "old broker fixture finishes within its deadline"
             );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let frames = self.worker.take().unwrap().join().unwrap();
+        self.permit.take();
+        frames
+    }
+}
+impl Drop for OldBroker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !crate::platform::process::thread_signalled(&worker) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if crate::platform::process::thread_signalled(&worker) {
+            let _ = worker.join();
+        } else {
+            RETAINED_OLD_BROKERS
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((
+                    worker,
+                    self.root.clone(),
+                    self.permit
+                        .take()
+                        .expect("original worker owns its admission"),
+                ));
+            eprintln!("old broker fixture cleanup unacknowledged; worker and scratch retained");
         }
     }
 }
 
 #[cfg(target_os = "macos")]
+thread_local! {
+    static MAC_NATIVE_DIRECTORY: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(target_os = "macos")]
+struct MacNativeDirectoryScope;
+#[cfg(target_os = "macos")]
+impl Drop for MacNativeDirectoryScope {
+    fn drop(&mut self) {
+        MAC_NATIVE_DIRECTORY.with(|directory| *directory.borrow_mut() = None);
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn mac_native_directory() -> PathBuf {
-    crate::device_lease::testing::temp_directory().join(format!(
-        "qc-broker-control-macos-native-{}",
-        std::process::id()
-    ))
+    MAC_NATIVE_DIRECTORY.with(|directory| {
+        directory
+            .borrow()
+            .as_ref()
+            .expect("owned Mac fixture installed")
+            .clone()
+    })
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_mac_marker_fixture_retires_on_assertion_unwind() {
+    let mut original = None;
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let scratch = Scratch::new("macos-native-unwind");
+        original = Some(scratch.0.clone());
+        MAC_NATIVE_DIRECTORY.with(|held| *held.borrow_mut() = Some(scratch.0.clone()));
+        let _scope = MacNativeDirectoryScope;
+        let _marker = qc_native_platform::resident_marker::ResidentMarker::acquire(&scratch.0)
+            .expect("acquire owned marker");
+        panic!("injected marker fixture assertion");
+    }));
+    assert!(failed.is_err());
+    assert!(!original.expect("exclusive root acquired").exists());
+    MAC_NATIVE_DIRECTORY.with(|held| assert!(held.borrow().is_none()));
 }
 
 #[cfg(target_os = "macos")]
 #[test]
 fn native_control_observes_the_mac_resident_marker() {
-    let directory = mac_native_directory();
-    let _ = fs::remove_dir_all(&directory);
+    let scratch = Scratch::new("macos-native");
+    let directory = scratch.0.clone();
+    MAC_NATIVE_DIRECTORY.with(|held| *held.borrow_mut() = Some(directory.clone()));
+    let _scope = MacNativeDirectoryScope;
     let environment = NativeEnv {
         default_directory: Some(mac_native_directory),
     };
@@ -72,10 +264,36 @@ fn native_control_observes_the_mac_resident_marker() {
     assert!(environment.session_marker_present());
     drop(marker);
     assert!(!environment.session_marker_present());
-    fs::remove_dir_all(directory).expect("remove marker test directory");
 }
 
 type Spawner = Box<dyn Fn(&Path) -> Result<Box<dyn Spawned>, String> + Send + Sync>;
+
+#[test]
+fn control_descriptor_reads_refuse_oversized_owner_private_documents_without_changing_them() {
+    let scratch = Scratch::new("oversized-descriptor");
+    qc_owner_only_file::write_staged(&scratch.descriptor(), b"{}").unwrap();
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(scratch.descriptor())
+        .unwrap();
+    file.set_len(128 * 1024 + 1).unwrap();
+    drop(file);
+    let error = read_descriptor(&scratch.descriptor()).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        fs::metadata(scratch.descriptor()).unwrap().len(),
+        128 * 1024 + 1
+    );
+}
+
+#[test]
+fn control_descriptor_reads_accept_a_verified_document_at_the_exact_budget() {
+    let scratch = Scratch::new("exact-descriptor-budget");
+    let mut bytes = b"{}".to_vec();
+    bytes.resize(128 * 1024, b' ');
+    qc_owner_only_file::write_staged(&scratch.descriptor(), &bytes).unwrap();
+    assert_eq!(read_descriptor(&scratch.descriptor()).unwrap(), bytes);
+}
 
 struct TestEnv {
     directory: PathBuf,
@@ -179,7 +397,7 @@ fn invoke(command: Command, confirm: bool, env: &dyn Env) -> Outcome {
 /// A resident broker whose icon holds the device indefinitely: nothing reaps
 /// it while a test runs.
 fn resident(scratch: &Scratch) -> Served {
-    test_support::serve(&scratch.descriptor(), |handle| {
+    test_support::serve(&scratch.descriptor(), scratch.1.clone(), |handle| {
         handle.set_resident(true);
         handle.set_tray_hold(Some(IdlePolicy::Never));
     })
@@ -431,7 +649,7 @@ fn a_marker_without_a_visible_descriptor_is_neither_not_running_nor_started_over
 #[test]
 fn status_moves_no_count_no_idle_clock_and_arms_no_grace() {
     let scratch = Scratch::new("status-clock");
-    let served = test_support::serve(&scratch.descriptor(), |handle| {
+    let served = test_support::serve(&scratch.descriptor(), scratch.1.clone(), |handle| {
         handle.set_resident(true);
         handle.set_tray_hold(Some(IdlePolicy::Minutes(5)));
     });
@@ -500,7 +718,7 @@ fn status_moves_no_count_no_idle_clock_and_arms_no_grace() {
 #[test]
 fn a_control_connection_never_parks_the_icons_idle_release() {
     let scratch = Scratch::new("backstop");
-    let served = test_support::serve(&scratch.descriptor(), |handle| {
+    let served = test_support::serve(&scratch.descriptor(), scratch.1.clone(), |handle| {
         handle.set_resident(true);
     });
     let minute = Duration::from_millis(600);
@@ -645,7 +863,7 @@ fn release_is_the_icons_disconnect_without_its_exit_and_is_idempotent() {
 #[test]
 fn connect_is_the_icons_connect() {
     let scratch = Scratch::new("connect");
-    let served = test_support::serve(&scratch.descriptor(), |handle| {
+    let served = test_support::serve(&scratch.descriptor(), scratch.1.clone(), |handle| {
         handle.set_resident(true);
         handle.set_tray_hold(Some(IdlePolicy::Never));
         handle.mark_started_disconnected();
@@ -1077,11 +1295,12 @@ fn start_reports_a_stale_claim_without_deleting_it() {
     // The real election (what `--resident` runs) takes it over and serves.
     let served: Arc<Mutex<Option<Served>>> = Arc::new(Mutex::new(None));
     let slot = Arc::clone(&served);
+    let owned_root = scratch.1.clone();
     env.spawner = Some(Box::new(move |directory| {
         let descriptor = directory.join(DESCRIPTOR_FILE);
         match crate::resident::elect(&descriptor, Duration::from_secs(2))? {
             crate::resident::Election::Serve(guard) => {
-                let broker = test_support::serve(&descriptor, move |handle| {
+                let broker = test_support::serve(&descriptor, owned_root.clone(), move |handle| {
                     drop(guard);
                     handle.set_resident(true);
                     handle.set_tray_hold(Some(IdlePolicy::Never));
@@ -1275,32 +1494,7 @@ fn an_older_broker_gets_only_the_handshake_and_is_reported_unsupported() {
     let scratch = Scratch::new("older-broker");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let old = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut frames = Vec::new();
-        loop {
-            let mut header = [0_u8; 4];
-            if stream.read_exact(&mut header).is_err() {
-                break;
-            }
-            let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
-            stream.read_exact(&mut body).unwrap();
-            let request: Value = serde_json::from_slice(&body).unwrap();
-            if frames.is_empty() {
-                let reply =
-                    serde_json::to_vec(&json!({"id": 0, "result": {"instanceId": "old"}})).unwrap();
-                stream
-                    .write_all(&(reply.len() as u32).to_be_bytes())
-                    .unwrap();
-                stream.write_all(&reply).unwrap();
-            }
-            frames.push(request["method"].as_str().unwrap_or_default().to_owned());
-        }
-        frames
-    });
+    let old = OldBroker::start(listener, scratch.1.clone());
     let descriptor = json!({
         "port": port, "bearerToken": "old-broker-token", "instanceId": "old",
         "processId": std::process::id(), "processCreatedAt": test_support::own_created_at(),
@@ -1310,16 +1504,43 @@ fn an_older_broker_gets_only_the_handshake_and_is_reported_unsupported() {
         .unwrap();
     let outcome = invoke(Command::Status, false, &TestEnv::new(&scratch.0));
     assert_eq!(outcome.exit_code, exit::BROKER_ERROR, "{}", outcome.report);
-    assert_eq!(outcome.report["outcome"], "unsupportedBroker");
+    assert_eq!(
+        outcome.report["outcome"], "unsupportedBroker",
+        "{}",
+        outcome.report
+    );
     let detail = outcome.report["detail"].as_str().unwrap();
     assert!(detail.contains("handshake"), "{detail}");
     assert!(!detail.contains("nothing was sent"), "{detail}");
-    assert_eq!(
-        old.join().unwrap(),
-        ["broker.authenticate"],
-        "nothing after it"
-    );
+    assert_eq!(old.finish(), ["broker.authenticate"], "nothing after it");
     assert_no_token(&scratch, "old-broker-token", &outcome);
+}
+
+#[test]
+fn old_broker_fixture_setup_unwind_cancels_accept_before_removing_root() {
+    let mut root = None;
+    let mut address = None;
+    let mut original_permit = None;
+    let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let scratch = Scratch::new("old-broker-unwind");
+        root = Some(scratch.0.clone());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        address = Some(listener.local_addr().unwrap());
+        let _old = OldBroker::start(listener, scratch.1.clone());
+        original_permit = Some(Arc::downgrade(_old.permit.as_ref().unwrap()));
+        panic!("injected descriptor setup failure before connecting");
+    }));
+    assert!(fault.is_err());
+    assert!(
+        original_permit.unwrap().upgrade().is_none(),
+        "actual joined fixture returned its own admission, independent of concurrent peers"
+    );
+    let rebound = std::net::TcpListener::bind(address.unwrap()).expect("owned listener retired");
+    drop(rebound);
+    assert!(
+        !root.unwrap().exists(),
+        "scratch retired only after worker acknowledgement"
+    );
 }
 
 #[test]

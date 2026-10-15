@@ -69,27 +69,43 @@ export interface RotaryGestureHandlers<E extends Element> {
   onWheel(event: WheelEvent<E>): void;
   onKeyDown(event: KeyboardEvent<E>): void;
   onKeyUp(event: KeyboardEvent<E>): void;
+  /** Retire a held arrow key when focus leaves before keyup. */
+  onBlur(): void;
 }
 
 export function useRotaryGesture<E extends Element = HTMLButtonElement>(options: RotaryGestureOptions<E>): RotaryGestureHandlers<E> {
   // Handlers are stable; they read the latest options through this ref.
   const latest = useRef(options);
   latest.current = options;
-  const drag = useRef<{ pointerId: number; y: number; pixelsPerStep: number } | undefined>(undefined);
+  const drag = useRef<{ pointerId: number; y: number; pixelsPerStep: number; target: E } | undefined>(undefined);
+  const mounted = useRef(true);
+  const mountEpoch = useRef(0);
+  const keys = useRef(new Set<string>());
   const wheelTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => {
-    if (wheelTimer.current !== undefined) clearTimeout(wheelTimer.current);
-    wheelTimer.current = undefined;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      mountEpoch.current++;
+      if (wheelTimer.current !== undefined) clearTimeout(wheelTimer.current);
+      wheelTimer.current = undefined;
+      keys.current.clear();
+      const held = drag.current;
+      drag.current = undefined;
+      if (held?.target.hasPointerCapture?.(held.pointerId)) held.target.releasePointerCapture(held.pointerId);
+      // Retirement is not a release into whichever device replaced this control.
+    };
   }, []);
   return useMemo(() => {
     const settle = () => {
+      if (!mounted.current) return;
       if (wheelTimer.current !== undefined) clearTimeout(wheelTimer.current);
       wheelTimer.current = undefined;
       latest.current.onSettle?.();
     };
     const end = (event: PointerEvent<E>, cancelled: boolean) => {
       const gesture = drag.current;
-      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      if (!mounted.current || !gesture || gesture.pointerId !== event.pointerId) return;
       drag.current = undefined;
       if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       latest.current.onPointerEnd?.(event, cancelled);
@@ -98,16 +114,18 @@ export function useRotaryGesture<E extends Element = HTMLButtonElement>(options:
     return {
       onPointerDown(event) {
         const current = latest.current;
-        if (current.disabled) return;
+        if (!mounted.current || current.disabled) return;
+        const previous = drag.current;
+        if (previous?.target.hasPointerCapture?.(previous.pointerId)) previous.target.releasePointerCapture(previous.pointerId);
         if (current.preventPointerDefault && event.cancelable) event.preventDefault();
         event.currentTarget.setPointerCapture?.(event.pointerId);
         const pixelsPerStep = typeof current.pixelsPerStep === "function" ? current.pixelsPerStep(event.pointerType) : current.pixelsPerStep;
-        drag.current = { pointerId: event.pointerId, y: event.clientY, pixelsPerStep };
+        drag.current = { pointerId: event.pointerId, y: event.clientY, pixelsPerStep, target: event.currentTarget };
         current.onPointerStart?.(event);
       },
       onPointerMove(event) {
         const gesture = drag.current;
-        if (!gesture || gesture.pointerId !== event.pointerId) return;
+        if (!mounted.current || !gesture || gesture.pointerId !== event.pointerId) return;
         if (latest.current.preventPointerDefault && event.cancelable) event.preventDefault();
         const steps = Math.trunc((gesture.y - event.clientY) / gesture.pixelsPerStep);
         if (!steps) return;
@@ -118,21 +136,29 @@ export function useRotaryGesture<E extends Element = HTMLButtonElement>(options:
       onPointerCancel(event) { end(event, true); },
       onWheel(event) {
         const current = latest.current;
-        if (current.disabled) return;
+        if (!mounted.current || current.disabled) return;
         event.preventDefault();
         current.onRotate(event.deltaY < 0 ? 1 : -1, "wheel");
         if (current.wheelSettleMs === undefined) return;
         if (wheelTimer.current !== undefined) clearTimeout(wheelTimer.current);
-        wheelTimer.current = setTimeout(settle, current.wheelSettleMs);
+        const epoch = mountEpoch.current;
+        wheelTimer.current = setTimeout(() => { if (mounted.current && epoch === mountEpoch.current) settle(); }, current.wheelSettleMs);
       },
       onKeyDown(event) {
         const direction = rotaryKeyDirection(event.key);
-        if (latest.current.disabled || direction === undefined) return;
+        if (!mounted.current || latest.current.disabled || direction === undefined) return;
+        if (event.repeat && !keys.current.has(event.key)) return;
+        keys.current.add(event.key);
         event.preventDefault();
         latest.current.onRotate(direction, "key");
       },
       onKeyUp(event) {
-        if (rotaryKeyDirection(event.key) !== undefined) settle();
+        if (mounted.current && rotaryKeyDirection(event.key) !== undefined && keys.current.delete(event.key)) settle();
+      },
+      onBlur() {
+        if (!mounted.current || keys.current.size === 0) return;
+        keys.current.clear();
+        settle();
       }
     } satisfies RotaryGestureHandlers<E>;
   }, []);

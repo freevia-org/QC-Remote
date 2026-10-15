@@ -1,7 +1,8 @@
 import { QC_GRID_COLUMNS, requirePresetIdentity } from "@qc-remote/client";
-import { useCallback, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { GatewayTransport } from "@qc-remote/client";
-import { inputRouteOptions, outputRouteOptions, routeDraft, routeDraftsFromSnapshot, routeOptionValue, routeOptionsForRow, updateRouteDraft, type RouteDrafts } from "@qc-remote/core";
+import { DeviceMutationAdmission, inputRouteOptions, outputRouteOptions, routeDraft, routeDraftsFromSnapshot, routeOptionValue, routeOptionsForRow, updateRouteDraft, type RouteDrafts } from "@qc-remote/core";
+import { captureGatewaySession } from "./gateway-session.ts";
 import type { CorOsRoutingPickerState } from "./quad-cortex-surface";
 import type { DeviceMutationWorkflowOptions } from "./workflow-options";
 
@@ -32,21 +33,47 @@ export interface RoutingWorkflowController {
 
 /** Shared route validation, mutation, verification, and history controller. */
 export function useRoutingWorkflow(options: RoutingWorkflowOptions): RoutingWorkflowController {
+  const fallbackAdmission = useRef<DeviceMutationAdmission | undefined>(undefined);
+  if (!fallbackAdmission.current) fallbackAdmission.current = new DeviceMutationAdmission();
+  const admission = options.lifetime?.mutations ?? fallbackAdmission.current;
   const { gateway, snapshot, connected, pending, setPending, reconcile, recordHistory, notice, fail } = options;
   const [drafts, setDrafts] = useState<RouteDrafts>({});
-  const [picker, setPicker] = useState<RoutePicker>();
+  const [picker, publishPicker] = useState<RoutePicker>();
+  const pickerEpoch = useRef(0);
+  const pickerRef = useRef<RoutePicker | undefined>(undefined);
+  const mounted = useRef(true);
+  const mountEpoch = useRef(0);
+  const latest = useRef({ gateway, connected, snapshot });
+  latest.current = { gateway, connected, snapshot };
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; mountEpoch.current += 1; pickerEpoch.current += 1; }; }, []);
+  const setPicker = useCallback((next?: RoutePicker) => { pickerEpoch.current += 1; pickerRef.current = next; publishPicker(next); }, []);
+  const renderOrigin = useMemo(() => options.lifetime?.checkpoint(), [options.lifetime, options.lifetime?.version]);
+  const capture = useCallback(() => {
+    const origin = renderOrigin;
+    const epoch = mountEpoch.current;
+    return captureGatewaySession(gateway, () => mounted.current && mountEpoch.current === epoch
+      && latest.current.gateway === gateway && latest.current.connected === connected
+      && latest.current.snapshot.presetIdentity === snapshot.presetIdentity
+      && latest.current.snapshot.setlistKey === snapshot.setlistKey
+      && latest.current.snapshot.presetPosition === snapshot.presetPosition
+      && (!origin || options.lifetime!.current(origin)));
+  }, [gateway, connected, snapshot.presetIdentity, snapshot.setlistKey, snapshot.presetPosition, options.lifetime, renderOrigin]);
+  useEffect(() => { setPicker(undefined); setDrafts({}); }, [capture, setPicker]);
 
   const openPicker = useCallback((row: number, side: "input" | "output") => {
+    if (!capture().current()) return;
     const route = snapshot.routes.find((candidate) => candidate.row === row);
     if (!connected || route?.inputId === undefined || route.outputId === undefined) {
       notice(!connected ? "Connect the Quad Cortex before changing signal routing." : "Refresh the complete device state before changing this route.");
       return;
     }
-    setPicker((current) => current?.row === row && current.side === side ? undefined : { row, side });
+    setPicker(pickerRef.current?.row === row && pickerRef.current.side === side ? undefined : { row, side });
     notice(`Select row ${row + 1} ${side} on the Quad Cortex screen.`);
-  }, [connected, notice, snapshot.routes]);
+  }, [connected, notice, capture, setPicker, snapshot.routes]);
 
   const applyRoute = useCallback(async (row: number, side: "input" | "output", selected?: number) => {
+    const operation = capture();
+    if (!operation.current()) return;
     const route = snapshot.routes.find((candidate) => candidate.row === row);
     const draft = drafts[row];
     const expected = side === "input"
@@ -56,13 +83,17 @@ export function useRoutingWorkflow(options: RoutingWorkflowOptions): RoutingWork
     if (desired === undefined || pending) return;
     if (!connected) { notice("Connect the Quad Cortex before changing signal routing."); return; }
     if (expected === desired) { setPicker(undefined); return; }
-    setPending(true);
-    notice(`Updating row ${row + 1} ${side}…`);
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     try {
+      setPending(true);
+      notice(`Updating row ${row + 1} ${side}…`);
+
       const execute = (value: number, previous: number, presetName: string) => side === "input"
-        ? gateway.setChainInput(row, value, previous, presetName, requirePresetIdentity(snapshot))
-        : gateway.setChainOutput(row, value, previous, presetName, requirePresetIdentity(snapshot));
+        ? operation.gateway.setChainInput(row, value, previous, presetName, requirePresetIdentity(snapshot))
+        : operation.gateway.setChainOutput(row, value, previous, presetName, requirePresetIdentity(snapshot));
       const result = await execute(desired, expected, snapshot.presetName);
+      operation.assertCurrent();
       if (result.snapshot) {
         reconcile(result.snapshot);
         setDrafts(routeDraftsFromSnapshot(result.snapshot));
@@ -74,9 +105,9 @@ export function useRoutingWorkflow(options: RoutingWorkflowOptions): RoutingWork
       });
       setPicker(undefined);
       notice(result.detail);
-    } catch (error) { fail(error); }
-    finally { setPending(false); }
-  }, [connected, drafts, fail, gateway, notice, pending, reconcile, recordHistory, setPending, snapshot.presetIdentity, snapshot.presetName, snapshot.routes]);
+    } catch (error) { if (operation.current()) fail(error); }
+    finally { if (mutationLease.release() && !admission.busy && operation.current()) setPending(false); }
+  }, [admission, connected, drafts, fail, gateway, notice, capture, setPicker, pending, reconcile, recordHistory, setPending, snapshot.presetIdentity, snapshot.presetName, snapshot.routes]);
 
   /**
    * The write both applySplit (reading a fully-drafted row) and the split
@@ -85,30 +116,39 @@ export function useRoutingWorkflow(options: RoutingWorkflowOptions): RoutingWork
    * for the whole feature.
    */
   const commitSplit = useCallback(async (row: number, splitColumn: number | null, mixColumn: number | null) => {
+    const operation = capture();
+    if (!operation.current()) return;
+    // -1 belongs to the local chooser/wire representation, not the checked API.
+    splitColumn = splitColumn === -1 ? null : splitColumn;
+    mixColumn = mixColumn === -1 ? null : mixColumn;
     const route = snapshot.routes.find((candidate) => candidate.row === row);
     if (!route || pending) return;
     if (!connected) { notice("Connect the Quad Cortex before changing signal routing."); return; }
     const expectedSplit = route.splitColumn ?? null;
-    const expectedMix = route.splitColumn === undefined ? null : route.mixColumn ?? -1;
+    const expectedMix = route.splitColumn === undefined ? null : route.mixColumn ?? null;
     if (splitColumn === expectedSplit && mixColumn === expectedMix) return;
-    const description = splitColumn === null ? "return it to a serial path" : `branch at column ${splitColumn + 1}${mixColumn === -1 ? " without a rejoin" : ` and rejoin at column ${Number(mixColumn) + 1}`}`;
-    setPending(true);
-    notice(`Updating row ${row + 1} parallel routing…`);
+    const description = splitColumn === null ? "return it to a serial path" : `branch at column ${splitColumn + 1}${mixColumn === null ? " without a rejoin" : ` and rejoin at column ${Number(mixColumn) + 1}`}`;
+    const mutationLease = admission.tryAcquire();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
     try {
-      const result = await gateway.setChainSplit(row, splitColumn, mixColumn, expectedSplit, expectedMix, snapshot.presetName, requirePresetIdentity(snapshot));
+      setPending(true);
+      notice(`Updating row ${row + 1} parallel routing…`);
+
+      const result = await operation.gateway.setChainSplit(row, splitColumn, mixColumn, expectedSplit, expectedMix, snapshot.presetName, requirePresetIdentity(snapshot));
+      operation.assertCurrent();
       if (result.snapshot) {
         reconcile(result.snapshot);
         setDrafts(routeDraftsFromSnapshot(result.snapshot));
       }
       recordHistory({
         label: `row ${row + 1} branch routing`,
-        execute: (current) => gateway.setChainSplit(row, expectedSplit, expectedMix, splitColumn, mixColumn, current.presetName, requirePresetIdentity(current)),
-        redo: (current) => gateway.setChainSplit(row, splitColumn, mixColumn, expectedSplit, expectedMix, current.presetName, requirePresetIdentity(current))
+        execute: (current) => operation.gateway.setChainSplit(row, expectedSplit, expectedMix, splitColumn, mixColumn, current.presetName, requirePresetIdentity(current)),
+        redo: (current) => operation.gateway.setChainSplit(row, splitColumn, mixColumn, expectedSplit, expectedMix, current.presetName, requirePresetIdentity(current))
       });
       notice(result.detail);
-    } catch (error) { fail(error); }
-    finally { setPending(false); }
-  }, [connected, fail, gateway, notice, pending, reconcile, recordHistory, setPending, snapshot.presetIdentity, snapshot.presetName, snapshot.routes]);
+    } catch (error) { if (operation.current()) fail(error); }
+    finally { if (mutationLease.release() && !admission.busy && operation.current()) setPending(false); }
+  }, [admission, connected, fail, gateway, notice, capture, pending, reconcile, recordHistory, setPending, snapshot.presetIdentity, snapshot.presetName, snapshot.routes]);
 
   const applySplit = useCallback(async (row: number) => {
     const draft = drafts[row];
@@ -117,16 +157,20 @@ export function useRoutingWorkflow(options: RoutingWorkflowOptions): RoutingWork
   }, [commitSplit, drafts]);
 
   const openSplitPlacement = useCallback((row: number) => {
+    if (!capture().current()) return;
     if (!connected) { notice("Connect the Quad Cortex before adding a signal split."); return; }
     const route = snapshot.routes.find((candidate) => candidate.row === row);
     if (!route) { notice("Refresh the complete device state before adding a split."); return; }
     if (route.splitColumn !== undefined) { notice(`Row ${row + 1} already branches - open its Splitter marker on the Grid to edit it.`); return; }
     setDrafts((current) => updateRouteDraft(current, route, { splitColumn: null, mixColumn: null }));
     setPicker({ row, side: "split" });
-  }, [connected, notice, snapshot.routes]);
+  }, [connected, notice, capture, setPicker, snapshot.routes]);
 
   const pickerProps = useMemo<CorOsRoutingPickerState | undefined>(() => {
     if (!picker) return undefined;
+    const operation = capture();
+    const epoch = pickerEpoch.current;
+    const pickerCurrent = () => operation.current() && pickerEpoch.current === epoch && pickerRef.current === picker;
     if (picker.side === "split" || picker.side === "mix") {
       const route = snapshot.routes.find((candidate) => candidate.row === picker.row);
       const draft = drafts[picker.row] ?? (route ? routeDraft(route) : { inputId: 0, outputId: 0, splitColumn: null as number | null, mixColumn: null as number | null });
@@ -144,6 +188,7 @@ export function useRoutingWorkflow(options: RoutingWorkflowOptions): RoutingWork
         value,
         disabled: pending,
         onSelect: (selected) => {
+          if (!pickerCurrent()) return;
           if (isSplit) {
             setDrafts((current) => ({ ...current, [picker.row]: { ...draft, splitColumn: selected, mixColumn: -1 } }));
             setPicker({ row: picker.row, side: "mix" });
@@ -152,7 +197,7 @@ export function useRoutingWorkflow(options: RoutingWorkflowOptions): RoutingWork
             void commitSplit(picker.row, draft.splitColumn, selected);
           }
         },
-        onClose: () => setPicker(undefined)
+        onClose: () => { if (pickerCurrent()) setPicker(undefined); }
       };
     }
     const side: "input" | "output" = picker.side === "input" ? "input" : "output";
@@ -166,10 +211,10 @@ export function useRoutingWorkflow(options: RoutingWorkflowOptions): RoutingWork
       options: routeOptionsForRow(side, picker.row, value, snapshot.routes),
       value,
       disabled: pending,
-      onSelect: (selected) => void applyRoute(picker.row, side, selected),
-      onClose: () => setPicker(undefined)
+      onSelect: (selected) => { if (pickerCurrent()) void applyRoute(picker.row, side, selected); },
+      onClose: () => { if (pickerCurrent()) setPicker(undefined); }
     };
-  }, [applyRoute, commitSplit, drafts, pending, picker, snapshot.routes]);
+  }, [applyRoute, commitSplit, drafts, capture, pending, picker, setPicker, snapshot.routes]);
 
   return { drafts, setDrafts, picker, pickerProps, openPicker, closePicker: () => setPicker(undefined), applyRoute, applySplit, openSplitPlacement };
 }

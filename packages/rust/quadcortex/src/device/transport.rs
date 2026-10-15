@@ -11,6 +11,8 @@ use crate::inbound_telemetry::InboundTelemetry;
 use crate::profile;
 use crate::proto::cortex_protobuf_v2 as pa;
 use prost::Message;
+#[cfg(feature = "cloud-forward")]
+use zeroize::Zeroize;
 
 /// Phase of the connection a [`TransportRuntime`] is managing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,6 +310,16 @@ pub struct TransportRuntime {
     frame_started_at_ms: Option<u64>,
     read_epoch: Option<u64>,
     inbound: InboundTelemetry,
+    #[cfg(feature = "cloud-forward")]
+    zencryption: crate::device_zencryption::ZencryptionState,
+    #[cfg(feature = "cloud-forward")]
+    zencryption_boundary_seen: bool,
+    #[cfg(feature = "cloud-forward")]
+    zencryption_fragment_seen: bool,
+    #[cfg(feature = "cloud-forward")]
+    last_zencryption_fragment_at_ms: Option<u64>,
+    #[cfg(feature = "cloud-forward")]
+    cloud_forward_enabled: bool,
 }
 
 impl TransportRuntime {
@@ -321,6 +333,16 @@ impl TransportRuntime {
             frame_started_at_ms: None,
             read_epoch: None,
             inbound: InboundTelemetry::default(),
+            #[cfg(feature = "cloud-forward")]
+            zencryption: crate::device_zencryption::ZencryptionState::default(),
+            #[cfg(feature = "cloud-forward")]
+            zencryption_boundary_seen: true,
+            #[cfg(feature = "cloud-forward")]
+            zencryption_fragment_seen: false,
+            #[cfg(feature = "cloud-forward")]
+            last_zencryption_fragment_at_ms: None,
+            #[cfg(feature = "cloud-forward")]
+            cloud_forward_enabled: false,
         }
     }
 
@@ -328,6 +350,41 @@ impl TransportRuntime {
     /// state decoder's half by [`crate::device::owner::SessionRuntime`].
     pub fn inbound_telemetry(&self) -> &InboundTelemetry {
         &self.inbound
+    }
+
+    /// Enables encrypted account forwarding only while the broker's
+    /// existing internet-relay setting is on.
+    #[cfg(feature = "cloud-forward")]
+    pub fn set_cloud_forward_enabled(&mut self, enabled: bool) {
+        self.cloud_forward_enabled = enabled;
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    fn clear_zencryption_session(&mut self) {
+        self.zencryption.clear();
+        self.zencryption_boundary_seen = true;
+        self.zencryption_fragment_seen = false;
+        self.last_zencryption_fragment_at_ms = None;
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    fn begin_zencryption_fragment(&mut self, received_at_ms: Option<u64>) {
+        // Captures and live transports can carry more than one Version
+        // handshake without replacing the TransportRuntime. Cortex Control
+        // starts a fresh secret after Connection/ResetCommsBuffers, and the
+        // transport also identifies a fresh handshake after a
+        // >2 s gap between secret fragments. Fragments within one handshake
+        // arrive within milliseconds and must continue to append.
+        let gap_starts_session = self
+            .last_zencryption_fragment_at_ms
+            .zip(received_at_ms)
+            .is_some_and(|(previous, current)| current.saturating_sub(previous) > 2_000);
+        if self.zencryption_boundary_seen || !self.zencryption_fragment_seen || gap_starts_session {
+            self.zencryption.clear();
+        }
+        self.zencryption_boundary_seen = false;
+        self.zencryption_fragment_seen = true;
+        self.last_zencryption_fragment_at_ms = received_at_ms;
     }
 
     /// Discards all session, framing and telemetry state and starts over as
@@ -363,6 +420,8 @@ impl TransportRuntime {
         // A receive tally must never straddle two connections, so this one
         // ends where the others do.
         self.inbound = InboundTelemetry::default();
+        #[cfg(feature = "cloud-forward")]
+        self.clear_zencryption_session();
         self.session.request_reconnect(now_ms);
     }
 
@@ -376,6 +435,8 @@ impl TransportRuntime {
         self.frames.reset();
         self.frame_started_at_ms = None;
         self.inbound = InboundTelemetry::default();
+        #[cfg(feature = "cloud-forward")]
+        self.clear_zencryption_session();
         self.session.disconnect(now_ms, recover);
     }
 
@@ -423,6 +484,8 @@ impl TransportRuntime {
     pub fn transport_opened(&mut self, now_ms: u64) {
         self.frames.reset();
         self.frame_started_at_ms = None;
+        #[cfg(feature = "cloud-forward")]
+        self.clear_zencryption_session();
         self.session.transport_opened(now_ms);
     }
 
@@ -579,33 +642,61 @@ impl TransportRuntime {
             .collect())
     }
 
-    /// Encode a message for the current connection. Neural DSP's own
-    /// cloud-account/login/backup/license message families ride on an
-    /// encrypted trailer this crate does not implement (no shipped QC Remote
-    /// feature calls into them); those message types are rejected outright
-    /// rather than sent unencrypted or malformed.
+    /// Encode a message for the current connection. CloudLogin and
+    /// ProductForward use the session's encrypted trailer only while the
+    /// gated cloud-forward path is enabled. Other cloud/backup/license message
+    /// families remain rejected rather than sent unencrypted or malformed.
     pub fn encode_reports_with_session(
         &self,
         message: &OutboundMessage,
         layout: ReportLayout,
     ) -> Result<Vec<Vec<u8>>, FrameError> {
+        reject_oversized_outbound(message)?;
+        #[cfg(feature = "cloud-forward")]
+        if matches!(
+            message.message_type,
+            profile::MESSAGE_TYPE_CLOUD_LOGIN | profile::MESSAGE_TYPE_PRODUCT_FORWARD
+        ) && self.cloud_forward_enabled
+        {
+            use zeroize::Zeroizing;
+            let mut encrypted = Zeroizing::new(
+                self.zencryption
+                    .transform(&message.payload)
+                    .map_err(|_| FrameError::UnsupportedEncryptedMessageType)?,
+            );
+            let reports = framing::encode_frame(&framing::Frame {
+                message_type: u32::from(message.message_type),
+                payload: std::mem::take(&mut *encrypted),
+                encrypted: true,
+                compressed: false,
+                device_bytes: [0, 0],
+            });
+
+            return Ok(reports
+                .into_iter()
+                .map(|report| match layout {
+                    ReportLayout::ReportIdPrefixed => report.to_vec(),
+                    ReportLayout::BodyOnly => report[1..].to_vec(),
+                })
+                .collect());
+        }
         if is_unsupported_encrypted_message_type(message.message_type) {
             return Err(FrameError::UnsupportedEncryptedMessageType);
         }
-        reject_oversized_outbound(message)?;
-        Ok(framing::encode_frame(&framing::Frame {
+        let reports = framing::encode_frame(&framing::Frame {
             message_type: u32::from(message.message_type),
             payload: message.payload.clone(),
             encrypted: false,
             compressed: false,
             device_bytes: [0, 0],
-        })
-        .into_iter()
-        .map(|report| match layout {
-            ReportLayout::ReportIdPrefixed => report.to_vec(),
-            ReportLayout::BodyOnly => report[1..].to_vec(),
-        })
-        .collect())
+        });
+        Ok(reports
+            .into_iter()
+            .map(|report| match layout {
+                ReportLayout::ReportIdPrefixed => report.to_vec(),
+                ReportLayout::BodyOnly => report[1..].to_vec(),
+            })
+            .collect())
     }
 
     /// Required pacing: yield for six milliseconds after each group of ten
@@ -654,6 +745,8 @@ impl TransportRuntime {
             self.frames.reset();
             self.frame_started_at_ms = None;
             self.read_epoch = Some(epoch);
+            #[cfg(feature = "cloud-forward")]
+            self.clear_zencryption_session();
         }
         self.push_report_at(raw_report, received_at_ms)
     }
@@ -715,6 +808,8 @@ impl TransportRuntime {
         let Ok(message_type) = u16::try_from(frame.message_type) else {
             // Past the host's dispatch range, so there is no 16-bit type to
             // key any other counter by; the raw trailer value is the record.
+            // It is nevertheless one fully assembled envelope.
+            self.inbound.record_unkeyed_envelope();
             self.inbound.record_undeclared_type(frame.message_type);
             return Err(FrameError::MessageTypeOutOfRange(frame.message_type));
         };
@@ -722,16 +817,48 @@ impl TransportRuntime {
         // still contributes its trailer bytes and its type to the tally.
         self.inbound
             .record_envelope(message_type, frame.device_bytes);
-        if crate::message_registry::message_name(message_type).is_none() {
+        let undeclared = crate::message_registry::message_name(message_type).is_none();
+        if undeclared {
             self.inbound.record_undeclared_type(u32::from(message_type));
         }
-        // This build does not implement Neural DSP's cloud-account/license
-        // trailer encryption (no shipped QC Remote feature needs it), so an
-        // encrypted frame can never be decoded here regardless of message
-        // type. Protocol decoders retain ownership of bounded decompression
-        // for the plaintext frames that remain.
+        #[cfg(feature = "cloud-forward")]
+        if matches!(
+            message_type,
+            profile::MESSAGE_TYPE_CONNECTION | profile::MESSAGE_TYPE_RESET_COMMS_BUFFERS
+        ) {
+            self.clear_zencryption_session();
+        }
+        // Encrypted cloud requests are available only through the forwarding
+        // switch. Decompression remains owned by the protocol decoder.
         if frame.encrypted {
+            #[cfg(feature = "cloud-forward")]
+            if self.cloud_forward_enabled && crate::device_zencryption::applies_to(message_type) {
+                use zeroize::Zeroizing;
+                let mut clear = Zeroizing::new(
+                    self.zencryption
+                        .transform(&frame.payload)
+                        .map_err(|_| FrameError::UnsupportedEncryptedMessageType)?,
+                );
+                let payload = if frame.compressed {
+                    self.inbound.record_compressed(message_type);
+                    crate::compression::gunzip_for_message_type(&clear, message_type)
+                        .map_err(|error| FrameError::Compression(error.to_string()))?
+                } else {
+                    std::mem::take(&mut *clear)
+                };
+
+                return Ok(Some(InboundFrame {
+                    message_type,
+                    payload,
+                    report_count,
+                    ingress,
+                    device_bytes: frame.device_bytes,
+                }));
+            }
             self.inbound.record_encrypted_rejection(message_type);
+            if undeclared {
+                self.inbound.record_undeclared_rejection_overlap();
+            }
             return Err(FrameError::UnsupportedEncryptedMessageType);
         }
         let payload = if frame.compressed {
@@ -744,6 +871,9 @@ impl TransportRuntime {
                     // Counted per type in the inbound telemetry and named in
                     // the error, so a dropped frame is never silent.
                     self.inbound.record_inflate_failure(message_type);
+                    if undeclared {
+                        self.inbound.record_undeclared_rejection_overlap();
+                    }
                     return Err(FrameError::Compression(format!(
                         "type {message_type} (limit {} bytes): {error}",
                         crate::compression::max_inflated_bytes_for(message_type)
@@ -753,6 +883,33 @@ impl TransportRuntime {
         } else {
             frame.payload
         };
+        #[cfg(feature = "cloud-forward")]
+        let mut payload = payload;
+        #[cfg(feature = "cloud-forward")]
+        // Install the connection key during every version exchange. The relay
+        // switch is live and can turn on after the handshake; retaining only
+        // this per-session key lets encrypted type-29 forwarding start without
+        // forcing a transport reconnect. No encrypted payload is decoded while
+        // the forwarding switch is off.
+        if message_type == profile::MESSAGE_TYPE_VERSION {
+            if let Ok(version) = pa::VersionMessage::decode(payload.as_slice()) {
+                let mut version = version;
+                if version.action == pa::message_action::Enum::Update as i32 {
+                    if let Some(pa::version_message::CommsVersion::CommsVersion(fragment)) =
+                        &mut version.comms_version
+                    {
+                        self.begin_zencryption_fragment(ingress.map(|time| time.last_report_at_ms));
+                        self.zencryption.install_wrapped_fragment(fragment);
+                        fragment.zeroize();
+                        // The wrapped session key is transport state, not
+                        // application state. Strip it before the Version frame
+                        // enters shared caches or state-decoder queues.
+                        version.comms_version = None;
+                        payload = version.encode_to_vec();
+                    }
+                }
+            }
+        }
         Ok(Some(InboundFrame {
             message_type,
             payload,
@@ -774,10 +931,8 @@ fn reject_oversized_outbound(message: &OutboundMessage) -> Result<(), FrameError
     Ok(())
 }
 
-/// Neural DSP's own cloud-account/login/backup/license message families
-/// (CloudLogin, ProductForward, BackupsForward, LogsForward, CloudBackup,
-/// License), which ride on an encrypted trailer this crate does not
-/// implement. No shipped QC Remote feature sends or receives any of these.
+/// Encrypted families that must never fall through to plaintext framing.
+/// The cloud-forward feature handles its supported families before this guard.
 fn is_unsupported_encrypted_message_type(message_type: u16) -> bool {
     matches!(message_type, 18 | 29 | 30 | 31 | 41 | 58)
 }
@@ -834,6 +989,44 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_unknown_rejections_count_each_unusable_envelope_once() {
+        let mut runtime = TransportRuntime::new(0);
+        assert_eq!(
+            runtime.push_report(&inbound_envelope(73, &[8, 1], true, false, [0, 0])),
+            Err(FrameError::UnsupportedEncryptedMessageType)
+        );
+        assert!(matches!(
+            runtime.push_report(&inbound_envelope(73, &[0x1f, 0x8b, 0], false, true, [0, 0])),
+            Err(FrameError::Compression(_))
+        ));
+        runtime
+            .push_report(&inbound_envelope(73, &[8, 1], false, false, [0, 0]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runtime.push_report(&inbound_envelope(
+                u32::from(profile::MESSAGE_TYPE_LICENSE),
+                &[8, 1],
+                true,
+                false,
+                [0, 0]
+            )),
+            Err(FrameError::UnsupportedEncryptedMessageType)
+        );
+        let snapshot = runtime.inbound_telemetry().snapshot();
+        assert_eq!(snapshot.frames, 4);
+        assert_eq!(snapshot.unacted_frames, 4);
+        assert_eq!(snapshot.undeclared_types[&73], 3);
+        assert_eq!(snapshot.encrypted_rejections[&73], 1);
+        assert_eq!(snapshot.inflate_failures[&73], 1);
+        let mut merged = runtime.inbound_telemetry().clone();
+        merged.merge(runtime.inbound_telemetry());
+        assert_eq!(merged.snapshot().frames, 8);
+        assert_eq!(merged.snapshot().unacted_frames, 8);
+        assert_eq!(merged.snapshot().undeclared_types[&73], 6);
+    }
+
+    #[test]
     fn an_undeclared_inbound_type_is_counted_rather_than_vanishing() {
         let mut runtime = TransportRuntime::new(0);
         let frame = runtime
@@ -866,15 +1059,30 @@ mod tests {
     #[test]
     fn a_type_past_the_host_dispatch_range_is_recorded_by_its_raw_trailer_value() {
         let mut runtime = TransportRuntime::new(0);
+        assert_eq!(runtime.push_report(&[0]), Err(FrameError::InvalidLength));
+        assert_eq!(runtime.inbound_telemetry().snapshot().frames, 0);
         assert_eq!(
             runtime.push_report(&inbound_envelope(0x0001_0000, &[], false, false, [0, 0])),
             Err(FrameError::MessageTypeOutOfRange(0x0001_0000))
         );
         let snapshot = runtime.inbound_telemetry().snapshot();
         assert_eq!(snapshot.undeclared_types[&0x0001_0000], 1);
-        // There is no 16-bit type to key the envelope tally by.
-        assert_eq!(snapshot.frames, 0);
+        // Complete envelopes count even when no 16-bit trailer key exists.
+        assert_eq!(snapshot.frames, 1);
         assert_eq!(snapshot.unacted_frames, 1);
+        assert!(snapshot.device_trailer_bytes.is_empty());
+        assert!(snapshot.encrypted_rejections.is_empty());
+        assert!(snapshot.inflate_failures.is_empty());
+        assert_eq!(
+            runtime.push_report(&inbound_envelope(u32::MAX, &[], false, false, [7, 8])),
+            Err(FrameError::MessageTypeOutOfRange(u32::MAX))
+        );
+        let snapshot = runtime.inbound_telemetry().snapshot();
+        assert_eq!(snapshot.frames, 2);
+        assert_eq!(snapshot.unacted_frames, 2);
+        assert_eq!(snapshot.undeclared_types[&u32::MAX], 1);
+        assert_eq!(snapshot.undeclared_types.len(), 2);
+        assert!(snapshot.device_trailer_bytes.is_empty());
     }
 
     #[test]
@@ -997,6 +1205,66 @@ mod tests {
                 report.to_vec()
             })
             .collect()
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    fn push_wrapped_version_fragment(
+        runtime: &mut TransportRuntime,
+        wrapped_fragment: &[u8],
+        received_at_ms: u64,
+    ) {
+        let payload = pa::VersionMessage {
+            action: pa::message_action::Enum::Update as i32,
+            comms_version: Some(pa::version_message::CommsVersion::CommsVersion(
+                wrapped_fragment.to_vec(),
+            )),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        for report in inbound_reports(profile::MESSAGE_TYPE_VERSION, &payload) {
+            runtime.push_report_at(&report, received_at_ms).unwrap();
+        }
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    fn assert_type29_decrypts_with_fragments(
+        receiver: &mut TransportRuntime,
+        wrapped_fragments: &[&[u8]],
+        received_at_ms: u64,
+    ) {
+        let mut sender = TransportRuntime::new(0);
+        sender.set_cloud_forward_enabled(true);
+        assert!(
+            !wrapped_fragments.is_empty(),
+            "test requires handshake fragments"
+        );
+        for fragment in wrapped_fragments {
+            assert!(sender.zencryption.install_wrapped_fragment(fragment));
+        }
+        let clear_payload = vec![0x08, 0x01, 0x18, 0x22, 0x2a, 0x02, 0x0a, 0x00];
+        let encrypted_reports = sender
+            .encode_reports_with_session(
+                &OutboundMessage {
+                    message_type: profile::MESSAGE_TYPE_PRODUCT_FORWARD,
+                    payload: clear_payload.clone(),
+                },
+                ReportLayout::ReportIdPrefixed,
+            )
+            .unwrap();
+        let mut decoded = None;
+        for mut report in encrypted_reports {
+            report[0] = framing::IN_REPORT_ID;
+            decoded = receiver
+                .push_report_at(&report, received_at_ms)
+                .unwrap()
+                .or(decoded);
+        }
+        assert_eq!(
+            decoded
+                .expect("encrypted type-29 frame is reassembled")
+                .payload,
+            clear_payload
+        );
     }
 
     #[test]
@@ -1454,6 +1722,176 @@ mod tests {
             TransportRuntime::new(0)
                 .encode_reports_with_session(&message, ReportLayout::ReportIdPrefixed),
             Err(FrameError::UnsupportedEncryptedMessageType)
+        );
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn opted_in_product_forward_response_is_encrypted_and_decodes_in_same_session() {
+        let mut runtime = TransportRuntime::new(0);
+        runtime.cloud_forward_enabled = true;
+        assert!(runtime.zencryption.install_wrapped_fragment(&[
+            0x63, 0x7a, 0xa2, 0x2b, 0x4b, 0xc2, 0x1e, 0x69, 0x43, 0x5e, 0xf1, 0x1d, 0x01, 0xd1,
+            0x29, 0xb8, 0x37, 0xf5, 0x61, 0x05,
+        ]));
+        let clear = vec![0x08, 0x01, 0x18, 0x22, 0x2a, 0x02, 0x0a, 0x00];
+        let message = OutboundMessage {
+            message_type: profile::MESSAGE_TYPE_PRODUCT_FORWARD,
+            payload: clear.clone(),
+        };
+
+        let reports = runtime
+            .encode_reports_with_session(&message, ReportLayout::ReportIdPrefixed)
+            .unwrap();
+        assert!(!reports.is_empty());
+        let mut decoded = None;
+        for report in reports {
+            let mut inbound = report;
+            inbound[0] = framing::IN_REPORT_ID;
+            decoded = runtime.push_report(&inbound).unwrap().or(decoded);
+        }
+        let decoded = decoded.expect("encrypted frame reassembled");
+        assert_eq!(decoded.message_type, profile::MESSAGE_TYPE_PRODUCT_FORWARD);
+        assert_eq!(decoded.payload, clear);
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn opted_in_cloud_login_update_is_encrypted_and_decodes_in_same_session() {
+        let mut runtime = TransportRuntime::new(0);
+        runtime.cloud_forward_enabled = true;
+        assert!(runtime.zencryption.install_wrapped_fragment(&[
+            0x63, 0x7a, 0xa2, 0x2b, 0x4b, 0xc2, 0x1e, 0x69, 0x43, 0x5e, 0xf1, 0x1d, 0x01, 0xd1,
+            0x29, 0xb8, 0x37, 0xf5, 0x61, 0x05,
+        ]));
+        let clear = vec![0x08, 0x01, 0x22, 0x02, 0x0a, 0x00];
+        let message = OutboundMessage {
+            message_type: profile::MESSAGE_TYPE_CLOUD_LOGIN,
+            payload: clear.clone(),
+        };
+
+        let reports = runtime
+            .encode_reports_with_session(&message, ReportLayout::ReportIdPrefixed)
+            .unwrap();
+        assert!(!reports.is_empty());
+        let mut decoded = None;
+        for report in reports {
+            let mut inbound = report;
+            inbound[0] = framing::IN_REPORT_ID;
+            decoded = runtime.push_report(&inbound).unwrap().or(decoded);
+        }
+        let decoded = decoded.expect("encrypted frame reassembled");
+        assert_eq!(decoded.message_type, profile::MESSAGE_TYPE_CLOUD_LOGIN);
+        assert_eq!(decoded.payload, clear);
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn enabling_cloud_forward_after_handshake_uses_the_captured_session_key() {
+        let wrapped_secret = [
+            0x63, 0x7a, 0xa2, 0x2b, 0x4b, 0xc2, 0x1e, 0x69, 0x43, 0x5e, 0xf1, 0x1d, 0x01, 0xd1,
+            0x29, 0xb8, 0x37, 0xf5, 0x61, 0x05,
+        ];
+        let version = pa::VersionMessage {
+            action: pa::message_action::Enum::Update as i32,
+            comms_version: Some(pa::version_message::CommsVersion::CommsVersion(
+                wrapped_secret.to_vec(),
+            )),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let mut receiver = TransportRuntime::new(0);
+        assert!(!receiver.cloud_forward_enabled);
+        let mut decoded_version = None;
+        for report in inbound_reports(profile::MESSAGE_TYPE_VERSION, &version) {
+            decoded_version = receiver.push_report(&report).unwrap().or(decoded_version);
+        }
+        let decoded_version = decoded_version.expect("version frame is reassembled");
+        let decoded_version =
+            pa::VersionMessage::decode(decoded_version.payload.as_slice()).unwrap();
+        assert!(
+            decoded_version.comms_version.is_none(),
+            "wrapped key is stripped before publication"
+        );
+        receiver.set_cloud_forward_enabled(true);
+
+        let mut sender = TransportRuntime::new(0);
+        assert!(sender.zencryption.install_wrapped_fragment(&wrapped_secret));
+        sender.set_cloud_forward_enabled(true);
+        let clear_payload = vec![0x08, 0x01, 0x18, 0x22, 0x2a, 0x02, 0x0a, 0x00];
+        let encrypted_reports = sender
+            .encode_reports_with_session(
+                &OutboundMessage {
+                    message_type: profile::MESSAGE_TYPE_PRODUCT_FORWARD,
+                    payload: clear_payload.clone(),
+                },
+                ReportLayout::ReportIdPrefixed,
+            )
+            .unwrap();
+        let mut decoded = None;
+        for mut report in encrypted_reports {
+            report[0] = framing::IN_REPORT_ID;
+            decoded = receiver.push_report(&report).unwrap().or(decoded);
+        }
+        let decoded = decoded.expect("encrypted type-29 frame is reassembled");
+        assert_eq!(decoded.message_type, profile::MESSAGE_TYPE_PRODUCT_FORWARD);
+        assert_eq!(decoded.payload, clear_payload);
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn cloud_secret_resets_at_connection_and_comms_reset_boundaries() {
+        let wrapped_fragment = [
+            0x63, 0x7a, 0xa2, 0x2b, 0x4b, 0xc2, 0x1e, 0x69, 0x43, 0x5e, 0xf1, 0x1d, 0x01, 0xd1,
+            0x29, 0xb8, 0x37, 0xf5, 0x61, 0x05,
+        ];
+
+        for boundary_type in [
+            profile::MESSAGE_TYPE_CONNECTION,
+            profile::MESSAGE_TYPE_RESET_COMMS_BUFFERS,
+        ] {
+            let mut receiver = TransportRuntime::new(0);
+            receiver.set_cloud_forward_enabled(true);
+            push_wrapped_version_fragment(&mut receiver, &wrapped_fragment, 10);
+            for report in inbound_reports(boundary_type, &[0x08, 0x01]) {
+                receiver.push_report_at(&report, 20).unwrap();
+            }
+            push_wrapped_version_fragment(&mut receiver, &wrapped_fragment, 30);
+            assert_type29_decrypts_with_fragments(&mut receiver, &[&wrapped_fragment], 40);
+        }
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn cloud_secret_resets_after_a_gap_between_handshake_fragments() {
+        let wrapped_fragment = [
+            0x63, 0x7a, 0xa2, 0x2b, 0x4b, 0xc2, 0x1e, 0x69, 0x43, 0x5e, 0xf1, 0x1d, 0x01, 0xd1,
+            0x29, 0xb8, 0x37, 0xf5, 0x61, 0x05,
+        ];
+        let mut receiver = TransportRuntime::new(0);
+        receiver.set_cloud_forward_enabled(true);
+        push_wrapped_version_fragment(&mut receiver, &wrapped_fragment, 10);
+        push_wrapped_version_fragment(&mut receiver, &wrapped_fragment, 2_011);
+
+        assert_type29_decrypts_with_fragments(&mut receiver, &[&wrapped_fragment], 2_012);
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn cloud_fragments_within_one_handshake_are_still_appended() {
+        let wrapped_fragment = [
+            0x63, 0x7a, 0xa2, 0x2b, 0x4b, 0xc2, 0x1e, 0x69, 0x43, 0x5e, 0xf1, 0x1d, 0x01, 0xd1,
+            0x29, 0xb8, 0x37, 0xf5, 0x61, 0x05,
+        ];
+        let mut receiver = TransportRuntime::new(0);
+        receiver.set_cloud_forward_enabled(true);
+        push_wrapped_version_fragment(&mut receiver, &wrapped_fragment, 10);
+        push_wrapped_version_fragment(&mut receiver, &wrapped_fragment, 11);
+
+        assert_type29_decrypts_with_fragments(
+            &mut receiver,
+            &[&wrapped_fragment, &wrapped_fragment],
+            12,
         );
     }
 

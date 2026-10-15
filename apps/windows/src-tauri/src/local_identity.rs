@@ -25,6 +25,9 @@ use subtle::ConstantTimeEq as _;
 pub(crate) const IDENTITY_PATH: &str = "/identity";
 /// How long a client waits for a proof.
 const IDENTITY_TIMEOUT: Duration = Duration::from_secs(2);
+// Software envelope budget, not a firmware limit. A proof is two short
+// strings; untrusted listeners must be rejected before buffering arbitrary JSON.
+const MAX_PROOF_BYTES: usize = 4096;
 const PROOF_CONTEXT: &[u8] = b"qc-remote-local-identity-v1";
 /// Nonces are 32 random bytes; anything much longer is not a nonce.
 const MAX_NONCE_CHARACTERS: usize = 128;
@@ -135,7 +138,7 @@ pub(crate) async fn verify(
     token: &str,
 ) -> Result<(), IdentityFailure> {
     let nonce = fresh_nonce();
-    let answer = client
+    let mut response = client
         .post(identity_url)
         .timeout(IDENTITY_TIMEOUT)
         .json(&IdentityChallenge {
@@ -153,14 +156,33 @@ pub(crate) async fn verify(
             no_proof(format!(
                 "the published endpoint refused the identity check ({error})"
             ))
-        })?
-        .json::<IdentityProof>()
-        .await
-        .map_err(|error| {
-            no_proof(format!(
-                "the published endpoint gave no identity proof ({error})"
-            ))
         })?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROOF_BYTES as u64)
+    {
+        return Err(no_proof(
+            "the published identity proof exceeds its software envelope budget".into(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(MAX_PROOF_BYTES);
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        no_proof(format!(
+            "the published endpoint gave no identity proof ({error})"
+        ))
+    })? {
+        if chunk.len() > MAX_PROOF_BYTES - bytes.len() {
+            return Err(no_proof(
+                "the published identity proof exceeds its software envelope budget".into(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let answer: IdentityProof = serde_json::from_slice(&bytes).map_err(|error| {
+        no_proof(format!(
+            "the published endpoint gave no identity proof ({error})"
+        ))
+    })?;
     if accepts(token, instance_id, &nonce, &answer) {
         Ok(())
     } else if !instance_id.is_empty() && answer.instance_id == instance_id {
@@ -194,6 +216,50 @@ pub(crate) fn identity_url_matches(rpc_url: &reqwest::Url, identity_url: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn untrusted_identity_envelopes_are_bounded_before_json_or_credential_use() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for scenario in ["declared", "chunked", "refused"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/identity", listener.local_addr().unwrap());
+            let client = crate::loopback_http::loopback_client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap();
+            let server = async {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 8192];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                let response = match scenario {
+                    "declared" => "HTTP/1.1 200 OK\r\nContent-Length: 4097\r\n\r\n".to_owned(),
+                    "chunked" => format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1001\r\n{}\r\n0\r\n\r\n", "x".repeat(4097)),
+                    _ => "HTTP/1.1 403 Forbidden\r\nContent-Length: 999999999\r\n\r\n".to_owned(),
+                };
+                let _ = socket.write_all(response.as_bytes()).await;
+            };
+            // Joined futures, no detached server thread/task. The whole fixture
+            // is bounded even if verification accidentally tries to read a body.
+            let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+                tokio::join!(
+                    verify(&client, &url, "fixture-instance", "fixture-token"),
+                    server
+                )
+            })
+            .await
+            .unwrap();
+            let failure = result.unwrap_err();
+            assert!(!failure.credential_mismatch);
+            if scenario == "refused" {
+                assert!(failure.to_string().contains("refused the identity check"));
+            } else {
+                assert!(
+                    failure.to_string().contains("software envelope budget"),
+                    "{scenario}: {failure}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn hmac_matches_the_rfc_4231_vectors() {

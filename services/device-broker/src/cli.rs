@@ -51,6 +51,20 @@ pub struct Binary {
 
 /// The host is stopped before exit, after clients were told; never longer.
 const EXIT_HOST_STOP: Duration = Duration::from_secs(2);
+
+fn host_shutdown_exit_code(previous: i32, acknowledged: bool, report: impl FnOnce()) -> i32 {
+    if acknowledged {
+        return previous;
+    }
+    // Process exit will terminate this process's remaining threads, but it
+    // must not certify that graceful original-host retirement succeeded.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(report));
+    if previous == 0 {
+        1
+    } else {
+        previous
+    }
+}
 /// An installer's request stops the host first, bounded.
 #[cfg(any(windows, test))]
 const INSTALL_HOST_STOP: Duration = Duration::from_secs(3);
@@ -73,13 +87,40 @@ struct ProbeResult {
 }
 
 fn probe() -> ProbeResult {
+    let mut lease = if std::env::var_os("QC_DEVICE_LEASE_PATH").is_some() {
+        crate::device_lease::LeaseHolder::new(
+            crate::device_lease::default_path(),
+            "QC Remote USB diagnostic (--probe)".into(),
+        )
+    } else {
+        crate::device_lease::LeaseHolder::with_locations(
+            crate::device_lease::Locations::from_environment(),
+            "QC Remote USB diagnostic (--probe)".into(),
+            true,
+        )
+    };
+    let io_owner = match lease.acquire().and_then(|()| lease.io_owner()) {
+        Ok(owner) => owner,
+        Err(holder) => {
+            return ProbeResult {
+                present: false,
+                connected: false,
+                synchronized: false,
+                handshake_ms: None,
+                observed_message_counts: BTreeMap::new(),
+                active_preset_name: None,
+                detail: crate::device_lease::waiting_detail(&holder),
+            }
+        }
+    };
     let started = Instant::now();
     let session = Arc::new(std::sync::Mutex::new(
         quadcortex::device::owner::SessionRuntime::new(0),
     ));
-    match usb::QcUsb::connect(
+    match usb::QcUsb::connect_device_cancellable_with_io_owner(
         Arc::clone(&session),
         &started,
+        None,
         |_, _| {},
         |message| {
             if message.message_type == quadcortex::profile::MESSAGE_TYPE_MODEL_REPO {
@@ -94,6 +135,8 @@ fn probe() -> ProbeResult {
                 }
             }
         },
+        &|| false,
+        Some(io_owner),
     ) {
         Ok(connection) => {
             let synchronized = session.lock_recover().transport.synchronized();
@@ -141,6 +184,7 @@ fn probe() -> ProbeResult {
 /// fall through to the live probe from an installer.
 #[derive(Debug, PartialEq, Eq)]
 enum Mode {
+    ResolveHostOnly,
     SelfCheck,
     StopForInstall,
     Control(crate::control::Invocation),
@@ -165,9 +209,15 @@ enum Mode {
 fn mode(args: &[String]) -> Mode {
     let has = |flag: &str| args.iter().any(|argument| argument == flag);
     match args {
+        [flag] if flag == crate::updater_relay::resolver_helper::FLAG => {
+            return Mode::ResolveHostOnly
+        }
         [flag] if flag == "--self-check" => return Mode::SelfCheck,
         [flag] if flag == "--stop-for-install" => return Mode::StopForInstall,
         _ => {}
+    }
+    if has(crate::updater_relay::resolver_helper::FLAG) {
+        return Mode::Usage("--resolve-host-only takes no other arguments".into());
     }
     if has("--self-check") || has("--stop-for-install") {
         return Mode::Usage("--self-check and --stop-for-install take no other arguments".into());
@@ -281,9 +331,21 @@ fn fail(message: impl std::fmt::Display) -> ! {
 
 pub fn main(binary: Binary) {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if mode(&args) == Mode::ResolveHostOnly {
+        if crate::updater_relay::resolver_helper::serve(
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+        )
+        .is_err()
+        {
+            std::process::exit(2);
+        }
+        return;
+    }
     // Reported by `--control status` as the running broker's version.
     crate::rpc::set_binary_version(binary.version);
     match mode(&args) {
+        Mode::ResolveHostOnly => unreachable!("resolver dispatched before broker initialization"),
         Mode::Usage(message) => fail(message),
         Mode::SelfCheck => println!(
             "{}",
@@ -582,16 +644,18 @@ fn serve(
         Arc::new(move || {
             // Clients were already sent `broker.shuttingDown` and the device
             // was released; stop the host, bounded, then go.
-            if let Some(supervisor) = supervisor.get() {
-                supervisor.stop_for_exit(EXIT_HOST_STOP);
-            }
+            let acknowledged = supervisor
+                .get()
+                .is_none_or(|supervisor| supervisor.stop_for_exit(EXIT_HOST_STOP));
             tray::remove_icon_now();
             #[cfg(unix)]
-            {
-                std::process::exit(exit_status.load(std::sync::atomic::Ordering::Acquire));
-            }
+            let previous = exit_status.load(std::sync::atomic::Ordering::Acquire);
             #[cfg(not(unix))]
-            std::process::exit(0)
+            let previous = 0;
+            let code = host_shutdown_exit_code(previous, acknowledged, || {
+                eprintln!("Background host shutdown was not acknowledged within the exit budget; exiting this process with incomplete graceful retirement")
+            });
+            std::process::exit(code)
         })
     };
     let published = {
@@ -727,7 +791,10 @@ fn install_release_with(
         return false;
     }
     if let Some(host) = host {
-        host.pause(INSTALL_HOST_STOP);
+        if !host.pause(INSTALL_HOST_STOP) {
+            host.resume();
+            return false;
+        }
     }
     let deadline = Instant::now() + INSTALL_RELEASE_WAIT;
     loop {
@@ -828,7 +895,53 @@ fn verify_live(settings_directory: Option<PathBuf>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unacknowledged_host_retirement_cannot_be_reported_as_a_clean_process_exit() {
+        let reported = std::cell::Cell::new(0);
+        assert_eq!(
+            super::host_shutdown_exit_code(0, true, || reported.set(reported.get() + 1)),
+            0
+        );
+        assert_eq!(reported.get(), 0);
+        assert_eq!(
+            super::host_shutdown_exit_code(0, false, || reported.set(reported.get() + 1)),
+            1
+        );
+        assert_eq!(reported.get(), 1);
+        assert_eq!(
+            super::host_shutdown_exit_code(130, false, || reported.set(reported.get() + 1)),
+            130
+        );
+        assert_eq!(reported.get(), 2);
+        assert_eq!(
+            super::host_shutdown_exit_code(0, false, || panic!("diagnostic failed")),
+            1
+        );
+    }
     use super::*;
+
+    struct ScratchDirectory(PathBuf);
+    impl ScratchDirectory {
+        fn new() -> Self {
+            for _ in 0..64 {
+                let path = std::env::temp_dir().join(format!(
+                    "qc-cli-relay-switch-{:032x}",
+                    rand::random::<u128>()
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("reserve CLI fixture directory: {error}"),
+                }
+            }
+            panic!("could not reserve CLI fixture after 64 collisions");
+        }
+    }
+    impl Drop for ScratchDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn parse(args: &[&str]) -> Mode {
         mode(
@@ -841,6 +954,19 @@ mod tests {
 
     #[test]
     fn installer_and_self_check_modes_are_exact_and_never_fall_through_to_a_probe() {
+        assert_eq!(parse(&["--resolve-host-only"]), Mode::ResolveHostOnly);
+        for flag in [
+            "--probe",
+            "--resident",
+            "--stdio",
+            "--broker-serve",
+            "example.org",
+        ] {
+            assert!(matches!(
+                parse(&["--resolve-host-only", flag]),
+                Mode::Usage(_)
+            ));
+        }
         assert_eq!(parse(&["--self-check"]), Mode::SelfCheck);
         assert_eq!(parse(&["--stop-for-install"]), Mode::StopForInstall);
         for args in [
@@ -1118,6 +1244,28 @@ mod tests {
     }
 
     #[test]
+    fn an_unacknowledged_host_pause_never_authorizes_an_installer_release() {
+        struct UnfinishedHost(std::sync::atomic::AtomicUsize);
+        impl HostPause for UnfinishedHost {
+            fn pause(&self, _within: Duration) -> bool {
+                false
+            }
+            fn resume(&self) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let host = UnfinishedHost(0.into());
+        for _ in 0..2 {
+            assert!(!install_release_with(
+                || 0,
+                || panic!("no release may run without host retirement acknowledgement"),
+                Some(&host)
+            ));
+        }
+        assert_eq!(host.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn only_a_resident_start_is_recorded_as_started_disconnected() {
         let resident = crate::rpc::test_support::handle();
         note_publication(&resident, true);
@@ -1178,13 +1326,10 @@ mod tests {
         // `--stdio` and `--verify-live` have no descriptor path, so nothing
         // used to tell their update relay where the Settings switch lives and
         // it ran on its defaults, on, whatever the user had chosen.
-        let directory =
-            std::env::temp_dir().join(format!("qc-cli-relay-switch-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(&directory).unwrap();
-        // Removed even when an assertion fails; the controller reading the
-        // switch from it is declared later, so it drops first.
-        let _directory = crate::device_lease::testing::OwnedTestDirectory(directory.clone());
+        // Declared before the controller: its worker is dropped before these
+        // settings bytes on success or any assertion unwind.
+        let owner = ScratchDirectory::new();
+        let directory = owner.0.clone();
         let controller = DeviceController::start_disconnected().unwrap();
         assert!(
             controller.status().updater_relay.enabled,
@@ -1231,9 +1376,19 @@ mod tests {
             &controller,
             Some(directory.clone())
         ));
-        assert_eq!(
-            controller.status().updater_relay.allowed_domains,
-            ["neuraldsp.com", "downloads.example.net"]
-        );
+        assert!(controller.status().updater_relay.allowed_domains.is_empty());
+    }
+
+    #[test]
+    fn cli_settings_fixture_is_retired_on_partial_setup_unwind() {
+        let mut root = None;
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let owner = ScratchDirectory::new();
+            root = Some(owner.0.clone());
+            std::fs::write(owner.0.join("partial"), b"partial fixture").unwrap();
+            panic!("injected CLI fixture assertion failure");
+        }));
+        assert!(fault.is_err());
+        assert!(!root.unwrap().exists());
     }
 }

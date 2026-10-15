@@ -1,5 +1,5 @@
 import type { PresetSnapshot } from "@qc-remote/client";
-import { applyFootswitchPreview } from "./footswitch.ts";
+import { applyFootswitchPreview, type QcStompPreviewPolicy } from "./footswitch.ts";
 import { samePresetAddress, type PresetAddress } from "./preset-address.ts";
 import {
   applyQcStateUpdate,
@@ -40,6 +40,8 @@ type ScalarIntent<K extends ScalarKey = ScalarKey> = {
   id: number;
   key: K;
   target: ScalarValueByKey[K];
+  /** The complete desired field state, including a configured hybrid row pair. */
+  applied: ScalarState;
   issuedAt: number;
   /**
    * Superseding intents inherit this base instead of snapshotting the older
@@ -55,6 +57,7 @@ type ScalarRollback = ScalarState & {
 };
 
 type BypassRollback = {
+  evidenceGeneration: number;
   address: string;
   row: number;
   column: number;
@@ -81,6 +84,10 @@ export interface QcCommandToken {
   readonly issuedAt: number;
   readonly scalarRollbacks: readonly ScalarRollback[];
   readonly bypassRollbacks: readonly BypassRollback[];
+  /** Bypass values belong to this scene, even when the preset address is unchanged. */
+  readonly bypassScene?: number;
+  readonly bypassGeneration?: number;
+  readonly footswitchEvidenceGeneration?: number;
   readonly previousFootswitchStates?: PresetSnapshot["footswitchStates"];
   readonly appliedFootswitchStates?: PresetSnapshot["footswitchStates"];
 }
@@ -107,6 +114,10 @@ export class QcCommandCoordinator {
   private footswitchBase?: FootswitchBase;
   private nextId = 1;
   private intentPreset?: PresetAddress;
+  private bypassScene?: number;
+  private bypassGeneration = 0;
+  private readonly bypassEvidenceGenerations = new Map<string, number>();
+  private footswitchEvidenceGeneration = 0;
 
   reset(): void {
     this.bypassIntents.clear();
@@ -114,6 +125,9 @@ export class QcCommandCoordinator {
     this.scalarIntents.clear();
     this.footswitchBase = undefined;
     this.intentPreset = undefined;
+    this.bypassScene = undefined;
+    this.bypassGeneration++;
+    this.bypassEvidenceGenerations.clear();
   }
 
   private observePreset(address: PresetAddress): void {
@@ -123,6 +137,17 @@ export class QcCommandCoordinator {
 
   get hasPendingCommands(): boolean {
     return this.bypassIntents.size > 0 || this.scalarIntents.size > 0;
+  }
+
+  private observeBypassScene(scene: number): void {
+    if (this.bypassScene !== undefined && this.bypassScene !== scene) {
+      this.bypassGeneration++;
+      this.bypassEvidenceGenerations.clear();
+      this.bypassIntents.clear();
+      this.bypassBases.clear();
+      this.footswitchBase = undefined;
+    }
+    this.bypassScene = scene;
   }
 
   /**
@@ -159,8 +184,8 @@ export class QcCommandCoordinator {
     return this.beginSnapshotMutation(snapshot, setBlockBypassInSnapshot(snapshot, blockId, bypassed), issuedAt);
   }
 
-  beginFootswitch(snapshot: PresetSnapshot, index: number, issuedAt = Date.now()): QcOptimisticCommand {
-    return this.beginSnapshotMutation(snapshot, applyFootswitchPreview(snapshot, index), issuedAt, true);
+  beginFootswitch(snapshot: PresetSnapshot, index: number, issuedAt = Date.now(), stompPolicy?: QcStompPreviewPolicy): QcOptimisticCommand {
+    return this.beginSnapshotMutation(snapshot, applyFootswitchPreview(snapshot, index, stompPolicy), issuedAt, true);
   }
 
   /** Forget a command that needs no device acknowledgement (for example demo mode). */
@@ -193,11 +218,14 @@ export class QcCommandCoordinator {
     }
     for (const rollback of token.bypassRollbacks) {
       const intent = this.bypassIntents.get(rollback.address);
+      if (token.bypassGeneration !== this.bypassGeneration) continue;
+      if (rollback.evidenceGeneration !== (this.bypassEvidenceGenerations.get(rollback.address) ?? 0)) continue;
       if (!intent || intent.commandId === token.id || intent.issuedAt < token.issuedAt) continue;
       this.adoptBypassBase(rollback.address, rollback.target, acknowledgedAt);
     }
     const footswitch = this.footswitchBase;
-    if (footswitch?.commandIds.has(token.id) && token.appliedFootswitchStates
+    if (token.bypassGeneration === this.bypassGeneration && token.footswitchEvidenceGeneration === this.footswitchEvidenceGeneration
+      && footswitch?.commandIds.has(token.id) && token.appliedFootswitchStates
       && this.hasPendingFootswitchCommand(token.id) && acknowledgedAt >= footswitch.observedAt) {
       footswitch.states = token.appliedFootswitchStates;
       footswitch.observedAt = acknowledgedAt;
@@ -221,6 +249,7 @@ export class QcCommandCoordinator {
       this.bypassIntents.delete(rollback.address);
       const base = this.bypassBases.get(rollback.address);
       this.bypassBases.delete(rollback.address);
+      if (token.bypassScene !== snapshot.activeScene) continue;
       restoredBypass = true;
       const previous = base ? base.bypassed : rollback.previous;
       next = {
@@ -254,13 +283,39 @@ export class QcCommandCoordinator {
         && !samePresetAddress(next, { setlistKey: state.setlistKey, presetPosition: next.presetPosition })) {
         this.observePreset({ setlistKey: state.setlistKey, presetPosition: state.position ?? next.presetPosition });
       }
-      const scalar = this.reconcileScalarUpdate(state, now, graceMs);
+      let scalar = this.reconcileScalarUpdate(state, now, graceMs);
       if (!scalar) continue;
       if (scalar.kind === "position" && scalar.position !== undefined) {
         this.observePreset({ setlistKey: scalar.setlistKey ?? next.setlistKey, presetPosition: scalar.position });
       }
+      // Only a scene accepted by scalar reconciliation retires old-scene work;
+      // an echo suppressed during a newer preview must not consume its ownership.
+      if (scalar.kind === "scene" && scalar.activeScene !== undefined) this.observeBypassScene(scalar.activeScene);
       const observedAt = scalar.observedAt ?? now;
+      // Projection records are bypass-only and require the current model witness.
+      // A scene projection is complete evidence for that scene; a sparse batch
+      // retires only its named matching blocks, never an unrelated replacement.
+      if ((scalar.kind === "scene" || scalar.kind === "bypassBatch") && scalar.blocks !== undefined) {
+        const projection = scalar.blocks;
+        const complete = scalar.kind === "scene";
+        scalar = { ...scalar, blocks: next.blocks.flatMap((block) => {
+          const observed = projection.find((item) => item.row === block.row && item.column === block.column
+            && item.modelId !== undefined && item.modelId === block.modelId);
+          return complete || observed ? [{ ...block, bypassed: observed?.bypassed }] : [];
+        }) };
+      }
       const observedBypass = bypassObservations(scalar);
+      if (scalar.kind === "scene" || scalar.kind === "bypassBatch") {
+        for (const [address, bypassed] of observedBypass) {
+          if (bypassed !== undefined) continue;
+          this.bypassEvidenceGenerations.set(address, (this.bypassEvidenceGenerations.get(address) ?? 0) + 1);
+          this.bypassIntents.delete(address);
+          this.bypassBases.delete(address);
+          // A later sibling failure must not repaint a pre-invalidation lamp map.
+          this.footswitchEvidenceGeneration++;
+          if (this.footswitchBase) this.footswitchBase.states = undefined;
+        }
+      }
       const bypass = reconcilePendingBypass(scalar, this.bypassIntents, now, graceMs);
       // A contradicting observation suppressed in favor of a newer intent is
       // still the device's value: it becomes what that intent rolls back to.
@@ -282,23 +337,32 @@ export class QcCommandCoordinator {
     graceMs = QC_OPTIMISTIC_COMMAND_GRACE_MS
   ): PresetSnapshot {
     this.observePreset(incoming);
+    // A slow full read from the origin scene may be suppressed by a newer
+    // scene preview. Do not adopt its bypass/footswitch evidence under the
+    // destination's activeScene, or retire that destination's journal.
+    const sceneAccepted = this.acceptScalar("scene", incoming.activeScene,
+      { kind: "scene", activeScene: incoming.activeScene, observedAt }, now, graceMs,
+      { key: "scene", previous: incoming.activeScene });
+    if (sceneAccepted) this.observeBypassScene(incoming.activeScene);
+    else incoming = { ...incoming, footswitchStates: undefined,
+      blocks: incoming.blocks.map((block) => ({ ...block, bypassed: undefined })) };
     let next = reconcilePresetSnapshot(incoming, this.bypassIntents, observedAt, now, graceMs);
     for (const block of incoming.blocks) {
       const address = bypassAddress(block.row, block.column);
-      if (this.bypassIntents.has(address)) this.adoptBypassBase(address, block.bypassed, observedAt);
+      if (sceneAccepted && this.bypassIntents.has(address)) this.adoptBypassBase(address, block.bypassed, observedAt);
     }
     const footswitch = this.footswitchBase;
-    if (footswitch && observedAt >= footswitch.observedAt) {
+    if (sceneAccepted && footswitch && observedAt >= footswitch.observedAt) {
       footswitch.states = incoming.footswitchStates;
       footswitch.observedAt = observedAt;
     }
     for (const [key, intent] of this.scalarIntents) {
       const actual = scalarValue(next, key);
-      if (now - intent.issuedAt >= graceMs || (actual === intent.target && observedAt >= intent.issuedAt)) {
+      if (now - intent.issuedAt >= graceMs || (actual === intent.target && modeIntentMatches(intent, next.footswitchModes) && observedAt >= intent.issuedAt)) {
         this.scalarIntents.delete(key);
       } else {
         adoptScalarBase(intent, scalarState(incoming, key), observedAt);
-        next = setScalar(next, key, intent.target);
+        next = key === "mode" ? restoreScalar(next, intent.applied) : setScalar(next, intent.key, intent.target);
       }
     }
     return next;
@@ -314,7 +378,7 @@ export class QcCommandCoordinator {
     const base = this.scalarIntents.get(key)?.base ?? { ...scalarState(before, key), observedAt: PRE_INTENT };
     const rollback: ScalarRollback = { ...stripObservedAt(base), applied: scalarState(after, key) };
     const token: QcCommandToken = { id: this.nextId++, issuedAt, scalarRollbacks: [rollback], bypassRollbacks: [] };
-    this.scalarIntents.set(key, { id: token.id, key, target: scalarValue(after, key), issuedAt, base } as ScalarIntent);
+    this.scalarIntents.set(key, { id: token.id, key, target: scalarValue(after, key), applied: scalarState(after, key), issuedAt, base } as ScalarIntent);
     return { snapshot: after, token };
   }
 
@@ -325,6 +389,7 @@ export class QcCommandCoordinator {
     footswitch = false
   ): QcOptimisticCommand {
     this.observePreset(before);
+    this.observeBypassScene(before.activeScene);
     const id = this.nextId++;
     // Decide before this command replaces any intent: a superseded press keeps
     // the lamp state the device last confirmed as the one to restore.
@@ -339,7 +404,7 @@ export class QcCommandCoordinator {
       if (scalarValue(before, key) === scalarValue(after, key)) continue;
       const base = this.scalarIntents.get(key)?.base ?? { ...scalarState(before, key), observedAt: PRE_INTENT };
       scalarRollbacks.push({ ...stripObservedAt(base), applied: scalarState(after, key) });
-      this.scalarIntents.set(key, { id, key, target: scalarValue(after, key), issuedAt, base } as ScalarIntent);
+      this.scalarIntents.set(key, { id, key, target: scalarValue(after, key), applied: scalarState(after, key), issuedAt, base } as ScalarIntent);
     }
 
     const beforeBlocks = new Map(before.blocks.map((block) => [bypassAddress(block.row, block.column), block]));
@@ -349,7 +414,7 @@ export class QcCommandCoordinator {
       const previous = beforeBlocks.get(address)?.bypassed;
       if (previous === block.bypassed || block.bypassed === undefined) continue;
       if (!this.bypassIntents.has(address)) this.bypassBases.set(address, { bypassed: previous, observedAt: PRE_INTENT });
-      bypassRollbacks.push({ address, row: block.row, column: block.column, previous: this.bypassBases.get(address)?.bypassed ?? previous, target: block.bypassed });
+      bypassRollbacks.push({ address, evidenceGeneration: this.bypassEvidenceGenerations.get(address) ?? 0, row: block.row, column: block.column, previous: this.bypassBases.get(address)?.bypassed ?? previous, target: block.bypassed });
       this.bypassIntents.set(address, { bypassed: block.bypassed, issuedAt, commandId: id });
     }
     return {
@@ -359,6 +424,9 @@ export class QcCommandCoordinator {
         issuedAt,
         scalarRollbacks,
         bypassRollbacks,
+        bypassScene: before.activeScene,
+        bypassGeneration: this.bypassGeneration,
+        footswitchEvidenceGeneration: this.footswitchEvidenceGeneration,
         previousFootswitchStates: footswitch ? before.footswitchStates : undefined,
         appliedFootswitchStates: footswitch ? after.footswitchStates : undefined
       }
@@ -413,7 +481,7 @@ export class QcCommandCoordinator {
     const intent = this.scalarIntents.get(key) as ScalarIntent<K> | undefined;
     if (!intent) return true;
     const observedAt = state.observedAt ?? now;
-    if (now - intent.issuedAt >= graceMs || (actual === intent.target && observedAt >= intent.issuedAt)) {
+    if (now - intent.issuedAt >= graceMs || (actual === intent.target && modeIntentMatches(intent, state.footswitchModes) && observedAt >= intent.issuedAt)) {
       this.scalarIntents.delete(key);
       return true;
     }
@@ -425,6 +493,14 @@ export class QcCommandCoordinator {
 function adoptScalarBase(intent: ScalarIntent, state: ScalarState, observedAt: number): void {
   if (observedAt < intent.base.observedAt) return;
   intent.base = { ...state, observedAt };
+}
+
+/** A hybrid kind alone is not confirmation of its configured footswitch roles. */
+function modeIntentMatches(intent: ScalarIntent, modes: PresetSnapshot["footswitchModes"]): boolean {
+  if (intent.key !== "mode" || intent.target !== "HYBRID") return true;
+  const expected = intent.applied.previousFootswitchModes;
+  return expected === undefined || (modes !== undefined && expected.length === modes.length
+    && expected.every((mode, index) => mode === modes[index]));
 }
 
 function stripObservedAt(base: ScalarBase): ScalarState {
@@ -447,9 +523,10 @@ function bypassObservations(state: QcStateUpdate): Array<[string, boolean | unde
     return [[bypassAddress(state.row, state.column), state.bypassed]];
   }
   if (state.kind === "bypassBatch") {
+    if (state.blocks !== undefined) return state.blocks.map((block) => [bypassAddress(block.row, block.column), block.bypassed]);
     return (state.bypassUpdates ?? []).map(({ row, column, bypassed }) => [bypassAddress(row, column), bypassed]);
   }
-  if (state.kind === "preset") {
+  if (state.kind === "preset" || state.kind === "scene") {
     return (state.blocks ?? []).map((block) => [bypassAddress(block.row, block.column), block.bypassed]);
   }
   return [];

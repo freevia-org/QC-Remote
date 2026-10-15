@@ -27,6 +27,9 @@
 //!   something deleted it, so the file's mtime shows a live owner and a crashed
 //!   one is recognisable.
 
+mod cleanup_lifetime;
+use cleanup_lifetime::{CleanupLimiter, CleanupPermit};
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -106,28 +109,53 @@ const RELEASE_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 struct PendingLeaseRelease {
     paths: Vec<PathBuf>,
     generation: LeaseRecord,
+    _cleanup: std::sync::Arc<CleanupPermit>,
 }
 
 static PENDING_LEASE_RELEASES: Mutex<Vec<PendingLeaseRelease>> = Mutex::new(Vec::new());
 static PENDING_LEASE_RELEASES_READY: Condvar = Condvar::new();
-static LEASE_RELEASE_WORKER_STARTED: Mutex<bool> = Mutex::new(false);
+static LEASE_RELEASE_WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
 /// Ensure a single process-wide worker retries releases that could not take
 /// the transition lock. The worker owns no device handles and exits with the
 /// process; the normal stale-owner recovery handles that case.
 fn ensure_release_worker() {
-    let mut started = LEASE_RELEASE_WORKER_STARTED
+    if PENDING_LEASE_RELEASES
         .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    if *started {
+        .unwrap_or_else(|p| p.into_inner())
+        .is_empty()
+    {
         return;
     }
-    if std::thread::Builder::new()
+    let completed = {
+        let mut owner = LEASE_RELEASE_WORKER
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if owner
+            .as_ref()
+            .is_some_and(crate::platform::process::thread_signalled)
+        {
+            owner.take()
+        } else {
+            None
+        }
+    };
+    if let Some(handle) = completed {
+        let _ = handle.join();
+    }
+    let mut owner = LEASE_RELEASE_WORKER
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if owner.is_some() {
+        return;
+    }
+    if let Ok(handle) = std::thread::Builder::new()
         .name("qc-lease-release".into())
         .spawn(retry_pending_lease_releases)
-        .is_ok()
     {
-        *started = true;
+        // One intentional process-lifetime manager. Started OS calls are not
+        // forcibly cancellable; its exact original remains owned until exit.
+        *owner = Some(handle);
     }
 }
 
@@ -177,6 +205,17 @@ fn remove_release_generation_locked(job: &PendingLeaseRelease) -> bool {
     })
 }
 
+fn attempt_release(
+    job: PendingLeaseRelease,
+    remove: impl FnOnce(&PendingLeaseRelease) -> bool,
+) -> Option<PendingLeaseRelease> {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| remove(&job))).unwrap_or(false) {
+        None
+    } else {
+        Some(job)
+    }
+}
+
 fn retry_pending_lease_releases() {
     loop {
         let job = {
@@ -190,9 +229,9 @@ fn retry_pending_lease_releases() {
             }
             pending.remove(0)
         };
-        if remove_release_generation(&job) {
+        let Some(job) = attempt_release(job, remove_release_generation) else {
             continue;
-        }
+        };
         let mut pending = PENDING_LEASE_RELEASES
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
@@ -493,15 +532,47 @@ fn prepare_shared_directory(directory: &Path) {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        // BUILTIN\Users (S-1-5-32-545): modify, inherited by files.
-        let _ = std::process::Command::new("icacls")
-            .arg(directory)
-            .args(["/grant", "*S-1-5-32-545:(OI)(CI)M"])
-            .creation_flags(0x0800_0000)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        let _ = grant_shared_directory_with(directory, |command| {
+            qc_native_platform::process::owned_tool::run(command, Duration::from_secs(3))
+        });
+    }
+}
+
+#[cfg(windows)]
+fn grant_shared_directory_with(
+    directory: &Path,
+    run: impl FnOnce(&mut std::process::Command) -> std::io::Result<std::process::Output>,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStringExt;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
+    }
+    let mut buffer = vec![0_u16; 32_768];
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return Err(std::io::Error::other(
+            "Could not resolve trusted Windows system directory",
+        ));
+    }
+    buffer.truncate(length);
+    let system = PathBuf::from(std::ffi::OsString::from_wide(&buffer));
+    if !system.is_absolute() {
+        return Err(std::io::Error::other(
+            "Windows system directory is not absolute",
+        ));
+    }
+    let mut command = std::process::Command::new(system.join("icacls.exe"));
+    // BUILTIN\Users (S-1-5-32-545): modify, inherited by files. No PATH/current-dir search.
+    command
+        .arg(directory)
+        .args(["/grant", "*S-1-5-32-545:(OI)(CI)M"])
+        .stderr(std::process::Stdio::piped());
+    let output = run(&mut command)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("Shared directory ACL tool failed"))
     }
 }
 
@@ -551,6 +622,19 @@ fn transition_wait_record() -> LeaseRecord {
     }
 }
 
+const UNAVAILABLE_CLAIM_ROLE: &str = "existing ownership claim could not be read or validated";
+const CLEANUP_CAPACITY_ROLE: &str = "native lease cleanup lifetime capacity exhausted";
+fn unavailable_claim_record() -> LeaseRecord {
+    let mut record = transition_wait_record();
+    record.role = UNAVAILABLE_CLAIM_ROLE.into();
+    record
+}
+fn cleanup_capacity_record() -> LeaseRecord {
+    let mut record = transition_wait_record();
+    record.role = CLEANUP_CAPACITY_ROLE.into();
+    record
+}
+
 /// Whether `record` names this very process (same pid and creation time).
 fn is_own(record: &LeaseRecord) -> bool {
     record.process_id == std::process::id()
@@ -559,6 +643,10 @@ fn is_own(record: &LeaseRecord) -> bool {
             crate::platform::process::os_process_created_at(record.process_id),
         ) {
             (Some(recorded), Some(current)) => recorded == current,
+            // A Windows lookup that succeeds cannot authenticate an absent
+            // recorded creation time. Keep Linux/OS-unknown compatibility;
+            // the shared record is still advisory metadata, not authentication.
+            (None, Some(_)) if cfg!(windows) => false,
             _ => true,
         }
 }
@@ -577,8 +665,58 @@ fn holder_is_live(record: &LeaseRecord) -> bool {
     }
 }
 
+// Software diagnostic-record budget, not a firmware or device limit. The shared
+// lease directory is writable by other users, so metadata length is not a read
+// bound: a record may grow after open or while it is being consumed.
+const MAX_LEASE_RECORD_BYTES: usize = 64 * 1024;
+
+fn read_record_from(reader: impl std::io::Read) -> std::io::Result<LeaseRecord> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_LEASE_RECORD_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_LEASE_RECORD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Device lease record exceeds its byte budget",
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
 fn read_record(path: &Path) -> Option<LeaseRecord> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    read_record_from(std::fs::File::open(path).ok()?).ok()
+}
+
+fn encode_record(record: &LeaseRecord) -> std::io::Result<Vec<u8>> {
+    struct BoundedRecord(Vec<u8>);
+    impl std::io::Write for BoundedRecord {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > MAX_LEASE_RECORD_BYTES.saturating_sub(self.0.len()) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Device lease record exceeds its byte budget",
+                ));
+            }
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = BoundedRecord(Vec::new());
+    serde_json::to_writer(&mut writer, record).map_err(|error| {
+        std::io::Error::new(
+            error
+                .io_error_kind()
+                .unwrap_or(std::io::ErrorKind::InvalidData),
+            error,
+        )
+    })?;
+    Ok(writer.0)
 }
 
 /// The lease of a live process other than `own_pid`, if any.
@@ -594,6 +732,7 @@ pub fn read_live_other(path: &Path, own_pid: u32) -> Option<LeaseRecord> {
 /// is written to a private temp file first and linked into place, so the file
 /// is never visible half written.
 fn create_exclusive(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
+    let bytes = encode_record(record)?;
     if let Some(parent) = path.parent() {
         #[cfg(target_os = "linux")]
         crate::platform::paths::prepare_directory(parent).map_err(std::io::Error::other)?;
@@ -602,58 +741,125 @@ fn create_exclusive(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
         #[cfg(windows)]
         let _ = std::fs::create_dir_all(parent);
     }
-    let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let temp = path.with_extension(format!(
-        "json.{}.{}.tmp",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
-    #[cfg(windows)]
-    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    qc_owner_only_file::write_staged(&temp, &bytes).map_err(std::io::Error::other)?;
-    #[cfg(windows)]
-    std::fs::write(&temp, &bytes)?;
-    let linked = std::fs::hard_link(&temp, path);
-    let _ = std::fs::remove_file(&temp);
+    let mut stage = LeaseStage::reserve(path)?;
+    stage.write_with(&bytes, std::io::Write::write_all)?;
+    let linked = std::fs::hard_link(&stage.path, path);
     match linked {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(error),
         Err(_) => {
             // A volume without hard links: fall back to an exclusive create.
-            use std::io::Write;
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options
-                    .mode(0o600)
-                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-            }
-            let mut file = options.open(path)?;
-            file.write_all(&bytes)
+            let mut target = LeaseStage::at(path.to_owned())?;
+            target.write_with(&bytes, std::io::Write::write_all)?;
+            target.armed = false;
+            Ok(())
         }
     }
 }
 
 /// Replaces the record with this process's own, atomically.
 fn replace_own(path: &Path, record: &LeaseRecord) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
+    let bytes = encode_record(record)?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         qc_owner_only_file::publish_atomically(path, &bytes).map_err(std::io::Error::other)
     }
     #[cfg(windows)]
     {
-        let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-        std::fs::write(&temp, &bytes)?;
-        let renamed = std::fs::rename(&temp, path);
-        if renamed.is_err() {
-            let _ = std::fs::remove_file(&temp);
+        let mut stage = LeaseStage::reserve(path)?;
+        stage.write_with(&bytes, std::io::Write::write_all)?;
+        std::fs::rename(&stage.path, path)?;
+        stage.armed = false; // Ownership transferred; never delete a new former-path occupant.
+        Ok(())
+    }
+}
+
+/// A fresh diagnostic stage, acquired before the first byte can be written.
+struct LeaseStage {
+    path: PathBuf,
+    file: std::fs::File,
+    armed: bool,
+}
+impl LeaseStage {
+    fn reserve(destination: &Path) -> std::io::Result<Self> {
+        for _ in 0..64 {
+            let path = destination.with_extension(format!(
+                "json.{}.{}.tmp",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            match Self::at(path) {
+                Ok(stage) => return Ok(stage),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
         }
-        renamed
+        Err(std::io::Error::other(
+            "Could not reserve fresh device lease stage",
+        ))
+    }
+    fn at(path: PathBuf) -> std::io::Result<Self> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::{
+                Foundation::GENERIC_WRITE,
+                Storage::FileSystem::{DELETE, FILE_SHARE_DELETE, FILE_SHARE_READ},
+            };
+            options
+                .access_mode(GENERIC_WRITE | DELETE)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        }
+        let file = options.open(&path)?;
+        Ok(Self {
+            path,
+            file,
+            armed: true,
+        })
+    }
+    fn write_with(
+        &mut self,
+        bytes: &[u8],
+        write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        write(&mut self.file, bytes)?;
+        self.file.sync_all()
+    }
+}
+impl Drop for LeaseStage {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+            };
+            let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+            unsafe {
+                SetFileInformationByHandle(
+                    self.file.as_raw_handle(),
+                    FileDispositionInfo,
+                    (&raw const disposition).cast(),
+                    std::mem::size_of_val(&disposition) as u32,
+                );
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -673,6 +879,8 @@ pub struct LeaseHolder {
     scan: bool,
     /// The shared directory to prepare before the first write.
     shared_directory: Option<PathBuf>,
+    cleanup_limiter: std::sync::Arc<CleanupLimiter>,
+    cleanup_permit: Option<std::sync::Arc<CleanupPermit>>,
     #[cfg(test)]
     transition_test_barrier: Option<PathBuf>,
 }
@@ -689,6 +897,8 @@ impl LeaseHolder {
             peers: Vec::new(),
             scan: false,
             shared_directory: None,
+            cleanup_limiter: CleanupLimiter::production(),
+            cleanup_permit: None,
             #[cfg(test)]
             transition_test_barrier: None,
         }
@@ -727,6 +937,19 @@ impl LeaseHolder {
         }
     }
 
+    // Peers are authoritative observations, never write/lock targets. This
+    // guards the known location set; it cannot serialize noncooperating old
+    // writers or hostile path changes after the final ownership observation.
+    fn unknown_recorded_claim(&self) -> Option<LeaseRecord> {
+        self.mirrors
+            .iter()
+            .chain(self.peers.iter())
+            .find_map(|path| {
+                (read_record(path).is_none() && path.try_exists().unwrap_or(true))
+                    .then(unavailable_claim_record)
+            })
+    }
+
     fn write_mirrors(&self) {
         for mirror in &self.mirrors {
             match read_record(mirror) {
@@ -734,9 +957,22 @@ impl LeaseHolder {
                     let _ = replace_own(mirror, &own_record(&self.role, self.since_unix_ms));
                 }
                 Some(existing) if holder_is_live(&existing) => {}
-                _ => {
-                    let _ = std::fs::remove_file(mirror);
-                    let _ = create_exclusive(mirror, &own_record(&self.role, self.since_unix_ms));
+                Some(stale) => {
+                    // Attribute stale recovery, just as for the primary. An
+                    // older broker may use this mirror as its primary claim.
+                    if read_record(mirror).as_ref() == Some(&stale) {
+                        let _ = std::fs::remove_file(mirror);
+                        let _ =
+                            create_exclusive(mirror, &own_record(&self.role, self.since_unix_ms));
+                    }
+                }
+                None => {
+                    // Unknown existing bytes or denied metadata are not proof
+                    // that the old owner's native session has retired.
+                    if matches!(mirror.try_exists(), Ok(false)) {
+                        let _ =
+                            create_exclusive(mirror, &own_record(&self.role, self.since_unix_ms));
+                    }
                 }
             }
         }
@@ -759,6 +995,29 @@ impl LeaseHolder {
         self.held
     }
 
+    /// Retain this already-acquired generation while a native HID handle may
+    /// outlive its worker. This never acquires or substitutes a new lease.
+    pub fn io_owner(&self) -> Result<std::sync::Arc<dyn Send + Sync>, LeaseRecord> {
+        if !self.held {
+            return Err(transition_wait_record());
+        }
+        let Some(cleanup) = self
+            .cleanup_permit
+            .as_ref()
+            .filter(|permit| permit.covers_paths(&self.transition_paths()))
+        else {
+            return Err(transition_wait_record());
+        };
+        let mut retained = Self::new(self.path.clone(), self.role.clone());
+        retained.cleanup_limiter = std::sync::Arc::clone(&self.cleanup_limiter);
+        retained.cleanup_permit = Some(std::sync::Arc::clone(cleanup));
+        retained.mirrors = self.mirrors.clone();
+        retained.since_unix_ms = self.since_unix_ms;
+        retained.held = true;
+        adjust_held(&retained.path, true);
+        Ok(std::sync::Arc::new(retained))
+    }
+
     /// Takes the claim before the device is opened. `Err(holder)` names a live
     /// process that owns the unit; the caller must not open it.
     pub fn acquire(&mut self) -> Result<(), LeaseRecord> {
@@ -767,10 +1026,37 @@ impl LeaseHolder {
 
     fn acquire_with_replacer(
         &mut self,
+        replace: impl FnMut(&Path, &LeaseRecord) -> std::io::Result<()>,
+    ) -> Result<(), LeaseRecord> {
+        let previous_generation = self.since_unix_ms;
+        let result = self.acquire_with_cleanup_admission(replace);
+        if result.is_err() && self.held {
+            self.since_unix_ms = previous_generation;
+        }
+        result
+    }
+
+    fn acquire_with_cleanup_admission(
+        &mut self,
         mut replace: impl FnMut(&Path, &LeaseRecord) -> std::io::Result<()>,
     ) -> Result<(), LeaseRecord> {
+        let reservation = if self.held {
+            None
+        } else {
+            Some(
+                self.cleanup_limiter
+                    .reserve(self.transition_paths())
+                    .map_err(|_| {
+                        ensure_release_worker();
+                        cleanup_capacity_record()
+                    })?,
+            )
+        };
         if let Some(directory) = self.shared_directory.take() {
             prepare_shared_directory(&directory);
+        }
+        if let Some(refused) = self.unknown_recorded_claim() {
+            return Err(refused);
         }
         if let Some(holder) = self.foreign_holder() {
             return Err(holder);
@@ -785,6 +1071,9 @@ impl LeaseHolder {
         // The first scan is an inexpensive early exit. Repeat it after taking
         // the inter-process guard so two stale recoveries cannot both pass a
         // pre-lock scan and open the HID device.
+        if let Some(refused) = self.unknown_recorded_claim() {
+            return Err(refused);
+        }
         if let Some(holder) = self.foreign_holder() {
             return Err(holder);
         }
@@ -808,7 +1097,7 @@ impl LeaseHolder {
                     {
                         return Err(transition_wait_record());
                     }
-                    self.mark_held();
+                    self.mark_held(reservation);
                     return Ok(());
                 }
                 Some(existing) if holder_is_live(&existing) => return Err(existing),
@@ -823,7 +1112,7 @@ impl LeaseHolder {
                     // Corruption or temporary read denial is not evidence that
                     // a recorded owner's native session is gone. Never replace
                     // an existing claim without an attributable stale owner.
-                    return Err(transition_wait_record());
+                    return Err(unavailable_claim_record());
                 }
                 None => {}
             }
@@ -832,7 +1121,7 @@ impl LeaseHolder {
                 // can interleave with ours).
                 match read_record(&self.path) {
                     Some(landed) if same_generation(&landed, &record) => {
-                        self.mark_held();
+                        self.mark_held(reservation);
                         return Ok(());
                     }
                     Some(landed) if holder_is_live(&landed) => return Err(landed),
@@ -848,8 +1137,9 @@ impl LeaseHolder {
         }
     }
 
-    fn mark_held(&mut self) {
+    fn mark_held(&mut self, cleanup: Option<std::sync::Arc<CleanupPermit>>) {
         if !self.held {
+            self.cleanup_permit = Some(cleanup.expect("lease cleanup admission precedes effects"));
             self.held = true;
             adjust_held(&self.path, true);
         }
@@ -884,25 +1174,41 @@ impl LeaseHolder {
 
     /// Removes the record if, and only if, it is this process's own.
     pub fn release(&mut self) {
+        self.release_with(remove_release_generation_locked, enqueue_lease_release);
+    }
+
+    fn release_with(
+        &mut self,
+        remove: impl FnOnce(&PendingLeaseRelease) -> bool,
+        enqueue: impl FnOnce(PendingLeaseRelease),
+    ) {
         if self.held {
+            let cleanup = self
+                .cleanup_permit
+                .take()
+                .expect("held lease owns cleanup admission");
             let transition_paths = self.transition_paths();
             let transition = LeaseTransitionGuard::acquire(&transition_paths, TRANSITION_LOCK_WAIT);
             self.held = false;
             if adjust_held(&self.path, false) == 0 {
-                if let Ok(_transition) = transition {
-                    let generation = own_record(&self.role, self.since_unix_ms);
-                    let pending = PendingLeaseRelease {
-                        paths: transition_paths,
-                        generation,
-                    };
-                    if !remove_release_generation_locked(&pending) {
-                        enqueue_lease_release(pending);
-                    }
+                let pending = PendingLeaseRelease {
+                    paths: transition_paths,
+                    generation: own_record(&self.role, self.since_unix_ms),
+                    _cleanup: cleanup,
+                };
+                let acknowledged = if let Ok(guard) = transition {
+                    let acknowledged =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| remove(&pending)))
+                            .unwrap_or(false);
+                    // Transition handles and their cleanup retire before the
+                    // final lifetime permit can be released or transferred.
+                    drop(guard);
+                    acknowledged
                 } else {
-                    enqueue_lease_release(PendingLeaseRelease {
-                        paths: transition_paths,
-                        generation: own_record(&self.role, self.since_unix_ms),
-                    });
+                    false
+                };
+                if !acknowledged {
+                    enqueue(pending);
                 }
             }
         }
@@ -937,6 +1243,12 @@ pub fn busy_detail(path: &Path) -> String {
 /// The status line naming a specific holder, for a deferred open.
 pub fn waiting_detail(holder: &LeaseRecord) -> String {
     if holder.process_id == 0 {
+        if holder.role == UNAVAILABLE_CLAIM_ROLE {
+            return "The existing device ownership claim could not be read or validated and was preserved. Opening is refused; inspect the ownership record and its owner's status before explicitly retrying.".into();
+        }
+        if holder.role == CLEANUP_CAPACITY_ROLE {
+            return "Native lease cleanup capacity is exhausted; waiting for exact active or deferred cleanup to retire before reopening the Quad Cortex.".into();
+        }
         return "Device ownership is being updated; retrying before opening the Quad Cortex".into();
     }
     format!(
@@ -972,10 +1284,10 @@ fn wait_for_transition_test_peers(directory: &Path) {
 pub(crate) mod testing {
     use super::*;
 
-    pub(crate) fn temp_directory() -> PathBuf {
-        std::env::temp_dir()
-            .canonicalize()
-            .expect("canonicalize the platform temp directory")
+    /// Exact cleanup admission spans active/native references plus queued and
+    /// in-flight generation cleanup, including mirrors and transition handles.
+    pub(crate) fn root_has_lease_activity(root: &Path) -> bool {
+        cleanup_lifetime::root_has_activity(root)
     }
 
     /// Match the production Linux directory contract for explicit test leases
@@ -990,96 +1302,143 @@ pub(crate) mod testing {
         Ok(())
     }
 
-    /// A directory one test created for itself alone, removed whole when the
-    /// guard drops, so a failing assertion or a panic no longer leaves it in
-    /// the temp directory. Declare it before anything that holds a file,
-    /// child or thread in the directory, so those drop first. Removal is
-    /// [`remove_test_directory`]: best effort, and it never panics.
-    pub(crate) struct OwnedTestDirectory(pub(crate) PathBuf);
-
-    impl Drop for OwnedTestDirectory {
-        fn drop(&mut self) {
-            if let Err(error) = remove_test_directory(&self.0) {
-                eprintln!("left test directory {}: {error}", self.0.display());
-            }
-        }
-    }
-
-    /// Removes a directory one test created for itself alone, with all it
-    /// holds; a directory already gone is success. Call it only once nothing
-    /// the test started can still write there. On Windows a handle that is
-    /// still closing (a helper process just killed, a scanner reading a file
-    /// just written) refuses a delete for a moment, so `remove_dir_all` is
-    /// retried with a growing pause, about a second in all. A last pass then
-    /// removes entry by entry, so one stubborn file keeps only itself and its
-    /// parents. Links are removed, never followed. Never panics.
-    pub(crate) fn remove_test_directory(path: &Path) -> std::io::Result<()> {
-        const ATTEMPTS: u64 = 8;
-        for attempt in 1..=ATTEMPTS {
-            match std::fs::remove_dir_all(path) {
-                Ok(()) => return Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(_) if attempt < ATTEMPTS => {
-                    std::thread::sleep(Duration::from_millis(25 * attempt))
-                }
-                Err(_) => {}
-            }
-        }
-        match remove_entries(path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            result => result,
-        }
-    }
-
-    /// Refuses to descend into a symlink or junction: `path` itself is
-    /// removed as a link, never walked, so this can never reach outside the
-    /// directory the test actually created.
-    fn remove_entries(path: &Path) -> std::io::Result<()> {
-        if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
-            return std::fs::remove_file(path).or_else(|_| std::fs::remove_dir(path));
-        }
-        let mut first_error = None;
-        for entry in std::fs::read_dir(path)? {
-            let removed = entry.and_then(|entry| {
-                let child = entry.path();
-                let kind = entry.file_type()?;
-                if kind.is_dir() && !kind.is_symlink() {
-                    remove_entries(&child)
-                } else if kind.is_symlink() && kind.is_dir() {
-                    // A directory link on Windows is removed as a directory.
-                    std::fs::remove_dir(&child)
-                } else {
-                    std::fs::remove_file(&child)
-                }
-            });
-            match removed {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) if first_error.is_none() => first_error = Some(error),
-                Err(_) => {}
-            }
-        }
-        match first_error {
-            Some(error) => Err(error),
-            None => std::fs::remove_dir(path),
-        }
-    }
-
     /// A live process that is not this one, killed on drop.
-    pub(crate) struct Sleeper(std::process::Child);
+    pub(crate) struct FixtureRoot(pub(crate) PathBuf);
+    impl Drop for FixtureRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    pub(crate) fn fresh_root(label: &str) -> std::sync::Arc<FixtureRoot> {
+        for _ in 0..64 {
+            let path = std::env::temp_dir().join(format!(
+                "qc-lease-{label}-{:032x}",
+                uuid::Uuid::new_v4().as_u128()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => {
+                    let root = std::sync::Arc::new(FixtureRoot(path));
+                    create_directory(&root.0).unwrap();
+                    return root;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("reserve lease fixture root: {error}"),
+            }
+        }
+        panic!("could not reserve lease fixture after 64 collisions");
+    }
+
+    pub(crate) struct BoundedChild {
+        child: Option<std::process::Child>,
+        root: Option<std::sync::Arc<FixtureRoot>>,
+    }
+    impl BoundedChild {
+        pub(crate) fn new(
+            child: std::process::Child,
+            root: Option<std::sync::Arc<FixtureRoot>>,
+        ) -> Self {
+            Self {
+                child: Some(child),
+                root,
+            }
+        }
+        pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+            let deadline = Instant::now() + Duration::from_secs(6);
+            loop {
+                if let Some(status) = self.child.as_mut().unwrap().try_wait()? {
+                    return Ok(status);
+                }
+                if Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "owned lease fixture child did not exit",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+    impl std::ops::Deref for BoundedChild {
+        type Target = std::process::Child;
+        fn deref(&self) -> &Self::Target {
+            self.child.as_ref().unwrap()
+        }
+    }
+    impl std::ops::DerefMut for BoundedChild {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            self.child.as_mut().unwrap()
+        }
+    }
+    impl Drop for BoundedChild {
+        fn drop(&mut self) {
+            let Some(mut child) = self.child.take() else {
+                return;
+            };
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            let _ = child.kill();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            static RETAINED: Mutex<
+                Vec<(std::process::Child, Option<std::sync::Arc<FixtureRoot>>)>,
+            > = Mutex::new(Vec::new());
+            RETAINED
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push((child, self.root.clone()));
+            eprintln!(
+                "lease fixture cleanup unacknowledged; original child and owned root retained"
+            );
+        }
+    }
+
+    pub(crate) struct Sleeper(BoundedChild);
     impl Sleeper {
         pub(crate) fn start() -> Self {
-            #[cfg(windows)]
-            let child = std::process::Command::new("ping")
-                .args(["-n", "60", "127.0.0.1"])
+            let root = fresh_root("sleeper");
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "device_lease::tests::transition_claim_crash_child_helper",
+                ])
+                .env(
+                    "QC_DEVICE_LEASE_TEST_TRANSITION_LOCK_PATH",
+                    root.0.join("sleeper.transition"),
+                )
+                .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
-                .spawn();
-            #[cfg(not(windows))]
-            let child = std::process::Command::new("sleep").arg("60").spawn();
-            Self(child.expect("a helper process starts"))
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            Self(BoundedChild::new(
+                command.spawn().expect("a helper process starts"),
+                Some(root),
+            ))
         }
         pub(crate) fn pid(&self) -> u32 {
             self.0.id()
+        }
+        #[cfg(windows)]
+        pub(crate) fn root_path(&self) -> &Path {
+            &self.0.root.as_ref().unwrap().0
+        }
+        #[cfg(windows)]
+        pub(crate) fn process_handle(&self) -> std::os::windows::io::RawHandle {
+            use std::os::windows::io::AsRawHandle;
+            self.0.as_raw_handle()
         }
         pub(crate) fn record(&self) -> LeaseRecord {
             LeaseRecord {
@@ -1093,11 +1452,6 @@ pub(crate) mod testing {
         pub(crate) fn kill(&mut self) {
             let _ = self.0.kill();
             let _ = self.0.wait();
-        }
-    }
-    impl Drop for Sleeper {
-        fn drop(&mut self) {
-            self.kill();
         }
     }
 
@@ -1115,15 +1469,251 @@ mod tests {
         create_directory(path)
     }
 
-    /// A record path in a directory of this test's own, removed by the
-    /// returned guard. It is named by the process id, so every run that did
-    /// not remove it left one more behind.
-    fn scratch(name: &str) -> (OwnedTestDirectory, PathBuf) {
-        let dir = temp_directory().join(format!("qc-lease-{name}-{}", std::process::id()));
-        let _ = create_test_directory(&dir);
-        let path = dir.join("device-owner.json");
-        let _ = std::fs::remove_file(&path);
-        (OwnedTestDirectory(dir), path)
+    #[cfg(windows)]
+    #[test]
+    fn a_current_pid_without_recorded_known_creation_time_does_not_prove_ownership() {
+        let path = scratch("own-pid-missing-creation");
+        let current = crate::platform::process::os_process_created_at(std::process::id())
+            .expect("this Windows process has a known creation time");
+        let mut unknown = own_record("unknown recorded generation", next_lease_generation_ms());
+        unknown.process_created_at = None;
+        assert!(!is_own(&unknown));
+        write_record(&path, &unknown);
+        let bytes = std::fs::read(&path).unwrap();
+        let mut opener = holder(&path);
+        assert_eq!(opener.acquire().unwrap_err(), unknown);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(!opener.is_held());
+        assert_eq!(held_count(&path), 0);
+        assert!(opener.io_owner().is_err());
+        // A positively matching current generation retains ordinary recovery.
+        let mut known = unknown;
+        known.process_created_at = Some(current);
+        write_record(&path, &known);
+        opener.acquire().unwrap();
+        assert!(opener.is_held());
+        opener.release();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn lease_record_reader_bounds_growing_input_and_retries_interrupted_reads() {
+        struct Growing {
+            consumed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            interrupt: bool,
+        }
+        impl std::io::Read for Growing {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                if std::mem::take(&mut self.interrupt) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                bytes.fill(b' ');
+                self.consumed.fetch_add(bytes.len(), Ordering::Relaxed);
+                Ok(bytes.len()) // Deliberately never reaches EOF.
+            }
+        }
+        let consumed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let error = read_record_from(Growing {
+            consumed: consumed.clone(),
+            interrupt: true,
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(consumed.load(Ordering::Relaxed), MAX_LEASE_RECORD_BYTES + 1);
+
+        let record = LeaseRecord {
+            process_id: 1,
+            process_created_at: None,
+            role: String::new(),
+            since_unix_ms: 2,
+            refreshed_unix_ms: 3,
+        };
+        let overhead = encode_record(&record).unwrap().len();
+        let mut exact = record;
+        exact.role = "a".repeat(MAX_LEASE_RECORD_BYTES - overhead);
+        let bytes = encode_record(&exact).unwrap();
+        assert_eq!(bytes.len(), MAX_LEASE_RECORD_BYTES);
+        assert_eq!(read_record_from(bytes.as_slice()).unwrap(), exact);
+        exact.role.push('a');
+        assert_eq!(
+            encode_record(&exact).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn excessive_lease_records_preserve_existing_claim_and_do_not_publish_stages() {
+        let root = fresh_root("record-byte-budget");
+        let existing = root.0.join(RECORD_NAME);
+        let sentinel = vec![b'x'; MAX_LEASE_RECORD_BYTES + 1];
+        std::fs::write(&existing, &sentinel).unwrap();
+        assert!(read_record(&existing).is_none());
+        let excessive = LeaseRecord {
+            process_id: std::process::id(),
+            process_created_at: None,
+            role: "a".repeat(MAX_LEASE_RECORD_BYTES + 1),
+            since_unix_ms: 2,
+            refreshed_unix_ms: 3,
+        };
+        assert_eq!(
+            replace_own(&existing, &excessive).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            create_exclusive(&existing, &excessive).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(std::fs::read(&existing).unwrap(), sentinel);
+        let missing_parent = root.0.join("not-created");
+        assert_eq!(
+            create_exclusive(&missing_parent.join(RECORD_NAME), &excessive)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert!(!missing_parent.exists());
+        let entries: Vec<_> = std::fs::read_dir(&root.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from(RECORD_NAME)]);
+    }
+
+    #[test]
+    fn lease_stage_fault_cleanup_preserves_collisions_and_prior_published_bytes() {
+        use std::io::Write;
+        let root = fresh_root("stage-faults");
+        let destination = root.0.join(RECORD_NAME);
+        std::fs::write(&destination, b"prior document").unwrap();
+        let staged = root.0.join("owned.tmp");
+        let occupied = root.0.join("occupied.tmp");
+        std::fs::write(&occupied, b"unowned contender").unwrap();
+        assert_eq!(
+            LeaseStage::at(occupied.clone()).err().unwrap().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(std::fs::read(&occupied).unwrap(), b"unowned contender");
+        let failed = (|| {
+            let mut stage = LeaseStage::at(staged.clone())?;
+            stage.write_with(b"complete", |file, _| {
+                file.write_all(b"partial")?;
+                Err(std::io::Error::other("injected partial lease write"))
+            })
+        })();
+        assert!(failed
+            .unwrap_err()
+            .to_string()
+            .contains("partial lease write"));
+        assert!(!staged.exists());
+        let unwind = std::panic::catch_unwind(|| {
+            let mut stage = LeaseStage::at(staged.clone()).unwrap();
+            stage
+                .write_with(b"complete", |file, _| {
+                    file.write_all(b"partial")?;
+                    panic!("injected lease stage unwind");
+                })
+                .unwrap();
+        });
+        assert!(unwind.is_err());
+        assert!(!staged.exists());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"prior document");
+        let record = own_record("fixture", 1);
+        replace_own(&destination, &record).unwrap();
+        assert_eq!(read_record(&destination), Some(record));
+        assert!(std::fs::read_dir(&root.0).unwrap().all(|entry| {
+            let entry = entry.unwrap();
+            !entry.file_name().to_string_lossy().ends_with(".tmp") || entry.path() == occupied
+        }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shared_directory_acl_command_uses_trusted_path_and_propagates_timeout_without_retry() {
+        let root = fresh_root("acl-command");
+        let mut calls = 0;
+        let error = grant_shared_directory_with(&root.0, |command| {
+            calls += 1;
+            let program = PathBuf::from(command.get_program());
+            assert!(program.is_absolute());
+            assert_eq!(program.file_name().unwrap(), "icacls.exe");
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                vec![
+                    root.0.as_os_str(),
+                    std::ffi::OsStr::new("/grant"),
+                    std::ffi::OsStr::new("*S-1-5-32-545:(OI)(CI)M")
+                ]
+            );
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "injected owned-tool timeout",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(calls, 1);
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lease_fixture_unwind_reaps_exact_child_before_retiring_root() {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::{
+            Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, WAIT_OBJECT_0},
+            System::Threading::{GetCurrentProcess, WaitForSingleObject},
+        };
+        let mut process = None;
+        let mut path = None;
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let sleeper = Sleeper::start();
+            path = Some(sleeper.root_path().to_owned());
+            let mut duplicated = std::ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    DuplicateHandle(
+                        GetCurrentProcess(),
+                        sleeper.process_handle(),
+                        GetCurrentProcess(),
+                        &mut duplicated,
+                        0,
+                        0,
+                        DUPLICATE_SAME_ACCESS,
+                    )
+                },
+                0
+            );
+            process = Some(unsafe { OwnedHandle::from_raw_handle(duplicated) });
+            panic!("injected child setup assertion failure");
+        }));
+        assert!(unwind.is_err());
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.unwrap().as_raw_handle(), 0) },
+            WAIT_OBJECT_0
+        );
+        assert!(!path.unwrap().exists());
+    }
+
+    struct ScratchPath {
+        path: PathBuf,
+        _root: std::sync::Arc<FixtureRoot>,
+    }
+    impl std::ops::Deref for ScratchPath {
+        type Target = PathBuf;
+        fn deref(&self) -> &PathBuf {
+            &self.path
+        }
+    }
+    impl AsRef<Path> for ScratchPath {
+        fn as_ref(&self) -> &Path {
+            &self.path
+        }
+    }
+    fn scratch(name: &str) -> ScratchPath {
+        let root = fresh_root(name);
+        ScratchPath {
+            path: root.0.join("device-owner.json"),
+            _root: root,
+        }
     }
 
     fn holder(path: &Path) -> LeaseHolder {
@@ -1134,17 +1724,10 @@ mod tests {
     }
 
     struct ChildGuard {
-        child: std::process::Child,
+        child: BoundedChild,
     }
 
-    impl Drop for ChildGuard {
-        fn drop(&mut self) {
-            if self.child.try_wait().ok().flatten().is_none() {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-            }
-        }
-    }
+    struct TestDirectory(std::sync::Arc<FixtureRoot>);
 
     #[test]
     fn lease_transition_child_helper() {
@@ -1213,14 +1796,8 @@ mod tests {
 
     #[test]
     fn concurrent_processes_cannot_both_recover_the_same_stale_lease() {
-        let directory = temp_directory().join(format!(
-            "qc-lease-process-race-{}-{}",
-            std::process::id(),
-            unix_ms()
-        ));
-        let _ = std::fs::remove_dir_all(&directory);
-        create_test_directory(&directory).unwrap();
-        let _owned_directory = OwnedTestDirectory(directory.clone());
+        let _owned_directory = TestDirectory(fresh_root("process-race"));
+        let directory = _owned_directory.0 .0.clone();
         let path = directory.join(RECORD_NAME);
         write_record(
             &path,
@@ -1243,7 +1820,9 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("lease race helper process starts");
-        let mut child = ChildGuard { child };
+        let mut child = ChildGuard {
+            child: BoundedChild::new(child, Some(_owned_directory.0.clone())),
+        };
         let mut parent = holder(&path);
         parent.transition_test_barrier = Some(directory.clone());
         let parent_result = parent.acquire();
@@ -1286,7 +1865,7 @@ mod tests {
 
     #[test]
     fn a_busy_device_names_a_live_holder_and_ignores_a_dead_one() {
-        let (_directory, path) = scratch("holder");
+        let path = scratch("holder");
         assert!(busy_detail(&path).contains("not attached"));
         let sleeper = Sleeper::start();
         write_record(&path, &sleeper.record());
@@ -1319,7 +1898,7 @@ mod tests {
 
     #[test]
     fn a_second_opener_defers_to_a_live_owner_and_never_touches_its_record() {
-        let (_directory, path) = scratch("defer");
+        let path = scratch("defer");
         let sleeper = Sleeper::start();
         let owner_record = sleeper.record();
         write_record(&path, &owner_record);
@@ -1349,7 +1928,7 @@ mod tests {
 
     #[test]
     fn a_waiting_opener_takes_over_after_the_owner_dies() {
-        let (_directory, path) = scratch("takeover");
+        let path = scratch("takeover");
         let mut sleeper = Sleeper::start();
         write_record(&path, &sleeper.record());
         let mut second = holder(&path);
@@ -1370,7 +1949,7 @@ mod tests {
 
     #[test]
     fn a_stale_record_with_a_dead_pid_or_reused_pid_is_ignored_and_replaced() {
-        let (_directory, path) = scratch("stale");
+        let path = scratch("stale");
         let dead = LeaseRecord {
             process_id: u32::MAX - 1,
             process_created_at: Some(1),
@@ -1395,79 +1974,19 @@ mod tests {
             opener.release();
         }
 
-        // A malformed claim cannot prove that the recorded owner is gone.
+        // An unreadable record cannot prove its previous owner is gone.
+        // Only the attributable dead/reused generations above are reaped.
         std::fs::write(&path, b"{ not json").unwrap();
         assert!(opener.acquire().is_err());
         assert!(!opener.is_held());
-        assert_eq!(held_count(&path), 0);
+        assert!(opener.io_owner().is_err());
+        opener.release();
         assert_eq!(std::fs::read(&path).unwrap(), b"{ not json");
     }
 
     #[test]
-    fn failed_or_unverified_own_record_refresh_never_reports_acquired() {
-        for failure in [true, false] {
-            let name = if failure {
-                "refresh-error"
-            } else {
-                "refresh-noop"
-            };
-            let (_directory, path) = scratch(name);
-            let previous = own_record("old deferred release", unix_ms().saturating_sub(10));
-            write_record(&path, &previous);
-            let before = std::fs::read(&path).unwrap();
-            let mut opener = holder(&path);
-            let mut replacer_called = false;
-            let result = opener.acquire_with_replacer(|replacement_path, replacement| {
-                replacer_called = true;
-                assert_eq!(replacement_path, path);
-                assert!(!same_generation(replacement, &previous));
-                if failure {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "simulated replacement failure",
-                    ))
-                } else {
-                    // Simulate a helper that claims success without persisting.
-                    Ok(())
-                }
-            });
-            assert!(
-                replacer_called,
-                "the injected replacement path was exercised"
-            );
-            assert!(result.is_err());
-            assert!(!opener.is_held());
-            assert_eq!(held_count(&path), 0);
-            assert_eq!(std::fs::read(&path).unwrap(), before);
-            assert_eq!(read_record(&path), Some(previous.clone()));
-
-            // Once persistence works, the newly recorded generation is held;
-            // delayed cleanup for the old generation cannot erase it.
-            opener.acquire().expect("real replacement persists");
-            assert!(opener.is_held());
-            let current = read_record(&path).unwrap();
-            assert_eq!(current.since_unix_ms, opener.since_unix_ms);
-            assert!(!same_generation(&current, &previous));
-            let pending = PendingLeaseRelease {
-                paths: vec![path.clone()],
-                generation: previous,
-            };
-            let _transition = LeaseTransitionGuard::acquire(
-                std::slice::from_ref(&path),
-                Duration::from_millis(100),
-            )
-            .unwrap();
-            assert!(remove_release_generation_locked(&pending));
-            assert_eq!(read_record(&path), Some(current));
-            drop(_transition);
-            opener.release();
-            assert_eq!(held_count(&path), 0);
-        }
-    }
-
-    #[test]
     fn the_owner_refreshes_and_restores_its_record_but_removes_only_its_own() {
-        let (_directory, path) = scratch("owner");
+        let path = scratch("owner");
         let mut owner = holder(&path);
         owner.acquire().unwrap();
         let first = read_record(&path).unwrap();
@@ -1488,7 +2007,7 @@ mod tests {
 
     #[test]
     fn dropping_the_holder_is_the_owners_clean_shutdown() {
-        let (_directory, path) = scratch("drop");
+        let path = scratch("drop");
         {
             let mut owner = holder(&path);
             owner.acquire().unwrap();
@@ -1497,17 +2016,22 @@ mod tests {
         assert!(!path.exists());
     }
 
-    /// Both roots under one directory of this test's own, removed whole by
-    /// the returned guard.
-    fn two_roots(name: &str) -> (OwnedTestDirectory, PathBuf, PathBuf) {
-        let base = temp_directory().join(format!("qc-lease-roots-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let program_data = base.join("ProgramData");
-        let local = base.join("Local");
-        let directory = OwnedTestDirectory(base);
+    fn two_roots(name: &str) -> (ScratchPath, ScratchPath) {
+        let base = fresh_root(name);
+        let program_data = base.0.join("ProgramData");
+        let local = base.0.join("Local");
         create_test_directory(&program_data).unwrap();
         create_test_directory(&local).unwrap();
-        (directory, program_data, local)
+        (
+            ScratchPath {
+                path: program_data,
+                _root: base.clone(),
+            },
+            ScratchPath {
+                path: local,
+                _root: base,
+            },
+        )
     }
 
     fn packaged_copy(local: &Path) -> PathBuf {
@@ -1531,7 +2055,7 @@ mod tests {
 
     #[test]
     fn transition_lock_timeout_refuses_without_reaping_a_live_claim() {
-        let (_directory, path) = scratch("transition-timeout");
+        let path = scratch("transition-timeout");
         let targets = vec![path.clone()];
         let owner = LeaseTransitionGuard::acquire(&targets, Duration::from_millis(100)).unwrap();
         assert!(LeaseTransitionGuard::acquire(&targets, Duration::from_millis(50)).is_err());
@@ -1547,13 +2071,8 @@ mod tests {
 
     #[test]
     fn timed_out_last_release_is_retried_while_process_remains_alive() {
-        let directory = temp_directory().join(format!(
-            "qc-lease-release-retry-{}-{}",
-            std::process::id(),
-            unix_ms()
-        ));
-        create_test_directory(&directory).unwrap();
-        let _directory = OwnedTestDirectory(directory.clone());
+        let _directory = TestDirectory(fresh_root("release-retry"));
+        let directory = _directory.0 .0.clone();
         let path = directory.join("device-owner.json");
         let mut owner = holder(&path);
         owner.acquire().unwrap();
@@ -1578,7 +2097,9 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("lease release retry helper process starts");
-        let mut child = ChildGuard { child };
+        let mut child = ChildGuard {
+            child: BoundedChild::new(child, Some(_directory.0.clone())),
+        };
         let result_path = path.with_extension("release-child-result");
         let deadline = Instant::now() + Duration::from_secs(10);
         while !result_path.exists() {
@@ -1599,14 +2120,166 @@ mod tests {
     }
 
     #[test]
-    fn delayed_release_job_cannot_delete_a_new_generation_from_same_process() {
-        let directory = temp_directory().join(format!(
-            "qc-lease-new-generation-{}-{}",
-            std::process::id(),
-            unix_ms()
+    fn own_generation_replacement_failure_or_false_success_never_admits_a_lease() {
+        for false_success in [false, true] {
+            let _directory = TestDirectory(fresh_root("generation-replacement-refusal"));
+            let path = _directory.0 .0.join("device-owner.json");
+            let old = own_record("retired generation", next_lease_generation_ms());
+            write_record(&path, &old);
+            let bytes = std::fs::read(&path).unwrap();
+            let mut opener = holder(&path);
+            let mut called = false;
+            let result = opener.acquire_with_replacer(|_, current| {
+                called = true;
+                assert_ne!(current.since_unix_ms, old.since_unix_ms);
+                if false_success {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "controlled replacement refusal",
+                    ))
+                }
+            });
+            assert!(called, "actual own-record replacement branch was exercised");
+            assert!(result.is_err());
+            assert!(!opener.is_held());
+            assert_eq!(held_count(&path), 0);
+            assert!(opener.io_owner().is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(read_record(&path), Some(old.clone()));
+            // A retry may acquire only after actual replacement/readback.
+            opener.acquire().unwrap();
+            let current = read_record(&path).unwrap();
+            assert_ne!(current.since_unix_ms, old.since_unix_ms);
+            assert_eq!(current.since_unix_ms, opener.since_unix_ms);
+            let late = PendingLeaseRelease {
+                paths: vec![path.clone()],
+                generation: old,
+                _cleanup: CleanupLimiter::production()
+                    .reserve(vec![path.clone()])
+                    .unwrap(),
+            };
+            let _transition = LeaseTransitionGuard::acquire(
+                std::slice::from_ref(&path),
+                Duration::from_millis(100),
+            )
+            .unwrap();
+            assert!(remove_release_generation_locked(&late));
+            assert_eq!(read_record(&path), Some(current));
+            drop(_transition);
+            opener.release();
+            assert_eq!(held_count(&path), 0);
+        }
+    }
+
+    #[test]
+    fn malformed_existing_claim_is_preserved_without_new_holder_admission() {
+        let _directory = TestDirectory(fresh_root("malformed-existing-claim"));
+        let path = _directory.0 .0.join("device-owner.json");
+        let sentinel = b"{malformed existing owner; liveness cannot be proved}";
+        std::fs::write(&path, sentinel).unwrap();
+        let mut opener = holder(&path);
+        let refused = opener.acquire().unwrap_err();
+        assert!(waiting_detail(&refused).contains("was preserved"));
+        assert!(waiting_detail(&refused).contains("Opening is refused"));
+        assert!(!waiting_detail(&refused).contains("being updated"));
+        assert!(!opener.is_held());
+        assert_eq!(held_count(&path), 0);
+        assert!(opener.io_owner().is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), sentinel);
+    }
+
+    #[test]
+    fn cleanup_capacity_refuses_acquisition_before_directory_or_claim_effects() {
+        let root = fresh_root("cleanup-admission-before-effects");
+        let limiter = CleanupLimiter::new(1);
+        let occupied = limiter
+            .reserve(vec![root.0.join("old-generation.json")])
+            .unwrap();
+        let unopened = root.0.join("not-created");
+        let mut opener = LeaseHolder::new(unopened.join("device-owner.json"), "fixture".into());
+        opener.shared_directory = Some(unopened.clone());
+        opener.cleanup_limiter = std::sync::Arc::clone(&limiter);
+        let refused = opener.acquire().unwrap_err();
+        assert_eq!(refused.role, CLEANUP_CAPACITY_ROLE);
+        assert!(waiting_detail(&refused).contains("cleanup capacity"));
+        assert!(
+            !unopened.exists(),
+            "no directory/ACL/claim effect before admission"
+        );
+        assert!(!opener.is_held());
+        assert!(opener.cleanup_permit.is_none());
+        drop(occupied);
+        opener.acquire().unwrap();
+        opener.release();
+    }
+
+    #[test]
+    fn exact_cleanup_capability_survives_native_clone_queue_inflight_and_failure_until_ack() {
+        let root = fresh_root("exact-cleanup-capability");
+        let path = root.0.join("device-owner.json");
+        let limiter = CleanupLimiter::new(1);
+        let mut owner = holder(&path);
+        owner.cleanup_limiter = std::sync::Arc::clone(&limiter);
+        owner.acquire().unwrap();
+        let generation = read_record(&path).unwrap();
+        let capability = std::sync::Arc::downgrade(owner.cleanup_permit.as_ref().unwrap());
+        let native = owner.io_owner().unwrap();
+        assert_eq!(
+            capability.strong_count(),
+            2,
+            "native clone shares exact admission"
+        );
+        let stable_generation = owner.since_unix_ms;
+        assert!(owner
+            .acquire_with_replacer(|_, _| Err(std::io::Error::other("controlled refusal")))
+            .is_err());
+        assert_eq!(owner.since_unix_ms, stable_generation);
+        assert!(owner.is_held());
+        assert_eq!(capability.strong_count(), 2);
+        drop(native);
+        let mut queued = None;
+        owner.release_with(
+            |_| false,
+            |job| {
+                queued = Some(job);
+            },
+        );
+        assert!(!owner.is_held());
+        assert_eq!(held_count(&path), 0);
+        assert!(cleanup_lifetime::root_has_activity(&root.0));
+        assert!(limiter.reserve(vec![path.clone()]).is_err());
+        let job = queued.take().unwrap();
+        assert!(same_generation(&job.generation, &generation));
+        assert!(std::sync::Arc::ptr_eq(
+            &capability.upgrade().unwrap(),
+            &job._cleanup
         ));
-        create_test_directory(&directory).unwrap();
-        let _directory = OwnedTestDirectory(directory.clone());
+        let job = attempt_release(job, |job| {
+            assert!(same_generation(&job.generation, &generation));
+            assert!(
+                cleanup_lifetime::root_has_activity(&root.0),
+                "popped in-flight job still owns root"
+            );
+            false
+        })
+        .unwrap();
+        let job = attempt_release(job, |_| panic!("controlled cleanup unwind")).unwrap();
+        assert!(cleanup_lifetime::root_has_activity(&root.0));
+        assert!(limiter.reserve(vec![path.clone()]).is_err());
+        assert!(attempt_release(job, remove_release_generation).is_none());
+        assert!(!cleanup_lifetime::root_has_activity(&root.0));
+        assert!(capability.upgrade().is_none());
+        assert!(!path.exists());
+        let next = limiter.reserve(vec![path]).unwrap();
+        drop(next);
+    }
+
+    #[test]
+    fn delayed_release_job_cannot_delete_a_new_generation_from_same_process() {
+        let _directory = TestDirectory(fresh_root("new-generation"));
+        let directory = _directory.0 .0.clone();
         let path = directory.join("device-owner.json");
         let old = own_record("lease generation", unix_ms());
         let newer = own_record("lease generation", old.since_unix_ms + 1);
@@ -1614,6 +2287,9 @@ mod tests {
         let job = PendingLeaseRelease {
             paths: vec![path.clone()],
             generation: old,
+            _cleanup: CleanupLimiter::production()
+                .reserve(vec![path.clone()])
+                .unwrap(),
         };
 
         let _transition =
@@ -1633,13 +2309,8 @@ mod tests {
 
     #[test]
     fn same_process_holders_share_one_generation_until_the_last_release() {
-        let directory = temp_directory().join(format!(
-            "qc-lease-shared-generation-{}-{}",
-            std::process::id(),
-            unix_ms()
-        ));
-        create_test_directory(&directory).unwrap();
-        let _directory = OwnedTestDirectory(directory.clone());
+        let _directory = TestDirectory(fresh_root("shared-generation"));
+        let directory = _directory.0 .0.clone();
         let path = directory.join("device-owner.json");
         let mut first = holder(&path);
         let mut second = holder(&path);
@@ -1657,14 +2328,45 @@ mod tests {
     }
 
     #[test]
+    fn native_io_owner_retains_the_exact_acquired_generation_until_last_handle_drop() {
+        let path = scratch("native-owner");
+        let mut owner = holder(&path);
+        assert!(
+            owner.io_owner().is_err(),
+            "no capability before acquisition"
+        );
+        owner.acquire().unwrap();
+        let generation = read_record(&path).unwrap().since_unix_ms;
+        let native = owner.io_owner().unwrap();
+        let writer = std::sync::Arc::clone(&native);
+        owner.release();
+        assert_eq!(read_record(&path).unwrap().since_unix_ms, generation);
+        drop(native);
+        assert!(path.exists(), "retained writer still owns the lease");
+        drop(writer);
+        assert!(!path.exists(), "last native owner retires its generation");
+        assert_eq!(held_count(&path), 0);
+    }
+
+    #[test]
+    fn late_native_owner_drop_does_not_remove_a_replacement_generation() {
+        let path = scratch("native-new-generation");
+        let mut owner = holder(&path);
+        owner.acquire().unwrap();
+        let native = owner.io_owner().unwrap();
+        let generation = read_record(&path).unwrap().since_unix_ms;
+        owner.release();
+        let replacement = own_record("replacement", generation + 1);
+        write_record(&path, &replacement);
+        drop(native);
+        assert_eq!(read_record(&path), Some(replacement));
+        assert_eq!(held_count(&path), 0);
+    }
+
+    #[test]
     fn transition_lock_reaps_a_claim_left_by_a_crashed_owner() {
-        let directory = temp_directory().join(format!(
-            "qc-lease-transition-crash-{}-{}",
-            std::process::id(),
-            unix_ms()
-        ));
-        create_test_directory(&directory).unwrap();
-        let _directory = OwnedTestDirectory(directory.clone());
+        let _directory = TestDirectory(fresh_root("transition-crash"));
+        let directory = _directory.0 .0.clone();
         let path = directory.join("device-owner.json");
         let lock = path.with_extension("transition");
         let claim = PathBuf::from(format!("{}.claim", lock.display()));
@@ -1679,7 +2381,9 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("transition claim owner child starts");
-        let mut child = ChildGuard { child };
+        let mut child = ChildGuard {
+            child: BoundedChild::new(child, Some(_directory.0.clone())),
+        };
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready.exists() {
             assert!(
@@ -1732,6 +2436,10 @@ mod tests {
             ready.exists(),
             "the owned test directory still contains its marker"
         );
+        // The reaped original Child still owns a scratch-root Arc until its
+        // guard is retired. Release that acknowledged owner before asserting
+        // that dropping the last directory owner removes the scratch bytes.
+        drop(child);
         drop(_directory);
         assert!(
             !directory.exists(),
@@ -1742,7 +2450,7 @@ mod tests {
 
     #[test]
     fn locations_put_the_record_in_the_shared_directory_and_list_every_other_copy() {
-        let (_directory, program_data, local) = two_roots("resolve");
+        let (program_data, local) = two_roots("resolve");
         let record = packaged_copy(&local);
         std::fs::write(&record, b"{}").unwrap();
         let locations = Locations::resolve(Some(&program_data), Some(&local));
@@ -1766,7 +2474,7 @@ mod tests {
 
     #[test]
     fn an_owner_recorded_only_in_a_packaged_processs_cache_is_deferred_to() {
-        let (_directory, program_data, local) = two_roots("packaged");
+        let (program_data, local) = two_roots("packaged");
         let sleeper = Sleeper::start();
         write_record(&packaged_copy(&local), &sleeper.record());
         let mut opener = shared_holder(&program_data, &local);
@@ -1788,7 +2496,7 @@ mod tests {
 
     #[test]
     fn an_owner_recorded_only_in_the_legacy_directory_is_deferred_to() {
-        let (_directory, program_data, local) = two_roots("legacy");
+        let (program_data, local) = two_roots("legacy");
         let sleeper = Sleeper::start();
         let legacy = local.join(APP_DIRECTORY);
         create_test_directory(&legacy).unwrap();
@@ -1799,7 +2507,7 @@ mod tests {
 
     #[test]
     fn a_dead_pid_in_any_location_is_ignored_and_the_open_proceeds() {
-        let (_directory, program_data, local) = two_roots("dead");
+        let (program_data, local) = two_roots("dead");
         let dead = LeaseRecord {
             process_id: u32::MAX - 1,
             process_created_at: Some(1),
@@ -1816,7 +2524,7 @@ mod tests {
 
     #[test]
     fn the_owner_writes_the_shared_record_and_its_mirror_and_removes_both() {
-        let (_directory, program_data, local) = two_roots("mirror");
+        let (program_data, local) = two_roots("mirror");
         let locations = Locations::resolve(Some(&program_data), Some(&local));
         let mut owner = shared_holder(&program_data, &local);
         owner.acquire().unwrap();
@@ -1833,8 +2541,118 @@ mod tests {
     }
 
     #[test]
+    fn unknown_mirror_refuses_acquire_and_tick_preserves_its_bytes() {
+        struct RestoreMirror {
+            path: PathBuf,
+            bytes: Vec<u8>,
+        }
+        impl Drop for RestoreMirror {
+            fn drop(&mut self) {
+                // Restore the attributable generation before owner/root Drop
+                // even if a behavioral assertion unwinds.
+                let _ = std::fs::write(&self.path, &self.bytes);
+            }
+        }
+        let root = fresh_root("unknown-mirror-refusal");
+        let primary = root.0.join("primary.json");
+        let mirror = root.0.join("legacy.json");
+        let sentinel = b"{unknown legacy owner; not proof of retirement}";
+        std::fs::write(&mirror, sentinel).unwrap();
+        let mut owner = LeaseHolder::new(primary.clone(), "fixture".into());
+        owner.mirrors.push(mirror.clone());
+        let refused = owner.acquire().unwrap_err();
+        assert!(waiting_detail(&refused).contains("Opening is refused"));
+        assert!(!owner.is_held());
+        assert!(owner.io_owner().is_err());
+        assert!(!primary.exists(), "no new primary/native admission");
+        assert_eq!(std::fs::read(&mirror).unwrap(), sentinel);
+        assert!(!testing::root_has_lease_activity(&root.0));
+
+        // An absent mirror is still supported and published normally.
+        std::fs::remove_file(&mirror).unwrap();
+        owner.acquire().unwrap();
+        let restore = RestoreMirror {
+            path: mirror.clone(),
+            bytes: std::fs::read(&mirror).unwrap(),
+        };
+        std::fs::write(&mirror, sentinel).unwrap();
+        owner.last_refresh = Instant::now() - REFRESH_INTERVAL - Duration::from_millis(1);
+        owner.tick();
+        assert_eq!(std::fs::read(&mirror).unwrap(), sentinel);
+        assert!(same_generation(
+            &read_record(&primary).unwrap(),
+            &own_record("fixture", owner.since_unix_ms)
+        ));
+        drop(restore);
+        owner.release();
+        assert!(!primary.exists());
+        assert!(!mirror.exists());
+    }
+
+    #[test]
+    fn an_attributable_dead_mirror_still_recovers_and_releases_normally() {
+        let root = fresh_root("dead-mirror-recovery");
+        let primary = root.0.join("primary.json");
+        let mirror = root.0.join("legacy.json");
+        write_record(
+            &mirror,
+            &LeaseRecord {
+                process_id: u32::MAX - 1,
+                process_created_at: Some(1),
+                role: "gone".into(),
+                since_unix_ms: 1,
+                refreshed_unix_ms: 1,
+            },
+        );
+        let mut owner = LeaseHolder::new(primary.clone(), "fixture".into());
+        owner.mirrors.push(mirror.clone());
+        owner.acquire().unwrap();
+        assert!(same_generation(
+            &read_record(&primary).unwrap(),
+            &read_record(&mirror).unwrap()
+        ));
+        owner.release();
+        assert!(!primary.exists());
+        assert!(!mirror.exists());
+    }
+
+    #[test]
+    fn unknown_read_only_peer_refuses_admission_without_mutating_or_locking_peer() {
+        let root = fresh_root("unknown-read-only-peer");
+        let primary = root.0.join("primary.json");
+        let peer = root.0.join("packaged-peer.json");
+        let sentinel = b"{unvalidated packaged owner}";
+        std::fs::write(&peer, sentinel).unwrap();
+        let mut owner = LeaseHolder::new(primary.clone(), "fixture".into());
+        owner.peers.push(peer.clone());
+        let refused = owner.acquire().unwrap_err();
+        assert!(waiting_detail(&refused).contains("Opening is refused"));
+        assert!(!owner.is_held());
+        assert!(owner.io_owner().is_err());
+        assert!(!primary.exists());
+        assert_eq!(std::fs::read(&peer).unwrap(), sentinel);
+        assert!(!peer.with_extension("transition").exists());
+        assert!(!testing::root_has_lease_activity(&root.0));
+        let stale = LeaseRecord {
+            process_id: u32::MAX - 1,
+            process_created_at: Some(1),
+            role: "gone".into(),
+            since_unix_ms: 1,
+            refreshed_unix_ms: 1,
+        };
+        write_record(&peer, &stale);
+        let peer_bytes = std::fs::read(&peer).unwrap();
+        owner.acquire().unwrap();
+        assert_eq!(std::fs::read(&peer).unwrap(), peer_bytes);
+        owner.release();
+        assert!(!primary.exists());
+        assert_eq!(std::fs::read(&peer).unwrap(), peer_bytes);
+        assert!(!peer.with_extension("transition").exists());
+    }
+
+    #[test]
     fn shared_primary_holder_also_serializes_with_a_legacy_primary_constructor() {
-        let (_directory, program_data, local) = two_roots("legacy-transition-lock");
+        let (program_data, local) = two_roots("legacy-transition-lock");
         let locations = Locations::resolve(Some(&program_data), Some(&local));
         let shared = shared_holder(&program_data, &local);
         let legacy = LeaseHolder::new(locations.mirrors[0].clone(), "older device broker".into());
@@ -1856,7 +2674,7 @@ mod tests {
 
     #[test]
     fn releasing_never_removes_a_live_other_ownerss_mirror() {
-        let (_directory, program_data, local) = two_roots("othermirror");
+        let (program_data, local) = two_roots("othermirror");
         let locations = Locations::resolve(Some(&program_data), Some(&local));
         let mut owner = shared_holder(&program_data, &local);
         owner.acquire().unwrap();
@@ -1908,5 +2726,18 @@ mod tests {
                 .process_id,
             11
         );
+    }
+
+    #[test]
+    fn lease_scratch_roots_are_retired_on_partial_setup_unwind() {
+        let mut root = None;
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let path = scratch("root-unwind");
+            root = Some(path.parent().unwrap().to_owned());
+            std::fs::write(&path, b"partial fixture").unwrap();
+            panic!("injected lease fixture setup assertion failure");
+        }));
+        assert!(unwind.is_err());
+        assert!(!root.unwrap().exists());
     }
 }
