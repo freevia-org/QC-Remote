@@ -13,7 +13,9 @@
  *   opening with no black strips; the display-only presentation (phones) and
  *   the standalone display use the framebuffer's own 800 : 480 (5 : 3).
  * - The box holds one fixed 800x480 canvas (`.qc-screen-fixture-root`) scaled
- *   by ONE transform, x by `100cqw / 800px` and y by `100cqh / 480px`, so the
+ *   by ONE transform, x by `100cqw / 800px` and y by `100cqh / 480px` (written
+ *   as tan(atan2(box, 800px)) over a registered length, see the canvas rule, so a
+ *   WebView older than Chrome 140 reads it too), so the
  *   canvas always covers the box exactly, whatever box a host offers. In the
  *   5 : 3 presentations both factors are equal (a uniform scale); in the
  *   hardware opening the ratio between them is the fixed 1.0716 (opening
@@ -36,6 +38,17 @@
  * decided here, once, in canvas units or in proportion to the box, so they
  * are the same on every host.
  */
+
+@property --qc-canvas-box-w {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --qc-canvas-box-h {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
 
 .qc-chassis,
 .qc-display-standalone {
@@ -147,6 +160,13 @@
   width: 800px;
   height: 480px;
   container-type: size;
-  transform: scale(calc(100cqw / 800px), calc(100cqh / 480px));
+  /* The two factors are box / 800px and box / 480px. calc() may divide a length by a length only from Chrome 140; an
+   * Android WebView older than that dropped the whole declaration, left the canvas at 800x480 device-independent
+   * pixels and showed its top-left corner, magnified. tan(atan2(a, b)) is a / b with no length division (Chrome 111),
+   * and the box size goes through a registered <length> first because a container unit written inside the trig
+   * function resolved to 1px in Chrome 133. */
+  --qc-canvas-box-w: 100cqw;
+  --qc-canvas-box-h: 100cqh;
+  transform: scale(tan(atan2(var(--qc-canvas-box-w), 800px)), tan(atan2(var(--qc-canvas-box-h), 480px)));
   transform-origin: top left;
 }

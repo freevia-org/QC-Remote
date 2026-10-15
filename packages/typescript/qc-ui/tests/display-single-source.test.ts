@@ -124,9 +124,20 @@ test("the canvas is a fixed 800x480 box scaled by the one documented transform",
   const canvas = rule(frameRules, ".qc-screen-bezel > .qc-screen-fixture-root").declarations;
   assert.equal(canvas.get("width"), "800px");
   assert.equal(canvas.get("height"), "480px");
-  assert.equal(canvas.get("transform"), "scale(calc(100cqw / 800px), calc(100cqh / 480px))", "x by box width / 800, y by box height / 480: the canvas fills whatever box the host offers");
+  assert.equal(canvas.get("transform"), "scale(tan(atan2(var(--qc-canvas-box-w), 800px)), tan(atan2(var(--qc-canvas-box-h), 480px)))", "x by box width / 800, y by box height / 480: the canvas fills whatever box the host offers");
   assert.equal(canvas.get("transform-origin"), "top left");
   assert.equal(canvas.get("container-type"), "size", "inside the canvas 1cqw is 8 canvas pixels on every host");
+});
+
+test("no transform divides a length by a length: an Android WebView older than Chrome 140 drops it and shows the canvas unscaled", () => {
+  const offences: string[] = [];
+  for (const [path, rules] of uiRules) {
+    for (const candidate of rules) {
+      const transform = candidate.declarations.get("transform");
+      if (transform && /\/\s*-?[\d.]+(?:px|cq[whi]|vw|vh|rem|em)/.test(transform)) offences.push(`${path}: ${candidate.selector}: ${transform}`);
+    }
+  }
+  assert.deepEqual(offences, [], "scale with tan(atan2(box, size)) over a registered <length>, as the canvas rule does");
 });
 
 test("nothing else in qc-ui sizes, positions or scales the display box or its canvas", () => {

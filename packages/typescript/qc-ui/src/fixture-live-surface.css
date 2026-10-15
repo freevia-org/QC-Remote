@@ -1506,7 +1506,7 @@
 /* Above every Grid hit layer (the action, route and block hits are z-index 5 to 9, in the same stacking context): at 4 the undo hit
    lay over the close control, so a click on the X pressed Undo and never reached the panel. Still below the menus (19 and up). */
 .coros-cpu-overlay-frame{position:absolute;inset:0;z-index:10;container-type:size;pointer-events:none}
-.coros-cpu-overlay-canvas{position:absolute;left:0;top:0;width:800px;height:480px;transform:scale(calc(100cqw / 800px),calc(100cqh / 480px));transform-origin:top left}
+.coros-cpu-overlay-canvas{position:absolute;left:0;top:0;width:800px;height:480px;--qc-canvas-box-w:100cqw;--qc-canvas-box-h:100cqh;transform:scale(tan(atan2(var(--qc-canvas-box-w),800px)),tan(atan2(var(--qc-canvas-box-h),480px)));transform-origin:top left}
 /* The unit's panel: x606-785, y12-90 of the 800x480 screen. */
 .coros-cpu-overlay{position:absolute;left:606px;top:12px;width:180px;height:79px;box-sizing:border-box;border-radius:10px;background:var(--qc-screen-surface-raised);color:var(--qc-context-capture-muted);font-family:var(--qc-font-device-plain);pointer-events:none}
 /* Over the live Grid the screen is scaled to the bezel, so the Grid's scene chip (it ends at the panel's top edge)
