@@ -145,3 +145,19 @@ test("following the unit's Settings pane selects the app's section and row, writ
   await act(async () => { stale({ section: "account", row: "backup" }); });
   assert.notEqual(value.accountRow, "backup", "a pane named for the previous session is not applied");
 });
+
+test("every registered unit pane lands on its own app row, in its own section", async (t) => {
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { QC_SETTINGS_UNIT_PANES } = await import("../src/settings-unit-selection.ts");
+  let value, renderer;
+  const gateway = { generalSettings: async () => ({}), identity: async () => ({ serial: "SYN-0001" }) };
+  function Harness() { value = useDeviceSettingsWorkflow({ gateway, sessionKey: "usb-A", connected: true, pending: false, setPending: () => {}, notice: () => {}, fail: (error) => { throw error; } }); return null; }
+  await act(async () => { renderer = create(React.createElement(Harness)); });
+  t.after(async () => { await act(async () => renderer.unmount()); });
+  const rowOf = { account: () => value.accountRow, system: () => value.systemRow, device: () => value.deviceRow, support: () => value.supportRow };
+  for (const [name, pane] of Object.entries(QC_SETTINGS_UNIT_PANES)) {
+    await act(async () => { value.followUnitSelection(pane.selection); });
+    assert.equal(value.section, pane.selection.section, name);
+    assert.equal(rowOf[pane.selection.section](), pane.selection.row, name);
+  }
+});
