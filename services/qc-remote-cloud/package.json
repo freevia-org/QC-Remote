@@ -15,25 +15,25 @@
     "test:workers:kv-proxy": "tsc --noEmit -p tsconfig.workers-tests.json && vitest run --config vitest.kv-proxy.config.ts"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260908.1",
+    "@cloudflare/workers-types": "^5.20261011.1",
     "@cloudflare/vitest-plugin": "^1.4.0",
     "@msw/cloudflare": "^0.2.0",
-    "msw": "^3.0.2",
+    "msw": "^3.0.3",
     "typescript": "^5.9.2",
     "vitest": "^5.0.3",
-    "wrangler": "4.145.0"
+    "wrangler": "4.149.0"
   },
   "overrides": {
-    "@modelcontextprotocol/client": "2.2.0",
-    "@modelcontextprotocol/sdk": "1.31.0"
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/sdk": "1.32.1"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "0.10.4",
-    "@modelcontextprotocol/client": "2.2.0",
-    "@modelcontextprotocol/sdk": "1.31.0",
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/server": "2.3.1",
     "@qc-remote/theme": "file:../../packages/typescript/qc-theme",
-    "agents": "^0.22.0",
-    "zod": "^4.5.4"
+    "agents": "^0.28.0",
+    "zod": "^4.6.6"
   }
 }
