@@ -1067,3 +1067,15 @@ test("a Settings pane the app does not know names no section, so the app is not 
   assert.ok(host.log.includes("settings.openSettings"), "the app still opens Settings, on whatever it showed");
   host.renderer.unmount();
 });
+
+test("the unit walking through the measured panes moves the app each time, and an unregistered pane leaves it where it was", () => {
+  const host = harness({});
+  const wifi = { section: "system" as const, row: "wifi" as const }, midi = { section: "device" as const, row: "midi" as const }, licenses = { section: "support" as const, row: "licenses" as const };
+  for (const selection of [wifi, midi, licenses]) act(() => host.follower.observe(observation("settings", undefined, selection)));
+  assert.deepEqual(host.settingsPanes, [wifi, midi, licenses]);
+  act(() => host.follower.observe(observation("settings")));
+  assert.deepEqual(host.settingsPanes, [wifi, midi, licenses], "an unregistered pane (for example Factory Reset) moves nothing");
+  act(() => host.follower.observe(observation("settings", undefined, licenses)));
+  assert.deepEqual(host.settingsPanes, [wifi, midi, licenses, licenses], "returning to a registered pane after an unregistered one follows again");
+  host.renderer.unmount();
+});

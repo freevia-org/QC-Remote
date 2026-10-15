@@ -4,7 +4,7 @@ import test from "node:test";
 import { register } from "node:module";
 import { act, create } from "react-test-renderer";
 import { classifyQcGraphicsTree } from "../src/use-adaptive-screen-polling.ts";
-import { QC_SETTINGS_UNIT_PANES, settingsSelectionFromTree, settingsSelectionKey } from "../src/settings-unit-selection.ts";
+import { QC_SETTINGS_ROWS_NOT_CAPTURED, QC_SETTINGS_UNIT_PANES, settingsSelectionFromTree, settingsSelectionKey } from "../src/settings-unit-selection.ts";
 import { DEVICE_SETTINGS_ACCOUNT_ROWS, DEVICE_SETTINGS_DEVICE_ROWS, DEVICE_SETTINGS_SUPPORT_ROWS, DEVICE_SETTINGS_SYSTEM_ROWS } from "../src/use-device-settings-workflow.ts";
 
 register("./support/react-singleton-loader.mjs", import.meta.url);
@@ -73,4 +73,91 @@ test("the poller hands the pane to the follower, and a pane change under one str
   tree = updates;
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
   assert.deepEqual(seen.at(-1), { kind: "settings", pane: "system/updates" });
+});
+
+/** Measured on a CorOS 4.1.0 unit: the content class that is the last child of zenUI::SettingsDialog for each row. */
+const MEASURED: ReadonlyArray<readonly [string, string, string, string]> = [
+  ["WifiSettings", "system", "wifi", "Connection"],
+  ["UpdaterSettings", "system", "updates", "Updates"],
+  ["BrightnessSettings", "system", "brightness", "Brightness"],
+  ["PowerButtonSensitivitySettings", "system", "power", "Power Functions"],
+  ["MasterVolumeSettings", "system", "volume", "Master Volume Knob"],
+  ["DiskSpaceSettings", "system", "storage", "Device Storage"],
+  ["GlobalBypassSettings", "device", "bypass", "Global Bypass"],
+  ["BypassSettings", "device", "scene-bypass", "Scene Bypass Behavior"],
+  ["StompModeBypassAssignmentSettings", "device", "stomp-bypass", "Stomp Mode Bypass"],
+  ["HoldTimeSettings", "device", "hold", "Hold Timing"],
+  ["SwapTempoAndTunerAccessSettings", "device", "swap", "Swap Tempo and Tuner"],
+  ["GigViewStompAccessSettings", "device", "gig-access", "Gig View Access"],
+  ["DynamicDelayCompensationSetting", "device", "latency", "Latency Compensation"],
+  ["MidiSettings", "device", "midi", "MIDI"],
+  ["ContactUsMenu", "support", "about", "About and Contact"],
+  ["DeviceInformation", "support", "info", "Device Information"],
+  ["ThirdPartyLicenses", "support", "licenses", "3rd Party Licenses"]
+];
+/** A synthetic Settings tree: class names only, the shape of the sanitized fixture, with the row's content class last. */
+const settingsTree = (content: string) => [
+  "zenUI::RootGraphicsItem", "  zenUI::GraphicsItem", "    zenUI::Grid", "      zenUI::Chain",
+  "  zenUI::SettingsDialog", "    zenUI::SettingsMenu", "      zenUI::ComboBoxWithSelector", "      zenUI::Table", "        zenUI::TableCell",
+  `    zenUI::${content}`, "    zenUI::Button", "      zenUI::PushButton"
+].join("\n");
+
+test("each measured Settings pane selects its section and row, and the registry holds exactly those", () => {
+  for (const [cls, section, row, label] of MEASURED) {
+    const tree = settingsTree(cls);
+    assert.equal(classifyQcGraphicsTree(tree), "settings", `${label} is a Settings screen`);
+    assert.deepEqual(settingsSelectionFromTree(tree), { section, row }, `${label} (${cls})`);
+    assert.deepEqual(settingsSelectionFromTree(tree.replace(/\n/g, "\r\n")), { section, row }, `${label} reads the same with CRLF`);
+  }
+  assert.deepEqual(Object.keys(QC_SETTINGS_UNIT_PANES).sort(), MEASURED.map(([cls]) => cls).sort());
+});
+
+test("every app row is either registered or listed as not captured, never both and never neither", () => {
+  const registered = new Set(Object.values(QC_SETTINGS_UNIT_PANES).map((pane) => settingsSelectionKey(pane.selection)));
+  const notCaptured = new Set(QC_SETTINGS_ROWS_NOT_CAPTURED.map(settingsSelectionKey));
+  const all = [
+    ...DEVICE_SETTINGS_ACCOUNT_ROWS.map((row) => `account/${row}`), ...DEVICE_SETTINGS_SYSTEM_ROWS.map((row) => `system/${row}`),
+    ...DEVICE_SETTINGS_DEVICE_ROWS.map((row) => `device/${row}`), ...DEVICE_SETTINGS_SUPPORT_ROWS.map((row) => `support/${row}`)
+  ];
+  for (const key of all) assert.notEqual(registered.has(key), notCaptured.has(key), `${key} must be exactly one of registered / not captured`);
+  assert.equal(registered.size + notCaptured.size, all.length);
+  assert.deepEqual([...notCaptured].sort(), ["account/backup", "account/user", "support/diagnostics", "support/report", "system/factory"]);
+});
+
+test("the app lists each section's measured rows in the unit's order", () => {
+  const order = (section: string) => MEASURED.filter((entry) => entry[1] === section).map((entry) => entry[2]);
+  for (const [section, rows] of [["system", DEVICE_SETTINGS_SYSTEM_ROWS], ["device", DEVICE_SETTINGS_DEVICE_ROWS], ["support", DEVICE_SETTINGS_SUPPORT_ROWS]] as const) {
+    const present = new Set(order(section));
+    assert.deepEqual((rows as readonly string[]).filter((row) => present.has(row)), order(section), `${section} order`);
+  }
+});
+
+test("a pane whose class was never read selects nothing, and a registered class buried in text does not count", () => {
+  for (const guess of ["FactoryResetSettings", "SendReportSettings", "DiagnosticsSettings", "AccountSettings", "UserSettings", "BackupSettings", "WifiSettingsExtra"]) {
+    assert.equal(settingsSelectionFromTree(settingsTree(guess)), undefined, `${guess} is not guessed`);
+  }
+  assert.equal(settingsSelectionFromTree(settingsTree("GraphicsItem") + "\n      text : 'zenUI::WifiSettings'"), undefined);
+});
+
+test("the synthetic trees carry class names only", () => {
+  for (const [cls] of MEASURED) assert.doesNotMatch(settingsTree(cls), /text :|[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}|[0-9a-f]{7,}|Linux/i);
+});
+
+test("the poller follows the unit from pane to pane across sections, and an unregistered pane yields no selection", async (t) => {
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let tree = settingsTree("WifiSettings");
+  const seen: string[] = [];
+  const gateway = { graphicsTree: async () => ({ tree }) };
+  function Probe() {
+    useAdaptiveQcScreenPolling({ gateway, enabled: true, connected: true, onObservation: (o) => seen.push(settingsSelectionKey(o.settingsSelection)) });
+    return null;
+  }
+  let renderer!: ReturnType<typeof create>;
+  await act(async () => { renderer = create(React.createElement(Probe)); });
+  t.after(async () => { await act(async () => renderer.unmount()); });
+  for (const cls of ["MidiSettings", "ThirdPartyLicenses", "FactoryResetSettings"]) {
+    tree = settingsTree(cls);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+  }
+  assert.deepEqual(seen, ["system/wifi", "device/midi", "support/licenses", ""]);
 });
