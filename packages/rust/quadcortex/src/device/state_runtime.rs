@@ -804,6 +804,7 @@ mod tests {
 
     fn listing_with_numb_at_52() -> PresetFolderListing {
         PresetFolderListing {
+            order: None,
             key: SETLIST.into(),
             name: "My Presets".into(),
             file_type: Some(0),

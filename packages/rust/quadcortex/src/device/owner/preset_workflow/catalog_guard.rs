@@ -120,6 +120,7 @@ mod tests {
     use super::*;
     fn folder() -> PresetFolderListing {
         PresetFolderListing {
+            order: None,
             key: "/media/p4/Presets/Test".into(),
             name: "Test".into(),
             file_type: Some(0),

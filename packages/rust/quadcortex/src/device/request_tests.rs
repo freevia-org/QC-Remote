@@ -4846,6 +4846,7 @@ fn history_write_is_single_frame_unverified_and_unpaced() {
 fn persistent_preset_workflows_share_validation_and_stages() {
     let mut library = PresetLibrary::default();
     library.ingest(PresetFolderListing {
+        order: None,
         key: "/media/p4/Presets/Live".into(),
         name: "Live".into(),
         file_type: Some(0),
@@ -5214,6 +5215,7 @@ fn persistent_preset_workflows_share_validation_and_stages() {
     .is_err());
 
     library.ingest(PresetFolderListing {
+        order: None,
         key: "/media/p4/Presets/Live".into(),
         name: "Live".into(),
         file_type: Some(0),
@@ -5253,6 +5255,7 @@ fn persistent_preset_workflows_share_validation_and_stages() {
 
     let mut missing_key_library = PresetLibrary::default();
     missing_key_library.ingest(PresetFolderListing {
+        order: None,
         key: "/media/p4/Presets/Live".into(),
         name: "Live".into(),
         file_type: Some(0),
@@ -5285,6 +5288,7 @@ fn persistent_preset_workflows_share_validation_and_stages() {
 
     let mut missing_rename_key_library = PresetLibrary::default();
     missing_rename_key_library.ingest(PresetFolderListing {
+        order: None,
         key: "/media/p4/Presets/Live".into(),
         name: "Live".into(),
         file_type: Some(0),
@@ -5341,6 +5345,7 @@ fn planned_rename_and_copy_encode_the_cortex_control_file_frames() {
     const RENAME_BUILDER_HEX: &str = "0801180022420a162f6d656469612f70342f507265736574732f4c69766520003a260a196f70617175652d6465766963652d70726f647563742d6b65791a0752656e616d65647802";
     const COPY_BUILDER_HEX: &str = "08051800223f0a1c2f6d656469612f70342f507265736574732f4d792050726573657473200028003a1b0a196f70617175652d6465766963652d70726f647563742d6b65792a1f0a192f6d656469612f70342f507265736574732f536372617463683a02101f";
     let listing = |key: &str, files: Vec<PresetFileListing>| PresetFolderListing {
+        order: None,
         key: key.into(),
         name: key.rsplit('/').next().unwrap().into(),
         file_type: Some(0),
@@ -5426,6 +5431,7 @@ fn save_preset_as_requires_overwrite_confirmation_for_an_empty_named_occupied_sl
     // overwrite it without confirmOverwrite.
     let mut library = PresetLibrary::default();
     library.ingest(PresetFolderListing {
+        order: None,
         key: "/media/p4/Presets/Live".into(),
         name: "Live".into(),
         file_type: Some(0),
@@ -5501,6 +5507,7 @@ fn copy_preset_does_not_treat_two_independently_empty_names_as_a_duplicate() {
     // a meaningful name to protect against duplication.
     let mut library = PresetLibrary::default();
     library.ingest(PresetFolderListing {
+        order: None,
         key: "/media/p4/Presets/Live".into(),
         name: "Live".into(),
         file_type: Some(0),
@@ -5604,6 +5611,7 @@ fn create_setlist_matches_desktop_capacity_collision_and_utf8_plan() {
             format!("/media/p4/Presets/{name}")
         };
         library.ingest(PresetFolderListing {
+            order: None,
             key,
             name: name.into(),
             file_type: Some(0),
@@ -5644,6 +5652,7 @@ fn create_setlist_matches_desktop_capacity_collision_and_utf8_plan() {
 
     let mut full = PresetLibrary::default();
     full.ingest(PresetFolderListing {
+        order: None,
         key: "/opt/neuraldsp/Factory Library".into(),
         name: "Factory Library".into(),
         file_type: Some(0),
@@ -5653,6 +5662,7 @@ fn create_setlist_matches_desktop_capacity_collision_and_utf8_plan() {
     });
     for index in 0..12 {
         full.ingest(PresetFolderListing {
+            order: None,
             key: format!("/media/p4/Presets/User{index}"),
             name: format!("User{index}"),
             file_type: Some(0),
@@ -5677,6 +5687,7 @@ fn delete_preset_resolves_an_authoritative_key_and_rejects_stale_identity() {
     let product_key = "/media/p4/Presets/Live/opaque-7f3d.pb";
     let mut library = PresetLibrary::default();
     library.ingest(PresetFolderListing {
+        order: None,
         key: setlist_key.into(),
         name: "Live".into(),
         file_type: Some(0),
@@ -5733,6 +5744,7 @@ fn delete_preset_resolves_an_authoritative_key_and_rejects_stale_identity() {
 
     let mut missing_key = PresetLibrary::default();
     missing_key.ingest(PresetFolderListing {
+        order: None,
         key: setlist_key.into(),
         name: "Live".into(),
         file_type: Some(0),
@@ -7679,6 +7691,7 @@ fn setlist_deletion_plan_requires_one_canonical_nonfactory_target() {
         ..Default::default()
     };
     let listing = |key: &str, name: &str, factory| crate::state::PresetFolderListing {
+        order: None,
         key: key.into(),
         name: name.into(),
         is_factory: factory,

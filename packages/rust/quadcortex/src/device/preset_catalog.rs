@@ -420,6 +420,7 @@ mod tests {
     }
     fn folder(key: &str, name: Option<&str>) -> PresetFolderListing {
         PresetFolderListing {
+            order: None,
             key: key.into(),
             name: key.rsplit('/').next().unwrap().into(),
             file_type: Some(0),

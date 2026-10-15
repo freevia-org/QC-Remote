@@ -1537,6 +1537,7 @@ mod tests {
         if let Some(name) = source_name {
             let key = "/media/p4/Presets/Test".to_string();
             let folder = crate::state::PresetFolderListing {
+                order: None,
                 key: key.clone(),
                 name: "Test".into(),
                 file_type: Some(0),

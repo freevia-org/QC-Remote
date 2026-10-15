@@ -85,14 +85,24 @@ const MY_PRESETS = "my presets";
  * the seventh row and carries 7). The number is therefore the display index,
  * so the order has to be the one the rows are drawn in.
  *
- * The gateway projects the setlists alphabetically, because that is how the
- * desktop application lists them; the unit's own order beyond "My Presets" is
- * not something the broker is told, so everything after the pinned folder
- * keeps the order it arrived in.
+ * The broker reports each folder's `order`, the position in which the unit
+ * first published it. The unit lists its user folders in that order (its row
+ * order matches the order the folders arrive in at connection). Folders are
+ * drawn by that order after the pinned "My Presets". A broker that predates the
+ * field sends none, and the folders then keep the order they arrived in, which
+ * is alphabetical. A folder without an order follows those that have one.
  */
-export function orderUserFolders<T extends Pick<PresetFolder, "name">>(folders: readonly T[]): T[] {
+export function orderUserFolders<T extends Pick<PresetFolder, "name" | "order">>(folders: readonly T[]): T[] {
   const pinned = folders.filter((folder) => folder.name.trim().toLowerCase() === MY_PRESETS);
-  return [...pinned, ...folders.filter((folder) => !pinned.includes(folder))];
+  const rest = folders.filter((folder) => !pinned.includes(folder));
+  const position = (folder: T): number => (typeof folder.order === "number" && Number.isFinite(folder.order) ? folder.order : Number.POSITIVE_INFINITY);
+  // Array.prototype.sort is stable, so equal or missing orders keep arrival order.
+  const ordered = [...rest].sort((left, right) => {
+    const l = position(left);
+    const r = position(right);
+    return l === r ? 0 : l < r ? -1 : 1;
+  });
+  return [...pinned, ...ordered];
 }
 
 export interface LibraryEntryGroup {

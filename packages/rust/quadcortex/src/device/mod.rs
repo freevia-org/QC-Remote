@@ -117,6 +117,11 @@ pub struct PresetFolder {
     pub name: String,
     /// Whether the folder is factory content, such as the factory library.
     pub is_factory: bool,
+    /// Position in which the device first published the folder, when it was observed. Orders
+    /// user folders the way the unit lists them; absent for projections that never saw arrival
+    /// order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<u32>,
 }
 
 /// The 256 preset slots of one setlist together with the known setlist folders.
@@ -132,7 +137,7 @@ pub struct PresetList {
     pub current_position: i32,
     /// One entry for each of the 256 positions, in position order.
     pub presets: Vec<PresetEntry>,
-    /// Known preset setlist folders, factory library first, then by name.
+    /// Known preset setlist folders, factory library first, then user folders in the device's order when observed, else by name.
     pub folders: Vec<PresetFolder>,
 }
 
@@ -230,6 +235,7 @@ impl PresetLibrary {
         self.listings
             .entry(key.clone())
             .or_insert_with(|| PresetFolderListing {
+                order: None,
                 name: key.rsplit('/').next().unwrap_or_default().to_string(),
                 key,
                 file_type: Some(0),
@@ -240,7 +246,8 @@ impl PresetLibrary {
     }
 
     /// Returns the setlist folders of the primary set: the factory library first, then the rest
-    /// ordered by name, ignoring case.
+    /// in the order the device published them when that order was observed, else by name,
+    /// ignoring case.
     pub fn folders(&self) -> Vec<PresetFolder> {
         Self::project_folders(self.listings.values())
     }
@@ -260,14 +267,22 @@ impl PresetLibrary {
                 name: folder.name.clone(),
                 is_factory: folder.is_factory
                     || folder.key.trim_end_matches('/') == "/opt/neuraldsp/Factory Library",
+                order: folder.order,
             })
             .collect::<Vec<_>>();
+        // Factory first. User folders follow the device's own order when it was observed, then
+        // (and for folders without one) by name, ignoring case.
         folders.sort_by(|left, right| {
-            right.is_factory.cmp(&left.is_factory).then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            })
+            right
+                .is_factory
+                .cmp(&left.is_factory)
+                .then_with(|| left.order.is_none().cmp(&right.order.is_none()))
+                .then_with(|| left.order.cmp(&right.order))
+                .then_with(|| {
+                    left.name
+                        .to_ascii_lowercase()
+                        .cmp(&right.name.to_ascii_lowercase())
+                })
         });
         folders
     }
@@ -1142,6 +1157,7 @@ mod tests {
     fn preset_library_expands_device_listings_to_all_qc_slots() {
         let mut library = PresetLibrary::default();
         library.ingest(PresetFolderListing {
+            order: None,
             key: "/media/p4/Presets/Live".into(),
             name: "Live".into(),
             file_type: Some(0),
@@ -1173,6 +1189,7 @@ mod tests {
         let mut library = PresetLibrary::default();
         let folder =
             |key: &str, name: &str, file_type, is_factory, is_plugin| PresetFolderListing {
+                order: None,
                 key: key.into(),
                 name: name.into(),
                 file_type,
@@ -1235,6 +1252,55 @@ mod tests {
     }
 
     #[test]
+    fn folders_follow_the_observed_device_order_with_factory_pinned_first() {
+        let mut library = PresetLibrary::default();
+        let folder = |name: &str, order: Option<u32>, is_factory: bool| PresetFolderListing {
+            order,
+            key: format!("/media/p4/Presets/{name}"),
+            name: name.into(),
+            file_type: Some(0),
+            is_factory,
+            is_plugin: false,
+            files: Vec::new(),
+        };
+        // Alphabetical order disagrees with the device order on purpose.
+        library.ingest(folder("Folder C", Some(0), false));
+        library.ingest(folder("Folder A", Some(2), false));
+        library.ingest(folder("Folder B", Some(1), false));
+        library.ingest(folder("Factory", Some(3), true));
+        let names = |folders: Vec<PresetFolder>| {
+            folders
+                .into_iter()
+                .map(|folder| folder.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(library.observed_folders()),
+            ["Factory", "Folder C", "Folder B", "Folder A"]
+        );
+        assert_eq!(
+            library.observed_folders()[1].order,
+            Some(0),
+            "the order is carried through to the projected folder"
+        );
+        // Folders that were never observed in order fall back to the name sort, after the
+        // ordered ones, and the sort stays total.
+        library.ingest(folder("Folder E", None, false));
+        library.ingest(folder("folder D", None, false));
+        assert_eq!(
+            names(library.observed_folders()),
+            ["Factory", "Folder C", "Folder B", "Folder A", "folder D", "Folder E"]
+        );
+        // Without any order the projection is the alphabetical one it always was.
+        let mut plain = PresetLibrary::default();
+        plain.ingest(folder("Folder B", None, false));
+        plain.ingest(folder("Folder A", None, false));
+        assert_eq!(names(plain.folders()), ["Folder A", "Folder B"]);
+        let json = serde_json::to_value(plain.folders()).unwrap();
+        assert!(json[0].get("order").is_none());
+    }
+
+    #[test]
     fn a_shorter_folder_frame_replaces_the_complete_cached_listing() {
         let mut library = PresetLibrary::default();
         let key = "/media/p4/Presets/Live";
@@ -1247,6 +1313,7 @@ mod tests {
             ..Default::default()
         };
         library.ingest(PresetFolderListing {
+            order: None,
             key: key.into(),
             name: "Live".into(),
             file_type: Some(0),
@@ -1255,6 +1322,7 @@ mod tests {
             files: vec![file(1, "Keep"), file(2, "Deleted Elsewhere")],
         });
         library.ingest(PresetFolderListing {
+            order: None,
             key: key.into(),
             name: "Live".into(),
             file_type: Some(0),
@@ -1273,6 +1341,7 @@ mod tests {
         let key = "/media/p4/Presets/Live";
         let product_key = "opaque-device-product-key";
         library.ingest(PresetFolderListing {
+            order: None,
             key: key.into(),
             name: "Live".into(),
             file_type: Some(0),
@@ -1301,6 +1370,7 @@ mod tests {
         let mut library = PresetLibrary::default();
         let key = "/media/p4/Presets/My Presets";
         let frame = |name: &str| PresetFolderListing {
+            order: None,
             key: key.into(),
             name: "My Presets".into(),
             file_type: Some(0),
@@ -1402,6 +1472,7 @@ mod tests {
         let key = "/media/p4/Presets/Live";
         let mut library = PresetLibrary::default();
         library.ingest(PresetFolderListing {
+            order: None,
             key: key.into(),
             name: "Live".into(),
             file_type: Some(0),
@@ -1470,6 +1541,7 @@ mod tests {
         let key = "/media/p4/Presets/Live";
         let mut library = PresetLibrary::default();
         library.ingest(PresetFolderListing {
+            order: None,
             key: key.into(),
             name: "Live".into(),
             file_type: Some(0),
@@ -1508,6 +1580,7 @@ mod tests {
         let key = "/media/p4/Presets/Live";
         let mut library = PresetLibrary::default();
         library.ingest(PresetFolderListing {
+            order: None,
             key: key.into(),
             name: "Live".into(),
             file_type: Some(0),

@@ -43,6 +43,9 @@ struct FolderObservation {
 #[derive(Default)]
 pub(super) struct CatalogObservations {
     folders: BTreeMap<String, FolderObservation>,
+    /// Next first-seen sequence number. Monotonic between clears, so a folder that is removed
+    /// and published again is placed after the folders that stayed.
+    next_folder_order: u32,
     retained_origin: Option<ObservationTicket>,
     retained_until_ms: u64,
     invalidation: Option<CatalogInvalidation>,
@@ -59,6 +62,7 @@ pub(super) struct CatalogObservations {
 impl CatalogObservations {
     pub fn clear(&mut self) {
         self.folders.clear();
+        self.next_folder_order = 0;
         self.retained_origin = None;
         self.retained_until_ms = 0;
         self.invalidation = None;
@@ -162,6 +166,7 @@ impl CatalogObservations {
 
     pub fn retained_listing(&self, key: &str) -> Option<PresetFolderListing> {
         let folder = self.folders.get(key.trim_end_matches('/'))?;
+        // The header carries the first-seen sequence number assigned at insertion.
         let mut listing = folder.header.clone();
         listing.files = folder.slots.values().cloned().collect();
         Some(listing)
@@ -252,13 +257,19 @@ impl CatalogObservations {
                 continue;
             };
             let supplied = std::mem::take(&mut incoming.files);
-            let folder =
-                self.folders
-                    .entry(incoming.key.clone())
-                    .or_insert_with(|| FolderObservation {
-                        header: incoming.clone(),
-                        slots: BTreeMap::new(),
-                    });
+            // The sequence number is assigned on first insertion only; later frames, renames
+            // and header updates keep it, so it is the order the device first published the
+            // folder in, which is the order its own directory lists them.
+            let next_order = &mut self.next_folder_order;
+            let folder = self.folders.entry(incoming.key.clone()).or_insert_with(|| {
+                let mut header = incoming.clone();
+                header.order = Some(*next_order);
+                *next_order = next_order.saturating_add(1);
+                FolderObservation {
+                    header,
+                    slots: BTreeMap::new(),
+                }
+            });
             // Only this wire header can change retained header evidence. A
             // programmatically changed native/presentation cache is not input.
             if wire.name.is_some() {

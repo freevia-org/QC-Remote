@@ -301,6 +301,7 @@ runtime.ingest(2, &position)?;
 
 // Slot 9 of the same setlist already holds a preset called "Other".
 runtime.ingest_preset_listing(PresetFolderListing {
+    order: None,
     key: SETLIST.into(),
     name: "Demo Setlist".into(),
     file_type: Some(0),
