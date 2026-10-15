@@ -7000,47 +7000,35 @@ mod tcp_tests {
 
     #[test]
     fn unread_tcp_response_is_bounded_and_socket_shutdown_retires_the_owned_writer_on_unwind() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (mut server, _) = listener.accept().unwrap();
-        let _prefill_shutdown = ShutdownSocket(client.try_clone().unwrap());
-        // Windows loopback can buffer an entire 8MiB frame. Establish real
-        // backpressure rather than inferring it from the frame's size.
-        server.set_nonblocking(true).unwrap();
-        let prefill_deadline = Instant::now() + Duration::from_secs(2);
-        let buffer = [0_u8; 64 * 1024];
-        let mut prefilled = 0_usize;
-        let mut blocked_since = None;
-        loop {
-            assert!(
-                Instant::now() < prefill_deadline,
-                "socket prefill deadline expired"
-            );
-            assert!(
-                prefilled < 128 * 1024 * 1024,
-                "socket prefill byte ceiling exceeded"
-            );
-            match server.write(&buffer) {
-                Ok(0) => panic!("prefill peer closed rather than applying backpressure"),
-                Ok(written) => {
-                    prefilled += written;
-                    blocked_since = None;
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    // One WouldBlock can precede a delayed loopback ACK and
-                    // renewed buffering. Require sustained unread pressure.
-                    let since = blocked_since.get_or_insert_with(Instant::now);
-                    if since.elapsed() >= Duration::from_millis(150) {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => panic!("socket prefill failed: {error}"),
+        fn bounded_pair(listener: &TcpListener) -> (TcpStream, TcpStream) {
+            // Set receive capacity before the handshake, rather than racing
+            // Windows loopback's delayed ACKs and auto-grown receive window.
+            let socket =
+                socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+            socket.set_recv_buffer_size(4096).unwrap();
+            socket
+                .connect(&listener.local_addr().unwrap().into())
+                .unwrap();
+            assert!(socket.recv_buffer_size().unwrap() <= 64 * 1024);
+            let client: TcpStream = socket.into();
+            let (server, _) = listener.accept().unwrap();
+            let server_socket = socket2::SockRef::from(&server);
+            // Winsock can complete a blocking send by accepting its buffer
+            // even when it exceeds SO_SNDBUF. Disable that test-only staging
+            // so completion requires peer acknowledgement, not admission.
+            // https://learn.microsoft.com/en-us/windows/win32/winsock/tcp-ip-specific-issues-2
+            #[cfg(windows)]
+            {
+                server_socket.set_send_buffer_size(0).unwrap();
+                assert_eq!(server_socket.send_buffer_size().unwrap(), 0);
             }
+            #[cfg(not(windows))]
+            server_socket.set_send_buffer_size(4096).unwrap();
+            assert!(server_socket.send_buffer_size().unwrap() <= 64 * 1024);
+            (client, server)
         }
-        assert!(prefilled > 0, "backpressure follows admitted bytes");
-        server.set_nonblocking(false).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let (client, mut server) = bounded_pair(&listener);
         let response = json!({"id":1,"result":"x".repeat(8 * 1024 * 1024)});
         let writer = test_support::FixtureJob::spawn_plain(move || {
             let start = Instant::now();
@@ -7057,20 +7045,34 @@ mod tcp_tests {
         drop(shutdown);
         drop(client);
 
-        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (mut server, _) = listener.accept().unwrap();
+        let (client, mut server) = bounded_pair(&listener);
         let finished = Arc::new(AtomicBool::new(false));
         let done = Arc::clone(&finished);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             let response = json!({"id":2,"result":"x".repeat(8 * 1024 * 1024)});
             let _writer = test_support::FixtureJob::spawn_plain(move || {
+                started_tx.send(()).unwrap();
                 let _ = write_tcp_response(&mut server, &response);
                 done.store(true, Ordering::Release);
+                let _ = finished_tx.send(());
             });
             let _shutdown = ShutdownSocket(client);
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(
+                finished_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout),
+                "the owned writer must still be unfinished before socket shutdown"
+            );
             panic!("injected reader assertion failure");
         }));
-        assert!(unwind.is_err());
+        let panic = unwind.expect_err("the injected reader failure must unwind");
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"injected reader assertion failure"),
+            "an earlier fixture assertion must not masquerade as the injected unwind"
+        );
         assert!(
             finished.load(Ordering::Acquire),
             "writer retired before unwind returned"
@@ -8629,6 +8631,8 @@ mod tcp_tests {
     fn shutdown_refuses_participants_then_forces_and_flushes_its_response() {
         let (mut scratch, path) = broker_scratch_descriptor_path("observer-shutdown");
         let serve = start_broker_serve_for_test(&path);
+        let instance_id = serve.handle.0.instance_id.clone();
+        let release_marker = BrokerReleaseMarker::path_for(&path, &instance_id);
         scratch.served_by(&serve);
         let mut observer = authenticated_tcp_client(serve.port, &serve.token);
         assert!(observer_hello(&mut observer, json!(15))
@@ -8659,6 +8663,17 @@ mod tcp_tests {
         }
         assert!(!serve.alive());
         assert!(!path.exists());
+        drop(observer);
+        drop(participant);
+        drop(serve); // Join the original serve/peer actors before fixture cleanup.
+        let marker: BrokerReleaseMarker =
+            serde_json::from_slice(&std::fs::read(&release_marker).unwrap()).unwrap();
+        assert_eq!(marker.instance_id, instance_id);
+        assert!(marker.forced);
+        assert!(qc_owner_only_file::is_owner_only(&release_marker).unwrap());
+        // Forced release is intentionally durable in production. Retire only
+        // this fixture's verified generation marker, not arbitrary leftovers.
+        std::fs::remove_file(release_marker).unwrap();
     }
 
     #[test]

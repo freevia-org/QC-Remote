@@ -467,6 +467,10 @@ mod tests {
     }
     #[cfg(windows)]
     impl FixtureChild {
+        #[allow(
+            deprecated,
+            reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+        )]
         fn spawn(mode: &str) -> Self {
             reap_fixture_children();
             FIXTURE_CHILD_COUNT

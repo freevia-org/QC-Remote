@@ -57,6 +57,10 @@ impl CleanupLimiter {
             LIMITER.with(Arc::clone)
         }
     }
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     pub(super) fn reserve(self: &Arc<Self>, paths: Vec<PathBuf>) -> Result<Arc<CleanupPermit>, ()> {
         self.count
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {

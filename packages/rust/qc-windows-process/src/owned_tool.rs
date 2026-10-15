@@ -110,6 +110,10 @@ impl Tool {
     fn spawn(command: &mut Command, deadline: Instant) -> io::Result<Self> {
         Self::spawn_with_limit(command, deadline, tool_limit().clone())
     }
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     fn spawn_with_limit(
         command: &mut Command,
         deadline: Instant,

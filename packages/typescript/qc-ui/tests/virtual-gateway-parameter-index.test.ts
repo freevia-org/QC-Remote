@@ -61,7 +61,7 @@ test("parameter writes reject prototype-shaped scene keys even if internal state
   assert.equal(({} as { polluted?: unknown }).polluted, undefined);
 });
 
-test("virtual block reset applies measured defaults to active and inactive scenes while retaining Scene mode", async () => {
+test("virtual block reset applies measured defaults to the active scene without inventing an all-scene reset", async () => {
   const measuredCatalogue = { models: [{ id: 1_001, name: "Amp", category: "Guitar Amplifier", hidden: false,
     parameters: [0, 1].map((index) => ({ index, name: `Parameter ${index}`, type: "float", minimum: 0, maximum: 1, valueScale: "linear", options: [] })) }] } as VirtualModelCatalogue;
   const storage = createMemoryVirtualDeviceStorage();
@@ -81,17 +81,19 @@ test("virtual block reset applies measured defaults to active and inactive scene
   });
   const result = await gateway.resetBlockParameters(block.row, block.column, block.modelId!, initial.presetName, initial.presetIdentity!);
   assert.equal(result.verified, true);
+  const expectedScenes = [.8, .6, .4, .9, .5, .7, .1, 1];
+  expectedScenes[initial.activeScene] = .2;
   for (const scene of [initial.activeScene, (initial.activeScene + 1) % 8]) {
     await gateway.selectScene(scene, initial.presetName, initial.presetIdentity!);
     const readback = await gateway.blockDetails(block.row, block.column, initial.presetName, initial.presetIdentity!);
-    assert.equal(readback.parameters.find((parameter) => parameter.index === 0)?.normalizedValue, .2);
+    assert.equal(readback.parameters.find((parameter) => parameter.index === 0)?.normalizedValue, expectedScenes[scene]);
     assert.equal(readback.parameters.find((parameter) => parameter.index === 0)?.sceneMode, true);
     assert.equal(readback.parameters.find((parameter) => parameter.index === 1)?.normalizedValue, .3);
     assert.equal(readback.parameters.find((parameter) => parameter.index === 0)?.expression, 2);
   }
   const persisted = JSON.parse(storage.text!);
   const stored = persisted.current.preset.blocks.find((target) => target.modelId === 1_001);
-  assert.deepEqual(stored.sceneValues[0], Array(8).fill(.2));
+  assert.deepEqual(stored.sceneValues[0], expectedScenes, "all seven inactive scene values are retained");
 });
 
 test("virtual replacement retires the old model's parameter assignments and same-model replacement is a true no-op", async () => {
@@ -115,7 +117,7 @@ test("virtual replacement retires the old model's parameter assignments and same
   const before = structuredClone(store.state.current);
   const unchanged = await gateway.replaceBlock(block.row, block.column, 1001, 1001, initial.presetName, initial.presetIdentity!);
   assert.equal(unchanged.changed, false);
-  assert.match(unchanged.detail, /left unchanged/);
+  assert.match(unchanged.detail, /already selected/);
   assert.deepEqual(store.state.current, before, "a same-model operation must not silently reset values or dirty state");
   const replaced = await gateway.replaceBlock(block.row, block.column, 1002, 1001, initial.presetName, initial.presetIdentity!);
   assert.equal(replaced.changed, true);

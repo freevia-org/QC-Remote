@@ -18,6 +18,10 @@ impl Budget {
             limit,
         }
     }
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     pub fn reserve(&'static self) -> Result<Reservation, String> {
         reap();
         self.count

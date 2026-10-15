@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { SupersededPresetOperation } from "@qc-remote/core";
 import type { DeviceCommandOptions } from "./workflow-options";
 import { bindDeviceCommandScope, deviceCommandBusy, devicePhysicalCommandKey, registerDeviceCommandSession } from "./device-command-ownership.ts";
+import { captureGatewaySession, registerGatewayWrapper } from "./gateway-session.ts";
+import type { GatewayTransport } from "@qc-remote/client";
 type DeviceWorkflowSessionOptions = Pick<DeviceCommandOptions, "lifetime" | "sessionKey" | "commandSessionKey" | "captureSessionCurrent" | "notice" | "fail"> & {
   gateway: object; connected: boolean; setPending?(pending: boolean): void;
 };
@@ -23,7 +25,8 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
   const pendingReset = useRef(false);
   let owner = ownerRef.current;
   const externalProbe = options.captureSessionCurrent?.() ?? (() => true);
-  const probe = () => externalProbe() && (!origin || Boolean(lifetime?.currentSession(origin)));
+  const route = captureGatewaySession(options.gateway as GatewayTransport);
+  const probe = () => externalProbe() && route.current() && (!origin || Boolean(lifetime?.currentSession(origin)));
   if (!owner || (!owner.current() && probe()) || owner.key !== sessionKey
       || owner.gateway !== options.gateway || owner.connected !== options.connected) {
     const replacement: Owner = { key: sessionKey, gateway: options.gateway, connected: options.connected, current: () => false };
@@ -35,7 +38,7 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
   const scoped = useMemo(() => {
     const current = held.current;
     const apply = (callback: () => void) => { if (current()) callback(); };
-    const gateway = new Proxy(held.gateway, {
+    const wrap = (inner: object) => new Proxy(inner, {
       get(target, key) {
         const method = Reflect.get(target, key);
         if (typeof method !== "function") return method;
@@ -53,6 +56,8 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
         };
       }
     });
+    const gateway = wrap(held.gateway);
+    registerGatewayWrapper(gateway as GatewayTransport, held.gateway as GatewayTransport, wrap as (target: GatewayTransport) => GatewayTransport, current);
     return { gateway, current, apply,
       notice: (message: string) => apply(() => latest.current.notice(message)),
       fail: (error: unknown) => { if (!(error instanceof SupersededPresetOperation)) apply(() => latest.current.fail(error)); },

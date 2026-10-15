@@ -3564,6 +3564,10 @@ mod tests {
     }
     // Shadows the production name ONLY within this test module. All calls
     // still invoke the real production listener, then retain its exact owner.
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     fn start_listener(
         state_files: Vec<PathBuf>,
         adapter: Arc<dyn DeviceAdapter>,
@@ -3609,6 +3613,10 @@ mod tests {
         std::sync::atomic::AtomicUsize::new(0);
     struct FixtureReaderPermit;
     impl FixtureReaderPermit {
+        #[allow(
+            deprecated,
+            reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+        )]
         fn acquire() -> Self {
             assert!(
                 FIXTURE_READERS_IN_USE

@@ -893,6 +893,10 @@ struct FakeBrokerThreads {
     permit: std::sync::Arc<FakeBrokerPermit>,
 }
 impl FakeBrokerThreads {
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     fn new(socket: &TcpStream) -> Self {
         let mut finished = Vec::new();
         let mut retained = RETAINED_FAKE_BROKER_THREADS
@@ -4535,20 +4539,6 @@ pub(crate) fn run_owned_test_binary_fixture_with_resource(
         })
     });
     finish_or_rethrow(outcome, report)
-}
-
-#[cfg(unix)]
-fn exited_process_id() -> u32 {
-    let mut child = Command::new("/bin/sh")
-        .args(["-c", "exit 0"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn a short-lived child for the dead-process fixture");
-    let pid = child.id();
-    child.wait().unwrap();
-    pid
 }
 
 // `os_process_is_alive`/`os_process_created_at` themselves are tested in

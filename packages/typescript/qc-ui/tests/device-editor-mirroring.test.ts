@@ -33,7 +33,7 @@ test("opening a block taps its native cell only on the bare Grid, with normal Gr
 
 test("opening a block refuses known and unknown screens over the Grid", async () => {
   for (const classes of [
-    ["ParameterEditor"], ["MainMenuPopup"], ["SceneSelectorPopup"], ["CpuLoadIndicator"],
+    ["ParameterEditor"], ["MainMenuPopup"], ["SceneSelectorPopup"],
     ["PortSelector"], ["SettingsDialog"], ["DirectoryDialog"], ["CheatSheetDialog"],
     ["MessageDialog"], ["Keyboard"], ["ModelMenu"], ["SMParamsEditor"],
     ["SomeNewPopup"], ["SomeNewDialog"], ["SomeNewOverlay"], ["SomeNewPanel"]
@@ -42,6 +42,12 @@ test("opening a block refuses known and unknown screens over the Grid", async ()
     await assert.rejects(openGridBlockOnDevice(host.gateway, block), /covered by another screen/, classes.join());
     assert.deepEqual(host.taps, [], `${classes.join()}: a Grid in the covered tree is not permission to touch it`);
   }
+});
+
+test("the small CPU monitor does not block Grid interaction", async () => {
+  const host = unit(["CpuLoadIndicator"]);
+  assert.equal(await openGridBlockOnDevice(host.gateway, block), true);
+  assert.deepEqual(host.taps, ["272,241"]);
 });
 
 test("opening a block refuses a missing Grid, Grid-prefixed impostor, stale operation and invalid cell", async () => {

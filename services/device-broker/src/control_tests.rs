@@ -57,6 +57,10 @@ static RETAINED_OLD_BROKERS: Mutex<Vec<RetainedOldBroker>> = Mutex::new(Vec::new
 static OLD_BROKER_OWNERS: AtomicUsize = AtomicUsize::new(0);
 struct OldBrokerPermit;
 impl OldBrokerPermit {
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     fn acquire() -> Arc<Self> {
         let finished = {
             let mut retained = RETAINED_OLD_BROKERS

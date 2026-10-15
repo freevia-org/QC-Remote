@@ -818,6 +818,10 @@ mod tests {
                 })
             }))
         }
+        #[allow(
+            deprecated,
+            reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+        )]
         fn reserve(
             self: &std::sync::Arc<Self>,
         ) -> Result<std::sync::Arc<ReaderPermit>, &'static str> {

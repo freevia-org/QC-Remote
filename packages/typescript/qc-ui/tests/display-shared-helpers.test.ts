@@ -135,9 +135,9 @@ test("the assembled Looper screen receives the host session probe before opening
   const host = {
     captureSessionCurrent: () => () => current,
     snapshot: { blocks: [{ modelId: 27_000, name: "Looper X" }], scenes: [], activeScene: 0 },
-    destination: { view: "looper-editor", setView: () => log.push("view"), setPopup() {}, latch: {} },
+    destination: { view: "looper-editor", captureCurrent: () => () => current, setView: () => log.push("view"), setPopup() {}, latch: {} },
     workflows: {
-      deviceSettings: { open: false }, tempo: { open: false }, looper: { run: async () => command },
+      deviceSettings: { open: false }, tempo: { open: false }, looper: { captureContinuation: () => () => current, run: async () => command },
       grid: { openBlock: async () => log.push("editor") }, scene: {}, preset: {}, routing: {}
     },
     views: {}, cpu: { monitor: () => null }, undo: {},

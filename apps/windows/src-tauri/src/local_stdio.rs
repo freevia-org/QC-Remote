@@ -1531,6 +1531,10 @@ fn production_refresh_budget() -> Arc<std::sync::atomic::AtomicUsize> {
 }
 struct RefreshPermit(Arc<std::sync::atomic::AtomicUsize>);
 impl RefreshPermit {
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     fn acquire(budget: &Arc<std::sync::atomic::AtomicUsize>) -> Option<Arc<Self>> {
         reap_refresh_workers();
         budget
@@ -2330,6 +2334,10 @@ mod tests {
         std::sync::atomic::AtomicUsize::new(0);
     struct StdioFixturePermit;
     impl StdioFixturePermit {
+        #[allow(
+            deprecated,
+            reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+        )]
         fn acquire() -> Self {
             let finished = {
                 let mut retained = RETAINED_STDIO_FIXTURE_THREADS
@@ -7095,6 +7103,10 @@ mod tests {
     fn stdio_bystander_child_helper() {
         std::thread::sleep(Duration::from_secs(60));
     }
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     fn test_owned_sleeper() -> StdioBystander {
         let mut retained = RETAINED_STDIO_BYSTANDERS
             .lock()

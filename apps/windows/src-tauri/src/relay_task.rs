@@ -12,6 +12,10 @@ static ACTIVE: AtomicUsize = AtomicUsize::new(0);
 static RETAINED: Mutex<Vec<Owned>> = Mutex::new(Vec::new());
 pub(crate) struct Permit;
 impl Permit {
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     pub(crate) fn acquire() -> Result<Self, String> {
         reap();
         ACTIVE

@@ -15,7 +15,7 @@ jni = "0.21"
 quadcortex = { path = "../quadcortex", features = ["cloud-forward"] }
 serde_json.workspace = true
 quadcortex-forwarder = { path = "../quadcortex-forwarder" }
-zeroize = "1"
+zeroize.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni-platform = { package = "jni", version = "0.22.4" }

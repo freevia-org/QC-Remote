@@ -46,6 +46,10 @@ fn reap_retained() {
         drop(original._permit);
     }
 }
+#[allow(
+    deprecated,
+    reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+)]
 fn permit() -> Result<Arc<Permit>, String> {
     MANAGERS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| (count < MAX_MANAGERS).then_some(count + 1))
         .map_err(|_| "Broker background manager capacity exhausted; original unfinished owners remain retained".to_string())?;

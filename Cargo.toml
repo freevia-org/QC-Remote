@@ -42,18 +42,27 @@ exclude = ["apps/windows/src-tauri"]
 [workspace.dependencies]
 async-trait = "0.1"
 base64 = "0.22"
+bytes = "=1.12.1"
+http = "=1.5.0"
+http-body-util = "=0.1.5"
+hyper = "=1.11.1"
+hyper-rustls = "=0.27.10"
+hyper-util = "=0.1.20"
 libc = "0.2"
 prost = "0.14"
 prost-build = "0.14"
 rand = "0.9"
 reqwest = "0.13"
+rustls = { version = "=0.23.46", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 tokio = "1"
+tower-service = "=0.3.3"
 uuid = { version = "1", features = ["v4"] }
-windows-sys = "0.61"
+windows-sys = "=0.61.2"
+zeroize = "1"
 
 # This root is a virtual manifest, so it has no [package] table to carry the
 # project license. Cargo's own place for a workspace-wide license is here.

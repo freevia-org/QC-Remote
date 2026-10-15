@@ -140,6 +140,10 @@ impl FixtureAdmissions {
         static OWNER: std::sync::OnceLock<Arc<FixtureAdmissions>> = std::sync::OnceLock::new();
         Arc::clone(OWNER.get_or_init(|| Self::new(FIXTURE_OWNER_LIMIT)))
     }
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     fn reserve(self: &Arc<Self>) -> Result<Arc<FixturePermit>, &'static str> {
         self.reap();
         self.count

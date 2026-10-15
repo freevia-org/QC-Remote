@@ -268,6 +268,10 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .extend(still_pending);
         }
+        #[allow(
+            deprecated,
+            reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+        )]
         fn spawn(command: &mut Command, root: Arc<ScratchRoot>) -> std::io::Result<Self> {
             Self::reap();
             CHILD_COUNT

@@ -2606,7 +2606,9 @@ mod tests {
         WriteStallPolicy::WindowsQcError31
     }
 
-    #[cfg(target_os = "linux")]
+    // Only Windows admits its specific transient Error 31. Every other
+    // platform, including macOS test builds, keeps strict failure handling.
+    #[cfg(not(windows))]
     fn writer_test_stall_policy() -> WriteStallPolicy {
         WriteStallPolicy::Strict
     }

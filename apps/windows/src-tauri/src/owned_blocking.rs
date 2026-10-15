@@ -29,6 +29,10 @@ impl Context {
                 .compare_exchange(QUEUED, ADMITTED, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
     }
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
     fn cancel(&self) {
         let _ = self
             .state

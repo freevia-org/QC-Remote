@@ -851,7 +851,15 @@ function CorOsParameterEditorContent(props: CorOsParameterEditorProps) {
 function CorOsParameterEditorSession(props: CorOsParameterEditorProps) {
   const mounted = useRef(true);
   const workflowGeneration = useRef(0);
-  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; workflowGeneration.current++; }; }, []);
+  const [, replaceMountedOwner] = useState(0);
+  useLayoutEffect(() => {
+    const replayed = !mounted.current;
+    mounted.current = true;
+    // StrictMode replay retires the first callbacks. Render new callbacks for
+    // the new generation rather than reviving the retired generation.
+    if (replayed) replaceMountedOwner((version) => version + 1);
+    return () => { mounted.current = false; workflowGeneration.current++; };
+  }, []);
   const [workflow, setWorkflow] = useState<"save" | "looper">();
   const [name, setName] = useState("");
   const [assignments, setAssignments] = useState<number[]>([]);

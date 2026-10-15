@@ -35,6 +35,10 @@ fn signalled(job: &thread::JoinHandle<()>) -> Result<bool, String> {
         )),
     }
 }
+#[allow(
+    deprecated,
+    reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+)]
 fn acquire() -> Result<Arc<Permit>, String> {
     let finished = {
         let mut retained = RETAINED.lock_recover();
