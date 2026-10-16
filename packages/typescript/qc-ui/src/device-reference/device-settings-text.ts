@@ -5,16 +5,23 @@
 // the device breaks the line.
 
 export const DEVICE_SETTINGS_COPY = {
-  gigView: `Enable this feature to toggle Gig View by pressing and holding BANK DOWN and TEMPO footswitches simultaneously.
-
-When enabled, single-pressing + TEMPO to cycle MODES is triggered upon footswitches release.`,
+  // Two paragraphs, each split where the unit draws its down triangle (the
+  // BANK DOWN switch) inside the line, not the words "BANK DOWN"
+  // (corpus settings-device-gig-view.png).
+  gigView: [
+    ["Enable this feature to toggle Gig View by pressing and holding ", " and TEMPO footswitches simultaneously."],
+    ["When enabled, single-pressing ", "+ TEMPO to cycle MODES is triggered upon footswitches release."]
+  ] as const,
   sceneBypassThird: "Do not overwrite bypass state when changing bypass state by any method."
 };
 
 export const GLOBAL_BYPASS_BODY_LINES = [
   "Globally bypass Cabs, IR Loaders, or Neural Captures of",
   "cabs* on any row. Globally bypassed devices will have a",
-  "bypass icon but will not appear bypassed on The Grid."
+  // The unit draws its bypass (power) mark between these two (corpus
+  // settings-device.png): "... will have a bypass icon [power] but will not ..."
+  "bypass icon",
+  "but will not appear bypassed on The Grid."
 ] as const;
 
 export const GLOBAL_BYPASS_FOOTNOTE_LINES = [

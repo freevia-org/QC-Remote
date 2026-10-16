@@ -391,12 +391,11 @@
 /* A settings row with no backend call at all (Connection, Updates, Power
    Functions, Factory Reset, My Account, Backups - see device-settings-
    screen.tsx's own `unavailable` flag on each CorOsDeviceSettings nav row).
-   Shown, never removed, per this session's established convention for an
-   unsupported Grid-menu action (coros-ui.ts's
-   corOsUnavailableContextActionMessage) - dimmed and still focusable/
-   clickable so the notice below still fires on interaction. */
-.coros-settings-official > main > nav button.is-unavailable { opacity: .5; }
-.coros-settings-official > main > nav button.is-unavailable:hover { cursor: not-allowed; }
+   Shown, never removed, and drawn exactly as the unit draws the row (corpus
+   settings-system.png: Connection is full white on every System pane): the
+   menu row is not the setting, so an unavailable pane behind it is no reason
+   to dim the row or its mark. The class stays as the hook the notice and the
+   tests read; selecting the row still selects the pane and announces it. */
 
 /* The plain "not exposed by the current USB gateway" body for an unavailable
    row's detail pane - text only, no reference layout exists for any of these
