@@ -32,8 +32,8 @@
     "audit:public-history": "node --test scripts/verify-public-history.test.mjs && node scripts/verify-public-history.mjs"
   },
   "overrides": {
-    "@modelcontextprotocol/sdk": "1.31.0",
-    "@modelcontextprotocol/client": "2.2.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/client": "2.3.1",
     "sharp": "0.35.5",
     "miniflare": {
       "undici": "7.29.1"
