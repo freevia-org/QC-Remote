@@ -77,12 +77,15 @@ test("the poller hands the pane to the follower, and a pane change under one str
 
 /** Measured on a CorOS 4.1.0 unit: the content class that is the last child of zenUI::SettingsDialog for each row. */
 const MEASURED: ReadonlyArray<readonly [string, string, string, string]> = [
+  ["MyAccountMain", "account", "user", "My Account"],
+  ["Backups", "account", "backup", "Backups"],
   ["WifiSettings", "system", "wifi", "Connection"],
   ["UpdaterSettings", "system", "updates", "Updates"],
   ["BrightnessSettings", "system", "brightness", "Brightness"],
   ["PowerButtonSensitivitySettings", "system", "power", "Power Functions"],
   ["MasterVolumeSettings", "system", "volume", "Master Volume Knob"],
   ["DiskSpaceSettings", "system", "storage", "Device Storage"],
+  ["ResetMenu", "system", "factory", "Factory Reset"],
   ["GlobalBypassSettings", "device", "bypass", "Global Bypass"],
   ["BypassSettings", "device", "scene-bypass", "Scene Bypass Behavior"],
   ["StompModeBypassAssignmentSettings", "device", "stomp-bypass", "Stomp Mode Bypass"],
@@ -93,6 +96,8 @@ const MEASURED: ReadonlyArray<readonly [string, string, string, string]> = [
   ["MidiSettings", "device", "midi", "MIDI"],
   ["ContactUsMenu", "support", "about", "About and Contact"],
   ["DeviceInformation", "support", "info", "Device Information"],
+  ["SendReport", "support", "report", "Send Report"],
+  ["DiagnosticsMenu", "support", "diagnostics", "Diagnostics"],
   ["ThirdPartyLicenses", "support", "licenses", "3rd Party Licenses"]
 ];
 /** A synthetic Settings tree: class names only, the shape of the sanitized fixture, with the row's content class last. */
@@ -121,19 +126,19 @@ test("every app row is either registered or listed as not captured, never both a
   ];
   for (const key of all) assert.notEqual(registered.has(key), notCaptured.has(key), `${key} must be exactly one of registered / not captured`);
   assert.equal(registered.size + notCaptured.size, all.length);
-  assert.deepEqual([...notCaptured].sort(), ["account/backup", "account/user", "support/diagnostics", "support/report", "system/factory"]);
+  assert.deepEqual([...notCaptured], [], "every row of the unit's four sections has been read from a tree");
 });
 
 test("the app lists each section's measured rows in the unit's order", () => {
   const order = (section: string) => MEASURED.filter((entry) => entry[1] === section).map((entry) => entry[2]);
-  for (const [section, rows] of [["system", DEVICE_SETTINGS_SYSTEM_ROWS], ["device", DEVICE_SETTINGS_DEVICE_ROWS], ["support", DEVICE_SETTINGS_SUPPORT_ROWS]] as const) {
+  for (const [section, rows] of [["account", DEVICE_SETTINGS_ACCOUNT_ROWS], ["system", DEVICE_SETTINGS_SYSTEM_ROWS], ["device", DEVICE_SETTINGS_DEVICE_ROWS], ["support", DEVICE_SETTINGS_SUPPORT_ROWS]] as const) {
     const present = new Set(order(section));
     assert.deepEqual((rows as readonly string[]).filter((row) => present.has(row)), order(section), `${section} order`);
   }
 });
 
 test("a pane whose class was never read selects nothing, and a registered class buried in text does not count", () => {
-  for (const guess of ["FactoryResetSettings", "SendReportSettings", "DiagnosticsSettings", "AccountSettings", "UserSettings", "BackupSettings", "WifiSettingsExtra"]) {
+  for (const guess of ["FactoryResetSettings", "SendReportSettings", "DiagnosticsSettings", "AccountSettings", "UserSettings", "BackupSettings", "WifiSettingsExtra", "BackupsExtra", "ResetMenuItem", "MyAccount"]) {
     assert.equal(settingsSelectionFromTree(settingsTree(guess)), undefined, `${guess} is not guessed`);
   }
   assert.equal(settingsSelectionFromTree(settingsTree("GraphicsItem") + "\n      text : 'zenUI::WifiSettings'"), undefined);
@@ -160,4 +165,61 @@ test("the poller follows the unit from pane to pane across sections, and an unre
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
   }
   assert.deepEqual(seen, ["system/wifi", "device/midi", "support/licenses", ""]);
+});
+
+test("the account section has exactly the unit's two rows, My Account then Backups, under the app's own ids", () => {
+  assert.deepEqual([...DEVICE_SETTINGS_ACCOUNT_ROWS], ["user", "backup"]);
+  assert.deepEqual(settingsSelectionFromTree(settingsTree("MyAccountMain")), { section: "account", row: "user" });
+  assert.deepEqual(settingsSelectionFromTree(settingsTree("Backups")), { section: "account", row: "backup" });
+});
+
+/**
+ * Following the unit is view-only. The panes that carry an action (reset, factory reset, send report, unlink, back up,
+ * diagnostics) must be reached by selection alone: following moves the app's row and touches nothing else.
+ */
+const ACTION_PANES: ReadonlyArray<readonly [string, string, string]> = [
+  ["ResetMenu", "system", "factory"], ["SendReport", "support", "report"], ["DiagnosticsMenu", "support", "diagnostics"],
+  ["MyAccountMain", "account", "user"], ["Backups", "account", "backup"]
+];
+
+test("following the unit onto an action pane selects the row and calls nothing on the gateway", async (t) => {
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { useDeviceSettingsWorkflow } = await import("../src/use-device-settings-workflow.ts");
+  const calls: string[] = [];
+  const gateway = new Proxy({}, { get: (_target, name) => (...args: unknown[]) => { calls.push(String(name)); return Promise.reject(new Error(`unexpected gateway call ${String(name)}`)); } });
+  const notices: string[] = [];
+  let value!: ReturnType<typeof useDeviceSettingsWorkflow>;
+  function Harness() {
+    value = useDeviceSettingsWorkflow({ gateway: gateway as never, sessionKey: "usb-A", connected: true, pending: false, setPending: () => {}, notice: (m: string) => notices.push(m), fail: (e: unknown) => { throw e; } } as never);
+    return null;
+  }
+  let renderer!: ReturnType<typeof create>;
+  await act(async () => { renderer = create(React.createElement(Harness)); });
+  t.after(async () => { await act(async () => renderer.unmount()); });
+  const rowOf = (section: string) => ({ account: value.accountRow, system: value.systemRow, device: value.deviceRow, support: value.supportRow })[section as "account"];
+  for (const [cls, section, row] of ACTION_PANES) {
+    const selection = settingsSelectionFromTree(settingsTree(cls))!;
+    await act(async () => { value.followUnitSelection(selection); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    assert.equal(value.section, section, `${cls} section`);
+    assert.equal(rowOf(section), row, `${cls} row`);
+  }
+  assert.deepEqual(calls, [], "no gateway call of any kind (no read, no write, no backup, no report, no reset)");
+  assert.deepEqual(notices, [], "nothing was announced as done");
+});
+
+test("the panes behind those rows are inert in the app: no handler, no effect, no gateway, no scheduled work", () => {
+  const read = (name: string) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
+  const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const reference = code(read("coros-reference-settings-pane.tsx"));
+  assert.ok(!/on[A-Z][A-Za-z]*\s*=/.test(reference), "the reference panes (reset, send report, diagnostics) draw buttons with no handler");
+  assert.ok(!/useEffect|useLayoutEffect|useGateway|gateway|fetch\(|setTimeout|setInterval/.test(reference), "and start nothing on mount");
+  const screen = read("device-settings-screen.tsx");
+  const account = screen.slice(screen.indexOf('if (section === "account")'), screen.indexOf('} else if (section === "system")'));
+  assert.match(account, /onSelect: select\(unavailableMessage\(ACCOUNT_ROW_LABELS\[row\]\), \(\) => setAccountRow\(row\)\)/, "an Account row only selects itself");
+  assert.match(account, /<UnavailableDetail /, "and its pane is the plain notice, with no account, backup or sign-out control");
+  assert.doesNotMatch(account, /workflow\./, "the Account section never calls the workflow");
+  const detail = screen.slice(screen.indexOf("function UnavailableDetail"), screen.indexOf("function fraction"));
+  assert.doesNotMatch(detail, /<button|onClick|useEffect/, "the notice has no control");
+  const nav = screen.slice(screen.indexOf('referenceView = REFERENCE_PANES.system[systemRow]'), screen.indexOf("// A device screen, not a window-level dialog"));
+  assert.doesNotMatch(nav.replace(/workflow=\{workflow\}/g, ""), /workflow\.(?!identity|screenCorOsVersion|identityReadAt)/, "System and Support rows reach no workflow action");
 });

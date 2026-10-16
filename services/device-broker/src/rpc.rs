@@ -132,16 +132,54 @@ pub fn serve_stdio(controller: DeviceController, phase_events: bool) -> Result<(
 }
 
 #[cfg(not(windows))]
-pub fn serve_stdio(controller: DeviceController, phase_events: bool) -> Result<(), String> {
+pub(crate) fn serve_stdio(
+    controller: DeviceController,
+    phase_events: bool,
+    #[cfg(target_os = "linux")] signals: crate::platform::shutdown::Pending,
+) -> Result<(), String> {
     let request_clock = Arc::new(crate::orphan_guard::RequestClock::started_now());
+    let performance_midi = Arc::new(PerformanceMidiWorkers::default());
+    #[cfg(target_os = "linux")]
+    let owner = StdioControllerOwner {
+        controller: Some(controller),
+        performance_midi: Arc::clone(&performance_midi),
+    };
+    #[cfg(target_os = "linux")]
+    let controller = owner
+        .controller
+        .as_ref()
+        .expect("stdio controller is owned");
     // The guard exits with `process::exit`, which skips the controller's Drop;
     // it stops the worker itself so the device still sees the disconnect.
     let worker_shutdown = controller.shutdown_handle();
+    #[cfg(target_os = "linux")]
+    let _signal_watch = signals.watch({
+        let midi = Arc::clone(&performance_midi);
+        let shutdown = worker_shutdown.clone();
+        move || {
+            retire_then_stop(
+                || midi.retire_all_devices(),
+                || {
+                    let _ = shutdown.stop_and_join(crate::worker::WORKER_EXIT_BUDGET);
+                },
+            );
+            std::process::exit(0);
+        }
+    })?;
     crate::orphan_guard::watch(
         crate::orphan_guard::parent_process_id(),
         Arc::clone(&request_clock),
-        move || {
-            let _ = worker_shutdown.stop_and_join(crate::worker::WORKER_EXIT_BUDGET);
+        {
+            let midi = Arc::clone(&performance_midi);
+            move || {
+                #[cfg(target_os = "linux")]
+                if !midi.retire_all_devices() {
+                    return;
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = &midi;
+                let _ = worker_shutdown.stop_and_join(crate::worker::WORKER_EXIT_BUDGET);
+            }
         },
     );
     let stdin = io::stdin();
@@ -149,7 +187,6 @@ pub fn serve_stdio(controller: DeviceController, phase_events: bool) -> Result<(
     let output = Arc::new(Mutex::new(io::stdout()));
     // All MIDI opens, sends, and closes run on per-device detached workers;
     // request handling only queues and waits for a bounded reply.
-    let performance_midi = Arc::new(PerformanceMidiWorkers::default());
     let event_output = Arc::clone(&output);
     let events = controller.subscribe_state_events();
     thread::Builder::new()
@@ -198,6 +235,304 @@ pub fn serve_stdio(controller: DeviceController, phase_events: bool) -> Result<(
         stop_phase_events.store(true, Ordering::Release);
         served
     })
+}
+
+#[cfg(target_os = "linux")]
+struct StdioControllerOwner {
+    controller: Option<DeviceController>,
+    performance_midi: Arc<PerformanceMidiWorkers>,
+}
+
+#[cfg(target_os = "linux")]
+fn retire_then_stop(retire: impl FnOnce() -> bool, stop: impl FnOnce()) -> bool {
+    if !retire() {
+        return false;
+    }
+    stop();
+    true
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod stdio_shutdown_tests {
+    use super::{
+        retire_then_stop, PerformanceMidiEndpoint, PerformanceMidiReceipt, PerformanceMidiWorkers,
+        PERFORMANCE_MIDI_RETIRE_BUDGET,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn stdio_midi_registry_orders_retirement_closes_admission_and_exits_worker() {
+        struct TrackingEndpoint {
+            events: Arc<Mutex<Vec<&'static str>>>,
+            dropped: Arc<AtomicBool>,
+        }
+        impl PerformanceMidiEndpoint for TrackingEndpoint {
+            fn send(
+                &mut self,
+                _device_id: &str,
+                _controller: u8,
+                _value: u8,
+            ) -> Result<PerformanceMidiReceipt, String> {
+                self.events.lock().unwrap().push("send");
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "fake".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+
+            fn retire(&mut self) {
+                self.events.lock().unwrap().push("retire");
+            }
+        }
+        impl Drop for TrackingEndpoint {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let factory_events = Arc::clone(&events);
+        let factory_dropped = Arc::clone(&dropped);
+        let workers = PerformanceMidiWorkers::with_factory(move || {
+            Box::new(TrackingEndpoint {
+                events: Arc::clone(&factory_events),
+                dropped: Arc::clone(&factory_dropped),
+            })
+        });
+        workers.send("stdio-fixture", 1, 2, || {}).unwrap();
+        assert!(retire_then_stop(
+            || workers.retire_all_devices(),
+            || events.lock().unwrap().push("hid-stopped"),
+        ));
+        assert!(workers
+            .send("stdio-fixture", 3, 4, || {})
+            .err()
+            .expect("send after retirement must be rejected")
+            .contains("shutting down"));
+        assert_eq!(*events.lock().unwrap(), ["send", "retire", "hid-stopped"]);
+        drop(workers);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !dropped.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "MIDI worker did not exit after registry drop"
+        );
+    }
+
+    #[test]
+    fn stdio_retirement_timeout_keeps_worker_quarantined_without_native_leak() {
+        struct BlockingEndpoint {
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            dropped: Arc<AtomicBool>,
+        }
+        struct ReleaseGateOnDrop(Arc<(Mutex<bool>, Condvar)>);
+        impl Drop for ReleaseGateOnDrop {
+            fn drop(&mut self) {
+                let (released, changed) = &*self.0;
+                *released.lock().unwrap() = true;
+                changed.notify_all();
+            }
+        }
+        impl PerformanceMidiEndpoint for BlockingEndpoint {
+            fn send(
+                &mut self,
+                _device_id: &str,
+                _controller: u8,
+                _value: u8,
+            ) -> Result<PerformanceMidiReceipt, String> {
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "fake".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+
+            fn retire(&mut self) {
+                let (released, changed) = &*self.gate;
+                let mut released = released.lock().unwrap();
+                while !*released {
+                    released = changed.wait(released).unwrap();
+                }
+            }
+        }
+        impl Drop for BlockingEndpoint {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release_gate = ReleaseGateOnDrop(Arc::clone(&gate));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let factory_gate = Arc::clone(&gate);
+        let factory_dropped = Arc::clone(&dropped);
+        let workers = PerformanceMidiWorkers::with_factory(move || {
+            Box::new(BlockingEndpoint {
+                gate: Arc::clone(&factory_gate),
+                dropped: Arc::clone(&factory_dropped),
+            })
+        });
+        workers.send("stdio-timeout-fixture", 1, 2, || {}).unwrap();
+        let started = Instant::now();
+        let hid_stopped = AtomicBool::new(false);
+        assert!(!retire_then_stop(
+            || workers.retire_all_devices(),
+            || hid_stopped.store(true, Ordering::Release),
+        ));
+        assert!(!hid_stopped.load(Ordering::Acquire));
+        assert!(started.elapsed() < PERFORMANCE_MIDI_RETIRE_BUDGET + Duration::from_millis(250));
+        assert!(workers
+            .send("stdio-timeout-fixture", 3, 4, || {})
+            .err()
+            .expect("send after retirement timeout must be rejected")
+            .contains("shutting down"));
+
+        let (released, changed) = &*gate;
+        *released.lock().unwrap() = true;
+        changed.notify_all();
+        assert!(workers.retire_device("stdio-timeout-fixture"));
+        drop(workers);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !dropped.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "timed-out MIDI worker did not exit after gate release and registry drop"
+        );
+    }
+
+    #[test]
+    fn full_queue_retirement_closes_on_owner_before_cancelled_send_and_recovers() {
+        use super::{MidiCommand, MidiSendCommand, MIDI_CANCELLED};
+        struct Endpoint {
+            retired: Arc<AtomicBool>,
+            sends: Arc<std::sync::atomic::AtomicUsize>,
+            dropped: Arc<AtomicBool>,
+        }
+        impl PerformanceMidiEndpoint for Endpoint {
+            fn send(&mut self, _: &str, _: u8, _: u8) -> Result<PerformanceMidiReceipt, String> {
+                assert!(self.retired.load(Ordering::Acquire));
+                self.sends.fetch_add(1, Ordering::AcqRel);
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "fixture".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+            fn retire(&mut self) {
+                self.retired.store(true, Ordering::Release);
+            }
+        }
+        impl Drop for Endpoint {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+        struct Release(Arc<(Mutex<bool>, Condvar)>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                let (open, changed) = &*self.0;
+                *open.lock().unwrap() = true;
+                changed.notify_all();
+            }
+        }
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let release = Release(Arc::clone(&gate));
+        let retired = Arc::new(AtomicBool::new(false));
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let factory_gate = Arc::clone(&gate);
+        let factory_retired = Arc::clone(&retired);
+        let factory_sends = Arc::clone(&sends);
+        let factory_dropped = Arc::clone(&dropped);
+        let workers = PerformanceMidiWorkers::with_factory(move || {
+            let (open, changed) = &*factory_gate;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = changed.wait(open).unwrap();
+            }
+            Box::new(Endpoint {
+                retired: Arc::clone(&factory_retired),
+                sends: Arc::clone(&factory_sends),
+                dropped: Arc::clone(&factory_dropped),
+            })
+        });
+        let (sender, _) = workers.get_or_start("full-queue-fixture").unwrap();
+        let (reply, _response) = std::sync::mpsc::channel();
+        let (_ack, acknowledged) = std::sync::mpsc::channel();
+        sender
+            .try_send(MidiCommand::Send(MidiSendCommand {
+                device_id: "full-queue-fixture".into(),
+                controller: 1,
+                value: 2,
+                validate: Box::new(|| panic!("cancelled fixture must not validate")),
+                state: Arc::new(std::sync::atomic::AtomicU8::new(MIDI_CANCELLED)),
+                reply,
+                acknowledged,
+            }))
+            .unwrap_or_else(|_| panic!("fixture queue must accept its first send"));
+        assert!(
+            !workers.retire_device("full-queue-fixture"),
+            "full queue cannot admit the Retire marker"
+        );
+        assert!(workers.workers.lock().unwrap()["full-queue-fixture"]
+            .retirement_pending
+            .load(Ordering::Acquire));
+        drop(release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while workers.workers.lock().unwrap()["full-queue-fixture"]
+            .retirement_pending
+            .load(Ordering::Acquire)
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(retired.load(Ordering::Acquire));
+        assert_eq!(sends.load(Ordering::Acquire), 0);
+        workers.send("full-queue-fixture", 3, 4, || {}).unwrap();
+        assert_eq!(sends.load(Ordering::Acquire), 1);
+        assert_eq!(
+            workers.workers.lock().unwrap().len(),
+            1,
+            "same owner recovered; no replacement"
+        );
+        drop(sender);
+        drop(workers);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !dropped.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "fixture endpoint retired on its owner"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for StdioControllerOwner {
+    fn drop(&mut self) {
+        if let Some(controller) = self.controller.take() {
+            if self.performance_midi.retire_all_devices() {
+                drop(controller);
+            } else {
+                // This function is the terminal stdio CLI path. Do not close
+                // HID before MIDI; process teardown retains final ownership.
+                eprintln!(
+                    "Retaining stdio HID owner until process teardown: MIDI close unacknowledged"
+                );
+                std::mem::forget(controller);
+            }
+        }
+    }
 }
 
 fn handle(
@@ -291,8 +626,9 @@ fn handle_with_disconnect_admission(
         Some(generated_gateway::BrokerDispatch::ResetSession) => controller
             .reset_session()
             .map(|outcome| reconnect_state(controller, outcome, "Communication session reset")),
-        Some(generated_gateway::BrokerDispatch::Disconnect) => controller
-            .disconnect_with_admission(disconnect_admission)
+        Some(generated_gateway::BrokerDispatch::Disconnect) => performance_midi
+            .retire_controller(controller)
+            .and_then(|()| controller.disconnect_with_admission(disconnect_admission))
             .map(|_| connection_state(controller, "Quad Cortex session closed")),
         // The native broker implements the generated gateway contract without
         // exposing raw HID/protobuf details to either client.
@@ -1155,6 +1491,8 @@ fn authoritative_preflight_result(readback: Value) -> Value {
 const PERFORMANCE_MIDI_LOCK_BUDGET: Duration = Duration::from_secs(3);
 const PERFORMANCE_MIDI_QUEUE_CAPACITY: usize = 1;
 const PERFORMANCE_MIDI_MAX_DEVICE_WORKERS: usize = 16;
+#[cfg(target_os = "linux")]
+const PERFORMANCE_MIDI_RETIRE_BUDGET: Duration = Duration::from_secs(3);
 // Software headroom across successive instances, not a firmware device count.
 // Native sends and endpoint close cannot be forcibly cancelled.
 static PERFORMANCE_MIDI_ORIGINALS: qc_native_platform::thread_owner::Budget =
@@ -1167,6 +1505,9 @@ trait PerformanceMidiEndpoint: Send + 'static {
         controller: u8,
         value: u8,
     ) -> Result<PerformanceMidiReceipt, String>;
+
+    #[cfg(target_os = "linux")]
+    fn retire(&mut self) {}
 }
 
 impl PerformanceMidiEndpoint for PerformanceMidi {
@@ -1178,6 +1519,11 @@ impl PerformanceMidiEndpoint for PerformanceMidi {
     ) -> Result<PerformanceMidiReceipt, String> {
         self.send_for_device(device_id, controller, value)
     }
+
+    #[cfg(target_os = "linux")]
+    fn retire(&mut self) {
+        self.retire_endpoint();
+    }
 }
 
 const MIDI_QUEUED: u8 = 0;
@@ -1185,7 +1531,7 @@ const MIDI_VALIDATING: u8 = 1;
 const MIDI_RUNNING: u8 = 2;
 const MIDI_CANCELLED: u8 = 3;
 
-struct MidiCommand {
+struct MidiSendCommand {
     device_id: String,
     controller: u8,
     value: u8,
@@ -1195,10 +1541,18 @@ struct MidiCommand {
     acknowledged: mpsc::Receiver<()>,
 }
 
+enum MidiCommand {
+    Send(MidiSendCommand),
+    #[cfg(target_os = "linux")]
+    Retire(mpsc::Sender<bool>),
+}
+
 struct MidiWorker {
     // Fields drop in declaration order: disconnect queue before retirement.
     sender: mpsc::SyncSender<MidiCommand>,
     poisoned: Arc<AtomicBool>,
+    #[cfg(target_os = "linux")]
+    retirement_pending: Arc<AtomicBool>,
     _original: qc_native_platform::thread_owner::Owned,
 }
 
@@ -1210,6 +1564,10 @@ struct MidiWorker {
 /// native TLS teardown until the exact original is signalled and joined.
 struct PerformanceMidiWorkers {
     workers: Mutex<HashMap<String, MidiWorker>>,
+    #[cfg(target_os = "linux")]
+    admission: Mutex<()>,
+    #[cfg(target_os = "linux")]
+    closing: AtomicBool,
     factory: Arc<dyn Fn() -> Box<dyn PerformanceMidiEndpoint> + Send + Sync>,
     worker_budget: &'static qc_native_platform::thread_owner::Budget,
     #[cfg(test)]
@@ -1228,6 +1586,10 @@ impl PerformanceMidiWorkers {
     ) -> Self {
         Self {
             workers: Mutex::new(HashMap::new()),
+            #[cfg(target_os = "linux")]
+            admission: Mutex::new(()),
+            #[cfg(target_os = "linux")]
+            closing: AtomicBool::new(false),
             factory: Arc::new(factory),
             worker_budget: &PERFORMANCE_MIDI_ORIGINALS,
             #[cfg(test)]
@@ -1251,6 +1613,10 @@ impl PerformanceMidiWorkers {
         let (sender, receiver) = mpsc::sync_channel::<MidiCommand>(PERFORMANCE_MIDI_QUEUE_CAPACITY);
         let poisoned = Arc::new(AtomicBool::new(false));
         let worker_poisoned = Arc::clone(&poisoned);
+        #[cfg(target_os = "linux")]
+        let retirement_pending = Arc::new(AtomicBool::new(false));
+        #[cfg(target_os = "linux")]
+        let worker_retirement_pending = Arc::clone(&retirement_pending);
         let factory = Arc::clone(&self.factory);
         let original = qc_native_platform::thread_owner::Owned::spawn(
             "qc-performance-midi",
@@ -1259,6 +1625,30 @@ impl PerformanceMidiWorkers {
             move || {
                 let mut endpoint = factory();
                 while let Ok(command) = receiver.recv() {
+                    #[cfg(target_os = "linux")]
+                    let command = match command {
+                        MidiCommand::Send(command) => command,
+                        MidiCommand::Retire(reply) => {
+                            endpoint.retire();
+                            worker_retirement_pending.store(false, Ordering::Release);
+                            let _ = reply.send(true);
+                            continue;
+                        }
+                    };
+                    #[cfg(not(target_os = "linux"))]
+                    let MidiCommand::Send(command) = command;
+                    #[cfg(target_os = "linux")]
+                    if worker_retirement_pending.load(Ordering::Acquire) {
+                        // A full queue may have prevented the Retire marker
+                        // from entering. The same owner must still close after
+                        // its prior native call, even for a cancelled send.
+                        endpoint.retire();
+                        worker_retirement_pending.store(false, Ordering::Release);
+                        let _ = command.reply.send(Err(
+                            "Performance MIDI endpoint retired before this queued send".into(),
+                        ));
+                        continue;
+                    }
                     if command
                         .state
                         .compare_exchange(
@@ -1315,10 +1705,75 @@ impl PerformanceMidiWorkers {
             MidiWorker {
                 sender: sender.clone(),
                 poisoned: Arc::clone(&poisoned),
+                #[cfg(target_os = "linux")]
+                retirement_pending,
                 _original: original,
             },
         );
         Ok((sender, poisoned))
+    }
+
+    fn retire_controller(&self, controller: &DeviceController) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if let Some(device_id) = controller.device_id() {
+            if !self.retire_device(&device_id) {
+                return Err(format!("Performance MIDI endpoint for {device_id} is still draining; its QC session remains open"));
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = controller;
+        Ok(())
+    }
+
+    /// Ordered endpoint close without replacing or detaching the native owner.
+    /// Request callers hold request_lock across this barrier and HID release;
+    /// terminal callers close admission first. The worker clears pending only
+    /// after close, so that caller fence must prevent reopening before release.
+    #[cfg(target_os = "linux")]
+    fn retire_device(&self, device_id: &str) -> bool {
+        let (sender, pending) = {
+            let workers = self.workers.lock_recover();
+            let Some(worker) = workers.get(device_id) else {
+                return true;
+            };
+            (
+                worker.sender.clone(),
+                Arc::clone(&worker.retirement_pending),
+            )
+        };
+        let deadline = Instant::now() + PERFORMANCE_MIDI_RETIRE_BUDGET;
+        pending.store(true, Ordering::Release);
+        let (reply, retired) = mpsc::channel();
+        let mut command = MidiCommand::Retire(reply);
+        loop {
+            match sender.try_send(command) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Disconnected(_)) => return false,
+                Err(mpsc::TrySendError::Full(queued)) => {
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    command = queued;
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        retired
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or(false)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn retire_all_devices(&self) -> bool {
+        let admission = self.admission.lock_recover();
+        self.closing.store(true, Ordering::Release);
+        let devices: Vec<_> = self.workers.lock_recover().keys().cloned().collect();
+        drop(admission);
+        let mut retired = true;
+        for device in devices {
+            retired &= self.retire_device(&device);
+        }
+        retired
     }
 
     #[cfg(test)]
@@ -1391,14 +1846,29 @@ impl PerformanceMidiWorkers {
         on_enqueued: impl FnOnce(),
         on_ambiguous_timeout: impl FnOnce(),
     ) -> Result<PerformanceMidiReceipt, String> {
+        #[cfg(target_os = "linux")]
+        let admission = self.admission.lock_recover();
+        #[cfg(target_os = "linux")]
+        if self.closing.load(Ordering::Acquire) {
+            return Err("Performance MIDI workers are shutting down; request was not sent".into());
+        }
         let (sender, poisoned) = self.get_or_start(device_id)?;
+        #[cfg(target_os = "linux")]
+        if self.workers.lock_recover()[device_id]
+            .retirement_pending
+            .load(Ordering::Acquire)
+        {
+            return Err(
+                "Performance MIDI endpoint is still draining after a device release".into(),
+            );
+        }
         if poisoned.load(Ordering::Acquire) {
             return Err("Performance MIDI worker is poisoned after an ambiguous timeout".into());
         }
         let (reply, response) = mpsc::channel();
         let (acknowledge, acknowledged) = mpsc::channel();
         let state = Arc::new(std::sync::atomic::AtomicU8::new(MIDI_QUEUED));
-        let command = MidiCommand {
+        let command = MidiCommand::Send(MidiSendCommand {
             device_id: device_id.to_owned(),
             controller,
             value,
@@ -1406,7 +1876,7 @@ impl PerformanceMidiWorkers {
             state: Arc::clone(&state),
             reply,
             acknowledged,
-        };
+        });
         match sender.try_send(command) {
             Ok(()) => on_enqueued(),
             Err(mpsc::TrySendError::Full(_)) => {
@@ -1419,6 +1889,8 @@ impl PerformanceMidiWorkers {
                 return Err("Performance MIDI worker has stopped; request was not sent.".into())
             }
         }
+        #[cfg(target_os = "linux")]
+        drop(admission);
         match response.recv_timeout(budget) {
             Ok(result) => {
                 let _ = acknowledge.send(());
@@ -5177,6 +5649,11 @@ impl BrokerShared {
     }
 
     fn disconnect_devices(&self) -> Result<(), String> {
+        // A failed close must not release ANY HID session while raw MIDI still
+        // owns the matching device. Request callers already hold admission.
+        for device in self.all_controllers() {
+            self.performance_midi.retire_controller(&device)?;
+        }
         // Snapshot before waiting. Every logical session still closes even
         // when another controller cannot verify its native teardown.
         let failures: Vec<_> = self
@@ -5355,6 +5832,19 @@ impl BrokerShared {
     }
 
     fn finish_shutdown(&self) -> crate::worker::WorkerShutdownReport {
+        #[cfg(target_os = "linux")]
+        if !self.performance_midi.retire_all_devices() {
+            let report = crate::worker::WorkerShutdownReport {
+                outcomes: self
+                    .all_controllers()
+                    .iter()
+                    .map(|controller| (controller.device_id(), crate::worker::WorkerExit::TimedOut))
+                    .collect(),
+            };
+            eprintln!("MIDI retirement unacknowledged; HID and descriptor claim remain owned until process teardown");
+            (self.on_idle_shutdown)();
+            return report;
+        }
         let _ = self.disconnect_devices();
         // `on_idle_shutdown` exits the process. Let the USB workers return
         // first, so a teardown a disconnect left in flight (an ack that timed
@@ -5374,12 +5864,14 @@ impl BrokerShared {
             eprintln!("QC device broker shutdown: {}", report.summary());
         }
         drop(controllers);
-        if let Some(claim) = self.descriptor_claim.lock_recover().take() {
-            if let Err(error) = claim.release() {
-                eprintln!(
-                    "Could not release {}: {error}",
-                    self.descriptor_path.display()
-                );
+        if report.all_verified() {
+            if let Some(claim) = self.descriptor_claim.lock_recover().take() {
+                if let Err(error) = claim.release() {
+                    eprintln!(
+                        "Could not release {}: {error}",
+                        self.descriptor_path.display()
+                    );
+                }
             }
         }
         (self.on_idle_shutdown)();
@@ -9790,6 +10282,44 @@ mod tcp_tests {
             .unwrap_err()
             .contains("shutdown is already committed"));
         assert!(shared.clients.lock_recover().idle_released);
+    }
+
+    #[test]
+    fn unverified_shutdown_retains_descriptor_until_actual_worker_retirement() {
+        struct Release(Arc<AtomicBool>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let release = Arc::new(AtomicBool::new(false));
+        let _release = Release(Arc::clone(&release));
+        let (_scratch, path) = broker_scratch_descriptor_path("shutdown-retains-claim");
+        let shared = BrokerShared {
+            controller: Arc::new(DeviceController::with_stuck_worker_for_test(Arc::clone(
+                &release,
+            ))),
+            descriptor_path: path.to_path_buf(),
+            descriptor_claim: Arc::new(Mutex::new(Some(
+                qc_owner_only_file::ClaimedFile::try_claim(&path).unwrap(),
+            ))),
+            ..broker_shared_for_test()
+        };
+        let report = shared.finish_shutdown();
+        assert!(!report.all_verified());
+        assert!(shared.descriptor_claim.lock_recover().is_some());
+        assert!(
+            qc_owner_only_file::ClaimedFile::try_claim(&path).is_err(),
+            "unknown original still excludes a successor"
+        );
+        release.store(true, Ordering::Release);
+        let report = shared.finish_shutdown();
+        assert!(report.all_verified(), "{}", report.summary());
+        assert!(shared.descriptor_claim.lock_recover().is_none());
+        qc_owner_only_file::ClaimedFile::try_claim(&path)
+            .unwrap()
+            .release()
+            .unwrap();
     }
 
     #[test]

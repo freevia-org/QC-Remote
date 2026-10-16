@@ -6,6 +6,75 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicUsize;
 
 #[test]
+fn stale_private_cloud_frames_are_zeroized_before_discard() {
+    for message_type in [18, 29, 30, 31, 41, 58, 61] {
+        let mut message = IncomingMessage {
+            observation: None,
+            sequence: 1,
+            message_type,
+            payload: vec![0xA5; 32],
+            received_at_unix_ms: 0,
+        };
+
+        assert!(!retain_message_for_current_epoch(&mut message, false));
+        // Zeroize for Vec clears its length; assert that observable contract,
+        // not a vacuous all() over the now-empty iterator or backing memory.
+        assert!(message.payload.is_empty());
+    }
+
+    let mut ordinary = IncomingMessage {
+        observation: None,
+        sequence: 2,
+        message_type: 13,
+        payload: vec![0xA5; 32],
+        received_at_unix_ms: 0,
+    };
+    assert!(!retain_message_for_current_epoch(&mut ordinary, false));
+    assert_eq!(ordinary.payload, vec![0xA5; 32]);
+
+    let mut current = IncomingMessage {
+        observation: None,
+        sequence: 3,
+        message_type: 61,
+        payload: vec![0xA5; 32],
+        received_at_unix_ms: 0,
+    };
+    assert!(retain_message_for_current_epoch(&mut current, true));
+    assert_eq!(current.payload, vec![0xA5; 32]);
+}
+
+#[test]
+fn decoder_owner_cancels_when_its_bounded_stop_queue_is_full() {
+    let retirement = WorkerRetirement::new(1);
+    let lifetime = retirement.reserve().unwrap();
+    let (messages, _receiver) = mpsc::sync_channel(1);
+    messages.try_send(StateDecoderCommand::Reset).unwrap();
+    let (finished, finished_rx) = mpsc::channel();
+    let decoder =
+        start_owned_decoder_with_lifetime("qc-test-owned-decoder", lifetime, move |stop| {
+            while !stop.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            let _ = finished.send(());
+        })
+        .unwrap();
+
+    // Stop cannot enter this full queue. The out-of-band stop flag must still
+    // retire the owned thread instead of detaching it at shutdown.
+    decoder.request_stop(&messages);
+    assert!(matches!(
+        messages.try_send(StateDecoderCommand::Stop),
+        Err(mpsc::TrySendError::Full(StateDecoderCommand::Stop))
+    ));
+    drop(decoder);
+
+    finished_rx
+        .recv_timeout(WORKER_EXIT_BUDGET)
+        .expect("decoder should observe cancellation and exit");
+}
+
+
+#[test]
 fn discovery_fixtures_are_instance_scoped_and_preserve_errors() {
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&calls);

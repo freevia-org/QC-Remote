@@ -69,23 +69,84 @@ fn selected_point(shared: &BrokerShared, point: &'static str) -> Option<TestHook
         .map(|(_, _, hook)| Arc::clone(hook))
 }
 pub(super) fn unused(shared: &BrokerShared, device: Arc<DeviceController>) -> Result<(), String> {
-    let clients = Arc::clone(&shared.clients);
-    let request_lock = Arc::clone(&shared.request_lock);
-    let default = Arc::clone(&shared.controller);
+    let work = UnusedDevice {
+        clients: Arc::clone(&shared.clients),
+        request_lock: Arc::clone(&shared.request_lock),
+        default: Arc::clone(&shared.controller),
+        device: Arc::clone(&device),
+        performance_midi: Arc::clone(&shared.performance_midi),
+        #[cfg(all(test, target_os = "linux"))]
+        retry_hook: selected_point(shared, "unused:retry-admitted"),
+        #[cfg(all(test, target_os = "linux"))]
+        disconnect_hook: selected_point(shared, "unused:disconnect"),
+    };
     shared.background.latest(
         [2, identity(&device), 0],
         Instant::now() + IDLE_SHUTDOWN_GRACE,
+        work.work(2),
+    )
+}
+
+#[derive(Clone)]
+struct UnusedDevice {
+    clients: Arc<Mutex<ClientAccounting>>,
+    request_lock: Arc<Mutex<()>>,
+    default: Arc<DeviceController>,
+    device: Arc<DeviceController>,
+    performance_midi: Arc<PerformanceMidiWorkers>,
+    #[cfg(all(test, target_os = "linux"))]
+    retry_hook: Option<TestHook>,
+    #[cfg(all(test, target_os = "linux"))]
+    disconnect_hook: Option<TestHook>,
+}
+impl UnusedDevice {
+    fn work(self, retries: usize) -> Work {
+        #[cfg(not(target_os = "linux"))]
+        let _ = retries;
         Work::new(move |ticket| {
-            let _exclusive = request_lock.lock_recover();
+            let exclusive = self.request_lock.lock_recover();
             let admission = ticket
-                .with_current(|| BrokerShared::reserve_unused_device(&clients, &default, &device))
+                .with_current(|| {
+                    BrokerShared::reserve_unused_device(&self.clients, &self.default, &self.device)
+                })
                 .flatten();
             if let Some(admission) = admission {
+                if let Err(error) = self.performance_midi.retire_controller(&self.device) {
+                    eprintln!("Unused device remains open: {error}");
+                    drop(admission);
+                    drop(exclusive);
+                    #[cfg(target_os = "linux")]
+                    if retries > 0 {
+                        match ticket.retry_after(
+                            Instant::now() + IDLE_SHUTDOWN_GRACE,
+                            self.clone().work(retries - 1),
+                        ) {
+                            Ok(true) =>
+                            {
+                                #[cfg(test)]
+                                if let Some(hook) = &self.retry_hook {
+                                    let _ = hook();
+                                }
+                            }
+                            Ok(false) => {} // A newer generation owns the policy.
+                            Err(error) => {
+                                eprintln!("Unused device retry was not admitted: {error}")
+                            }
+                        }
+                    }
+                    return;
+                }
+                #[cfg(all(test, target_os = "linux"))]
+                if let Some(hook) = &self.disconnect_hook {
+                    let _ = hook();
+                }
                 // Reservation follows the actual queued worker even on caller timeout.
-                let _ = device.disconnect_with_admission(Some(Box::new(admission)));
+                let _ = self
+                    .device
+                    .disconnect_with_admission(Some(Box::new(admission)));
             }
-        }),
-    )
+        })
+    }
 }
 fn idle_work(shared: &Arc<BrokerShared>) -> Work {
     let owner = Arc::downgrade(shared);
@@ -398,6 +459,105 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
     }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn unused_release_retries_delayed_midi_close_but_preserves_reselected_client() {
+        let _serial = FIXTURES.lock_recover();
+        struct Endpoint(Gate);
+        impl PerformanceMidiEndpoint for Endpoint {
+            fn send(&mut self, _: &str, _: u8, _: u8) -> Result<PerformanceMidiReceipt, String> {
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "fixture".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+            fn retire(&mut self) {
+                self.0.wait();
+            }
+        }
+        for reselect in [false, true] {
+            let midi_gate = Gate::new();
+            let release_midi = ReleaseGate(midi_gate.clone());
+            let mut handle = test_support::handle();
+            Arc::get_mut(&mut handle.0).unwrap().performance_midi =
+                Arc::new(PerformanceMidiWorkers::with_factory(move || {
+                    Box::new(Endpoint(midi_gate.clone()))
+                }));
+            let fixture = Fixture(handle);
+            let shared = fixture.shared();
+            let participant = test_support::attach(&fixture.0, false);
+            shared
+                .select_available_device(participant, "unused-fixture-old")
+                .unwrap();
+            let old = shared.controller_for(Some(participant));
+            shared
+                .performance_midi
+                .send("unused-fixture-old", 1, 2, || {})
+                .unwrap();
+            shared
+                .select_available_device(participant, "unused-fixture-new")
+                .unwrap();
+            let new = shared.controller_for(Some(participant));
+            assert!(!Arc::ptr_eq(&old, &new));
+            let retry_gate = Gate::new();
+            let release_retry = ReleaseGate(retry_gate.clone());
+            let (admitted, retried) = mpsc::channel();
+            let disconnects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = Arc::clone(&disconnects);
+            let work = UnusedDevice {
+                clients: Arc::clone(&shared.clients),
+                request_lock: Arc::clone(&shared.request_lock),
+                default: Arc::clone(&shared.controller),
+                device: Arc::clone(&old),
+                performance_midi: Arc::clone(&shared.performance_midi),
+                retry_hook: Some(Arc::new(move || {
+                    let _ = admitted.send(());
+                    retry_gate.wait();
+                    Ok(())
+                })),
+                disconnect_hook: Some(Arc::new(move || {
+                    observed.fetch_add(1, Ordering::AcqRel);
+                    Ok(())
+                })),
+            };
+            let key = [2, identity(&old), 0];
+            shared
+                .background
+                .latest(key, Instant::now(), work.work(2))
+                .unwrap();
+            retried
+                .recv_timeout(Duration::from_secs(10))
+                .expect("MIDI close exceeded its bound and admitted an owned retry");
+            assert_eq!(
+                disconnects.load(Ordering::Acquire),
+                0,
+                "no HID release before MIDI close acknowledgement"
+            );
+            if reselect {
+                shared
+                    .select_available_device(participant, "unused-fixture-old")
+                    .unwrap();
+                assert!(Arc::ptr_eq(&shared.controller_for(Some(participant)), &old));
+            }
+            drop(release_midi);
+            drop(release_retry);
+            let deadline = Instant::now() + Duration::from_secs(12);
+            while shared.background.pending_key(key) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+            assert!(
+                !shared.background.pending_key(key),
+                "retry original must retire"
+            );
+            assert_eq!(disconnects.load(Ordering::Acquire), usize::from(!reselect));
+            if !reselect {
+                assert!(Arc::ptr_eq(&shared.controller_for(Some(participant)), &new));
+            }
+            fixture.finish();
+        }
+    }
+
     #[test]
     fn selected_reconnect_superseded_behind_request_lock_never_reaches_the_old_controller() {
         let _serial = FIXTURES.lock_recover();

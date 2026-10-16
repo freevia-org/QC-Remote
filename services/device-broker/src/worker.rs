@@ -3124,6 +3124,22 @@ fn run_state_decoder_with_stop(
     run_state_decoder_with_lifetime(shared, sender, messages, session_clock, stop, lifetime);
 }
 
+fn zeroize_private_cloud_payload(message: &mut IncomingMessage) -> bool {
+    if quadcortex_hid::latest_cache::is_private_cloud_message(message.message_type) {
+        message.payload.zeroize();
+        true
+    } else {
+        false
+    }
+}
+
+fn retain_message_for_current_epoch(message: &mut IncomingMessage, current: bool) -> bool {
+    if !current {
+        zeroize_private_cloud_payload(message);
+    }
+    current
+}
+
 fn run_state_decoder_with_lifetime(
     shared: StateDecoderShared,
     sender: mpsc::SyncSender<StateDecoderCommand>,
@@ -3341,8 +3357,7 @@ fn ingest_incoming(
     mut message: IncomingMessage,
     now_ms: u64,
 ) {
-    if quadcortex_hid::latest_cache::is_private_cloud_message(message.message_type) {
-        message.payload.zeroize();
+    if zeroize_private_cloud_payload(&mut message) {
         return;
     }
     update_message(state, &mut connected.latest_messages, message.clone());
@@ -4236,10 +4251,7 @@ fn run_leased(
                         .observation
                         .as_ref()
                         .is_some_and(|ticket| session.lock_recover().accepts_observation(ticket));
-                    if !current {
-                        if matches!(message.message_type, 18 | 29) {
-                            message.payload.zeroize();
-                        }
+                    if !retain_message_for_current_epoch(&mut message, current) {
                         clear_session_caches(&state, &latest_messages);
                         connected.latest_messages.clear();
                         let _ = state_messages.send(StateDecoderCommand::Reset);

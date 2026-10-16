@@ -437,7 +437,7 @@ pub fn main(binary: Binary) {
                 &controller,
                 binary.default_directory.map(|default| default()),
             );
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "linux")))]
             let _signal_watch = {
                 let shutdown = controller.shutdown_handle();
                 signals
@@ -452,7 +452,11 @@ pub fn main(binary: Binary) {
                         fail(error)
                     })
             };
-            if let Err(error) = crate::rpc::serve_stdio(controller, phase_events) {
+            #[cfg(target_os = "linux")]
+            let served = crate::rpc::serve_stdio(controller, phase_events, signals);
+            #[cfg(not(target_os = "linux"))]
+            let served = crate::rpc::serve_stdio(controller, phase_events);
+            if let Err(error) = served {
                 fail(error);
             }
         }

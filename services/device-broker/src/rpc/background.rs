@@ -110,6 +110,56 @@ pub(super) struct Ticket {
     generation: u64,
 }
 impl Ticket {
+    /// Rearm an active original's key without starting another dispatcher or
+    /// capturing its Manager in queued work. Superseded/stopped work cannot
+    /// overwrite a newer generation; the existing owner retains the timer.
+    #[cfg(target_os = "linux")]
+    pub(super) fn retry_after(&self, deadline: Instant, work: Work) -> Result<bool, String> {
+        let mut pending = Some(work);
+        let mut replaced = None;
+        let shared = self.shared.upgrade();
+        let result = (|| {
+            let Some(shared) = &shared else {
+                return Ok(false);
+            };
+            let mut state = shared.state.lock_recover();
+            if state.stopped
+                || !state
+                    .entries
+                    .get(&self.key)
+                    .is_some_and(|entry| entry.running && entry.generation == self.generation)
+            {
+                return Ok(false);
+            }
+            let generation = state
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| "Broker background generation exhausted".to_string())?;
+            state.generation = generation;
+            let entry = state
+                .entries
+                .get_mut(&self.key)
+                .expect("current active key");
+            entry.generation = generation;
+            entry.deadline = deadline;
+            entry.requesters_closed = false;
+            replaced = entry
+                .queued
+                .replace(pending.take().expect("retry work is owned"));
+            Ok(true)
+        })();
+        if let Some(shared) = shared {
+            shared.changed.notify_all();
+        }
+        if let Some(work) = pending {
+            work.cancel();
+        }
+        if let Some(work) = replaced {
+            work.cancel();
+        }
+        result
+    }
+
     pub(super) fn current(&self) -> bool {
         self.with_current(|| ()).is_some()
     }

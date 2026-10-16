@@ -42,18 +42,20 @@ export const QC_SETTINGS_UNIT_PANES: Readonly<Record<string, QcSettingsUnitPane>
   DynamicDelayCompensationSetting: { selection: { section: "device", row: "latency" }, evidence: "Settings > Device > Latency Compensation, measured on a CorOS 4.1.0 unit: the last child of zenUI::SettingsDialog when the row is selected" },
   MidiSettings: { selection: { section: "device", row: "midi" }, evidence: "Settings > Device > MIDI, measured on a CorOS 4.1.0 unit: the last child of zenUI::SettingsDialog when the row is selected" },
   ContactUsMenu: { selection: { section: "support", row: "about" }, evidence: "Settings > Support > About and Contact, measured on a CorOS 4.1.0 unit: the last child of zenUI::SettingsDialog when the row is selected" },
+  ResetMenu: { selection: { section: "system", row: "factory" }, evidence: "Settings > System > Factory Reset, measured on a CorOS 4.1.0 unit: the last child of zenUI::SettingsDialog when the row is selected" },
+  SendReport: { selection: { section: "support", row: "report" }, evidence: "Settings > Support > Send Report, measured on a CorOS 4.1.0 unit: the last child of zenUI::SettingsDialog when the row is selected" },
+  DiagnosticsMenu: { selection: { section: "support", row: "diagnostics" }, evidence: "Settings > Support > Diagnostics, measured on a CorOS 4.1.0 unit: the last child of zenUI::SettingsDialog when the row is selected" },
+  MyAccountMain: { selection: { section: "account", row: "user" }, evidence: "Settings > Account > My Account, measured on a CorOS 4.1.0 unit: the last child of zenUI::SettingsDialog when the row is selected" },
+  Backups: { selection: { section: "account", row: "backup" }, evidence: "Settings > Account > Backups, measured on a CorOS 4.1.0 unit: the last child of zenUI::SettingsDialog when the row is selected" },
   ThirdPartyLicenses: { selection: { section: "support", row: "licenses" }, evidence: "Settings > Support > 3rd Party Licenses, measured on a CorOS 4.1.0 unit: the last child of zenUI::SettingsDialog when the row is selected" }
 };
 
 /**
- * Rows the unit has that are deliberately not registered, because their pane class has not been read from a tree (the row
- * was avoided on the unit): Account (leads to sign-in), System > Factory Reset, Support > Send Report, Support > Diagnostics.
- * They stay unregistered, so the app is left where it is on them; a class is never guessed.
+ * Rows the unit has whose pane class has not been read from a tree. Every row is captured now (CorOS 4.1.0), so this is
+ * empty; a row the app gains later without a measured class is listed here instead of guessed, and the registry test
+ * requires each app row to be registered or listed, never neither.
  */
-export const QC_SETTINGS_ROWS_NOT_CAPTURED: ReadonlyArray<QcSettingsUnitSelection> = [
-  { section: "account", row: "user" }, { section: "account", row: "backup" },
-  { section: "system", row: "factory" }, { section: "support", row: "report" }, { section: "support", row: "diagnostics" }
-];
+export const QC_SETTINGS_ROWS_NOT_CAPTURED: ReadonlyArray<QcSettingsUnitSelection> = [];
 
 const CLASS_LINE = /^\s*zenUI::([A-Za-z0-9_]+)\s*$/;
 
