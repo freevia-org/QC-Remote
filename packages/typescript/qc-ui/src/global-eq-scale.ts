@@ -1,3 +1,4 @@
+import { formatFixed } from "./format-number.ts";
 const clampNormalized = (value: number) => Math.max(0, Math.min(1, value));
 
 /** CorOS stores Global EQ frequency as a logarithmic 20 Hz–20 kHz value. */
@@ -9,7 +10,7 @@ export function formatGlobalEqFrequency(normalized: number) {
   const hz = globalEqFrequencyHz(normalized);
   if (hz < 1000) return `${Math.round(hz)} Hz`;
   const khz = hz / 1000;
-  return `${khz < 10 ? khz.toFixed(1) : Math.round(khz)} kHz`;
+  return `${khz < 10 ? formatFixed(khz) : Math.round(khz)} kHz`;
 }
 
 /** CorOS stores Global EQ Q as a normalized 0.10–10.00 value. */

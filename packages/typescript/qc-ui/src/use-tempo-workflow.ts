@@ -1,3 +1,4 @@
+import { formatFixed } from "./format-number.ts";
 import { useDeviceWorkflowSession } from "./use-device-workflow-session.ts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QC_MAXIMUM_TEMPO_BPM, QC_MINIMUM_TEMPO_BPM } from "@qc-remote/client";
@@ -174,7 +175,7 @@ export function useTempoWorkflow(options: TempoWorkflowOptions) {
     commit(running ? "Unmuting the metronome" : "Muting the metronome", (gateway) => gateway.setTempoMetronome(null, null, running, null, null, null, null, null, null)), [commit, gateway]);
 
   const setVolumeDb = useCallback((value: number) =>
-    commit(`Metronome Volume ${value.toFixed(1)} dB`, (gateway) => gateway.setTempoMetronome(null, value, null, null, null, null, null, null, null)), [commit, gateway]);
+    commit(`Metronome Volume ${formatFixed(value)} dB`, (gateway) => gateway.setTempoMetronome(null, value, null, null, null, null, null, null, null)), [commit, gateway]);
 
   const setPan = useCallback((value: number) =>
     commit("Metronome Pan", (gateway) => gateway.setTempoMetronome(null, null, null, value, null, null, null, null, null)), [commit, gateway]);
