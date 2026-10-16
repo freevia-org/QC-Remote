@@ -27,12 +27,17 @@ export async function runOwnedTests({ argv, cwd = process.cwd(), environment = p
   signalSource.on('SIGTERM', sigterm);
   try {
     if (platform === 'win32') {
+      const inheritedValue = name => Object.entries(environment).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+        .find(([key]) => key.toUpperCase() === name)?.[1];
+      // Keep one outer creation namespace rather than appending an owner GUID
+      // at every nesting level: Chrome still has Windows profile path limits.
+      // Every producer creates/deletes only its own exclusive leaf beneath it.
+      if (inheritedValue('QC_VALIDATION_PRODUCER_ROOT') === undefined
+          && inheritedValue('QC_REMOTE_TEST_STATE_ROOT') !== undefined) {
+        environment = { ...environment, QC_VALIDATION_PRODUCER_ROOT: inheritedValue('QC_REMOTE_TEST_STATE_ROOT') };
+      }
       const result = await windowsProducer({ command: process.execPath,
         arguments: ['--experimental-strip-types', '--test', '--test-concurrency=4', ...argv], cwd, environment,
-        // Nest exclusive children, never delete the inherited namespace. An
-        // outer owner can then retire bytes if it must kill this entire run.
-        ownerParentDirectory: Object.entries(environment).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-          .find(([key]) => key.toUpperCase() === 'QC_REMOTE_TEST_STATE_ROOT')?.[1],
         nativeTestState: true, timeoutMilliseconds }, {
         signal: cancellation.signal,
         onStdout: text => stdout.write(text), onStderr: text => stderr.write(text),
