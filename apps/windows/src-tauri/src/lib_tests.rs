@@ -10143,3 +10143,409 @@ fn the_relay_helper_starts_a_broker_once_for_an_ordinary_call() {
         assert_eq!(*starts.lock().unwrap(), vec![descriptor.clone()]);
     }
 }
+
+#[test]
+fn a_release_binds_only_the_generation_it_released() {
+    let descriptor = |instance: &str| device_broker_descriptor::DeviceBrokerDescriptor {
+        port: 1,
+        bearer_token: "token".into(),
+        instance_id: instance.into(),
+        process_id: 1,
+        process_created_at: None,
+        published_at_unix_ms: 0,
+        gateway_api_version: None,
+    };
+    let alive = |_: &device_broker_descriptor::DeviceBrokerDescriptor| true;
+    let dead = |_: &device_broker_descriptor::DeviceBrokerDescriptor| false;
+    let newer = descriptor("newer-generation");
+    let same = descriptor("released-generation");
+    assert!(
+        broker_attach_candidate(Some("released-generation"), Some(&newer), false, &alive),
+        "a live broker started after the release is a candidate"
+    );
+    assert!(
+        !broker_attach_candidate(Some("released-generation"), Some(&newer), true, &alive),
+        "a broker being force-released, or named by a Quit record, is not"
+    );
+    assert!(
+        !broker_attach_candidate(Some("released-generation"), Some(&same), false, &alive),
+        "the released broker on its way out keeps the release"
+    );
+    assert!(
+        !broker_attach_candidate(Some("released-generation"), Some(&newer), false, &dead),
+        "a dead descriptor is no candidate"
+    );
+    assert!(
+        !broker_attach_candidate(Some("released-generation"), None, false, &alive),
+        "nothing published: nothing to attach"
+    );
+    assert!(
+        broker_attach_candidate(None, Some(&newer), false, &alive),
+        "recovery behind the gate excludes no generation"
+    );
+    for method in [
+        rpc::RUNTIME_STATUS,
+        "broker.devices",
+        rpc::RECONNECT,
+        rpc::DISCONNECT,
+        DEVICE_BROKER_DISCONNECT_METHOD,
+        "broker.selectDevice",
+    ] {
+        assert!(forwarded_before_reconnect(method), "{method}");
+    }
+    assert!(!forwarded_before_reconnect("device.setParameter"));
+    assert!(!forwarded_before_reconnect(rpc::CURRENT_STATE_EVENTS));
+    assert!(!supersede_probe_method(rpc::RECONNECT));
+}
+
+#[test]
+fn a_quit_record_naming_a_broker_or_unreadable_excludes_it() {
+    let directory = unique_fixture_directory("supersede-quit-record");
+    let _directory_guard = RemoveDirOnDrop::new(directory.clone());
+    let descriptor = directory.join("device-broker.json");
+    assert!(
+        !user_quit_excludes(&descriptor, "newer-generation"),
+        "no record"
+    );
+    let quit = device_broker_descriptor::user_quit_path(&descriptor);
+    fs::write(&quit, br#"{"instanceId":"released-generation"}"#).unwrap();
+    assert!(
+        !user_quit_excludes(&descriptor, "newer-generation"),
+        "the Quit names another generation"
+    );
+    assert!(user_quit_excludes(&descriptor, "released-generation"));
+    fs::write(&quit, b"not json").unwrap();
+    assert!(
+        user_quit_excludes(&descriptor, "newer-generation"),
+        "an unreadable record excludes every one"
+    );
+}
+
+/// Publish a broker descriptor for this test process on `port`.
+fn publish_fixture_descriptor(descriptor_path: &Path, port: u16, instance_id: &str) {
+    fs::write(
+        descriptor_path,
+        serde_json::to_vec(&json!({
+            "port": port,
+            "bearerToken": "fixture-token",
+            "instanceId": instance_id,
+            "processId": std::process::id(),
+            "publishedAtUnixMs": device_broker_descriptor::unix_time_ms(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+fn closed_loopback_port() -> u16 {
+    // Bound, then released: nothing listens on it.
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// A [`released_window_gateway_beside_newer_descriptor`] fixture: the
+/// gateway, its peer socket, the published descriptor's path, the directory
+/// guard keeping it alive, and each subsequent start attempt's recorded
+/// `descriptor_path` (from `count_starts_refusing`).
+type ReleasedWindowGatewayFixture = (
+    Gateway,
+    TcpStream,
+    PathBuf,
+    RemoveDirOnDrop,
+    std::sync::Arc<Mutex<Vec<Option<PathBuf>>>>,
+);
+
+/// A window gateway holding a tray release, with a newer broker published
+/// beside it (live pid, different instance id) on `port`.
+fn released_window_gateway_beside_newer_descriptor(
+    label: &str,
+    port: u16,
+) -> ReleasedWindowGatewayFixture {
+    let directory = unique_fixture_directory(label);
+    let directory_guard = RemoveDirOnDrop::new(directory.clone());
+    let descriptor_path = directory.join("device-broker.json");
+    publish_fixture_descriptor(&descriptor_path, port, "newer-generation");
+    let (mut gateway, peer, release_reader, flag) =
+        gateway_with_a_failed_writer_and_gated_release_reader(true);
+    gateway.descriptor_path = Some(descriptor_path.clone());
+    let starts = gateway.count_starts_refusing();
+    assert!(gateway
+        .request_detailed(rpc::RUNTIME_STATUS, json!({}))
+        .is_err());
+    release_reader.send(()).unwrap();
+    gateway
+        .retiring_process
+        .as_ref()
+        .unwrap()
+        .reader_completed
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    assert!(flag.load(std::sync::atomic::Ordering::Acquire));
+    (gateway, peer, descriptor_path, directory_guard, starts)
+}
+
+#[test]
+fn a_failed_attach_to_a_newer_broker_keeps_the_release_backs_off_and_never_elects_or_spawns() {
+    let (mut gateway, _peer, descriptor, _directory, starts) =
+        released_window_gateway_beside_newer_descriptor(
+            "supersede-attach-fails",
+            closed_loopback_port(),
+        );
+    for _ in 0..3 {
+        assert!(matches!(
+            gateway.respect_intentional_release(rpc::RUNTIME_STATUS),
+            Err(GatewayRequestFailure::Remote { code: -32002, .. })
+        ));
+        assert!(gateway.intentional_release, "cleared only after an attach");
+        assert!(gateway.process.is_none());
+    }
+    assert_eq!(
+        gateway.released_instance_id.as_deref(),
+        Some("failed-test-generation")
+    );
+    assert_eq!(
+        gateway.supersede_attach_attempts, 1,
+        "a failed candidate is not retried on every probe"
+    );
+    assert!(starts.lock().unwrap().is_empty(), "no election, no spawn");
+    // A device request never probes for a newer broker at all.
+    assert!(matches!(
+        gateway.respect_intentional_release("device.setParameter"),
+        Err(GatewayRequestFailure::Remote { code: -32002, .. })
+    ));
+    // A descriptor naming another instance is tried at once.
+    publish_fixture_descriptor(&descriptor, closed_loopback_port(), "newest-generation");
+    assert!(gateway
+        .respect_intentional_release(rpc::RUNTIME_STATUS)
+        .is_err());
+    assert_eq!(gateway.supersede_attach_attempts, 2);
+    assert!(gateway.intentional_release);
+    assert!(starts.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_newer_broker_that_is_itself_being_released_does_not_supersede_the_release() {
+    use generated_broker_surface::BrokerReleaseMarker;
+    let (mut gateway, _peer, descriptor, _directory, starts) =
+        released_window_gateway_beside_newer_descriptor("supersede-marked", closed_loopback_port());
+    fs::write(
+        BrokerReleaseMarker::path_for(&descriptor, "newer-generation"),
+        serde_json::to_vec(&BrokerReleaseMarker {
+            instance_id: "newer-generation".into(),
+            forced: true,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        gateway.respect_intentional_release(rpc::RUNTIME_STATUS),
+        Err(GatewayRequestFailure::Remote { code: -32002, .. })
+    ));
+    assert!(gateway.intentional_release);
+    assert_eq!(gateway.supersede_attach_attempts, 0, "never attached to");
+    assert!(starts.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_newer_broker_named_by_the_quit_record_does_not_supersede_the_release() {
+    let (mut gateway, _peer, descriptor, _directory, starts) =
+        released_window_gateway_beside_newer_descriptor(
+            "supersede-quit-named",
+            closed_loopback_port(),
+        );
+    fs::write(
+        device_broker_descriptor::user_quit_path(&descriptor),
+        br#"{"instanceId":"newer-generation"}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        gateway.respect_intentional_release(rpc::RUNTIME_STATUS),
+        Err(GatewayRequestFailure::Remote { code: -32002, .. })
+    ));
+    assert_eq!(gateway.supersede_attach_attempts, 0);
+    assert!(starts.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_headless_bridge_gateway_is_never_superseded() {
+    let (mut gateway, _peer, _descriptor, _directory, starts) =
+        released_window_gateway_beside_newer_descriptor("supersede-bridge", closed_loopback_port());
+    gateway.participant_provider = Some("fixture bridge");
+    assert!(matches!(
+        gateway.respect_intentional_release(rpc::RUNTIME_STATUS),
+        Err(GatewayRequestFailure::Remote { code: -32002, .. })
+    ));
+    assert!(gateway.intentional_release);
+    assert_eq!(gateway.supersede_attach_attempts, 0);
+    assert!(starts.lock().unwrap().is_empty());
+}
+
+/// A broker that answers the authenticate handshake as `instance_id` and the
+/// version check that follows, then holds the connection open for a while.
+fn serve_one_fixture_attach(
+    listener: std::net::TcpListener,
+    instance_id: &'static str,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return,
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let Ok(authenticate) = read_frame(&mut stream) else {
+            return;
+        };
+        assert_eq!(
+            authenticate.get("method").and_then(Value::as_str),
+            Some(DEVICE_BROKER_AUTHENTICATE_METHOD)
+        );
+        let _ = write_frame(
+            &mut stream,
+            &serde_json::to_vec(&json!({"id": 0, "result": {"instanceId": instance_id}})).unwrap(),
+        );
+        let Ok(status) = read_frame(&mut stream) else {
+            return;
+        };
+        let _ = write_frame(
+            &mut stream,
+            &serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "id": status.get("id").cloned().unwrap_or(json!(1)),
+                "result": {"gatewayApiVersion": generated_gateway::API_VERSION}
+            }))
+            .unwrap(),
+        );
+        // Anything else is not answered: the test sends nothing more.
+        let _ = read_frame(&mut stream);
+    })
+}
+
+#[test]
+fn a_window_attaches_to_a_newer_broker_and_then_forwards_only_probes_until_its_reconnect() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let broker = serve_one_fixture_attach(listener, "newer-generation");
+    let (mut gateway, _peer, _descriptor, _directory, starts) =
+        released_window_gateway_beside_newer_descriptor("supersede-attaches", port);
+    assert!(matches!(
+        gateway.respect_intentional_release(rpc::RUNTIME_STATUS),
+        Ok(true)
+    ));
+    assert!(
+        !gateway.intentional_release,
+        "cleared once the attach succeeded"
+    );
+    assert!(gateway.released_instance_id.is_none());
+    assert!(gateway.reconnect_required);
+    assert_eq!(
+        gateway
+            .process
+            .as_ref()
+            .and_then(gateway_process_instance_id)
+            .as_deref(),
+        Some("newer-generation")
+    );
+    assert_eq!(gateway.supersede_attach_attempts, 1);
+    assert!(
+        starts.lock().unwrap().is_empty(),
+        "attached, never elected or spawned"
+    );
+    assert!(
+        gateway.lock_free_reads.current().is_none(),
+        "no read bypasses the gate"
+    );
+    // A device mutation never reaches the attached broker.
+    assert!(matches!(
+        gateway.request_detailed("device.setParameter", json!({})),
+        Err(GatewayRequestFailure::Remote { code: -32002, .. })
+    ));
+    assert!(gateway.reconnect_required);
+    drop(gateway);
+    broker.join().unwrap();
+}
+
+#[test]
+fn recovery_behind_the_gate_attaches_only_and_never_spawns_or_auto_connects() {
+    // The broker a window attached to after a release has exited, and the
+    // window's own reconnect has not come yet.
+    let directory = unique_fixture_directory("supersede-gate-recovery");
+    let _directory_guard = RemoveDirOnDrop::new(directory.clone());
+    let mut gateway = Gateway {
+        reconnect_required: true,
+        started_once: true,
+        descriptor_path: Some(directory.join("device-broker.json")),
+        ..Gateway::default()
+    };
+    let starts = gateway.record_start_auto_connect_refusing();
+    for method in [rpc::RUNTIME_STATUS, "broker.devices"] {
+        assert!(
+            matches!(
+                gateway.request_detailed(method, json!({})),
+                Err(GatewayRequestFailure::Remote { code: -32002, .. })
+            ),
+            "the release itself, never a lost session the window would reconnect"
+        );
+    }
+    assert!(
+        starts.lock().unwrap().is_empty(),
+        "no election, no spawn, so no auto-connecting broker"
+    );
+    assert!(gateway.reconnect_required);
+    // The window's own reconnect lifts the gate and starts as usual.
+    let _ = gateway.request_detailed(rpc::RECONNECT, json!({}));
+    assert!(!gateway.reconnect_required);
+    assert_eq!(
+        *starts.lock().unwrap(),
+        vec![true],
+        "only the window's own reconnect starts a broker, and that one may open the session"
+    );
+}
+
+#[test]
+fn after_a_supersede_attach_only_probes_and_the_reconnect_reach_the_broker() {
+    // The gate itself, without a live broker: the flag set as a successful
+    // supersede attach leaves it.
+    let mut gateway = Gateway {
+        reconnect_required: true,
+        ..Gateway::default()
+    };
+    let starts = gateway.count_starts_refusing();
+    for method in [
+        "device.setParameter",
+        rpc::CURRENT_STATE_EVENTS,
+        "device.recallPreset",
+    ] {
+        assert!(
+            matches!(
+                gateway.request_detailed(method, json!({})),
+                Err(GatewayRequestFailure::Remote { code: -32002, .. })
+            ),
+            "{method}"
+        );
+    }
+    assert!(gateway.reconnect_required);
+    assert!(
+        starts.lock().unwrap().is_empty(),
+        "refused before any start"
+    );
+    // The window's reconnect lifts the gate (and then starts as usual; the
+    // seam refuses that start).
+    let _ = gateway.request_detailed(rpc::RECONNECT, json!({}));
+    assert!(!gateway.reconnect_required);
+}
