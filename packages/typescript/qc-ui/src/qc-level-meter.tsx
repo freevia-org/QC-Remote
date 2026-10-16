@@ -60,3 +60,11 @@ export function QcLevelMeter({ className, value = 0, label }: QcLevelMeterProps)
     </svg>
   );
 }
+
+/**
+ * What the unit's output meter reads with no signal: the floor of its -40 dB scale.
+ * The host publishes no meter data (IoSettings carries settings only), so the app draws this idle reading, like the unlit bar.
+ */
+export const QC_LEVEL_METER_IDLE_DB = -40;
+/** What the unit's LIMITER readout shows while it is not reducing gain. Idle, like the meter above; the host reports no limiter data. */
+export const QC_LIMITER_IDLE_DB = 0;

@@ -1,3 +1,4 @@
+import { formatFixed } from "./format-number.ts";
 import { closeUserOpenedTarget, escapeUserOpenedTarget } from "./user-open-focus";
 import { useEffect, useRef, useState } from "react";
 import type { PresetSnapshot, TempoSettings } from "@qc-remote/client";
@@ -197,8 +198,8 @@ function CorOsTempoSession({ workflow, snapshot, queueTempo, onSelectScene, onCl
           </button>
           <section className="tempo-control is-volume">
             <span>VOLUME</span>
-            <TempoDial label="Volume" valueText={`${displayVolume === undefined ? "—" : displayVolume.toFixed(1)} dB`} value={displayVolume} min={VOLUME_MIN} max={VOLUME_MAX} step={.5} position={tempoVolumePosition} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftVolume(value); }} onCommit={commitVolume} />
-            <strong>{displayVolume === undefined ? "—" : displayVolume.toFixed(1)}<span className="tempo-unit"> dB</span></strong>
+            <TempoDial label="Volume" valueText={`${displayVolume === undefined ? "—" : formatFixed(displayVolume)} dB`} value={displayVolume} min={VOLUME_MIN} max={VOLUME_MAX} step={.5} position={tempoVolumePosition} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftVolume(value); }} onCommit={commitVolume} />
+            <strong>{displayVolume === undefined ? "—" : formatFixed(displayVolume)}<span className="tempo-unit"> dB</span></strong>
           </section>
           <section className="tempo-control is-mute">
             <button type="button" disabled={disabled || running === undefined} onClick={() => { if (!disabled && running !== undefined) void workflow.setRunning(!running); }}>{running === undefined ? "Unavailable" : running ? "MUTE" : "UNMUTE"}</button>
