@@ -65,7 +65,7 @@ base64 = "0.22"
 # Locates the Documents folder (SHGetKnownFolderPath) for backups a remote or
 # MCP caller asks for. Already in the lock file through Tauri.
 dirs = "6"
-rand = "0.9"
+rand = "0.10"
 quadcortex = { path = "../../../packages/rust/quadcortex" }
 qc-relay-client = { path = "../../../packages/rust/qc-relay-client" }
 qc-remote-mcp = { path = "../../../services/rust-mcp" }

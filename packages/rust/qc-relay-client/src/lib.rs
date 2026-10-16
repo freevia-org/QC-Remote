@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
-use rand::Rng;
+use rand::RngExt;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

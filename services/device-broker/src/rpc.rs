@@ -3652,7 +3652,7 @@ fn unix_time_ms() -> u64 {
 
 fn generate_token(byte_len: usize) -> String {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use rand::Rng as _;
+    use rand::RngExt as _;
     let mut bytes = vec![0_u8; byte_len];
     rand::rng().fill(bytes.as_mut_slice());
     URL_SAFE_NO_PAD.encode(bytes)

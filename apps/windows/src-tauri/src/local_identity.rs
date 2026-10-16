@@ -81,7 +81,7 @@ pub(crate) fn prove(token: &str, instance_id: &str, nonce: &str) -> Option<Strin
 }
 
 fn fresh_nonce() -> String {
-    use rand::Rng as _;
+    use rand::RngExt as _;
     let mut bytes = [0_u8; 32];
     rand::rng().fill(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
