@@ -4418,7 +4418,10 @@ fn tar_text(value: &[u8]) -> String {
 }
 
 fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError> {
-    let mut reader = Reader::from_reader(xml);
+    // quick-xml 0.42 rejects non-UTF-8 input; decoding lossily first keeps the
+    // tolerance the byte-oriented reader had (valid UTF-8 is borrowed, not copied).
+    let xml = String::from_utf8_lossy(xml);
+    let mut reader = Reader::from_str(&xml);
     reader.config_mut().trim_text(true);
     let mut catalog = HashMap::new();
     let mut category = String::new();
@@ -4434,8 +4437,7 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                     .attributes()
                     .filter_map(Result::ok)
                     .filter_map(|attribute| {
-                        let key = String::from_utf8_lossy(attribute.key.local_name().as_ref())
-                            .into_owned();
+                        let key = attribute.key.local_name().into_inner().to_owned();
                         let value = attribute
                             .normalized_value(XmlVersion::Implicit1_0)
                             .ok()?
@@ -4443,12 +4445,12 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                         Some((key, value))
                     })
                     .collect::<HashMap<_, _>>();
-                if name.as_ref() == b"Category" {
+                if name.into_inner() == "Category" {
                     category = attrs.get("name").cloned().unwrap_or_default();
                     category_hidden = attrs
                         .get("hidden")
                         .is_some_and(|value| value.eq_ignore_ascii_case("true"));
-                } else if name.as_ref() == b"Model" {
+                } else if name.into_inner() == "Model" {
                     current = attrs.get("id").and_then(|value| value.parse::<u32>().ok());
                     parameter_index = 0;
                     if let Some(id) = current {
@@ -4510,7 +4512,7 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                         retained_cost = next_cost;
                         catalog.insert(id, info);
                     }
-                } else if name.as_ref() == b"Parameter" {
+                } else if name.into_inner() == "Parameter" {
                     validate_catalog_numeric_attributes(&attrs)?;
                     if let Some(model) = current.and_then(|id| catalog.get_mut(&id)) {
                         let replacement = attrs
@@ -4641,7 +4643,7 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                     }
                 }
             }
-            Ok(Event::End(event)) if event.local_name().as_ref() == b"Model" => current = None,
+            Ok(Event::End(event)) if event.local_name().into_inner() == "Model" => current = None,
             Ok(Event::Eof) => break,
             Err(error) => return Err(StateDecodeError::CatalogXml(error.to_string())),
             _ => {}
