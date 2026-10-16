@@ -101,7 +101,10 @@ finally {if(process.connected)process.disconnect()}
       if(driver&&driver.exitCode===null&&driver.signalCode===null) driver.kill('SIGKILL');
       if(state) await until(()=>!alive(state.worker)&&!alive(state.child),'Build cleanup incomplete');
       sibling.kill(); await until(()=>!alive(sibling.pid),'Control process cleanup incomplete');
-      await rm(directory,{recursive:true,force:true});
+      // Hard owner death is asynchronous: the surviving native supervisor may
+      // still be closing the admitted worker's CWD after its compiler exits.
+      // Keep failure visible if bounded retirement/deletion cannot complete.
+      await rm(directory,{recursive:true,force:true,maxRetries:8,retryDelay:100});
     }
   });
 }
