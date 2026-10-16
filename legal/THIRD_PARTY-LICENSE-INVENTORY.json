@@ -3950,7 +3950,7 @@
     {
       "ecosystem": "cargo",
       "name": "rustls-platform-verifier-android",
-      "version": "0.2.0",
+      "version": "0.1.1",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
       "licenseTextEvidence": {
@@ -3984,17 +3984,6 @@
       "ecosystem": "cargo",
       "name": "rustls-platform-verifier",
       "version": "0.7.0",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
-      "licenseTextHashes": [
-        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
-        "6205904d553962d42fd62764787a5b635a1416d4b3794f4fc465ec36bfbf7ceb"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "rustls-platform-verifier",
-      "version": "0.7.1",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
       "licenseTextHashes": [
@@ -9130,9 +9119,8 @@
         "cargo:quinn-udp@0.5.15",
         "cargo:quinn@0.11.11",
         "cargo:quinn@0.11.12",
-        "cargo:rustls-platform-verifier-android@0.2.0",
+        "cargo:rustls-platform-verifier-android@0.1.1",
         "cargo:rustls-platform-verifier@0.7.0",
-        "cargo:rustls-platform-verifier@0.7.1",
         "cargo:serialize-to-javascript-impl@0.1.2",
         "cargo:serialize-to-javascript@0.1.2",
         "cargo:sse-stream@0.2.6",
@@ -10009,8 +9997,7 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:rustls-platform-verifier@0.7.0",
-        "cargo:rustls-platform-verifier@0.7.1"
+        "cargo:rustls-platform-verifier@0.7.0"
       ]
     },
     {
