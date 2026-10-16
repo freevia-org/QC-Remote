@@ -149,6 +149,8 @@ pub(crate) fn serve_stdio(
         .controller
         .as_ref()
         .expect("stdio controller is owned");
+    #[cfg(not(target_os = "linux"))]
+    let controller = &controller;
     // The guard exits with `process::exit`, which skips the controller's Drop;
     // it stops the worker itself so the device still sees the disconnect.
     let worker_shutdown = controller.shutdown_handle();
@@ -210,7 +212,7 @@ pub(crate) fn serve_stdio(
     let stop_phase_events = AtomicBool::new(false);
     thread::scope(|scope| {
         if phase_events {
-            let (controller, output, stop) = (&controller, &*output, &stop_phase_events);
+            let (controller, output, stop) = (controller, &*output, &stop_phase_events);
             thread::Builder::new()
                 .name("qc-native-phase".into())
                 .spawn_scoped(scope, move || {
@@ -223,7 +225,7 @@ pub(crate) fn serve_stdio(
                 if !request_clock.start_request() {
                     return Err("STDIO orphan retirement committed before request dispatch".into());
                 }
-                let response = serve_stdio_request(&controller, &performance_midi, request);
+                let response = serve_stdio_request(controller, &performance_midi, request);
                 request_clock.finish_request();
                 let mut output = output
                     .lock()
