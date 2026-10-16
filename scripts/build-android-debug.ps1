@@ -6,7 +6,7 @@
 # verification, dependency-graph provenance, or legal-asset gating here,
 # just a real `assembleDebug`.
 #
-# Usage: powershell -File scripts/build-android-debug.ps1 [-SkipRustBuild]
+# Usage: powershell -File scripts/build-android-debug.ps1 [-SkipRustBuild] [-RunChecks]
 #
 # -SkipRustBuild skips the explicit Rust cross-compile step (useful if the
 # .so files were already built and Gradle's own buildSharedQcRust task will
@@ -14,7 +14,9 @@
 # libraries exist, since preBuild still depends on that task.
 
 param(
-    [switch]$SkipRustBuild
+    [switch]$SkipRustBuild,
+    # Development validation compiles the same native inputs, plus Java tests/lint.
+    [switch]$RunChecks
 )
 
 $ErrorActionPreference = "Stop"
@@ -68,7 +70,9 @@ try {
     npm run android:sync
     if ($LASTEXITCODE -ne 0) { throw "Capacitor sync failed with exit code $LASTEXITCODE." }
 
-    & node (Join-Path $PSScriptRoot "run-owned-gradle.mjs") (Join-Path $androidAppRoot "android\gradlew.bat") -p ".\android" assembleDebug
+    $gradleTasks = @("assembleDebug")
+    if ($RunChecks) { $gradleTasks += @("lintDebug", "testDebugUnitTest") }
+    & node (Join-Path $PSScriptRoot "run-owned-gradle.mjs") (Join-Path $androidAppRoot "android\gradlew.bat") -p ".\android" @gradleTasks
     if ($LASTEXITCODE -ne 0) { throw "Gradle assembleDebug failed with exit code $LASTEXITCODE." }
 }
 finally {
