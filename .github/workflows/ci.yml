@@ -94,6 +94,8 @@ jobs:
         run: node --test scripts/test-windows-native.test.mjs
       - name: Test Claude built-in Node and direct bridge startup
         run: node --test scripts/claude-mcp-startup.test.mjs
+      - name: Test owned Gradle failure, interruption and launcher-termination cleanup
+        run: node --test scripts/run-owned-gradle.test.mjs
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           # apps/windows/src-tauri/rust-toolchain.toml pins profile = "minimal",

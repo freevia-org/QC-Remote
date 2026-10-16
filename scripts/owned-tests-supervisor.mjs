@@ -51,7 +51,7 @@ process.on('message', async request => {
     root = await mkdtemp(join(request.environment.QC_REMOTE_TEST_STATE_ROOT ?? tmpdir(), 'qc-owned-tests-'));
     if (cancelled) { await retire(1); return; }
     const environment = Object.fromEntries(Object.entries(request.environment).filter(([key]) => key.toUpperCase() !== 'QC_REMOTE_TEST_STATE_ROOT'));
-    child = spawn(process.execPath, ['--experimental-strip-types', '--test', '--test-concurrency=4', ...request.argv], {
+    child = spawn(request.command ?? process.execPath, request.arguments ?? ['--experimental-strip-types', '--test', '--test-concurrency=4', ...request.argv], {
       cwd: request.cwd, env: { ...environment, QC_REMOTE_TEST_STATE_ROOT: root },
       detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     });
