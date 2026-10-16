@@ -85,13 +85,18 @@ QC Remote keeps these items on the device it runs on:
   background component's error output, and a short USB flight recorder stay in
   app-private storage on your computer or phone. The flight recorder contains
   timestamps, process numbers, event names, message type numbers and report
-  counts, rather than message contents. It keeps at most 256 entries and up to
-  four frozen incident windows on Windows. Cloud/account forwarding envelopes
-  and firmware-forwarding requests are excluded from the general message cache
+  counts, rather than message contents. On Windows it also notes, for each
+  request the unit makes for its Neural DSP account, a request number, the
+  HTTP method, the time limit, the answer status and the time remaining, and
+  each sign-in state change the unit reports (created, updated or removed).
+  It does not record URLs, header values, request or response bodies, or
+  tokens. It keeps at most 256 entries and up to four frozen incident
+  windows on Windows. Cloud/account forwarding envelopes and
+  firmware-forwarding requests are excluded from the general message cache
   and event stream. The production forwarder does not keep request or response
-  bodies, header values, URLs, or a request history. Its displayed status has
-  aggregate counts and transfer state. Other programs running as your Windows
-  user can read the local troubleshooting files.
+  bodies, header values or URLs. Its displayed status has aggregate counts and
+  transfer state. Other programs running as your Windows user can read the
+  local troubleshooting files.
 - **Demo device.** The Windows app's built-in demo device keeps its setlists and
   presets in `%LOCALAPPDATA%\QC Remote\virtual-device`.
 - **Files you ask for.** Workspaces you save, device backups, and diagnostics
@@ -351,6 +356,9 @@ the server responses back to the unit.
   general message cache or event stream. Aggregate status counts remain local.
 - **Your control.** Forwarding is on by default. Clear "Internet for the Quad
   Cortex" in Windows Settings to stop it, including a transfer in progress.
+  With it off, QC Remote still answers the unit's account requests with an
+  error so the unit is not left waiting. It sends nothing to the network and
+  keeps nothing.
   This Windows forwarding feature is separate from the optional Freevia remote
   relay. The Android app does not perform these broker HTTP exchanges.
 

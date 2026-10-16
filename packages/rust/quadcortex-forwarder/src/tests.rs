@@ -189,3 +189,133 @@ fn expired_http_deadline_never_starts_dns_or_a_socket() {
     assert!(matches!(result, Err(fetch::FetchFailure::Timeout)));
     assert!(!called.load(Ordering::Acquire));
 }
+
+#[test]
+fn answer_deadline_leaves_the_margin_before_the_units_own_deadline() {
+    let started = Instant::now();
+    assert_eq!(answer_deadline(0, started), None);
+    assert_eq!(
+        answer_deadline(30_000, started),
+        Some(started + Duration::from_millis(28_000))
+    );
+    assert_eq!(
+        answer_deadline(40_000, started),
+        Some(started + Duration::from_millis(38_000))
+    );
+    // A short budget is answered halfway rather than before it began.
+    assert_eq!(
+        answer_deadline(1_000, started),
+        Some(started + Duration::from_millis(500))
+    );
+}
+
+#[test]
+fn watchdog_deadline_follows_the_answer_deadline_by_its_grace() {
+    let started = Instant::now();
+    assert_eq!(watchdog_deadline(0, started), None);
+    assert_eq!(
+        watchdog_deadline(30_000, started),
+        Some(started + Duration::from_millis(28_500))
+    );
+    // A short budget keeps the grace inside a quarter of its margin.
+    assert_eq!(
+        watchdog_deadline(1_000, started),
+        Some(started + Duration::from_millis(625))
+    );
+}
+
+#[test]
+fn a_silent_account_server_is_answered_before_the_device_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut block = [0; 4096];
+        let _ = socket.read(&mut block);
+        // Never answer: the exchange must end at the answer deadline.
+        let _ = socket.read(&mut block);
+    });
+    let payload = pa::ProductForwardMessage {
+        action: 1,
+        cloud_request_id: 201,
+        request: Some(pa::product_forward_message::Request::Request(
+            pa::ProductForwardRequest {
+                operation: pa::http_operation::Enum::Post as i32,
+                url: format!("http://{address}/"),
+                timeout: 30_000,
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    // As if the frame had arrived 27.5 s ago: the answer deadline is 0.5 s
+    // away and the unit's own 2.5 s away, the margin a real request has.
+    let Some(started) = Instant::now().checked_sub(Duration::from_millis(27_500)) else {
+        return; // A host up for under 27.5 s cannot express that instant.
+    };
+    let device_deadline = started + Duration::from_millis(30_000);
+    let mut replies = Vec::new();
+    forward_at(
+        29,
+        &payload,
+        Arc::new(AtomicBool::new(false)),
+        &mut |frame, deadline| {
+            assert_eq!(deadline, Some(device_deadline));
+            replies.push(frame);
+            Ok(())
+        },
+        started,
+    )
+    .unwrap();
+    assert!(Instant::now() < device_deadline);
+    assert_eq!(replies.len(), 1);
+    let reply = pa::ProductForwardMessage::decode(replies[0].payload.as_slice()).unwrap();
+    assert_eq!(reply.cloud_request_id, 201);
+    let Some(pa::product_forward_message::Response::Response(response)) = reply.response else {
+        panic!("response missing")
+    };
+    assert_eq!(response.error_code, cloud_forward::BROKER_ANSWER_STATUS);
+    assert!(response.payload.is_empty());
+    server.join().unwrap();
+}
+
+#[test]
+fn a_failed_account_exchange_is_answered_and_reported_as_a_network_failure() {
+    // A URL that does not parse fails at once, before any DNS or socket.
+    let payload = pa::ProductForwardMessage {
+        action: 1,
+        cloud_request_id: 202,
+        request: Some(pa::product_forward_message::Request::Request(
+            pa::ProductForwardRequest {
+                operation: pa::http_operation::Enum::Post as i32,
+                url: "not a url".into(),
+                timeout: 30_000,
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let mut replies = Vec::new();
+    let answer = forward_product_with_fetcher_at(
+        &http::DirectHttpFetcher::default(),
+        &payload,
+        Arc::new(AtomicBool::new(false)),
+        &mut |frame, _| {
+            replies.push(frame);
+            Ok(())
+        },
+        Instant::now(),
+    );
+    assert_eq!(answer, Ok(ProductAnswer::NetworkFailed));
+    assert_eq!(replies.len(), 1);
+    let reply = pa::ProductForwardMessage::decode(replies[0].payload.as_slice()).unwrap();
+    let Some(pa::product_forward_message::Response::Response(response)) = reply.response else {
+        panic!("response missing")
+    };
+    assert_eq!(response.error_code, cloud_forward::BROKER_ANSWER_STATUS);
+}

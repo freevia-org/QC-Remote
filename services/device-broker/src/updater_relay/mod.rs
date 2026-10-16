@@ -168,12 +168,27 @@ fn reap() {
         }
     }
 }
+/// A CorOS update is a series of Type 61 requests with gaps between them, so
+/// an empty task list alone does not mean no update is running: the unit is
+/// taken to be updating for this long after its latest request.
+pub const UPDATE_QUIET_AFTER: Duration = Duration::from_secs(60);
+
+/// What the unit has shown of an update, beyond the requests in flight.
+#[derive(Debug, Default)]
+struct UpdateActivity {
+    /// When the unit last sent a Type 61 request.
+    last_request_at: Option<Instant>,
+    /// Its own updater state (Type 68) last said an update is under way.
+    device_updating: bool,
+}
+
 pub struct UpdaterRelay {
     settings: Mutex<SettingsCache>,
     state: Arc<Mutex<State>>,
     tasks: Mutex<Vec<Task>>,
     response_cancellations: Mutex<Vec<std::sync::Weak<AtomicBool>>>,
     fetcher: Arc<dyn HttpFetcher>,
+    activity: Mutex<UpdateActivity>,
 }
 impl Default for UpdaterRelay {
     fn default() -> Self {
@@ -198,6 +213,7 @@ impl UpdaterRelay {
             tasks: Mutex::new(Vec::new()),
             response_cancellations: Mutex::new(Vec::new()),
             fetcher,
+            activity: Mutex::new(UpdateActivity::default()),
         }
     }
     pub fn set_settings_directory(&self, directory: PathBuf) {
@@ -247,6 +263,7 @@ impl UpdaterRelay {
     }
     pub fn on_forward_frame(&self, payload: &[u8], now: Instant) -> Disposition {
         reap();
+        self.activity.lock_recover().last_request_at = Some(now);
         let settings = self.settings(now);
         {
             let mut state = self.state.lock_recover();
@@ -328,6 +345,19 @@ impl UpdaterRelay {
     pub fn is_active(&self) -> bool {
         !self.tasks.lock_recover().is_empty()
     }
+    /// Whether an update may be under way, for work that must not interrupt
+    /// one: a request in flight, a request within `UPDATE_QUIET_AFTER`, or
+    /// the unit's own updater state between requesting data and rebooting.
+    pub fn update_in_progress(&self, now: Instant) -> bool {
+        if self.is_active() {
+            return true;
+        }
+        let activity = self.activity.lock_recover();
+        activity.device_updating
+            || activity
+                .last_request_at
+                .is_some_and(|at| now.saturating_duration_since(at) < UPDATE_QUIET_AFTER)
+    }
     pub fn maintain(&self, now: Instant) {
         reap();
         if !self.settings(now).enabled {
@@ -361,6 +391,16 @@ impl UpdaterRelay {
     }
     pub fn on_updater_state(&self, payload: &[u8]) {
         if let Ok(message) = pa::UpdaterMessage::decode(payload) {
+            if let Some(pa::updater_message::State::State(state)) = message.state.as_ref() {
+                let updating = matches!(
+                    pa::updater_state::Enum::try_from(*state),
+                    Ok(pa::updater_state::Enum::RequestingData
+                        | pa::updater_state::Enum::DownloadingData
+                        | pa::updater_state::Enum::Updating
+                        | pa::updater_state::Enum::Reboot)
+                );
+                self.activity.lock_recover().device_updating = updating;
+            }
             if matches!(message.state,Some(pa::updater_message::State::State(state)) if pa::updater_state::Enum::try_from(state).ok()==Some(pa::updater_state::Enum::Failed))
             {
                 self.cancel_if_active("device abandoned update");
