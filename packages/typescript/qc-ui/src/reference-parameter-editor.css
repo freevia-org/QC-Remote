@@ -49,6 +49,8 @@
 .coros-directory-header .directory-cloud { flex: 0 0 12.5%; display: grid; place-items: center; padding: 0; border-radius: .875cqw; background: var(--qc-screen-surface-raised); }
 .coros-directory-header .directory-cloud.is-active { background: var(--qc-palette-183b24); color: var(--qc-screen-accent); }
 .coros-directory-header .directory-cloud svg { width: 35%; height: auto; aspect-ratio: 1; fill: currentColor; stroke: currentColor; stroke-width: 1.7; }
+/* A linked unit's button holds the registry's 24px cloud_upload art, white in both states (the unit keeps it white over the green upload-mode tile). The art paints itself, so it takes no stroke. */
+.coros-directory-header button.directory-cloud svg { width: 24px; height: 24px; aspect-ratio: auto; color: var(--qc-icon-primary); stroke: none; }
 .coros-directory-header .directory-header-spacer { flex: 1; }
 .coros-directory-header .directory-tools { flex: 0 0 auto; width: auto; gap: 2.5%; }
 .coros-directory-header .directory-tools { gap: 1cqw; }
