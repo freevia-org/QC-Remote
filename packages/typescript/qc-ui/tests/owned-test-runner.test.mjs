@@ -19,8 +19,7 @@ test('owned test runner preserves exact argv/outcome and confines state under th
     windowsProducer: async (request, options) => {
       assert.deepEqual(request.arguments, ['--experimental-strip-types', '--test', '--test-concurrency=4', ...argv]);
       assert.equal(request.nativeTestState, true);
-      assert.deepEqual(request.environment, { KEEP: 'value', QC_REMOTE_TEST_STATE_ROOT: 'E:/outer-test-root' });
-      assert.equal(request.ownerParentDirectory, environment.QC_REMOTE_TEST_STATE_ROOT);
+      assert.deepEqual(request.environment, { KEEP: 'value', QC_REMOTE_TEST_STATE_ROOT: 'E:/outer-test-root', QC_VALIDATION_PRODUCER_ROOT: 'E:/outer-test-root' });
       assert.ok(request.timeoutMilliseconds > 0);
       options.onStdout('out'); options.onStderr('err');
       return { code: 17, retirementAcknowledged: true };

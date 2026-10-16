@@ -10,14 +10,16 @@ test('owned test fixture', async () => {
   mkdirSync(profile);
   writeFileSync(join(profile, 'partial'), 'test-only bytes');
   const child = process.env.QC_FIXTURE_BROWSER
-    ? spawn(process.env.QC_FIXTURE_BROWSER, ['--headless=new', '--disable-gpu', '--no-sandbox', '--no-first-run', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' })
+    ? spawn(process.env.QC_FIXTURE_BROWSER, ['--headless=new', '--disable-gpu', '--no-sandbox', '--no-first-run', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] })
     : spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
   await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+  let diagnostic = '';
+  child.stderr?.on('data', chunk => { diagnostic = (diagnostic + chunk).slice(-4096); });
   child.unref();
   if (process.env.QC_FIXTURE_BROWSER) {
     const deadline = Date.now() + 30_000;
     while (!existsSync(join(profile, 'DevToolsActivePort'))) {
-      if (child.exitCode !== null || Date.now() > deadline) throw new Error('Fixture Chrome never became ready');
+      if (child.exitCode !== null || Date.now() > deadline) throw new Error(`Fixture Chrome never became ready (exit ${child.exitCode}, profile length ${profile.length}): ${diagnostic}`);
       await new Promise(resolve => setTimeout(resolve, 50));
     }
   }
