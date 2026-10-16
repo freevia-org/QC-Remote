@@ -733,6 +733,24 @@ impl Gateway {
         ));
         starts
     }
+
+    /// `count_starts_refusing`, recording each start's `auto_connect`.
+    pub(crate) fn record_start_auto_connect_refusing(
+        &mut self,
+    ) -> std::sync::Arc<Mutex<Vec<bool>>> {
+        let starts = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let recorded = starts.clone();
+        self.start_seam = Some(std::sync::Arc::new(
+            move |auto_connect, _descriptor_path| {
+                recorded
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(auto_connect);
+                Err(GatewayStartSeam::REFUSAL.into())
+            },
+        ));
+        starts
+    }
 }
 
 /// The read that may travel on a broker connection while another request on
@@ -1424,6 +1442,46 @@ impl GatewayProcess {
         )
     }
 
+    /// Attach to exactly this published broker: no election, never a spawn.
+    /// Used only by `Gateway::attach_published_candidate`, which has already
+    /// checked the descriptor; the authenticated handshake proves the
+    /// connection reached that same instance.
+    fn attach_exact(
+        event_tx: Option<mpsc::SyncSender<DeviceEvent>>,
+        descriptor: &device_broker_descriptor::DeviceBrokerDescriptor,
+        release_marker_path: PathBuf,
+        deadline: Instant,
+    ) -> Result<Self, String> {
+        // The connect and the authenticated handshake are bounded by their
+        // own timeouts (0.5 s and 2 s, `broker_attach`); the version check
+        // gets whatever is left of `deadline`, and nothing at all past it.
+        let stream =
+            attach_to_device_broker(descriptor).map_err(|failure| failure.message().to_owned())?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("The newer broker did not finish attaching in time".into());
+        }
+        let reader = stream
+            .try_clone()
+            .map_err(|error| format!("Could not start gateway event reader: {error}"))?;
+        let lock_free_writer = stream
+            .try_clone()
+            .map_err(|error| format!("Could not start gateway lock-free reads: {error}"))?;
+        Self::with_transport_within(
+            GatewayTransport::SharedBroker {
+                stream,
+                hosted_child: None,
+                instance_id: descriptor.instance_id.clone(),
+                release_marker_path,
+            },
+            descriptor.process_id,
+            reader,
+            event_tx,
+            Some(lock_free_writer),
+            remaining,
+        )
+    }
+
     /// A private broker on stdio pipes, as every host used before the broker
     /// was shared.
     ///
@@ -1475,6 +1533,25 @@ impl GatewayProcess {
         event_tx: Option<mpsc::SyncSender<DeviceEvent>>,
         lock_free_writer: Option<TcpStream>,
     ) -> Result<Self, String> {
+        Self::with_transport_within(
+            transport,
+            broker_pid,
+            reader,
+            event_tx,
+            lock_free_writer,
+            GATEWAY_RESPONSE_TIMEOUT,
+        )
+    }
+
+    /// `with_transport`, with its version check answered within `within`.
+    fn with_transport_within(
+        transport: GatewayTransport,
+        broker_pid: u32,
+        reader: impl Read + Send + 'static,
+        event_tx: Option<mpsc::SyncSender<DeviceEvent>>,
+        lock_free_writer: Option<TcpStream>,
+        within: Duration,
+    ) -> Result<Self, String> {
         let intentional_release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let lock_free_reads = lock_free_writer.map(|writer| {
             std::sync::Arc::new(LockFreeReads::new(writer, intentional_release.clone()))
@@ -1498,7 +1575,7 @@ impl GatewayProcess {
             participant_announced: false,
             lock_free_reads,
         };
-        process.verify_gateway_api_version()?;
+        process.verify_gateway_api_version(within)?;
         Ok(process)
     }
 
@@ -1512,14 +1589,14 @@ impl GatewayProcess {
     /// later (the `add_block` deadlock was exactly this shape). Checking once
     /// here, right after spawn and before anything else can use the process,
     /// turns that into one immediate, specific failure naming both versions.
-    fn verify_gateway_api_version(&mut self) -> Result<(), String> {
-        let status =
-            self.request(rpc::RUNTIME_STATUS, json!({}))
-                .map_err(|failure| match failure {
-                    GatewayRequestFailure::Transport(message)
-                    | GatewayRequestFailure::UnansweredMutation(message) => message,
-                    GatewayRequestFailure::Remote { message, .. } => message,
-                })?;
+    fn verify_gateway_api_version(&mut self, within: Duration) -> Result<(), String> {
+        let status = self
+            .request_as_within(rpc::RUNTIME_STATUS, json!({}), None, within)
+            .map_err(|failure| match failure {
+                GatewayRequestFailure::Transport(message)
+                | GatewayRequestFailure::UnansweredMutation(message) => message,
+                GatewayRequestFailure::Remote { message, .. } => message,
+            })?;
         check_gateway_api_version(&status, self.broker_pid)
     }
 
@@ -1598,7 +1675,18 @@ impl GatewayProcess {
         params: Value,
         origin: Option<&str>,
     ) -> Result<Value, GatewayRequestFailure> {
-        let result = self.request_unchecked_as(method, params, origin)?;
+        self.request_as_within(method, params, origin, GATEWAY_RESPONSE_TIMEOUT)
+    }
+
+    /// `request_as`, giving up on the answer after `within`.
+    fn request_as_within(
+        &mut self,
+        method: &str,
+        params: Value,
+        origin: Option<&str>,
+        within: Duration,
+    ) -> Result<Value, GatewayRequestFailure> {
+        let result = self.request_unchecked_as_within(method, params, origin, within)?;
         if matches!(method, "broker.devices" | "broker.selectDevice") {
             validate_broker_control_result(method, &result)?;
         } else if method == "broker.backupTarget" {
@@ -1631,6 +1719,16 @@ impl GatewayProcess {
         method: &str,
         params: Value,
         origin: Option<&str>,
+    ) -> Result<Value, GatewayRequestFailure> {
+        self.request_unchecked_as_within(method, params, origin, GATEWAY_RESPONSE_TIMEOUT)
+    }
+
+    fn request_unchecked_as_within(
+        &mut self,
+        method: &str,
+        params: Value,
+        origin: Option<&str>,
+        within: Duration,
     ) -> Result<Value, GatewayRequestFailure> {
         let id = self.next_id;
         self.next_id = self.next_id.checked_add(1).unwrap_or(1);
@@ -1681,15 +1779,20 @@ impl GatewayProcess {
         }
         .map_err(|failure| failure.request_failure(method))?;
 
-        let response = match self.responses.recv_timeout(GATEWAY_RESPONSE_TIMEOUT) {
+        let response = match self.responses.recv_timeout(within) {
             Ok(GatewayReaderMessage::Response(value)) => value,
             Ok(GatewayReaderMessage::Failed(error)) => {
                 return Err(GatewayRequestFailure::Transport(error).after_dispatch(method));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Whole seconds as before; a bounded attach's remainder in ms.
+                let waited = if within.as_secs() > 0 && within.subsec_millis() == 0 {
+                    format!("{} seconds", within.as_secs())
+                } else {
+                    format!("{} ms", within.as_millis())
+                };
                 return Err(GatewayRequestFailure::Transport(format!(
-                    "Gateway did not answer {method} within {} seconds",
-                    GATEWAY_RESPONSE_TIMEOUT.as_secs()
+                    "Gateway did not answer {method} within {waited}"
                 ))
                 .after_dispatch(method));
             }
@@ -3465,8 +3568,22 @@ struct Gateway {
     /// a broker it spawned would answer every call "not connected".
     auto_connect_first_broker: bool,
     /// Survives dropping the failed transport after a deliberate tray release.
-    /// Only explicit reconnect clears it; ordinary crash recovery is unchanged.
+    /// Explicit reconnect clears it, and so does a newer broker generation
+    /// published after the released one, once attached (`attach_published_candidate`); ordinary
+    /// crash recovery is unchanged.
     intentional_release: bool,
+    /// The broker instance the standing release belongs to, when known. A
+    /// release binds that generation only, never a broker started after it.
+    released_instance_id: Option<String>,
+    /// Set when a window gateway attached to a newer broker while a release
+    /// stood (`attach_published_candidate`): until its own reconnect, only
+    /// `forwarded_before_reconnect` requests reach that broker.
+    reconnect_required: bool,
+    /// The last candidate attach that failed (`attach_published_candidate`).
+    failed_attach: Option<FailedAttach>,
+    /// Attaches `attach_published_candidate` attempted, for tests.
+    #[cfg(test)]
+    supersede_attach_attempts: usize,
     participant_provider: Option<&'static str>,
     /// Set only for the background MCP host inside `qc-device-broker.exe`:
     /// its broker's per-process host token, presented in `broker.hello`.
@@ -3479,6 +3596,93 @@ struct Gateway {
     /// alone (`Gateway::count_starts_refusing`).
     #[cfg(test)]
     start_seam: Option<GatewayInstanceStarter>,
+}
+
+/// The broker instance a connection was attached to, if it is a shared one.
+fn gateway_process_instance_id(process: &GatewayProcess) -> Option<String> {
+    match &process.transport {
+        GatewayTransport::SharedBroker { instance_id, .. } => Some(instance_id.clone()),
+        GatewayTransport::OwnedChild { .. } => None,
+    }
+}
+
+/// Whether a published broker may be attached to without an election or a
+/// spawn: it is live, it is not `excluded_instance_id` (the released
+/// generation, when there is one), and nothing excludes it (`excluded`: its
+/// own forced-release marker, or a user Quit record naming it or unreadable,
+/// `user_quit_excludes`). This only selects a candidate: an attach to exactly
+/// this descriptor must still succeed (`Gateway::attach_published_candidate`).
+fn broker_attach_candidate(
+    excluded_instance_id: Option<&str>,
+    published: Option<&device_broker_descriptor::DeviceBrokerDescriptor>,
+    excluded: bool,
+    alive: &dyn Fn(&device_broker_descriptor::DeviceBrokerDescriptor) -> bool,
+) -> bool {
+    published.is_some_and(|descriptor| {
+        excluded_instance_id != Some(descriptor.instance_id.as_str())
+            && !excluded
+            && alive(descriptor)
+    })
+}
+
+/// Whether the user Quit record excludes this broker instance: it names it,
+/// or it cannot be read (an unreadable record names no generation, so it
+/// excludes every one), the same predicate `user_quit_refusal_at` applies.
+/// A Quit in the short gap before its shutdown commits is never attached.
+fn user_quit_excludes(descriptor_path: &Path, instance_id: &str) -> bool {
+    match device_broker_descriptor::read_user_quit(descriptor_path) {
+        None => false,
+        Some(Ok(record)) => record.instance_id == instance_id,
+        Some(Err(_)) => true,
+    }
+}
+
+/// How long a candidate whose attach failed is left alone, unless the
+/// descriptor names another instance or process sooner.
+const SUPERSEDE_ATTACH_RETRY_AFTER: Duration = Duration::from_secs(30);
+/// The whole of one candidate attach, version check and device selection
+/// included. It runs under the gateway lock.
+const SUPERSEDE_ATTACH_DEADLINE: Duration = Duration::from_secs(5);
+
+/// A candidate attach that failed, so the probes do not repeat it.
+struct FailedAttach {
+    instance_id: String,
+    process_id: u32,
+    at: Instant,
+}
+
+/// The reads a window gateway may use, while a release stands, to find and
+/// attach to a newer broker generation: its status heartbeat and its
+/// inventory poll. Nothing else ever triggers that attach.
+fn supersede_probe_method(method: &str) -> bool {
+    matches!(method, rpc::RUNTIME_STATUS | "broker.devices")
+}
+
+/// What a window gateway forwards to a broker it attached to after a release
+/// (`Gateway::reconnect_required`) before its own reconnect: the probes, the
+/// reconnect itself, a device selection made by the user, and a disconnect.
+/// Every other request, any `device.*` mutation included, is refused with the
+/// release's -32002, so nothing but that reconnect can reopen the device
+/// session the release closed.
+fn forwarded_before_reconnect(method: &str) -> bool {
+    supersede_probe_method(method)
+        || matches!(
+            method,
+            rpc::RECONNECT
+                | rpc::DISCONNECT
+                | DEVICE_BROKER_DISCONNECT_METHOD
+                | "broker.selectDevice"
+        )
+}
+
+fn released_from_tray() -> GatewayRequestFailure {
+    GatewayRequestFailure::Remote {
+        code: -32002,
+        message: "The device was released from the tray. Connect explicitly to use it again."
+            .into(),
+        retryable: false,
+        details: None,
+    }
 }
 
 #[derive(Default)]
@@ -3515,9 +3719,14 @@ impl Gateway {
     /// A busy gateway's callers reach its connection through this slot, so
     /// it must name the current process, or none.
     fn publish_lock_free_reads(&self) {
+        // While `reconnect_required` stands no read bypasses the gate: a busy
+        // gateway's callers then wait for the lock (or are refused as busy)
+        // and meet `forwarded_before_reconnect` like any other request. The
+        // next request after the reconnect republishes the slot.
         self.lock_free_reads.publish(
             self.process
                 .as_ref()
+                .filter(|_| !self.reconnect_required)
                 .and_then(|process| process.lock_free_reads.clone()),
         );
     }
@@ -3553,6 +3762,7 @@ impl Gateway {
                 // contaminate the new connection's release state.
                 drop(process);
                 self.intentional_release = false;
+                self.released_instance_id = None;
                 return Ok(true);
             }
             let completed = match process
@@ -3571,6 +3781,9 @@ impl Gateway {
             // writer may miss it, so inspect the durable marker exactly at
             // failed-generation recovery, never on ordinary hot RPCs.
             self.intentional_release |= process.has_durable_forced_release();
+            if self.intentional_release && self.released_instance_id.is_none() {
+                self.released_instance_id = gateway_process_instance_id(&process);
+            }
             if !completed && !self.intentional_release {
                 self.retiring_process = Some(process);
                 return Err(GatewayRequestFailure::Transport(
@@ -3578,11 +3791,16 @@ impl Gateway {
                 ));
             }
         }
-        self.intentional_release |= self.process.as_ref().is_some_and(|process| {
+        if let Some(process) = self.process.as_ref().filter(|process| {
             process
                 .intentional_release
                 .load(std::sync::atomic::Ordering::Acquire)
-        });
+        }) {
+            self.intentional_release = true;
+            if self.released_instance_id.is_none() {
+                self.released_instance_id = gateway_process_instance_id(process);
+            }
+        }
         if !self.intentional_release {
             return Ok(false);
         }
@@ -3593,16 +3811,115 @@ impl Gateway {
         publish_gateway_readiness(false);
         if method == rpc::RECONNECT {
             self.intentional_release = false;
+            self.released_instance_id = None;
             return Ok(true);
         }
-        Err(GatewayRequestFailure::Remote {
-            code: -32002,
-            message: "The device was released from the tray. Connect explicitly to use it again."
-                .into(),
-            retryable: false,
-            details: None,
-        })
+        // The release bound the generation it released. A window whose status
+        // or inventory probe finds a newer live broker published (started by
+        // the user, or by a client's own demand when no Quit stands) attaches
+        // to exactly that broker so it can mirror what it reports. Only the
+        // window's own gateway does this: a headless bridge stays released
+        // until an explicit reconnect. The release is cleared only once that
+        // attach has succeeded; on any failure it stands. The attached broker
+        // then receives only the probe that found it, and later only
+        // `forwarded_before_reconnect` requests, until the window reconnects.
+        if self.participant_provider.is_none() && supersede_probe_method(method) {
+            let released = self.released_instance_id.clone();
+            if let Some(process) = released
+                .as_deref()
+                .and_then(|released| self.attach_published_candidate(Some(released)))
+            {
+                self.process = Some(process);
+                self.intentional_release = false;
+                self.released_instance_id = None;
+                self.reconnect_required = true;
+                self.publish_lock_free_reads();
+                return Ok(true);
+            }
+        }
+        Err(released_from_tray())
     }
+
+    /// One attach to the published broker, never an election or a spawn, and
+    /// only when `broker_attach_candidate` accepts it. The connection is
+    /// proven to be that very instance (`attach_to_device_broker` requires the
+    /// authenticated answer to carry the descriptor's instance id, and the
+    /// transport is checked again here), and a selected device is re-selected
+    /// on it without asking the broker to open the session. The whole attach
+    /// is bounded by `SUPERSEDE_ATTACH_DEADLINE`, and a candidate that failed
+    /// is not tried again for `SUPERSEDE_ATTACH_RETRY_AFTER` unless the
+    /// descriptor names another instance or process. `None` on any failure;
+    /// the caller then keeps the release.
+    fn attach_published_candidate(
+        &mut self,
+        excluded_instance_id: Option<&str>,
+    ) -> Option<GatewayProcess> {
+        let descriptor_path = self.shared_descriptor_path()?.to_path_buf();
+        let descriptor = device_broker_descriptor::read_descriptor(
+            &descriptor_path,
+            device_broker_descriptor::unix_time_ms(),
+        )?;
+        if self.failed_attach.as_ref().is_some_and(|failed| {
+            failed.instance_id == descriptor.instance_id
+                && failed.process_id == descriptor.process_id
+                && failed.at.elapsed() < SUPERSEDE_ATTACH_RETRY_AFTER
+        }) {
+            return None;
+        }
+        let marker = generated_broker_surface::BrokerReleaseMarker::path_for(
+            &descriptor_path,
+            &descriptor.instance_id,
+        );
+        let excluded = read_forced_release_marker(&marker, &descriptor.instance_id)
+            || user_quit_excludes(&descriptor_path, &descriptor.instance_id);
+        if !broker_attach_candidate(
+            excluded_instance_id,
+            Some(&descriptor),
+            excluded,
+            &broker_attach::published_broker_process_is_alive,
+        ) {
+            return None;
+        }
+        #[cfg(test)]
+        {
+            self.supersede_attach_attempts += 1;
+        }
+        let deadline = Instant::now() + SUPERSEDE_ATTACH_DEADLINE;
+        let attached =
+            GatewayProcess::attach_exact(self.event_tx.clone(), &descriptor, marker, deadline)
+                .ok()
+                .filter(|process| {
+                    gateway_process_instance_id(process).as_deref()
+                        == Some(descriptor.instance_id.as_str())
+                })
+                .and_then(|mut process| match &self.selected_device_id {
+                    None => Some(process),
+                    Some(device_id) => {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        (!remaining.is_zero()
+                            && process
+                                .request_as_within(
+                                    "broker.selectDevice",
+                                    json!({"deviceId": device_id, "autoConnect": false}),
+                                    None,
+                                    remaining,
+                                )
+                                .is_ok())
+                        .then_some(process)
+                    }
+                });
+        self.failed_attach = if attached.is_some() {
+            None
+        } else {
+            Some(FailedAttach {
+                instance_id: descriptor.instance_id.clone(),
+                process_id: descriptor.process_id,
+                at: Instant::now(),
+            })
+        };
+        attached
+    }
+
     /// Copy the device truth out of any reply that carries `usbDiagnostics`.
     /// Keyed on the payload rather than on the method name so every reply that
     /// reports the session - `system.status`, `device.reconnect`,
@@ -3752,8 +4069,24 @@ impl Gateway {
         if existing_only && self.process.is_none() {
             return Err(existing_connection_unavailable());
         }
+        // A broker this window attached to while a release stood
+        // (`attach_published_candidate`) gets nothing that could reopen the
+        // released session until the window's own reconnect or reset.
+        if self.reconnect_required {
+            if matches!(method, rpc::RECONNECT | rpc::RESET_SESSION) {
+                self.reconnect_required = false;
+            } else if !forwarded_before_reconnect(method) {
+                return Err(if existing_only {
+                    existing_connection_unavailable()
+                } else {
+                    released_from_tray()
+                });
+            }
+        }
+        // While the gate stands, any recovery attaches the way a reconnect
+        // after a release does: it never asks a broker to open the session.
         let reconnect_after_release = match self.respect_intentional_release(method) {
-            Ok(reconnect) => reconnect,
+            Ok(reconnect) => reconnect || self.reconnect_required,
             Err(_) if existing_only => return Err(existing_connection_unavailable()),
             Err(failure) => return Err(failure),
         };
@@ -3779,12 +4112,33 @@ impl Gateway {
                 && !reconnect_after_release
                 && method != DEVICE_BROKER_DISCONNECT_METHOD
                 && self.broker_auto_connect();
-            self.process = Some(
-                self.start_gateway_process(auto_connect)
-                    .map_err(GatewayRequestFailure::Transport)?,
-            );
-            self.started_once = true;
-            if let Some(device_id) = &self.selected_device_id {
+            let mut reselected = false;
+            if self.reconnect_required {
+                // The broker this window attached to after a release went
+                // away before the window's own reconnect. Recovery is the
+                // same bounded attach to a published broker, never an
+                // election or a spawn, so nothing here can start a broker
+                // that opens the released device session.
+                //
+                // Nothing to attach answers with the release itself, never
+                // a transport failure: the window must not read this as an
+                // ordinary lost session and issue the automatic reconnect
+                // that would lift the gate.
+                let attached = self
+                    .attach_published_candidate(None)
+                    .ok_or_else(released_from_tray)?;
+                self.process = Some(attached);
+                // `attach_published_candidate` already re-selected the
+                // device, within its own deadline.
+                reselected = true;
+            } else {
+                self.process = Some(
+                    self.start_gateway_process(auto_connect)
+                        .map_err(GatewayRequestFailure::Transport)?,
+                );
+                self.started_once = true;
+            }
+            if let Some(device_id) = self.selected_device_id.as_ref().filter(|_| !reselected) {
                 if let Err(error) = self.process.as_mut().expect("process started").request("broker.selectDevice", json!({"deviceId":device_id, "autoConnect": !reconnect_after_release && !matches!(method, rpc::RECONNECT | rpc::RESET_SESSION | rpc::DISCONNECT | DEVICE_BROKER_DISCONNECT_METHOD)})) {
                     self.retire_current_process();
                     self.connected = false;
@@ -4692,10 +5046,21 @@ async fn set_public_relay_access_mode(
 #[tauri::command]
 async fn broker_devices(app: AppHandle) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        app.state::<Mutex<Gateway>>()
+        let state = app.state::<Mutex<Gateway>>();
+        let mut gateway = state
             .lock()
-            .map_err(|_| "Gateway session lock was poisoned".to_string())?
-            .request("broker.devices", json!({}))
+            .map_err(|_| "Gateway session lock was poisoned".to_string())?;
+        let mut inventory = gateway.request("broker.devices", json!({}))?;
+        // Which broker generation answered, so the window can tell a
+        // restarted broker from the same one answering again.
+        let instance = gateway
+            .process
+            .as_ref()
+            .and_then(gateway_process_instance_id);
+        if let (Some(object), Some(instance)) = (inventory.as_object_mut(), instance) {
+            object.insert("brokerInstanceId".into(), Value::String(instance));
+        }
+        Ok(inventory)
     })
     .await
     .map_err(|error| error.to_string())?
