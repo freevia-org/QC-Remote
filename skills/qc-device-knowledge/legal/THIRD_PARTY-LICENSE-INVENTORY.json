@@ -2036,7 +2036,7 @@
     {
       "ecosystem": "cargo",
       "name": "hyper-util",
-      "version": "0.1.20",
+      "version": "0.1.21",
       "license": "MIT",
       "sourceUrl": "https://github.com/hyperium/hyper-util",
       "licenseTextHashes": [
@@ -2046,7 +2046,7 @@
     {
       "ecosystem": "cargo",
       "name": "hyper",
-      "version": "1.11.1",
+      "version": "1.12.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/hyperium/hyper",
       "licenseTextHashes": [
@@ -2552,6 +2552,17 @@
       "ecosystem": "cargo",
       "name": "libc",
       "version": "0.2.189",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/rust-lang/libc",
+      "licenseTextHashes": [
+        "85ad950cce8752f716dbf49be95b2639172cb49f291336d57f1fdc9989e38179",
+        "c96302294382bf166f3963bdbce0760aa2b9f0abaa2a7bdb296de7a1c7b51867"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "libc",
+      "version": "0.2.190",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rust-lang/libc",
       "licenseTextHashes": [
@@ -3407,8 +3418,28 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "protoc-bin-vendored-linux-aarch_64",
+      "version": "3.3.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "licenseTextHashes": [
+        "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "protoc-bin-vendored-linux-ppcle_64",
       "version": "3.2.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "licenseTextHashes": [
+        "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "protoc-bin-vendored-linux-ppcle_64",
+      "version": "3.3.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
       "licenseTextHashes": [
@@ -3427,8 +3458,28 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "protoc-bin-vendored-linux-s390_64",
+      "version": "3.3.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "licenseTextHashes": [
+        "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "protoc-bin-vendored-linux-x86_32",
       "version": "3.2.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "licenseTextHashes": [
+        "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "protoc-bin-vendored-linux-x86_32",
+      "version": "3.3.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
       "licenseTextHashes": [
@@ -3447,8 +3498,28 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "protoc-bin-vendored-linux-x86_64",
+      "version": "3.3.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "licenseTextHashes": [
+        "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "protoc-bin-vendored-macos-aarch_64",
       "version": "3.2.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "licenseTextHashes": [
+        "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "protoc-bin-vendored-macos-aarch_64",
+      "version": "3.3.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
       "licenseTextHashes": [
@@ -3467,6 +3538,16 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "protoc-bin-vendored-macos-x86_64",
+      "version": "3.3.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "licenseTextHashes": [
+        "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "protoc-bin-vendored-win32",
       "version": "3.2.0",
       "license": "MIT",
@@ -3477,8 +3558,28 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "protoc-bin-vendored-win32",
+      "version": "3.3.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "licenseTextHashes": [
+        "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "protoc-bin-vendored",
       "version": "3.2.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
+      "licenseTextHashes": [
+        "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "protoc-bin-vendored",
+      "version": "3.3.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/stepancheg/rust-protoc-bin-vendored/",
       "licenseTextHashes": [
@@ -3500,6 +3601,16 @@
       "ecosystem": "cargo",
       "name": "quick-xml",
       "version": "0.41.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/tafia/quick-xml",
+      "licenseTextHashes": [
+        "12bfa73c9eacbe1e22c772b2cba1f5e3195ae9fafc7773f50493a3e6e306da01"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "quick-xml",
+      "version": "0.42.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/tafia/quick-xml",
       "licenseTextHashes": [
@@ -3607,18 +3718,6 @@
         "179c83ef07a51414e7fb13941958470bbd43c072efbe9635951ebcd7583ae5d5",
         "2411d70acb18e15ac32f7aace439a5c2725b8d0074510caf651d4c270d7c05aa",
         "c3df7fccc8e579715eba93d78aece4158a11d95de9d2103b3827fdf2a89a95a2"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "rand",
-      "version": "0.10.2",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/rust-random/rand",
-      "licenseTextHashes": [
-        "2411d70acb18e15ac32f7aace439a5c2725b8d0074510caf651d4c270d7c05aa",
-        "cc367a7134c2b07d995a2f8dea591094a1d100e49c68513f729fdf3eaf580a21",
-        "fee4d7ce394c9161daabd2797e22d8d5ed80ea3c0f4524b242ab22582d2cc412"
       ]
     },
     {
@@ -3851,7 +3950,7 @@
     {
       "ecosystem": "cargo",
       "name": "rustls-platform-verifier-android",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
       "licenseTextEvidence": {
@@ -3885,6 +3984,17 @@
       "ecosystem": "cargo",
       "name": "rustls-platform-verifier",
       "version": "0.7.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "6205904d553962d42fd62764787a5b635a1416d4b3794f4fc465ec36bfbf7ceb"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "rustls-platform-verifier",
+      "version": "0.7.1",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
       "licenseTextHashes": [
@@ -4121,6 +4231,17 @@
       "ecosystem": "cargo",
       "name": "serde_json",
       "version": "1.0.151",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/serde-rs/json",
+      "licenseTextHashes": [
+        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
+        "85ad950cce8752f716dbf49be95b2639172cb49f291336d57f1fdc9989e38179"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "serde_json",
+      "version": "1.0.154",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/serde-rs/json",
       "licenseTextHashes": [
@@ -4996,6 +5117,16 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "tokio",
+      "version": "1.53.3",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/tokio-rs/tokio",
+      "licenseTextHashes": [
+        "3e1bef82aa0dfee4504ad211f7e4895153e3191db6ab179f94a7e20f990a0b67"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "toml_datetime",
       "version": "0.6.3",
       "license": "MIT OR Apache-2.0",
@@ -5365,7 +5496,7 @@
     {
       "ecosystem": "cargo",
       "name": "uuid",
-      "version": "1.26.1",
+      "version": "1.28.0",
       "license": "Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/uuid-rs/uuid",
       "licenseTextHashes": [
@@ -5428,7 +5559,7 @@
     {
       "ecosystem": "cargo",
       "name": "want",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "license": "MIT",
       "sourceUrl": "https://github.com/seanmonstar/want",
       "licenseTextHashes": [
@@ -6010,18 +6141,6 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "zerocopy",
-      "version": "0.8.58",
-      "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
-      "sourceUrl": "https://github.com/google/zerocopy",
-      "licenseTextHashes": [
-        "47248d1ec833e0771ddacb65f2cf9978785f4a9976b5b0b69d1e33c60a50be55",
-        "98ed0ad9db8a72957b9c45941fe2ed31933a3beacbd193e662df483d0643a13d",
-        "a03d4daa4f46496a592dbf6734f5ee16ed52f1eb7a56ae4648d609ebf0efd0b7"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
       "name": "zerofrom-derive",
       "version": "0.1.7",
       "license": "Unicode-3.0",
@@ -6065,6 +6184,17 @@
       "ecosystem": "cargo",
       "name": "zeroize",
       "version": "1.9.0",
+      "license": "Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/RustCrypto/utils",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "836ed921bbad486c21fe437f1f565aef73cf20f242f7344eae04b01ed53a2d57"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "zeroize",
+      "version": "1.9.1",
       "license": "Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/RustCrypto/utils",
       "licenseTextHashes": [
@@ -8010,7 +8140,7 @@
     {
       "ecosystem": "npm",
       "name": "@capacitor/android",
-      "version": "8.5.2",
+      "version": "8.5.3",
       "license": "MIT",
       "sourceUrl": "https://github.com/ionic-team/capacitor",
       "licenseTextHashes": [
@@ -8020,7 +8150,7 @@
     {
       "ecosystem": "npm",
       "name": "@capacitor/core",
-      "version": "8.5.2",
+      "version": "8.5.3",
       "license": "MIT",
       "sourceUrl": "https://github.com/ionic-team/capacitor",
       "licenseTextHashes": [
@@ -8030,7 +8160,7 @@
     {
       "ecosystem": "npm",
       "name": "@capacitor/status-bar",
-      "version": "8.0.3",
+      "version": "8.0.4",
       "license": "MIT",
       "sourceUrl": "https://github.com/ionic-team/capacitor-plugins",
       "licenseTextHashes": [
@@ -8040,7 +8170,7 @@
     {
       "ecosystem": "npm",
       "name": "@tauri-apps/api",
-      "version": "2.11.1",
+      "version": "2.12.4",
       "license": "Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/tauri-apps/tauri",
       "licenseTextHashes": [
@@ -8428,7 +8558,7 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:hyper@1.11.1"
+        "cargo:hyper@1.12.0"
       ]
     },
     {
@@ -8533,7 +8663,7 @@
       ],
       "components": [
         "cargo:uuid@1.26.0",
-        "cargo:uuid@1.26.1"
+        "cargo:uuid@1.28.0"
       ]
     },
     {
@@ -8551,7 +8681,8 @@
         "LICENSE-MIT.md"
       ],
       "components": [
-        "cargo:quick-xml@0.41.0"
+        "cargo:quick-xml@0.41.0",
+        "cargo:quick-xml@0.42.0"
       ]
     },
     {
@@ -8843,7 +8974,6 @@
         "COPYRIGHT"
       ],
       "components": [
-        "cargo:rand@0.10.2",
         "cargo:rand@0.10.3",
         "cargo:rand@0.9.5",
         "cargo:rand_chacha@0.9.0",
@@ -9000,8 +9130,9 @@
         "cargo:quinn-udp@0.5.15",
         "cargo:quinn@0.11.11",
         "cargo:quinn@0.11.12",
-        "cargo:rustls-platform-verifier-android@0.1.1",
+        "cargo:rustls-platform-verifier-android@0.2.0",
         "cargo:rustls-platform-verifier@0.7.0",
+        "cargo:rustls-platform-verifier@0.7.1",
         "cargo:serialize-to-javascript-impl@0.1.2",
         "cargo:serialize-to-javascript@0.1.2",
         "cargo:sse-stream@0.2.6",
@@ -9009,6 +9140,7 @@
         "cargo:tinyvec@1.13.3",
         "cargo:utf8_iter@1.0.4",
         "cargo:zeroize@1.9.0",
+        "cargo:zeroize@1.9.1",
         "cargo:zeroize_derive@1.5.0",
         "gradle:androidx.annotation:annotation-experimental@1.4.1",
         "gradle:androidx.annotation:annotation-jvm@1.8.1",
@@ -9258,6 +9390,7 @@
         "cargo:serde_derive_internals@0.29.1",
         "cargo:serde_derive_internals@0.30.0",
         "cargo:serde_json@1.0.151",
+        "cargo:serde_json@1.0.154",
         "cargo:serde_path_to_error@0.1.20",
         "cargo:serde_repr@0.1.21",
         "cargo:servo_arc@0.4.3",
@@ -9457,7 +9590,8 @@
       "components": [
         "cargo:tokio-stream@0.1.19",
         "cargo:tokio-util@0.7.19",
-        "cargo:tokio@1.53.1"
+        "cargo:tokio@1.53.1",
+        "cargo:tokio@1.53.3"
       ]
     },
     {
@@ -9561,8 +9695,7 @@
         "LICENSE-BSD"
       ],
       "components": [
-        "cargo:zerocopy@0.8.56",
-        "cargo:zerocopy@0.8.58"
+        "cargo:zerocopy@0.8.56"
       ]
     },
     {
@@ -9696,7 +9829,7 @@
         "gradle:androidx.core:core@1.17.0",
         "gradle:androidx.profileinstaller:profileinstaller@1.4.0",
         "gradle:androidx.webkit:webkit@1.14.0",
-        "npm:@tauri-apps/api@2.11.1"
+        "npm:@tauri-apps/api@2.12.4"
       ]
     },
     {
@@ -9876,7 +10009,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:rustls-platform-verifier@0.7.0"
+        "cargo:rustls-platform-verifier@0.7.0",
+        "cargo:rustls-platform-verifier@0.7.1"
       ]
     },
     {
@@ -10305,8 +10439,8 @@
         "LICENSE"
       ],
       "components": [
-        "npm:@capacitor/android@8.5.2",
-        "npm:@capacitor/core@8.5.2"
+        "npm:@capacitor/android@8.5.3",
+        "npm:@capacitor/core@8.5.3"
       ]
     },
     {
@@ -10392,7 +10526,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:zeroize@1.9.0"
+        "cargo:zeroize@1.9.0",
+        "cargo:zeroize@1.9.1"
       ]
     },
     {
@@ -10448,6 +10583,7 @@
         "cargo:erased-serde@0.4.10",
         "cargo:itoa@1.0.18",
         "cargo:libc@0.2.189",
+        "cargo:libc@0.2.190",
         "cargo:pastey@0.2.3",
         "cargo:prettyplease@0.2.37",
         "cargo:proc-macro2@1.0.107",
@@ -10465,6 +10601,7 @@
         "cargo:serde_derive_internals@0.29.1",
         "cargo:serde_derive_internals@0.30.0",
         "cargo:serde_json@1.0.151",
+        "cargo:serde_json@1.0.154",
         "cargo:serde_path_to_error@0.1.20",
         "cargo:serde_repr@0.1.21",
         "cargo:serde_urlencoded@0.7.1",
@@ -10554,7 +10691,7 @@
         "cargo:tauri-runtime@2.11.3",
         "cargo:tauri-utils@2.10.1",
         "cargo:tauri@2.11.5",
-        "npm:@tauri-apps/api@2.11.1"
+        "npm:@tauri-apps/api@2.12.4"
       ]
     },
     {
@@ -10794,7 +10931,7 @@
         "cargo:unicode-segmentation@1.13.3",
         "cargo:url@2.5.8",
         "cargo:uuid@1.26.0",
-        "cargo:uuid@1.26.1",
+        "cargo:uuid@1.28.0",
         "cargo:version_check@0.9.5",
         "cargo:web_atoms@0.2.6",
         "cargo:window-vibrancy@0.6.0",
@@ -10836,14 +10973,23 @@
       ],
       "components": [
         "cargo:protoc-bin-vendored-linux-aarch_64@3.2.0",
+        "cargo:protoc-bin-vendored-linux-aarch_64@3.3.0",
         "cargo:protoc-bin-vendored-linux-ppcle_64@3.2.0",
+        "cargo:protoc-bin-vendored-linux-ppcle_64@3.3.0",
         "cargo:protoc-bin-vendored-linux-s390_64@3.2.0",
+        "cargo:protoc-bin-vendored-linux-s390_64@3.3.0",
         "cargo:protoc-bin-vendored-linux-x86_32@3.2.0",
+        "cargo:protoc-bin-vendored-linux-x86_32@3.3.0",
         "cargo:protoc-bin-vendored-linux-x86_64@3.2.0",
+        "cargo:protoc-bin-vendored-linux-x86_64@3.3.0",
         "cargo:protoc-bin-vendored-macos-aarch_64@3.2.0",
+        "cargo:protoc-bin-vendored-macos-aarch_64@3.3.0",
         "cargo:protoc-bin-vendored-macos-x86_64@3.2.0",
+        "cargo:protoc-bin-vendored-macos-x86_64@3.3.0",
         "cargo:protoc-bin-vendored-win32@3.2.0",
-        "cargo:protoc-bin-vendored@3.2.0"
+        "cargo:protoc-bin-vendored-win32@3.3.0",
+        "cargo:protoc-bin-vendored@3.2.0",
+        "cargo:protoc-bin-vendored@3.3.0"
       ]
     },
     {
@@ -10852,8 +10998,7 @@
         "LICENSE-APACHE"
       ],
       "components": [
-        "cargo:zerocopy@0.8.56",
-        "cargo:zerocopy@0.8.58"
+        "cargo:zerocopy@0.8.56"
       ]
     },
     {
@@ -10908,8 +11053,7 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:zerocopy@0.8.56",
-        "cargo:zerocopy@0.8.58"
+        "cargo:zerocopy@0.8.56"
       ]
     },
     {
@@ -11465,7 +11609,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:libc@0.2.189"
+        "cargo:libc@0.2.189",
+        "cargo:libc@0.2.190"
       ]
     },
     {
@@ -11514,7 +11659,6 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:rand@0.10.2",
         "cargo:rand@0.10.3",
         "cargo:rand@0.9.5",
         "cargo:rand_chacha@0.9.0",
@@ -11778,7 +11922,7 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:hyper-util@0.1.20"
+        "cargo:hyper-util@0.1.21"
       ]
     },
     {
@@ -11862,7 +12006,7 @@
         "LICENSE"
       ],
       "components": [
-        "npm:@capacitor/status-bar@8.0.3"
+        "npm:@capacitor/status-bar@8.0.4"
       ]
     },
     {
@@ -12015,7 +12159,7 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:want@0.3.1"
+        "cargo:want@0.3.2"
       ]
     },
     {
@@ -12092,7 +12236,6 @@
         "LICENSE-APACHE"
       ],
       "components": [
-        "cargo:rand@0.10.2",
         "cargo:rand@0.10.3",
         "cargo:rand@0.9.5",
         "cargo:rand_chacha@0.9.0"
