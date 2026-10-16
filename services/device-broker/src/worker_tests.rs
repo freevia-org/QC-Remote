@@ -73,7 +73,6 @@ fn decoder_owner_cancels_when_its_bounded_stop_queue_is_full() {
         .expect("decoder should observe cancellation and exit");
 }
 
-
 #[test]
 fn discovery_fixtures_are_instance_scoped_and_preserve_errors() {
     let calls = Arc::new(AtomicUsize::new(0));
