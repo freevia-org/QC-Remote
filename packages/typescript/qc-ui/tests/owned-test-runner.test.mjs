@@ -13,18 +13,20 @@ test('owned test runner preserves exact argv/outcome and confines state under th
   const signals = new EventEmitter();
   const out = [];
   const argv = ['--test-name-pattern=a b', 'a.test.mjs'];
-  const environment = { KEEP: 'value' };
+  const environment = { KEEP: 'value', NODE_TEST_CONTEXT: 'child-v8', QC_REMOTE_TEST_STATE_ROOT: 'E:/outer-test-root' };
   const code = await runOwnedTests({ argv, environment, signalSource: signals, platform: 'win32',
     stdout: { write: text => out.push(text) }, stderr: { write: text => out.push(text) },
     windowsProducer: async (request, options) => {
       assert.deepEqual(request.arguments, ['--experimental-strip-types', '--test', '--test-concurrency=4', ...argv]);
       assert.equal(request.nativeTestState, true);
-      assert.deepEqual(request.environment, environment);
+      assert.deepEqual(request.environment, { KEEP: 'value', QC_REMOTE_TEST_STATE_ROOT: 'E:/outer-test-root' });
+      assert.equal(request.ownerParentDirectory, environment.QC_REMOTE_TEST_STATE_ROOT);
       assert.ok(request.timeoutMilliseconds > 0);
       options.onStdout('out'); options.onStderr('err');
       return { code: 17, retirementAcknowledged: true };
     } });
   assert.equal(code, 17);
+  assert.equal(environment.NODE_TEST_CONTEXT, 'child-v8', 'caller environment must remain unchanged');
   assert.deepEqual(out, ['out', 'err']);
   assert.equal(signals.listenerCount('SIGINT') + signals.listenerCount('SIGTERM'), 0);
 });
@@ -61,7 +63,7 @@ const chrome = process.platform === 'win32' && existsSync('C:/Program Files/Goog
   ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined;
 for (const mode of ['success', 'failure', 'worker-killed', 'owner-killed', 'interrupt', 'deadline', ...(chrome ? ['browser-owner-killed'] : [])]) {
   test(`real owned test run retires descendants and partial profile on ${mode}`, { timeout: 180_000 }, async () => {
-    const control = await mkdtemp(join(tmpdir(), 'qc-test-owner-proof-'));
+    const control = await mkdtemp(join(process.env.QC_REMOTE_TEST_STATE_ROOT ?? tmpdir(), 'qc-test-owner-proof-'));
     const report = join(control, 'report.json');
     const sibling = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
     let child;
