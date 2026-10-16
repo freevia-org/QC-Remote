@@ -5220,3 +5220,215 @@ fn retained_io_gateway_refuses_invalidated_owner_even_when_latest_cache_has_old_
         "unavailable retained IO must be refused before decoding cached bytes"
     );
 }
+
+/// A teardown with no USB session left can neither answer a Type 29 nor
+/// record that it could not (no recorder is open): nothing of it, answer or
+/// flight-record line, may be carried into a later session.
+#[test]
+fn a_teardown_without_a_session_leaves_nothing_for_the_next_one() {
+    let (controller, _commands) = refresh_controller();
+    let mut relay = CloudForwardRelay::default();
+    let mut payload = pa::ProductForwardMessage {
+        action: pa::message_action::Enum::Update as i32,
+        cloud_request_id: 290,
+        request: Some(pa::product_forward_message::Request::Request(
+            pa::ProductForwardRequest {
+                operation: pa::http_operation::Enum::Post as i32,
+                url: "https://cloud.invalid/must-not-connect".into(),
+                timeout: 30_000,
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    // Relay off: refused at once, but the answer is still owed to the unit.
+    relay.on_product_forward(
+        &mut payload,
+        RequestOrigin {
+            epoch: 1,
+            key_generation: 0,
+            received_at: Instant::now(),
+        },
+    );
+    let mut connection = None;
+    answer_cloud_requests_before_teardown(
+        &mut connection,
+        &mut relay,
+        &controller.session_owner,
+        &controller.session_clock,
+        &controller.state,
+        "broker-stopping",
+    );
+    assert!(relay
+        .take_response_when(1, CloudAnswerKey::Ready(0))
+        .is_none());
+    assert!(relay.take_events().is_empty());
+}
+
+#[test]
+fn key_renewal_needs_repeated_evidence_on_a_settled_key_and_an_idle_unit() {
+    let start = Instant::now();
+    let at = |seconds: u64| start + Duration::from_secs(seconds);
+    let mut watch = CloudKeyWatch::default();
+    // A key still being built never settles, so its frames never count.
+    watch.observe(CloudAnswerKey::NotReady, at(0));
+    watch.note_unusable(5, at(10));
+    assert_eq!(watch.decide(at(10), false), KeyRenewal::Wait);
+    // A usable key that just changed has not settled either.
+    watch.observe(CloudAnswerKey::Ready(1), at(10));
+    watch.note_unusable(5, at(12));
+    assert_eq!(watch.decide(at(12), false), KeyRenewal::Wait);
+    // Settled: one frame is not enough...
+    watch.note_unusable(1, at(16));
+    assert_eq!(watch.decide(at(16), false), KeyRenewal::Wait);
+    // ...and two too far apart are not either.
+    watch.note_unusable(1, at(80));
+    assert_eq!(watch.decide(at(80), false), KeyRenewal::Wait);
+    // Two within the window, but an update or backup is running: deferred,
+    // reported once, and the evidence is kept past the window.
+    watch.note_unusable(1, at(81));
+    assert_eq!(watch.decide(at(81), true), KeyRenewal::Deferred);
+    assert_eq!(watch.decide(at(90), true), KeyRenewal::Wait);
+    assert_eq!(watch.decide(at(300), false), KeyRenewal::Renew);
+    // At most once per cooldown.
+    watch.note_unusable(2, at(301));
+    assert_eq!(watch.decide(at(301), false), KeyRenewal::Wait);
+    // A connected session with no key at all also qualifies once settled.
+    watch.new_session();
+    watch.observe(CloudAnswerKey::Missing, at(1_000));
+    watch.note_unusable(2, at(1_006));
+    assert_eq!(watch.decide(at(1_006), false), KeyRenewal::Renew);
+}
+
+#[test]
+fn a_frames_clock_starts_at_its_own_first_report() {
+    let clock = Instant::now();
+    let now = clock + Duration::from_millis(2_000);
+    assert_eq!(frame_received_at(None, &clock, now), now);
+    let ingress = IngressTime {
+        first_report_at_ms: 1_000,
+        last_report_at_ms: 1_250,
+    };
+    assert_eq!(
+        frame_received_at(Some(ingress), &clock, now),
+        clock + Duration::from_millis(1_000)
+    );
+    // A time past now cannot be a receive time.
+    let late = IngressTime {
+        first_report_at_ms: 5_000,
+        last_report_at_ms: 5_000,
+    };
+    assert_eq!(frame_received_at(Some(late), &clock, now), now);
+}
+
+/// The fix for a live-link teardown that used to cancel the real answer it
+/// had just queued: the answer must keep its admission after the helper.
+#[test]
+fn a_teardown_flush_never_cancels_the_answer_it_queued() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut block = [0; 4096];
+        let _ = socket.read(&mut block);
+        let _ = socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+    });
+    let mut relay = CloudForwardRelay::default();
+    relay.set_enabled(true);
+    let mut payload = pa::ProductForwardMessage {
+        action: pa::message_action::Enum::Update as i32,
+        cloud_request_id: 291,
+        request: Some(pa::product_forward_message::Request::Request(
+            pa::ProductForwardRequest {
+                operation: pa::http_operation::Enum::Get as i32,
+                url: format!("http://{address}/"),
+                timeout: 30_000,
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    relay.on_product_forward(
+        &mut payload,
+        RequestOrigin {
+            epoch: 1,
+            key_generation: 0,
+            received_at: Instant::now(),
+        },
+    );
+    let fetched_by = Instant::now() + Duration::from_secs(5);
+    while relay.fetched_answers() == 0 {
+        assert!(Instant::now() < fetched_by, "the answer was never fetched");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let mut sent = Vec::new();
+    let lines = flush_cloud_answers_for_teardown(
+        &mut relay,
+        1,
+        CloudAnswerKey::Ready(0),
+        "broker-stopping",
+        &mut |message, _deadline, cancel| {
+            sent.push((message, cancel));
+            Ok(())
+        },
+    );
+    assert_eq!(sent.len(), 1);
+    let reply = pa::ProductForwardMessage::decode(sent[0].0.payload.as_slice()).unwrap();
+    assert_eq!(reply.cloud_request_id, 291);
+    let Some(pa::product_forward_message::Response::Response(response)) = reply.response else {
+        panic!("missing response")
+    };
+    assert_eq!(response.error_code, 200);
+    assert!(
+        !sent[0].1.load(Ordering::Acquire),
+        "the queued answer keeps its admission after the teardown flush"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("cloud-request-answered id=291 status=200")),
+        "{lines:?}"
+    );
+    drop(relay);
+    server.join().unwrap();
+}
+
+#[test]
+fn key_renewal_backs_off_and_keeps_bounded_evidence() {
+    let start = Instant::now();
+    let at = |seconds: u64| start + Duration::from_secs(seconds);
+    let mut watch = CloudKeyWatch::default();
+    watch.observe(CloudAnswerKey::Missing, at(0));
+    // Deferred behind an update: the evidence stays bounded however many
+    // frames arrive.
+    watch.note_unusable(100, at(10));
+    for _ in 0..50 {
+        watch.note_unusable(3, at(11));
+    }
+    assert!(watch.unusable.len() <= CLOUD_KEY_EVIDENCE_MAX);
+    assert_eq!(watch.decide(at(11), true), KeyRenewal::Deferred);
+    watch.note_unusable(100, at(12));
+    assert!(watch.unusable.len() <= CLOUD_KEY_EVIDENCE_MAX);
+    // Each renewal waits twice as long as the last, up to 40 minutes.
+    let mut renewed_at = 12;
+    assert_eq!(watch.decide(at(renewed_at), false), KeyRenewal::Renew);
+    for minutes in [10, 20, 40, 40] {
+        let due = renewed_at + minutes * 60;
+        watch.note_unusable(2, at(due - 1));
+        assert_eq!(
+            watch.decide(at(due - 1), false),
+            KeyRenewal::Wait,
+            "{minutes}"
+        );
+        watch.note_unusable(2, at(due));
+        assert_eq!(watch.decide(at(due), false), KeyRenewal::Renew, "{minutes}");
+        renewed_at = due;
+    }
+}

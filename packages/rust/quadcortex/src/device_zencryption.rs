@@ -58,6 +58,10 @@ impl ZencryptionState {
         true
     }
 
+    pub(crate) fn is_installed(&self) -> bool {
+        !self.secret.is_empty()
+    }
+
     pub(crate) fn transform(&self, bytes: &[u8]) -> Result<Vec<u8>, ZencryptionError> {
         if self.secret.is_empty() {
             return Err(ZencryptionError::MissingSecret);

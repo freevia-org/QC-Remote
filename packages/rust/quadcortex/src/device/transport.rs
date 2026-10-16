@@ -310,6 +310,12 @@ pub struct TransportRuntime {
     frame_started_at_ms: Option<u64>,
     read_epoch: Option<u64>,
     inbound: InboundTelemetry,
+    /// The encrypted envelope the latest push rejected, and why.
+    encrypted_rejection: Option<EncryptedRejection>,
+    /// Advances whenever the account-frame key material changes.
+    key_generation: u64,
+    /// Host time of the latest key fragment, when the push carried one.
+    key_changed_at_ms: Option<u64>,
     #[cfg(feature = "cloud-forward")]
     zencryption: crate::device_zencryption::ZencryptionState,
     #[cfg(feature = "cloud-forward")]
@@ -320,6 +326,48 @@ pub struct TransportRuntime {
     last_zencryption_fragment_at_ms: Option<u64>,
     #[cfg(feature = "cloud-forward")]
     cloud_forward_enabled: bool,
+    #[cfg(feature = "cloud-forward")]
+    cloud_answers_enabled: bool,
+}
+
+/// Why a complete encrypted envelope was not delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncryptedRejectionCause {
+    /// This host does not decrypt the type (not built in, or switched off).
+    NotDecrypted,
+    /// The type is decrypted, but this connection holds no session key yet.
+    NoSessionKey,
+    /// Decrypted with the installed key, the payload is not a valid gzip
+    /// stream: the key is most likely not the one the unit used.
+    Undecryptable,
+    /// Decrypted and valid, but past its type's inflated-size ceiling: a
+    /// legitimate but oversized frame, not evidence of a wrong key.
+    TooLarge,
+}
+
+/// Whether an account-frame answer may be encrypted now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudAnswerKey {
+    /// Yes, under this key generation.
+    Ready(u64),
+    /// The handshake is not complete, or a key fragment arrived within
+    /// `CLOUD_KEY_QUIET_MS`, so the key may still be growing.
+    NotReady,
+    /// The handshake is complete but no key is installed.
+    Missing,
+}
+
+/// How long after its latest fragment a key is taken to be complete. The
+/// fragments of one handshake arrive within milliseconds of each other.
+pub const CLOUD_KEY_QUIET_MS: u64 = 500;
+
+/// The complete encrypted envelope a push rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EncryptedRejection {
+    /// The frame's own wire type, undecoded.
+    pub message_type: u16,
+    /// Why the envelope was rejected rather than decrypted.
+    pub cause: EncryptedRejectionCause,
 }
 
 impl TransportRuntime {
@@ -333,6 +381,9 @@ impl TransportRuntime {
             frame_started_at_ms: None,
             read_epoch: None,
             inbound: InboundTelemetry::default(),
+            encrypted_rejection: None,
+            key_generation: 0,
+            key_changed_at_ms: None,
             #[cfg(feature = "cloud-forward")]
             zencryption: crate::device_zencryption::ZencryptionState::default(),
             #[cfg(feature = "cloud-forward")]
@@ -343,6 +394,8 @@ impl TransportRuntime {
             last_zencryption_fragment_at_ms: None,
             #[cfg(feature = "cloud-forward")]
             cloud_forward_enabled: false,
+            #[cfg(feature = "cloud-forward")]
+            cloud_answers_enabled: false,
         }
     }
 
@@ -352,15 +405,94 @@ impl TransportRuntime {
         &self.inbound
     }
 
-    /// Enables encrypted account forwarding only while the broker's
-    /// existing internet-relay setting is on.
+    /// Decrypt and encrypt every Zencryption family (18, 29, 30, 31, 41, 58)
+    /// on this connection. The broker sets this from its internet-relay
+    /// switch; with it off, only what `set_cloud_account_answers_enabled`
+    /// admits is decrypted.
     #[cfg(feature = "cloud-forward")]
     pub fn set_cloud_forward_enabled(&mut self, enabled: bool) {
         self.cloud_forward_enabled = enabled;
     }
 
+    /// Decrypt CloudLogin (18) and ProductForward (29), and encrypt their
+    /// answers, even while forwarding is off: a host that never forwards a
+    /// request must still read its ids to answer it before the unit's
+    /// deadline. Nothing else is decrypted on this account. Off by default.
+    #[cfg(feature = "cloud-forward")]
+    pub fn set_cloud_account_answers_enabled(&mut self, enabled: bool) {
+        self.cloud_answers_enabled = enabled;
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    fn decrypts(&self, message_type: u16) -> bool {
+        crate::device_zencryption::applies_to(message_type)
+            && (self.cloud_forward_enabled
+                || (self.cloud_answers_enabled && is_cloud_answer_message_type(message_type)))
+    }
+
+    /// The complete encrypted envelope the latest `push_report*` call
+    /// rejected, taken once. The frame stream itself is intact, so a host
+    /// can drop such a frame without treating it as link loss; see
+    /// [`is_cloud_account_message_type`].
+    pub fn take_encrypted_rejection(&mut self) -> Option<EncryptedRejection> {
+        self.encrypted_rejection.take()
+    }
+
+    fn reject_encrypted(&mut self, message_type: u16, cause: EncryptedRejectionCause) {
+        self.encrypted_rejection = Some(EncryptedRejection {
+            message_type,
+            cause,
+        });
+    }
+
+    /// Whether an account-frame answer may be encrypted at `now_ms` (the
+    /// host clock every `now_ms` and report time here uses), and under which
+    /// key generation. It may once the handshake is complete (the phase is
+    /// Syncing or Ready; preset synchronization is not waited for) and no
+    /// key fragment has arrived for `CLOUD_KEY_QUIET_MS`, which also covers
+    /// a re-handshake while the phase stays Ready. Each fragment, clear or
+    /// reconnect starts a new generation, so an answer prepared under an
+    /// older key is known.
+    pub fn cloud_answer_key(&self, now_ms: u64) -> CloudAnswerKey {
+        if !self.is_connected() {
+            return CloudAnswerKey::NotReady;
+        }
+        if !self.cloud_session_key_installed() {
+            return CloudAnswerKey::Missing;
+        }
+        let settling = self
+            .key_changed_at_ms
+            .is_some_and(|at| now_ms.saturating_sub(at) < CLOUD_KEY_QUIET_MS);
+        if settling {
+            CloudAnswerKey::NotReady
+        } else {
+            CloudAnswerKey::Ready(self.key_generation)
+        }
+    }
+
+    /// The current account-frame key generation, whatever its state: the one
+    /// a frame decrypted now was decrypted with.
+    pub fn cloud_key_generation(&self) -> u64 {
+        self.key_generation
+    }
+
+    /// Whether this connection holds the session key that cloud-account
+    /// frames are encrypted with. Writing one before the key arrives fails.
+    pub fn cloud_session_key_installed(&self) -> bool {
+        #[cfg(feature = "cloud-forward")]
+        {
+            self.zencryption.is_installed()
+        }
+        #[cfg(not(feature = "cloud-forward"))]
+        {
+            false
+        }
+    }
+
     #[cfg(feature = "cloud-forward")]
     fn clear_zencryption_session(&mut self) {
+        self.key_generation = self.key_generation.wrapping_add(1);
+        self.key_changed_at_ms = None;
         self.zencryption.clear();
         self.zencryption_boundary_seen = true;
         self.zencryption_fragment_seen = false;
@@ -382,6 +514,9 @@ impl TransportRuntime {
         if self.zencryption_boundary_seen || !self.zencryption_fragment_seen || gap_starts_session {
             self.zencryption.clear();
         }
+        // Appending changes the key as much as replacing it does.
+        self.key_generation = self.key_generation.wrapping_add(1);
+        self.key_changed_at_ms = received_at_ms;
         self.zencryption_boundary_seen = false;
         self.zencryption_fragment_seen = true;
         self.last_zencryption_fragment_at_ms = received_at_ms;
@@ -390,7 +525,10 @@ impl TransportRuntime {
     /// Discards all session, framing and telemetry state and starts over as
     /// [`TransportRuntime::new`] would.
     pub fn reset(&mut self, now_ms: u64) {
+        let key_generation = self.key_generation.wrapping_add(1);
         *self = Self::new(now_ms);
+        // A generation must never repeat within one host process.
+        self.key_generation = key_generation;
     }
 
     /// Current connection phase.
@@ -644,8 +782,9 @@ impl TransportRuntime {
 
     /// Encode a message for the current connection. CloudLogin and
     /// ProductForward use the session's encrypted trailer only while the
-    /// gated cloud-forward path is enabled. Other cloud/backup/license message
-    /// families remain rejected rather than sent unencrypted or malformed.
+    /// gated cloud-forward path or account answers are enabled. Other
+    /// cloud/backup/license message families remain rejected rather than sent
+    /// unencrypted or malformed.
     pub fn encode_reports_with_session(
         &self,
         message: &OutboundMessage,
@@ -656,7 +795,7 @@ impl TransportRuntime {
         if matches!(
             message.message_type,
             profile::MESSAGE_TYPE_CLOUD_LOGIN | profile::MESSAGE_TYPE_PRODUCT_FORWARD
-        ) && self.cloud_forward_enabled
+        ) && (self.cloud_forward_enabled || self.cloud_answers_enabled)
         {
             use zeroize::Zeroizing;
             let mut encrypted = Zeroizing::new(
@@ -756,6 +895,7 @@ impl TransportRuntime {
         raw_report: &[u8],
         received_at_ms: Option<u64>,
     ) -> Result<Option<InboundFrame>, FrameError> {
+        self.encrypted_rejection = None;
         let report = match normalize_inbound_report(raw_report) {
             Ok(report) => report,
             Err(error) => {
@@ -828,21 +968,41 @@ impl TransportRuntime {
         ) {
             self.clear_zencryption_session();
         }
-        // Encrypted cloud requests are available only through the forwarding
-        // switch. Decompression remains owned by the protocol decoder.
+        // Encrypted cloud frames are decrypted only for the families the
+        // forwarding switch, or the account-answer switch for 18 and 29,
+        // admits. Decompression remains owned by the protocol decoder.
         if frame.encrypted {
             #[cfg(feature = "cloud-forward")]
-            if self.cloud_forward_enabled && crate::device_zencryption::applies_to(message_type) {
+            if self.decrypts(message_type) {
                 use zeroize::Zeroizing;
-                let mut clear = Zeroizing::new(
-                    self.zencryption
-                        .transform(&frame.payload)
-                        .map_err(|_| FrameError::UnsupportedEncryptedMessageType)?,
-                );
+                let Ok(clear) = self.zencryption.transform(&frame.payload) else {
+                    // No session key yet: counted and named like any other
+                    // encrypted rejection rather than lost.
+                    self.inbound.record_encrypted_rejection(message_type);
+                    self.reject_encrypted(message_type, EncryptedRejectionCause::NoSessionKey);
+                    return Err(FrameError::UnsupportedEncryptedMessageType);
+                };
+                let mut clear = Zeroizing::new(clear);
                 let payload = if frame.compressed {
                     self.inbound.record_compressed(message_type);
-                    crate::compression::gunzip_for_message_type(&clear, message_type)
-                        .map_err(|error| FrameError::Compression(error.to_string()))?
+                    match crate::compression::gunzip_for_message_type(&clear, message_type) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            // A wrong key yields a stream that is not gzip; a
+                            // right key can still yield one past the ceiling.
+                            self.inbound.record_inflate_failure(message_type);
+                            let cause = match error {
+                                crate::compression::InflateError::Limit => {
+                                    EncryptedRejectionCause::TooLarge
+                                }
+                                crate::compression::InflateError::Decode(_) => {
+                                    EncryptedRejectionCause::Undecryptable
+                                }
+                            };
+                            self.reject_encrypted(message_type, cause);
+                            return Err(FrameError::Compression(error.to_string()));
+                        }
+                    }
                 } else {
                     std::mem::take(&mut *clear)
                 };
@@ -856,6 +1016,7 @@ impl TransportRuntime {
                 }));
             }
             self.inbound.record_encrypted_rejection(message_type);
+            self.reject_encrypted(message_type, EncryptedRejectionCause::NotDecrypted);
             if undeclared {
                 self.inbound.record_undeclared_rejection_overlap();
             }
@@ -889,8 +1050,9 @@ impl TransportRuntime {
         // Install the connection key during every version exchange. The relay
         // switch is live and can turn on after the handshake; retaining only
         // this per-session key lets encrypted type-29 forwarding start without
-        // forcing a transport reconnect. No encrypted payload is decoded while
-        // the forwarding switch is off.
+        // forcing a transport reconnect. While the forwarding switch is off,
+        // only CloudLogin and ProductForward are decrypted, and only when the
+        // host enabled account answers (see `set_cloud_account_answers_enabled`).
         if message_type == profile::MESSAGE_TYPE_VERSION {
             if let Ok(version) = pa::VersionMessage::decode(payload.as_slice()) {
                 let mut version = version;
@@ -935,6 +1097,23 @@ fn reject_oversized_outbound(message: &OutboundMessage) -> Result<(), FrameError
 /// The cloud-forward feature handles its supported families before this guard.
 fn is_unsupported_encrypted_message_type(message_type: u16) -> bool {
     matches!(message_type, 18 | 29 | 30 | 31 | 41 | 58)
+}
+
+/// The cloud-account, backup, log and license families the unit encrypts.
+/// One of these that cannot be decrypted is a single unusable request, not
+/// evidence of a broken link: the unit sends them whenever its account is
+/// active, whatever this host can do with them.
+pub fn is_cloud_account_message_type(message_type: u16) -> bool {
+    is_unsupported_encrypted_message_type(message_type)
+}
+
+/// The two account families a host answers itself when it does not forward.
+#[cfg(feature = "cloud-forward")]
+fn is_cloud_answer_message_type(message_type: u16) -> bool {
+    matches!(
+        message_type,
+        profile::MESSAGE_TYPE_CLOUD_LOGIN | profile::MESSAGE_TYPE_PRODUCT_FORWARD
+    )
 }
 
 /// Android interrupt reads expose the 128-byte body while hidapi exposes the
@@ -986,6 +1165,228 @@ mod tests {
             .to_vec();
         report[0] = framing::IN_REPORT_ID;
         report
+    }
+
+    #[test]
+    fn an_encrypted_rejection_is_named_by_type_once_and_only_for_its_own_push() {
+        let mut runtime = TransportRuntime::new(0);
+        let account = u32::from(profile::MESSAGE_TYPE_PRODUCT_FORWARD);
+        assert_eq!(
+            runtime.push_report(&inbound_envelope(account, &[8, 1], true, false, [0, 0])),
+            Err(FrameError::UnsupportedEncryptedMessageType)
+        );
+        assert_eq!(
+            runtime.take_encrypted_rejection(),
+            Some(EncryptedRejection {
+                message_type: profile::MESSAGE_TYPE_PRODUCT_FORWARD,
+                cause: EncryptedRejectionCause::NotDecrypted,
+            })
+        );
+        assert_eq!(runtime.take_encrypted_rejection(), None);
+        // A later push of any other kind clears an untaken marker.
+        assert!(runtime
+            .push_report(&inbound_envelope(account, &[8, 1], true, false, [0, 0]))
+            .is_err());
+        assert!(matches!(
+            runtime.push_report(&inbound_envelope(73, &[0x1f, 0x8b, 0], false, true, [0, 0])),
+            Err(FrameError::Compression(_))
+        ));
+        assert_eq!(runtime.take_encrypted_rejection(), None);
+        assert_eq!(
+            runtime.inbound_telemetry().snapshot().encrypted_rejections
+                [&profile::MESSAGE_TYPE_PRODUCT_FORWARD],
+            2
+        );
+        assert!(is_cloud_account_message_type(
+            profile::MESSAGE_TYPE_PRODUCT_FORWARD
+        ));
+        assert!(is_cloud_account_message_type(
+            profile::MESSAGE_TYPE_CLOUD_LOGIN
+        ));
+        assert!(!is_cloud_account_message_type(73));
+        assert!(!runtime.cloud_session_key_installed());
+        assert_eq!(runtime.cloud_answer_key(0), CloudAnswerKey::NotReady);
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    const TEST_WRAPPED_FRAGMENT: [u8; 20] = [
+        0x63, 0x7a, 0xa2, 0x2b, 0x4b, 0xc2, 0x1e, 0x69, 0x43, 0x5e, 0xf1, 0x1d, 0x01, 0xd1, 0x29,
+        0xb8, 0x37, 0xf5, 0x61, 0x05,
+    ];
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn an_enabled_codec_without_a_session_key_counts_and_names_the_frame() {
+        let mut runtime = TransportRuntime::new(0);
+        runtime.set_cloud_forward_enabled(true);
+        assert!(!runtime.cloud_session_key_installed());
+        let account = u32::from(profile::MESSAGE_TYPE_PRODUCT_FORWARD);
+        assert_eq!(
+            runtime.push_report(&inbound_envelope(account, &[8, 1], true, false, [0, 0])),
+            Err(FrameError::UnsupportedEncryptedMessageType)
+        );
+        assert_eq!(
+            runtime.take_encrypted_rejection(),
+            Some(EncryptedRejection {
+                message_type: profile::MESSAGE_TYPE_PRODUCT_FORWARD,
+                cause: EncryptedRejectionCause::NoSessionKey,
+            })
+        );
+        assert_eq!(
+            runtime.inbound_telemetry().snapshot().encrypted_rejections
+                [&profile::MESSAGE_TYPE_PRODUCT_FORWARD],
+            1
+        );
+        assert!(runtime
+            .zencryption
+            .install_wrapped_fragment(&TEST_WRAPPED_FRAGMENT));
+        assert!(runtime.cloud_session_key_installed());
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn a_wrong_key_is_named_as_undecryptable() {
+        let mut runtime = TransportRuntime::new(0);
+        runtime.set_cloud_account_answers_enabled(true);
+        push_wrapped_version_fragment(&mut runtime, &TEST_WRAPPED_FRAGMENT, 10);
+        let account = u32::from(profile::MESSAGE_TYPE_PRODUCT_FORWARD);
+        // Ciphertext under some other key: decrypts to bytes that will not inflate.
+        assert!(matches!(
+            runtime.push_report(&inbound_envelope(
+                account,
+                &[1, 2, 3, 4],
+                true,
+                true,
+                [0, 0]
+            )),
+            Err(FrameError::Compression(_))
+        ));
+        assert_eq!(
+            runtime.take_encrypted_rejection(),
+            Some(EncryptedRejection {
+                message_type: profile::MESSAGE_TYPE_PRODUCT_FORWARD,
+                cause: EncryptedRejectionCause::Undecryptable,
+            })
+        );
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn account_answers_decrypt_only_cloud_login_and_product_forward() {
+        let mut receiver = TransportRuntime::new(0);
+        receiver.set_cloud_account_answers_enabled(true);
+        push_wrapped_version_fragment(&mut receiver, &TEST_WRAPPED_FRAGMENT, 10);
+        assert_type29_decrypts_with_fragments(&mut receiver, &[&TEST_WRAPPED_FRAGMENT], 11);
+        // The other Zencryption families stay undecrypted with forwarding off.
+        assert!(receiver
+            .push_report(&inbound_envelope(30, &[8, 1], true, false, [0, 0]))
+            .is_err());
+        assert_eq!(
+            receiver.take_encrypted_rejection(),
+            Some(EncryptedRejection {
+                message_type: 30,
+                cause: EncryptedRejectionCause::NotDecrypted,
+            })
+        );
+        let answer = OutboundMessage {
+            message_type: profile::MESSAGE_TYPE_PRODUCT_FORWARD,
+            payload: vec![0x08, 0x01],
+        };
+        assert!(receiver
+            .encode_reports_with_session(&answer, ReportLayout::ReportIdPrefixed)
+            .is_ok());
+        let license = OutboundMessage {
+            message_type: profile::MESSAGE_TYPE_LICENSE,
+            payload: vec![0x08, 0x01],
+        };
+        assert!(receiver
+            .encode_reports_with_session(&license, ReportLayout::ReportIdPrefixed)
+            .is_err());
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn answers_wait_for_a_complete_handshake_and_a_quiet_key() {
+        let mut runtime = TransportRuntime::new(0);
+        runtime.set_cloud_account_answers_enabled(true);
+        push_wrapped_version_fragment(&mut runtime, &TEST_WRAPPED_FRAGMENT, 10);
+        assert!(runtime.cloud_session_key_installed());
+        // Before the handshake completes the key may still be growing.
+        assert_eq!(runtime.cloud_answer_key(2_000), CloudAnswerKey::NotReady);
+        // Complete but not preset-synchronized: Syncing is enough.
+        runtime.handshake_completed(20, false);
+        assert!(!runtime.synchronized());
+        assert_eq!(
+            runtime.cloud_answer_key(10 + CLOUD_KEY_QUIET_MS - 1),
+            CloudAnswerKey::NotReady
+        );
+        let CloudAnswerKey::Ready(first) = runtime.cloud_answer_key(10 + CLOUD_KEY_QUIET_MS) else {
+            panic!("a quiet key after the handshake is ready")
+        };
+        // A re-handshake while the phase stays connected: the new fragment
+        // starts a generation and closes the window until it is quiet again.
+        push_wrapped_version_fragment(&mut runtime, &TEST_WRAPPED_FRAGMENT, 5_000);
+        assert_eq!(runtime.cloud_answer_key(5_100), CloudAnswerKey::NotReady);
+        let CloudAnswerKey::Ready(second) = runtime.cloud_answer_key(5_000 + CLOUD_KEY_QUIET_MS)
+        else {
+            panic!("quiet again")
+        };
+        assert_ne!(first, second);
+        runtime.reset(6_000);
+        assert_eq!(runtime.cloud_answer_key(9_000), CloudAnswerKey::NotReady);
+        assert_ne!(runtime.key_generation, second, "a reset never repeats one");
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn a_connected_session_without_a_key_reports_it_missing() {
+        let mut runtime = TransportRuntime::new(0);
+        runtime.handshake_completed(20, true);
+        assert_eq!(runtime.cloud_answer_key(1_000), CloudAnswerKey::Missing);
+    }
+
+    #[cfg(feature = "cloud-forward")]
+    #[test]
+    fn an_oversized_account_frame_is_not_taken_for_a_wrong_key() {
+        let mut sender = TransportRuntime::new(0);
+        sender.set_cloud_account_answers_enabled(true);
+        assert!(sender
+            .zencryption
+            .install_wrapped_fragment(&TEST_WRAPPED_FRAGMENT));
+        let mut receiver = TransportRuntime::new(0);
+        receiver.set_cloud_account_answers_enabled(true);
+        push_wrapped_version_fragment(&mut receiver, &TEST_WRAPPED_FRAGMENT, 10);
+        // A valid gzip stream past the type-29 ceiling, encrypted under the
+        // right key.
+        let limit =
+            crate::compression::max_inflated_bytes_for(profile::MESSAGE_TYPE_PRODUCT_FORWARD);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::best());
+        encoder.write_all(&vec![0; limit + 1]).unwrap();
+        let ciphertext = sender
+            .zencryption
+            .transform(&encoder.finish().unwrap())
+            .unwrap();
+        let reports = framing::encode_frame(&framing::Frame {
+            message_type: u32::from(profile::MESSAGE_TYPE_PRODUCT_FORWARD),
+            payload: ciphertext,
+            encrypted: true,
+            compressed: true,
+            device_bytes: [0, 0],
+        });
+        let mut result = Ok(None);
+        for report in reports {
+            let mut inbound = report.to_vec();
+            inbound[0] = framing::IN_REPORT_ID;
+            result = receiver.push_report_at(&inbound, 11);
+        }
+        assert!(matches!(result, Err(FrameError::Compression(_))));
+        assert_eq!(
+            receiver.take_encrypted_rejection(),
+            Some(EncryptedRejection {
+                message_type: profile::MESSAGE_TYPE_PRODUCT_FORWARD,
+                cause: EncryptedRejectionCause::TooLarge,
+            })
+        );
     }
 
     #[test]

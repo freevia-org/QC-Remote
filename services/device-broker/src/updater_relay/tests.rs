@@ -411,3 +411,32 @@ fn queued_updater_frame_expiry_and_retirement_survive_http_task_completion() {
     relay.cancel_if_active("setting disabled after HTTP completion");
     assert!(cancel.load(std::sync::atomic::Ordering::Acquire));
 }
+
+#[test]
+fn an_update_counts_as_in_progress_between_its_requests_and_while_the_unit_says_so() {
+    let relay = UpdaterRelay::new();
+    relay.use_fixed_settings(UpdaterRelaySettings {
+        enabled: false,
+        ..Default::default()
+    });
+    let start = Instant::now();
+    assert!(!relay.update_in_progress(start));
+    // A request, even one not forwarded, starts the quiet period; the gap
+    // before the next one of a download is still the update.
+    relay.on_forward_frame(&frame(0, "https://neuraldsp.com/x", 1, None), start);
+    assert!(!relay.is_active());
+    assert!(relay.update_in_progress(start + super::UPDATE_QUIET_AFTER - Duration::from_secs(1)));
+    assert!(!relay.update_in_progress(start + super::UPDATE_QUIET_AFTER));
+    // The unit's own updater state keeps it in progress past the quiet period.
+    let state = |value: pa::updater_state::Enum| {
+        pa::UpdaterMessage {
+            state: Some(pa::updater_message::State::State(value as i32)),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    };
+    relay.on_updater_state(&state(pa::updater_state::Enum::Updating));
+    assert!(relay.update_in_progress(start + Duration::from_secs(600)));
+    relay.on_updater_state(&state(pa::updater_state::Enum::Idle));
+    assert!(!relay.update_in_progress(start + Duration::from_secs(600)));
+}

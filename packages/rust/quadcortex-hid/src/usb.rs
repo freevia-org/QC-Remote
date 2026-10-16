@@ -9,7 +9,10 @@ use quadcortex::device::owner::{
     NativeDispatchTicket, ObservationTicket, OperationTicket, SessionRuntime,
 };
 use quadcortex::device::session::{DispatchOutcome, SessionDriver};
-use quadcortex::device::transport::{ReportLayout, TransportRuntime};
+use quadcortex::device::transport::{
+    is_cloud_account_message_type, EncryptedRejection, EncryptedRejectionCause, ReportLayout,
+    TransportRuntime,
+};
 use quadcortex::framing;
 use quadcortex::profile;
 use quadcortex::sync::RecoverPoison;
@@ -946,6 +949,9 @@ pub struct QcUsb {
     /// Whether the latest `read_message` received no HID report: an idle poll
     /// or the reader's idle marker. A partial frame is not an empty read.
     last_read_was_empty: bool,
+    /// Account frames dropped since the last `take_unusable_account_frames`
+    /// because this session's key was missing or wrong.
+    unusable_account_frames: u64,
     report_layout: ReportLayout,
     flight: FlightRecorder,
     disconnected_state_sent: bool,
@@ -1136,6 +1142,14 @@ impl QcUsb {
         self.last_read_was_empty
     }
 
+    /// Cloud-account frames dropped, since the last call, because the session
+    /// key was missing or did not decrypt them. A frame the host chose not to
+    /// decrypt is not counted. A host can renew the key (a fresh handshake)
+    /// instead of leaving the unit's account requests unanswerable.
+    pub fn take_unusable_account_frames(&mut self) -> u64 {
+        std::mem::take(&mut self.unusable_account_frames)
+    }
+
     fn open(
         owner: Arc<Mutex<SessionRuntime>>,
         session_clock: &Instant,
@@ -1221,6 +1235,7 @@ impl QcUsb {
             _api: api,
             next_sequence: 1,
             last_read_was_empty: false,
+            unusable_account_frames: 0,
             report_layout: ReportLayout::ReportIdPrefixed,
             flight,
             disconnected_state_sent: false,
@@ -1693,7 +1708,9 @@ impl QcUsb {
     /// A single rejected frame the policy tolerates (an over-limit inflation,
     /// a corrupt gzip stream) is dropped without ending the session, but never
     /// silently: the transport's inbound telemetry counts it by type and the
-    /// flight record names it as `read-dropped`.
+    /// flight record names it as `read-dropped`. A cloud-account frame this
+    /// host cannot decrypt is dropped the same way, never counts toward the
+    /// streak and, as a complete envelope, resets it (see `ReadErrorDisposition`).
     pub fn read_message(&mut self, timeout_ms: i32) -> Result<Option<IncomingMessage>, UsbError> {
         match self.read_message_poll(timeout_ms) {
             Ok((message, true)) => {
@@ -1708,14 +1725,38 @@ impl QcUsb {
                 self.abort();
                 Err(error)
             }
-            Err(error) if !self.owner.lock_recover().transport.read_failed() => {
-                self.flight.event(format!("read-dropped: {error}"));
-                Ok(None)
-            }
             Err(error) => {
-                self.flight.incident(format!("read-failure: {error}"));
-                self.abort();
-                Err(error)
+                let disposition = read_error_disposition(&mut self.owner.lock_recover().transport);
+                match disposition {
+                    ReadErrorDisposition::DropAccountFrame(rejection) => {
+                        let unusable = key_unusable(rejection.cause);
+                        if unusable {
+                            self.unusable_account_frames =
+                                self.unusable_account_frames.saturating_add(1);
+                        }
+                        self.flight.event(format!(
+                            "read-dropped: encrypted type {} ({}) not counted as link loss",
+                            rejection.message_type,
+                            cause_label(rejection.cause)
+                        ));
+                        Ok(None)
+                    }
+                    ReadErrorDisposition::Tolerate(encrypted) => {
+                        self.flight.event(format!(
+                            "read-dropped{}: {error}",
+                            encrypted_label(encrypted)
+                        ));
+                        Ok(None)
+                    }
+                    ReadErrorDisposition::EndSession(encrypted) => {
+                        self.flight.incident(format!(
+                            "read-failure{}: {error}",
+                            encrypted_label(encrypted)
+                        ));
+                        self.abort();
+                        Err(error)
+                    }
+                }
             }
         }
     }
@@ -1839,6 +1880,60 @@ fn record_teardown_evidence(observer: Option<&AtomicBool>, queued: bool, finishe
     verified
 }
 
+/// What one rejected inbound read does to the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadErrorDisposition {
+    /// A complete cloud-account envelope this host did not or could not
+    /// decrypt: dropped and named, never counted toward link loss, and, being
+    /// a complete envelope, proof the stream is healthy (the streak resets).
+    /// The unit sends these whenever its account is active; two in a row used
+    /// to end the USB session, and every answer it was owed.
+    DropAccountFrame(EncryptedRejection),
+    /// A first rejection: dropped, session kept. Carries an encrypted type.
+    Tolerate(Option<u16>),
+    /// A second rejection in a row: the link is treated as lost.
+    EndSession(Option<u16>),
+}
+
+fn read_error_disposition(transport: &mut TransportRuntime) -> ReadErrorDisposition {
+    let rejection = transport.take_encrypted_rejection();
+    if let Some(rejection) = rejection {
+        if is_cloud_account_message_type(rejection.message_type) {
+            transport.read_succeeded();
+            return ReadErrorDisposition::DropAccountFrame(rejection);
+        }
+    }
+    let encrypted = rejection.map(|rejection| rejection.message_type);
+    if transport.read_failed() {
+        ReadErrorDisposition::EndSession(encrypted)
+    } else {
+        ReadErrorDisposition::Tolerate(encrypted)
+    }
+}
+
+/// A missing or wrong key, as opposed to a type this host does not decrypt.
+fn key_unusable(cause: EncryptedRejectionCause) -> bool {
+    matches!(
+        cause,
+        EncryptedRejectionCause::NoSessionKey | EncryptedRejectionCause::Undecryptable
+    )
+}
+
+fn cause_label(cause: EncryptedRejectionCause) -> &'static str {
+    match cause {
+        EncryptedRejectionCause::NotDecrypted => "not decrypted",
+        EncryptedRejectionCause::NoSessionKey => "no session key",
+        EncryptedRejectionCause::Undecryptable => "undecryptable",
+        EncryptedRejectionCause::TooLarge => "over its size limit",
+    }
+}
+
+fn encrypted_label(encrypted: Option<u16>) -> String {
+    encrypted.map_or_else(String::new, |message_type| {
+        format!(" (encrypted type {message_type})")
+    })
+}
+
 fn encode_session_reports(
     session: &TransportRuntime,
     message: &OutboundMessage,
@@ -1870,8 +1965,9 @@ impl Drop for QcUsb {
 #[cfg(test)]
 mod tests {
     use super::{
-        encode_session_reports, first_supported_path, macos_device_identity, observe_initial,
-        HidIo, HidWriteMessage, IncomingMessage, ReportLayout, TransportRuntime, UsbError,
+        encode_session_reports, encrypted_label, first_supported_path, key_unusable,
+        macos_device_identity, observe_initial, read_error_disposition, HidIo, HidWriteMessage,
+        IncomingMessage, ReadErrorDisposition, ReportLayout, TransportRuntime, UsbError,
         UsbTelemetry, READER_LOCK_STALL_THRESHOLD_MS,
     };
     use crate::backend::WriteStallPolicy;
@@ -2064,6 +2160,66 @@ mod tests {
         assert!(
             encode_session_reports(&session, &command, ReportLayout::ReportIdPrefixed).is_err()
         );
+    }
+
+    #[test]
+    fn an_undecryptable_account_frame_never_counts_toward_link_loss() {
+        use quadcortex::device::transport::{EncryptedRejection, EncryptedRejectionCause};
+        fn encrypted(message_type: u16) -> Vec<u8> {
+            let mut report = quadcortex::framing::encode_frame(&quadcortex::framing::Frame {
+                message_type: u32::from(message_type),
+                payload: vec![8, 1],
+                encrypted: true,
+                compressed: false,
+                device_bytes: [0, 0],
+            })[0]
+                .to_vec();
+            report[0] = quadcortex::framing::IN_REPORT_ID;
+            report
+        }
+        let mut transport = TransportRuntime::new(0);
+        // Any run of them, of every account family, leaves the streak alone.
+        for message_type in [29, 29, 18, 30, 31, 41, 58, 29] {
+            assert!(transport.push_report(&encrypted(message_type)).is_err());
+            assert_eq!(
+                read_error_disposition(&mut transport),
+                ReadErrorDisposition::DropAccountFrame(EncryptedRejection {
+                    message_type,
+                    cause: EncryptedRejectionCause::NotDecrypted,
+                })
+            );
+        }
+        // Any other rejection keeps the shared policy: one tolerated, and the
+        // next in a row ends the session...
+        assert!(transport.push_report(&encrypted(73)).is_err());
+        assert_eq!(
+            read_error_disposition(&mut transport),
+            ReadErrorDisposition::Tolerate(Some(73))
+        );
+        // ...unless a complete account envelope arrived between them.
+        assert!(transport.push_report(&encrypted(29)).is_err());
+        assert!(matches!(
+            read_error_disposition(&mut transport),
+            ReadErrorDisposition::DropAccountFrame(_)
+        ));
+        assert!(transport.push_report(&[0x01]).is_err());
+        assert_eq!(
+            read_error_disposition(&mut transport),
+            ReadErrorDisposition::Tolerate(None)
+        );
+        assert!(transport.push_report(&[0x01]).is_err());
+        assert_eq!(
+            read_error_disposition(&mut transport),
+            ReadErrorDisposition::EndSession(None)
+        );
+        assert_eq!(encrypted_label(Some(73)), " (encrypted type 73)");
+        assert_eq!(encrypted_label(None), "");
+        // Only a missing or wrong key asks the host to renew it.
+        assert!(!key_unusable(EncryptedRejectionCause::NotDecrypted));
+        assert!(key_unusable(EncryptedRejectionCause::NoSessionKey));
+        assert!(key_unusable(EncryptedRejectionCause::Undecryptable));
+        // An oversized but valid frame says nothing about the key.
+        assert!(!key_unusable(EncryptedRejectionCause::TooLarge));
     }
 
     #[test]

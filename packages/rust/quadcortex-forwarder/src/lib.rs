@@ -74,6 +74,32 @@ fn check(cancel: &AtomicBool, deadline: Option<Instant>) -> Result<(), ForwardEr
 fn deadline(timeout: i32, started: Instant) -> Option<Instant> {
     (timeout > 0).then(|| started + Duration::from_millis(timeout as u64))
 }
+/// How long before the unit's own deadline a Type 29 is answered when its
+/// HTTP exchange has not finished. An unanswered request is followed ~30 s
+/// later by the unit's CloudLogin DELETE (captured three times), which drops
+/// its account link, so a late answer must never become no answer.
+pub const ANSWER_MARGIN: Duration = Duration::from_secs(2);
+/// The instant by which a Type 29 with `timeout` ms must be answered:
+/// `ANSWER_MARGIN` before the unit's deadline, or halfway for a short one.
+pub fn answer_deadline(timeout: i32, started: Instant) -> Option<Instant> {
+    (timeout > 0).then(|| {
+        let total = Duration::from_millis(timeout as u64);
+        started + total.saturating_sub(ANSWER_MARGIN.min(total / 2))
+    })
+}
+/// How long after `answer_deadline` an owner gives a still-running exchange
+/// before it answers in its place, so a real response finishing just at the
+/// answer deadline is not replaced by an error.
+pub const WATCHDOG_GRACE: Duration = Duration::from_millis(500);
+/// `WATCHDOG_GRACE` after `answer_deadline`, and at most a quarter of the
+/// margin: 28.5 s for the unit's 30 s, 1.5 s before its deadline.
+pub fn watchdog_deadline(timeout: i32, started: Instant) -> Option<Instant> {
+    (timeout > 0).then(|| {
+        let total = Duration::from_millis(timeout as u64);
+        let margin = ANSWER_MARGIN.min(total / 2);
+        started + total.saturating_sub(margin) + WATCHDOG_GRACE.min(margin / 4)
+    })
+}
 /// Forward one decrypted protocol frame. Encryption/framing remains in the
 /// transport. The sink must honor cancellation and its supplied absolute deadline
 /// while waiting for USB admission. Type 18 is a notification, never HTTP.
@@ -188,79 +214,119 @@ pub fn forward_with_fetcher_at(
                 _ => Ok(()), // An HTTP error is an intact response, not a transport error.
             }
         }
-        29 => {
-            let mut message =
-                pa::ProductForwardMessage::decode(payload).map_err(|_| ForwardError::Protocol)?;
-            let incoming = message
-                .request_id
-                .take()
-                .map(|pa::product_forward_message::RequestId::RequestId(id)| id);
-            static NEXT_RESPONSE_REQUEST_ID: std::sync::atomic::AtomicU64 =
-                std::sync::atomic::AtomicU64::new(8);
-            let request_id = Some(
-                incoming
-                    .unwrap_or_else(|| NEXT_RESPONSE_REQUEST_ID.fetch_add(1, Ordering::Relaxed)),
-            );
-            let Some(pa::product_forward_message::Request::Request(request)) =
-                message.request.take()
-            else {
-                return Err(ForwardError::Protocol);
-            };
-            let deadline = deadline(request.timeout, started);
-            check(&cancel, deadline)?;
-            let timeout = deadline
-                .map(|end| end.saturating_duration_since(Instant::now()))
-                .unwrap_or(Duration::ZERO);
-            let body = Zeroizing::new(match request.payload {
-                Some(pa::product_forward_request::Payload::Payload(bytes)) => bytes,
-                None => Vec::new(),
-            });
-            let headers = request
-                .headers
-                .into_iter()
-                .map(|h| (h.name, h.value))
-                .collect::<Vec<_>>();
-            let result = (|| {
-                let url =
-                    url::Url::parse(&request.url).map_err(|_| fetch::FetchFailure::Protocol)?;
-                let method = match pa::http_operation::Enum::try_from(request.operation).ok() {
-                    Some(pa::http_operation::Enum::Get) => ::http::Method::GET,
-                    Some(pa::http_operation::Enum::Put) => ::http::Method::PUT,
-                    Some(pa::http_operation::Enum::Post) => ::http::Method::POST,
-                    Some(pa::http_operation::Enum::Delete) => ::http::Method::DELETE,
-                    None => return Err(fetch::FetchFailure::Protocol),
-                };
-                let mut response = fetcher.send_until(
-                    method,
-                    &url,
-                    &headers,
-                    &body,
-                    deadline,
-                    Arc::clone(&cancel),
-                )?;
-                let mut bytes = Zeroizing::new(Vec::new());
-                while let Some(piece) = response.body.next_chunk(timeout)? {
-                    bytes.extend_from_slice(&piece);
-                }
-                Ok((response.status, std::mem::take(&mut *bytes)))
-            })();
-            check(&cancel, deadline)?;
-            let (status, bytes) = match result {
-                Ok((status, bytes)) => (i32::from(status), bytes),
-                Err(fetch::FetchFailure::Timeout) => (504, Vec::new()),
-                Err(_) => (502, Vec::new()),
-            };
-            let response = cloud_forward::product_forward_response(
-                request_id,
-                message.cloud_request_id,
-                bytes,
-                status,
-            );
-            sink(response, deadline)?;
-            check(&cancel, deadline)
-        }
+        29 => forward_product_with_fetcher_at(fetcher, payload, cancel, sink, started).map(|_| ()),
         _ => Err(ForwardError::Protocol),
     }
+}
+
+/// How a forwarded Type 29 was answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProductAnswer {
+    /// With the HTTP status the server sent.
+    Server(i32),
+    /// The exchange did not finish by its answer deadline.
+    TimedOut,
+    /// The exchange failed (connection, TLS, protocol).
+    NetworkFailed,
+}
+
+/// Forward one decrypted Type 29 and answer it, as `forward_with_fetcher_at`
+/// does, reporting how it was answered.
+pub fn forward_product_with_fetcher_at(
+    fetcher: &http::DirectHttpFetcher,
+    payload: &[u8],
+    cancel: Arc<AtomicBool>,
+    sink: &mut dyn FnMut(OutboundMessage, Option<Instant>) -> Result<(), ForwardError>,
+    started: Instant,
+) -> Result<ProductAnswer, ForwardError> {
+    check(&cancel, None)?;
+    let mut message =
+        pa::ProductForwardMessage::decode(payload).map_err(|_| ForwardError::Protocol)?;
+    let incoming = message
+        .request_id
+        .take()
+        .map(|pa::product_forward_message::RequestId::RequestId(id)| id);
+    static NEXT_RESPONSE_REQUEST_ID: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(8);
+    let request_id =
+        Some(incoming.unwrap_or_else(|| NEXT_RESPONSE_REQUEST_ID.fetch_add(1, Ordering::Relaxed)));
+    let Some(pa::product_forward_message::Request::Request(request)) = message.request.take()
+    else {
+        return Err(ForwardError::Protocol);
+    };
+    // The unit's deadline bounds USB admission of the answer; the HTTP
+    // exchange (head and streamed body share `answer_by`) stops
+    // `ANSWER_MARGIN` earlier, so a slow or silent server still
+    // produces an answer the unit receives in time.
+    let deadline = deadline(request.timeout, started);
+    let answer_by = answer_deadline(request.timeout, started);
+    check(&cancel, deadline)?;
+    let timeout = answer_by
+        .map(|end| end.saturating_duration_since(Instant::now()))
+        .unwrap_or(Duration::ZERO);
+    let body = Zeroizing::new(match request.payload {
+        Some(pa::product_forward_request::Payload::Payload(bytes)) => bytes,
+        None => Vec::new(),
+    });
+    let headers = request
+        .headers
+        .into_iter()
+        .map(|h| (h.name, h.value))
+        .collect::<Vec<_>>();
+    let result = (|| {
+        let url = url::Url::parse(&request.url).map_err(|_| fetch::FetchFailure::Protocol)?;
+        let method = match pa::http_operation::Enum::try_from(request.operation).ok() {
+            Some(pa::http_operation::Enum::Get) => ::http::Method::GET,
+            Some(pa::http_operation::Enum::Put) => ::http::Method::PUT,
+            Some(pa::http_operation::Enum::Post) => ::http::Method::POST,
+            Some(pa::http_operation::Enum::Delete) => ::http::Method::DELETE,
+            None => return Err(fetch::FetchFailure::Protocol),
+        };
+        let mut response = fetcher.send_until(
+            method,
+            &url,
+            &headers,
+            &body,
+            answer_by,
+            Arc::clone(&cancel),
+        )?;
+        let mut bytes = Zeroizing::new(Vec::new());
+        while let Some(piece) = response.body.next_chunk(timeout)? {
+            bytes.extend_from_slice(&piece);
+        }
+        Ok((response.status, std::mem::take(&mut *bytes)))
+    })();
+    // Only cancellation (session retired, relay owner gone) or a
+    // missed device deadline suppresses the answer; an HTTP timeout
+    // is answered while the unit still waits.
+    check(&cancel, deadline)?;
+    // A failed exchange is answered too, with the one made-up status
+    // (`cloud_forward::BROKER_ANSWER_STATUS`); the caller learns which.
+    let (status, bytes, answer) = match result {
+        Ok((status, bytes)) => {
+            let status = i32::from(status);
+            (status, bytes, ProductAnswer::Server(status))
+        }
+        Err(fetch::FetchFailure::Timeout) => (
+            cloud_forward::BROKER_ANSWER_STATUS,
+            Vec::new(),
+            ProductAnswer::TimedOut,
+        ),
+        Err(_) => (
+            cloud_forward::BROKER_ANSWER_STATUS,
+            Vec::new(),
+            ProductAnswer::NetworkFailed,
+        ),
+    };
+    let response = cloud_forward::product_forward_response(
+        request_id,
+        message.cloud_request_id,
+        bytes,
+        status,
+    );
+    sink(response, deadline)?;
+    check(&cancel, deadline)?;
+    Ok(answer)
 }
 
 #[cfg(test)]

@@ -27,6 +27,7 @@ use quadcortex::device::request::{
 use quadcortex::device::touch_guard::TouchGuard;
 #[cfg(test)]
 use quadcortex::device::transport::TransportRuntime;
+use quadcortex::device::transport::{CloudAnswerKey, IngressTime};
 use quadcortex::device::{GatewaySnapshot, PresetFolder, PresetList};
 #[cfg(test)]
 use quadcortex::domain::STATE_EVENT_MAXIMUM_LIMIT;
@@ -37,6 +38,7 @@ use quadcortex::proto::cortex_protobuf_v2 as pa;
 use quadcortex::responses::{LibraryEntries, TempoClock as TempoClockFrame};
 use quadcortex::state::{parse_model_repo, BlockDetails, ModelCatalog, ModelList, StateUpdate};
 use quadcortex::sync::RecoverPoison;
+use quadcortex_forwarder::cloud_forward::RequestOrigin;
 use quadcortex_hid::{ConnectedQc, IncomingMessage, QcUsb, UsbError};
 use retention::{
     budgeted_queue, BudgetedSender, OfferOutcome, QueueKind, RetentionCounters,
@@ -3599,6 +3601,7 @@ fn run_leased(
     let mut relay_pump = RelayPump::new();
     let mut cloud_forward =
         CloudForwardRelay::with_fetcher(crate::updater_relay::http::direct_fetcher());
+    let mut cloud_key_watch = CloudKeyWatch::default();
     let mut command_not_before = Instant::now();
     // The inbound-telemetry revision this loop has already published. A
     // connection epoch resets the session's tally to zero, which is a change
@@ -3611,15 +3614,23 @@ fn run_leased(
         // cancel this attempt, rather than become its new baseline.
         let interrupted = connect_interrupt.watch();
         // ProductForward credentials use the same user-visible internet-relay
-        // switch as the plaintext firmware relay. Set this before a new USB
+        // switch as the plaintext firmware relay: it alone decides whether an
+        // account request reaches the network. Set this before a new USB
         // connection enters its version handshake so the session key is
-        // installed before any encrypted account request can arrive.
+        // installed before any encrypted account request can arrive. With the
+        // switch off, CloudLogin and ProductForward are still decrypted, in
+        // memory and only far enough (ids, timeout, action) to answer or log
+        // them, then zeroized: a request left unanswered makes the unit drop
+        // its account link. The other account families stay undecrypted.
         let internet_relay_enabled = updater_relay.status().enabled;
         cloud_forward.set_enabled(internet_relay_enabled);
-        session
-            .lock_recover()
-            .transport
-            .set_cloud_forward_enabled(internet_relay_enabled);
+        {
+            let mut owner = session.lock_recover();
+            owner
+                .transport
+                .set_cloud_forward_enabled(internet_relay_enabled);
+            owner.transport.set_cloud_account_answers_enabled(true);
+        }
         if connection.is_some() {
             lease.tick();
         } else {
@@ -3660,7 +3671,14 @@ fn run_leased(
                     // Before the connection goes: the reconnect below can be due
                     // at once, so the no-session branch may never get a pass.
                     updater_relay.cancel("the device session was restarted");
-                    cloud_forward.cancel_all();
+                    answer_cloud_requests_before_teardown(
+                        &mut connection,
+                        &mut cloud_forward,
+                        &session,
+                        &session_clock,
+                        &state,
+                        "device-session-restarted",
+                    );
                     connection.take();
                     fail_pending(&mut pending_requests, "Device session restarted");
                     fail_backup(&mut backup, "Device session restarted");
@@ -3675,7 +3693,14 @@ fn run_leased(
                 }
                 Command::Disconnect { reply, _admission } => {
                     updater_relay.cancel("the device session was closed");
-                    cloud_forward.cancel_all();
+                    answer_cloud_requests_before_teardown(
+                        &mut connection,
+                        &mut cloud_forward,
+                        &session,
+                        &session_clock,
+                        &state,
+                        "device-session-closed",
+                    );
                     let verified = if let Some(mut connected) = connection.take() {
                         let request_id = connected.reserve_request_id();
                         connected.usb.disconnect_exact_checked(request_id)
@@ -3951,7 +3976,14 @@ fn run_leased(
                     fail_pending(&mut pending_requests, "Native broker stopped");
                     fail_backup(&mut backup, "Native broker stopped");
                     updater_relay.cancel("the broker is stopping");
-                    cloud_forward.cancel_all();
+                    answer_cloud_requests_before_teardown(
+                        &mut connection,
+                        &mut cloud_forward,
+                        &session,
+                        &session_clock,
+                        &state,
+                        "broker-stopping",
+                    );
                     // A full publication queue must not park the USB worker
                     // before its decoder owner can signal cancellation.
                     _decoder.request_stop(&state_messages);
@@ -4122,7 +4154,10 @@ fn run_leased(
                     // Whatever the relay still holds belongs to a session that
                     // ended; none of it may be written into this one.
                     updater_relay.cancel("a new device session started");
-                    cloud_forward.cancel_all();
+                    cloud_forward.abandon_all("new-device-session");
+                    cloud_key_watch.new_session();
+                    // Those lines describe the session that ended, not this one.
+                    let _ = cloud_forward.take_events();
                     connection = Some(connected);
                 }
                 Err(UsbError::NotAvailable) => {
@@ -4165,9 +4200,74 @@ fn run_leased(
             }
         }
 
+        // A session key that is missing or wrong leaves every account request
+        // unanswerable. Two such frames used to end the link, and the
+        // reconnect brought a fresh key; now they are only dropped, so ask for
+        // that fresh handshake explicitly: only on repeated evidence, on a
+        // settled key state, never over an update or a backup, at most once
+        // per cooldown.
+        if let Some(connected) = connection.as_mut() {
+            let now = Instant::now();
+            let answer_key = session
+                .lock_recover()
+                .transport
+                .cloud_answer_key(session_clock.elapsed().as_millis() as u64);
+            cloud_key_watch.observe(answer_key, now);
+            let unusable = connected
+                .usb
+                .take_unusable_account_frames()
+                .saturating_add(u64::from(cloud_forward.take_undecodable()));
+            if unusable > 0 {
+                cloud_key_watch.note_unusable(unusable, now);
+                connected
+                    .usb
+                    .record_event(format!("cloud-key-unusable: {unusable} account frame(s)"));
+            }
+            // A CorOS download pauses between its requests; a restart in such
+            // a gap would still abort the update.
+            let busy = updater_relay.update_in_progress(now) || backup.is_some();
+            match cloud_key_watch.decide(now, busy) {
+                KeyRenewal::Wait => {}
+                KeyRenewal::Deferred => connected.usb.record_incident(
+                    "cloud-key-renewal-deferred: an update or backup is in progress",
+                ),
+                KeyRenewal::Renew => {
+                    connected
+                        .usb
+                        .record_incident("cloud-key-renewal: restarting the session");
+                    restart_session(
+                        "Quad Cortex account frames could not be decrypted; renewing the session",
+                        &mut connection,
+                        &mut pending_requests,
+                        &mut backup,
+                        &state,
+                        &latest_messages,
+                        &session,
+                        &session_clock,
+                        &state_messages,
+                        &updater_relay,
+                        &mut cloud_forward,
+                    );
+                    auto_connect = true;
+                    continue;
+                }
+            }
+        }
+
         if let Some(connected) = connection.as_mut() {
             let session_epoch = state.lock_recover().session_epoch;
-            if let Some(mut replies) = cloud_forward.take_response(session_epoch) {
+            // An answer is encrypted only under a finished key: never before
+            // this session's version exchange completes, never between its
+            // fragments (writing one then would also fail and abort the link).
+            let answer_key = session
+                .lock_recover()
+                .transport
+                .cloud_answer_key(session_clock.elapsed().as_millis() as u64);
+            let replies = cloud_forward.take_response_when(session_epoch, answer_key);
+            for event in cloud_forward.take_events() {
+                connected.usb.record_event(event);
+            }
+            if let Some(mut replies) = replies {
                 let mut write_failed = false;
                 for reply in std::mem::take(&mut replies.messages) {
                     match connected.usb.send_forwarded_command(
@@ -4176,7 +4276,12 @@ fn run_leased(
                         Arc::clone(&replies.cancel),
                     ) {
                         Ok(()) => {}
-                        Err(UsbError::ForwardingRetired) => continue,
+                        Err(UsbError::ForwardingRetired) => {
+                            connected
+                                .usb
+                                .record_event("cloud-reply-retired: deadline or cancellation");
+                            continue;
+                        }
                         Err(_) => {
                             connected.usb.record_incident("cloud-forward-write-failure");
                             connected.usb.abort();
@@ -4257,6 +4362,16 @@ fn run_leased(
                         .observation
                         .as_ref()
                         .is_some_and(|ticket| session.lock_recover().accepts_observation(ticket));
+                    if !current && message.message_type == profile::MESSAGE_TYPE_PRODUCT_FORWARD {
+                        // Not forwarded into a session it does not belong to,
+                        // but the unit still waits for an answer to it.
+                        let origin = request_origin(&message, &state, &session, &session_clock);
+                        cloud_forward.refuse_product_forward(
+                            &mut message.payload,
+                            "stale-epoch",
+                            origin,
+                        );
+                    }
                     if !retain_message_for_current_epoch(&mut message, current) {
                         clear_session_caches(&state, &latest_messages);
                         connected.latest_messages.clear();
@@ -4271,7 +4386,8 @@ fn run_leased(
                         // Stop streaming to it, as the pending requests and the
                         // backup above are stopped.
                         updater_relay.cancel("the QC lifecycle epoch changed");
-                        cloud_forward.cancel_all();
+                        // The link stays up, so what is retired is answered.
+                        cloud_forward.refuse_outstanding("epoch-changed");
                         continue;
                     }
 
@@ -4279,8 +4395,8 @@ fn run_leased(
                     // or credential-lifecycle state. They never enter the
                     // general cache, raw-event stream, or state decoder.
                     if message.message_type == profile::MESSAGE_TYPE_PRODUCT_FORWARD {
-                        let epoch = state.lock_recover().session_epoch;
-                        cloud_forward.on_product_forward(&mut message.payload, epoch);
+                        let origin = request_origin(&message, &state, &session, &session_clock);
+                        cloud_forward.on_product_forward(&mut message.payload, origin);
                         continue;
                     }
                     if message.message_type == profile::MESSAGE_TYPE_CLOUD_LOGIN {
@@ -4291,6 +4407,10 @@ fn run_leased(
                         // These credential-bearing operations have no broker
                         // handler and must not enter general state publication.
                         message.payload.zeroize();
+                        connected.usb.record_event(format!(
+                            "cloud-frame-dropped: type {} has no handler",
+                            message.message_type
+                        ));
                         continue;
                     }
 
@@ -4458,7 +4578,10 @@ fn run_leased(
             }
             if relay_report.write_error.is_some() {
                 updater_relay.cancel("a write to the unit failed");
-                cloud_forward.cancel_all();
+                cloud_forward.abandon_all("write-failure");
+                for event in cloud_forward.take_events() {
+                    connected.usb.record_event(event);
+                }
                 teardown_after_session_failure(
                     "Update relay write failed",
                     session_clock.elapsed().as_millis() as u64,
@@ -4560,7 +4683,9 @@ fn run_leased(
         } else {
             // Whatever the relay was running belonged to a session that is gone.
             updater_relay.cancel_if_active("no device session");
-            cloud_forward.cancel_all();
+            cloud_forward.abandon_all("no-device-session");
+            // No recorder is open; none of this may land in the next session's.
+            let _ = cloud_forward.take_events();
             thread::sleep(Duration::from_millis(100));
         }
         expire_pending(
@@ -4659,7 +4784,14 @@ fn restart_session(
     // The reconnect is due at once, so the loop's no-session branch may never
     // run: end the relay's request here, before the old session is dropped.
     updater_relay.cancel("the device session was restarted");
-    cloud_forward.cancel_all();
+    answer_cloud_requests_before_teardown(
+        connection,
+        cloud_forward,
+        session,
+        session_clock,
+        state,
+        "device-session-restarted",
+    );
     connection.take();
     fail_pending(pending_requests, "Device session restarted");
     fail_backup(backup, "Device session restarted");
@@ -4669,6 +4801,234 @@ fn restart_session(
         .request_reconnect(session_clock.elapsed().as_millis() as u64);
     let _ = state_messages.send(StateDecoderCommand::Reset);
     set_phase(state, "searching", detail, false, false);
+}
+
+/// The fewest minutes after a first session restart asked for because the
+/// account-frame key was missing or wrong. One restart normally restores
+/// the key; a unit that keeps failing must not be reconnected in a loop, so
+/// each further restart doubles the wait: 10, 20, then 40 minutes, capped.
+const CLOUD_KEY_RENEW_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+/// The doublings `CLOUD_KEY_RENEW_COOLDOWN` stops at (40 minutes).
+const CLOUD_KEY_RENEW_MAX_DOUBLINGS: u32 = 2;
+/// Unusable-frame evidence kept at most, also while a renewal is deferred.
+const CLOUD_KEY_EVIDENCE_MAX: usize = 8;
+/// Unusable account frames needed within `CLOUD_KEY_RENEW_WINDOW` before a
+/// renewal: one can be a frame caught across a key change.
+const CLOUD_KEY_RENEW_FRAMES: usize = 2;
+const CLOUD_KEY_RENEW_WINDOW: Duration = Duration::from_secs(60);
+/// How long the answer-key state must hold before its frames count: a comms
+/// reset clears and rebuilds the key within this.
+const CLOUD_KEY_SETTLED_FOR: Duration = Duration::from_secs(5);
+
+/// What `CloudKeyWatch::decide` asks of the worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyRenewal {
+    Wait,
+    /// Renewal is due but would interrupt an update or a backup; reported
+    /// once, and the evidence is kept until it can run.
+    Deferred,
+    Renew,
+}
+
+/// Decides when unusable account frames justify a fresh handshake.
+#[derive(Debug, Default)]
+struct CloudKeyWatch {
+    unusable: std::collections::VecDeque<Instant>,
+    key_state: Option<(CloudAnswerKey, Instant)>,
+    last_renewal: Option<Instant>,
+    renewals: u32,
+    deferred: bool,
+}
+
+impl CloudKeyWatch {
+    /// Track the answer-key state; a change restarts its settling time.
+    fn observe(&mut self, key: CloudAnswerKey, now: Instant) {
+        if self.key_state.is_none_or(|(state, _)| state != key) {
+            self.key_state = Some((key, now));
+        }
+    }
+
+    /// The key is either usable or missing, and has been for a while. Frames
+    /// dropped while it is still being built are expected and never count.
+    fn settled(&self, now: Instant) -> bool {
+        self.key_state.is_some_and(|(state, since)| {
+            state != CloudAnswerKey::NotReady
+                && now.saturating_duration_since(since) >= CLOUD_KEY_SETTLED_FOR
+        })
+    }
+
+    fn note_unusable(&mut self, frames: u64, now: Instant) {
+        if !self.settled(now) {
+            return;
+        }
+        for _ in 0..frames.min(CLOUD_KEY_EVIDENCE_MAX as u64) {
+            if self.unusable.len() >= CLOUD_KEY_EVIDENCE_MAX {
+                self.unusable.pop_front();
+            }
+            self.unusable.push_back(now);
+        }
+    }
+
+    fn decide(&mut self, now: Instant, busy: bool) -> KeyRenewal {
+        if !self.deferred {
+            while self
+                .unusable
+                .front()
+                .is_some_and(|at| now.saturating_duration_since(*at) > CLOUD_KEY_RENEW_WINDOW)
+            {
+                self.unusable.pop_front();
+            }
+        }
+        let cooling = self
+            .last_renewal
+            .is_some_and(|at| now.saturating_duration_since(at) < self.cooldown());
+        if self.unusable.len() < CLOUD_KEY_RENEW_FRAMES || cooling || !self.settled(now) {
+            return KeyRenewal::Wait;
+        }
+        if busy {
+            let first = !self.deferred;
+            self.deferred = true;
+            return if first {
+                KeyRenewal::Deferred
+            } else {
+                KeyRenewal::Wait
+            };
+        }
+        self.unusable.clear();
+        self.deferred = false;
+        self.last_renewal = Some(now);
+        self.renewals = self.renewals.saturating_add(1);
+        KeyRenewal::Renew
+    }
+
+    /// The wait after the latest renewal: 10, 20, then 40 minutes.
+    fn cooldown(&self) -> Duration {
+        let doublings = self
+            .renewals
+            .saturating_sub(1)
+            .min(CLOUD_KEY_RENEW_MAX_DOUBLINGS);
+        CLOUD_KEY_RENEW_COOLDOWN * (1_u32 << doublings)
+    }
+
+    /// A new USB session: its key starts over; the cooldown does not.
+    fn new_session(&mut self) {
+        self.unusable.clear();
+        self.key_state = None;
+        self.deferred = false;
+    }
+}
+
+/// When the unit's clock for a frame started: at its first HID report, in
+/// the session clock both the HID reader and this worker use; for a
+/// multi-report frame that is earlier than its assembly.
+fn frame_received_at(
+    ingress: Option<IngressTime>,
+    session_clock: &Instant,
+    now: Instant,
+) -> Instant {
+    ingress
+        .map(|time| *session_clock + Duration::from_millis(time.first_report_at_ms))
+        .filter(|at| *at <= now)
+        .unwrap_or(now)
+}
+
+fn request_origin(
+    message: &IncomingMessage,
+    state: &Arc<Mutex<BrokerStatus>>,
+    session: &Arc<Mutex<SessionRuntime>>,
+    session_clock: &Instant,
+) -> RequestOrigin {
+    RequestOrigin {
+        epoch: state.lock_recover().session_epoch,
+        key_generation: session.lock_recover().transport.cloud_key_generation(),
+        received_at: frame_received_at(
+            message
+                .observation
+                .as_ref()
+                .and_then(|ticket| ticket.ingress()),
+            session_clock,
+            Instant::now(),
+        ),
+    }
+}
+
+/// The longest a teardown waits for TX admission of its Type 29 answers.
+const TEARDOWN_CLOUD_ANSWER_BUDGET: Duration = Duration::from_millis(500);
+
+/// Where teardown answers are written: the USB session's forwarding lane.
+type CloudAnswerSink<'a> =
+    dyn FnMut(OutboundMessage, Option<Instant>, Arc<AtomicBool>) -> Result<(), String> + 'a;
+
+/// Before this broker ends a USB session itself (stop, disconnect, restart),
+/// answer every Type 29 the unit is still waiting for: otherwise the request
+/// times out on the unit and it drops its account link about 30 s later. The
+/// answers are queued ahead of the teardown on the same ordered TX lane, and
+/// the orderly close writes them. Any that cannot be written (no usable key,
+/// no connection, admission refused) is named in the flight record.
+fn answer_cloud_requests_before_teardown(
+    connection: &mut Option<ConnectedQc>,
+    cloud_forward: &mut CloudForwardRelay,
+    session: &Arc<Mutex<SessionRuntime>>,
+    session_clock: &Instant,
+    state: &Arc<Mutex<BrokerStatus>>,
+    reason: &str,
+) {
+    let Some(connected) = connection.as_mut() else {
+        cloud_forward.abandon_all(reason);
+        // No recorder is open; none of this may land in the next session's.
+        let _ = cloud_forward.take_events();
+        return;
+    };
+    let epoch = state.lock_recover().session_epoch;
+    let answer_key = session
+        .lock_recover()
+        .transport
+        .cloud_answer_key(session_clock.elapsed().as_millis() as u64);
+    let usb = &mut connected.usb;
+    let lines = flush_cloud_answers_for_teardown(
+        cloud_forward,
+        epoch,
+        answer_key,
+        reason,
+        &mut |message, deadline, cancel| {
+            usb.send_forwarded_command(message, deadline, cancel)
+                .map_err(|error| error.to_string())
+        },
+    );
+    for line in lines {
+        connected.usb.record_event(line);
+    }
+}
+
+/// Write every answer owed before a live-link teardown, fetched ones first,
+/// then retire the rest without cancelling what was written: the answers
+/// are in the TX lane, and the orderly close flushes them. The flight-record
+/// lines to keep are returned.
+fn flush_cloud_answers_for_teardown(
+    cloud_forward: &mut CloudForwardRelay,
+    epoch: u64,
+    answer_key: CloudAnswerKey,
+    reason: &str,
+    send: &mut CloudAnswerSink<'_>,
+) -> Vec<String> {
+    // Answers already fetched go first; only exchanges still running are
+    // refused.
+    cloud_forward.refuse_outstanding(reason);
+    // A teardown must not wait out a unit deadline for TX admission.
+    let budget = Instant::now() + TEARDOWN_CLOUD_ANSWER_BUDGET;
+    let mut failures = Vec::new();
+    while let Some(mut replies) = cloud_forward.take_response_when(epoch, answer_key) {
+        let deadline = Some(replies.deadline.map_or(budget, |end| end.min(budget)));
+        for reply in std::mem::take(&mut replies.messages) {
+            if let Err(error) = send(reply, deadline, Arc::clone(&replies.cancel)) {
+                failures.push(format!("cloud-reply-not-queued: {error}"));
+            }
+        }
+    }
+    cloud_forward.retire_for_teardown(reason);
+    let mut lines = cloud_forward.take_events();
+    lines.extend(failures);
+    lines
 }
 
 /// Deliver a backup's terminal outcome and restore the session phase.
