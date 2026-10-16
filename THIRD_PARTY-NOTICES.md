@@ -206,10 +206,6 @@ configurations are outside this distributed-component inventory.
 
 ### Rust crates
 
-#### Apache-2.0 (1)
-
-borsh-derive
-
 #### Apache-2.0 OR Apache-2.0 WITH LLVM-exception OR MIT (3)
 
 wasi, wasip2, wit-bindgen
@@ -226,9 +222,9 @@ num_enum, num_enum_derive
 
 r-efi
 
-#### Apache-2.0 OR MIT (35)
+#### Apache-2.0 OR MIT (34)
 
-android_system_properties, borsh, bumpalo, hermit-abi, iana-time-zone-haiku, js-sys, ndk, ndk-context, ndk-sys, portable-atomic, portable-atomic-util, proptest, quick-error, rand_xorshift, rusty-fork, tao-macros, unarray, wait-timeout, wasm-bindgen, wasm-bindgen-futures, wasm-bindgen-macro, wasm-bindgen-macro-support, wasm-bindgen-shared, wasm-streams, web-sys, winapi, winapi-i686-pc-windows-gnu, winapi-x86_64-pc-windows-gnu, windows_aarch64_gnullvm, windows_aarch64_msvc, windows_i686_gnu, windows_i686_gnullvm, windows_i686_msvc, windows_x86_64_gnu, windows_x86_64_gnullvm
+android_system_properties, bumpalo, hermit-abi, iana-time-zone-haiku, js-sys, ndk, ndk-context, ndk-sys, portable-atomic, portable-atomic-util, proptest, quick-error, rand_xorshift, rusty-fork, tao-macros, unarray, wait-timeout, wasm-bindgen, wasm-bindgen-futures, wasm-bindgen-macro, wasm-bindgen-macro-support, wasm-bindgen-shared, wasm-streams, web-sys, winapi, winapi-i686-pc-windows-gnu, winapi-x86_64-pc-windows-gnu, windows_aarch64_gnullvm, windows_aarch64_msvc, windows_i686_gnu, windows_i686_gnullvm, windows_i686_msvc, windows_x86_64_gnu, windows_x86_64_gnullvm
 
 #### Apache-2.0 OR MIT OR Zlib (8)
 
