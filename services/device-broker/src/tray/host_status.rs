@@ -256,14 +256,9 @@ fn unix_time_ms() -> u64 {
 /// process whose creation time matches (so a recycled pid cannot vouch).
 pub fn read(directory: &Path) -> Option<HostPresence> {
     let path = directory.join(FILE_NAME);
-    if !qc_owner_only_file::is_owner_only(&path).ok()? {
-        return None;
-    }
-    if std::fs::metadata(&path).ok()?.len() > MAX_BYTES {
-        return None;
-    }
+    let bytes = qc_owner_only_file::read_owner_only_bounded(&path, MAX_BYTES as usize).ok()?;
     trusted(
-        &std::fs::read(&path).ok()?,
+        &bytes,
         unix_time_ms(),
         std::process::id(),
         crate::platform::process::os_process_is_alive,

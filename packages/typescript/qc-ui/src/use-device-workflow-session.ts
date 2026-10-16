@@ -1,14 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SupersededPresetOperation } from "@qc-remote/core";
 import type { DeviceCommandOptions } from "./workflow-options";
-import { bindDeviceCommandScope, deviceCommandBusy, registerDeviceCommandSession } from "./device-command-ownership.ts";
-type DeviceWorkflowSessionOptions = Pick<DeviceCommandOptions, "sessionKey" | "commandSessionKey" | "captureSessionCurrent" | "notice" | "fail"> & {
+import { bindDeviceCommandScope, deviceCommandBusy, devicePhysicalCommandKey, registerDeviceCommandSession } from "./device-command-ownership.ts";
+import { captureGatewaySession, registerGatewayWrapper } from "./gateway-session.ts";
+import type { GatewayTransport } from "@qc-remote/client";
+type DeviceWorkflowSessionOptions = Pick<DeviceCommandOptions, "lifetime" | "sessionKey" | "commandSessionKey" | "captureSessionCurrent" | "notice" | "fail"> & {
   gateway: object; connected: boolean; setPending?(pending: boolean): void;
 };
 
 /** Own device-wide reads and multi-step writes across transport replacements. */
 export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>(options: T) {
   const [, replaceMountedOwner] = useState(0);
+  const lifetime = options.lifetime;
+  const physicalSession = lifetime?.checkpoint().session;
+  const origin = useMemo(() => lifetime?.checkpoint(), [lifetime, physicalSession]);
+  const lifetimeKey = useMemo(() => ({ lifetime, session: physicalSession }), [lifetime, physicalSession]);
+  const sessionKey = options.sessionKey ?? (lifetime ? lifetimeKey : undefined);
   const latest = useRef(options);
   latest.current = options;
   type Owner = { key: unknown; gateway: T["gateway"]; connected: boolean; current(): boolean };
@@ -17,10 +24,12 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
   const pendingOwner = useRef<Owner | null>(null);
   const pendingReset = useRef(false);
   let owner = ownerRef.current;
-  const probe = options.captureSessionCurrent?.() ?? (() => true);
-  if (!owner || (!owner.current() && probe()) || owner.key !== options.sessionKey
+  const externalProbe = options.captureSessionCurrent?.() ?? (() => true);
+  const route = captureGatewaySession(options.gateway as GatewayTransport);
+  const probe = () => externalProbe() && route.current() && (!origin || Boolean(lifetime?.currentSession(origin)));
+  if (!owner || (!owner.current() && probe()) || owner.key !== sessionKey
       || owner.gateway !== options.gateway || owner.connected !== options.connected) {
-    const replacement: Owner = { key: options.sessionKey, gateway: options.gateway, connected: options.connected, current: () => false };
+    const replacement: Owner = { key: sessionKey, gateway: options.gateway, connected: options.connected, current: () => false };
     replacement.current = () => ownerRef.current === replacement && probe();
     ownerRef.current = replacement;
     owner = replacement;
@@ -29,7 +38,7 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
   const scoped = useMemo(() => {
     const current = held.current;
     const apply = (callback: () => void) => { if (current()) callback(); };
-    const gateway = new Proxy(held.gateway, {
+    const wrap = (inner: object) => new Proxy(inner, {
       get(target, key) {
         const method = Reflect.get(target, key);
         if (typeof method !== "function") return method;
@@ -47,6 +56,8 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
         };
       }
     });
+    const gateway = wrap(held.gateway);
+    registerGatewayWrapper(gateway as GatewayTransport, held.gateway as GatewayTransport, wrap as (target: GatewayTransport) => GatewayTransport, current);
     return { gateway, current, apply,
       notice: (message: string) => apply(() => latest.current.notice(message)),
       fail: (error: unknown) => { if (!(error instanceof SupersededPresetOperation)) apply(() => latest.current.fail(error)); },
@@ -59,7 +70,7 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
       }
     };
   }, [held]);
-  const commandSessionKey = options.commandSessionKey ?? options.sessionKey ?? options.gateway;
+  const commandSessionKey = options.commandSessionKey ?? (lifetime ? devicePhysicalCommandKey(lifetime, physicalSession) : sessionKey ?? options.gateway);
   if (options.setPending) {
     bindDeviceCommandScope(scoped.setPending, options.setPending);
     pendingReset.current = registerDeviceCommandSession(scoped.setPending, commandSessionKey, true) || pendingReset.current;
@@ -72,6 +83,16 @@ export function useDeviceWorkflowSession<T extends DeviceWorkflowSessionOptions>
       if (setter && !deviceCommandBusy(scoped.setPending)) setter(false);
     }
   }, [commandSessionKey, held, scoped.setPending]);
+  useEffect(() => {
+    if (!lifetime) return;
+    let checkpoint = lifetime.checkpoint();
+    return lifetime.subscribe(() => {
+      if (lifetime.currentSession(checkpoint)) return;
+      checkpoint = lifetime.checkpoint();
+      epoch.current++;
+      replaceMountedOwner((version) => version + 1);
+    });
+  }, [lifetime]);
   useEffect(() => {
     // StrictMode replays mount effects. Replace the revoked owner explicitly;
     // restoring it would revive reads started before that cleanup.

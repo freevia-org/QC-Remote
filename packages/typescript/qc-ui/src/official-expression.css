@@ -9,9 +9,11 @@
 .expression-bypass-official > header { height: var(--qc-nav-bar-height); display: flex; gap: 2.25cqw; align-items: center; padding: 0 1cqw; }
 .expression-bypass-official > header button { height: var(--qc-nav-bar-button); border-radius: 1cqw; background: var(--qc-screen-surface-control); font-size: 2.25cqw; }
 .expression-bypass-official > header button:first-child { width: 12.25cqw; font-size: 3cqw; }
-.expression-bypass-official > header button:nth-child(2), .expression-bypass-official > header button:nth-child(3) { width: 17cqw; }
-.expression-bypass-official > header button:nth-child(2) { border: 1px solid var(--qc-screen-accent); background: var(--qc-palette-102818); color: var(--qc-screen-accent); }
-.expression-bypass-official > header button:nth-child(3) { background: var(--qc-screen-surface-raised); }
+.expression-bypass-official > header button:nth-child(2), .expression-bypass-official > header button:nth-child(3) { width: 17cqw; background: var(--qc-screen-surface-raised); }
+/* Live pedal selection follows its observed semantic state. The explicit
+   static reference chooser has no aria-pressed and retains its captured EXP1. */
+.expression-bypass-official > header button:nth-child(2):not([aria-pressed]),
+.expression-bypass-official > header button[aria-pressed="true"] { border: 1px solid var(--qc-screen-accent); background: var(--qc-palette-102818); color: var(--qc-screen-accent); }
 .expression-bypass-official > header button:last-child { width: 12.25cqw; margin-left: auto; background: var(--qc-palette-1838ff); font-size: 3cqw; }
 .expression-bypass-official > header button > svg { width: 3cqw; height: 3cqw; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .expression-bypass-official > header button:last-child > .qc-navigation-bar-icon { width: 48px; height: 48px; }
@@ -40,7 +42,7 @@
 .expression-switch-panel .switch-delay .expression-rotary { position: absolute; right: .625cqw; bottom: -.375cqw; width: 72px; height: 72px; }
 .expression-switch-panel .switch-latch { opacity: .35; }
 .expression-switch-panel .switch-latch > span { font-size: 1.75cqw; white-space: nowrap; }
-.expression-parameter-grid { height: 27cqw; margin: .375cqw 1cqw 1cqw; display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: 13.5cqw 13.5cqw; overflow: hidden; border-radius: 0 0 1cqw 1cqw; background: var(--qc-screen-surface-raised); }
+.expression-parameter-grid { height: 27cqw; margin: .375cqw 1cqw 1cqw; display: grid; grid-template-columns: repeat(5, 1fr); grid-template-rows: 13.5cqw 13.5cqw; overflow-x: hidden; overflow-y: auto; border-radius: 0 0 1cqw 1cqw; background: var(--qc-screen-surface-raised); }
 .expression-parameter-grid section { position: relative; padding: 1cqw 1.25cqw; border-right: 1px solid var(--qc-palette-111); border-bottom: 1px solid var(--qc-palette-111); font-size: 2cqw; }
 .expression-parameter-grid section:last-child { grid-column: auto; }
 .expression-parameter-grid section span { display: flex; justify-content: space-between; }

@@ -38,7 +38,7 @@ export interface CorOsParameterEditorProps {
   accent: string;
   activeScene: number;
   scenes: string[];
-  bypassed: boolean;
+  bypassed?: boolean;
   footswitch?: number;
   routingNode?: "splitter" | "mixer";
   disabled?: boolean;
@@ -195,10 +195,25 @@ function EqResponseGraph({ bands, selectedBand, drafts, accent, disabled, onSele
   disabled?: boolean;
   onSelectBand: (band: number) => void;
 } & ControlCallbacks) {
-  const drag = useRef<{ pointerId: number; x: number; y: number; frequency?: BlockParameter; gain?: BlockParameter; frequencyValue: number; frequencyGraphValue: number; gainValue: number } | undefined>(undefined);
-  const editable = (parameter: BlockParameter | undefined) => !disabled && Boolean(parameter?.writable)
+  const drag = useRef<{ pointerId: number; x: number; y: number; frequency?: BlockParameter; gain?: BlockParameter; frequencyValue: number; frequencyGraphValue: number; gainValue: number; latestFrequency: number; latestGain: number; target: HTMLButtonElement; epoch: number } | undefined>(undefined);
+  const mounted = useRef(true);
+  const epoch = useRef(0);
+  const latest = useRef({ disabled, bands }); latest.current = { disabled, bands };
+  const retireDrag = () => {
+    const current = drag.current;
+    drag.current = undefined;
+    if (current?.target.hasPointerCapture?.(current.pointerId)) current.target.releasePointerCapture(current.pointerId);
+  };
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; epoch.current++; retireDrag(); };
+  }, []);
+  const currentDrag = (current: NonNullable<typeof drag.current>) => mounted.current && current.epoch === epoch.current
+    && !latest.current.disabled && latest.current.bands.some((band) => band.frequency?.index === current.frequency?.index
+      && band.gain?.index === current.gain?.index);
+  const editable = (parameter: BlockParameter | undefined) => !latest.current.disabled && Boolean(parameter?.writable)
     && parameter?.enabled !== false && parameter?.normalizedValue != null;
-  const currentOperand = (parameter: BlockParameter | undefined) => parameter && bands
+  const currentOperand = (parameter: BlockParameter | undefined) => parameter && latest.current.bands
     .flatMap((band) => [band.frequency, band.gain]).find((candidate) => candidate?.index === parameter.index);
   const value = (parameter: BlockParameter | undefined, fallback: number) => parameter ? drafts[parameter.index] ?? parameter.normalizedValue ?? fallback : fallback;
   const graphFrequency = (parameter: BlockParameter | undefined, normalized: number, fallback: number) => {
@@ -216,13 +231,16 @@ function EqResponseGraph({ bands, selectedBand, drafts, accent, disabled, onSele
   const polyline = [[0, 50], ...activePoints.map((point) => [point.x, point.y]), [100, 50]].map(([x, y]) => `${x},${y}`).join(" ");
   const updateDrag = (event: PointerEvent<HTMLButtonElement>) => {
     if (!drag.current || drag.current.pointerId !== event.pointerId) return;
+    if (!currentDrag(drag.current)) { retireDrag(); return; }
     const panel = event.currentTarget.closest(".eq-response-panel")?.getBoundingClientRect();
-    if (!panel) return;
+    if (!panel || panel.width <= 0 || panel.height <= 0) return;
     const nextFrequencyGraph = clamp(drag.current.frequencyGraphValue + (event.clientX - drag.current.x) / panel.width);
     const nextFrequency = drag.current.frequency
       ? parameterNormalizedValue(drag.current.frequency, 20 * Math.pow(1000, nextFrequencyGraph))
       : clamp(drag.current.frequencyValue + (event.clientX - drag.current.x) / panel.width);
     const nextGain = clamp(drag.current.gainValue - (event.clientY - drag.current.y) / (panel.height * .76));
+    drag.current.latestFrequency = nextFrequency;
+    drag.current.latestGain = nextGain;
     const frequency = currentOperand(drag.current.frequency), gain = currentOperand(drag.current.gain);
     if (editable(frequency)) onDraftChange(frequency!, nextFrequency);
     if (editable(gain)) onDraftChange(gain!, nextGain);
@@ -230,11 +248,11 @@ function EqResponseGraph({ bands, selectedBand, drafts, accent, disabled, onSele
   const finishDrag = (event: PointerEvent<HTMLButtonElement>) => {
     if (!drag.current || drag.current.pointerId !== event.pointerId) return;
     const current = drag.current;
-    drag.current = undefined;
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    retireDrag();
+    if (!currentDrag(current)) return;
     const frequency = currentOperand(current.frequency), gain = currentOperand(current.gain);
-    if (editable(frequency)) onCommit(frequency!, drafts[frequency!.index] ?? frequency!.normalizedValue ?? current.frequencyValue);
-    if (editable(gain)) onCommit(gain!, drafts[gain!.index] ?? gain!.normalizedValue ?? current.gainValue);
+    if (editable(frequency)) onCommit(frequency!, current.latestFrequency);
+    if (editable(gain)) onCommit(gain!, current.latestGain);
   };
   return <div className="eq-response-panel" style={{ "--eq-accent": accent } as CSSProperties}>
     <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="EQ frequency response">
@@ -243,10 +261,12 @@ function EqResponseGraph({ bands, selectedBand, drafts, accent, disabled, onSele
       <g className="eq-axis-labels"><text x="5" y="97">20</text><text x="28" y="97">100</text><text x="52" y="97">1k</text><text x="76" y="97">10k</text><text x="95" y="97" textAnchor="end">20k</text><text x="1" y="15">+12</text><text x="1" y="53">0</text><text x="1" y="90">-12</text></g>
     </svg>
     {points.map((point) => <button key={point.band.number} className={`eq-band-node${selectedBand === point.band.number ? " is-selected" : ""}${point.bypassed ? " is-bypassed" : ""}`} style={{ left: `${point.x}%`, top: `${point.y}%` }} disabled={disabled} aria-label={`Select EQ band ${point.band.number}`} aria-pressed={selectedBand === point.band.number} onClick={() => onSelectBand(point.band.number)} onPointerDown={(event) => {
-      if (disabled) return;
+      if (!mounted.current || latest.current.disabled || disabled) return;
+      retireDrag();
       onSelectBand(point.band.number);
       event.currentTarget.setPointerCapture?.(event.pointerId);
-      drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, frequency: editable(point.band.frequency) ? point.band.frequency : undefined, gain: editable(point.band.gain) ? point.band.gain : undefined, frequencyValue: value(point.band.frequency, point.x / 100), frequencyGraphValue: (point.x - 5) / 90, gainValue: value(point.band.gain, .5) };
+      const frequencyValue = value(point.band.frequency, point.x / 100), gainValue = value(point.band.gain, .5);
+      drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, frequency: editable(point.band.frequency) ? point.band.frequency : undefined, gain: editable(point.band.gain) ? point.band.gain : undefined, frequencyValue, frequencyGraphValue: (point.x - 5) / 90, gainValue, latestFrequency: frequencyValue, latestGain: gainValue, target: event.currentTarget, epoch: epoch.current };
     }} onPointerMove={updateDrag} onPointerUp={finishDrag} onPointerCancel={finishDrag}>{point.band.number}</button>)}
   </div>;
 }
@@ -361,7 +381,7 @@ function CorOsReferenceStandardEditor({ props, accent, parameters, menuOpen, set
       <QcEditorFootswitchAssignment pending={footswitchAssignmentPending} letter={footswitch === undefined ? undefined : sceneLetter(footswitch)} aria-label={footswitchAssignmentPending ? "Waiting for a footswitch assignment" : footswitch === undefined ? "Assign a footswitch" : `Assigned to footswitch ${sceneLetter(footswitch)}`} onClick={() => { setMenuOpen(false); onFootswitchAssignmentStart(!footswitchAssignmentPending); }} />
       <QcSceneSelector className="editor-scene" letter={sceneLetter(activeScene)} onPrevious={() => onSceneSelect((activeScene - 1 + sceneCount) % sceneCount)} onNext={() => onSceneSelect((activeScene + 1) % sceneCount)} />
       {hasPages && <span className="editor-pages" aria-label="Parameter pages"><button aria-label="Parameter page 1" onClick={() => onPageChange(0)}>1</button><button aria-label="Parameter page 2" onClick={() => onPageChange(1)}>2</button></span>}
-      <button className="editor-bypass" aria-label={bypassed ? "Activate device" : "Bypass device"} aria-pressed={bypassed} onClick={onToggleBypass}>{/* Bypassed blocks show the barred ring, not the power symbol: a 72px accent ring plus a 48px white bar, not a link glyph. */}<QcEditorIcon kind={bypassed ? "bypass-muted" : "bypass"} /></button>
+      <button className="editor-bypass" disabled={typeof bypassed !== "boolean"} aria-label={typeof bypassed !== "boolean" ? "Device bypass state unavailable" : bypassed ? "Activate device" : "Bypass device"} aria-pressed={bypassed} onClick={() => { if (typeof bypassed === "boolean") onToggleBypass(); }}>{/* Bypassed blocks show the barred ring, not the power symbol: a 72px accent ring plus a 48px white bar, not a link glyph. */}<QcEditorIcon kind={bypassed ? "bypass-muted" : "bypass"} /></button>
       <button className="editor-done" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button>
     </header>
     <div className={`coros-parameter-controls${parameters.length > 5 ? " is-two-row" : ""}`}>{parameters.map((parameter) => {
@@ -372,7 +392,7 @@ function CorOsReferenceStandardEditor({ props, accent, parameters, menuOpen, set
       const nextToggle = value >= .5 ? 0 : 1;
       return <label key={parameter.index} className={`${toggle ? "is-toggle " : ""}${referenceParameterClass(parameter.name)}`}>
         <strong>{parameter.name.toUpperCase()}</strong>
-        {toggle ? <button className="coros-toggle" disabled={disabled || !parameter.writable || parameter.enabled === false} aria-label={`${parameter.name}: ${parameterDisplay(parameter, value)}`} onClick={() => { onDraftChange(parameter, nextToggle); onCommit(parameter, nextToggle); }}><QcPillToggle index={value >= .5 ? 1 : 0} detent="var(--editor-color)" /><QcPillToggleLabels labels={parameter.options.length ? parameter.options : ["Off", "On"]} index={value >= .5 ? 1 : 0} /></button> : <><input type="range" min="0" max="1" step={parameterStep(parameter)} value={value} disabled={disabled || !parameter.writable || parameter.enabled === false} aria-label={`${parameter.name}: ${parameterDisplay(parameter, value)}`} onChange={(event) => onDraftChange(parameter, Number(event.target.value))} onPointerUp={(event) => onCommit(parameter, Number(event.currentTarget.value))} onKeyUp={(event) => { if (["ArrowUp", "ArrowRight", "ArrowDown", "ArrowLeft"].includes(event.key)) onCommit(parameter, Number(event.currentTarget.value)); }} /><span className="coros-dial"><QcRotaryDial value={dialValue} mode={detents ? "step" : "arc"} steps={detents} accent={accent} /></span><small>{parameterDisplay(parameter, value)}</small></>}
+        {toggle ? <button className="coros-toggle" disabled={disabled || !parameter.writable || parameter.enabled === false} aria-label={`${parameter.name}: ${parameterDisplay(parameter, value)}`} onClick={() => { onDraftChange(parameter, nextToggle); onCommit(parameter, nextToggle); }}><QcPillToggle index={value >= .5 ? 1 : 0} detent="var(--editor-color)" /><QcPillToggleLabels labels={parameter.options.length ? parameter.options : ["Off", "On"]} index={value >= .5 ? 1 : 0} /></button> : <><input type="range" min="0" max="1" step={parameterStep(parameter)} value={value} disabled={disabled || !parameter.writable || parameter.enabled === false} aria-label={`${parameter.name}: ${parameterDisplay(parameter, value)}`} onChange={(event) => onDraftChange(parameter, Number(event.target.value))} onPointerUp={(event) => onCommit(parameter, Number(event.currentTarget.value))} onKeyUp={(event) => { if (["ArrowUp", "ArrowRight", "ArrowDown", "ArrowLeft", "Home", "End", "PageUp", "PageDown"].includes(event.key)) onCommit(parameter, Number(event.currentTarget.value)); }} /><span className="coros-dial"><QcRotaryDial value={dialValue} mode={detents ? "step" : "arc"} steps={detents} accent={accent} /></span><small>{parameterDisplay(parameter, value)}</small></>}
       </label>;
     })}</div>
     {footswitchAssignmentPending && <QcFootswitchAssignmentPrompt assignedLetter={footswitch === undefined ? undefined : sceneLetter(footswitch)} onCancel={() => onFootswitchAssignmentStart(false)} onUnassign={onUnassignFootswitch} />}
@@ -390,13 +410,13 @@ function CorOsReferenceSpecialEditor({ props, accent, menuOpen, setMenuOpen }: {
   const sceneControl = <QcSceneSelector className="editor-scene" letter={sceneLetter(activeScene)} onPrevious={() => onSceneSelect((activeScene - 1 + sceneCount) % sceneCount)} onNext={() => onSceneSelect((activeScene + 1) % sceneCount)} />;
   const more = <button className="editor-more" aria-label="Device contextual menu" aria-expanded={menuOpen} onClick={() => { onFootswitchAssignmentStart(false); setMenuOpen(!menuOpen); }}><QcUiIcon kind="more" /></button>;
   if (details.name === "212 UK C30 65 (M)") return <section className="coros-parameter-editor coros-reference-parameter-editor coros-special-editor coros-cab-editor editor-ukc30-cab" aria-label={`${details.name} parameter editor`}>
-    <header className="cab-editor-header">{more}<span className="editor-title"><small>GUITAR CAB</small><strong style={{ color: accent }}>{details.name}<i className="cab-preset-mark"><QcPresetStackIcon /></i></strong></span><QcEditorFootswitchAssignment letter={footswitch === undefined ? "E" : sceneLetter(footswitch)} aria-label={footswitch === undefined ? "Assign a footswitch" : `Assigned to footswitch ${sceneLetter(footswitch)}`} />{sceneControl}<span className="cab-header-divider divider-one" /><button className="cab-header-mode is-active" onClick={() => onPageChange(0)}>CAB</button><button className="cab-header-mode" onClick={() => onPageChange(1)}>EQ</button><span className="cab-header-divider divider-two" /><button className={`editor-bypass${bypassed ? " is-bypassed" : ""}`} aria-label={bypassed ? "Activate device" : "Bypass device"} onClick={onToggleBypass}><QcEditorIcon kind="bypass" /></button><button className="editor-done" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button></header>
+    <header className="cab-editor-header">{more}<span className="editor-title"><small>GUITAR CAB</small><strong style={{ color: accent }}>{details.name}<i className="cab-preset-mark"><QcPresetStackIcon /></i></strong></span><QcEditorFootswitchAssignment letter={footswitch === undefined ? "E" : sceneLetter(footswitch)} aria-label={footswitch === undefined ? "Assign a footswitch" : `Assigned to footswitch ${sceneLetter(footswitch)}`} />{sceneControl}<span className="cab-header-divider divider-one" /><button className="cab-header-mode is-active" onClick={() => onPageChange(0)}>CAB</button><button className="cab-header-mode" onClick={() => onPageChange(1)}>EQ</button><span className="cab-header-divider divider-two" /><button className={`editor-bypass${bypassed ? " is-bypassed" : ""}`} disabled={typeof bypassed !== "boolean"} aria-label={typeof bypassed !== "boolean" ? "Device bypass state unavailable" : bypassed ? "Activate device" : "Bypass device"} aria-pressed={bypassed} onClick={() => { if (typeof bypassed === "boolean") onToggleBypass(); }}><QcEditorIcon kind="bypass" /></button><button className="editor-done" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button></header>
     <div className="cab-halves">{[0, 1].map((side) => <section key={side}><div className="cab-values">{CAB_REFERENCE_VALUES.map((control) => <span key={control.name}>{control.name}<QcBarSlider value={control.value} origin={control.origin} /><b>{control.display}</b></span>)}</div><div className="cab-speaker"><QcCabMicrophoneTarget x={side ? 68.75 : 31.25} y={50} direction={side ? "left" : "right"} /></div><div className="cab-footer"><button className="cab-phase" disabled title="This captured model does not publish microphone phase controls." aria-label={`Microphone ${side + 1} phase unavailable`}><QcUiIcon kind="phase-invert" /></button><button className="cab-mic" disabled title="This captured model does not publish a microphone selector."><QcUiIcon kind="cab-previous" /><strong>{side ? "Ribbon 160" : "Dynamic 57"}</strong><QcUiIcon kind="cab-next" /></button><button className="cab-enable" disabled title="This captured model does not publish a microphone enable control."><i /></button></div></section>)}</div>
     {footswitchAssignmentPending && <QcFootswitchAssignmentPrompt assignedLetter={footswitch === undefined ? undefined : sceneLetter(footswitch)} onCancel={() => onFootswitchAssignmentStart(false)} onUnassign={onUnassignFootswitch} />}
   </section>;
   const gridLines = [1.902, 6.386, 9.918, 12.636, 15.082, 17.12, 19.022, 20.652, 31.386, 37.772, 42.255, 45.788, 48.505, 50.951, 52.989, 54.891, 56.522, 67.255, 73.641, 78.125, 81.658, 84.375, 86.821, 88.859, 90.761, 92.391];
   return <section className="coros-parameter-editor coros-reference-parameter-editor coros-special-editor coros-eq-editor editor-parametric-8" aria-label={`${details.name} parameter editor`}>
-    <header>{more}<span className="editor-title is-eq"><small>EQ</small><strong style={{ color: accent }}>{details.name}<i className="eq-preset-mark"><QcPresetStackIcon /></i></strong></span><span className="editor-spacer" /><QcEditorFootswitchAssignment letter={footswitch === undefined ? "F" : sceneLetter(footswitch)} aria-label={footswitch === undefined ? "Assign a footswitch" : `Assigned to footswitch ${sceneLetter(footswitch)}`} />{sceneControl}<button className={`editor-bypass${bypassed ? " is-bypassed" : ""}`} aria-label={bypassed ? "Activate device" : "Bypass device"} onClick={onToggleBypass}><QcEditorIcon kind="bypass" /></button><button className="editor-done" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button></header>
+    <header>{more}<span className="editor-title is-eq"><small>EQ</small><strong style={{ color: accent }}>{details.name}<i className="eq-preset-mark"><QcPresetStackIcon /></i></strong></span><span className="editor-spacer" /><QcEditorFootswitchAssignment letter={footswitch === undefined ? "F" : sceneLetter(footswitch)} aria-label={footswitch === undefined ? "Assign a footswitch" : `Assigned to footswitch ${sceneLetter(footswitch)}`} />{sceneControl}<button className={`editor-bypass${bypassed ? " is-bypassed" : ""}`} disabled={typeof bypassed !== "boolean"} aria-label={typeof bypassed !== "boolean" ? "Device bypass state unavailable" : bypassed ? "Activate device" : "Bypass device"} aria-pressed={bypassed} onClick={() => { if (typeof bypassed === "boolean") onToggleBypass(); }}><QcEditorIcon kind="bypass" /></button><button className="editor-done" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button></header>
     <div className="eq-graph"><div className="eq-grid-lines" aria-hidden="true">{gridLines.map((left) => <i key={left} style={{ left: `${left}%` }} />)}</div><div className="eq-axis-labels"><b>100</b><b>1k</b><b>10k</b></div><span>1</span><span>2</span><span>3</span><span>4</span></div><div className="eq-tabs">{[1, 2, 3, 4, 5, 6, 7, 8].map((number) => <span key={number}>{number}</span>)}<span>OUT</span></div><div className="eq-values"><span className="eq-type">TYPE<strong><svg className="eq-filter-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 16h6l7-8h7" /></svg><span>{EQ_FILTER_TYPE_LABELS[4].toUpperCase()}</span><QcUiIcon kind="down" /></strong></span><span className="eq-dial-value">GAIN<QcRotaryDial className="eq-control-dial" value={0.5} accent={accent} /><strong>0.0 <small>dB</small></strong></span><span className="eq-dial-value">FREQ<QcRotaryDial className="eq-control-dial" value={0.1565} accent={accent} /><strong>50 <small>Hz</small></strong></span><span className="eq-dial-value">Q<QcRotaryDial className="eq-control-dial" value={0.0779} accent={accent} /><strong>0.71</strong></span><span className="eq-bypass-value">BYPASS 1<strong><QcEditorIcon kind="band-power" /></strong></span></div>
     {footswitchAssignmentPending && <QcFootswitchAssignmentPrompt assignedLetter={footswitch === undefined ? undefined : sceneLetter(footswitch)} onCancel={() => onFootswitchAssignmentStart(false)} onUnassign={onUnassignFootswitch} />}
   </section>;
@@ -813,7 +833,7 @@ function CorOsParameterEditorContent(props: CorOsParameterEditorProps) {
       <button className={`parameter-footswitch${footswitch === undefined ? "" : " is-assigned"}${footswitchAssignmentPending ? " is-assigning" : ""}`} disabled={Boolean(routingNode)} aria-label={routingNode ? `${details.name} has no footswitch assignment` : footswitchAssignmentPending ? "Waiting for a footswitch assignment" : footswitch === undefined ? "Assign a footswitch" : `Assigned to footswitch ${sceneLetter(footswitch)}`} aria-pressed={footswitchAssignmentPending} onClick={() => { setMenuOpen(false); onFootswitchAssignmentStart(!footswitchAssignmentPending); }}><QcEditorIcon kind="footswitch" /><span>{routingNode ? "–" : footswitchAssignmentPending ? "?" : footswitch === undefined ? "?" : sceneLetter(footswitch)}</span></button>
       <QcSceneSelector className="parameter-scene" letter={sceneLetter(activeScene)} onPrevious={() => onSceneSelect((activeScene - 1 + Math.max(1, scenes.length)) % Math.max(1, scenes.length))} onNext={() => onSceneSelect((activeScene + 1) % Math.max(1, scenes.length))} />
       <i className="parameter-header-divider" aria-hidden="true" />
-      <button className={`parameter-bypass${bypassed ? " is-bypassed" : ""}`} disabled={Boolean(routingNode)} aria-label={routingNode ? `${details.name} bypass is controlled by routing` : bypassed ? "Activate device" : "Bypass device"} aria-pressed={routingNode ? undefined : bypassed} onClick={onToggleBypass}><QcEditorIcon kind={bypassed ? "bypass-muted" : "bypass"} /></button>
+      <button className={`parameter-bypass${bypassed ? " is-bypassed" : ""}`} disabled={Boolean(routingNode) || typeof bypassed !== "boolean"} aria-label={routingNode ? `${details.name} bypass is controlled by routing` : typeof bypassed !== "boolean" ? "Device bypass state unavailable" : bypassed ? "Activate device" : "Bypass device"} aria-pressed={routingNode ? undefined : bypassed} onClick={() => { if (typeof bypassed === "boolean") onToggleBypass(); }}><QcEditorIcon kind={bypassed ? "bypass-muted" : "bypass"} /></button>
       <button className="parameter-close" aria-label="Close parameter editor" onClick={onClose}><QcEditorIcon kind="confirm" /></button>
     </header>
     {tabs.length > 0 && <nav className="parameter-tabs" aria-label="Parameter tabs">{tabs.map((label, index) => <button key={label} className={safePage === index ? "is-active" : ""} aria-current={safePage === index ? "page" : undefined} onClick={() => onPageChange(index)}>{label}</button>)}</nav>}
@@ -829,47 +849,57 @@ function CorOsParameterEditorContent(props: CorOsParameterEditorProps) {
 }
 
 function CorOsParameterEditorSession(props: CorOsParameterEditorProps) {
+  const mounted = useRef(true);
+  const workflowGeneration = useRef(0);
+  const [, replaceMountedOwner] = useState(0);
+  useLayoutEffect(() => {
+    const replayed = !mounted.current;
+    mounted.current = true;
+    // StrictMode replay retires the first callbacks. Render new callbacks for
+    // the new generation rather than reviving the retired generation.
+    if (replayed) replaceMountedOwner((version) => version + 1);
+    return () => { mounted.current = false; workflowGeneration.current++; };
+  }, []);
   const [workflow, setWorkflow] = useState<"save" | "looper">();
   const [name, setName] = useState("");
   const [assignments, setAssignments] = useState<number[]>([]);
   const [workflowPending, setWorkflowPending] = useState(false);
   const [workflowError, setWorkflowError] = useState("");
-  const generation = useRef(0);
-  const mounted = useRef(true);
-  const busy = useRef(false);
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current += 1; }; }, []);
-  const owns = (captured: number) => mounted.current && generation.current === captured;
+  const renderedGeneration = workflowGeneration.current;
+  const saving = useRef(false);
   const begin = (action: ParameterEditorContextAction) => {
-    if (!mounted.current) return;
+    if (!mounted.current || saving.current || workflowGeneration.current !== renderedGeneration) return;
     if (action === "save-device-preset" && props.onSaveDevicePreset) {
-      generation.current += 1; busy.current = false; setWorkflowPending(false);
+      workflowGeneration.current++;
+      saving.current = false; setWorkflowPending(false);
       setName(""); setWorkflowError(""); setWorkflow("save"); return;
     }
     if (action === "assign-looper-actions" && props.onLoadLooperAssignments) {
-      const captured = ++generation.current;
-      busy.current = true;
-      setAssignments([]);
+      const generation = ++workflowGeneration.current;
+      const current = () => mounted.current && workflowGeneration.current === generation;
+      saving.current = false; setAssignments([]);
       setWorkflowError(""); setWorkflow("looper"); setWorkflowPending(true);
-      void props.onLoadLooperAssignments().then((value) => { if (owns(captured)) setAssignments(value); }, (error) => { if (owns(captured)) setWorkflowError(error instanceof Error ? error.message : String(error)); }).finally(() => { if (owns(captured)) { busy.current = false; setWorkflowPending(false); } });
+      void props.onLoadLooperAssignments().then((value) => { if (current()) setAssignments(value); }, (error) => { if (current()) setWorkflowError(error instanceof Error ? error.message : String(error)); }).finally(() => { if (current()) setWorkflowPending(false); });
       return;
     }
     props.onContextAction(action);
   };
-  const renderedGeneration = generation.current;
-  const closeWorkflow = () => { if (owns(renderedGeneration) && !busy.current) { generation.current += 1; setWorkflow(undefined); setWorkflowError(""); } };
+  const closeWorkflow = () => { if (mounted.current && workflowGeneration.current === renderedGeneration && !workflowPending) { workflowGeneration.current++; setWorkflow(undefined); setWorkflowError(""); } };
   const save = async () => {
-    if (!owns(renderedGeneration) || busy.current || !workflow) return;
-    const captured = renderedGeneration;
-    busy.current = true;
+    if (!mounted.current || workflowGeneration.current !== renderedGeneration || saving.current || workflowPending || !workflow) return;
+    saving.current = true;
+    const generation = ++workflowGeneration.current;
+    const current = () => mounted.current && workflowGeneration.current === generation;
     setWorkflowPending(true); setWorkflowError("");
     try {
       if (workflow === "save") await props.onSaveDevicePreset?.(name.trim());
       else if (workflow === "looper") await props.onSaveLooperAssignments?.(assignments);
-      if (owns(captured)) { generation.current += 1; busy.current = false; setWorkflow(undefined); setWorkflowPending(false); }
-    } catch (error) { if (owns(captured)) setWorkflowError(error instanceof Error ? error.message : String(error)); }
-    finally { if (owns(captured)) { busy.current = false; setWorkflowPending(false); } }
+      if (current()) setWorkflow(undefined);
+    } catch (error) { if (current()) setWorkflowError(error instanceof Error ? error.message : String(error)); }
+    finally { if (current()) { saving.current = false; setWorkflowPending(false); } }
   };
   const nextLooperAction = (slot: number) => {
+    if (!mounted.current || workflowGeneration.current !== renderedGeneration || workflowPending) return;
     setAssignments((current) => {
       if (current.length !== 8) return current;
       const next = (current[slot] + 1) % LOOPER_X_ASSIGNMENT_INDEX_NAMES.length;

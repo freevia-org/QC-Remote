@@ -155,6 +155,7 @@ const STOP_BOUND: Duration = Duration::from_secs(3);
 /// supervisor tick or bounds its wait with `try_lock`, so a wedged host can
 /// delay but never prevent process exit or an installer's stop.
 pub struct Supervisor {
+    original: Mutex<Option<qc_native_platform::thread_owner::Owned>>,
     host: Mutex<Option<Box<dyn RunningHost>>>,
     marker: Mutex<SessionMarker>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -164,6 +165,41 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
+    fn reconcile_host(
+        &self,
+        wanted: bool,
+        next_attempt: &mut Instant,
+        start: impl FnOnce() -> Result<Box<dyn RunningHost>, String>,
+    ) {
+        let mut host = self
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Recheck after taking the same slot pause() takes. A tick can have
+        // sampled wanted before an installer successfully paused an empty slot.
+        let wanted =
+            wanted && !self.paused.load(Ordering::Acquire) && !self.exiting.load(Ordering::Acquire);
+        if !wanted {
+            if let Some(mut running) = host.take() {
+                stop_quietly(running.as_mut(), STOP_BOUND);
+                if !running.finished() {
+                    *host = Some(running);
+                }
+            }
+        } else if host.as_ref().is_none_or(|running| running.finished())
+            && Instant::now() >= *next_attempt
+        {
+            *host = None;
+            *next_attempt = Instant::now() + RESTART_BACKOFF;
+            match catch_unwind(AssertUnwindSafe(start)) {
+                Ok(Ok(running)) => *host = Some(running),
+                Ok(Err(error)) => {
+                    eprintln!("The background MCP host could not start; retrying: {error}")
+                }
+                Err(_) => eprintln!("The background MCP host panicked while starting"),
+            }
+        }
+    }
     /// Starts the supervising thread for a published broker.
     pub fn start(
         handle: BrokerHandle,
@@ -172,6 +208,7 @@ impl Supervisor {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let directory = handle.directory();
         let supervisor = Arc::new(Self {
+            original: Mutex::new(None),
             host: Mutex::new(None),
             marker: Mutex::new(SessionMarker::default()),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -179,64 +216,63 @@ impl Supervisor {
             paused: AtomicBool::new(false),
             exiting: AtomicBool::new(false),
         });
-        let running = Arc::clone(&supervisor);
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(32);
+        let running = Arc::downgrade(&supervisor);
         let fallback = handle.clone();
-        std::thread::Builder::new()
-            .name("qc-resident-host".into())
-            .spawn(move || {
-                let outcome = catch_unwind(AssertUnwindSafe(|| running.run(handle, services)));
+        let resource = (handle.clone(), services.clone());
+        let original = qc_native_platform::thread_owner::Owned::spawn(
+            "qc-resident-host",
+            &BUDGET,
+            resource,
+            move || {
+                let outcome = catch_unwind(AssertUnwindSafe(|| {
+                    Self::run(running.clone(), handle, services)
+                }));
                 if outcome.is_err() {
                     fallback.set_tray_hold(None);
                     fallback.set_resident(false);
                 }
-                running.set_marker(false);
-            })
-            .map_err(|error| error.to_string())?;
+                if let Some(running) = running.upgrade() {
+                    running.set_marker(false);
+                }
+            },
+        )?;
+        *supervisor
+            .original
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(original);
         Ok(supervisor)
     }
 
-    fn run(&self, handle: BrokerHandle, services: Arc<dyn ResidentHost>) {
+    fn run(running: std::sync::Weak<Self>, handle: BrokerHandle, services: Arc<dyn ResidentHost>) {
         let directory = handle.directory();
         let mut next_attempt = Instant::now();
-        while !self.exiting.load(Ordering::Acquire) {
-            let resident = handle.is_resident() && !handle.shutting_down();
-            self.set_marker(resident);
-            let wanted = resident && !self.paused.load(Ordering::Acquire);
-            {
-                // A panic while the slot was held leaves it poisoned; the
-                // slot itself is still the best record of the host.
-                let mut host = self
-                    .host
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if !wanted {
-                    if let Some(mut running) = host.take() {
-                        stop_quietly(running.as_mut(), STOP_BOUND);
-                    }
-                } else if host.as_ref().is_none_or(|running| running.finished())
-                    && Instant::now() >= next_attempt
-                    && !self.exiting.load(Ordering::Acquire)
-                {
-                    *host = None;
-                    next_attempt = Instant::now() + RESTART_BACKOFF;
-                    match catch_unwind(AssertUnwindSafe(|| {
-                        services.start(
-                            &directory,
-                            host_token(),
-                            DeviceReadinessProbe::new(handle.clone()),
-                        )
-                    })) {
-                        Ok(Ok(running)) => *host = Some(running),
-                        Ok(Err(error)) => {
-                            eprintln!("The background MCP host could not start; retrying: {error}")
-                        }
-                        Err(_) => eprintln!("The background MCP host panicked while starting"),
-                    }
-                }
+        loop {
+            let Some(supervisor) = running.upgrade() else {
+                break;
+            };
+            if supervisor.exiting.load(Ordering::Acquire) {
+                break;
             }
+            let resident = handle.is_resident() && !handle.shutting_down();
+            supervisor.set_marker(resident);
+            supervisor.reconcile_host(resident, &mut next_attempt, || {
+                services.start(
+                    &directory,
+                    host_token(),
+                    DeviceReadinessProbe::new(handle.clone()),
+                )
+            });
+            // Do not form a Supervisor -> original -> Arc<Supervisor> cycle.
+            // The original remains externally owned even after this weak loop ends.
+            drop(supervisor);
+            qc_native_platform::thread_owner::reap();
             std::thread::sleep(TICK);
         }
-        self.set_marker(false);
+        if let Some(supervisor) = running.upgrade() {
+            supervisor.set_marker(false);
+        }
     }
 
     fn set_marker(&self, present: bool) {
@@ -260,10 +296,32 @@ impl Supervisor {
     /// For process exit: stop the host, bounded by `within` in total, and
     /// never start it again. Called after clients were sent
     /// `broker.shuttingDown`, so the host's own connection already knows.
-    pub fn stop_for_exit(&self, within: Duration) {
+    pub fn stop_for_exit(&self, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
         self.exiting.store(true, Ordering::Release);
         self.set_marker(false);
-        self.stop_within(within);
+        let host_stopped = self.stop_within(deadline.saturating_duration_since(Instant::now()));
+        loop {
+            match self.original.try_lock() {
+                Ok(mut original) => {
+                    let retired = original.as_mut().is_none_or(|original| {
+                        original.wait_within(deadline.saturating_duration_since(Instant::now()))
+                    });
+                    return host_stopped && retired;
+                }
+                Err(TryLockError::Poisoned(error)) => {
+                    let mut original = error.into_inner();
+                    let retired = original.as_mut().is_none_or(|original| {
+                        original.wait_within(deadline.saturating_duration_since(Instant::now()))
+                    });
+                    return host_stopped && retired;
+                }
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(TryLockError::WouldBlock) => return false,
+            }
+        }
     }
 
     /// For an installer's request: stop the host and keep it stopped until
@@ -293,14 +351,22 @@ impl Supervisor {
                     if let Some(mut running) = host.take() {
                         let remaining = deadline.saturating_duration_since(Instant::now());
                         stop_quietly(running.as_mut(), remaining);
-                        return running.finished();
+                        let finished = running.finished();
+                        if !finished {
+                            *host = Some(running);
+                        }
+                        return finished;
                     }
                     return true;
                 }
                 Err(TryLockError::Poisoned(poisoned)) => {
-                    if let Some(mut running) = poisoned.into_inner().take() {
+                    let mut host = poisoned.into_inner();
+                    if let Some(mut running) = host.take() {
                         let remaining = deadline.saturating_duration_since(Instant::now());
                         stop_quietly(running.as_mut(), remaining);
+                        if !running.finished() {
+                            *host = Some(running);
+                        }
                     }
                     return false;
                 }
@@ -312,6 +378,21 @@ impl Supervisor {
                 }
             }
         }
+    }
+}
+
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        self.exiting.store(true, Ordering::Release);
+        let host = self
+            .host
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(host) = host {
+            stop_quietly(host.as_mut(), Duration::ZERO);
+        }
+        // Field destruction retains an unacknowledged exact supervising
+        // original in the shared capped reaper. RunningHost Drop requests stop.
     }
 }
 
@@ -554,41 +635,17 @@ fn elect_with(
 }
 
 fn os_liveness(pid: u32, created_at: Option<u64>) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        if !crate::platform::process::os_process_is_alive(pid) {
-            return false;
-        }
-        // An unreadable identity is unknown, never authority to reap an owner.
-        match (
+    let alive = crate::platform::process::os_process_is_alive(pid);
+    alive
+        && identity_may_still_match(
             created_at,
             crate::platform::process::os_process_created_at(pid),
-        ) {
-            (Some(recorded), Some(current)) => recorded == current,
-            _ => true,
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if !crate::platform::process::os_process_is_alive(pid) {
-            return false;
-        }
-        // An unreadable identity is unknown, never authority to reap an owner.
-        match (
-            created_at,
-            crate::platform::process::os_process_created_at(pid),
-        ) {
-            (Some(recorded), Some(current)) => recorded == current,
-            _ => true,
-        }
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        crate::platform::process::os_process_is_alive(pid)
-            && created_at.is_none_or(|created| {
-                crate::platform::process::os_process_created_at(pid) == Some(created)
-            })
-    }
+        )
+}
+
+fn identity_may_still_match(recorded: Option<u64>, current: Option<u64>) -> bool {
+    // Inaccessible identity is unknown, not authority to reap a live owner.
+    !matches!((recorded, current), (Some(recorded), Some(current)) if recorded != current)
 }
 
 #[derive(Deserialize)]
@@ -605,7 +662,7 @@ fn descriptor_is_live(descriptor: &Path, alive: &dyn Fn(u32, Option<u64>) -> boo
     // clients, so unrelated connection fields cannot make a live owner look
     // dead and trigger a second broker.
     let read = || -> Option<Option<DescriptorProcessIdentity>> {
-        match std::fs::read(descriptor) {
+        match read_process_descriptor(descriptor) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(_) => Some(None),
             Ok(bytes) => Some(serde_json::from_slice::<DescriptorProcessIdentity>(&bytes).ok()),
@@ -627,26 +684,84 @@ fn descriptor_is_live(descriptor: &Path, alive: &dyn Fn(u32, Option<u64>) -> boo
     parsed.process_id != 0 && alive(parsed.process_id, parsed.process_created_at)
 }
 
+fn read_process_descriptor(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    const MAX_BYTES: u64 = 128 * 1024;
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > MAX_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Broker descriptor exceeds the 128 KiB safety budget",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Broker descriptor grew beyond the 128 KiB safety budget",
+        ));
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device_lease::testing::OwnedTestDirectory;
     use std::sync::atomic::AtomicUsize;
 
-    /// A directory of this test's own and the guard that removes it. Each
-    /// test still removes it itself at its end and fails if it cannot; the
-    /// guard covers a test that fails before getting there.
-    fn scratch(label: &str) -> (OwnedTestDirectory, PathBuf) {
-        let directory = std::env::temp_dir().join(format!(
-            "qc-resident-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&directory).unwrap();
-        (OwnedTestDirectory(directory.clone()), directory)
+    struct Scratch(Arc<Root>);
+
+    #[test]
+    fn resident_descriptor_projection_is_bounded_and_preserves_oversized_bytes() {
+        let directory = scratch("descriptor-budget");
+        let path = directory.join(DESCRIPTOR_FILE);
+        let mut bytes = br#"{"processId":7,"processCreatedAt":1}"#.to_vec();
+        bytes.resize(128 * 1024, b' ');
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(descriptor_is_live(&path, &|pid, time| pid == 7 && time == Some(1)));
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(128 * 1024 + 1).unwrap();
+        drop(file);
+        assert_eq!(
+            read_process_descriptor(&path).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert!(!descriptor_is_live(&path, &|_, _| panic!(
+            "oversized bytes cannot establish a process identity"
+        )));
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 128 * 1024 + 1);
+    }
+    struct Root(PathBuf);
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    impl std::ops::Deref for Scratch {
+        type Target = PathBuf;
+        fn deref(&self) -> &PathBuf {
+            &self.0 .0
+        }
+    }
+    impl AsRef<Path> for Scratch {
+        fn as_ref(&self) -> &Path {
+            &self.0 .0
+        }
+    }
+    fn scratch(label: &str) -> Scratch {
+        for _ in 0..64 {
+            let directory = std::env::temp_dir().join(format!(
+                "qc-resident-{label}-{:032x}",
+                rand::random::<u128>()
+            ));
+            match std::fs::create_dir(&directory) {
+                Ok(()) => return Scratch(Arc::new(Root(directory))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("reserve resident fixture: {error}"),
+            }
+        }
+        panic!("could not reserve resident fixture after 64 collisions");
     }
 
     fn descriptor_json(pid: u32, created: u64) -> String {
@@ -670,7 +785,7 @@ mod tests {
     fn macos_election_rejects_a_group_or_other_writable_directory() {
         use std::os::unix::fs::PermissionsExt;
 
-        let (_scratch, directory) = scratch("unsafe-directory");
+        let directory = scratch("unsafe-directory");
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o777)).unwrap();
         let descriptor = directory.join(DESCRIPTOR_FILE);
 
@@ -683,7 +798,7 @@ mod tests {
     fn macos_election_rejects_a_non_owner_only_descriptor() {
         use std::os::unix::fs::PermissionsExt;
 
-        let (_scratch, directory) = scratch("public-descriptor");
+        let directory = scratch("public-descriptor");
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
         let descriptor = directory.join(DESCRIPTOR_FILE);
         std::fs::write(&descriptor, b"{}").unwrap();
@@ -695,7 +810,7 @@ mod tests {
 
     #[test]
     fn a_live_broker_means_a_resident_start_exits_cleanly() {
-        let (_scratch, directory) = scratch("live");
+        let directory = scratch("live");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         std::fs::write(&descriptor, descriptor_json(42, 7)).unwrap();
         let alive = |pid: u32, created: Option<u64>| pid == 42 && created == Some(7);
@@ -716,7 +831,7 @@ mod tests {
 
     #[test]
     fn a_live_minimal_process_identity_means_a_resident_start_exits_cleanly() {
-        let (_scratch, directory) = scratch("live-minimal");
+        let directory = scratch("live-minimal");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         std::fs::write(&descriptor, minimal_descriptor_json(42, Some(7))).unwrap();
         let alive = |pid: u32, created: Option<u64>| pid == 42 && created == Some(7);
@@ -737,7 +852,7 @@ mod tests {
 
     #[test]
     fn a_dead_or_recycled_holder_is_replaced_under_the_election_lock() {
-        let (_scratch, directory) = scratch("dead");
+        let directory = scratch("dead");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         std::fs::write(&descriptor, descriptor_json(42, 7)).unwrap();
         // pid alive but a different creation time: a recycled pid.
@@ -766,7 +881,7 @@ mod tests {
     /// slot exactly as `serve_broker_tcp` does, so it never exits 1.
     #[test]
     fn a_killed_owners_stale_claim_never_blocks_the_next_resident_start() {
-        let (_scratch, directory) = scratch("killed");
+        let directory = scratch("killed");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         // Process exit closes the claim's handle but leaves both names.
         drop(qc_owner_only_file::ClaimedFile::try_claim(&descriptor).unwrap());
@@ -804,7 +919,7 @@ mod tests {
     /// A live pid in the descriptor is the same: nothing is touched.
     #[test]
     fn a_held_or_live_claim_is_never_removed_and_the_start_steps_aside() {
-        let (_scratch, directory) = scratch("held");
+        let directory = scratch("held");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let mut held = qc_owner_only_file::ClaimedFile::try_claim(&descriptor).unwrap();
         // Even a descriptor naming a dead pid cannot free a held claim.
@@ -857,7 +972,7 @@ mod tests {
     /// refuse every later claim, so every logon start exited 0 unserved.
     #[test]
     fn a_crashed_election_holder_never_blocks_the_next_resident_start() {
-        let (_scratch, directory) = scratch("crashed-election");
+        let directory = scratch("crashed-election");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let election = election_path(&descriptor);
         // Process exit closes the claim's handle but leaves both names.
@@ -889,7 +1004,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_recovers_a_fresh_abandoned_election_without_waiting_for_age() {
-        let (_scratch, directory) = scratch("linux-fresh-crash");
+        let directory = scratch("linux-fresh-crash");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let election = election_path(&descriptor);
         drop(qc_owner_only_file::ClaimedFile::try_claim(&election).unwrap());
@@ -907,7 +1022,7 @@ mod tests {
     /// A held election lock is never cleared, however old its file.
     #[test]
     fn an_old_but_held_election_lock_is_never_overtaken() {
-        let (_scratch, directory) = scratch("old-held-election");
+        let directory = scratch("old-held-election");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let election = election_path(&descriptor);
         let peer = qc_owner_only_file::ClaimedFile::try_claim(&election).unwrap();
@@ -923,7 +1038,7 @@ mod tests {
 
     #[test]
     fn a_peer_holding_the_election_is_never_overtaken() {
-        let (_scratch, directory) = scratch("peer");
+        let directory = scratch("peer");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let peer = qc_owner_only_file::ClaimedFile::try_claim(&election_path(&descriptor)).unwrap();
         let started = Instant::now();
@@ -942,19 +1057,24 @@ mod tests {
 
     #[test]
     fn two_racing_resident_starts_elect_exactly_one() {
-        let (_scratch, directory) = scratch("race");
+        let directory = scratch("race");
         let descriptor = directory.join(DESCRIPTOR_FILE);
         let served = Arc::new(AtomicUsize::new(0));
-        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let barrier = Arc::new(AtomicUsize::new(0));
         let handles: Vec<_> = (0..2)
             .map(|_| {
+                let root_owner = Arc::clone(&directory.0);
                 let (descriptor, served, barrier) = (
                     descriptor.clone(),
                     Arc::clone(&served),
                     Arc::clone(&barrier),
                 );
                 std::thread::spawn(move || {
-                    barrier.wait();
+                    let _root_owner = root_owner;
+                    assert!(
+                        reach_race_start(&barrier, Duration::from_secs(1)),
+                        "both owned starts reach the bounded race admission"
+                    );
                     if let Election::Serve(guard) =
                         elect_with(&descriptor, Duration::from_millis(600), &|_, _| false).unwrap()
                     {
@@ -993,6 +1113,7 @@ mod tests {
 
     fn supervisor_with(host: FakeHost) -> Supervisor {
         Supervisor {
+            original: Mutex::new(None),
             host: Mutex::new(Some(Box::new(host))),
             marker: Mutex::new(SessionMarker::default()),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1069,6 +1190,146 @@ mod tests {
     }
 
     #[test]
+    fn repeated_pause_keeps_an_unacknowledged_original_host_until_it_retires() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let supervisor = supervisor_with(FakeHost {
+            stopped: Arc::clone(&stopped),
+            wedged: true,
+        });
+        assert!(!supervisor.pause(Duration::from_millis(10)));
+        assert!(
+            supervisor.host_running(),
+            "timeout is not proof that the host retired"
+        );
+        assert!(
+            !supervisor.pause(Duration::from_millis(10)),
+            "a repeated pause must not certify an empty slot after dropping an unknown original"
+        );
+        stopped.store(true, Ordering::SeqCst);
+        assert!(supervisor.pause(Duration::ZERO));
+        assert!(!supervisor.host_running());
+    }
+
+    #[test]
+    fn a_successful_pause_excludes_a_tick_with_an_earlier_wanted_sample() {
+        let supervisor = supervisor_with(FakeHost {
+            stopped: Arc::new(AtomicBool::new(true)),
+            wedged: false,
+        });
+        let sampled_wanted = true;
+        assert!(supervisor.pause(Duration::ZERO));
+        let starts = AtomicUsize::new(0);
+        let mut next = Instant::now();
+        supervisor.reconcile_host(sampled_wanted, &mut next, || {
+            starts.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FakeHost {
+                stopped: Arc::new(AtomicBool::new(false)),
+                wedged: false,
+            }))
+        });
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        assert!(!supervisor.host_running());
+        supervisor.resume();
+        supervisor.reconcile_host(true, &mut next, || {
+            starts.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FakeHost {
+                stopped: Arc::new(AtomicBool::new(false)),
+                wedged: false,
+            }))
+        });
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        assert!(supervisor.pause(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_host_constructor_in_progress_cannot_be_certified_as_a_successful_pause() {
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        let supervisor = Arc::new(supervisor_with(FakeHost {
+            stopped: Arc::new(AtomicBool::new(true)),
+            wedged: false,
+        }));
+        let (entered, entered_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        struct Release(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let release = Release(Some(release));
+        let tick = Arc::clone(&supervisor);
+        let mut original = qc_native_platform::thread_owner::Owned::spawn(
+            "resident-late-constructor-fixture",
+            &BUDGET,
+            Arc::clone(&supervisor),
+            move || {
+                let mut next = Instant::now();
+                tick.reconcile_host(true, &mut next, || {
+                    entered.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                    Ok(Box::new(FakeHost {
+                        stopped: Arc::new(AtomicBool::new(false)),
+                        wedged: false,
+                    }))
+                });
+            },
+        )
+        .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!supervisor.pause(Duration::from_millis(10)));
+        assert!(
+            supervisor.host_running(),
+            "slot contention is not retirement"
+        );
+        drop(release);
+        assert!(original.wait_within(Duration::from_secs(2)));
+        assert!(supervisor.pause(Duration::ZERO));
+        assert!(!supervisor.host_running());
+    }
+
+    #[test]
+    fn exit_does_not_certify_a_retired_host_slot_while_its_supervising_original_is_alive() {
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        let supervisor = supervisor_with(FakeHost {
+            stopped: Arc::new(AtomicBool::new(true)),
+            wedged: false,
+        });
+        let (entered, entered_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        struct Release(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let release = Release(Some(release));
+        let original = qc_native_platform::thread_owner::Owned::spawn(
+            "resident-original-exit-fixture",
+            &BUDGET,
+            (),
+            move || {
+                let _ = entered.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(30));
+            },
+        )
+        .unwrap();
+        *supervisor.original.lock().unwrap() = Some(original);
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!supervisor.stop_for_exit(Duration::from_millis(10)));
+        assert!(!supervisor.host_running());
+        assert_eq!(BUDGET.count(), 1);
+        drop(release);
+        assert!(supervisor.stop_for_exit(Duration::from_secs(2)));
+        assert_eq!(BUDGET.count(), 0);
+    }
+
+    #[test]
     fn only_this_processs_host_token_identifies_the_host() {
         let token = host_token();
         assert_eq!(token.len(), 64);
@@ -1079,5 +1340,72 @@ mod tests {
         let mut forged = token.to_string();
         forged.replace_range(0..1, if token.starts_with('0') { "1" } else { "0" });
         assert!(!is_host_token(&forged));
+    }
+
+    #[test]
+    fn unavailable_process_creation_does_not_reap_a_live_legacy_descriptor() {
+        assert!(identity_may_still_match(Some(7), None));
+        assert!(identity_may_still_match(None, Some(7)));
+        assert!(identity_may_still_match(None, None));
+        assert!(identity_may_still_match(Some(7), Some(7)));
+        assert!(!identity_may_still_match(Some(7), Some(8)));
+        let directory = scratch("unknown-creation");
+        let descriptor = directory.join(DESCRIPTOR_FILE);
+        let bytes = minimal_descriptor_json(42, Some(7));
+        std::fs::write(&descriptor, &bytes).unwrap();
+        let outcome = elect_with(&descriptor, Duration::from_millis(100), &|pid, recorded| {
+            pid == 42 && identity_may_still_match(recorded, None)
+        })
+        .unwrap();
+        assert!(matches!(outcome, Election::AlreadyServed));
+        assert_eq!(std::fs::read_to_string(&descriptor).unwrap(), bytes);
+        assert!(!election_path(&descriptor).exists());
+    }
+
+    #[test]
+    fn resident_fixture_root_is_removed_on_partial_setup_unwind() {
+        let mut root = None;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            let directory = scratch("unwind");
+            root = Some(directory.as_ref().to_owned());
+            std::fs::write(directory.join("partial"), b"partial fixture").unwrap();
+            panic!("injected fixture assertion failure");
+        }));
+        assert!(outcome.is_err());
+        assert!(!root.unwrap().exists());
+    }
+
+    fn reach_race_start(arrivals: &AtomicUsize, within: Duration) -> bool {
+        arrivals.fetch_add(1, Ordering::SeqCst);
+        let deadline = Instant::now() + within;
+        while arrivals.load(Ordering::SeqCst) < 2 {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
+    }
+
+    #[test]
+    fn missing_second_race_worker_does_not_strand_the_first_or_its_scratch() {
+        let directory = scratch("missing-race-worker");
+        let path = directory.as_ref().to_owned();
+        let root = directory.0.clone();
+        let worker = std::thread::spawn(move || {
+            let _root = root;
+            reach_race_start(&AtomicUsize::new(0), Duration::from_millis(30))
+        });
+        drop(directory);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !crate::platform::process::thread_signalled(&worker) {
+            assert!(
+                Instant::now() < deadline,
+                "owned worker retires without a second admission"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!worker.join().unwrap());
+        assert!(!path.exists());
     }
 }

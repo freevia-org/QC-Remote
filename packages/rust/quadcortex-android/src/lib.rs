@@ -1,3 +1,4 @@
+mod forwarding;
 mod preset_workflow;
 // Closed native handles use `-3` for integer-returning JNI methods. Methods
 // returning strings throw `IllegalStateException`; void lifecycle callbacks
@@ -42,6 +43,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 struct DecoderHandle {
     session: Mutex<SessionRuntime>,
+    forwarding: forwarding::ForwardingTasks,
 }
 
 struct SessionComponent<'a, T> {
@@ -103,6 +105,7 @@ fn register_handle() -> jlong {
     static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
     let decoder = Arc::new(DecoderHandle {
         session: Mutex::new(SessionRuntime::new(0)),
+        forwarding: forwarding::ForwardingTasks::default(),
     });
     let value = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     if value <= 0 {
@@ -128,7 +131,10 @@ fn stamp_android_file_mutation_request_id(
 }
 
 fn unregister_handle(value: jlong) {
-    handles().lock_recover().remove(&value);
+    let removed = handles().lock_recover().remove(&value);
+    if let Some(native) = removed {
+        native.forwarding.cancel_all();
+    }
 }
 
 /// Run a JNI export body so a Rust panic never unwinds into the JVM.
@@ -180,6 +186,24 @@ fn bytes_result(env: &mut JNIEnv, result: Result<Vec<u8>, String>) -> jbyteArray
             .byte_array_from_slice(&value)
             .map(|value| value.into_raw())
             .unwrap_or(ptr::null_mut()),
+        Err(error) => {
+            let _ = env.throw_new("java/lang/IllegalStateException", error);
+            ptr::null_mut()
+        }
+    }
+}
+
+fn secret_bytes_result(env: &mut JNIEnv, result: Result<Vec<u8>, String>) -> jbyteArray {
+    match result {
+        Ok(mut value) => {
+            let array = env
+                .byte_array_from_slice(&value)
+                .map(|value| value.into_raw())
+                .unwrap_or(ptr::null_mut());
+            use zeroize::Zeroize;
+            value.zeroize();
+            array
+        }
         Err(error) => {
             let _ = env.throw_new("java/lang/IllegalStateException", error);
             ptr::null_mut()
@@ -1669,6 +1693,263 @@ pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeCapt
     )
 }
 
+/// The platform owns forwarding admission; enabling it changes only the
+/// connection-scoped wire codec, not ordinary state observations.
+#[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeSetCloudForwardEnabled(
+    mut env: JNIEnv,
+    _class: JClass,
+    value: jlong,
+    enabled: jint,
+) {
+    or_throw(
+        catch_panic(|| {
+            let result = handle(value).map(|native| {
+                let mut owner = native.session.lock_recover();
+                owner.transport.set_cloud_forward_enabled(enabled != 0);
+                native.forwarding.set_enabled(enabled != 0);
+            });
+            if let Err(error) = result {
+                let _ = env.throw_new("java/lang/IllegalStateException", error);
+            }
+        }),
+        &mut env,
+        (),
+    )
+}
+
+// rustls-platform-verifier 0.7 uses jni 0.22 independently of the legacy
+// decoder facade's jni 0.21. Receive its own ABI-safe unowned environment;
+// never cast between wrapper types or disable platform certificate checks.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeInitializeForwarding<
+    'caller,
+>(
+    mut env: jni_platform::EnvUnowned<'caller>,
+    _class: jni_platform::objects::JClass<'caller>,
+    context: jni_platform::objects::JObject<'caller>,
+) {
+    catch_panic(|| {
+        env.with_env(|env| {
+            // Keep this entry under the same explicit panic guard as the
+            // legacy JNI facade. Convert initializer panics into a JNI error
+            // so the 0.22 policy raises a Java exception instead of silently
+            // continuing with an uninitialized platform verifier.
+            catch_panic(|| rustls_platform_verifier::android::init_with_env(env, context))
+                .unwrap_or_else(|_| {
+                    Err(jni_platform::errors::Error::JniCall(
+                        jni_platform::errors::JniError::Other(-1),
+                    ))
+                })
+        })
+        .resolve::<jni_platform::errors::ThrowRuntimeExAndDefault>();
+    })
+    .unwrap_or_default();
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeForwardingWriteBudgetMs(
+    _env: JNIEnv,
+    _class: JClass,
+    value: jlong,
+    task: jlong,
+) -> jint {
+    catch_panic(|| {
+        let Ok(native) = handle(value) else {
+            return 0;
+        };
+        let owner = native.session.lock_recover();
+        let Some(observation) = native.forwarding.observation(task) else {
+            return 0;
+        };
+        if !owner.accepts_observation(&observation) {
+            return 0;
+        }
+        native.forwarding.write_budget_ms(task)
+    })
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeStartForwarding(
+    mut env: JNIEnv,
+    _class: JClass,
+    value: jlong,
+    kind: jint,
+    payload: JByteArray,
+    observation: JString,
+) -> jlong {
+    or_throw(
+        catch_panic(|| {
+            let result = (|| {
+                let native = handle(value)?;
+                let text: String = env
+                    .get_string(&observation)
+                    .map_err(|_| "invalid forwarding observation")?
+                    .into();
+                let observation: ObservationTicket =
+                    serde_json::from_str(&text).map_err(|_| "invalid forwarding observation")?;
+                let owner = native.session.lock_recover();
+                if !owner.accepts_observation(&observation) {
+                    return Ok(0);
+                }
+                let bytes = env
+                    .convert_byte_array(payload)
+                    .map_err(|_| "invalid forwarding payload")?;
+                native.forwarding.start(
+                    u16::try_from(kind).map_err(|_| "invalid forwarding family")?,
+                    bytes,
+                    observation,
+                )
+            })();
+            match result {
+                Ok(id) => id,
+                Err(error) => {
+                    let _ = env.throw_new("java/lang/IllegalStateException", error);
+                    0
+                }
+            }
+        }),
+        &mut env,
+        0,
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeNextForwarding(
+    mut env: JNIEnv,
+    _class: JClass,
+    value: jlong,
+    task: jlong,
+) -> jbyteArray {
+    or_throw(
+        catch_panic(|| {
+            let result = (|| {
+                let native = handle(value)?;
+                let message = native.forwarding.next(task)?;
+                if let Some(mut message) = message {
+                    let mut encoded = Vec::with_capacity(message.payload.len() + 2);
+                    encoded.extend_from_slice(&message.message_type.to_le_bytes());
+                    encoded.extend_from_slice(&message.payload);
+                    use zeroize::Zeroize;
+                    message.payload.zeroize();
+                    Ok(encoded)
+                } else {
+                    Ok(Vec::new())
+                }
+            })();
+            secret_bytes_result(&mut env, result)
+        }),
+        &mut env,
+        ptr::null_mut(),
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeForwardingFinished(
+    _env: JNIEnv,
+    _class: JClass,
+    value: jlong,
+    task: jlong,
+) -> jint {
+    catch_panic(|| {
+        handle(value)
+            .map(|native| native.forwarding.finished(task) as jint)
+            .unwrap_or(1)
+    })
+    .unwrap_or(1)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeCancelForwarding(
+    mut env: JNIEnv,
+    _class: JClass,
+    value: jlong,
+    task: jlong,
+) {
+    or_throw(
+        catch_panic(|| {
+            if let Ok(native) = handle(value) {
+                native.forwarding.cancel(task);
+            }
+        }),
+        &mut env,
+        (),
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeCloseForwarding(
+    mut env: JNIEnv,
+    _class: JClass,
+    value: jlong,
+    task: jlong,
+) {
+    or_throw(
+        catch_panic(|| {
+            if let Ok(native) = handle(value) {
+                native.forwarding.close(task);
+            }
+        }),
+        &mut env,
+        (),
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeEncodeForwardingReports(
+    mut env: JNIEnv,
+    _class: JClass,
+    value: jlong,
+    task: jlong,
+    kind: jint,
+    payload: JByteArray,
+    include_report_id: jint,
+) -> jbyteArray {
+    or_throw(
+        catch_panic(|| {
+            let result = (|| {
+                let native = handle(value)?;
+                let owner = native.session.lock_recover();
+                let observation = native
+                    .forwarding
+                    .observation(task)
+                    .ok_or("forwarding task retired")?;
+                if !owner.accepts_observation(&observation) {
+                    return Err("forwarding session retired".into());
+                }
+                let kind = u16::try_from(kind).map_err(|_| "invalid forwarding family")?;
+                if !matches!(kind, 29 | 61) {
+                    return Err("invalid forwarding response family".into());
+                }
+                let mut message = OutboundMessage {
+                    message_type: kind,
+                    payload: env
+                        .convert_byte_array(payload)
+                        .map_err(|_| "invalid forwarding response")?,
+                };
+                let layout = if include_report_id != 0 {
+                    ReportLayout::ReportIdPrefixed
+                } else {
+                    ReportLayout::BodyOnly
+                };
+                let result = owner
+                    .transport
+                    .encode_reports_with_session(&message, layout)
+                    .map(|reports| reports.into_iter().flatten().collect())
+                    .map_err(|_| "could not frame forwarding response".to_string());
+                use zeroize::Zeroize;
+                message.payload.zeroize();
+                result
+            })();
+            secret_bytes_result(&mut env, result)
+        }),
+        &mut env,
+        ptr::null_mut(),
+    )
+}
+
 // Called under the same owner lock as report assembly. The command thread
 // cannot admit an operation between a completed frame and its state reduction.
 fn complete_native_frame(
@@ -1677,6 +1958,30 @@ fn complete_native_frame(
     ticket: ObservationTicket,
     now_ms: u64,
 ) -> Result<Vec<u8>, String> {
+    if quadcortex_forwarder::is_sensitive_message_type(frame.message_type) {
+        // Private adapter delivery only. Never reduce forwarding envelopes into
+        // state, lifecycle caches or generic payload events.
+        if !matches!(frame.message_type, 29 | 61) {
+            use zeroize::Zeroize;
+            let mut payload = frame.payload;
+            payload.zeroize();
+            return Ok(Vec::new());
+        }
+        let header = serde_json::to_vec(&serde_json::json!({
+            "observation": ticket,
+            "forwardingOnly": true,
+        }))
+        .map_err(|error| error.to_string())?;
+        let mut payload = zeroize::Zeroizing::new(frame.payload);
+        let mut result = Vec::with_capacity(header.len() + payload.len() + 6);
+        result.extend_from_slice(&frame.message_type.to_le_bytes());
+        result.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        result.extend_from_slice(&header);
+        result.extend_from_slice(&payload);
+        use zeroize::Zeroize;
+        payload.zeroize();
+        return Ok(result);
+    }
     let observation = if frame.message_type == quadcortex::profile::MESSAGE_TYPE_MODEL_REPO {
         // Metadata parsing and its lifecycle validation stay on the metadata lane.
         None
@@ -1738,7 +2043,7 @@ pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativePush
                 complete_native_frame(&mut owner, frame, observation, received_at_ms.max(0) as u64)
             }))
             .unwrap_or_else(|_| Err("native QC report decoder panicked".to_string()));
-            bytes_result(&mut env, result)
+            secret_bytes_result(&mut env, result)
         }),
         &mut env,
         ptr::null_mut(),
@@ -2248,6 +2553,7 @@ fn with_transport(value: jlong, action: impl FnOnce(&mut TransportRuntime) -> ji
 
 fn schedule_reconnect(handle: &DecoderHandle, now_ms: u64) -> Result<u64, String> {
     let mut owner = handle.session.lock_recover();
+    handle.forwarding.retire_tasks();
     let delay = owner.transport.schedule_reconnect(now_ms);
     owner.reset_state();
     Ok(delay)
@@ -2265,6 +2571,7 @@ pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeSess
             let result = (|| {
                 let native = handle(value)?;
                 let mut owner = native.session.lock_recover();
+                native.forwarding.retire_tasks();
                 let connection = owner.opened(now_ms.max(0) as u64)?;
                 i64::try_from(connection)
                     .map_err(|_| "QC connection identity exceeds JNI range".to_string())
@@ -2423,6 +2730,7 @@ pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeSess
     catch_panic(|| {
         if let Ok(native) = handle(value) {
             let mut owner = native.session.lock_recover();
+            native.forwarding.retire_tasks();
             owner.transport.disconnect(now_ms.max(0) as u64, false);
             owner.reset_state();
         }
@@ -2486,8 +2794,15 @@ pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeSess
     _class: JClass,
     value: jlong,
 ) -> jint {
-    catch_panic(|| with_transport(value, |transport| transport.terminal_read_failed() as jint))
-        .unwrap_or(CLOSED_HANDLE_SENTINEL)
+    catch_panic(|| {
+        let Ok(native) = handle(value) else {
+            return CLOSED_HANDLE_SENTINEL;
+        };
+        let mut owner = native.session.lock_recover();
+        native.forwarding.retire_tasks();
+        owner.transport.terminal_read_failed() as jint
+    })
+    .unwrap_or(CLOSED_HANDLE_SENTINEL)
 }
 
 #[no_mangle]
@@ -3033,14 +3348,42 @@ mod tests {
 
     #[test]
     fn completed_android_frame_reduces_state_before_native_admission() {
+        use prost::Message;
+        use quadcortex::proto::cortex_protobuf_v2 as pa;
+
         let mut owner = SessionRuntime::new(0);
         let connection = owner.opened(0).unwrap();
         owner.lifecycle = Some(SessionDriver::start(7, "session".into(), 0));
+        let seed_ticket = owner.capture_observation(connection).unwrap();
+        let preset = pa::RecallPresetMessage {
+            action: pa::message_action::Enum::Update as i32,
+            preset: Some(pa::recall_preset_message::Preset::Preset(
+                quadcortex::proto::BinaryPreset {
+                    name: Some(quadcortex::proto::binary_preset::Name::Name(
+                        "Preset".into(),
+                    )),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        assert!(owner
+            .observe_state(
+                &seed_ticket,
+                quadcortex::profile::MESSAGE_TYPE_RECALL_PRESET,
+                &preset,
+            )
+            .unwrap()
+            .is_some());
+        // The experiment below must publish only its completed native frame.
+        owner.take_state_publications().unwrap();
+        assert!(!owner.state_publications_ready());
         let snapshot = owner.state.snapshot_mut();
-        snapshot.has_preset = true;
-        snapshot.preset_name = "Preset".into();
         snapshot.preset_position = 1;
         snapshot.setlist_key = "/media/p4/Presets/Live".into();
+        assert_eq!(owner.state.snapshot().preset_name, "Preset");
+        assert!(owner.state.snapshot().has_preset);
         let context = owner
             .context_for_write(
                 "device.selectScene",
@@ -3058,6 +3401,8 @@ mod tests {
             )
             .unwrap();
         let operation = owner.plan_operation_in_context(&context, 0, 3000).unwrap();
+        owner.validate_operation(&operation, 0).unwrap();
+        let address_revision = owner.state.snapshot().address_revision;
         let ticket = owner.capture_observation(connection).unwrap();
         let frame = quadcortex::device::transport::InboundFrame {
             message_type: quadcortex::profile::MESSAGE_TYPE_SETLIST_POSITION,
@@ -3071,10 +3416,12 @@ mod tests {
         let packet = complete_native_frame(&mut owner, frame, ticket.clone(), 1).unwrap();
         // Java has not received or decoded this packet yet.
         assert_eq!(owner.state.snapshot().preset_position, 4);
-        assert!(owner
-            .validate_operation(&operation, 1)
-            .unwrap_err()
-            .contains("target changed"));
+        assert_eq!(owner.state.snapshot().preset_name, "Preset");
+        assert!(owner.state.snapshot().address_revision > address_revision);
+        assert_eq!(
+            owner.validate_operation(&operation, 1).unwrap_err(),
+            "QC write target changed after planning; refresh before starting a new operation"
+        );
         let length = u32::from_le_bytes(packet[2..6].try_into().unwrap()) as usize;
         let header: Value = serde_json::from_slice(&packet[6..6 + length]).unwrap();
         assert_eq!(header["observation"], serde_json::to_value(ticket).unwrap());
@@ -3091,6 +3438,51 @@ mod tests {
                 > 0
         );
         assert!(!owner.state_publications_ready());
+    }
+
+    #[test]
+    fn sensitive_android_frames_never_enter_generic_publications() {
+        let mut owner = SessionRuntime::new(0);
+        let connection = owner.opened(0).unwrap();
+        owner.lifecycle = Some(SessionDriver::start(7, "session".into(), 0));
+        for kind in [18, 29, 30, 31, 41, 58, 61] {
+            let ticket = owner.capture_observation(connection).unwrap();
+            let payload = b"sensitive-account-envelope".to_vec();
+            let frame = quadcortex::device::transport::InboundFrame {
+                message_type: kind,
+                payload: payload.clone(),
+                report_count: 1,
+                ingress: None,
+                device_bytes: [0, 0],
+            };
+            let packet = complete_native_frame(&mut owner, frame, ticket, 1).unwrap();
+            if matches!(kind, 29 | 61) {
+                let length = u32::from_le_bytes(packet[2..6].try_into().unwrap()) as usize;
+                let header: Value = serde_json::from_slice(&packet[6..6 + length]).unwrap();
+                assert_eq!(header["forwardingOnly"], true);
+                assert!(header.get("states").is_none());
+                assert!(header.get("lifecycle").is_none());
+                assert_eq!(&packet[6 + length..], &payload);
+            } else {
+                assert!(packet.is_empty(), "sensitive family {kind} escaped to Java");
+            }
+            assert!(!owner.state_publications_ready());
+        }
+        // An ordinary frame remains on the existing state/lifecycle lane.
+        let ticket = owner.capture_observation(connection).unwrap();
+        let frame = quadcortex::device::transport::InboundFrame {
+            message_type: quadcortex::profile::MESSAGE_TYPE_SETLIST_POSITION,
+            payload: vec![8, 1, 32, 4],
+            report_count: 1,
+            ingress: None,
+            device_bytes: [0, 0],
+        };
+        let packet = complete_native_frame(&mut owner, frame, ticket, 1).unwrap();
+        let length = u32::from_le_bytes(packet[2..6].try_into().unwrap()) as usize;
+        let header: Value = serde_json::from_slice(&packet[6..6 + length]).unwrap();
+        assert!(header.get("forwardingOnly").is_none());
+        assert!(header.get("states").is_some());
+        assert!(header.get("lifecycle").is_some());
     }
 
     #[test]

@@ -33,6 +33,39 @@ public class QcHidWritePolicyTest {
     }
 
     @Test
+    public void forwardingCancellationAndExpiryAreBenignOnlyBeforeFirstReport() {
+        for (boolean began : new boolean[]{false, true}) {
+            for (boolean current : new boolean[]{false, true}) {
+                List<String> terminal = new ArrayList<>();
+                try {
+                    QcHidWritePolicy.forwardingWriteBudget(began, current, () -> 0, terminal::add);
+                    fail("Cancelled or expired forwarding must not reach HID");
+                } catch (IllegalStateException error) {
+                    assertEquals(current ? "Internet forwarding request ended."
+                        : "Internet forwarding was cancelled.", error.getMessage());
+                }
+                assertEquals(began ? 1 : 0, terminal.size());
+            }
+        }
+        List<String> terminal = new ArrayList<>();
+        assertEquals(37, QcHidWritePolicy.forwardingWriteBudget(true, true, () -> 37, terminal::add));
+        assertEquals(0, terminal.size());
+    }
+
+    @Test
+    public void interruptedForwardingResetsOnlyAnIncompleteFrame() {
+        for (boolean complete : new boolean[]{false, true}) {
+            List<String> terminal = new ArrayList<>();
+            RuntimeException interrupted = new IllegalStateException("batch interrupted");
+            try {
+                QcHidWritePolicy.rejectInterruptedForwardingFrame(complete, interrupted, terminal::add);
+                fail("Interrupted forwarding must leave the write loop");
+            } catch (RuntimeException actual) { assertSame(interrupted, actual); }
+            assertEquals(complete ? 0 : 1, terminal.size());
+        }
+    }
+
+    @Test
     public void twoFragmentStatusStallsRemainDelivered() {
         List<String> terminal = new ArrayList<>();
         assertEquals(

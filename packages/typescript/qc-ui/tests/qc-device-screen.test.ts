@@ -37,12 +37,20 @@ test("the Looper X block is found by model or by name", () => {
   assert.equal(findLooperXBlock({ blocks: [block({})] }), undefined);
 });
 
+test("refused Looper transitions never publish a close or enter an editor", async () => {
+  const host = looperHarness();
+  host.options.looper.run = async () => false;
+  const actions = qcLooperScreenActions(host.options);
+  await actions.onClose(); await actions.onMenu(); await actions.onParameters();
+  assert.deepEqual(host.log, []);
+});
+
 function looperHarness(blocks: GridBlock[] = [block({ modelId: 27_000, name: "Looper X" })]) {
   const log: string[] = [];
   const gate: { release?: () => void } = {};
   const options = {
     snapshot: { blocks },
-    looper: { run: async (command: string, value?: number | null) => { log.push(`run:${command}${value ?? ""}`); if (command === "close") await new Promise<void>((resolve) => { gate.release = resolve; }); } },
+    looper: { captureContinuation: () => () => true, run: async (command: string, value?: number | null) => { log.push(`run:${command}${value ?? ""}`); if (command === "close") await new Promise<void>((resolve) => { gate.release = resolve; }); return true; } },
     grid: { openBlock: async () => { log.push("open-block"); } },
     setView: (next: CorOsScreenView | null | ((current: CorOsScreenView | null) => CorOsScreenView | null)) => { log.push(`view:${typeof next === "function" ? "fn" : next}`); },
     setParameterMenuInitiallyOpen: (open: boolean) => { log.push(`menu:${open}`); },
@@ -71,6 +79,22 @@ test("the Looper X screen's own Close awaits the same close", async () => {
   assert.deepEqual(log, ["run:close", "view:null"]);
 });
 
+test("Looper outer continuation refuses replacement session or screen after inner success", async () => {
+  for (const change of ["context", "view"]) {
+    const host = looperHarness(); let current = true;
+    if (change === "context") host.options.looper.captureContinuation = () => () => current;
+    const options = { ...host.options, current: () => change !== "view" || current };
+    host.options.looper.run = async () => { await Promise.resolve(); current = false; return true; };
+    const actions = qcLooperScreenActions(options);
+    await actions.onMenu();
+    assert.deepEqual(host.log, [], change);
+  }
+  const host = looperHarness(); let current = true;
+  host.options.looper.captureContinuation = () => () => current;
+  const action = host.actions.onClose(); current = false; host.gate.release!(); await action;
+  assert.deepEqual(host.log, ["run:close"]);
+});
+
 test("Looper X Parameters and Menu enter performance mode, leave the screen, then open the block editor", async () => {
   const parameters = looperHarness();
   await parameters.actions.onParameters();
@@ -93,7 +117,7 @@ test("Looper X Parameters and Menu explain themselves when the preset has no Loo
 test("refused Looper X commands never close the screen or open its block editor", async () => {
   for (const action of ["close", "parameters", "menu"] as const) {
     const host = looperHarness();
-    const options = { ...host.options, looper: { run: async () => false } };
+    const options = { ...host.options, looper: { ...host.options.looper, run: async () => false } };
     const actions = qcLooperScreenActions(options);
     await (action === "close" ? actions.onClose() : action === "parameters" ? actions.onParameters() : actions.onMenu());
     assert.deepEqual(host.log, [], action + ": refusal cannot claim a UI transition or dispatch openBlock");
@@ -108,7 +132,7 @@ test("Looper X follow-up actions retire with the device session while the comman
     const command = new Promise<boolean>((done) => { resolve = done; });
     const actions = qcLooperScreenActions({ ...host.options,
       captureSessionCurrent: () => () => current,
-      looper: { run: async () => command }
+      looper: { ...host.options.looper, run: async () => command }
     });
     const pending = action === "close" ? actions.onClose() : action === "parameters" ? actions.onParameters() : actions.onMenu();
     current = false;

@@ -10,7 +10,7 @@ use std::{
         atomic::{AtomicBool, Ordering as AtomicOrdering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::watch;
 use tokio_tungstenite::{
@@ -64,6 +64,20 @@ fn relay_socket_config() -> WebSocketConfig {
 }
 const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const SOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const MANAGEMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn management_client() -> Result<reqwest::Client, String> {
+    management_client_with_timeout(MANAGEMENT_REQUEST_TIMEOUT)
+}
+
+fn management_client_with_timeout(timeout: Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(MANAGEMENT_CONNECT_TIMEOUT)
+        .timeout(timeout)
+        .build()
+        .map_err(|_| "Could not prepare the cloud connection".into())
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -404,6 +418,55 @@ fn pairing_request(
         .map_err(|_| "Could not construct a pairing request".into())
 }
 
+// HTTP management responses share the existing software result ceiling. The
+// reqwest request timeout continues to cover headers and every body chunk.
+// This bounds our accumulation, not a transport library's individual chunk.
+/// A response could not be read as complete JSON within the response ceiling.
+/// Transport and parser details are deliberately not retained in this error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundedResponseError;
+
+impl std::fmt::Display for BoundedResponseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("invalid, oversized, or incomplete JSON response")
+    }
+}
+
+impl std::error::Error for BoundedResponseError {}
+
+/// Read one HTTP JSON response under the existing 16 MiB software result
+/// ceiling, refusing before an oversized chunk is appended. The originating
+/// reqwest request deadline continues to apply to body chunks. A temporal
+/// deadline alone would not bound retained response bytes.
+pub async fn bounded_response_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+) -> Result<T, BoundedResponseError> {
+    bounded_response_json_with_limit(response, MAX_RESULT_FRAME_BYTES).await
+}
+
+fn append_response_chunk(
+    bytes: &mut Vec<u8>,
+    chunk: &[u8],
+    maximum: usize,
+) -> Result<(), BoundedResponseError> {
+    if chunk.len() > maximum.saturating_sub(bytes.len()) {
+        return Err(BoundedResponseError);
+    }
+    bytes.extend_from_slice(chunk);
+    Ok(())
+}
+
+async fn bounded_response_json_with_limit<T: serde::de::DeserializeOwned>(
+    mut response: reqwest::Response,
+    maximum: usize,
+) -> Result<T, BoundedResponseError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| BoundedResponseError)? {
+        append_response_chunk(&mut bytes, &chunk, maximum)?;
+    }
+    serde_json::from_slice(&bytes).map_err(|_| BoundedResponseError)
+}
+
 pub async fn pair(
     endpoint: &str,
     pairing_code: &str,
@@ -451,8 +514,7 @@ pub async fn pair_replacing(
     if let Some(error) = pairing_http_error(response.status().as_u16(), previous.is_some()) {
         return Err(error.into());
     }
-    let receipt: PairingResponse = response
-        .json()
+    let receipt: PairingResponse = bounded_response_json(response)
         .await
         .map_err(|_| "The public relay returned an invalid pairing receipt".to_string())?;
     if previous.is_some() && receipt.previous_device_replacement_pending.is_none() {
@@ -504,7 +566,7 @@ pub async fn usage(credentials: &Credentials) -> Result<Usage, String> {
         .map_err(|_| "The relay endpoint is invalid".to_string())?;
     url.query_pairs_mut()
         .append_pair("deviceId", &credentials.device_id);
-    let response = reqwest::Client::new()
+    let response = management_client()?
         .get(url)
         .bearer_auth(&credentials.device_credential)
         .send()
@@ -517,8 +579,7 @@ pub async fn usage(credentials: &Credentials) -> Result<Usage, String> {
             "QC Remote Cloud could not read relay usage".into()
         });
     }
-    response
-        .json::<Usage>()
+    bounded_response_json::<Usage>(response)
         .await
         .map_err(|_| "QC Remote Cloud returned invalid relay usage".to_string())
 }
@@ -544,7 +605,7 @@ pub async fn roster(credentials: &Credentials) -> Result<Vec<PairedDevice>, Stri
         .map_err(|_| "The relay endpoint is invalid".to_string())?;
     url.query_pairs_mut()
         .append_pair("deviceId", &credentials.device_id);
-    let response = reqwest::Client::new()
+    let response = management_client()?
         .get(url)
         .bearer_auth(&credentials.device_credential)
         .send()
@@ -559,8 +620,7 @@ pub async fn roster(credentials: &Credentials) -> Result<Vec<PairedDevice>, Stri
             _ => "QC Remote Cloud could not list the devices on this account".to_string(),
         });
     }
-    Ok(response
-        .json::<RosterResponse>()
+    Ok(bounded_response_json::<RosterResponse>(response)
         .await
         .map_err(|_| "QC Remote Cloud returned an invalid device list".to_string())?
         .devices)
@@ -583,7 +643,7 @@ pub async fn connectors(credentials: &Credentials) -> Result<Vec<RemoteConnector
         .map_err(|_| "The relay endpoint is invalid".to_string())?;
     url.query_pairs_mut()
         .append_pair("deviceId", &credentials.device_id);
-    let response = reqwest::Client::new()
+    let response = management_client()?
         .get(url)
         .bearer_auth(&credentials.device_credential)
         .send()
@@ -598,8 +658,7 @@ pub async fn connectors(credentials: &Credentials) -> Result<Vec<RemoteConnector
             _ => "QC Remote Cloud could not list Remote MCP connectors".into(),
         });
     }
-    Ok(response
-        .json::<ConnectorResponse>()
+    Ok(bounded_response_json::<ConnectorResponse>(response)
         .await
         .map_err(|_| "QC Remote Cloud returned an invalid connector list".to_string())?
         .connectors)
@@ -646,7 +705,7 @@ pub async fn revoke_connector(
     url.query_pairs_mut()
         .append_pair("deviceId", &credentials.device_id)
         .append_pair("target", grant_id);
-    let response = reqwest::Client::new()
+    let response = management_client()?
         .post(url)
         .bearer_auth(&credentials.device_credential)
         .send()
@@ -677,7 +736,7 @@ pub async fn revoke_paired_device(credentials: &Credentials, target: &str) -> Re
     url.query_pairs_mut()
         .append_pair("deviceId", &credentials.device_id)
         .append_pair("target", target);
-    let response = reqwest::Client::new()
+    let response = management_client()?
         .post(url)
         .bearer_auth(&credentials.device_credential)
         .send()
@@ -715,7 +774,7 @@ pub async fn revoke(credentials: &Credentials) -> Result<(), String> {
         .map_err(|_| "The relay endpoint is invalid".to_string())?;
     url.query_pairs_mut()
         .append_pair("deviceId", &credentials.device_id);
-    let response = reqwest::Client::new()
+    let response = management_client()?
         .post(url)
         .bearer_auth(&credentials.device_credential)
         .send()
@@ -762,7 +821,7 @@ pub async fn begin_host_pairing(
     platform: &str,
 ) -> Result<HostPairingSession, String> {
     let endpoint = normalize_endpoint(endpoint)?;
-    let response = reqwest::Client::new()
+    let response = management_client()?
         .post(format!("{endpoint}/v1/host/pairing-sessions"))
         .json(&host_pairing_request_body(label, platform))
         .send()
@@ -771,8 +830,7 @@ pub async fn begin_host_pairing(
     if !response.status().is_success() {
         return Err("QC Remote Cloud could not start pairing".into());
     }
-    let mut session: HostPairingSession = response
-        .json()
+    let mut session: HostPairingSession = bounded_response_json(response)
         .await
         .map_err(|_| "QC Remote Cloud returned an invalid pairing session".to_string())?;
     session.endpoint = endpoint;
@@ -796,7 +854,7 @@ pub async fn poll_host_pairing(
     if session.session_id.len() < 20 || session.receiver_secret.len() < MINIMUM_CREDENTIAL_LENGTH {
         return Err("The pairing session is invalid".into());
     }
-    let response = reqwest::Client::new()
+    let response = management_client()?
         .get(format!(
             "{endpoint}/v1/host/pairing-sessions/{}",
             session.session_id
@@ -808,8 +866,7 @@ pub async fn poll_host_pairing(
     match response.status().as_u16() {
         202 => Ok(None),
         200 => {
-            let completed: HostPairingPoll = response
-                .json()
+            let completed: HostPairingPoll = bounded_response_json(response)
                 .await
                 .map_err(|_| "QC Remote Cloud returned an invalid pairing result".to_string())?;
             if completed.state != "complete" {
@@ -838,9 +895,24 @@ async fn invoke_with_deadline(
     method: &str,
     params: Value,
     deadline_ms: Option<u64>,
+    received_at: Instant,
     resource_read: bool,
     invoking: &AtomicBool,
 ) -> Result<Value, DeviceError> {
+    // Queueing, policy checks and adapter admission spend the original receipt
+    // budget. An expired queued action never acquires an adapter-side effect.
+    let Some(remaining) = adapter_invoke_timeout(deadline_ms)
+        .checked_sub(received_at.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+    else {
+        let mut error = DeviceError::new(
+            "DEVICE_QUEUE_TIMEOUT",
+            "The relay request budget expired before local adapter admission; no device action was started",
+            false,
+        );
+        error.details = Some(Box::new(json!({"requestSent": false})));
+        return Err(error);
+    };
     invoking.store(true, AtomicOrdering::Release);
     let call = async {
         if resource_read {
@@ -849,13 +921,27 @@ async fn invoke_with_deadline(
             adapter.invoke(method, params).await
         }
     };
-    match tokio::time::timeout(adapter_invoke_timeout(deadline_ms), call).await {
+    match tokio::time::timeout(remaining, call).await {
         Ok(result) => result,
-        Err(_) => Err(DeviceError::new(
+        Err(_) => Err(admitted_request_failure(
+            method,
             "DEVICE_TIMEOUT",
             "The local device adapter did not complete the request before its deadline",
-            true,
         )),
+    }
+}
+
+// Adapter admission is not proof of USB delivery or non-delivery. Only a
+// generated read can safely retain retry advice after its answer is lost.
+fn admitted_request_failure(method: &str, code: &str, message: &str) -> DeviceError {
+    if generated_actions::is_read_only(method) {
+        DeviceError::new(code, message, true)
+    } else {
+        DeviceError::new(
+            "WRITE_OUTCOME_AMBIGUOUS",
+            format!("{message}. The action may have completed. Do not retry automatically; inspect the Quad Cortex state before deciding what to do next."),
+            false,
+        )
     }
 }
 
@@ -1113,8 +1199,11 @@ impl Client {
                         return Ok(());
                     }
                 }
-                message = async { match deferred.pop_front() { Some(message) => Some(Ok(message)), None => stream.next().await } } => match message {
-                    Some(Ok(Message::Text(text))) if text.len() <= MAX_REQUEST_FRAME_BYTES => {
+                message = async { match deferred.pop_front() {
+                    Some(message) => Some(Ok(message)),
+                    None => stream.next().await.map(|result| result.map(|message| (message, Instant::now()))),
+                } } => match message {
+                    Some(Ok((Message::Text(text), received_at))) if text.len() <= MAX_REQUEST_FRAME_BYTES => {
                         if self.consume_replacement_ack(&text)? { continue; }
                         let frame = serde_json::from_str(&text).map_err(|_| ())?;
                         if let DeviceFrame::McpPresence { clients } = frame {
@@ -1160,6 +1249,7 @@ impl Client {
                                     &method,
                                     params,
                                     deadline_ms,
+                                    received_at,
                                     resource_read,
                                     &invoking,
                                 );
@@ -1198,13 +1288,14 @@ impl Client {
                                         incoming = stream.next() => {
                                             match incoming {
                                                 Some(Ok(Message::Text(text))) if text.len() <= MAX_REQUEST_FRAME_BYTES => {
+                                                    let received_at = Instant::now();
                                                     if self.consume_replacement_ack(&text)? { continue; }
                                                     match serde_json::from_str::<DeviceFrame>(&text).map_err(|_| ())? {
                                                         DeviceFrame::McpPresence { clients } => {
                                                             if !valid_mcp_presence(&clients) { return Err(()); }
                                                             if let Some(presence)=&self.mcp_presence { presence.send_replace(Some(clients)); }
                                                         }
-                                                        DeviceFrame::Invoke { .. } if deferred.len() < 16 => deferred.push_back(Message::Text(text)),
+                                                        DeviceFrame::Invoke { .. } if deferred.len() < 16 => deferred.push_back((Message::Text(text), received_at)),
                                                         _ => return Err(()),
                                                     }
                                                 }
@@ -1218,10 +1309,10 @@ impl Client {
                                                 let _ = send_close(&mut sink).await;
                                                 return Ok(());
                                             }
-                                            break Err(DeviceError::new(
+                                            break Err(admitted_request_failure(
+                                                &method,
                                                 "DEVICE_INTERRUPTED",
                                                 "The local device request was interrupted",
-                                                true,
                                             ));
                                         }
                                     }
@@ -1234,13 +1325,13 @@ impl Client {
                         };
                         if send_frame(&mut sink, &response).await.is_err() { return Err(()); }
                     }
-                    Some(Ok(Message::Ping(value))) => if send_message(&mut sink, Message::Pong(value)).await.is_err() { return Err(()); },
-                    Some(Ok(Message::Close(Some(frame)))) if qc_relay_protocol::pairing_rejection_close(u16::from(frame.code)) => {
+                    Some(Ok((Message::Ping(value), _))) => if send_message(&mut sink, Message::Pong(value)).await.is_err() { return Err(()); },
+                    Some(Ok((Message::Close(Some(frame)), _))) if qc_relay_protocol::pairing_rejection_close(u16::from(frame.code)) => {
                         self.rejected_credential();
                         return Ok(());
                     }
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return Err(()),
-                    Some(Ok(Message::Text(_))) => { let _ = send_close(&mut sink).await; return Err(()); }
+                    Some(Ok((Message::Close(_), _))) | Some(Err(_)) | None => return Err(()),
+                    Some(Ok((Message::Text(_), _))) => { let _ = send_close(&mut sink).await; return Err(()); }
                     _ => {}
                 }
             }
@@ -1301,6 +1392,279 @@ where
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    struct AppliedThenStalledAdapter {
+        effects: AtomicUsize,
+        started: tokio::sync::Notify,
+    }
+
+    #[async_trait]
+    impl DeviceAdapter for AppliedThenStalledAdapter {
+        async fn ready(&self) -> bool {
+            true
+        }
+        async fn invoke(&self, _method: &str, _params: Value) -> Result<Value, DeviceError> {
+            self.effects.fetch_add(1, Ordering::SeqCst);
+            self.started.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn expired_deferred_mutation_is_not_admitted_and_live_queued_work_keeps_its_budget() {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        struct GatedAdapter {
+            calls: std::sync::Mutex<Vec<String>>,
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+        }
+        #[async_trait]
+        impl DeviceAdapter for GatedAdapter {
+            async fn ready(&self) -> bool {
+                true
+            }
+            async fn invoke(&self, _method: &str, params: Value) -> Result<Value, DeviceError> {
+                let tag = params["tag"].as_str().unwrap().to_owned();
+                self.calls.lock().unwrap().push(tag.clone());
+                if tag == "held" {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                Ok(json!({"tag": tag}))
+            }
+        }
+        let adapter = Arc::new(GatedAdapter {
+            calls: std::sync::Mutex::new(Vec::new()),
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let credentials: Credentials = serde_json::from_value(json!({
+            "endpoint":"https://relay.example.test", "deviceId":"fixture",
+            "deviceCredential":"fixture-only"
+        }))
+        .unwrap();
+        let (state, _) = watch::channel(ConnectionState::Connected);
+        let (_access_tx, access) = watch::channel(AccessMode::Full);
+        let (stop_tx, stop) = watch::channel(false);
+        let mut client = Client::new(credentials, adapter.clone(), state, access, stop);
+        let (host_io, relay_io) = tokio::io::duplex(8192);
+        let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
+        let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
+        // Lexical futures retain the actual connection and adapter on unwind;
+        // no spawned host task can escape an assertion/setup failure.
+        let host = client.connected(socket);
+        tokio::pin!(host);
+        let invoke = |tag: &str, budget| {
+            Message::Text(
+                json!({
+                    "type":"invoke", "id":tag, "action":"set_master_volume",
+                    "method":"device.setMasterVolume", "params":{"tag":tag},
+                    "deadlineMs":budget
+                })
+                .to_string()
+                .into(),
+            )
+        };
+        let drive = async {
+            relay.send(invoke("held", 5000)).await.unwrap();
+            adapter.entered.notified().await;
+            relay.send(invoke("expired", 20)).await.unwrap();
+            relay.send(invoke("live", 5000)).await.unwrap();
+            relay
+                .send(Message::Ping(b"queued".to_vec().into()))
+                .await
+                .unwrap();
+            // Pong is emitted only after both invocation frames were received
+            // and queued by the busy production loop.
+            loop {
+                if let Message::Pong(bytes) = next_frame(&mut relay).await {
+                    assert_eq!(bytes.as_ref(), b"queued");
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            adapter.release.notify_one();
+            let held = result_frame(&mut relay, "held").await;
+            assert_eq!(held["ok"], true);
+            let expired = result_frame(&mut relay, "expired").await;
+            assert_eq!(expired["ok"], false);
+            assert_eq!(expired["error"]["code"], "DEVICE_QUEUE_TIMEOUT");
+            assert_eq!(expired["error"]["retryable"], false);
+            assert_eq!(expired["error"]["details"]["requestSent"], false);
+            let live = result_frame(&mut relay, "live").await;
+            assert_eq!(live["ok"], true);
+            assert_eq!(*adapter.calls.lock().unwrap(), ["held", "live"]);
+        };
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut host => panic!("host ended before the controlled caller: {result:?}"),
+                () = drive => {},
+            }
+            stop_tx.send(true).unwrap();
+            (&mut host).await.expect("controlled host stop failed");
+        })
+        .await
+        .expect("the whole queued-request fixture budget expired");
+    }
+
+    #[tokio::test]
+    async fn an_adapter_effect_before_timeout_is_not_reported_as_retryable_write() {
+        for method in [
+            "device.deletePreset",
+            "device.setTempo",
+            "device.currentPreset",
+            "unknown.method",
+        ] {
+            let adapter = Arc::new(AppliedThenStalledAdapter {
+                effects: AtomicUsize::new(0),
+                started: tokio::sync::Notify::new(),
+            });
+            let invoking = AtomicBool::new(false);
+            let failure = invoke_with_deadline(
+                adapter.clone(),
+                method,
+                json!({}),
+                Some(20),
+                Instant::now(),
+                false,
+                &invoking,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(adapter.effects.load(Ordering::SeqCst), 1);
+            assert!(invoking.load(Ordering::Acquire));
+            if method == "device.currentPreset" {
+                assert_eq!(failure.code, "DEVICE_TIMEOUT");
+                assert!(failure.retryable);
+            } else {
+                assert_eq!(failure.code, "WRITE_OUTCOME_AMBIGUOUS");
+                assert!(!failure.retryable);
+                assert!(failure.message.contains("Do not retry automatically"));
+            }
+            assert!(
+                failure.details.is_none(),
+                "adapter admission proves no USB delivery facts"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn admitted_mutation_timeout_and_interruption_send_one_nonretryable_wire_outcome() {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        struct Host(tokio::task::JoinHandle<Result<(), ()>>);
+        impl Drop for Host {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        for interrupted in [false, true] {
+            let (host_io, relay_io) = tokio::io::duplex(8192);
+            let adapter = Arc::new(AppliedThenStalledAdapter {
+                effects: AtomicUsize::new(0),
+                started: tokio::sync::Notify::new(),
+            });
+            let (state, _) = watch::channel(ConnectionState::Connected);
+            let (_access_tx, access) = watch::channel(AccessMode::Full);
+            let (stop_tx, stop) = watch::channel(false);
+            let credentials: Credentials = serde_json::from_value(json!({
+                "endpoint":"https://relay.example.test", "deviceId":"fixture",
+                "deviceCredential":"fixture-only"
+            }))
+            .unwrap();
+            let mut client = Client::new(credentials, adapter.clone(), state, access, stop);
+            let mut host = Host(tokio::spawn(async move {
+                let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
+                client.connected(socket).await
+            }));
+            let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
+            relay
+                .send(Message::Text(
+                    json!({
+                        "type":"invoke", "id":"applied-once", "action":"delete_preset",
+                        "method":"device.deletePreset", "params":{},
+                        "deadlineMs":if interrupted { 5000 } else { 20 }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), adapter.started.notified())
+                .await
+                .unwrap();
+            if interrupted {
+                stop_tx.send_replace(false);
+            }
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Message::Text(text) = next_frame(&mut relay).await {
+                        let frame: Value = serde_json::from_str(&text).unwrap();
+                        if frame["type"] != "result" {
+                            continue;
+                        }
+                        assert_eq!(frame["id"], "applied-once");
+                        assert_eq!(frame["ok"], false);
+                        assert_eq!(frame["error"]["code"], "WRITE_OUTCOME_AMBIGUOUS");
+                        assert_eq!(frame["error"]["retryable"], false);
+                        assert!(frame["error"].get("details").is_none());
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("the admitted request must produce a result within the whole receive budget");
+            assert_eq!(adapter.effects.load(Ordering::SeqCst), 1);
+            stop_tx.send_replace(true);
+            tokio::time::timeout(Duration::from_secs(5), &mut host.0)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cloud_management_deadline_covers_response_headers_and_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        struct Server(tokio::task::JoinHandle<()>);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        for send_headers in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let _server = Server(tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 4096];
+                let received = socket.read(&mut request).await.unwrap();
+                assert!(
+                    received > 0,
+                    "fixture must receive request bytes before stalling"
+                );
+                if send_headers {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n").await.unwrap();
+                }
+                std::future::pending::<()>().await;
+                drop(socket);
+            }));
+            let client = management_client_with_timeout(Duration::from_millis(100)).unwrap();
+            let result = async {
+                client
+                    .get(format!("http://{address}/fixture"))
+                    .send()
+                    .await?
+                    .json::<Value>()
+                    .await
+            }
+            .await;
+            assert!(
+                result.unwrap_err().is_timeout(),
+                "a stalled response must end at the request deadline"
+            );
+        }
+    }
 
     #[test]
     fn a_not_found_revoke_is_told_apart_from_a_confirmed_one() {
@@ -1442,20 +1806,6 @@ mod tests {
     #[tokio::test]
     async fn authoritative_policy_revokes_and_relaxes_without_waiting_for_watch() {
         use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
-        async fn result_frame<S>(relay: &mut S, id: &str) -> Value
-        where
-            S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
-                + Unpin,
-        {
-            loop {
-                if let Message::Text(text) = next_frame(relay).await {
-                    let frame: Value = serde_json::from_str(&text).expect("response frame");
-                    if frame["type"] == "result" && frame["id"] == id {
-                        return frame;
-                    }
-                }
-            }
-        }
         let (host_io, relay_io) = tokio::io::duplex(1 << 20);
         let adapter = Arc::new(EffectivePolicyAdapter::new(AccessMode::ReadOnly));
         let (state, _) = watch::channel(ConnectionState::Connected);
@@ -1470,10 +1820,10 @@ mod tests {
         }))
         .expect("credentials");
         let mut client = Client::new(credentials, adapter.clone(), state, access, stop);
-        let host = tokio::spawn(async move {
+        let mut host = OwnedHost(tokio::spawn(async move {
             let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
             client.connected(socket).await
-        });
+        }));
         let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
         let invoke = |id: &str| {
             Message::Text(
@@ -1533,7 +1883,7 @@ mod tests {
         assert_eq!(adapter.invocations.load(Ordering::SeqCst), 2);
 
         stop_tx.send(true).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), host)
+        tokio::time::timeout(Duration::from_secs(5), &mut host.0)
             .await
             .expect("the host did not stop")
             .unwrap()
@@ -1571,11 +1921,11 @@ mod tests {
                 assert_eq!(prior, "fixture-old");
                 ack_tx.send_replace(true);
             }));
-            let host = tokio::spawn(async move {
+            let mut host = OwnedHost(tokio::spawn(async move {
                 let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
                 let result = client.connected(socket).await;
                 (result, client.credentials.previous_credential.is_some())
-            });
+            }));
             let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
             if deliver_ack {
                 relay.send(Message::Text(json!({"type":qc_relay_protocol::REPLACEMENT_ACK_FRAME_TYPE,"previousDeviceId":"fixture-old","previousCredentialAccepted":false}).to_string().into())).await.unwrap();
@@ -1586,7 +1936,7 @@ mod tests {
                 assert!(*ack_rx.borrow());
             }
             relay.send(Message::Close(None)).await.unwrap();
-            let (_, retained) = tokio::time::timeout(Duration::from_secs(5), host)
+            let (_, retained) = tokio::time::timeout(Duration::from_secs(5), &mut host.0)
                 .await
                 .unwrap()
                 .unwrap();
@@ -1690,6 +2040,224 @@ mod tests {
         assert_eq!(callbacks.load(Ordering::SeqCst), 0);
     }
 
+    // Abort the exact fixture task on assertion/setup unwind; successful paths
+    // still await its original handle rather than detach it on join timeout.
+    struct OwnedHost<T>(tokio::task::JoinHandle<T>);
+    impl<T> Drop for OwnedHost<T> {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    #[test]
+    fn response_body_ceiling_rejects_before_appending_an_oversized_chunk() {
+        let mut bytes = b"{}".to_vec();
+        append_response_chunk(&mut bytes, b"  ", 4).unwrap();
+        assert_eq!(bytes, b"{}  ");
+        assert_eq!(
+            append_response_chunk(&mut bytes, b"x", 4),
+            Err(BoundedResponseError)
+        );
+        assert_eq!(bytes, b"{}  ");
+    }
+
+    // No spawned server task: select owns and drops the actual socket future
+    // on normal completion, timeout, or assertion unwind.
+    async fn controlled_chunked_json(
+        body: Vec<u8>,
+        finish_body: bool,
+        request_budget: Duration,
+    ) -> Result<Result<Value, BoundedResponseError>, tokio::time::error::Elapsed> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        struct Finished(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for Finished {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let observed = {
+            let server = async move {
+                let _finished = Finished(Some(finished_tx));
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 4096];
+                let mut request_length = 0;
+                while !request[..request_length]
+                    .windows(4)
+                    .any(|window| window == b"\r\n\r\n")
+                {
+                    assert!(
+                        request_length < request.len(),
+                        "request headers exceed fixture budget"
+                    );
+                    let received = socket.read(&mut request[request_length..]).await.unwrap();
+                    assert!(
+                        received > 0,
+                        "client closed before completing request headers"
+                    );
+                    request_length += received;
+                }
+                socket.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.unwrap();
+                for chunk in body.chunks(4) {
+                    socket
+                        .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                        .await
+                        .unwrap();
+                    socket.write_all(chunk).await.unwrap();
+                    socket.write_all(b"\r\n").await.unwrap();
+                }
+                if finish_body {
+                    socket.write_all(b"0\r\n\r\n").await.unwrap();
+                }
+                std::future::pending::<()>().await;
+            };
+            let client = async {
+                let client = reqwest::Client::builder()
+                    .timeout(request_budget)
+                    .build()
+                    .unwrap();
+                let response = client
+                    .get(format!("http://{address}/"))
+                    .send()
+                    .await
+                    .unwrap();
+                bounded_response_json_with_limit::<Value>(response, 32).await
+            };
+            tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::select! {
+                    biased;
+                    () = server => unreachable!("the controlled server has no completion path"),
+                    result = client => result,
+                }
+            })
+            .await
+        };
+        tokio::time::timeout(Duration::from_secs(2), finished_rx)
+            .await
+            .expect("controlled server ownership did not retire")
+            .unwrap();
+        observed
+    }
+
+    #[tokio::test]
+    async fn chunked_management_json_is_bounded_without_waiting_for_eof() {
+        for oversized in [false, true] {
+            let mut body = b"{}".to_vec();
+            body.resize(if oversized { 33 } else { 32 }, b' ');
+            let result = controlled_chunked_json(body, !oversized, Duration::from_secs(5))
+                .await
+                .expect("the byte ceiling waited for EOF or the request timeout");
+            if oversized {
+                assert_eq!(result, Err(BoundedResponseError));
+            } else {
+                assert_eq!(result.unwrap(), json!({}));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_management_json_rejects_invalid_json_after_a_complete_body() {
+        let observed = controlled_chunked_json(b"{".to_vec(), true, Duration::from_secs(5)).await;
+        assert_eq!(
+            observed.expect("complete invalid JSON must not wait for a body deadline"),
+            Err(BoundedResponseError)
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_management_json_preserves_the_request_body_deadline() {
+        let observed =
+            controlled_chunked_json(b"{}".to_vec(), false, Duration::from_millis(250)).await;
+        assert_eq!(
+            observed.expect("the request deadline was lost during body collection"),
+            Err(BoundedResponseError)
+        );
+    }
+
+    async fn result_frame<S>(relay: &mut S, id: &str) -> Value
+    where
+        S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+            + Unpin,
+    {
+        result_frame_within(relay, id, Duration::from_secs(5))
+            .await
+            .expect("the requested result did not arrive within the whole receive budget")
+    }
+
+    async fn result_frame_within<S>(
+        relay: &mut S,
+        id: &str,
+        budget: Duration,
+    ) -> Result<Value, tokio::time::error::Elapsed>
+    where
+        S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+            + Unpin,
+    {
+        tokio::time::timeout(budget, async {
+            loop {
+                if let Message::Text(text) = next_frame(relay).await {
+                    let frame: Value = serde_json::from_str(&text).expect("response frame");
+                    if frame["type"] == "result" && frame["id"] == id {
+                        return frame;
+                    }
+                }
+            }
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn ready_heartbeats_do_not_renew_the_result_observation_deadline() {
+        let mut heartbeat = Box::pin(futures_util::stream::unfold((), |_| async {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            Some((
+                Ok(Message::Text(json!({"type": "ready"}).to_string().into())),
+                (),
+            ))
+        }));
+        assert!(
+            result_frame_within(&mut heartbeat, "missing", Duration::from_millis(40))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn owned_host_aborts_the_exact_task_on_fixture_unwind() {
+        struct Finished(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for Finished {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let host = OwnedHost(tokio::spawn(async move {
+            let _finished = Finished(Some(finished_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        }));
+        tokio::time::timeout(Duration::from_secs(5), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _owned = host;
+            panic!("injected fixture failure");
+        }));
+        assert!(failure.is_err());
+        tokio::time::timeout(Duration::from_secs(5), finished_rx)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
     async fn next_frame<S>(relay: &mut S) -> Message
     where
         S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
@@ -1722,10 +2290,10 @@ mod tests {
         };
         let mut client = Client::new(credentials, adapter.clone(), state, access, stop)
             .with_gateway_api_version(31);
-        let host = tokio::spawn(async move {
+        let mut host = OwnedHost(tokio::spawn(async move {
             let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
             client.connected(socket).await
-        });
+        }));
         let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
         let invoke = json!({
             "type": "invoke", "id": "r1", "action": "delete_preset",
@@ -1738,28 +2306,32 @@ mod tests {
         let mut advertised_api_version = false;
         let mut received_result = false;
         // Readiness and replies are independent streams: either may arrive first.
-        while !advertised_api_version || !received_result {
-            if let Message::Text(text) = next_frame(&mut relay).await {
-                let frame: Value = serde_json::from_str(&text).unwrap();
-                if frame["type"] == "ready" {
-                    assert_eq!(frame["gatewayApiVersion"], 31);
-                    advertised_api_version = true;
-                }
-                if frame["type"] == "result" {
-                    assert_eq!(frame["id"], "r1");
-                    assert_eq!(frame["ok"], true);
-                    assert!(!received_result, "the request returned more than once");
-                    received_result = true;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !advertised_api_version || !received_result {
+                if let Message::Text(text) = next_frame(&mut relay).await {
+                    let frame: Value = serde_json::from_str(&text).unwrap();
+                    if frame["type"] == "ready" {
+                        assert_eq!(frame["gatewayApiVersion"], 31);
+                        advertised_api_version = true;
+                    }
+                    if frame["type"] == "result" {
+                        assert_eq!(frame["id"], "r1");
+                        assert_eq!(frame["ok"], true);
+                        assert!(!received_result, "the request returned more than once");
+                        received_result = true;
+                    }
                 }
             }
-        }
+        })
+        .await
+        .expect("readiness and result did not arrive within the whole receive budget");
         assert!(
             advertised_api_version,
             "the host did not advertise its gateway API version"
         );
         assert_eq!(adapter.0.load(Ordering::SeqCst), 1);
         stop_tx.send(true).unwrap();
-        let outcome = tokio::time::timeout(Duration::from_secs(5), host)
+        let outcome = tokio::time::timeout(Duration::from_secs(5), &mut host.0)
             .await
             .expect("stop was not serviced")
             .unwrap();
@@ -1999,27 +2571,31 @@ mod tests {
             pairing: None,
         };
         let mut client = Client::new(credentials, adapter.clone(), state, access, stop);
-        let host = tokio::spawn(async move {
+        let mut host = OwnedHost(tokio::spawn(async move {
             let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
             client.connected(socket).await
-        });
+        }));
         let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
         async fn next_ready<S>(relay: &mut S, wanted: bool)
         where
             S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
                 + Unpin,
         {
-            // A frame already in flight may carry the previous value; the
-            // next one after it must carry the new one.
-            for _ in 0..3 {
-                if let Message::Text(text) = next_frame(relay).await {
-                    let frame: Value = serde_json::from_str(&text).unwrap();
-                    if frame["type"] == "ready" && frame["usbConnected"] == wanted {
-                        return;
+            tokio::time::timeout(Duration::from_secs(5), async {
+                // A frame already in flight may carry the previous value; the
+                // next one after it must carry the new one.
+                for _ in 0..3 {
+                    if let Message::Text(text) = next_frame(relay).await {
+                        let frame: Value = serde_json::from_str(&text).unwrap();
+                        if frame["type"] == "ready" && frame["usbConnected"] == wanted {
+                            return;
+                        }
                     }
                 }
-            }
-            panic!("no ready frame carried usbConnected={wanted}");
+                panic!("no ready frame carried usbConnected={wanted}");
+            })
+            .await
+            .expect("the wanted ready state did not arrive within the whole receive budget");
         }
         next_ready(&mut relay, false).await;
         adapter.0.store(true, Ordering::SeqCst);
@@ -2027,7 +2603,7 @@ mod tests {
         adapter.0.store(false, Ordering::SeqCst);
         next_ready(&mut relay, false).await;
         stop_tx.send(true).unwrap();
-        let outcome = tokio::time::timeout(Duration::from_secs(5), host)
+        let outcome = tokio::time::timeout(Duration::from_secs(5), &mut host.0)
             .await
             .expect("stop was not serviced")
             .unwrap();
@@ -2080,10 +2656,10 @@ mod tests {
         }))
         .expect("credentials");
         let mut client = Client::new(credentials, adapter.clone(), state, access, stop);
-        let host = tokio::spawn(async move {
+        let mut host = OwnedHost(tokio::spawn(async move {
             let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
             client.connected(socket).await
-        });
+        }));
         let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
         let invoke = |id: &str, origin: Option<&str>| {
             let mut frame = json!({
@@ -2101,16 +2677,9 @@ mod tests {
             ("r3", Some("someLaterOrigin")),
         ] {
             relay.send(invoke(id, origin)).await.unwrap();
-            loop {
-                if let Message::Text(text) = next_frame(&mut relay).await {
-                    let frame: Value = serde_json::from_str(&text).unwrap();
-                    if frame["type"] == "result" {
-                        assert_eq!(frame["id"], id);
-                        assert_eq!(frame["ok"], true, "{frame}");
-                        break;
-                    }
-                }
-            }
+            let frame = result_frame(&mut relay, id).await;
+            assert_eq!(frame["id"], id);
+            assert_eq!(frame["ok"], true, "{frame}");
         }
         assert_eq!(
             *adapter.0.lock().unwrap(),
@@ -2121,7 +2690,7 @@ mod tests {
             ]
         );
         stop_tx.send(true).unwrap();
-        let outcome = tokio::time::timeout(Duration::from_secs(5), host)
+        let outcome = tokio::time::timeout(Duration::from_secs(5), &mut host.0)
             .await
             .expect("stop was not serviced")
             .unwrap();

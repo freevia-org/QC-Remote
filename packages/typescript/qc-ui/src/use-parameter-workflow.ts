@@ -1,21 +1,24 @@
 import { requireModelId, requirePresetIdentity } from "@qc-remote/client";
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { useGuardedMutation } from "./use-guarded-mutation.ts";
 import type { BlockDetails, BlockParameter, GatewayTransport, PresetSnapshot } from "@qc-remote/client";
 import type { BlockEditorSessionController } from "./use-block-editor-session";
 import type { DeviceMutationWorkflowOptions } from "./workflow-options";
 import type { QcController } from "./use-qc-controller";
-import { samePresetAddress, SupersededPresetOperation } from "@qc-remote/core";
+import { samePresetAddress, SupersededPresetOperation, type DeviceMutationLease } from "@qc-remote/core";
 import { PARAMETER_ENCODER_ROLES, parameterEditorControlSlots, parameterEditorPageSize, parameterStep } from "./parameter-model.ts";
+import { captureGatewaySession } from "./gateway-session.ts";
+import { claimDeviceCommand, completeDeviceCommand, deviceCommandBusy, devicePhysicalCommandKey, registerDeviceCommandSession } from "./device-command-ownership.ts";
 
 type ParameterGesture = {
   details: BlockDetails;
   parameter: BlockParameter;
   snapshot: PresetSnapshot;
   gateway: GatewayTransport;
+  current(): boolean;
   observed: number;
   sent: number[];
 };
+type ParameterAdmissionHold = { token: DeviceMutationLease; hostToken: object; setter: (pending: boolean) => void; running: number; retired: boolean };
 type Preview = { gesture: ParameterGesture; value: number; revision: number };
 type Release = { revision: number; apply(): Promise<void> };
 const sameParameterValue = (left: number, right: number) => Math.abs(left - right) <= .00001;
@@ -31,6 +34,11 @@ export interface ParameterWorkflowOptions extends DeviceMutationWorkflowOptions 
 /** Shared low-latency parameter preview, coalescing, verified commit, and recovery. */
 export function useParameterWorkflow(options: ParameterWorkflowOptions) {
   const { gateway, snapshot, editor, controller, connected, pending, setPending, reconcile, recordHistory, notice, fail } = options;
+  const admission = controller.lifetime.mutations;
+  const physicalSession = controller.lifetime.checkpoint().session;
+  const fallbackCommandKey = devicePhysicalCommandKey(controller.lifetime, physicalSession);
+  registerDeviceCommandSession(setPending, options.commandSessionKey ?? fallbackCommandKey, options.commandSessionKey !== undefined);
+  const hold = useRef<ParameterAdmissionHold | undefined>(undefined);
   const timers = useRef(new Map<number, number>());
   const targets = useRef(new Map<number, number>());
   const clock = useRef(0);
@@ -44,6 +52,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
   const releaseRunning = useRef(false);
   const batchRunning = useRef(false);
   const lifetime = useRef(0);
+  const mounted = useRef(true);
   const context = useRef({snapshot, connected});
   context.current = {snapshot, connected};
   const detailsRef = useRef(editor.details);
@@ -62,10 +71,43 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       return () => hostCurrent() && controller.lifetime.current(checkpoint)
         && epoch === lifetime.current && actionKey === currentActionKey.current;
   };
-  const actionGuard = useGuardedMutation({ ...options, sessionKey: actionKey,
-    commandSessionKey: options.commandSessionKey ?? options.sessionKey ?? gateway,
-    captureSessionCurrent: captureActionCurrent
-  }, "editing block parameters");
+  const captureEditorOperation = (details: BlockDetails) => {
+    const actionCurrent = captureActionCurrent();
+    const epoch = lifetime.current;
+    const origin = controller.lifetime.checkpoint();
+    const session = captureGatewaySession(gateway, () => controller.lifetime.currentSession(origin));
+    const operation = captureGatewaySession(session.gateway, () => actionCurrent() && mounted.current && session.current() && epoch === lifetime.current
+      && context.current.connected && controller.lifetime.current(origin)
+      && detailsRef.current?.row === details.row && detailsRef.current.column === details.column
+      && detailsRef.current.modelId === details.modelId && detailsRef.current.scene === details.scene);
+    return { ...operation, sessionCurrent: session.current, sessionGateway: session.gateway };
+  };
+
+  const retireHold = useCallback((owned: ParameterAdmissionHold) => {
+    if (owned.running || (!owned.retired && (targets.current.size || timers.current.size || releases.current.size
+        || previewQueue.current || previewRunning.current || releaseRunning.current || batchRunning.current))) return;
+    if (hold.current === owned) hold.current = undefined;
+    owned.retired = true;
+    owned.token.release();
+    try { completeDeviceCommand(owned.setter, owned.hostToken); }
+    catch (error) { try { console.error("Parameter pending release failed:", error); } catch { /* Diagnostic only. */ } }
+  }, [admission, setPending]);
+  const reserveHold = useCallback(() => {
+    const owned = hold.current;
+    if (owned?.token.current() && !owned.retired) return owned;
+    if (pending || admission.busy || deviceCommandBusy(setPending)) return;
+    const token = admission.tryAcquire();
+    if (!token) return;
+    const hostToken = {};
+    if (!claimDeviceCommand(setPending, hostToken)) { token.release(); return; }
+    const acquired = { token, hostToken, setter: setPending, running: 0, retired: false };
+    hold.current = acquired;
+    return acquired;
+  }, [admission, pending, setPending]);
+  const endWork = useCallback((owned: ParameterAdmissionHold) => {
+    owned.running--;
+    retireHold(owned);
+  }, [retireHold]);
 
   const parameterOwnerCurrent = useMemo(() => {
     const hostCurrent = options.captureSessionCurrent?.() ?? (() => true);
@@ -103,7 +145,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
   const gestureCurrent = useCallback((gesture: ParameterGesture) => {
     const current = context.current;
     const details = detailsRef.current;
-    return gestures.current.get(gesture.parameter.index) === gesture && current.connected
+    return mounted.current && gesture.current() && gestures.current.get(gesture.parameter.index) === gesture && current.connected
       && samePresetAddress(current.snapshot, gesture.snapshot)
       && current.snapshot.presetIdentity === gesture.snapshot.presetIdentity
       && current.snapshot.activeScene === gesture.snapshot.activeScene
@@ -143,15 +185,19 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
 
   const drainPreviews = useCallback(async () => {
     if (previewRunning.current) return;
+    const owned = hold.current;
+    if (!owned?.token.current() || owned.retired) return;
+    const epoch = lifetime.current;
+    owned.running++;
     previewRunning.current = true;
     try {
-      while (previewQueue.current) {
+      while (epoch === lifetime.current && owned.token.current() && previewQueue.current) {
         const next = previewQueue.current;
         previewQueue.current = undefined;
         try {
           const {gesture} = next;
           const {parameter} = await readGesture(gesture);
-          if (!gestureCurrent(gesture) || revisions.current.get(parameter.index) !== next.revision) continue;
+          if (epoch !== lifetime.current || !owned.token.current() || !gestureCurrent(gesture) || revisions.current.get(parameter.index) !== next.revision) continue;
           if (sameParameterValue(parameter.normalizedValue!, next.value)
               || gesture.sent.length >= maximumUnobservedPreviews) continue;
           // Record the attempted value, including ambiguous delivery. Only a
@@ -163,10 +209,10 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
         } catch { /* The verified release write owns reconciliation and errors. */ }
       }
     } finally {
-      previewRunning.current = false;
-      resolveWaiters();
+      if (epoch === lifetime.current) { previewRunning.current = false; resolveWaiters(); }
+      endWork(owned);
     }
-  }, [gestureCurrent, readGesture, resolveWaiters]);
+  }, [endWork, gestureCurrent, readGesture, resolveWaiters]);
 
   const waitForPreviews = useCallback(() => !previewRunning.current && !previewQueue.current
     ? Promise.resolve()
@@ -174,6 +220,12 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
 
   const cancel = useCallback(() => {
     lifetime.current++;
+    const owned = hold.current;
+    hold.current = undefined;
+    if (owned) owned.retired = true;
+    previewRunning.current = false;
+    releaseRunning.current = false;
+    batchRunning.current = false;
     clock.current += 1;
     revisions.current.clear();
     targets.current.clear();
@@ -185,7 +237,20 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     for (const timer of timers.current.values()) window.clearTimeout(timer);
     timers.current.clear();
     resolveWaiters();
-  }, [controller.cancelInteraction, resolveWaiters]);
+    if (owned) retireHold(owned);
+  }, [controller.cancelInteraction, resolveWaiters, retireHold]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; cancel(); };
+  }, [cancel]);
+
+  useEffect(() => {
+    let origin = controller.lifetime.checkpoint();
+    return controller.lifetime.subscribe(() => {
+      if (!controller.lifetime.current(origin)) { origin = controller.lifetime.checkpoint(); cancel(); }
+    });
+  }, [cancel, controller.lifetime]);
 
   useEffect(() => cancel, [cancel, connected, snapshot.presetIdentity, snapshot.setlistKey,
     snapshot.presetPosition, snapshot.activeScene, editor.details?.row, editor.details?.column,
@@ -199,6 +264,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     stillCurrent: () => boolean = () => true,
     gesture?: ParameterGesture
   ): Promise<string | undefined> => {
+    if (!mounted.current) return;
     if (snapshot.gridLayoutComplete === false) {
       notice("The Grid layout is incomplete. Block parameter edits are paused until the current-preset refresh succeeds.");
       return;
@@ -217,9 +283,12 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     }
     const row = details.row;
     const column = details.column;
-    setPending(true);
-    notice(`Applying ${parameter.name}…`);
+    const mutationLease = reserveHold();
+    if (!mutationLease) { if (reportFailure) throw new Error("A device command is already in progress."); notice("A device command is already in progress."); return; }
+    mutationLease.running++;
     try {
+      setPending(true);
+      notice(`Applying ${parameter.name}…`);
       const result = await operationGateway.setParameter(row, column, parameter.index, value, parameter.normalizedValue,
         operationSnapshot.activeScene, requireModelId(details), operationSnapshot.presetName, requirePresetIdentity(operationSnapshot));
       if (stillCurrent()) {
@@ -259,9 +328,9 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       if (reportFailure) throw error;
       if (stillCurrent()) fail(error);
     } finally {
-      setPending(false);
+      endWork(mutationLease);
     }
-  }, [connected, editor, fail, gateway, notice, pending, reconcile, recordHistory, setPending, snapshot]);
+  }, [admission, endWork, reserveHold, connected, editor, fail, gateway, notice, pending, reconcile, recordHistory, setPending, snapshot]);
 
   const apply = useCallback(async (parameter: BlockParameter, value: number, revision: number) => {
     if (snapshot.gridLayoutComplete === false) {
@@ -287,32 +356,43 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
         targets.current.delete(parameter.index);
         gestures.current.delete(parameter.index);
       }
+      const owned = hold.current;
+      if (owned) retireHold(owned);
     }
-  }, [applyResolvedParameter, fail, gestureCurrent, readGesture]);
+  }, [retireHold, applyResolvedParameter, fail, gestureCurrent, readGesture]);
 
   const drainReleases = useCallback(async () => {
     if (releaseRunning.current || batchRunning.current) return;
+    const owned = hold.current;
+    if (!owned?.token.current() || owned.retired) return;
+    const epoch = lifetime.current;
+    owned.running++;
     releaseRunning.current = true;
     try {
-      while (releases.current.size) {
+      while (epoch === lifetime.current && owned.token.current() && releases.current.size) {
         const [index, next] = releases.current.entries().next().value!;
         releases.current.delete(index);
         await waitForPreviews();
-        if (revisions.current.get(index) === next.revision) await next.apply();
+        if (epoch === lifetime.current && owned.token.current() && revisions.current.get(index) === next.revision) await next.apply();
       }
     } finally {
-      releaseRunning.current = false;
+      if (epoch === lifetime.current) releaseRunning.current = false;
+      endWork(owned);
     }
-  }, [waitForPreviews]);
+  }, [endWork, waitForPreviews]);
 
   const draft = useCallback((parameter: BlockParameter, value: number) => {
-    if (!parameterOwnerCurrent()) return clock.current;
+    if (!parameterOwnerCurrent()) return -1;
     if (!parameter.writable || parameter.enabled === false) {
       const current = detailsRef.current?.parameters.find((item) => item.index === parameter.index);
       if (!current?.writable || current.enabled === false) retireParameter(parameter.index);
       return clock.current;
     }
     if (batchRunning.current) return clock.current;
+    if (!mounted.current || batchRunning.current) return -1;
+    const existingHold = hold.current;
+    if (connected && !reserveHold()) return -1;
+    try {
     const revision = ++clock.current;
     revisions.current.set(parameter.index, revision);
     targets.current.set(parameter.index, value);
@@ -329,14 +409,19 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     if (connected && continuous && details && parameter.normalizedValue !== null) {
       let gesture = gestures.current.get(parameter.index);
       if (!gesture || !gestureCurrent(gesture)) {
-        gesture = {details, parameter, snapshot, gateway, observed: parameter.normalizedValue, sent: []};
+        const operation = captureEditorOperation(details);
+        gesture = {details, parameter, snapshot, gateway: operation.gateway, current: operation.current, observed: parameter.normalizedValue, sent: []};
         gestures.current.set(parameter.index, gesture);
       }
       previewQueue.current = {gesture, value, revision};
       void drainPreviews();
     }
     return revision;
-  }, [connected, controller, drainPreviews, editor, gateway, gestureCurrent, reconcile, parameterOwnerCurrent, retireParameter, snapshot]);
+    } catch (error) {
+      if (!existingHold && hold.current?.running === 0) cancel();
+      throw error;
+    }
+  }, [cancel, connected, controller, drainPreviews, editor, gateway, gestureCurrent, reconcile, reserveHold, parameterOwnerCurrent, retireParameter, snapshot]);
 
   const commit = useCallback((parameter: BlockParameter, value: number) => {
     if (!parameterOwnerCurrent()) return;
@@ -347,6 +432,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     }
     if (batchRunning.current) return;
     const revision = draft(parameter, value);
+    if (revision < 0) return;
     const target = authorityTargets.current.get(parameter.index);
     if (target) controller.releaseInteraction(target, value);
     const existing = timers.current.get(parameter.index);
@@ -365,7 +451,7 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       return;
     }
     const details = detailsRef.current;
-    if (!details || pending || releaseRunning.current || batchRunning.current || !changes.length) return;
+    if (!details || (pending && !hold.current) || releaseRunning.current || batchRunning.current || !changes.length) return;
     if (!connected) {
       editor.updateParameters(changes);
       reconcile({ ...snapshot, dirty: true });
@@ -374,30 +460,33 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     }
     // A linked control release owns its parameters until verification finishes.
     // Supersede their older timers, but let already admitted previews settle.
-    batchRunning.current = true;
     const epoch = lifetime.current;
     const sameBlock = (block: BlockDetails | undefined) => block?.row === details.row
       && block.column === details.column && block.modelId === details.modelId && block.scene === details.scene;
-    const current = () => epoch === lifetime.current && context.current.connected
+    const current = () => parameterOwnerCurrent() && epoch === lifetime.current && context.current.connected
       && samePresetAddress(context.current.snapshot, snapshot)
       && context.current.snapshot.presetIdentity === snapshot.presetIdentity
       && context.current.snapshot.activeScene === snapshot.activeScene && sameBlock(detailsRef.current);
     const batch = [...new Map(changes.map(change => [change.parameter.index, change])).values()];
     const retirements = new Map(batch.map(({parameter}) => [parameter.index, parameterRetirements.current.get(parameter.index) ?? 0]));
     const assertCurrent = () => { if (!current() || batch.some(({parameter}) => (parameterRetirements.current.get(parameter.index) ?? 0) !== retirements.get(parameter.index))) throw new SupersededPresetOperation(); };
-    for (const {parameter, value} of batch) {
-      const target = { kind: "parameter" as const, row: details.row, column: details.column, parameterIndex: parameter.index };
-      authorityTargets.current.set(parameter.index, target);
-      controller.updateInteraction(target, value);
-      controller.releaseInteraction(target, value);
-      const timer = timers.current.get(parameter.index);
-      if (timer !== undefined) window.clearTimeout(timer);
-      timers.current.delete(parameter.index);
-      releases.current.delete(parameter.index);
-    }
-    setPending(true);
-    notice("Applying parameter changes…");
+    const mutationLease = reserveHold();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
+    mutationLease.running++;
     try {
+      batchRunning.current = true;
+      for (const {parameter, value} of batch) {
+        const target = { kind: "parameter" as const, row: details.row, column: details.column, parameterIndex: parameter.index };
+        authorityTargets.current.set(parameter.index, target);
+        controller.updateInteraction(target, value);
+        controller.releaseInteraction(target, value);
+        const timer = timers.current.get(parameter.index);
+        if (timer !== undefined) window.clearTimeout(timer);
+        timers.current.delete(parameter.index);
+        releases.current.delete(parameter.index);
+      }
+      setPending(true);
+      notice("Applying parameter changes…");
       await waitForPreviews();
       assertCurrent();
       let currentBlock = await gateway.blockDetails(details.row, details.column, snapshot.presetName, requirePresetIdentity(snapshot));
@@ -459,11 +548,11 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
         targets.current.delete(parameter.index);
         gestures.current.delete(parameter.index);
       }
-      batchRunning.current = false;
-      setPending(false);
-      void drainReleases();
+      if (epoch === lifetime.current) batchRunning.current = false;
+      endWork(mutationLease);
+      if (epoch === lifetime.current) void drainReleases();
     }
-  }, [connected, controller, drainReleases, editor, fail, gateway, notice, observeGesture, pending, reconcile, setPending, snapshot, waitForPreviews]);
+  }, [admission, endWork, reserveHold, connected, controller, drainReleases, editor, fail, gateway, notice, observeGesture, pending, reconcile, setPending, snapshot, waitForPreviews]);
 
   const targetValue = useCallback((parameter: BlockParameter) => targets.current.get(parameter.index) ?? editor.drafts[parameter.index] ?? parameter.normalizedValue ?? 0, [editor.drafts]);
   const toggleSceneMode = useCallback(async (parameter: BlockParameter) => {
@@ -472,83 +561,91 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
       return;
     }
     const details = detailsRef.current;
-    if (!details) return;
+    if (!details || pending || hold.current || admission.busy) return;
     if (!connected) {
       notice("Connect the Quad Cortex before changing a parameter's Scene assignment.");
       return;
     }
-    const currentAction = captureActionCurrent();
-    const assertCurrent = () => { if (!currentAction()) throw new SupersededPresetOperation(); };
-    const sameBlock = (block: BlockDetails) => block.row === details.row && block.column === details.column
-      && block.modelId === details.modelId && block.scene === details.scene;
-    await actionGuard.run({
-      progress: `${parameter.sceneMode ? "Removing" : "Assigning"} ${parameter.name} ${parameter.sceneMode ? "from" : "to"} Scenes…`,
-      write: async () => {
+    const operation = captureEditorOperation(details);
+    const gateway = operation.gateway;
+    const mutationLease = reserveHold();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
+    mutationLease.running++;
+    try {
+      setPending(true);
+      notice(`${parameter.sceneMode ? "Removing" : "Assigning"} ${parameter.name} ${parameter.sceneMode ? "from" : "to"} Scenes…`);
       await waitForPreviews();
-      assertCurrent();
+      operation.assertCurrent();
       const observed = await gateway.blockDetails(details.row, details.column, snapshot.presetName, requirePresetIdentity(snapshot));
-      assertCurrent();
-      if (!sameBlock(observed)) throw new Error("The parameter block or scene changed. Select it again before editing.");
+      operation.assertCurrent();
+      if (observed.row !== details.row || observed.column !== details.column || observed.modelId !== details.modelId || observed.scene !== details.scene) throw new Error("The parameter block or scene changed. Select it again before editing.");
       const current = observed.parameters.find((candidate) => candidate.index === parameter.index);
       if (!current || !current.writable || current.enabled === false || current.sceneMode !== parameter.sceneMode) throw new Error("The parameter's Scene assignment changed. Refresh and retry.");
       const enabled = !current.sceneMode;
       const result = await gateway.setParameterSceneMode(observed.row, observed.column, current.index, enabled, requireModelId(observed), snapshot.presetName, requirePresetIdentity(snapshot));
-      assertCurrent();
+      operation.assertCurrent();
       const confirmed = await gateway.blockDetails(observed.row, observed.column, snapshot.presetName, requirePresetIdentity(snapshot));
-      assertCurrent();
+      operation.assertCurrent();
       const confirmedParameter = confirmed.parameters.find((candidate) => candidate.index === current.index);
-      if (!sameBlock(confirmed) || confirmedParameter?.sceneMode !== enabled) throw new Error("The Quad Cortex did not confirm the parameter's Scene assignment.");
+      if (confirmed.row !== details.row || confirmed.column !== details.column || confirmed.modelId !== details.modelId || confirmed.scene !== details.scene || confirmedParameter?.sceneMode !== enabled) throw new Error("The Quad Cortex did not confirm the parameter's Scene assignment.");
       detailsRef.current = confirmed;
       editor.load(confirmed);
       if (result.snapshot) reconcile(result.snapshot);
       recordHistory({
         label: `${observed.name} ${current.name} Scene assignment`,
-        execute: (latest) => gateway.setParameterSceneMode(observed.row, observed.column, current.index, current.sceneMode, requireModelId(observed), latest.presetName, requirePresetIdentity(latest)),
-        redo: (latest) => gateway.setParameterSceneMode(observed.row, observed.column, current.index, enabled, requireModelId(observed), latest.presetName, requirePresetIdentity(latest))
+        execute: (latest) => operation.sessionGateway.setParameterSceneMode(observed.row, observed.column, current.index, current.sceneMode, requireModelId(observed), latest.presetName, requirePresetIdentity(latest)),
+        redo: (latest) => operation.sessionGateway.setParameterSceneMode(observed.row, observed.column, current.index, enabled, requireModelId(observed), latest.presetName, requirePresetIdentity(latest))
       });
       notice(result.detail);
-      }
-    });
-  }, [actionGuard, actionKey, connected, controller.lifetime, editor, gateway, notice, options.captureSessionCurrent, reconcile, recordHistory, snapshot, waitForPreviews]);
+    } catch (error) {
+      if (operation.current()) fail(error);
+    } finally {
+      endWork(mutationLease);
+    }
+  }, [admission, endWork, reserveHold, connected, editor, fail, gateway, notice, pending, reconcile, recordHistory, setPending, snapshot, waitForPreviews]);
   const resetDefaults = useCallback(async () => {
     if (snapshot.gridLayoutComplete === false) {
       notice("The Grid layout is incomplete. Block parameter edits are paused until the current-preset refresh succeeds.");
       return;
     }
     const details = detailsRef.current;
-    if (!details) return;
+    if (!details || pending || hold.current || admission.busy) return;
     if (!connected) {
       notice("Connect the Quad Cortex before resetting block parameters.");
       return;
     }
-    const currentAction = captureActionCurrent();
-    const assertCurrent = () => { if (!currentAction()) throw new SupersededPresetOperation(); };
-    const sameBlock = (block: BlockDetails) => block.row === details.row && block.column === details.column
-      && block.modelId === details.modelId && block.scene === details.scene;
-    await actionGuard.run({
-      progress: `Resetting ${details.name} parameters…`,
-      write: async () => {
+    const operation = captureEditorOperation(details);
+    const gateway = operation.gateway;
+    const mutationLease = reserveHold();
+    if (!mutationLease) { notice("A device command is already in progress."); return; }
+    mutationLease.running++;
+    try {
+      setPending(true);
+      notice(`Resetting ${details.name} parameters…`);
       await waitForPreviews();
-      assertCurrent();
+      operation.assertCurrent();
       const observed = await gateway.blockDetails(details.row, details.column, snapshot.presetName, requirePresetIdentity(snapshot));
-      assertCurrent();
-      if (!sameBlock(observed)) {
+      operation.assertCurrent();
+      if (observed.modelId !== details.modelId || observed.scene !== details.scene) {
         throw new Error("The parameter block or scene changed. Select it again before resetting.");
       }
       const result = await gateway.resetBlockParameters(observed.row, observed.column, requireModelId(observed), snapshot.presetName, requirePresetIdentity(snapshot));
-      assertCurrent();
+      operation.assertCurrent();
       const confirmed = await gateway.blockDetails(observed.row, observed.column, snapshot.presetName, requirePresetIdentity(snapshot));
-      assertCurrent();
-      if (!sameBlock(confirmed)) {
+      operation.assertCurrent();
+      if (confirmed.row !== observed.row || confirmed.column !== observed.column || confirmed.modelId !== observed.modelId || confirmed.scene !== observed.scene) {
         throw new Error("The parameter block or scene changed before reset readback.");
       }
       detailsRef.current = confirmed;
       editor.load(confirmed);
       reconcile(result.snapshot ?? { ...snapshot, dirty: true });
       notice("Block parameters reset to defaults.");
-      }
-    });
-  }, [actionGuard, actionKey, connected, controller.lifetime, editor, gateway, notice, options.captureSessionCurrent, reconcile, snapshot, waitForPreviews]);
+    } catch (error) {
+      if (operation.current()) fail(error);
+    } finally {
+      endWork(mutationLease);
+    }
+  }, [admission, endWork, reserveHold, connected, editor, fail, gateway, notice, pending, reconcile, setPending, snapshot, waitForPreviews]);
   const adjustEncoder = useCallback((
     role: string,
     delta: number,
@@ -578,7 +675,8 @@ export function useParameterWorkflow(options: ParameterWorkflowOptions) {
     if (announceCommit) report(`${details.name} · ${parameter.name}`);
     return true;
   }, [commit, editor.page, targetValue]);
+  const ownsMutation = useCallback(() => Boolean(hold.current?.token.current() && !hold.current.retired), []);
   const hasPendingChanges = useCallback(() => batchRunning.current || releaseRunning.current || timers.current.size > 0 || targets.current.size > 0, []);
 
-  return { draft, commit, commitBatch, applyResolvedParameter, toggleSceneMode, resetDefaults, adjustEncoder, cancel, targetValue, hasPendingChanges, updateDetails: (details: typeof editor.details) => { detailsRef.current = details; if (details) editor.load(details); } };
+  return { ownsMutation, draft, commit, commitBatch, applyResolvedParameter, toggleSceneMode, resetDefaults, adjustEncoder, cancel, targetValue, hasPendingChanges, updateDetails: (details: typeof editor.details) => { detailsRef.current = details; if (details) editor.load(details); } };
 }

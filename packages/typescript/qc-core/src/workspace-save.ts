@@ -6,9 +6,9 @@ import { withoutModelPresetCatalog } from "./model-preset-catalog.ts";
  * preset list: that list belongs to one device session and is not user data to keep on disk.
  * The Windows app saves through saveWorkspaceDocument below, which builds its document here, and
  * behaviour tests run that path with a recording writer. That is a convention, not a boundary: the
- * Rust command that writes the file (validate_workspace) accepts any object with version 1 and an
- * object snapshot and does not remove the catalog, so a caller that builds its own document would
- * bypass this builder.
+ * Rust command validates the stable version-1 document fields before reading or writing but does
+ * not remove the catalog, so a caller that builds its own document would bypass this builder's
+ * catalog exclusion.
  */
 export function buildWorkspaceDocument(input: {
   snapshot: PresetSnapshot;

@@ -14,8 +14,6 @@
     { "number": 5, "name": "IOMeter", "category": "telemetry" },
     { "number": 11, "name": "ProductionAutomationMode", "category": "factory" },
     { "number": 16, "name": "EnableCaptureOut", "category": "unestablished" },
-    { "number": 18, "name": "CloudLogin", "category": "cloud" },
-    { "number": 29, "name": "ProductForward", "category": "cloud" },
     { "number": 30, "name": "BackupsForward", "category": "cloud" },
     { "number": 31, "name": "LogsForward", "category": "cloud" },
     { "number": 37, "name": "GridModelMeter", "category": "telemetry" },

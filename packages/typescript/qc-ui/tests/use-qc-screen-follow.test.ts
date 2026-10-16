@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
@@ -16,9 +16,52 @@ import type { QcScreenFollowOptions } from "../src/use-qc-screen-follow.ts";
 register("./support/react-singleton-loader.mjs", import.meta.url);
 const { createElement } = (await import("react")).default;
 const { consumeQcDisplayStates, qcGigViewTransition, useQcFollowSetting, useQcScreenFollow } = await import("../src/use-qc-screen-follow.ts");
+const { PresetLifetime } = await import("@qc-remote/core");
+const { useAdaptiveQcScreenPolling } = await import("../src/use-adaptive-screen-polling.ts");
+
+test("adaptive graphics polling fences same-route reconnect receipts and errors without treating preset changes as reconnects", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  for (const rejectOld of [false, true]) {
+    const lifetime = new PresetLifetime({ setlistKey: "1_p", presetPosition: 0 });
+    const requests: Array<{ resolve(value: { tree: string }): void; reject(error: Error): void }> = [];
+    const observed: string[] = [];
+    const gateway = { graphicsTree: () => new Promise<{ tree: string }>((resolve, reject) => requests.push({ resolve, reject })) };
+    let polling!: ReturnType<typeof useAdaptiveQcScreenPolling>;
+    function Probe() {
+      polling = useAdaptiveQcScreenPolling({ gateway, lifetime, enabled: true, connected: true, onObservation: (next) => observed.push(next.kind) });
+      return null;
+    }
+    let renderer!: ReactTestRenderer;
+    act(() => { renderer = create(createElement(Probe)); });
+    try {
+      assert.equal(requests.length, 1);
+      act(() => lifetime.observe({ setlistKey: "1_p", presetPosition: 1 }));
+      assert.equal(requests.length, 1, "ordinary preset navigation must not restart the session poll");
+      act(() => lifetime.reset());
+      assert.equal(requests.length, 2, "same-route reconnect starts a new owned poll");
+      await act(async () => {
+        if (rejectOld) requests[0].reject(new Error("Old USB disconnected"));
+        else requests[0].resolve({ tree: "zenUI::SettingsDialog" });
+        await Promise.resolve();
+      });
+      assert.deepEqual(observed, []);
+      assert.equal(polling.phase, "polling");
+      await act(async () => { requests[1].resolve({ tree: "zenUI::Grid" }); await Promise.resolve(); });
+      assert.deepEqual(observed, ["grid"]);
+      assert.equal(polling.observation?.kind, "grid");
+      assert.equal(polling.phase, "ready");
+    } finally { act(() => renderer.unmount()); }
+  }
+});
 
 const observation = (kind: QcObservedScreenKind, ioSelection?: QcScreenObservation["ioSelection"], settingsSelection?: QcScreenObservation["settingsSelection"]): QcScreenObservation => ({ kind, signature: kind + JSON.stringify(ioSelection ?? "") + JSON.stringify(settingsSelection ?? ""), observedAt: 0, ...(ioSelection ? { ioSelection } : {}), ...(settingsSelection ? { settingsSelection } : {}) });
 type Unit = "Grid" | "MainMenuPopup" | "SettingsDialog" | "HybridModeConfigDialog" | "CheatSheetDialog" | "MessageDialog" | "TunerDialog" | "ParameterEditor" | "Keyboard" | "MetronomeEditor" | "CpuLoadIndicator" | "DirectoryDialog" | "SceneSelectorPopup" | "PortSelector" | "MidiMatrixDialog" | "CopySceneDialog" | "SearchDialog" | "OptionsPopup";
+
+const scenarioRenderers = new Set<ReactTestRenderer>();
+afterEach(() => {
+  for (const renderer of scenarioRenderers) act(() => renderer.unmount());
+  scenarioRenderers.clear();
+});
 
 interface Scenario {
   sessionEpoch?: number;
@@ -53,6 +96,7 @@ function harness(initial: Scenario = {}) {
   const world = { captureRead: undefined as (() => Promise<{pngBase64:string}>) | undefined, sceneLetter: "A", unreadableTitle: false, treeRead: undefined as (() => Promise<{ tree: string }>) | undefined, unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: (initial.menuScroll ?? "bottom") as "bottom" | "mid" | "top", swipedAt: -1e9, rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", stuck: initial.scrollStuck ?? false, panel: initial.panel ?? false };
   const state = { blockMenuOpen: initial.blockMenuOpen ?? false, directorySearchOpen: initial.directorySearchOpen ?? false, sceneCommand: (initial.sceneCommand ?? null) as "copy" | "swap" | null, view: initial.view ?? null as string | null, popup: initial.popup ?? null as "grid-menu" | "scene-menu" | "mode-menu" | null, settingsOpen: initial.settingsOpen ?? false, directoryOpen: initial.directoryOpen ?? false, routePicker: initial.routePicker as { row: number; side: string } | undefined, tempoOpen: initial.tempoOpen ?? false };
   const latch = createQcScreenLatch();
+  const lifetime = new PresetLifetime({ setlistKey: "1_p", presetPosition: 0 });
   const gateway = {
     graphicsTree: async () => {
       if (world.treeRead) return world.treeRead();
@@ -126,6 +170,7 @@ function harness(initial: Scenario = {}) {
     open() {}
   });
   const options = (scenario: Scenario): QcScreenFollowOptions => ({
+    lifetime,
     sessionKey: scenario.sessionEpoch ?? 0,
     captureSessionCurrent: () => { const epoch = scenario.sessionEpoch ?? 0; return () => epoch === (current.sessionEpoch ?? 0); },
     gateway, decodeFrame: async () => world.unreadableTitle ? undefined : ({ width: 800, height: 480, luma: titleFrame(world.scene) }),
@@ -139,11 +184,12 @@ function harness(initial: Scenario = {}) {
   function Probe() { seen.current = useQcScreenFollow(options(current)); return null; }
   let renderer!: ReactTestRenderer;
   act(() => { renderer = create(createElement(Probe)); });
+  scenarioRenderers.add(renderer);
   /** The app's screen changes by the user's hand (or the unit's), then the host re-renders. */
   const rerender = async (next: Scenario) => { current = { ...current, ...next }; Object.assign(state, { view: next.view !== undefined ? next.view : state.view, popup: next.popup !== undefined ? next.popup : state.popup, settingsOpen: next.settingsOpen ?? state.settingsOpen, directoryOpen: next.directoryOpen ?? state.directoryOpen, routePicker: "routePicker" in next ? next.routePicker : state.routePicker, blockMenuOpen: next.blockMenuOpen ?? state.blockMenuOpen, directorySearchOpen: next.directorySearchOpen ?? state.directorySearchOpen, sceneCommand: "sceneCommand" in next ? (next.sceneCommand ?? null) : state.sceneCommand, tempoOpen: next.tempoOpen ?? state.tempoOpen }); await act(async () => { renderer.update(createElement(Probe)); await new Promise((resolve) => setTimeout(resolve, 100)); });
     // The route starts when the render commits, and now takes a few settle waits of its own.
     await new Promise((resolve) => setTimeout(resolve, 400)); };
-  return { log, selections, settingsPanes, cloudStates, world, state, latch, watchers, rerender, get follower() { return seen.current!; }, renderer };
+  return { log, selections, settingsPanes, cloudStates, world, state, latch, lifetime, gateway, watchers, rerender, get follower() { return seen.current!; }, renderer };
 }
 
 const overlaysClosed = ["grid.close", "scene.closeCommand", "preset.closeDirectory", "settings.close", "tempo.close", "tuner.close"];
@@ -513,6 +559,58 @@ test("the CPU overlay is seen with the Grid still in the tree, and followed both
   act(() => unitFirst.follower.observe(observation("grid")));
   assert.equal(unitFirst.state.view, null);
   unitFirst.renderer.unmount();
+});
+
+test("obsolete screen opening cannot gesture after its app screen closes, session stops, or hook unmounts", async () => {
+  for (const transition of ["close", "disconnect", "reconnect", "unmount"] as const) {
+    const host = harness({ follow: false, available: true });
+    let release!: (value: { tree: string }) => void;
+    const pending = new Promise<{ tree: string }>((resolve) => { release = resolve; });
+    const original = host.gateway.graphicsTree;
+    let first = true;
+    host.gateway.graphicsTree = () => first ? (first = false, pending) as never : original();
+    await host.rerender({ settingsOpen: true });
+    if (transition === "close") await host.rerender({ settingsOpen: false });
+    else if (transition === "disconnect") await host.rerender({ ready: false });
+    else if (transition === "reconnect") act(() => host.lifetime.reset());
+    else act(() => host.renderer.unmount());
+    await act(async () => { release({ tree: "zenUI::RootGraphicsItem\nzenUI::Grid" }); await new Promise((resolve) => setTimeout(resolve, 20)); });
+    assert.deepEqual(host.log.filter((entry) => /^(tap|hold|swipe):/.test(entry)), [], transition);
+    assert.deepEqual(host.log.filter((entry) => entry.startsWith("notice:")), [], `${transition}: obsolete errors stay silent`);
+    if (transition !== "unmount") act(() => host.renderer.unmount());
+  }
+});
+
+test("a rejected obsolete screen read cannot publish its error onto the replacement view", async () => {
+  const host = harness({ follow: false, available: true });
+  let reject!: (error: Error) => void;
+  host.gateway.graphicsTree = () => new Promise((_, failure) => { reject = failure; }) as never;
+  await host.rerender({ view: "modes" });
+  act(() => host.renderer.unmount());
+  await act(async () => { reject(new Error("old USB read failed")); await Promise.resolve(); });
+  assert.deepEqual(host.log, []);
+});
+
+test("a same-gateway reconnect releases stalled driving ownership immediately for new unit observations", async () => {
+  const host = harness({ follow: false, available: true });
+  let release!: (value: { tree: string }) => void;
+  host.gateway.graphicsTree = () => new Promise((resolve) => { release = resolve; }) as never;
+  await host.rerender({ view: "modes" });
+  act(() => host.lifetime.reset());
+  act(() => host.follower.observe(observation("settings")));
+  assert.ok(host.log.includes("settings.openSettings"), "a stalled predecessor must not suppress the new session's screen");
+  act(() => host.renderer.unmount());
+  await act(async () => { release({ tree: "zenUI::RootGraphicsItem\nzenUI::Grid" }); await Promise.resolve(); });
+});
+
+test("a same-screen first observation after session reset is followed again without a readiness toggle", () => {
+  const host = harness();
+  act(() => host.follower.observe(observation("settings")));
+  host.log.length = 0;
+  act(() => host.lifetime.reset());
+  act(() => host.follower.observe(observation("settings")));
+  assert.ok(host.log.includes("settings.openSettings"));
+  act(() => host.renderer.unmount());
 });
 
 test("Settings opens on its Updates pane: the app's routes send only the menu, the row and the header check, never a touch in that pane", async () => {

@@ -7,12 +7,10 @@ import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
-  runWindowsNativeTests,
+  runWindowsNativeTests as runNative,
   NATIVE_TEST_HELPER_ACTIVATORS,
   topLevelNativeTestEnvironment,
   selectCargoExecutable,
-  terminateOwnedCargo,
-  waitForClose,
 } from "./test-windows-native.mjs";
 
 function artifact(targetName, kind, executable, testProfile = false) {
@@ -49,6 +47,56 @@ function mockChild({ messages = [], exitCode = 0, hold = false } = {}) {
     child.close(exitCode);
   });
   return child;
+}
+
+
+// Explicit producer test double, never the production default or native proof.
+// Existing artifact/environment/staging oracles below are unchanged.
+function mockOwnedProducer(spawnImpl, terminateChild = async (child) => child.close(130, "SIGINT")) {
+  return (request, { signal, onStdout, onStderr }) => new Promise((resolve, reject) => {
+    const child = spawnImpl(request.command, request.arguments, {
+      cwd: request.cwd, env: request.environment,
+      nativeTestState: request.nativeTestState,
+      stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+    });
+    let completed = false;
+    let retiring = null;
+    let stopping = false;
+    const fail = (error) => {
+      if (completed || stopping) return;
+      stopping = true;
+      retiring = (async () => {
+        try {
+          await terminateChild(child, { platform: "win32" });
+          error.retirementAcknowledged = true;
+        } catch (cleanup) {
+          error = new AggregateError([error, cleanup], error.message + " Cleanup: " + cleanup.message);
+          error.retirementAcknowledged = false;
+        }
+        completed = true;
+        signal?.removeEventListener("abort", abort);
+        reject(error);
+      })();
+    };
+    const abort = () => fail(new Error("Interrupted by SIGINT."));
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { try { onStdout(chunk); } catch (error) { fail(error); } });
+    child.stderr.on("data", (chunk) => { try { onStderr(chunk); } catch (error) { fail(error); } });
+    child.once("error", fail);
+    child.once("close", (code) => {
+      if (completed || stopping) return;
+      completed = true;
+      signal?.removeEventListener("abort", abort);
+      resolve({ code, retirementAcknowledged: true });
+    });
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+  });
+}
+
+function runWindowsNativeTests({ spawnImpl, terminateChild, ...options }) {
+  return runNative({ ...options, producerImpl: mockOwnedProducer(spawnImpl, terminateChild) });
 }
 
 const quiet = { write() {} };
@@ -101,30 +149,6 @@ test("the library harness artifact matches Cargo's rlib target shape", () => {
   }], { targetName: "qc_remote_lib", kind: "rlib", test: true }), /found 0/);
 });
 
-test("waitForClose removes its close listener when the child exits", async () => {
-  const child = mockChild({ hold: true });
-  const listenersBefore = child.listenerCount("close");
-  const waiting = waitForClose(child, 10_000);
-  assert.equal(child.listenerCount("close"), listenersBefore + 1);
-  child.close(0);
-  assert.equal(await waiting, true);
-  assert.equal(child.listenerCount("close"), listenersBefore);
-});
-
-test("a failed Windows process-tree kill remains a cleanup error after the parent closes", async () => {
-  const child = mockChild({ hold: true });
-  child.pid = 7134;
-  await assert.rejects(terminateOwnedCargo(child, {
-    platform: "win32",
-    graceMs: 0,
-    killTree: async (pid) => {
-      assert.equal(pid, 7134);
-      return new Error("taskkill access denied");
-    },
-  }), /Could not terminate the owned Windows Cargo process tree 7134: taskkill access denied/);
-  assert.deepEqual(child.killCalls, ["SIGKILL"]);
-});
-
 test("preserves the prepared broker across an app build collision and scopes child variables", async () => {
   const fixture = await temporaryRepository();
   const calls = [];
@@ -136,6 +160,7 @@ test("preserves the prepared broker across an app build collision and scopes chi
     PRESERVE_ME: "yes",
     ...Object.fromEntries(NATIVE_TEST_HELPER_ACTIVATORS.map((key) => [key, "foreign-fixture"])),
     qc_harness_descriptor_path: "lowercase-foreign",
+    qC_rEmOtE_tEsT_sTaTe_RoOt: "foreign-unowned-state",
   };
   const original = { ...env };
   const spawnImpl = (command, args, options) => {
@@ -163,11 +188,14 @@ test("preserves the prepared broker across an app build collision and scopes chi
 
     assert.deepEqual(env, original, "the parent environment is not mutated");
     assert.equal(calls.length, 3);
-    assert.equal(NATIVE_TEST_HELPER_ACTIVATORS.length, 7);
+    assert.equal(NATIVE_TEST_HELPER_ACTIVATORS.length, 8);
+    assert.deepEqual(calls.map((call) => call.options.nativeTestState), [false, false, true],
+      "only the executing test producer owns native health/stderr state");
     for (const call of calls) {
       assert.equal(call.options.env.PRESERVE_ME, "yes");
       for (const key of NATIVE_TEST_HELPER_ACTIVATORS) assert.equal(call.options.env[key], undefined);
       assert.equal(call.options.env.qc_harness_descriptor_path, undefined);
+      assert.equal(call.options.env.qC_rEmOtE_tEsT_sTaTe_RoOt, undefined);
     }
     assert.ok(calls.every((call) => call.command === "rustup"));
     assert.ok(calls.every((call) => call.args.slice(0, 3).join(" ") === "run stable-x86_64-pc-windows-msvc cargo"));
@@ -298,7 +326,7 @@ test("a Cargo spawn error cleans up its owned child before returning", async () 
     stdout: quiet,
     stderr: quiet,
     terminateChild: async (owned) => { cleaned = owned === child; child.close(1); },
-  }), /Windows broker build could not start: rustup not found/);
+  }), /rustup not found/);
   assert.equal(cleaned, true);
 });
 
@@ -352,4 +380,33 @@ test("explicit child helper activation survives outside top-level sanitization",
   assert.equal(child.QC_HARNESS_DESCRIPTOR_PATH, "owned");
   assert.equal(child.QC_HARNESS_CONTROL_DIR, "owned-control");
   assert.equal(original.QC_HARNESS_DESCRIPTOR_PATH, "foreign");
+});
+
+
+
+test("unknown original retirement retains staged broker bytes instead of reporting cleanup", async () => {
+  const fixture = await temporaryRepository();
+  let count = 0;
+  let staged;
+  try {
+    await assert.rejects(runNative({
+      rootDir: fixture.root, platform: "win32", signalSource: new EventEmitter(), stdout: quiet, stderr: quiet,
+      producerImpl: async (request, { onStdout }) => {
+        if (++count === 1) {
+          onStdout(JSON.stringify(artifact("qc-device-broker", "bin", fixture.brokerPath)) + "\n");
+          return { code: 0, retirementAcknowledged: true };
+        }
+        staged = (await readdir(fixture.targetDir)).find((name) => name.startsWith(".qc-device-broker-test-"));
+        const error = new Error("injected unknown original retirement");
+        error.retirementAcknowledged = false;
+        throw error;
+      },
+    }), /Retaining staged broker bytes/);
+    assert.equal(count, 2, "no subsequent Cargo dispatch after unknown retirement");
+    assert.equal(await readFile(join(fixture.targetDir, staged, "qc-device-broker.exe"), "utf8"), "prepared workspace broker");
+  } finally {
+    // This test double launched no native process; exact owned fixture bytes
+    // are safe to retire independently after checking production retention.
+    await rm(fixture.root, { recursive: true, force: true });
+  }
 });

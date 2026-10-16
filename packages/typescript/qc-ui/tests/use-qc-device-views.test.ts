@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import { register } from "node:module";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createQcScreenLatch } from "../src/qc-unit-screens.ts";
@@ -9,6 +9,8 @@ import type { QcDeviceViews, QcDeviceViewsOptions } from "../src/use-qc-device-v
 register("./support/react-singleton-loader.mjs", import.meta.url);
 const { createElement } = (await import("react")).default;
 const { useQcDeviceViews } = await import("../src/use-qc-device-views.ts");
+const ownedFixtures = new Set<() => void>();
+afterEach(() => { for (const dispose of [...ownedFixtures]) dispose(); });
 
 interface World {
   sessionEpoch: number;
@@ -39,25 +41,40 @@ function mount(overrides: Partial<World> = {}) {
   const log: string[] = [];
   const world: World = { sessionEpoch: 0, view: null, demo: false, hardwareReady: true, sessionReady: true, showResult: true, setlistKey: "set-a", presetList: undefined, ioFails: false, identityFails: false, unit: "Grid", unitIgnoresGestures: false, ...overrides };
   const latch = createQcScreenLatch();
+  let destinationGeneration = 0;
+  let renderedView = world.view;
+  // The production host keeps the routing gateway stable across ordinary
+  // state renders. New wrapper objects would falsely simulate a route swap.
   const gateway = {
-      identity: async () => { if (world.identityRead) return world.identityRead(); if (world.identityFails) throw new Error("identity failed"); return { serial: "S1", customName: "", appFwVersion: "3.1", ...(world.identityCorOsVersion ? { corOsVersion: world.identityCorOsVersion } : {}) } as never; },
-      graphicsTree: async () => world.treeRead ? world.treeRead() : ({ tree: `zenUI::RootGraphicsItem\nzenUI::${world.unit}${world.treeText ? ` text '${world.treeText}'` : ""}` }),
-      tapScreen: async (x: number, y: number) => { log.push(`tap:${x},${y}`); if (!world.unitIgnoresGestures && world.unit === "CheatSheetDialog") world.unit = "Grid"; },
-      longTapScreen: async (x: number, y: number) => { log.push(`long:${x},${y}`); },
-      swipeScreen: async (x: number, y: number, toX: number, toY: number) => { log.push(`swipe:${x},${y},${toX},${toY}`); if (!world.unitIgnoresGestures && world.unit === "Grid" && Math.abs(toY - y) > 245) world.unit = "CheatSheetDialog"; }
-    } as never;
+    identity: async () => { if (world.identityRead) return world.identityRead(); if (world.identityFails) throw new Error("identity failed"); return { serial: "S1", customName: "", appFwVersion: "3.1", ...(world.identityCorOsVersion ? { corOsVersion: world.identityCorOsVersion } : {}) } as never; },
+    graphicsTree: async () => world.treeRead ? world.treeRead() : ({ tree: `zenUI::RootGraphicsItem\nzenUI::${world.unit}${world.treeText ? ` text '${world.treeText}'` : ""}` }),
+    tapScreen: async (x: number, y: number) => { log.push(`tap:${x},${y}`); if (!world.unitIgnoresGestures && world.unit === "CheatSheetDialog") world.unit = "Grid"; },
+    longTapScreen: async (x: number, y: number) => { log.push(`long:${x},${y}`); },
+    swipeScreen: async (x: number, y: number, toX: number, toY: number) => { log.push(`swipe:${x},${y},${toX},${toY}`); if (!world.unitIgnoresGestures && world.unit === "Grid" && Math.abs(toY - y) > 245) world.unit = "CheatSheetDialog"; }
+  };
   const options = (): QcDeviceViewsOptions => ({
     sessionKey: world.sessionEpoch,
     captureSessionCurrent: () => { const epoch = world.sessionEpoch; return () => epoch === world.sessionEpoch; },
-    destination: { latch, get view() { return world.view as never; }, setView: ((next: unknown) => { world.view = typeof next === "function" ? (next as (current: string | null) => string | null)(world.view) : next as string | null; log.push(`view:${world.view}`); }) as never },
+    destination: {
+      latch, get view() { return world.view as never; },
+      captureCurrent: () => { const generation = destinationGeneration, view = world.view; return () => generation === destinationGeneration && view === world.view; },
+      setView: ((next: unknown) => {
+        const functional = typeof next === "function";
+        const value = functional ? (next as (current: string | null) => string | null)(world.view) : next as string | null;
+        if (!functional || value !== world.view) destinationGeneration++;
+        world.view = value;
+        renderedView = value;
+        log.push(`view:${world.view}`);
+      }) as never
+    },
     snapshot: { setlistKey: world.setlistKey, deviceName: "Rig" },
     session: { demo: world.demo, hardwareReady: world.hardwareReady, sessionReady: world.sessionReady },
-    gateway,
+    gateway: gateway as never,
     screenPoll: { intervalMs: 1, timeoutMs: 6 },
     workflows: {
       performance: { showDeviceView: async (view, visible = true) => { log.push(`show:${view}:${visible}`); return world.showResult; } },
       tuner: { openTuner: () => { log.push("tuner.open"); } },
-      looper: { run: async (command) => { log.push(`looper:${command}`); } },
+      looper: { captureContinuation: () => () => true, run: async (command) => { log.push(`looper:${command}`); return true; } },
       ioEq: { refresh: async () => { log.push("io.refresh"); if (world.ioFails) throw new Error("io failed"); } },
       preset: { presetList: world.presetList, loadDirectory: (...args) => { log.push(`load:${args.join(",")}`); } },
       deviceSettings: { screenCorOsVersion: world.screenVersion }
@@ -70,8 +87,13 @@ function mount(overrides: Partial<World> = {}) {
   function Probe() { seen.current = useQcDeviceViews(options()); identityFrames.push(seen.current.deviceInformation); return null; }
   let renderer!: ReactTestRenderer;
   act(() => { renderer = create(createElement(Probe)); });
-  const rerender = () => act(() => renderer.update(createElement(Probe)));
-  return { log, world, latch, rerender, identityFrames, get views() { return seen.current!; }, renderer };
+  const rerender = () => act(() => {
+    if (renderedView !== world.view) { destinationGeneration++; renderedView = world.view; }
+    renderer.update(createElement(Probe));
+  });
+  const dispose = () => { if (!ownedFixtures.delete(dispose)) return; act(() => renderer.unmount()); };
+  ownedFixtures.add(dispose);
+  return { log, world, latch, rerender, identityFrames, get views() { return seen.current!; }, renderer: { unmount: dispose } };
 }
 
 test("opening Gig View goes through the shared command, then loads the setlist the Gig list needs", async () => {
@@ -288,6 +310,38 @@ test("the app sends no tap while the unit shows an update screen", async () => {
   assert.deepEqual(host.log, ["notice:The Quad Cortex is showing an update screen. Update screens are display only in the app; use the unit."]);
   host.renderer.unmount();
 });
+// Append to packages/typescript/qc-ui/tests/use-qc-device-views.test.ts;
+// uses its actual production hook, registered React singleton loader and renderer.
+test("same-route physical reset refreshes Device Information without requiring a ready/name transition", async () => {
+  const { PresetLifetime } = await import("@qc-remote/core");
+  const lifetime = new PresetLifetime({ setlistKey: "same", presetPosition: 0 });
+  let serial = "original-unit", reads = 0, renderer, seen;
+  const options = {
+    lifetime,
+    gateway: { identity: async () => { reads++; return { serial }; } },
+    snapshot: { setlistKey: "same", deviceName: "Quad Cortex" },
+    session: { demo: false, hardwareReady: true, sessionReady: true },
+    destination: { view: null, latch: createQcScreenLatch(), captureCurrent: () => () => true, setView: () => {} },
+    workflows: {}, notice: () => {}, fail: error => assert.fail(String(error))
+  };
+  function Probe() { seen = useQcDeviceViews(options as never); return null; }
+  try {
+    await act(async () => { renderer = create(createElement(Probe)); });
+    assert.equal(reads, 1);
+    assert.equal(seen.deviceInformation.serial, "original-unit");
+    await act(async () => { lifetime.invalidate(); renderer.update(createElement(Probe)); });
+    assert.equal(reads, 1, "ordinary preset invalidation is not a new physical identity");
+    serial = "replacement-unit";
+    await act(async () => { lifetime.reset(); renderer.update(createElement(Probe)); });
+    assert.equal(reads, 2, "native producer replacement can keep gateway, ready and deviceName unchanged but still requires fresh identity");
+    assert.equal(seen.deviceInformation.serial, "replacement-unit");
+    const beforeClose = reads;
+    await act(async () => { renderer.unmount(); }); renderer = undefined;
+    await act(async () => lifetime.reset());
+    assert.equal(reads, beforeClose, "closed hook cannot restart identity reads");
+  } finally { if (renderer) await act(async () => renderer.unmount()); }
+});
+
 
 test("a touch the user makes on the picture of the unit's Settings is never forwarded, whichever pane it shows", async () => {
   for (const classes of ["SettingsDialog", "SettingsDialog" + String.fromCharCode(10) + "zenUI::UpdaterSettings", "UpdaterSettings"]) {

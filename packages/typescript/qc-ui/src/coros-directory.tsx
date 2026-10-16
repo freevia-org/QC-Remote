@@ -42,16 +42,7 @@ export function CorOsDirectory({ snapshot, directory }: { snapshot: PresetSnapsh
 }
 
 function CorOsDirectorySession({ snapshot, directory }: { snapshot: PresetSnapshot; directory: PresetDirectoryState }) {
-  const referenceFallback = snapshot.setlistKey === "/user/A/" && !directory.list;
-  // The setlist names the `preset-directory` frame actually holds.
-  const referenceFolders = ["My Presets", "Set Live", "Set Rec", "Set AcousticLive"];
-  const referencePresets: PresetEntry[] = Array.from({ length: 8 }, (_, index) => ({
-    position: 248 + index,
-    location: `32${String.fromCharCode(65 + index)}`,
-    name: index === 7 ? "Pyquadcortex scratch" : "Unsaved",
-    instrument: 0
-  }));
-  const viewingActiveSetlist = referenceFallback || directory.list?.setlistKey === snapshot.setlistKey;
+  const viewingActiveSetlist = directory.list?.setlistKey === snapshot.setlistKey;
   const currentBank = viewingActiveSetlist ? Math.floor(snapshot.presetPosition / 8) + 1 : 1;
   const [selectedBank, setSelectedBank] = useState(currentBank);
   const [presetMenuPosition, setPresetMenuPosition] = useState<number>();
@@ -72,6 +63,19 @@ function CorOsDirectorySession({ snapshot, directory }: { snapshot: PresetSnapsh
   const [libraryFolderKey, setLibraryFolderKey] = useState<string>();
   const [favoritesTab, setFavoritesTab] = useState<"favorites" | "recents">("favorites");
   const [favoritesSubcategory, setFavoritesSubcategory] = useState<"presets" | "captures" | "irs">("presets");
+  // Row positions are meaningful only in their displayed setlist. Never carry
+  // a destructive selection or Arrange source into another catalog/context.
+  const selectionContext = `${snapshot.presetIdentity ?? snapshot.setlistKey}\n${directory.list?.setlistKey ?? ""}`;
+  const latestSelectionContext = useRef(selectionContext);
+  latestSelectionContext.current = selectionContext;
+  useEffect(() => {
+    setArrangeMode(false);
+    setArrangeSource(undefined);
+    setMultiSelectMode(false);
+    setSelectedPresetPositions(new Set());
+    setPresetMenuPosition(undefined);
+    setUploadMode(false);
+  }, [selectionContext]);
   const library = directory.library;
   const onLoadLibrary = directory.onLoadLibrary;
   useEffect(() => {
@@ -83,9 +87,9 @@ function CorOsDirectorySession({ snapshot, directory }: { snapshot: PresetSnapsh
   useEffect(() => {
     if (directory.open) setSelectedBank(currentBank);
   }, [currentBank, directory.list?.setlistKey, directory.open]);
-  const highestBank = referenceFallback ? 32 : Math.max(1, ...(directory.list?.presets.map((entry) => Math.floor(entry.position / 8) + 1) ?? []));
-  const banks = Array.from({ length: referenceFallback ? 14 : highestBank }, (_, index) => index + (referenceFallback ? 19 : 1));
-  const bankPresets = referenceFallback ? referencePresets : directory.list?.presets.filter((entry) => Math.floor(entry.position / 8) + 1 === selectedBank) ?? [];
+  const highestBank = Math.max(1, ...(directory.list?.presets.map((entry) => Math.floor(entry.position / 8) + 1) ?? []));
+  const banks = Array.from({ length: highestBank }, (_, index) => index + 1);
+  const bankPresets = directory.list?.presets.filter((entry) => Math.floor(entry.position / 8) + 1 === selectedBank) ?? [];
   const matchingPresets = searchOpen
     ? (directory.list?.presets ?? []).filter((entry) => `${entry.location} ${entry.name}`.toLocaleLowerCase().includes(searchQuery.trim().toLocaleLowerCase()))
     : bankPresets;
@@ -126,6 +130,7 @@ function CorOsDirectorySession({ snapshot, directory }: { snapshot: PresetSnapsh
   const factoryFolder = directory.list?.folders.find((folder) => folder.isFactory);
   const userFolders = orderUserFolders(directory.list?.folders.filter((folder) => !folder.isFactory) ?? []);
   const runPresetAction = (action: "upload" | "edit" | "copy" | "cut" | "paste" | "delete", entry: PresetEntry) => {
+    if (latestSelectionContext.current !== selectionContext) return;
     setPresetMenuPosition(undefined);
     directory.onPresetAction(action, entry);
   };
@@ -133,10 +138,12 @@ function CorOsDirectorySession({ snapshot, directory }: { snapshot: PresetSnapsh
   const selectablePresets = presets.filter((entry) => entry.occupied !== false && entry.name !== "Unsaved");
   const selectedPresets = selectablePresets.filter((entry) => selectedPresetPositions.has(entry.position));
   const leaveMultiSelect = () => {
+    if (latestSelectionContext.current !== selectionContext) return;
     setMultiSelectMode(false);
     setSelectedPresetPositions(new Set());
   };
   const runBatchAction = (action: "copy" | "delete") => {
+    if (latestSelectionContext.current !== selectionContext) return;
     if (!selectedPresets.length) return;
     directory.onPresetBatchAction(action, selectedPresets);
     leaveMultiSelect();
@@ -144,13 +151,13 @@ function CorOsDirectorySession({ snapshot, directory }: { snapshot: PresetSnapsh
 
   return <section className="coros-directory" aria-label="Preset Directory">
     {multiSelectMode ? <header className="coros-directory-header directory-multiselect-header">
-      <button type="button" className="directory-select-all" aria-label="Select all presets in this view" aria-pressed={selectedPresets.length > 0 && selectedPresets.length === selectablePresets.length} onClick={() => setSelectedPresetPositions(selectedPresets.length === selectablePresets.length ? new Set() : new Set(selectablePresets.map((entry) => entry.position)))}>
+      <button type="button" className="directory-select-all" aria-label="Select all presets in this view" aria-pressed={selectedPresets.length > 0 && selectedPresets.length === selectablePresets.length} onClick={() => { if (latestSelectionContext.current !== selectionContext) return; setSelectedPresetPositions(selectedPresets.length === selectablePresets.length ? new Set() : new Set(selectablePresets.map((entry) => entry.position))); }}>
         <span>{selectedPresets.length > 0 && selectedPresets.length === selectablePresets.length ? <QcUiIcon kind="check" /> : null}</span>
       </button>
       <strong>Multi Select</strong>
       <span className="directory-header-spacer" />
       <button type="button" className="directory-batch-action" disabled={!selectedPresets.length || directory.disabled} onClick={() => runBatchAction("copy")}><b aria-hidden="true"><QcEditorIcon kind="copy" /></b><span>Copy</span>{selectedPresets.length > 0 && <i>{selectedPresets.length}</i>}</button>
-      <button type="button" className="directory-batch-action" disabled={selectedPresets.length !== 1 || directory.disabled} onClick={() => { const source = selectedPresets[0]; leaveMultiSelect(); setArrangeSource(source); setArrangeMode(true); }}><QcDirectoryIcon kind="arrange" /><span>Arrange</span></button>
+      <button type="button" className="directory-batch-action" disabled={selectedPresets.length !== 1 || directory.disabled} onClick={() => { if (latestSelectionContext.current !== selectionContext) return; const source = selectedPresets[0]; leaveMultiSelect(); setArrangeSource(source); setArrangeMode(true); }}><QcDirectoryIcon kind="arrange" /><span>Arrange</span></button>
       <button type="button" className="directory-batch-action is-danger" disabled={!selectedPresets.length || directory.disabled || !!directory.list?.folders.find((folder) => folder.key === directory.list?.setlistKey)?.isFactory} onClick={() => runBatchAction("delete")}><QcDirectoryIcon kind="trash" /><span>Delete</span></button>
       <button type="button" className="directory-close" aria-label="Finish multi select" onClick={leaveMultiSelect}><QcDirectoryIcon kind="done" /></button>
     </header> : <header className="coros-directory-header">
@@ -166,7 +173,7 @@ function CorOsDirectorySession({ snapshot, directory }: { snapshot: PresetSnapsh
           <button type="button" aria-label="Sort" disabled title="Sorting is not available for this list."><QcDirectoryIcon kind={DIRECTORY_SORT_ORDER_GLYPH} /></button>
         </>}
         {category === "presets" && <>
-          <button type="button" aria-label="Multi select presets" disabled={directory.disabled || !directory.list} onClick={() => { setPresetMenuPosition(undefined); setArrangeMode(false); setArrangeSource(undefined); setMultiSelectMode(true); setSelectedPresetPositions(new Set()); }}><QcDirectoryIcon kind={DIRECTORY_MULTISELECT_GLYPH} /></button>
+          <button type="button" aria-label="Multi select presets" disabled={directory.disabled || !directory.list} onClick={() => { if (latestSelectionContext.current !== selectionContext) return; setPresetMenuPosition(undefined); setArrangeMode(false); setArrangeSource(undefined); setMultiSelectMode(true); setSelectedPresetPositions(new Set()); }}><QcDirectoryIcon kind={DIRECTORY_MULTISELECT_GLYPH} /></button>
           <button type="button" aria-label="Sort presets" aria-haspopup="menu" aria-expanded={sortOpen} aria-pressed={sortOpen} className={sortOpen ? "is-active" : ""} onClick={() => { setPresetMenuPosition(undefined); setSortOpen((open) => !open); }}><QcDirectoryIcon kind={DIRECTORY_SORT_ORDER_GLYPH} /></button>
         </>}
         {(category !== "favorites" || favoritesShowsTools(favoritesTab)) && <>
@@ -182,8 +189,7 @@ function CorOsDirectorySession({ snapshot, directory }: { snapshot: PresetSnapsh
         <DirectoryProviderRow kind="cloud" label="Cloud Presets" signedOut={isCloudSignedOut(directory.cloudSignedIn)} />
         <button type="button" disabled={!factoryFolder} className={factoryFolder && factoryFolder.key === directory.list?.setlistKey ? "is-active" : ""} onClick={() => factoryFolder && directory.onSelectSetlist(factoryFolder.key)}><span><QcDirectoryIcon kind="folder" number={0} /></span>Factory Presets</button>
         {userFolders.map((folder, index) => <button key={folder.key} className={folder.key === directory.list?.setlistKey ? "is-active" : ""} onClick={() => directory.onSelectSetlist(folder.key)}><span><QcDirectoryIcon kind="folder" number={index + 1} /></span>{folder.name}<b className="directory-folder-more"><QcUiIcon kind="more" /></b></button>)}
-        {referenceFallback && referenceFolders.map((name, index) => <button type="button" disabled key={name} className={index === 0 ? "is-active" : ""}><span><QcDirectoryIcon kind="folder" number={index + 1} /></span>{name}<b className="directory-folder-more"><QcUiIcon kind="more" /></b></button>)}
-        {!referenceFallback && !userFolders.length && <button type="button" disabled className="is-active"><span><QcDirectoryIcon kind="folder" number={1} /></span>{directory.list?.setlistName ?? snapshot.setlistName}<b className="directory-folder-more"><QcUiIcon kind="more" /></b></button>}
+        {!userFolders.length && <button type="button" disabled className="is-active"><span><QcDirectoryIcon kind="folder" number={1} /></span>{directory.list?.setlistName ?? snapshot.setlistName}<b className="directory-folder-more"><QcUiIcon kind="more" /></b></button>}
         <button className="directory-new-setlist" disabled={directory.disabled} title="Create a new user setlist" onClick={directory.onNewSetlist}><span><QcDirectoryIcon kind="new-folder" /></span>New Setlist</button>
       </nav>
       <nav className="directory-banks qc-scroll-rail" aria-label="Preset banks">
@@ -193,6 +199,7 @@ function CorOsDirectorySession({ snapshot, directory }: { snapshot: PresetSnapsh
         {searchOpen && <label className="directory-search-field"><QcDirectoryIcon kind="search" /><input type="search" aria-label="Search Directory" placeholder="Search Directory" value={searchQuery} autoFocus onChange={(event) => setSearchQuery(event.target.value)} /><button type="button" aria-label="Close directory search" onClick={() => { setSearchQuery(""); setSearchOpen(false); }}>×</button></label>}
         {directory.loading && !directory.list ? <div className="directory-loading">READING PRESETS FROM QUAD CORTEX…</div> : presets.map((entry) => <div key={entry.position} role="option" aria-selected={multiSelectMode ? selectedPresetPositions.has(entry.position) : viewingActiveSetlist && entry.position === snapshot.presetPosition} className={`directory-preset-row${entry.occupied === false || entry.name === "Unsaved" ? " is-empty" : ""}${viewingActiveSetlist && entry.position === snapshot.presetPosition ? " is-current" : ""}${uploadMode ? " is-upload-mode" : ""}${multiSelectMode ? " is-multiselect" : ""}${selectedPresetPositions.has(entry.position) ? " is-selected" : ""}`}>
           <button className={`preset-recall${arrangeSource?.position === entry.position ? " is-arrange-source" : ""}`} disabled={directory.disabled} onClick={() => {
+            if (latestSelectionContext.current !== selectionContext) return;
             if (multiSelectMode) {
               if (entry.occupied === false || entry.name === "Unsaved") return;
               setSelectedPresetPositions((current) => {

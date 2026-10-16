@@ -15,13 +15,13 @@ test("Device settings reject prior-session masks and late read/write completions
   const first = { globalBypassCab: { row1: false, row2: true, row3: false, row4: false } };
   const replacement = { globalBypassCab: { row1: false, row2: false, row3: false, row4: false } };
   let read = async () => first;
-  const writes: unknown[] = [], notices: string[] = [], pending: boolean[] = [];
+  const writes: unknown[] = [], notices: string[] = [], pending: boolean[] = [], errors: string[] = [];
   const gateway = {
     generalSettings: () => read(),
     setGlobalBypass: (cab, ir) => { writes.push({ cab, ir }); return new Promise((resolve) => { resolveWrite = resolve; }); }
   };
   let options = { gateway, sessionKey: "usb-A", connected: true, pending: false,
-    setPending: (busy: boolean) => pending.push(busy), notice: (message: string) => notices.push(message), fail: (error) => { throw error; } };
+    setPending: (busy: boolean) => pending.push(busy), notice: (message: string) => notices.push(message), fail: (error: Error) => errors.push(error.message) };
   function Harness() { value = useDeviceSettingsWorkflow(options); return null; }
   await act(async () => { renderer = create(React.createElement(Harness)); });
   t.after(async () => { await act(async () => renderer.unmount()); });
@@ -30,6 +30,7 @@ test("Device settings reject prior-session masks and late read/write completions
   read = () => new Promise((resolve) => { resolveRead = resolve; });
   let staleRead;
   await act(async () => { staleRead = value.refresh(); });
+  read = async () => first; // The mutation independently re-reads native rows.
   let staleWrite;
   await act(async () => { staleWrite = value.setGlobalBypass("cab", 1, true); });
   assert.deepEqual(writes, [{ cab: [true, true, false, false], ir: null }]);
@@ -42,8 +43,11 @@ test("Device settings reject prior-session masks and late read/write completions
   assert.equal(value.settings, undefined);
   assert.deepEqual(notices, []);
   assert.deepEqual(pending, []);
+  assert.deepEqual(errors, [], "late operations from the old session stay silent");
+  read = async () => ({} as typeof first);
   await act(async () => { await value.setGlobalBypass("cab", 1, true); });
-  assert.equal(writes.length, 1, "The replacement session has no observed mask yet");
+  assert.equal(writes.length, 1, "An incomplete fresh mask cannot reuse prior-session cached rows");
+  assert.match(errors.at(-1)!, /Global Bypass state is unavailable/);
   read = async () => replacement;
   await act(async () => { await value.refresh(); });
   let newWrite;

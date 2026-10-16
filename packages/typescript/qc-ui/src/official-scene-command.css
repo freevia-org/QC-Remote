@@ -40,7 +40,7 @@
  */
 
 .scene-command-overlay { position: absolute; z-index: 90; inset: 0; display: grid; place-items: center; pointer-events: none; }
-.scene-command-scrim { position: absolute; inset: 0; background: var(--qc-screen-wash-grid-menu); }
+.scene-command-scrim { position: absolute; inset: 0; background: var(--qc-screen-wash-grid-menu); pointer-events: auto; }
 
 .scene-command-panel {
   position: relative;

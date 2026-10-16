@@ -1,4 +1,4 @@
-export { QcHardwareSwitch, QcMasterVolumeKnob } from "./quad-cortex-surface";
+export { QcHardwareSwitch, QcMasterVolumeKnob, qcHardwareSwitchGestureKey } from "./quad-cortex-surface";
 export { createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay } from "./qc-device-display";
 export type { QcDeviceDisplayHost, QcDeviceDisplayModel } from "./qc-device-display";
 export { QcDeviceInformationDisplay } from "./device-information-display";
@@ -134,3 +134,4 @@ export { capturedPresetForDemo, capturePresetText, captureSetlistForDemo, DEMO_L
 export type { CapturedPresetText, CapturedSetlist, CapturedSetlistPreset, CapturedSetlistScene, DemoLibraryTextDocument, DemoPasteResult, ParsedText, PresetReplayReport, PresetTextDocument, PresetTextValues } from "./preset-transfer";
 
 export { RemoteAccountDeletionLink } from "./remote-account-deletion-link";
+export { captureGatewaySession } from "./gateway-session";

@@ -35,6 +35,10 @@ enum Source {
         row: u32,
         column: u32,
     },
+    StompTarget {
+        footswitch: u32,
+        momentary: bool,
+    },
     Routing {
         row: u32,
     },
@@ -45,6 +49,7 @@ enum Source {
         control: Option<String>,
     },
     ModeSlots,
+    IoSettings,
     PresetLoadMidi,
 }
 
@@ -82,6 +87,40 @@ impl Source {
                 .iter()
                 .find(|block| block.row == *row && block.column == *column)
                 .map(|block| (block.footswitch, &block.footswitch_assignment_type))),
+            Self::StompTarget {
+                footswitch,
+                momentary,
+            } => {
+                let mut assigned = snapshot
+                    .blocks
+                    .iter()
+                    .filter(|block| block.footswitch == Some(*footswitch))
+                    .map(|block| {
+                        (
+                            &block.id,
+                            block.row,
+                            block.column,
+                            block.model_id,
+                            &block.footswitch_assignment_type,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                assigned.sort_unstable();
+                json!([
+                    assigned,
+                    if *momentary {
+                        snapshot
+                            .footswitch_states
+                            .as_ref()
+                            .and_then(|states| {
+                                states.iter().find(|state| state.index == *footswitch)
+                            })
+                            .and_then(|state| state.momentary)
+                    } else {
+                        None
+                    }
+                ])
+            }
             Self::Routing { row } => json!(snapshot
                 .routes
                 .iter()
@@ -125,6 +164,7 @@ impl Source {
                     .unwrap_or(Value::Null)
             }
             Self::ModeSlots => json!(snapshot.mode_slots),
+            Self::IoSettings => json!(state.assert_io_settings_healthy().is_ok()),
             Self::PresetLoadMidi => json!(snapshot.preset_load_midi_out),
             Self::GlobalEqPreset {
                 value,
@@ -361,6 +401,16 @@ impl DispatchOperands {
     /// bound to is gone or changed.
     pub fn validate(&self, state: &DeviceStateRuntime) -> Result<(), String> {
         self.validate_targets(state)?;
+        // Planning may precede queueing and an owner-visible topology loss.
+        // Old cell/model equality is not proof of current address authority.
+        // Reuse the planner's exact same family policy at native admission.
+        if crate::device::request::gateway_method_requires_exact_grid(&self.method)
+            && !state.snapshot().grid_layout_complete
+        {
+            return Err(
+                "STATE_UNAVAILABLE: The Grid layout is incomplete; this operation requires a complete current preset".into(),
+            );
+        }
         if let Some(preflight) = &self.external_preflight {
             let expected = preflight
                 .expected
@@ -439,6 +489,9 @@ impl DispatchOperands {
         assert_expected_preset(snapshot, &self.guards)?;
         assert_expected_state(&self.method, snapshot, &self.guards)?;
         for (source, expected) in &self.sources {
+            if matches!(source, Source::IoSettings) {
+                state.assert_io_settings_healthy()?;
+            }
             if let Source::ModelAvailability { model_id } = source {
                 state.assert_model_available(*model_id)?;
             }
@@ -624,17 +677,34 @@ fn operation_sources(operation: &DeviceOperation, sources: &mut Vec<Source>) {
             parameter_index,
             ..
         } => parameter(sources, *row, 0, *parameter_index, Some(control.clone())),
+        DeviceOperation::SetInputPort { .. }
+        | DeviceOperation::SetOutputPort { .. }
+        | DeviceOperation::SetUsbPort { .. }
+        | DeviceOperation::SetMidiThru(_)
+        | DeviceOperation::SetOutputPairing { .. } => sources.push(Source::IoSettings),
         DeviceOperation::SetPresetLoadMidiOut { .. } => {
             sources.push(Source::Preset);
             sources.push(Source::PresetLoadMidi);
+        }
+        DeviceOperation::SetStompMomentary { footswitch, .. } => {
+            sources.push(Source::Preset);
+            sources.push(Source::StompTarget {
+                footswitch: *footswitch,
+                momentary: true,
+            });
+        }
+        DeviceOperation::SetStompLabel { footswitch, .. } => {
+            sources.push(Source::Preset);
+            sources.push(Source::StompTarget {
+                footswitch: *footswitch,
+                momentary: false,
+            });
         }
         DeviceOperation::SavePreset { .. }
         | DeviceOperation::DeleteSetlist { .. }
         | DeviceOperation::CopyScene { .. }
         | DeviceOperation::SetSceneLabel { .. }
         | DeviceOperation::SetSceneColor { .. }
-        | DeviceOperation::SetStompMomentary { .. }
-        | DeviceOperation::SetStompLabel { .. }
         | DeviceOperation::SetMidiOut { .. }
         | DeviceOperation::Undo
         | DeviceOperation::Redo => sources.push(Source::Preset),
@@ -653,6 +723,110 @@ mod tests {
     use super::*;
     use crate::{profile, proto::cortex_protobuf_v2 as pa};
     use prost::Message;
+
+    #[test]
+    fn full_preset_invalidation_revokes_queued_and_new_scene_metadata_writes() {
+        let mut state = DeviceStateRuntime::new();
+        state.snapshot_mut().has_preset = true;
+        state.snapshot_mut().preset_identity = Some("old-current".into());
+        let write = PlannedWrite::HidOperation(DeviceOperation::SetSceneLabel {
+            scene: 0,
+            label: Some("new".into()),
+        });
+        let params = json!({"scene":0,"expectedPresetName":"Unsaved"});
+        let queued =
+            DispatchOperands::capture("device.setSceneLabel", &params, &write, &state).unwrap();
+        assert!(queued.validate(&state).is_ok());
+        state
+            .ingest(
+                profile::MESSAGE_TYPE_SCENE_COPY,
+                &pa::SceneCopyMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    from_index: 0,
+                    to_index: 7,
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        assert!(!state.snapshot().has_preset);
+        assert!(state.snapshot().preset_identity.is_none());
+        assert!(queued.validate(&state).is_err());
+        assert!(
+            DispatchOperands::capture("device.setSceneLabel", &params, &write, &state).is_err()
+        );
+    }
+
+    #[test]
+    fn queued_stomp_writes_recheck_target_assignments_and_momentary_without_unrelated_telemetry() {
+        let mut state = DeviceStateRuntime::new();
+        state.snapshot_mut().has_preset = true;
+        state.snapshot_mut().grid_layout_complete = true;
+        state.snapshot_mut().blocks.push(crate::state::GridBlock {
+            id: "0:0".into(),
+            row: 0,
+            column: 0,
+            model_id: Some(7),
+            footswitch: Some(0),
+            ..Default::default()
+        });
+        state.snapshot_mut().footswitch_states = Some(vec![crate::state::FootswitchState {
+            index: 0,
+            active: Some(true),
+            assigned: true,
+            color: "#ffffff".into(),
+            momentary: Some(false),
+            label: Some("same".into()),
+        }]);
+        let momentary = DispatchOperands::capture(
+            "device.setStompMomentary",
+            &json!({"footswitch":0,"expectedMomentary":false}),
+            &PlannedWrite::HidOperation(DeviceOperation::SetStompMomentary {
+                footswitch: 0,
+                momentary: true,
+            }),
+            &state,
+        )
+        .unwrap();
+        let label = DispatchOperands::capture(
+            "device.setStompLabel",
+            &json!({"footswitch":0}),
+            &PlannedWrite::HidOperation(DeviceOperation::SetStompLabel {
+                footswitch: 0,
+                label: "new".into(),
+                single: true,
+            }),
+            &state,
+        )
+        .unwrap();
+        state.snapshot_mut().tempo = 131;
+        state.snapshot_mut().blocks.push(crate::state::GridBlock {
+            id: "1:1".into(),
+            row: 1,
+            column: 1,
+            model_id: Some(9),
+            footswitch: Some(1),
+            ..Default::default()
+        });
+        assert!(momentary.validate(&state).is_ok());
+        assert!(label.validate(&state).is_ok());
+        state.snapshot_mut().footswitch_states.as_mut().unwrap()[0].momentary = Some(true);
+        assert!(
+            momentary.validate(&state).is_err(),
+            "same-preset momentary push must revoke a stale queued write"
+        );
+        assert!(
+            label.validate(&state).is_ok(),
+            "label target does not depend on momentary telemetry"
+        );
+        state.snapshot_mut().footswitch_states.as_mut().unwrap()[0].momentary = Some(false);
+        state.snapshot_mut().blocks[1].footswitch = Some(0);
+        assert!(momentary.validate(&state).is_err());
+        assert!(
+            label.validate(&state).is_err(),
+            "same label with changed single/shared assignment must revoke the planned map target"
+        );
+    }
 
     #[test]
     fn a_queued_write_cannot_regain_its_target_after_an_aba_transition() {
@@ -698,6 +872,7 @@ mod tests {
     fn plugin_add_needs_only_catalog_presence_at_capture_and_again_at_dispatch_for_all_methods() {
         let mut state = DeviceStateRuntime::new();
         state.snapshot_mut().has_preset = true;
+        state.snapshot_mut().grid_layout_complete = true;
         let catalog = |xml: &[u8]| {
             pa::ModelRepoMessage {
                 action: pa::message_action::Enum::Update as i32,

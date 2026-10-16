@@ -1,5 +1,6 @@
 import type { GatewayTransport, PresetSnapshot } from "@qc-remote/client";
 import type { DeviceHistoryEntry } from "./use-device-history";
+import type { PresetLifetime } from "@qc-remote/core";
 
 export interface WorkflowPrompts {
   confirm(message: string): boolean | Promise<boolean>;
@@ -11,6 +12,8 @@ export interface WorkflowPrompts {
  * `useGuardedMutation` needs to admit, run and report one device write.
  */
 export interface DeviceCommandOptions {
+  /** Physical-session fence; ordinary preset changes do not revoke device-wide commands. */
+  lifetime?: PresetLifetime;
   connected: boolean;
   sessionKey?: unknown;
   /** The host transport/session identity, independent of a hook mount owner. */

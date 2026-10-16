@@ -59,8 +59,8 @@ axum = "0.8"
 # The loopback MCP listener is served through hyper directly, not
 # `axum::serve`, which offers no request-head timeout. Both are already in the
 # lock file as axum's own dependencies.
-hyper = { version = "1", features = ["http1", "server"] }
-hyper-util = { version = "0.1", features = ["server-graceful", "service", "tokio"] }
+hyper = { version = "=1.11.1", features = ["http1", "server"] }
+hyper-util = { version = "=0.1.20", features = ["server-graceful", "service", "tokio"] }
 base64 = "0.22"
 # Locates the Documents folder (SHGetKnownFolderPath) for backups a remote or
 # MCP caller asks for. Already in the lock file through Tauri.
@@ -73,6 +73,7 @@ rfd = "0.15"
 reqwest = { version = "0.13", features = ["form", "json"] }
 rmcp = { version = "3.2", features = ["server", "transport-io"] }
 serde = { version = "1", features = ["derive"] }
+semver = "=1.0.28"
 # `preserve_order` keeps `Value::Object` an insertion-ordered map. Without it a
 # pair or unpair rewrites another vendor's whole configuration file with every
 # key at every depth sorted alphabetically, which is a total diff of a file QC
@@ -93,6 +94,7 @@ zip = { version = "8.1", default-features = false }
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 windows-registry = "0.6"
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes"] }
 qc-windows-midi = { path = "../../../packages/rust/qc-windows-midi" }
 # The broker owns the native tray through windows-sys. The GUI has no direct
 # tray-icon, muda or tao API dependency; Tauri owns its own window/menu graph.
@@ -115,6 +117,7 @@ plist = "1.10"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+socket2 = "=0.6.5"
 
 # No debuginfo for dependencies in debug builds.
 #

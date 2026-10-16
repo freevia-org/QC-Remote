@@ -34,8 +34,9 @@ final class QcNativeStateDecoder implements AutoCloseable {
         final List<JSObject> states;
         final JSObject tempoClock;
         final LifecycleStatus lifecycle;
+        final boolean forwardingOnly;
         DecodedFrame(String observationTicket, int messageType, byte[] payload,
-            List<JSObject> states, JSObject tempoClock, LifecycleStatus lifecycle) {
+            List<JSObject> states, JSObject tempoClock, LifecycleStatus lifecycle, boolean forwardingOnly) {
             this.observationTicket = observationTicket;
             this.observationFence = new QcObservationFence(observationTicket);
             this.messageType = messageType;
@@ -43,6 +44,7 @@ final class QcNativeStateDecoder implements AutoCloseable {
             this.states = states;
             this.tempoClock = tempoClock;
             this.lifecycle = lifecycle;
+            this.forwardingOnly = forwardingOnly;
         }
         static DecodedFrame decode(byte[] decoded) {
             if (decoded.length == 0) return null;
@@ -57,6 +59,10 @@ final class QcNativeStateDecoder implements AutoCloseable {
                 JSONObject header = new JSONObject(new String(decoded, 6, (int) headerLength,
                     java.nio.charset.StandardCharsets.UTF_8));
                 String ticket = header.getJSONObject("observation").toString();
+                if (header.optBoolean("forwardingOnly", false)) {
+                    return new DecodedFrame(ticket, messageType, Arrays.copyOfRange(decoded, payloadOffset, decoded.length),
+                        java.util.Collections.emptyList(), null, null, true);
+                }
                 JSONArray encodedStates = header.getJSONArray("states");
                 List<JSObject> states = new ArrayList<>();
                 for (int index = 0; index < encodedStates.length(); index++) {
@@ -65,7 +71,7 @@ final class QcNativeStateDecoder implements AutoCloseable {
                 return new DecodedFrame(ticket, messageType, Arrays.copyOfRange(decoded, payloadOffset, decoded.length),
                     states,
                     header.isNull("tempoClock") ? null : JSObject.fromJSONObject(header.getJSONObject("tempoClock")),
-                    new LifecycleStatus(header.getJSONObject("lifecycle").toString()));
+                    new LifecycleStatus(header.getJSONObject("lifecycle").toString()), false);
             } catch (Exception error) {
                 throw new IllegalStateException("Native QC framing returned an invalid decoded observation.", error);
             }
@@ -647,7 +653,53 @@ final class QcNativeStateDecoder implements AutoCloseable {
     }
 
     DecodedFrame pushReport(long connection, long reportEpoch, byte[] report, long receivedAtMs) {
-        return DecodedFrame.decode(nativePushReport(requireHandle(), connection, reportEpoch, report, receivedAtMs));
+        byte[] decoded = nativePushReport(requireHandle(), connection, reportEpoch, report, receivedAtMs);
+        try { return DecodedFrame.decode(decoded); }
+        finally { Arrays.fill(decoded, (byte) 0); }
+    }
+
+    void setCloudForwardEnabled(boolean enabled) {
+        nativeSetCloudForwardEnabled(requireHandle(), enabled ? 1 : 0);
+    }
+
+    static void initializeForwarding(android.content.Context context) {
+        nativeInitializeForwarding(context.getApplicationContext());
+    }
+
+    int forwardingWriteBudgetMs(long task) { return nativeForwardingWriteBudgetMs(requireHandle(), task); }
+
+    long startForwarding(DecodedFrame frame) {
+        if (!frame.forwardingOnly) throw new IllegalArgumentException("Not a forwarding frame.");
+        return startForwarding(frame.messageType, frame.payload, frame.observationTicket);
+    }
+
+    long startForwarding(int messageType, byte[] payload, String observationTicket) {
+        return nativeStartForwarding(requireHandle(), messageType, payload, observationTicket);
+    }
+
+    EncodedMessage nextForwarding(long task) {
+        byte[] encoded = nativeNextForwarding(requireHandle(), task);
+        if (encoded == null || encoded.length == 0) return null;
+        if (encoded.length < 2) throw new IllegalStateException("Invalid forwarding response envelope.");
+        try {
+            int type = (encoded[0] & 0xff) | ((encoded[1] & 0xff) << 8);
+            return new EncodedMessage(type, Arrays.copyOfRange(encoded, 2, encoded.length));
+        } finally { Arrays.fill(encoded, (byte) 0); }
+    }
+
+    boolean forwardingFinished(long task) { return nativeForwardingFinished(requireHandle(), task) != 0; }
+    void cancelForwarding(long task) { nativeCancelForwarding(requireHandle(), task); }
+    void closeForwarding(long task) { nativeCloseForwarding(requireHandle(), task); }
+
+    List<byte[]> encodeForwardingReports(long task, EncodedMessage message, boolean includeReportId, long nowMs) {
+        int reportSize = includeReportId ? REPORT_SIZE : REPORT_SIZE - 1;
+        byte[] encoded = nativeEncodeForwardingReports(requireHandle(), task, message.messageType, message.payload, includeReportId ? 1 : 0);
+        try {
+        if (encoded.length == 0 || encoded.length % reportSize != 0) throw new IllegalStateException("Invalid forwarding reports.");
+        List<byte[]> reports = new ArrayList<>(encoded.length / reportSize);
+        for (int offset = 0; offset < encoded.length; offset += reportSize) reports.add(Arrays.copyOfRange(encoded, offset, offset + reportSize));
+        return reports;
+        } finally { Arrays.fill(encoded, (byte) 0); }
     }
 
     boolean observationCurrent(String ticket) {
@@ -779,6 +831,15 @@ final class QcNativeStateDecoder implements AutoCloseable {
     private static native int nativeObservationCurrent(long handle, String ticket);
     private static native long nativeCaptureReportEpoch(long handle, long connection);
     private static native byte[] nativePushReport(long handle, long connection, long reportEpoch, byte[] report, long receivedAtMs);
+    private static native void nativeSetCloudForwardEnabled(long handle, int enabled);
+    private static native void nativeInitializeForwarding(android.content.Context context);
+    private static native int nativeForwardingWriteBudgetMs(long handle, long task);
+    private static native long nativeStartForwarding(long handle, int messageType, byte[] payload, String observation);
+    private static native byte[] nativeNextForwarding(long handle, long task);
+    private static native int nativeForwardingFinished(long handle, long task);
+    private static native void nativeCancelForwarding(long handle, long task);
+    private static native void nativeCloseForwarding(long handle, long task);
+    private static native byte[] nativeEncodeForwardingReports(long handle, long task, int messageType, byte[] payload, int includeReportId);
     private static native void nativeReset(long handle);
     private static native void nativeDestroy(long handle);
     private static native String nativeQueueModelRepo(long handle, String ticket, byte[] payload);

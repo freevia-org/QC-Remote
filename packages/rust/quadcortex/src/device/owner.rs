@@ -3,6 +3,8 @@
 
 mod backup;
 mod catalog_observations;
+#[cfg(test)]
+mod io_retention_tests;
 mod library_catalog;
 mod preset_workflow;
 mod session_runtime;
@@ -621,12 +623,26 @@ mod tests {
         use crate::{commands::DeviceCommand, profile::MESSAGE_TYPE_SCENE as SCENE};
         use serde_json::json;
         let (mut owner, connection) = live_owner();
+        observe_preflight(
+            &mut owner,
+            connection,
+            crate::profile::MESSAGE_TYPE_RECALL_PRESET,
+            pa::RecallPresetMessage {
+                action: pa::message_action::Enum::Update as i32,
+                preset: Some(pa::recall_preset_message::Preset::Preset(
+                    crate::proto::BinaryPreset {
+                        name: Some(crate::proto::binary_preset::Name::Name("Preset".into())),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        );
         let snapshot = owner.state.snapshot_mut();
-        snapshot.has_preset = true;
-        snapshot.preset_name = "Preset".into();
         snapshot.setlist_key = "My Presets".into();
         snapshot.preset_position = 3;
-        snapshot.active_scene = 2;
+        observe_preflight(&mut owner, connection, SCENE, vec![8, 1, 24, 2]);
         let method = "device.selectScene";
         let params = json!({"scene":2,"expectedPresetName":"Preset"});
         let context = owner
@@ -642,13 +658,24 @@ mod tests {
             .unwrap_err()
             .contains("not bound"));
         let old_snapshot = json!({"presetName":"Preset","activeScene":2});
+        let (_, baseline) = owner
+            .bind_write_preflight(&context, method, &params, &old_snapshot, 0)
+            .unwrap();
+        assert_eq!(
+            baseline,
+            crate::device::request::GatewayWritePreflightDecision::AlreadyMatched
+        );
         // Valid Scene UPDATE to scene 1 reaches the owner after the host cloned
         // the preflight snapshot but before it decides whether to suppress a write.
         observe_preflight(&mut owner, connection, SCENE, vec![8, 1, 24, 1]);
-        assert!(owner
-            .bind_write_preflight(&context, method, &params, &old_snapshot, 1)
-            .unwrap_err()
-            .contains("changed before binding"));
+        assert_eq!(owner.state.snapshot().preset_name, "Preset");
+        assert_eq!(owner.state.snapshot().active_scene, 1);
+        assert_eq!(
+            owner
+                .bind_write_preflight(&context, method, &params, &old_snapshot, 1)
+                .unwrap_err(),
+            "QC external preflight changed before binding to the write"
+        );
         // Caller arguments changed after planning cannot turn this into a no-op
         // for a different scene: the retained desired scene is still 2.
         let (bound, decision) = owner
@@ -2470,6 +2497,160 @@ mod tests {
     }
 
     #[test]
+    fn queued_grid_write_refuses_withdrawn_layout_authority_at_first_native_report() {
+        use crate::device::delivery::{DeliveryStatus, DeliveryStop, ReportOutcome};
+        use crate::device::request::plan_gateway_write_with_state;
+        use crate::proto::{binary_preset, model, BinaryPreset, Chain, Model};
+        use serde_json::json;
+        for withdraw in [false, true] {
+            let (mut owner, connection) = live_owner();
+            let recall = pa::RecallPresetMessage {
+                action: pa::message_action::Enum::Update as i32,
+                preset: Some(pa::recall_preset_message::Preset::Preset(BinaryPreset {
+                    name: Some(binary_preset::Name::Name("Queued authority fixture".into())),
+                    tempo: Some(binary_preset::Tempo::Tempo(120)),
+                    chains: vec![Chain {
+                        models: [11, 22]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(column, hash)| Model {
+                                hash: Some(model::Hash::Hash(hash)),
+                                column: Some(model::Column::Column(column as u32)),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }
+            .encode_to_vec();
+            let observed = owner
+                .capture_observation_with_ingress(
+                    connection,
+                    Some(IngressTime {
+                        first_report_at_ms: 0,
+                        last_report_at_ms: 0,
+                    }),
+                )
+                .unwrap();
+            owner
+                .observe_state(
+                    &observed,
+                    crate::profile::MESSAGE_TYPE_RECALL_PRESET,
+                    &recall,
+                )
+                .unwrap()
+                .unwrap();
+            assert!(owner.state.snapshot().grid_layout_complete);
+            let params = json!({
+                "row":0, "column":0, "expectedModelId":11,
+                "expectedPresetName":owner.state.snapshot().preset_name,
+                "expectedPresetIdentity":owner.caller_preset_identity().unwrap()
+            });
+            let plan =
+                plan_gateway_write_with_state("device.removeBlock", &params, &owner.state).unwrap();
+            let context = owner
+                .context_for_write("device.removeBlock", &params, &plan.write)
+                .unwrap();
+            let operation = owner.plan_operation_in_context(&context, 1, 1000).unwrap();
+            let dispatch = owner.prepare_dispatch(Some(&operation), None, 1).unwrap();
+            let delivery = owner
+                .prepare_delivery(&dispatch, crate::profile::MESSAGE_TYPE_GRID, 1, 1)
+                .unwrap();
+            owner.delivery_admitted(&delivery).unwrap();
+            if withdraw {
+                let before = owner.state.snapshot().clone();
+                let movement = pa::GridMoveMessage {
+                    r#move: [2, 3]
+                        .into_iter()
+                        .map(|to_col| pa::GridMoveElement {
+                            from_row: 0,
+                            from_col: 0,
+                            to_row: 0,
+                            to_col,
+                            is_drop: true,
+                        })
+                        .collect(),
+                    ..Default::default()
+                }
+                .encode_to_vec();
+                let observed = owner
+                    .capture_observation_with_ingress(
+                        connection,
+                        Some(IngressTime {
+                            first_report_at_ms: 2,
+                            last_report_at_ms: 2,
+                        }),
+                    )
+                    .unwrap();
+                owner
+                    .observe_state(&observed, crate::profile::MESSAGE_TYPE_GRID_MOVE, &movement)
+                    .unwrap()
+                    .unwrap();
+                assert!(!owner.state.snapshot().grid_layout_complete);
+                assert_eq!(owner.state.snapshot().blocks, before.blocks);
+                assert_eq!(owner.state.snapshot().routes, before.routes);
+                assert_eq!(
+                    owner.state.snapshot().address_revision,
+                    before.address_revision
+                );
+                assert!(
+                    plan_gateway_write_with_state("device.removeBlock", &params, &owner.state)
+                        .is_err(),
+                    "fresh planning already refuses this unknown layout"
+                );
+                let result = owner.begin_native_report(&delivery, 0, 3);
+                assert!(
+                    result.is_err(),
+                    "already queued writes must also refuse before any native report starts"
+                );
+                assert!(result.unwrap_err().contains("Grid layout is incomplete"));
+                let record = owner.delivery_record(&delivery).unwrap();
+                assert_eq!(record.status, DeliveryStatus::Cancelled);
+                assert_eq!(record.stop, Some(DeliveryStop::AdmissionRevoked));
+                assert_eq!(record.started_at_ms, None);
+                assert_eq!(record.delivered_reports, 0);
+            } else {
+                owner.begin_native_report(&delivery, 0, 3).unwrap();
+                owner
+                    .finish_native_report(&delivery, 0, ReportOutcome::Delivered, 3)
+                    .unwrap();
+                assert_eq!(
+                    owner.delivery_record(&delivery).unwrap().delivered_reports,
+                    1
+                );
+            }
+            // Unknown cell topology does not disable a preset-level control.
+            let tempo = json!({
+                "bpm":130, "expectedTempo":owner.state.snapshot().tempo,
+                "expectedPresetName":owner.state.snapshot().preset_name,
+                "expectedPresetIdentity":owner.caller_preset_identity().unwrap()
+            });
+            let plan =
+                plan_gateway_write_with_state("device.setTempo", &tempo, &owner.state).unwrap();
+            let context = owner
+                .context_for_write("device.setTempo", &tempo, &plan.write)
+                .unwrap();
+            let operation = owner.plan_operation_in_context(&context, 4, 1000).unwrap();
+            let dispatch = owner.prepare_dispatch(Some(&operation), None, 4).unwrap();
+            let delivery = owner
+                .prepare_delivery(&dispatch, crate::profile::MESSAGE_TYPE_GLOBAL_TEMPO, 1, 4)
+                .unwrap();
+            owner.delivery_admitted(&delivery).unwrap();
+            owner.begin_native_report(&delivery, 0, 5).unwrap();
+            owner
+                .finish_native_report(&delivery, 0, ReportOutcome::Delivered, 5)
+                .unwrap();
+            assert_eq!(
+                owner.delivery_record(&delivery).unwrap().delivered_reports,
+                1
+            );
+        }
+    }
+
+    #[test]
     fn queued_write_rejects_a_replaced_target_in_the_same_session() {
         let (mut owner, _) = live_owner();
         let context = bypass_context(&mut owner);
@@ -3196,6 +3377,91 @@ mod tests {
         assert!(owner.plan_operation(2, 100).is_err());
         owner.disconnect(3, false);
         assert!(owner.plan_operation(3, 100).is_err());
+    }
+
+    #[test]
+    fn sparse_grid_overflow_publishes_recovery_and_retires_the_cached_preset_until_recall() {
+        use crate::proto::{model, param, param_value, Chain, Model, Param, ParamValue};
+        let (mut owner, connection) = live_owner();
+        let ticket = owner.capture_observation(connection).unwrap();
+        owner.observe_state(&ticket, 15, &preset_payload()).unwrap();
+        let initial = owner
+            .current_preset()
+            .unwrap()
+            .state_version
+            .clone()
+            .unwrap();
+        owner.take_state_publications().unwrap();
+        let grid = |indices: Vec<u32>| {
+            pa::GridMessage {
+                action: pa::message_action::Enum::Update as i32,
+                preset: Some(pa::grid_message::Preset::Preset(
+                    crate::proto::BinaryPreset {
+                        chains: vec![Chain {
+                            models: vec![Model {
+                                column: Some(model::Column::Column(0)),
+                                params: indices
+                                    .into_iter()
+                                    .map(|index| Param {
+                                        index: Some(param::Index::Index(index)),
+                                        param_values: vec![ParamValue {
+                                            value: Some(param_value::Value::FloatValue(0.5)),
+                                        }],
+                                        ..Default::default()
+                                    })
+                                    .collect(),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            }
+            .encode_to_vec()
+        };
+        let at_limit = grid((0..20_000).collect());
+        assert!(at_limit.len() < crate::profile::MAX_FRAME_BYTES);
+        owner
+            .observe_state(&ticket, crate::profile::MESSAGE_TYPE_GRID, &at_limit)
+            .unwrap();
+        owner.take_state_publications().unwrap();
+        assert!(owner
+            .observe_state(
+                &ticket,
+                crate::profile::MESSAGE_TYPE_GRID,
+                &grid(vec![u32::MAX])
+            )
+            .is_err());
+        assert!(owner.state.sparse_state_invalidated());
+        assert!(owner.current_preset().is_none());
+        assert!(!owner.state.snapshot().has_preset);
+        assert!(!owner.state.snapshot().grid_layout_complete);
+        assert!(owner.state.snapshot().blocks.is_empty());
+        assert!(owner.state.snapshot().routes.is_empty());
+        assert!(owner.state.snapshot().preset_identity.is_none());
+        let published = owner.take_state_publications().unwrap();
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].states.len(), 1);
+        let recovery = &published[0].states[0];
+        assert_eq!(recovery.kind, "gridTopology");
+        assert_eq!(recovery.grid_layout_complete, Some(false));
+        assert_eq!(recovery.refresh_required, Some(true));
+        assert!(recovery.state_version.as_ref().unwrap().revision > initial.revision);
+        assert!(owner
+            .observe_state(&ticket, crate::profile::MESSAGE_TYPE_GRID, &grid(vec![0]))
+            .is_err());
+        assert!(
+            owner.current_preset().is_none(),
+            "a sparse echo cannot reopen discarded state"
+        );
+        owner.observe_state(&ticket, 15, &preset_payload()).unwrap();
+        assert!(!owner.state.sparse_state_invalidated());
+        assert!(
+            owner.current_preset().is_some(),
+            "only the real full preset restores cached reads"
+        );
     }
 
     #[test]

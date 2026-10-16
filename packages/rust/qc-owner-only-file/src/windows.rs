@@ -62,7 +62,10 @@ use std::{
     fs::{self, File},
     io::Write as _,
     mem,
-    os::windows::{ffi::OsStrExt as _, io::FromRawHandle as _},
+    os::windows::{
+        ffi::OsStrExt as _,
+        io::{AsRawHandle as _, FromRawHandle as _},
+    },
     path::Path,
     ptr,
 };
@@ -139,18 +142,33 @@ pub fn create_owner_only_directory(path: &Path) -> Result<bool, String> {
         }
     };
 
-    match open_and_verify_directory(path, user.sid(), created) {
-        Ok((_directory, true)) => Ok(created),
-        Ok((directory, false)) => {
-            if created {
-                delete_open_empty_directory(&directory);
-            }
-            Err(format!(
-                "Directory {} is not protected to this user",
-                path.display()
-            ))
+    finish_directory_creation(path, created, || {
+        open_and_verify_directory(path, user.sid(), created)
+    })
+}
+
+fn finish_directory_creation(
+    path: &Path,
+    created: bool,
+    inspect: impl FnOnce() -> Result<(File, bool), String>,
+) -> Result<bool, String> {
+    // CreateDirectoryW returns no created-object handle. A later open may
+    // observe a pathname substitute, even when its ACL names this same user.
+    // Never delete an unproven directory on inspection refusal or failure.
+    let retained = |reason: String| {
+        if created {
+            format!("{reason}. Directory creation succeeded but exact ownership could not be certified; the path {} was not removed. Inspect its ownership and permissions before explicitly retrying.", path.display())
+        } else {
+            reason
         }
-        Err(error) => Err(error),
+    };
+    match inspect() {
+        Ok((_directory, true)) => Ok(created),
+        Ok((_directory, false)) => Err(retained(format!(
+            "Directory {} is not protected to this user",
+            path.display()
+        ))),
+        Err(error) => Err(retained(error)),
     }
 }
 
@@ -257,26 +275,6 @@ fn owner_and_dacl_are_private(handle: HANDLE, expected_owner: PSID) -> Result<bo
     result
 }
 
-fn delete_open_empty_directory(directory: &File) {
-    use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
-    };
-    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
-    // SAFETY: `directory` owns a live handle opened with DELETE access. The
-    // disposition structure remains valid for this call. Deletion is by handle,
-    // never by a possibly replaced path, and succeeds only while the directory
-    // is empty.
-    unsafe {
-        SetFileInformationByHandle(
-            directory.as_raw_handle().cast(),
-            FileDispositionInfo,
-            (&raw const disposition).cast(),
-            mem::size_of_val(&disposition) as u32,
-        );
-    }
-}
-
 fn wide_path(path: &Path) -> Vec<u16> {
     path.as_os_str()
         .encode_wide()
@@ -340,12 +338,66 @@ fn write_staged_verified_by(
     contents: &[u8],
     verify: fn(HANDLE, PSID) -> Result<bool, String>,
 ) -> Result<(), String> {
-    let user = CurrentUser::look_up()?;
-    let mut dacl = OwnerOnlyDacl::grant_full_access(user.sid())?;
+    write_stage(path, contents, verify, true, |file, bytes| {
+        file.write_all(bytes)
+    })
+    .map(|_| ())
+}
+
+/// Fresh publication must never retire a pre-existing staging pathname.
+pub(crate) fn stage_fresh(
+    contents: &[u8],
+    mut next_path: impl FnMut() -> std::path::PathBuf,
+) -> Result<std::path::PathBuf, String> {
+    for _ in 0..64 {
+        let path = next_path();
+        if write_stage(&path, contents, names_only, false, |file, bytes| {
+            file.write_all(bytes)
+        })? {
+            return Ok(path);
+        }
+    }
+    Err("Could not reserve a fresh credential staging file".into())
+}
+
+struct FreshFileCleanup(HANDLE, bool);
+impl Drop for FreshFileCleanup {
+    fn drop(&mut self) {
+        if self.1 {
+            use windows_sys::Win32::Storage::FileSystem::{
+                FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+            };
+            let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+            // The guard is declared after File and drops first; DELETE access
+            // belongs to this exact fresh handle, never a colliding pathname.
+            unsafe {
+                SetFileInformationByHandle(
+                    self.0,
+                    FileDispositionInfo,
+                    (&raw const disposition).cast(),
+                    mem::size_of_val(&disposition) as u32,
+                );
+            }
+        }
+    }
+}
+
+/// Exclusive, verified empty-file reservation; never removes a collision.
+pub fn create_new_owner_only(path: &Path) -> std::io::Result<File> {
+    create_new_owner_only_verified_by(path, names_only)
+}
+
+fn create_new_owner_only_verified_by(
+    path: &Path,
+    verify: fn(HANDLE, PSID) -> Result<bool, String>,
+) -> std::io::Result<File> {
+    let user = CurrentUser::look_up().map_err(std::io::Error::other)?;
+    let mut dacl = OwnerOnlyDacl::grant_full_access(user.sid()).map_err(std::io::Error::other)?;
     // SAFETY: SECURITY_DESCRIPTOR holds only integers and raw pointers, for which all-zero
     // bytes are a valid value (null pointers). It is initialised properly just below.
     let mut descriptor: SECURITY_DESCRIPTOR = unsafe { mem::zeroed() };
-    let descriptor_pointer = owner_only_descriptor(&mut dacl, &mut descriptor)?;
+    let descriptor_pointer =
+        owner_only_descriptor(&mut dacl, &mut descriptor).map_err(std::io::Error::other)?;
     // SAFETY: `descriptor` was initialised above. `dacl` owns a DWORD-aligned buffer that holds a
     // fully initialised ACL. The descriptor keeps this pointer without copying it, so `dacl`
     // must outlive every use of `descriptor`: both are locals, `descriptor` is declared after
@@ -361,9 +413,6 @@ fn write_staged_verified_by(
         bInheritHandle: 0,
     };
 
-    // This is a private staging name owned by this process; removing a leftover
-    // is how `CREATE_NEW` is guaranteed to be the creating open.
-    let _ = fs::remove_file(path);
     let wide: Vec<u16> = path
         .as_os_str()
         .encode_wide()
@@ -377,7 +426,7 @@ fn write_staged_verified_by(
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            GENERIC_WRITE,
+            GENERIC_WRITE | windows_sys::Win32::Storage::FileSystem::DELETE,
             // Readers may open it; nothing else may write it while it is being
             // staged.
             FILE_SHARE_READ,
@@ -388,40 +437,62 @@ fn write_staged_verified_by(
         )
     };
     if handle == INVALID_HANDLE_VALUE {
-        return Err(format!(
-            "Could not create {} for this user only: {}",
-            path.display(),
-            std::io::Error::last_os_error()
-        ));
+        return Err(std::io::Error::last_os_error());
     }
     // SAFETY: `CreateFileW` returned a handle it does not own any more, and the
     // `File` now closes it exactly once on drop, including on the error paths
     // below.
-    let mut file = unsafe { File::from_raw_handle(handle.cast()) };
-
-    match verify(handle, user.sid()) {
-        Ok(true) => {}
-        Ok(false) => {
-            drop(file);
-            let _ = fs::remove_file(path);
-            return Err(format!(
-                "{} cannot hold a per-user DACL, so a full-control credential was not written to it",
+    let file = unsafe { File::from_raw_handle(handle.cast()) };
+    let mut cleanup = FreshFileCleanup(handle, true);
+    if !verify(handle, user.sid()).map_err(std::io::Error::other)? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "{} cannot hold a per-user DACL, so no credential was written",
                 path.display()
-            ));
+            ),
+        ));
+    }
+    cleanup.1 = false;
+    Ok(file)
+}
+
+fn write_stage(
+    path: &Path,
+    contents: &[u8],
+    verify: fn(HANDLE, PSID) -> Result<bool, String>,
+    replace_existing: bool,
+    write: impl FnOnce(&mut File, &[u8]) -> std::io::Result<()>,
+) -> Result<bool, String> {
+    // Only this legacy explicit replacement wrapper may remove an old name.
+    if replace_existing {
+        let _ = fs::remove_file(path);
+    }
+    let mut file = match create_new_owner_only_verified_by(path, verify) {
+        Ok(file) => file,
+        Err(error) if !replace_existing && error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Ok(false)
         }
         Err(error) => {
-            drop(file);
-            let _ = fs::remove_file(path);
-            return Err(error);
+            return Err(format!(
+                "Could not create {} for this user only: {error}",
+                path.display()
+            ))
         }
+    };
+    let mut cleanup = FreshFileCleanup(file.as_raw_handle().cast(), true);
+    let result = (|| {
+        if let Err(error) = write(&mut file, contents).and_then(|()| file.sync_all()) {
+            return Err(format!("Could not write {}: {error}", path.display()));
+        }
+        Ok(true)
+    })();
+    if result.is_ok() {
+        cleanup.1 = false;
     }
-
-    if let Err(error) = file.write_all(contents) {
-        drop(file);
-        let _ = fs::remove_file(path);
-        return Err(format!("Could not write {}: {error}", path.display()));
-    }
-    Ok(())
+    drop(cleanup);
+    drop(file);
+    result
 }
 
 /// Whether the file at `path` grants this user and nobody else, with
@@ -439,6 +510,34 @@ pub fn is_owner_only(path: &Path) -> Result<bool, String> {
     let file =
         File::open(path).map_err(|error| format!("Could not open {}: {error}", path.display()))?;
     names_only(file.as_raw_handle().cast(), user.sid())
+}
+
+/// Open and verify the exact final regular file later read by the bounded reader.
+/// Final reparse points are refused; ancestors remain inside the caller's trust boundary.
+/// Preserve the published file policy: its protected DACL admits only this user.
+/// An elevated publisher's default owner may legitimately be Administrators.
+pub(crate) fn open_owner_only_document(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::{
+        fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawHandle,
+    };
+    let user = CurrentUser::look_up().map_err(std::io::Error::other)?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.file_attributes() & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)
+            != 0
+        || !names_only(file.as_raw_handle().cast(), user.sid()).map_err(std::io::Error::other)?
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Credential file is not a current-user-access-only regular file",
+        ));
+    }
+    Ok(file)
 }
 
 /// Reads the DACL back off an open handle and reports whether it is exactly one
@@ -670,6 +769,290 @@ mod tests {
     use super::*;
     use windows_sys::Win32::Security::GetSecurityDescriptorOwner;
 
+    struct Root(std::path::PathBuf);
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct Scratch {
+        path: std::path::PathBuf,
+        root: std::sync::Arc<Root>,
+        reader_permit: Option<std::sync::Arc<ReaderPermit>>,
+    }
+    impl std::ops::Deref for Scratch {
+        type Target = std::path::PathBuf;
+        fn deref(&self) -> &Self::Target {
+            &self.path
+        }
+    }
+    impl AsRef<Path> for Scratch {
+        fn as_ref(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    // Failed cleanup retains the original Child and its scratch owner. Never
+    // delete output/descriptor bytes while an unacknowledged reader is alive.
+    struct ReaderAdmissions {
+        count: std::sync::atomic::AtomicUsize,
+        limit: usize,
+    }
+    struct ReaderPermit(std::sync::Arc<ReaderAdmissions>);
+    impl Drop for ReaderPermit {
+        fn drop(&mut self) {
+            self.0
+                .count
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+    impl ReaderAdmissions {
+        fn global() -> std::sync::Arc<Self> {
+            static OWNER: std::sync::OnceLock<std::sync::Arc<ReaderAdmissions>> =
+                std::sync::OnceLock::new();
+            std::sync::Arc::clone(OWNER.get_or_init(|| {
+                std::sync::Arc::new(Self {
+                    count: std::sync::atomic::AtomicUsize::new(0),
+                    limit: 4,
+                })
+            }))
+        }
+        #[allow(
+            deprecated,
+            reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+        )]
+        fn reserve(
+            self: &std::sync::Arc<Self>,
+        ) -> Result<std::sync::Arc<ReaderPermit>, &'static str> {
+            self.count
+                .fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |count| (count < self.limit).then_some(count + 1),
+                )
+                .map_err(|_| "reader fixture capacity exhausted")?;
+            Ok(std::sync::Arc::new(ReaderPermit(std::sync::Arc::clone(
+                self,
+            ))))
+        }
+    }
+    struct RetainedReader {
+        child: std::process::Child,
+        _root: std::sync::Arc<Root>,
+        _permit: std::sync::Arc<ReaderPermit>,
+    }
+    fn retained_readers() -> &'static std::sync::Mutex<Vec<RetainedReader>> {
+        static RETAINED: std::sync::Mutex<Vec<RetainedReader>> = std::sync::Mutex::new(Vec::new());
+        &RETAINED
+    }
+    fn reap_readers() {
+        let records =
+            std::mem::take(&mut *retained_readers().lock().unwrap_or_else(|p| p.into_inner()));
+        let pending = records
+            .into_iter()
+            .filter_map(|mut record| {
+                if matches!(record.child.try_wait(), Ok(Some(_))) {
+                    None // Exact original retires before root and permit fields.
+                } else {
+                    Some(record)
+                }
+            })
+            .collect::<Vec<_>>();
+        retained_readers()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend(pending);
+    }
+    fn reader_scratch_file(name: &str) -> Scratch {
+        reap_readers();
+        // Refuse before any scratch/root/output/process effects.
+        let permit = ReaderAdmissions::global()
+            .reserve()
+            .expect("bounded reader admission");
+        let mut scratch = scratch_file(name);
+        scratch.reader_permit = Some(permit);
+        scratch
+    }
+
+    struct Reader {
+        child: Option<std::process::Child>,
+        root: std::sync::Arc<Root>,
+        permit: std::sync::Arc<ReaderPermit>,
+    }
+    impl Drop for Reader {
+        fn drop(&mut self) {
+            let Some(mut child) = self.child.take() else {
+                return;
+            };
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            let _ = child.kill();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+            loop {
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            retained_readers()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(RetainedReader {
+                    child,
+                    _root: self.root.clone(),
+                    _permit: self.permit.clone(),
+                });
+            eprintln!(
+                "owner-only reader cleanup unacknowledged; original child and scratch retained"
+            );
+        }
+    }
+
+    fn read_with_node(path: &Scratch, after_spawn: impl FnOnce(u32)) -> std::process::Output {
+        use std::io::Read as _;
+        use std::os::windows::process::CommandExt as _;
+        let stdout = path.root.0.join("reader.stdout");
+        let stderr = path.root.0.join("reader.stderr");
+        let output_file = |path: &Path| {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .expect("exclusive reader output")
+        };
+        let mut reader = Reader {
+            child: None,
+            root: path.root.clone(),
+            permit: path
+                .reader_permit
+                .as_ref()
+                .expect("reader admission precedes root allocation")
+                .clone(),
+        };
+        reader.child = Some(
+            std::process::Command::new("node")
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .env_remove("NODE_OPTIONS")
+                .env_remove("NODE_REPL_EXTERNAL_MODULE")
+                .arg("-e")
+                .arg(
+                    "process.stdout.write(require('node:fs').readFileSync(process.argv[1],'utf8'))",
+                )
+                .arg(path.as_ref())
+                .stdin(std::process::Stdio::null())
+                .stdout(output_file(&stdout))
+                .stderr(output_file(&stderr))
+                .spawn()
+                .expect("node is required to verify separate-process descriptor access"),
+        );
+        after_spawn(reader.child.as_ref().unwrap().id());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = reader
+                .child
+                .as_mut()
+                .unwrap()
+                .try_wait()
+                .expect("observe reader")
+            {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "separate reader exceeded deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        // The original Child acknowledged exit before reading/removing outputs.
+        drop(reader.child.take());
+        let bounded = |path: &Path| {
+            let mut bytes = Vec::new();
+            File::open(path)
+                .unwrap()
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .unwrap();
+            assert!(
+                bytes.len() <= 1024 * 1024,
+                "reader output exceeded fixture cap"
+            );
+            bytes
+        };
+        std::process::Output {
+            status,
+            stdout: bounded(&stdout),
+            stderr: bounded(&stderr),
+        }
+    }
+
+    #[test]
+    fn fresh_atomic_stage_preserves_colliding_unowned_bytes() {
+        let parent = scratch_directory("fresh-collision");
+        let occupied = parent.join("occupied.tmp");
+        let fresh = parent.join("fresh.tmp");
+        fs::write(&occupied, b"other publisher bytes").unwrap();
+        let mut count = 0;
+        let staged = stage_fresh(b"complete document", || {
+            count += 1;
+            if count == 1 {
+                occupied.clone()
+            } else {
+                fresh.clone()
+            }
+        })
+        .unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(staged, fresh);
+        assert_eq!(fs::read(occupied).unwrap(), b"other publisher bytes");
+        assert_eq!(fs::read(staged).unwrap(), b"complete document");
+    }
+
+    #[test]
+    fn fresh_stage_partial_write_validation_error_and_unwind_remove_only_owned_file() {
+        let parent = scratch_directory("fresh-faults");
+        let destination = parent.join("published.json");
+        fs::write(&destination, b"prior document").unwrap();
+        let staged = parent.join("fresh.tmp");
+        let failed = write_stage(&staged, b"secret", names_only, false, |file, _| {
+            file.write_all(b"partial secret")?;
+            Err(std::io::Error::other("injected partial-write failure"))
+        });
+        assert!(failed.unwrap_err().contains("partial-write failure"));
+        assert!(!staged.exists());
+        assert!(write_stage(
+            &staged,
+            b"secret",
+            |_, _| Ok(false),
+            false,
+            |_, _| panic!("validation must precede any write")
+        )
+        .is_err());
+        assert!(!staged.exists());
+        assert!(write_stage(
+            &staged,
+            b"secret",
+            |_, _| Err("injected DACL error".into()),
+            false,
+            |_, _| panic!("validation must precede any write")
+        )
+        .is_err());
+        assert!(!staged.exists());
+        let fault = std::panic::catch_unwind(|| {
+            write_stage(&staged, b"secret", names_only, false, |file, _| {
+                file.write_all(b"partial secret")?;
+                panic!("injected unwind")
+            })
+        });
+        assert!(fault.is_err());
+        assert!(!staged.exists());
+        assert_eq!(fs::read(destination).unwrap(), b"prior document");
+    }
+
     #[test]
     fn directory_descriptor_explicitly_names_current_user_as_owner() {
         let user = CurrentUser::look_up().expect("current user SID");
@@ -693,26 +1076,145 @@ mod tests {
         assert_eq!(defaulted, 0);
     }
 
-    fn scratch_file(name: &str) -> std::path::PathBuf {
-        let directory = std::env::temp_dir().join(format!(
-            "qc-remote-owner-only-{name}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).expect("scratch directory");
-        directory.join("local-mcp.json")
+    #[test]
+    fn directory_inspection_failures_report_retention_and_preserve_unknown_substitutes() {
+        for failure in ["false", "security-error", "open-error"] {
+            let parent = scratch_directory("directory-inspection-retention");
+            let created = parent.join("private");
+            let original = parent.join("original");
+            create_owner_only_directory(&created).unwrap();
+            fs::write(created.join("original-marker"), b"original bytes").unwrap();
+            fs::rename(&created, &original).unwrap();
+            // This empty substitute is deliberately deletable by the old
+            // false-verifier branch: cleanup must not assume it is ours.
+            fs::create_dir(&created).unwrap();
+            let user = CurrentUser::look_up().unwrap();
+            let refused = finish_directory_creation(&created, true, || {
+                if failure == "open-error" {
+                    return Err("injected directory open failure".into());
+                }
+                let (directory, _) = open_and_verify_directory(&created, user.sid(), true)?;
+                if failure == "security-error" {
+                    return Err("injected directory security inspection failure".into());
+                }
+                Ok((directory, false))
+            })
+            .unwrap_err();
+            assert!(refused.contains("was not removed"));
+            assert!(refused.contains("explicitly retrying"));
+            assert!(created.is_dir(), "an unknown empty substitute must survive");
+            assert!(fs::read_dir(&created).unwrap().next().is_none());
+            assert_eq!(
+                fs::read(original.join("original-marker")).unwrap(),
+                b"original bytes"
+            );
+        }
     }
 
-    fn scratch_directory(name: &str) -> std::path::PathBuf {
-        let directory = std::env::temp_dir().join(format!(
-            "qc-owner-only-directory-{name}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).expect("scratch directory");
-        directory
+    fn scratch_file(name: &str) -> Scratch {
+        let mut scratch = scratch_directory(name);
+        scratch.path = scratch.path.join("local-mcp.json");
+        scratch
+    }
+
+    fn scratch_directory(name: &str) -> Scratch {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        for _ in 0..64 {
+            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let directory = std::env::temp_dir().join(format!(
+                "qc-owner-only-directory-{name}-{}-{serial}",
+                std::process::id()
+            ));
+            match fs::create_dir(&directory) {
+                Ok(()) => {
+                    return Scratch {
+                        path: directory.clone(),
+                        root: std::sync::Arc::new(Root(directory)),
+                        reader_permit: None,
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("scratch directory: {error}"),
+            }
+        }
+        panic!("could not reserve exclusive scratch directory after 64 collisions");
+    }
+
+    #[test]
+    fn windows_scratch_cleanup_survives_partial_setup_and_assertion_unwind() {
+        let mut root = None;
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let scratch = scratch_directory("unwind");
+            root = Some(scratch.path.clone());
+            fs::write(scratch.join("partial"), b"partial setup").unwrap();
+            panic!("injected assertion failure");
+        }));
+        assert!(fault.is_err());
+        assert!(
+            !root.unwrap().exists(),
+            "owned scratch removed during unwind"
+        );
+    }
+
+    #[test]
+    fn separate_reader_unwind_reaps_original_child_before_scratch_cleanup() {
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        };
+        let mut root = None;
+        let mut process = None;
+        let mut permit = None;
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let scratch = reader_scratch_file("reader-unwind");
+            permit = Some(std::sync::Arc::downgrade(
+                scratch.reader_permit.as_ref().unwrap(),
+            ));
+            root = Some(scratch.root.0.clone());
+            write_staged(&scratch, b"fixture bytes").unwrap();
+            read_with_node(&scratch, |pid| {
+                // Hold the exact process object before injecting the panic;
+                // a later recycled PID cannot satisfy the cleanup assertion.
+                let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+                assert!(!handle.is_null());
+                process = Some(unsafe { OwnedHandle::from_raw_handle(handle.cast()) });
+                panic!("injected post-spawn assertion failure");
+            });
+        }));
+        assert!(fault.is_err());
+        let process = process.expect("reader was spawned and its original handle retained");
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.as_raw_handle().cast(), 0) },
+            WAIT_OBJECT_0,
+            "original reader process must acknowledge exit before root retirement"
+        );
+        assert!(
+            !root.unwrap().exists(),
+            "reader root removed after acknowledged cleanup"
+        );
+        assert!(
+            permit.unwrap().upgrade().is_none(),
+            "original/root retirement releases exact admission"
+        );
+    }
+
+    #[test]
+    fn reader_capacity_stays_with_retained_resource_clones_until_acknowledgement() {
+        let admissions = std::sync::Arc::new(ReaderAdmissions {
+            count: std::sync::atomic::AtomicUsize::new(0),
+            limit: 1,
+        });
+        let permit = admissions.reserve().unwrap();
+        let retained = permit.clone();
+        drop(permit);
+        assert!(admissions.reserve().is_err());
+        drop(retained);
+        assert_eq!(
+            admissions.count.load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        drop(admissions.reserve().unwrap());
     }
 
     #[test]
@@ -762,16 +1264,10 @@ mod tests {
         // The load-bearing claim of this whole change: tightening the DACL must
         // not cost an external reader. A same-process `fs::read` does not prove
         // that a separate cross-runtime client can open the descriptor.
-        let path = scratch_file("cross-process");
+        let path = reader_scratch_file("cross-process");
         write_staged(&path, b"{\"bearerToken\":\"secret\"}").expect("owner-only staging write");
 
-        let read_back = std::process::Command::new("node")
-            .arg("-e")
-            .arg("process.stdout.write(require('node:fs').readFileSync(process.argv[1],'utf8'))")
-            .arg(&path)
-            .output()
-            .expect("node is required to verify that readers still reach the descriptor");
-        let _ = fs::remove_dir_all(path.parent().expect("scratch parent"));
+        let read_back = read_with_node(&path, |_| {});
 
         assert!(
             read_back.status.success(),
@@ -798,7 +1294,6 @@ mod tests {
             write_staged_verified_by(&path, b"{\"bearerToken\":\"secret\"}", |_, _| Ok(false));
 
         let left_behind = path.exists();
-        let _ = fs::remove_dir_all(path.parent().expect("scratch parent"));
         let message = refused.expect_err("an unprotectable file must fail the publication");
         assert!(
             message.contains("cannot hold a per-user DACL"),
@@ -826,7 +1321,6 @@ mod tests {
 
         let owner_only = is_owner_only(&path).expect("inspect the DACL");
         let contents = fs::read(&path).expect("read back");
-        let _ = fs::remove_dir_all(path.parent().expect("scratch parent"));
 
         assert!(
             owner_only,

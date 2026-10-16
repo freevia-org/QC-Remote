@@ -582,11 +582,7 @@ fn client_rows(snapshot: &Snapshot) -> (usize, usize, Vec<MenuRow>) {
     if let Some(apps) = loaded_linked_apps(snapshot) {
         let activity = activity_known(snapshot);
         for app in apps {
-            let sessions = if activity {
-                linked_app_sessions(snapshot, app)
-            } else {
-                Vec::new()
-            };
+            let sessions = linked_app_sessions(snapshot, app);
             remote += sessions.len();
             rows.push(MenuRow::Submenu {
                 label: linked_app_label(app, apps, snapshot),
@@ -604,9 +600,10 @@ pub const LINKED_APPS_UNAVAILABLE: &str =
 
 /// Shown when live remote sessions do not name their grant (a relay deployed
 /// before `grantId`): which linked app is in use cannot be told, so no entry
-/// claims to be active or idle and the sessions keep their own rows.
+/// claims to be idle. Known sessions stay under their app; unmapped ones
+/// retain their own rows rather than invalidating positive known activity.
 pub const LINKED_ACTIVITY_NEEDS_UPDATE: &str =
-    "Which linked app is active needs a QC Remote Cloud update; active sessions are listed separately";
+    "Some active sessions cannot be matched to linked apps; showing them separately";
 
 /// The account's linked remote apps, when the host has a current list.
 fn loaded_linked_apps(snapshot: &Snapshot) -> Option<&[LinkedApp]> {
@@ -628,12 +625,12 @@ fn activity_known(snapshot: &Snapshot) -> bool {
         .iter()
         .flat_map(|host| host.clients.iter())
         .filter(|client| client.remote)
-        .all(|client| client.grant_known)
+        .all(|client| client.grant_known && client.linked_app_id.is_some())
 }
 
 /// The linked apps sessions are placed under, when placement can be trusted.
 fn placing_linked_apps(snapshot: &Snapshot) -> Option<&[LinkedApp]> {
-    loaded_linked_apps(snapshot).filter(|_| activity_known(snapshot))
+    loaded_linked_apps(snapshot)
 }
 
 /// The linked app a remote session was placed under by the host, if listed.
@@ -679,7 +676,7 @@ fn linked_app_base_label(app: &LinkedApp, apps: &[LinkedApp], snapshot: &Snapsho
 }
 
 /// The entry's menu label, unique within the menu: two entries that would
-/// still read the same get the last four characters of their opaque entry id
+/// still read the same get the shortest unique suffix (at least four characters)
 /// (stable for as long as the grant stays listed).
 fn linked_app_label(app: &LinkedApp, apps: &[LinkedApp], snapshot: &Snapshot) -> String {
     let base = linked_app_base_label(app, apps, snapshot);
@@ -691,7 +688,22 @@ fn linked_app_label(app: &LinkedApp, apps: &[LinkedApp], snapshot: &Snapshot) ->
         return base;
     }
     let chars: Vec<char> = app.entry_id.chars().collect();
-    let tag: String = chars[chars.len().saturating_sub(4)..].iter().collect();
+    let peers: Vec<Vec<char>> = apps
+        .iter()
+        .filter(|other| {
+            other.entry_id != app.entry_id && linked_app_base_label(other, apps, snapshot) == base
+        })
+        .map(|other| other.entry_id.chars().collect())
+        .collect();
+    let width = (4..=chars.len().max(4))
+        .find(|width| {
+            let suffix = &chars[chars.len().saturating_sub(*width)..];
+            peers
+                .iter()
+                .all(|other| suffix != &other[other.len().saturating_sub(*width)..])
+        })
+        .unwrap_or(chars.len());
+    let tag: String = chars[chars.len().saturating_sub(width)..].iter().collect();
     format!("{base} #{tag}")
 }
 
@@ -707,10 +719,10 @@ fn linked_app_rows(
     let mut details: Vec<String> = Vec::new();
     details.push(match (activity_known, sessions.len()) {
         // No claim either way: its sessions cannot be told from others'.
-        (false, _) => "Linked".into(),
+        (false, 0) => "Linked".into(),
         (true, 0) => "Linked, idle".into(),
-        (true, 1) => "Active now".into(),
-        (true, live) => format!("Active now ({live} sessions)"),
+        (_, 1) => "Active now".into(),
+        (_, live) => format!("Active now ({live} sessions)"),
     });
     if let Some(version) = &app.app_version {
         details.push(format!("App {version}"));
@@ -1683,6 +1695,7 @@ mod tests {
                     session_id: Some("relay-9".into()),
                     name: "ChatGPT web".into(),
                     grant_known: true,
+                    linked_app_id: Some("app-9".into()),
                     ..remote_claude()
                 },
             ],
@@ -1698,6 +1711,67 @@ mod tests {
             ..HostPresence::default()
         });
         snapshot
+    }
+
+    #[test]
+    fn linked_activity_keeps_known_sessions_but_cannot_infer_idle_from_an_unmapped_grant() {
+        let mut snapshot = linked_devices();
+        snapshot
+            .host
+            .as_mut()
+            .unwrap()
+            .clients
+            .last_mut()
+            .unwrap()
+            .linked_app_id = None;
+        // The last active remote session has a known grant but no linked-app id.
+        assert!(
+            !activity_known(&snapshot),
+            "grant-known alone cannot map activity"
+        );
+        let model = presentation(&snapshot);
+        let all = labels(&model);
+        assert!(all.contains(&"1 local and 3 remote clients active".into()));
+        assert!(!all.iter().any(|label| label.ends_with("remote apps idle")));
+        let known = submenu(
+            &model,
+            "Claude (remote, Windows Chrome 140, linked 2 h ago)",
+        );
+        assert_eq!(known[0], MenuRow::Text("Active now (2 sessions)".into()));
+        let uncertain = submenu(
+            &model,
+            "Claude (remote, Android Chrome 139, linked 1 h ago)",
+        );
+        assert_eq!(uncertain[0], MenuRow::Text("Linked".into()));
+        assert!(
+            all.contains(&"ChatGPT web (remote)".into()),
+            "unmapped session stays visible"
+        );
+    }
+
+    #[test]
+    fn linked_app_labels_disambiguate_ids_with_the_same_four_character_suffix() {
+        let snapshot = ready();
+        let apps = vec![
+            linked("first-aaaa", "Claude", "Android", 0),
+            linked("second-aaaa", "Claude", "Android", 0),
+        ];
+        let first = linked_app_label(&apps[0], &apps, &snapshot);
+        let second = linked_app_label(&apps[1], &apps, &snapshot);
+        assert_ne!(
+            first, second,
+            "same trailing four characters do not identify different grants"
+        );
+        assert_ne!(
+            confirmation(&MenuAction::UnlinkLinkedApp {
+                entry_id: apps[0].entry_id.clone(),
+                app: first
+            }),
+            confirmation(&MenuAction::UnlinkLinkedApp {
+                entry_id: apps[1].entry_id.clone(),
+                app: second
+            })
+        );
     }
 
     #[test]

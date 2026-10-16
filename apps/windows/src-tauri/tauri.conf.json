@@ -41,6 +41,7 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
+        "template": "./windows/installer.nsi",
         "startMenuFolder": "QC Remote",
         "installerHooks": "./windows/hooks.nsh"
       }

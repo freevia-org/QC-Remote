@@ -30,6 +30,18 @@ let lastStatus: any;
 let cursor = 0;
 let statePoll: ReturnType<typeof setInterval> | undefined;
 let directIpadSession = false;
+const iosConnectionModeKey = "qc.remote.ios.connection-mode-v1";
+
+export type IosConnectionMode = "midi" | "auto" | "remote";
+
+export function getIosConnectionMode(): IosConnectionMode | undefined {
+  const value = localStorage.getItem(iosConnectionModeKey);
+  return value === "midi" || value === "auto" || value === "remote" ? value : undefined;
+}
+
+function prefersRemoteHost(): boolean {
+  return getIosConnectionMode() === "remote";
+}
 
 async function load(): Promise<void> {
   if (loaded) return;
@@ -134,7 +146,10 @@ function startStatePolling(): void {
   })(); }, 1_500);
 }
 async function invokeRemote(method: string, args: Record<string, unknown> = {}): Promise<any> {
-  if (method === "system.status") return await callTool("get_qc_status", {});
+  if (method === "system.status") {
+    lastStatus = await callTool("get_qc_status", {});
+    return lastStatus;
+  }
   if (method === "device.snapshot" || method === "device.currentPreset") return await callTool("get_current_preset", {});
   const descriptor = GATEWAY_CLIENT_METHODS[Object.keys(GATEWAY_CLIENT_METHODS).find((key) => (GATEWAY_CLIENT_METHODS as any)[key].rpc === method) as keyof typeof GATEWAY_CLIENT_METHODS];
   if (!descriptor) throw new Error(`This iOS remote session does not provide ${method}.`);
@@ -173,7 +188,7 @@ const nativePlugin = {
     await load();
     if (Capacitor.isNativePlatform()) {
       const capabilities = await QCIosNativeBridge.platformCapabilities();
-      if (capabilities.deviceFamily === "ipad") {
+      if (capabilities.deviceFamily === "ipad" && !prefersRemoteHost()) {
         const driver = await QCIosNativeBridge.scanUsbDriver();
         if (driver.available || driver.connected) {
           directIpadSession = Boolean(driver.connected);
@@ -190,7 +205,7 @@ const nativePlugin = {
   async connect() {
     if (Capacitor.isNativePlatform()) {
       const capabilities = await QCIosNativeBridge.platformCapabilities();
-      if (capabilities.deviceFamily === "ipad") {
+      if (capabilities.deviceFamily === "ipad" && !prefersRemoteHost()) {
         const driver = await QCIosNativeBridge.scanUsbDriver();
         if (driver.available || directIpadSession) {
           const result = await QCIosNativeBridge.connectUsbDriver();
@@ -269,7 +284,21 @@ export const QcUsbNative = nativePlugin as any;
 export const androidGatewayTransport = withDeviceConnectionSource(createGatewayClientTransport<GatewayTransport>(<T,>(method: string, params?: Record<string, unknown>) => nativePlugin.gatewayInvoke({ method, params }) as Promise<T>, "rpc"));
 export async function androidUsbRuntimeDiagnostics(): Promise<NonNullable<RuntimeStatus["usbDiagnostics"]> & { android: any }> {
   const android = await nativePlugin.diagnostics();
-  return { phase: android.phase, detail: directIpadSession ? "Connected directly to the Quad Cortex through the iPad DriverKit prototype." : client ? "Connected through the QC Remote host." : "Sign in to QC Remote Cloud to reach a paired host.", connected: android.connected, synchronized: android.synchronized, android };
+  const hostRelay = lastStatus?.usbDiagnostics?.updaterRelay;
+  const relayDetail = hostRelay && typeof hostRelay.enabled === "boolean"
+    ? ` The paired host's QC internet forwarding is ${hostRelay.enabled ? "enabled" : "disabled"}.`
+    : " Forwarding for QC account, cloud, and update requests depends on the paired host's QC Remote version and settings.";
+  return {
+    phase: android.phase,
+    detail: directIpadSession
+      ? "Connected directly through the iPad DriverKit prototype. This direct iOS path does not provide the QC internet request forwarder; use Paired host mode for QC account, cloud, and update requests."
+      : client
+        ? `Connected through the QC Remote paired host.${relayDetail}`
+        : "Sign in to QC Remote Cloud to reach a paired host.",
+    connected: android.connected,
+    synchronized: android.synchronized,
+    android
+  };
 }
 export const createAndroidQcTransport = (gateway: GatewayTransport, currentSnapshot: () => PresetSnapshot): QcDeviceTransport => createQcGatewayTransport(gateway, currentSnapshot);
 export const ScreenWakeNative = { setEnabled: ({ enabled }: { enabled: boolean }) => QCIosNativeBridge.setScreenAwake({ enabled }) };
@@ -294,6 +323,20 @@ export const publicRelay: PublicRelayPort = {
     async poll() { const current = await status(); return current.paired ? { state: "paired" as const, status: current } : { state: "waiting" as const }; }
   }
 };
+
+/** Switch the iOS UI's connection route after closing any current USB or cloud session. */
+export async function setIosConnectionMode(mode: IosConnectionMode): Promise<void> {
+  const previousMode = localStorage.getItem(iosConnectionModeKey);
+  localStorage.setItem(iosConnectionModeKey, mode);
+  try {
+    await nativePlugin.disconnect();
+    await QCIosNativeBridge.disconnectUsbMidi().catch(() => undefined);
+  } catch (error) {
+    if (previousMode === null) localStorage.removeItem(iosConnectionModeKey);
+    else localStorage.setItem(iosConnectionModeKey, previousMode);
+    throw error;
+  }
+}
 
 const appUrlListener = App.addListener("appUrlOpen", ({ url }) => {
   void (async () => {

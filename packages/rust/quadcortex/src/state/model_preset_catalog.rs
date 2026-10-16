@@ -55,6 +55,13 @@ pub const GLOBAL_EQ_MODEL_PRESET_HASH: u32 = 4004;
 /// more would be retained, rather than grow without bound.
 pub const RETAINED_ENTRY_LIMIT: usize = 20_000;
 
+/// Aggregate retained string payload budget, reusing the software decoder's
+/// inflate ceiling. This is not a firmware limit. It includes every entry's
+/// name/value, the separately owned identity-index keys and the active marker.
+/// Entry counts separately bound container/allocator overhead. Admission is
+/// checked before cloning a batch or multiplying a rename across duplicates.
+pub const RETAINED_STRING_BYTES_LIMIT: usize = crate::profile::MAX_INFLATED_BYTES;
+
 /// Entries of the scope hash the fold may hold, and so a publication may
 /// carry. The projection is republished whole on every message and travels in
 /// snapshots and write results, so it is bounded. This is an operational
@@ -62,16 +69,6 @@ pub const RETAINED_ENTRY_LIMIT: usize = 20_000;
 /// the fold invalidates (`publication-limit`) only when strictly more would be
 /// held.
 pub const PUBLISHED_ENTRY_LIMIT: usize = 256;
-
-/// Per retained identity, name or marker string. This generous operational cap matches
-/// the capture/IR catalog and is not a device name-length claim.
-pub const MAX_RETAINED_STRING_BYTES: usize = 16 * 1024;
-
-/// Total retained string bytes, including the identity-key index and loaded marker.
-/// Matching the capture/IR provider budget prevents count-bounded entries from
-/// accumulating many GiB across individually valid frames. Overflow invalidates
-/// the entire fold as `retention-limit`; it never truncates identities.
-pub const MAX_RETAINED_BYTES: usize = 32 * 1024 * 1024;
 
 type Tuple = (u32, bool, String);
 
@@ -101,6 +98,7 @@ enum Invalidation {
     MalformedIdentity,
     InboundLoss,
     RetentionLimit,
+    RetentionBytes,
     PublicationLimit,
 }
 
@@ -111,6 +109,7 @@ impl Invalidation {
             Self::MalformedIdentity => "malformed-identity",
             Self::InboundLoss => "inbound-loss",
             Self::RetentionLimit => "retention-limit",
+            Self::RetentionBytes => "retention-byte-limit",
             Self::PublicationLimit => "publication-limit",
         }
     }
@@ -301,18 +300,21 @@ impl ModelPresetCatalog {
     }
 
     fn record_marker(&mut self, id: &pa::ModelPresetId) {
-        let incoming_bytes = id.value.as_ref().map_or(0, |value| match value {
+        let new_bytes = id.value.as_ref().map_or(0, |value| match value {
             pa::model_preset_id::Value::Value(value) => value.len(),
         });
-        let previous_bytes = self
+        let old_bytes = self
             .marker
             .as_ref()
             .and_then(|marker| marker.id.as_ref())
             .map_or(0, String::len);
-        if incoming_bytes > MAX_RETAINED_STRING_BYTES
-            || !self.retained_budget_allows(previous_bytes, incoming_bytes)
+        if !self
+            .retained_string_bytes()
+            .and_then(|bytes| bytes.checked_sub(old_bytes))
+            .and_then(|bytes| bytes.checked_add(new_bytes))
+            .is_some_and(|bytes| bytes <= RETAINED_STRING_BYTES_LIMIT)
         {
-            self.invalidate(Invalidation::RetentionLimit);
+            self.invalidate(Invalidation::RetentionBytes);
             return;
         }
         let marker = ModelPresetCatalogMarker {
@@ -336,31 +338,12 @@ impl ModelPresetCatalog {
     }
 
     fn append(&mut self, presets: &[pa::ModelPreset]) {
-        let mut additional = 0usize;
-        let mut tuple_keys: HashSet<_> = self
-            .tuple_counts
-            .keys()
-            .map(|key| (key.0, key.1, key.2.as_str()))
-            .collect();
-        for preset in presets {
-            let Some((value, is_factory, hash)) = preset_identity_parts(preset) else {
+        if let Err(reason) = self.check_append_budget(presets) {
+            if reason == Invalidation::MalformedIdentity {
                 self.invalidate_malformed();
-                return;
-            };
-            let name = preset_name(preset).unwrap_or_default();
-            if value.len() > MAX_RETAINED_STRING_BYTES || name.len() > MAX_RETAINED_STRING_BYTES {
-                self.invalidate(Invalidation::RetentionLimit);
-                return;
+            } else {
+                self.invalidate(reason);
             }
-            additional = additional
-                .saturating_add(value.len())
-                .saturating_add(name.len());
-            if tuple_keys.insert((hash, is_factory, value)) {
-                additional = additional.saturating_add(value.len());
-            }
-        }
-        if !self.retained_budget_allows(0, additional) {
-            self.invalidate(Invalidation::RetentionLimit);
             return;
         }
         // Identity first, so a malformed entry leaves the lists as they were.
@@ -396,23 +379,33 @@ impl ModelPresetCatalog {
     }
 
     fn rename(&mut self, preset: &pa::ModelPreset) {
-        let Some((value, is_factory, hash)) = preset_identity_parts(preset) else {
+        // Validate with borrowed strings before any duplicate-name expansion.
+        let Some((hash, factory, value)) = borrowed_preset_identity(preset) else {
             self.invalidate_malformed();
             return;
         };
-        let name = preset_name(preset);
-        if value.len() > MAX_RETAINED_STRING_BYTES
-            || name.is_some_and(|name| name.len() > MAX_RETAINED_STRING_BYTES)
-            || !self.rename_budget_allows(value, is_factory, hash, name)
-        {
-            self.invalidate(Invalidation::RetentionLimit);
-            return;
+        if let Some(name) = preset_name(preset) {
+            let bytes = self.retained_string_bytes().and_then(|initial| {
+                self.entries
+                    .iter()
+                    .filter(|entry| {
+                        entry.hash == hash && entry.is_factory == factory && entry.value == value
+                    })
+                    .try_fold(initial, |bytes, entry| {
+                        bytes.checked_sub(entry.name.len())?.checked_add(name.len())
+                    })
+            });
+            if !bytes.is_some_and(|bytes| bytes <= RETAINED_STRING_BYTES_LIMIT) {
+                self.invalidate(Invalidation::RetentionBytes);
+                return;
+            }
         }
         let Some(identity) = preset_identity(preset) else {
             self.invalidate_malformed();
             return;
         };
         let key = (identity.hash, identity.is_factory, identity.value);
+        let name = preset_name(preset);
         let is_default = preset_is_default(preset);
         let mut matched = false;
         for entry in self.entries.iter_mut().filter(|entry| entry.matches(&key)) {
@@ -463,68 +456,12 @@ impl ModelPresetCatalog {
 
     /// Invalidates instead of truncating: a list cut at a limit would look
     /// like a whole one.
-    fn retained_bytes(&self) -> usize {
-        self.entries
-            .iter()
-            .fold(0usize, |bytes, entry| {
-                bytes
-                    .saturating_add(entry.value.len())
-                    .saturating_add(entry.name.len())
-            })
-            .saturating_add(
-                self.tuple_counts
-                    .keys()
-                    .fold(0usize, |bytes, key| bytes.saturating_add(key.2.len())),
-            )
-            .saturating_add(
-                self.marker
-                    .as_ref()
-                    .and_then(|marker| marker.id.as_ref())
-                    .map_or(0, String::len),
-            )
-    }
-
-    fn retained_budget_allows(&self, removed: usize, added: usize) -> bool {
-        self.retained_bytes()
-            .saturating_sub(removed)
-            .saturating_add(added)
-            <= MAX_RETAINED_BYTES
-    }
-
-    fn rename_budget_allows(
-        &self,
-        value: &str,
-        is_factory: bool,
-        hash: u32,
-        name: Option<&str>,
-    ) -> bool {
-        let Some(name) = name else { return true };
-        let (removed, added) = self
-            .entries
-            .iter()
-            .filter(|entry| {
-                entry.hash == hash && entry.is_factory == is_factory && entry.value == value
-            })
-            .fold((0usize, 0usize), |(removed, added), entry| {
-                (
-                    removed.saturating_add(entry.name.len()),
-                    added.saturating_add(name.len()),
-                )
-            });
-        self.retained_budget_allows(removed, added)
-    }
-
     fn enforce_limits(&mut self) {
-        let oversized = self.entries.iter().any(|entry| {
-            entry.value.len() > MAX_RETAINED_STRING_BYTES
-                || entry.name.len() > MAX_RETAINED_STRING_BYTES
-        }) || self
-            .marker
-            .as_ref()
-            .and_then(|marker| marker.id.as_ref())
-            .is_some_and(|id| id.len() > MAX_RETAINED_STRING_BYTES);
-        if oversized || self.retained_bytes() > MAX_RETAINED_BYTES {
-            self.invalidate(Invalidation::RetentionLimit);
+        if !self
+            .retained_string_bytes()
+            .is_some_and(|bytes| bytes <= RETAINED_STRING_BYTES_LIMIT)
+        {
+            self.invalidate(Invalidation::RetentionBytes);
             return;
         }
         if !matches!(self.phase, Phase::Folding) {
@@ -540,6 +477,79 @@ impl ModelPresetCatalog {
         } else if scoped > PUBLISHED_ENTRY_LIMIT {
             self.invalidate(Invalidation::PublicationLimit);
         }
+    }
+
+    fn retained_string_bytes(&self) -> Option<usize> {
+        let marker = self
+            .marker
+            .as_ref()
+            .and_then(|marker| marker.id.as_ref())
+            .map_or(0, String::len);
+        let entries = self.entries.iter().try_fold(marker, |bytes, entry| {
+            bytes
+                .checked_add(entry.value.len())?
+                .checked_add(entry.name.len())
+        })?;
+        self.tuple_counts
+            .keys()
+            .try_fold(entries, |bytes, key| bytes.checked_add(key.2.len()))
+    }
+
+    fn check_append_budget(&self, presets: &[pa::ModelPreset]) -> Result<(), Invalidation> {
+        // Validate/count before reserving the temporary borrowed-key set too.
+        let mut scoped = self
+            .entries
+            .iter()
+            .filter(|entry| entry.hash == GLOBAL_EQ_MODEL_PRESET_HASH)
+            .count();
+        for preset in presets {
+            let identity =
+                borrowed_preset_identity(preset).ok_or(Invalidation::MalformedIdentity)?;
+            if identity.0 == GLOBAL_EQ_MODEL_PRESET_HASH {
+                scoped = scoped.saturating_add(1);
+            }
+        }
+        if self
+            .entries
+            .len()
+            .checked_add(presets.len())
+            .is_none_or(|count| count > RETAINED_ENTRY_LIMIT)
+        {
+            return Err(Invalidation::RetentionLimit);
+        }
+        if scoped > PUBLISHED_ENTRY_LIMIT {
+            return Err(Invalidation::PublicationLimit);
+        }
+        // Borrow keys, including new keys in this batch: checking the budget
+        // itself must not allocate copies of the untrusted string payload.
+        let mut identities: HashSet<(u32, bool, &str)> = self
+            .tuple_counts
+            .keys()
+            .map(|key| (key.0, key.1, key.2.as_str()))
+            .collect();
+        let mut bytes = self
+            .retained_string_bytes()
+            .ok_or(Invalidation::RetentionBytes)?;
+        for preset in presets {
+            let identity =
+                borrowed_preset_identity(preset).ok_or(Invalidation::MalformedIdentity)?;
+            bytes = bytes
+                .checked_add(identity.2.len())
+                .and_then(|bytes| bytes.checked_add(preset_name(preset).unwrap_or_default().len()))
+                .ok_or(Invalidation::RetentionBytes)?;
+            if identities.insert(identity) {
+                bytes = bytes
+                    .checked_add(identity.2.len())
+                    .ok_or(Invalidation::RetentionBytes)?;
+            }
+            if bytes > RETAINED_STRING_BYTES_LIMIT {
+                return Err(Invalidation::RetentionBytes);
+            }
+        }
+        if bytes > RETAINED_STRING_BYTES_LIMIT {
+            return Err(Invalidation::RetentionBytes);
+        }
+        Ok(())
     }
 
     fn invalidate_malformed(&mut self) {
@@ -706,7 +716,7 @@ fn carries_loaded_field(message: &pa::ModelPresetMessage) -> bool {
 }
 
 fn preset_identity(preset: &pa::ModelPreset) -> Option<Identity> {
-    let (value, is_factory, hash) = preset_identity_parts(preset)?;
+    let (hash, is_factory, value) = borrowed_preset_identity(preset)?;
     Some(Identity {
         value: value.to_owned(),
         is_factory,
@@ -714,12 +724,12 @@ fn preset_identity(preset: &pa::ModelPreset) -> Option<Identity> {
     })
 }
 
-fn preset_identity_parts(preset: &pa::ModelPreset) -> Option<(&str, bool, u32)> {
+fn borrowed_preset_identity(preset: &pa::ModelPreset) -> Option<(u32, bool, &str)> {
     let pa::model_preset::Id::Id(id) = preset.id.as_ref()?;
     let pa::model_preset_id::Value::Value(value) = id.value.as_ref()?;
     let pa::model_preset_id::IsFactory::IsFactory(is_factory) = id.is_factory.as_ref()?;
     let pa::model_preset_id::Hash::Hash(hash) = id.hash.as_ref()?;
-    Some((value, *is_factory, *hash))
+    Some((*hash, *is_factory, value.as_str()))
 }
 
 fn preset_name(preset: &pa::ModelPreset) -> Option<&str> {
@@ -739,6 +749,143 @@ mod tests {
     use super::*;
 
     const SCOPE: u32 = GLOBAL_EQ_MODEL_PRESET_HASH;
+
+    #[test]
+    fn individually_bounded_frames_cannot_accumulate_unbounded_catalog_strings() {
+        use prost::Message;
+        let mut catalog = ModelPresetCatalog::default();
+        let name = "n".repeat(512 * 1024);
+        for index in 0..33 {
+            let frame = message(
+                Action::Create,
+                vec![preset(&format!("id-{index}"), false, 1, &name, false)],
+            );
+            assert!(frame.encoded_len() < 1024 * 1024);
+            catalog.fold(&frame);
+            assert!(catalog.retained_string_bytes().unwrap() <= RETAINED_STRING_BYTES_LIMIT);
+        }
+        assert_eq!(
+            catalog.view().invalid_reason.as_deref(),
+            Some("retention-byte-limit")
+        );
+        assert!(catalog.entries.is_empty());
+        assert!(catalog.tuple_counts.is_empty());
+        assert!(catalog.view().entries.is_none());
+        catalog.fold(&message(Action::Delete, vec![]));
+        catalog.fold(&message(
+            Action::Create,
+            vec![preset("valid", false, SCOPE, "valid", false)],
+        ));
+        assert!(catalog.is_invalidated());
+        assert!(matches!(
+            catalog.admits("valid", false, SCOPE),
+            Err(Refusal::Invalidated("retention-byte-limit"))
+        ));
+    }
+
+    #[test]
+    fn bulk_identity_keys_and_duplicate_values_are_both_in_the_byte_budget() {
+        use prost::Message;
+        let mut catalog = ModelPresetCatalog::default();
+        let value = "v".repeat(256 * 1024);
+        for index in 0..33 {
+            // Two-entry updates take the bulk append route, not rename.
+            let frame = message(
+                Action::Update,
+                vec![
+                    preset(&format!("{value}{index}"), false, 1, "", false),
+                    preset("duplicate", false, 1, "", false),
+                ],
+            );
+            assert!(frame.encoded_len() < 1024 * 1024);
+            catalog.fold(&frame);
+        }
+        assert_eq!(
+            catalog.view().invalid_reason.as_deref(),
+            Some("retention-byte-limit")
+        );
+        assert_eq!(catalog.retained_string_bytes(), Some(0));
+
+        let mut duplicates = ModelPresetCatalog::default();
+        duplicates.fold(&message(
+            Action::Create,
+            vec![
+                preset("id", false, 1, "name", false),
+                preset("id", false, 1, "name", false),
+            ],
+        ));
+        // Each entry owns its value/name; the shared identity owns one extra value.
+        assert_eq!(duplicates.retained_string_bytes(), Some(2 * (2 + 4) + 2));
+    }
+
+    #[test]
+    fn duplicate_rename_expansion_is_refused_before_retaining_names() {
+        use prost::Message;
+        let mut catalog = ModelPresetCatalog::default();
+        catalog.fold(&message(
+            Action::Create,
+            (0..40)
+                .map(|_| preset("id", false, 1, "old", false))
+                .collect(),
+        ));
+        let rename = message(
+            Action::Update,
+            vec![preset("id", false, 1, &"n".repeat(512 * 1024), false)],
+        );
+        assert!(rename.encoded_len() < 1024 * 1024);
+        catalog.fold(&rename);
+        assert_eq!(
+            catalog.view().invalid_reason.as_deref(),
+            Some("retention-byte-limit")
+        );
+        assert_eq!(catalog.retained_string_bytes(), Some(0));
+        assert!(catalog.entries.is_empty());
+    }
+
+    #[test]
+    fn marker_and_delete_accounting_accept_exact_budget_but_never_publish_over_budget() {
+        let mut catalog = ModelPresetCatalog::default();
+        catalog.fold(&message(
+            Action::Create,
+            vec![preset(
+                "id",
+                false,
+                1,
+                &"n".repeat(RETAINED_STRING_BYTES_LIMIT - 4),
+                false,
+            )],
+        ));
+        assert_eq!(
+            catalog.retained_string_bytes(),
+            Some(RETAINED_STRING_BYTES_LIMIT)
+        );
+        assert!(!catalog.is_invalidated());
+        catalog.fold(&message(Action::Delete, vec![key_only("id", false, 1)]));
+        assert_eq!(catalog.retained_string_bytes(), Some(0));
+        catalog.fold(&loaded(id("marker", false, 1)));
+        assert_eq!(catalog.retained_string_bytes(), Some(6));
+        catalog.fold(&message(
+            Action::Create,
+            vec![preset(
+                "id",
+                false,
+                1,
+                &"n".repeat(RETAINED_STRING_BYTES_LIMIT - 10),
+                false,
+            )],
+        ));
+        assert_eq!(
+            catalog.retained_string_bytes(),
+            Some(RETAINED_STRING_BYTES_LIMIT)
+        );
+        catalog.fold(&loaded(id("longer-marker", false, 1)));
+        assert_eq!(
+            catalog.view().invalid_reason.as_deref(),
+            Some("retention-byte-limit")
+        );
+        assert!(catalog.view().active_marker.is_none());
+        assert_eq!(catalog.retained_string_bytes(), Some(0));
+    }
 
     fn id(value: &str, is_factory: bool, hash: u32) -> pa::ModelPresetId {
         pa::ModelPresetId {
@@ -1474,110 +1621,6 @@ mod tests {
         assert_eq!(view.counters.retained_other_hash_entries, 2_000);
     }
 
-    #[test]
-    fn duplicate_tuple_rename_checks_prospective_bytes_before_copying_names() {
-        let mut catalog = ModelPresetCatalog::default();
-        catalog.fold(&message(
-            Action::Create,
-            vec![preset("same", false, 77, "", false); RETAINED_ENTRY_LIMIT],
-        ));
-        assert_eq!(catalog.view().state, "folding");
-        let name = "x".repeat(MAX_RETAINED_STRING_BYTES);
-        assert!(!catalog.rename_budget_allows("same", false, 77, Some(&name)));
-        assert!(catalog.entries.iter().all(|entry| entry.name.is_empty()));
-        assert!(catalog.rename_budget_allows("same", false, 77, Some("A")));
-        catalog.fold(&message(
-            Action::Update,
-            vec![preset("same", false, 77, &name, false)],
-        ));
-        assert_eq!(
-            catalog.view().invalid_reason.as_deref(),
-            Some("retention-limit")
-        );
-        assert_eq!(catalog.retained_bytes(), 0);
-        assert_eq!(catalog.view().counters.renames, 0);
-    }
-
-    #[test]
-    fn oversized_identity_name_and_marker_invalidate_without_retaining_strings() {
-        let too_long = "x".repeat(MAX_RETAINED_STRING_BYTES + 1);
-        for entry in [
-            preset(&too_long, false, SCOPE, "Normal", false),
-            preset("normal", false, SCOPE, &too_long, false),
-        ] {
-            let mut catalog = seeded();
-            catalog.fold(&message(Action::Create, vec![entry]));
-            assert_eq!(
-                catalog.view().invalid_reason.as_deref(),
-                Some("retention-limit")
-            );
-            assert_eq!(catalog.retained_bytes(), 0);
-            assert!(catalog.admits("b", false, SCOPE).is_err());
-        }
-        let mut catalog = ModelPresetCatalog::default();
-        catalog.fold(&loaded(id(&too_long, false, SCOPE)));
-        assert_eq!(
-            catalog.view().invalid_reason.as_deref(),
-            Some("retention-limit")
-        );
-        assert!(catalog.view().active_marker.is_none());
-        assert_eq!(catalog.retained_bytes(), 0);
-    }
-
-    #[test]
-    fn individually_bounded_creates_cannot_exhaust_the_session_byte_budget() {
-        let mut catalog = ModelPresetCatalog::default();
-        let name = "x".repeat(MAX_RETAINED_STRING_BYTES);
-        for index in 0..4096 {
-            catalog.fold(&message(
-                Action::Create,
-                vec![preset(&format!("id-{index}"), false, 77, &name, false)],
-            ));
-            if catalog.is_invalidated() {
-                assert!(index < RETAINED_ENTRY_LIMIT);
-                assert_eq!(catalog.retained_bytes(), 0);
-                assert_eq!(
-                    catalog.view().invalid_reason.as_deref(),
-                    Some("retention-limit")
-                );
-                catalog.fold(&message(Action::Delete, vec![]));
-                assert!(catalog.is_invalidated());
-                return;
-            }
-            assert!(catalog.retained_bytes() <= MAX_RETAINED_BYTES);
-        }
-        panic!("repeated valid frames did not hit the retained-byte bound");
-    }
-
-    #[test]
-    fn rename_delete_and_marker_replacement_account_for_current_strings_only() {
-        let mut catalog = ModelPresetCatalog::default();
-        let long = "x".repeat(MAX_RETAINED_STRING_BYTES);
-        catalog.fold(&message(
-            Action::Create,
-            vec![preset("a", false, SCOPE, &long, false)],
-        ));
-        assert_eq!(catalog.retained_bytes(), long.len() + 2);
-        catalog.fold(&message(
-            Action::Update,
-            vec![preset("a", false, SCOPE, "A", false)],
-        ));
-        assert_eq!(catalog.retained_bytes(), 3);
-        catalog.fold(&loaded(id(&long, false, SCOPE)));
-        assert_eq!(catalog.retained_bytes(), long.len() + 3);
-        catalog.fold(&loaded(id("a", false, SCOPE)));
-        assert_eq!(catalog.retained_bytes(), 4);
-        catalog.fold(&message(Action::Delete, vec![key_only("a", false, SCOPE)]));
-        assert_eq!(catalog.retained_bytes(), 1);
-        catalog.fold(&message(Action::Delete, vec![]));
-        assert_eq!(catalog.retained_bytes(), 0);
-        assert_eq!(catalog.view().state, "folding");
-        catalog.fold(&message(
-            Action::Create,
-            vec![preset("ok", false, SCOPE, "Normal", false)],
-        ));
-        assert!(catalog.admits("ok", false, SCOPE).is_ok());
-    }
     #[test]
     fn the_retention_boundary_accepts_exactly_the_limit_and_invalidates_one_more() {
         for (count, expected) in [

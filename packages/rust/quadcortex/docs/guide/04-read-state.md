@@ -420,7 +420,12 @@ Two behaviours to expect, both visible in the decoder's doc comments:
   looks the same as a handled message with nothing to report. The decoder counts
   such types in its inbound telemetry so the difference is recoverable; see
   [Troubleshooting](crate::guide::troubleshooting).
-- A decode failure is an `Err` from `ingest`. The snapshot is left as it was.
+- A decode failure is an `Err` from `ingest`, not a fabricated successful state
+  observation. An ordinary malformed message does not replace the last good
+  state. However, invalidated retained folds explicitly withdraw dependent
+  cached evidence: sparse Grid resource overflow retires the cached preset and
+  requires a real full-preset refresh; model-preset fold invalidation retires
+  that catalog's authority until the session resets.
 
 ## Step 7. Doing it live
 

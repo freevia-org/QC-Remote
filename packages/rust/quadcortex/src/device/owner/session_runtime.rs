@@ -1234,17 +1234,31 @@ impl SessionRuntime {
             }
         }
         let previous_address_revision = self.state.snapshot().address_revision;
+        let io_was_invalid = !self.state.snapshot().io_settings_error.is_empty();
         let mut observation = match self.state.ingest(message_type, payload) {
             Ok(observation) => observation,
             Err(error) => {
+                if message_type == crate::profile::MESSAGE_TYPE_IO_SETTINGS && !io_was_invalid {
+                    let reason = self.state.snapshot().io_settings_error.clone();
+                    if !reason.is_empty() {
+                        let mut update = crate::state::StateUpdate::empty("ioPorts");
+                        update.io_ports = Some(Vec::new());
+                        update.io_settings_error = Some(reason);
+                        let mut states = [update];
+                        self.stamp_state_version(&mut states)?;
+                        self.stage_state_publication(ticket, &states, None)?;
+                    }
+                }
                 if let Some(update) = self.state.take_failed_preset_invalidation() {
                     self.preset_observation = None;
                     self.invalidate_preset_workflow(format!(
-                        "Current preset could not be retained: {error}"
+                        "Retained Grid state was invalidated: {error}"
                     ));
                     let mut states = [update];
-                    self.stamp_state_version(&mut states)?;
-                    if let Err(publish) = self.stage_state_publication(ticket, &states, None) {
+                    if let Err(publish) = self
+                        .stamp_state_version(&mut states)
+                        .and_then(|()| self.stage_state_publication(ticket, &states, None))
+                    {
                         return Err(format!("{error}; {publish}"));
                     }
                 }

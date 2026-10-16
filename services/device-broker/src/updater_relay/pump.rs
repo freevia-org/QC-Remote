@@ -63,6 +63,15 @@ impl FixedClock {
 /// Where the pump's frames go: the connected unit, or a fake in tests.
 pub trait RelaySink {
     fn send(&mut self, message: OutboundMessage) -> Result<(), String>;
+    fn send_forwarded(
+        &mut self,
+        frame: quadcortex_forwarder::ForwardedMessage,
+    ) -> Result<(), String> {
+        if !frame.current() {
+            return Ok(());
+        }
+        self.send(frame.into_parts().0)
+    }
 }
 
 /// What one pass did.
@@ -179,7 +188,7 @@ impl RelayPump {
             return report;
         }
         if let Some(frame) = relay.poll_outbound() {
-            match sink.send(frame) {
+            match sink.send_forwarded(frame) {
                 Ok(()) => {
                     report.frames += 1;
                     self.reads_owed = READS_PER_FRAME;

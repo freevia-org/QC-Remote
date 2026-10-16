@@ -96,6 +96,7 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
 
   const history = useDeviceHistory({
     gateway, snapshot: controller.snapshot, connected, pending, setPending,
+    lifetime,
     reconcile, notice, fail
   });
 
@@ -127,6 +128,7 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
 
   const routing = useRoutingWorkflow({
     gateway,
+    lifetime: controller.lifetime,
     snapshot: controller.snapshot,
     connected: connected && gridReady,
     pending,
@@ -140,6 +142,9 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
   const grid = useGridWorkflow({
     clearHistory: history.clear,
     gateway,
+    lifetime: controller.lifetime,
+    deviceUndo: source === "device",
+    mirrorDeviceScreen: source === "device",
     snapshot: controller.snapshot,
     selectedBlockId,
     setSelectedBlockId,
@@ -182,6 +187,7 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
     presetLifetime: lifetime,
     commandSessionKey: options.commandSessionKey ?? options.gateway,
     gateway,
+    lifetime: controller.lifetime,
     snapshot: controller.snapshot,
     connected,
     pending,
@@ -202,6 +208,7 @@ export function useQcWorkflows(options: UseQcWorkflowsOptions) {
     connected,
     demo,
     projectDeviceScreensLocally: demo || source === "virtual",
+    stompPreviewPolicy: source === "virtual" ? "ordered-group" : undefined,
     recordHistory: history.record,
     onPresetChanged: () => finishPresetTransition(),
     notice,

@@ -1,4 +1,4 @@
-import { spawn, execFile } from "node:child_process";
+import { runOwnedWindowsCommand } from "./windows-owned-producer.mjs";
 import { copyFile, lstat, mkdtemp, realpath, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Only top-level test-helper activators are removed. Child fixtures deliberately
 // supply their own activation values; production connection/lease policy is unchanged.
-export const NATIVE_TEST_HELPER_ACTIVATORS = Object.freeze(["QC_HARNESS_DESCRIPTOR_PATH", "QC_HARNESS_STATUS_PATH", "QC_HARNESS_CONTROL_DIR", "QC_HARNESS_OBSERVER", "QC_DEVICE_LEASE_TEST_RACE_DIR", "QC_DEVICE_LEASE_TEST_RELEASE_PATH", "QC_REMOTE_LOCAL_MCP_STDERR_CHILD"]);
+export const NATIVE_TEST_HELPER_ACTIVATORS = Object.freeze(["QC_HARNESS_DESCRIPTOR_PATH", "QC_HARNESS_STATUS_PATH", "QC_HARNESS_CONTROL_DIR", "QC_HARNESS_OBSERVER", "QC_DEVICE_LEASE_TEST_RACE_DIR", "QC_DEVICE_LEASE_TEST_RELEASE_PATH", "QC_REMOTE_LOCAL_MCP_STDERR_CHILD", "QC_REMOTE_TEST_STATE_ROOT"]);
 export function topLevelNativeTestEnvironment(environment) {
   const denied = new Set(NATIVE_TEST_HELPER_ACTIVATORS);
   return Object.fromEntries(Object.entries(environment).filter(([key]) => !denied.has(key.toUpperCase())));
@@ -49,59 +49,6 @@ function parseRoot(argv, cwd) {
   return resolve(cwd, value);
 }
 
-export function waitForClose(child, milliseconds) {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
-  return new Promise((settle) => {
-    const finish = (closed) => {
-      clearTimeout(timer);
-      child.off("close", onClose);
-      settle(closed);
-    };
-    const onClose = () => finish(true);
-    const timer = setTimeout(() => finish(false), milliseconds);
-    child.once("close", onClose);
-  });
-}
-
-function taskkillTree(pid) {
-  return new Promise((settle) => {
-    execFile("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
-      windowsHide: true,
-      timeout: 10_000,
-    }, (error) => settle(error));
-  });
-}
-
-/** Stop only the Cargo/rustup process tree launched by this runner. */
-export async function terminateOwnedCargo(child, {
-  platform = process.platform,
-  graceMs = 2_000,
-  killTree = taskkillTree,
-} = {}) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  let treeError = null;
-  if (platform === "win32" && Number.isInteger(child.pid) && child.pid > 0) {
-    treeError = await killTree(child.pid);
-  }
-  if (await waitForClose(child, graceMs)) {
-    if (treeError) {
-      throw new Error(`Could not terminate the owned Windows Cargo process tree ${child.pid}: ${treeError.message}`, {
-        cause: treeError,
-      });
-    }
-    return;
-  }
-  if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-  if (!await waitForClose(child, graceMs)) {
-    throw new Error(`Cargo child ${child.pid ?? "without pid"} did not exit after termination.`);
-  }
-  if (treeError) {
-    throw new Error(`Could not terminate the owned Windows Cargo process tree ${child.pid}: ${treeError.message}`, {
-      cause: treeError,
-    });
-  }
-}
-
 function artifactPath(executable, rootDir) {
   const path = isAbsolute(executable) ? executable : resolve(rootDir, executable);
   if (!existsSync(path)) throw new Error(`Cargo reported a missing executable artifact: ${path}`);
@@ -122,8 +69,8 @@ function cargoError(command, code, signal) {
 export async function runWindowsNativeTests({
   rootDir = SCRIPT_ROOT,
   env = process.env,
-  spawnImpl = spawn,
-  terminateChild = terminateOwnedCargo,
+  producerImpl = runOwnedWindowsCommand,
+  transformCargoRequest = (request) => request,
   signalSource = process,
   stdout = process.stdout,
   stderr = process.stderr,
@@ -134,94 +81,69 @@ export async function runWindowsNativeTests({
     throw new Error(`Windows native test root is missing Cargo manifests: ${root}`);
   }
 
-  let child = null;
   let interrupted = null;
-  let termination = null;
-  let cleanupFailure = null;
+  let retirementAcknowledged = true;
+  const cancellation = new AbortController();
   let stagedBrokerDirectory = null;
   let stagedBrokerParent = null;
   let operationFailure = null;
   const onInterrupt = (signal) => {
     if (interrupted) return;
     interrupted = signal;
-    if (child) {
-      termination = Promise.resolve(terminateChild(child, { platform }))
-        .catch((error) => { cleanupFailure = error; });
-    }
+    cancellation.abort(new Error(`Interrupted by ${signal}.`));
   };
   const onSigint = () => onInterrupt("SIGINT");
   const onSigterm = () => onInterrupt("SIGTERM");
   signalSource.on("SIGINT", onSigint);
   signalSource.on("SIGTERM", onSigterm);
 
-  const runCargo = (args, { json = false, childEnv = env, label }) => new Promise((resolveRun, rejectRun) => {
-    if (interrupted) return rejectRun(new Error(`Interrupted by ${interrupted}.`));
-    const argv = cargoArguments(args);
-    const command = "rustup";
-    const runEnv = { ...childEnv };
-    const processHandle = spawnImpl(command, argv, {
-      cwd: root,
-      env: runEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    child = processHandle;
+  const runCargo = async (args, { json = false, childEnv = env, label, nativeTestState = false }) => {
+    if (interrupted) throw new Error("Interrupted by " + interrupted + ".");
     const messages = [];
     let stdoutBuffer = "";
-    let settled = false;
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      rejectRun(error);
-    };
     const emitLine = (line) => {
       if (!line) return;
-      if (!json) {
-        stdout.write(`${line}\n`);
-        return;
-      }
+      if (!json) { stdout.write(line + "\n"); return; }
       let message;
       try { message = JSON.parse(line); }
-      catch {
-        stdout.write(`${line}\n`);
-        return;
-      }
-      messages.push(message);
+      catch { stdout.write(line + "\n"); return; }
+      // Only artifacts select executables; diagnostics are streamed rather than
+      // retaining an entire build's JSON output a second time.
+      if (message.reason === "compiler-artifact") messages.push(message);
       if (message.reason === "compiler-message" && message.message?.rendered) {
         stderr.write(message.message.rendered);
       }
     };
-    const safeEmitLine = (line) => {
-      try { emitLine(line); }
-      catch (error) { fail(error); }
-    };
-    processHandle.stdout.setEncoding("utf8");
-    processHandle.stderr.setEncoding("utf8");
-    processHandle.stdout.on("data", (chunk) => {
-      try {
-        stdoutBuffer += chunk;
-        const lines = stdoutBuffer.split(/\r?\n/);
-        stdoutBuffer = lines.pop() ?? "";
-        for (const line of lines) safeEmitLine(line);
-      } catch (error) {
-        fail(error);
+    const request = transformCargoRequest({
+      command: "rustup", arguments: cargoArguments(args), cwd: root,
+      environment: { ...childEnv }, timeoutMilliseconds: 3_600_000,
+      maxOutputBytes: 67_108_864,
+      nativeTestState,
+    });
+    try {
+      const result = await producerImpl(request, {
+        signal: cancellation.signal,
+        onStdout(chunk) {
+          stdoutBuffer += chunk;
+          const lines = stdoutBuffer.split(/\r?\n/);
+          stdoutBuffer = lines.pop() ?? "";
+          for (const line of lines) emitLine(line);
+        },
+        onStderr(chunk) { stderr.write(chunk); },
+      });
+      if (result.retirementAcknowledged !== true) {
+        retirementAcknowledged = false;
+        throw new Error(label + " returned without affirmative original-tree retirement.");
       }
-    });
-    processHandle.stderr.on("data", (chunk) => {
-      try { stderr.write(chunk); }
-      catch (error) { fail(error); }
-    });
-    processHandle.once("error", (error) => fail(new Error(`${label} could not start: ${error.message}`, { cause: error })));
-    processHandle.once("close", (code, signal) => {
-      if (child === processHandle) child = null;
-      if (stdoutBuffer) safeEmitLine(stdoutBuffer);
-      if (settled) return;
-      if (interrupted) return fail(new Error(`Interrupted by ${interrupted}.`));
-      if (code !== 0) return fail(cargoError(label, code, signal));
-      settled = true;
-      resolveRun(messages);
-    });
-  });
+      if (stdoutBuffer) emitLine(stdoutBuffer);
+      if (interrupted) throw new Error("Interrupted by " + interrupted + ".");
+      if (result.code !== 0) throw cargoError(label, result.code, null);
+      return messages;
+    } catch (error) {
+      if (error.retirementAcknowledged === false) retirementAcknowledged = false;
+      throw error;
+    }
+  };
 
   try {
     if (platform !== "win32") throw new Error("Windows native tests require a Windows host and the MSVC toolchain.");
@@ -256,25 +178,19 @@ export async function runWindowsNativeTests({
     const testMessages = await runCargo([
       "test", "--locked", "--features", "tray-sidecar", "--all-targets", "--manifest-path", APP_MANIFEST,
       "--", "--test-threads=1",
-    ], { childEnv: testEnv, label: "Windows app all-target tests" });
-    if (cleanupFailure) throw new Error(`Cargo child cleanup failed: ${cleanupFailure.message}`, { cause: cleanupFailure });
+    ], { childEnv: testEnv, label: "Windows app all-target tests", nativeTestState: true });
     return Object.freeze({ brokerExecutable: stagedBrokerExecutable, libraryTestExecutable, testMessages: testMessages.length });
   } catch (error) {
-    if (child) {
-      termination ??= Promise.resolve(terminateChild(child, { platform }))
-        .catch((cleanupError) => { cleanupFailure = cleanupError; });
-    }
-    if (termination) await termination;
-    operationFailure = cleanupFailure
-      ? new AggregateError([error, cleanupFailure], `${error.message} Cleanup also failed: ${cleanupFailure.message}`)
-      : error;
-    throw operationFailure;
+    operationFailure = error;
+    throw error;
   } finally {
     signalSource.off("SIGINT", onSigint);
     signalSource.off("SIGTERM", onSigterm);
-    if (termination) await termination;
     if (stagedBrokerDirectory) {
       try {
+        if (!retirementAcknowledged) {
+          throw new Error("Retaining staged broker bytes because original Cargo tree retirement is unacknowledged: " + stagedBrokerDirectory);
+        }
         const stageInfo = await lstat(stagedBrokerDirectory);
         if (stageInfo.isSymbolicLink() || !stageInfo.isDirectory() ||
             dirname(stagedBrokerDirectory) !== stagedBrokerParent ||

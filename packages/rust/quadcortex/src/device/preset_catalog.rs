@@ -112,8 +112,11 @@ impl PresetMutationCatalog {
         self.last_sequence = sequence;
         let change = match self.native.apply(message) {
             Ok(change) => change,
-            Err(_) => {
+            Err(error) => {
                 self.overflow = true;
+                // NativePresetCatalog returns host-authored capacity errors,
+                // not wire names. Keep the actual exhausted resource.
+                self.mismatch = Some(error);
                 return;
             }
         };
@@ -353,7 +356,7 @@ impl PresetMutationCatalog {
     pub fn remaining_ms(&self, now_ms: u64) -> u64 {
         self.schedule.remaining_ms(now_ms)
     }
-    /// Whether verification ended because the retained folder capacity was
+    /// Whether verification ended because a retained model or byte capacity was
     /// exceeded. That is a real failure, unlike a window that merely expired.
     pub fn overflowed(&self) -> bool {
         self.overflow
@@ -363,6 +366,11 @@ impl PresetMutationCatalog {
     }
     pub fn failure_message(&self) -> String {
         if self.overflow {
+            if let Some(reason) = self.mismatch.as_deref() {
+                if reason != "Native preset catalog exceeded its folder capacity" {
+                    return format!("Preset catalog verification failed: {reason}");
+                }
+            }
             return "Preset catalog verification exceeded its retained folder capacity".into();
         }
         let mut message = self.schedule.failure_message("preset mutation catalog");
@@ -791,6 +799,56 @@ mod tests {
     }
 
     #[test]
+    fn byte_capacity_verification_reports_bytes_without_calling_one_folder_a_folder_overflow() {
+        use prost::Message as _;
+        let mut pending = runtime(&plan());
+        let large = "x".repeat(1024 * 1024);
+        for index in 0..64u32 {
+            let mut listing = folder(KEY, Some(&large));
+            listing.files[0].position = index;
+            listing.files[0].product_key = Some(format!("bounded-key-{index}"));
+            let mut message = publication(Some(&listing));
+            message.action = pa::message_action::Enum::Update as i32;
+            assert!(message.encode_to_vec().len() < crate::profile::MAX_INFLATED_BYTES);
+            pending.observe(
+                index as u64 + 2,
+                Some(IngressTime {
+                    first_report_at_ms: index as u64 + 11,
+                    last_report_at_ms: index as u64 + 11,
+                }),
+                &message,
+            );
+            if pending.overflowed() {
+                break;
+            }
+        }
+        assert!(
+            pending.overflowed(),
+            "bounded valid deltas must reach the provider byte ceiling"
+        );
+        assert_eq!(pending.native.folders().count(), 1);
+        assert!(matches!(
+            pending.take_action(500),
+            CatalogVerificationAction::Failed { .. }
+        ));
+        let failure = pending.failure_message();
+        assert!(failure.contains("retained-byte capacity"), "{failure}");
+        assert!(
+            failure.contains(&crate::device::native_catalog::MAX_PRESET_CATALOG_BYTES.to_string()),
+            "{failure}"
+        );
+        assert!(!failure.contains("folder capacity"), "{failure}");
+        assert!(pending.resolution().is_none());
+
+        // Ordinary fresh evidence still verifies; the folder-count diagnostic
+        // is independently pinned by the pre-existing capacity test below.
+        let mut healthy = runtime(&plan());
+        observe(&mut healthy, 2, 11, Some(&folder(KEY, Some("Saved"))));
+        assert_eq!(healthy.take_action(11), CatalogVerificationAction::Complete);
+        assert_eq!(healthy.resolution().unwrap().saved_name, "Saved");
+    }
+
+    #[test]
     fn folder_capacity_failure_cannot_verify_a_truncated_candidate_set() {
         let mut runtime = runtime(&copy_plan("create"));
         for index in 0..=MAX_PRESET_FOLDERS {
@@ -806,5 +864,9 @@ mod tests {
             CatalogVerificationAction::Failed { .. }
         ));
         assert!(runtime.failure_message().contains("capacity"));
+        assert_eq!(
+            runtime.failure_message(),
+            "Preset catalog verification exceeded its retained folder capacity"
+        );
     }
 }

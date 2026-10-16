@@ -36,8 +36,8 @@ export const KEYBOARD_SHORTCUTS: readonly ShortcutRow[] = [
   { keys: "Arrow keys / Enter", action: "Select the nearest Grid block / open its live parameters" },
   { keys: "T / Shift+T", action: "Tap tempo / open the tuner on the unit" },
   { keys: "B", action: "Toggle the selected block on or off" },
-  { keys: "Delete", action: "Remove the selected block; Ctrl+Z puts it back" },
-  { keys: "Ctrl+Z", action: "Undo the last change QC Remote made" },
+  { keys: "Delete", action: "Remove the selected block; removal Undo is unavailable in DEMO" },
+  { keys: "Ctrl+Z", action: "Undo an app-recorded change, or the latest edit on the unit's shared Undo stack" },
   { keys: "Ctrl+Y / Ctrl+Shift+Z", action: "Redo the change that was undone" },
   { keys: "Ctrl+C", action: "Copy the settings of the selected device" },
   { keys: "Ctrl+V", action: "Paste those settings onto another device of the same model" },
@@ -59,7 +59,7 @@ export const MOUSE_INTERACTIONS: readonly ShortcutRow[] = [
   { keys: "Drag, scroll, or arrow the volume knob", action: "Change the master volume on the unit" },
   { keys: "Click the preset name on the screen", action: "Open the unit's preset Directory" },
   { keys: "Click the save icon on the screen", action: "Open Save to QC for the loaded preset" },
-  { keys: "Click the undo arrow on the screen", action: "Undo the last change QC Remote made" }
+  { keys: "Click the undo arrow on the screen", action: "Undo an app-recorded change, or the latest edit on the unit's shared Undo stack" }
 ];
 
 export const USER_GUIDE: readonly GuideSection[] = [
@@ -146,7 +146,7 @@ export const USER_GUIDE: readonly GuideSection[] = [
       },
       {
         kind: "paragraph",
-        text: "The screen shows the Grid of the loaded preset. The preset name across the top opens the unit's preset Directory. The arrow beside it undoes the last change, and the save icon opens Save to QC. The scene control lists the preset's scenes, the mode control lists the mode slots the unit reports, and the input and output ends of each signal line open a route picker for that row. Tuner and Gig View, from the Performance menu, open on the unit itself rather than in this window."
+        text: "The screen shows the Grid of the loaded preset. The preset name across the top opens the unit's preset Directory. The arrow beside it undoes the last change, and the save icon opens Save to QC. The scene control lists the preset's scenes, the mode control lists the mode slots the unit reports, and the input and output ends of each signal line open a route picker for that row. Tuner and Gig View, from the Performance menu, open on the unit and show their matching view in this window."
       },
       {
         kind: "note",
@@ -180,12 +180,12 @@ export const USER_GUIDE: readonly GuideSection[] = [
           "Preset > Routing… splits a row at one column and rejoins it at another, or returns the row to a single path.",
           "Preset > Discard Changes… reloads the stored preset and throws away every unsaved edit.",
           "Edit > Copy Device and Edit > Paste Device copy the settings of the selected device onto another device of the same model.",
-          "Edit > Undo and Edit > Redo step back and forward through the changes QC Remote has made in this session."
+          "Edit > Undo and Edit > Redo use app-recorded history where available. Hardware removal, replacement and scene copy use the unit's shared Undo stack: its latest entry can also come from the physical unit or another app. DEMO cannot undo removal or model replacement; Discard Changes restores its saved preset."
         ]
       },
       {
         kind: "note",
-        text: "Adding, moving, removing, routing, or reassigning a device asks before changing the unit. Changes are temporary until saved; Discard Changes… restores the stored preset. Re-routing also warns that splitting or rejoining a row can interrupt audio."
+        text: "Grid edits apply immediately without confirmation. Check the target before adding, moving, removing, routing or reassigning a device. Changes remain temporary until saved; Discard Changes… restores the stored preset. Splitting or rejoining a row can interrupt audio."
       }
     ]
   },
@@ -302,7 +302,7 @@ export const USER_GUIDE: readonly GuideSection[] = [
     blocks: [
       {
         kind: "paragraph",
-        text: "These keys act on the Grid and on the unit. The Grid and performance keys are suspended while a text field, a menu, a dialog, or the preset browser has focus, so typing a preset name never presses a footswitch. Ctrl+S, Ctrl+Shift+S and Escape keep working wherever you are. Menu entries that have a shortcut show it beside the entry."
+        text: "Grid and performance keys pause while a text field, menu, dialog or preset browser has focus. Modal choices also suspend save, undo, redo, copy and paste shortcuts. Elsewhere, Ctrl+S and Ctrl+Shift+S save; Escape belongs to the active dialog or surface. Menu entries show their shortcuts."
       },
       { kind: "shortcuts", rows: KEYBOARD_SHORTCUTS },
       {
@@ -312,7 +312,7 @@ export const USER_GUIDE: readonly GuideSection[] = [
       { kind: "shortcuts", rows: MOUSE_INTERACTIONS },
       {
         kind: "note",
-        text: "Ctrl+Shift+S opens Save to QC, which names what it is about to write; Delete removes the selected block straight away, and Ctrl+Z puts it back. Escape closes what is open: a pending parameter edit and the block editor together, or the open dialog, the preset browser and the route picker together. A menu or a status panel closes on its own Escape, and the focus returns to the badge that opened it."
+        text: "Ctrl+Shift+S opens Save to QC, which names what it is about to write; Delete removes the selected block. Hardware Undo follows the unit's shared stack, not necessarily that removal; removal Undo is unavailable in DEMO. Escape closes what is open: a pending parameter edit and the block editor together, or the open dialog, the preset browser and the route picker together. A menu or a status panel closes on its own Escape, and the focus returns to the badge that opened it."
       }
     ]
   },
@@ -327,7 +327,7 @@ export const USER_GUIDE: readonly GuideSection[] = [
       },
       {
         kind: "paragraph",
-        text: "Internet for the Quad Cortex, on by default, lets the unit use this computer's internet connection to reach Neural DSP's servers (neuraldsp.com addresses, plus any extra domain you add) for updates while it is connected over USB; its serial number and its own credentials go with its requests."
+        text: "Internet for the Quad Cortex, on by default, forwards the connected unit's account, cloud and CorOS update requests over this computer's internet connection. Destinations, headers and bodies come from the unit and may include its credentials and serial number. The production forwarder keeps no traffic history. Turn this off to stop forwarding."
       },
       {
         kind: "paragraph",
@@ -340,7 +340,7 @@ export const USER_GUIDE: readonly GuideSection[] = [
           "View > Actual Size draws it at an approximation of its physical width.",
           "View > Full Screen fills the display, and choosing it again returns the window.",
           "Performance > Tempo… asks for a whole number of beats per minute from 40 through 240.",
-          "Performance > I/O Settings, Tuner, Looper X, and Gig View open those screens on the unit."
+          "Performance > I/O Settings, Tuner, and Gig View open those screens. Open Looper X by tapping its block in the Grid; it has no separate Performance menu entry."
         ]
       },
       {
@@ -378,11 +378,11 @@ export const USER_GUIDE: readonly GuideSection[] = [
       },
       {
         kind: "paragraph",
-        text: "The diagnostics report is a snapshot of state rather than a record of your playing. It carries when it was generated, the application version, the platform, whether the device gateway is available, the connection phase, the location and position of the loaded preset, its mode, scene, tempo, block count, and whether it had unsaved edits, and the list of connection events with their names and details."
+        text: "The diagnostics report is a snapshot of state rather than a record of your playing. It carries when it was generated, the application version, the platform, whether the device gateway is available, the connection phase, the location and position of the loaded preset, its mode, scene, tempo, block count, and whether it had unsaved edits, and connection-event names and times. Event details are omitted because they can contain private names or paths."
       },
       {
         kind: "note",
-        text: "The report names no serial numbers, no MAC addresses, no usernames, no file paths, and no preset or setlist names. Device info… shows the serial number and software versions the Quad Cortex reports about itself on this computer only; they are never included in a report, and cloud account identifiers are never read or displayed."
+        text: "The report names no serial numbers, no MAC addresses, no usernames, no file paths, and no preset or setlist names. Device info… shows the serial number and software versions the Quad Cortex reports about itself on this computer only; these and cloud account identifiers are never included in a diagnostics report. REMOTE displays the account paired with the device."
       }
     ]
   },

@@ -25,7 +25,7 @@ export type AppMenu = { name: string; items: MenuItem[] };
 
 export const divider = (): MenuItem => ({ separator: true });
 
-export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress, busy, localIntegrationAction, controlAccessMode, onControlAccessModeChange, claudeApprovalLapsed, localStatusChecking, claudeStatusRefreshFailed, chatgptStatusRefreshFailed, antigravityStatusRefreshFailed, lmStudioStatusRefreshFailed, janStatusRefreshFailed, otherMcpStatusRefreshFailed, runtime, deviceName, physicalDevices, selectedDeviceId, onSelectDevice, presetLabel, events, relayStatus, relayPending, relayPairingStarting, relayPairingError, relayPairingQrCode, relayPairingUrl, claudeExtensionStatus, claudeInstallPending, chatgptIntegrationStatus, chatgptRestartRequired, chatgptRemovalRestartRequired, antigravityIntegrationStatus, lmStudioIntegrationStatus, janIntegrationStatus, otherMcpStatus, relayConnectors, relayConnectorsError, relayUnlinkingGrantId, relayConnectorAddress, onRelayPanelOpen, onRelayPairingOpen, onOpenRelayConnector, onShareRelayConnector, onRelayReconnect, onRelayPairingRefresh, onRelayPairingShare, onRelayUnpair, onRelayDeleteAccount, onRelayUnlinkConnector, onInstallClaude, onOpenClaude, onOpenClaudeExtensions, onOpenClaudeDownload, onInstallChatgpt, onRemoveChatgpt, onOpenChatgpt, onOpenChatgptDownload, onOpenChatgptConfiguration, onOpenAntigravityDownload, onInstallAntigravity, onRemoveAntigravity, onOpenAntigravity, onInstallLmStudio, onRemoveLmStudio, onOpenLmStudio, onOpenLmStudioDownload, onInstallJan, onRemoveJan, onOpenJan, onOpenJanDownload, onCopyOtherMcpSetup, onRefreshLocalIntegrations, onLocalPanelChange, onConnect, onDisconnect, demoPending, onStartDemo, onStopDemo, deviceHeldInBackground, onResumeDevice, onClearEvents, onOpenChange }: {
+export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress, busy, localIntegrationAction, controlAccessMode, onControlAccessModeChange, claudeApprovalLapsed, localStatusChecking, claudeStatusRefreshFailed, chatgptStatusRefreshFailed, antigravityStatusRefreshFailed, lmStudioStatusRefreshFailed, janStatusRefreshFailed, otherMcpStatusRefreshFailed, runtime, deviceName, physicalDevices, selectedDeviceId, onSelectDevice, presetLabel, events, relayStatus, relayPending, relayPairingStarting, relayPairingError, relayPairingQrCode, relayPairingUrl, claudeExtensionStatus, claudeInstallPending, chatgptIntegrationStatus, chatgptRestartRequired, chatgptRemovalRestartRequired, antigravityIntegrationStatus, lmStudioIntegrationStatus, janIntegrationStatus, otherMcpStatus, relayConnectors, relayConnectorsError, relayUnlinkingGrantId, relayConnectorAddress, onRelayPanelOpen, onRelayPairingOpen, onOpenRelayConnector, onShareRelayConnector, onRelayReconnect, onRelayPairingRefresh, onRelayPairingShare, onRelayUnpair, onRetryRelayWithdrawal, onRelayDeleteAccount, onRelayUnlinkConnector, onInstallClaude, onOpenClaude, onOpenClaudeExtensions, onOpenClaudeDownload, onInstallChatgpt, onRemoveChatgpt, onOpenChatgpt, onOpenChatgptDownload, onOpenChatgptConfiguration, onOpenAntigravityDownload, onInstallAntigravity, onRemoveAntigravity, onOpenAntigravity, onInstallLmStudio, onRemoveLmStudio, onOpenLmStudio, onOpenLmStudioDownload, onInstallJan, onRemoveJan, onOpenJan, onOpenJanDownload, onCopyOtherMcpSetup, onRefreshLocalIntegrations, onLocalPanelChange, onConnect, onDisconnect, demoPending, onStartDemo, onStopDemo, deviceHeldInBackground, onResumeDevice, onClearEvents, onOpenChange }: {
   menus: AppMenu[];
   onSelect: (item: MenuCommand) => void;
   connection: ConnectionState;
@@ -77,6 +77,7 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
   onRelayPairingRefresh: () => void;
   onRelayPairingShare: () => void;
   onRelayUnpair: () => void;
+  onRetryRelayWithdrawal: () => void;
   onRelayDeleteAccount: () => void;
   onRelayUnlinkConnector: (grantId: string) => void;
   onInstallClaude: () => void;
@@ -127,11 +128,23 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
 }) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [statusPanelOpen, setStatusPanelOpen] = useState<"device" | "local" | "relay" | null>(null);
-  const [localUnpair, setLocalUnpair] = useState<{ provider: LocalProviderName; stage: "confirm" | "complete"; extensionDialog?: "opening" | "opened" | "failed" } | null>(null);
+  const [localUnpair, publishLocalUnpair] = useState<{ provider: LocalProviderName; stage: "confirm" | "complete"; extensionDialog?: "opening" | "opened" | "failed" } | null>(null);
+  const liveUnpair = useRef(localUnpair);
+  const promptMounted = useRef(true);
+  const removingPrompt = useRef<typeof localUnpair>(null);
+  const setLocalUnpair = useCallback((next: typeof localUnpair | ((previous: typeof localUnpair) => typeof localUnpair)) => {
+    const value = typeof next === "function" ? next(liveUnpair.current) : next;
+    liveUnpair.current = value;
+    publishLocalUnpair(value);
+  }, []);
+  useEffect(() => {
+    promptMounted.current = true;
+    return () => { promptMounted.current = false; liveUnpair.current = null; };
+  }, []);
   const root = useRef<HTMLDivElement>(null);
   const deviceStatusRoot = useRef<HTMLDivElement>(null);
   const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
-  const itemRefs = useRef(new Map<string, HTMLButtonElement[]>());
+  const itemRefs = useRef(new Map<string, Array<HTMLButtonElement | null>>());
   // The three status badges declare aria-haspopup="dialog"; Escape used to drop
   // focus on <body> instead of handing it back to the badge that opened the
   // panel, which strands keyboard and screen-reader users at the top of the app.
@@ -158,7 +171,7 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
     setOpenMenu(name);
     onOpenChange(true);
     if (focus) requestAnimationFrame(() => {
-      const candidates = itemRefs.current.get(name)?.filter((item) => !item.disabled) ?? [];
+      const candidates = itemRefs.current.get(name)?.filter((item): item is HTMLButtonElement => Boolean(item?.isConnected && !item.disabled)) ?? [];
       candidates[focus === "first" ? 0 : candidates.length - 1]?.focus();
     });
   }, [onOpenChange]);
@@ -253,7 +266,7 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
   };
 
   const moveFocus = (menuName: string, event: ReactKeyboardEvent, itemIndex: number) => {
-    const candidates = itemRefs.current.get(menuName)?.filter((item) => !item.disabled) ?? [];
+    const candidates = itemRefs.current.get(menuName)?.filter((item): item is HTMLButtonElement => Boolean(item?.isConnected && !item.disabled)) ?? [];
     const current = candidates.indexOf(event.currentTarget as HTMLButtonElement);
     if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
       event.preventDefault();
@@ -375,7 +388,6 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
                 aria-checked={item.checked}
                 disabled={item.disabled}
                 ref={(node) => {
-                  if (!node) return;
                   const refs = itemRefs.current.get(menu.name) ?? [];
                   refs[index] = node;
                   itemRefs.current.set(menu.name, refs);
@@ -409,19 +421,23 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
           pending={localIntegrationAction?.startsWith("remove-") === true}
           onCancel={() => setLocalUnpair(null)}
           onConfirm={() => {
-            if (localUnpair.provider === "chatgpt") {
-              void completeUnpairIfSuccessful(onRemoveChatgpt, () => setLocalUnpair({ provider: "chatgpt", stage: "complete" }));
-              return;
-            }
-            if (localUnpair.provider === "antigravity") {
-              void completeUnpairIfSuccessful(onRemoveAntigravity, () => setLocalUnpair({ provider: "antigravity", stage: "complete" }));
-              return;
-            }
-            if (localUnpair.provider === "lm-studio") {
-              void completeUnpairIfSuccessful(onRemoveLmStudio, () => setLocalUnpair({ provider: "lm-studio", stage: "complete" }));
-              return;
-            }
-            void completeUnpairIfSuccessful(onRemoveJan, () => setLocalUnpair({ provider: "jan", stage: "complete" }));
+            const origin = localUnpair;
+            if (!promptMounted.current || liveUnpair.current !== origin || origin.stage !== "confirm" || removingPrompt.current === origin) return;
+            removingPrompt.current = origin;
+            const complete = () => {
+              if (promptMounted.current && liveUnpair.current === origin) {
+                setLocalUnpair({ provider: origin.provider, stage: "complete" });
+              }
+            };
+            const settle = (remove: () => boolean | Promise<boolean>) => {
+              void completeUnpairIfSuccessful(remove, complete).finally(() => {
+                if (removingPrompt.current === origin) removingPrompt.current = null;
+              });
+            };
+            if (origin.provider === "chatgpt") { settle(onRemoveChatgpt); return; }
+            if (origin.provider === "antigravity") { settle(onRemoveAntigravity); return; }
+            if (origin.provider === "lm-studio") { settle(onRemoveLmStudio); return; }
+            settle(onRemoveJan);
           }}
           onOpen={localUnpair.provider === "claude" ? onOpenClaude : localUnpair.provider === "chatgpt" ? onOpenChatgpt : localUnpair.provider === "antigravity" ? onOpenAntigravity : localUnpair.provider === "lm-studio" ? onOpenLmStudio : onOpenJan}
         /> : <div className="local-provider-list">
@@ -450,8 +466,11 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
               // and coloured like every other row's Unpair, because six rows
               // showing one control in two colours looked inconsistent.
               unpair: () => {
-                setLocalUnpair({ provider: "claude", stage: "complete", extensionDialog: "opening" });
-                void onOpenClaudeExtensions().then((opened) => setLocalUnpair((current) => current?.provider === "claude" ? { ...current, extensionDialog: opened ? "opened" : "failed" } : current));
+                const origin = { provider: "claude", stage: "complete", extensionDialog: "opening" } as const;
+                setLocalUnpair(origin);
+                void onOpenClaudeExtensions().then((opened) => {
+                  if (promptMounted.current && liveUnpair.current === origin) setLocalUnpair({ ...origin, extensionDialog: opened ? "opened" : "failed" });
+                });
               }
             }}
           />
@@ -561,6 +580,10 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
           accessMode={controlAccessMode}
           onAccessModeChange={onControlAccessModeChange}
         />}
+        {relayStatus?.pendingRevocation && <div className="remote-access-card" role="status">
+          <p>{relayStatus.paired ? "A previous cloud authorization still needs to be withdrawn." : relayStatus.detail ?? "Cloud authorization withdrawal still needs to finish."}</p>
+          <button type="button" disabled={relayPending} onClick={onRetryRelayWithdrawal}>Retry withdrawal</button>
+        </div>}
         <RemoteAccountDeletionLink onOpen={onRelayDeleteAccount} />
       </section>}
       <ConnectionBadge connection={connection} deviceReady={deviceReady} syncProgress={syncProgress} actionRequired={usbActionRequired} expanded={statusPanelOpen === "device"} badgeRef={(node) => { if (node) statusBadgeRefs.current.set("device", node); }} onClick={() => toggleStatusPanel("device")} />

@@ -22,8 +22,10 @@ const cpu = (update: Partial<QcStateUpdate>) => ({ kind: "cpuLoad", ...update })
 
 test("one telemetry owner tracks the aggregate load and the per-block columns", () => {
   const host = mount();
-  assert.equal(host.value.cpuLoad, 0);
+  assert.equal(host.value.cpuLoad, undefined, "no CPU sample has been observed yet");
   assert.deepEqual(host.value.cpuColumns, []);
+  act(() => host.value.consume([cpu({ cpuTotalLoad: 0 })]));
+  assert.equal(host.value.cpuLoad, 0, "an observed zero is distinct from unavailable telemetry");
   const columns = [{ column: 2, load: 64 }] as unknown as NonNullable<QcStateUpdate["cpuColumns"]>;
   act(() => host.value.consume([cpu({ cpuTotalLoad: 41, cpuColumns: columns })]));
   assert.equal(host.value.cpuLoad, 41);

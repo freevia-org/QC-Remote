@@ -101,7 +101,8 @@
 .capture-library-browser.is-live-capture-picker > aside,
 .capture-library-browser.is-live-capture-picker > main { min-height: 0; overflow-y: auto; scrollbar-width: none; }
 .capture-library-browser.is-live-capture-picker > main { display: block; padding: 0; background: var(--qc-palette-101310); }
-.capture-library-browser.is-live-capture-picker > main .capture-picker-filters { position: sticky; z-index: 3; top: 0; }
-.capture-library-browser.is-live-capture-picker > main .device-browser-search { position: sticky; z-index: 3; top: 0; }
+.capture-library-browser.is-live-capture-picker > main .capture-picker-sticky-toolbar { position: sticky; z-index: 3; top: 0; display: flex; flex-direction: column; background: var(--qc-screen-surface-control); }
+.capture-library-browser.is-live-capture-picker > main .capture-picker-filters,
+.capture-library-browser.is-live-capture-picker > main .device-browser-search { position: static; }
 .capture-library-browser.is-live-capture-picker > main .capture-library-rows { position: relative; }
 }

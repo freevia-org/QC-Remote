@@ -14,8 +14,9 @@
 //! as it was.
 use serde_json::{Map, Value};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::Read;
 use std::path::Path;
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const SETTINGS_FILE: &str = "device-broker-tray.json";
@@ -35,7 +36,22 @@ pub const UPDATER_RELAY_DEFAULT_MAX_DOWNLOAD_BYTES: u64 = 512 * 1024 * 1024;
 const UPDATER_RELAY_MIN_MAX_DOWNLOAD_BYTES: u64 = 1024 * 1024;
 const UPDATER_RELAY_MAX_MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const UPDATER_RELAY_MAX_EXTRA_DOMAINS: usize = 8;
+#[cfg(test)]
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+const MAX_SETTINGS_BYTES: u64 = 128 * 1024;
+
+fn read_settings(path: &Path) -> std::io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SETTINGS_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Tray settings exceed 128 KiB",
+        ));
+    }
+    Ok(bytes)
+}
 
 /// What the broker does once no participant is attached, while its icon shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,7 +114,7 @@ pub fn parse_idle_minutes(value: &Value) -> Result<Option<u32>, String> {
 }
 
 fn read_document(directory: &Path) -> Map<String, Value> {
-    fs::read(directory.join(SETTINGS_FILE))
+    read_settings(&directory.join(SETTINGS_FILE))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .and_then(|value| value.as_object().cloned())
@@ -214,7 +230,7 @@ pub enum SettingsReadError {
 pub fn try_read_updater_relay_in(
     directory: &Path,
 ) -> Result<UpdaterRelaySettings, SettingsReadError> {
-    let bytes = match fs::read(directory.join(SETTINGS_FILE)) {
+    let bytes = match read_settings(&directory.join(SETTINGS_FILE)) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(UpdaterRelaySettings::default());
@@ -249,6 +265,15 @@ pub fn set_idle_minutes_in(directory: &Path, minutes: Option<u32>) -> Result<Tra
 /// so no other key is lost. A missing tray switch is written out as its
 /// default, never as off.
 fn update_key(directory: &Path, key: &str, value: Value) -> Result<Map<String, Value>, String> {
+    update_key_with_reader(directory, key, value, read_settings)
+}
+
+fn update_key_with_reader(
+    directory: &Path,
+    key: &str,
+    value: Value,
+    read: impl FnOnce(&Path) -> std::io::Result<Vec<u8>>,
+) -> Result<Map<String, Value>, String> {
     fs::create_dir_all(directory)
         .map_err(|error| format!("Create tray settings directory: {error}"))?;
     // Lock the stable side-file, never the replaced document, and keep it after
@@ -262,7 +287,24 @@ fn update_key(directory: &Path, key: &str, value: Value) -> Result<Map<String, V
         .map_err(|error| format!("Open tray settings lock: {error}"))?;
     lock.lock()
         .map_err(|error| format!("Lock tray settings: {error}"))?;
-    let mut document = read_document(directory);
+    // Tolerant defaults belong to display readers, not a read/modify/write
+    // transaction: losing a read must never erase the other runtime's keys.
+    let mut document =
+        match read(&directory.join(SETTINGS_FILE)) {
+            Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                Ok(Value::Object(document)) => document,
+                _ => return Err(
+                    "Existing tray settings must be a valid JSON object; no settings were changed"
+                        .into(),
+                ),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Map::new(),
+            Err(error) => {
+                return Err(format!(
+                    "Read existing tray settings; no settings were changed: {error}"
+                ))
+            }
+        };
     let defaults = TraySettings::default();
     document
         .entry(TRAY_ENABLED_KEY)
@@ -275,28 +317,8 @@ fn update_key(directory: &Path, key: &str, value: Value) -> Result<Map<String, V
 }
 
 fn atomic_write(directory: &Path, bytes: &[u8]) -> Result<(), String> {
-    let (temp_path, mut temp) = loop {
-        let sequence = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-        let path = directory.join(format!(
-            ".{SETTINGS_FILE}.broker-{}.{sequence}.tmp",
-            std::process::id()
-        ));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => break (path, file),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(format!("Create tray settings temporary file: {error}")),
-        }
-    };
-    let result = (|| {
-        temp.write_all(bytes)?;
-        temp.sync_all()?;
-        drop(temp);
-        fs::rename(&temp_path, directory.join(SETTINGS_FILE))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    result.map_err(|error| format!("Write tray settings: {error}"))
+    qc_owner_only_file::publish_atomically(&directory.join(SETTINGS_FILE), bytes)
+        .map_err(|error| format!("Write tray settings: {error}"))
 }
 
 #[cfg(test)]
@@ -305,17 +327,56 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
 
+    #[test]
+    fn oversized_settings_are_bounded_and_never_overwritten_by_a_mutation() {
+        let dir = Scratch::new();
+        let path = dir.0.join(SETTINGS_FILE);
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_SETTINGS_BYTES + 1).unwrap();
+        drop(file);
+        assert_eq!(
+            read_settings(&path).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert!(try_read_updater_relay_in(&dir.0).is_err());
+        assert_eq!(read_in(&dir.0), TraySettings::default());
+        assert!(set_idle_minutes_in(&dir.0, Some(20)).is_err());
+        assert!(set_updater_relay_enabled_in(&dir.0, true).is_err());
+        assert_eq!(fs::metadata(&path).unwrap().len(), MAX_SETTINGS_BYTES + 1);
+        assert!(fs::read_dir(&dir.0).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
+    }
+
+    #[test]
+    fn failed_settings_publication_preserves_destination_and_cleans_only_its_stage() {
+        let dir = Scratch::new();
+        let destination = dir.0.join(SETTINGS_FILE);
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("sentinel"), b"preserve").unwrap();
+        assert!(atomic_write(&dir.0, b"{}").is_err());
+        assert_eq!(fs::read(destination.join("sentinel")).unwrap(), b"preserve");
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
     struct Scratch(PathBuf);
     impl Scratch {
         fn new() -> Self {
-            let directory = std::env::temp_dir().join(format!(
-                "qc-broker-tray-settings-{}-{}",
-                std::process::id(),
-                NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed) + 1_000_000
-            ));
-            let _ = fs::remove_dir_all(&directory);
-            fs::create_dir_all(&directory).unwrap();
-            Self(directory)
+            for _ in 0..64 {
+                let directory = std::env::temp_dir().join(format!(
+                    "qc-broker-tray-settings-{}-{}",
+                    std::process::id(),
+                    NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed) + 1_000_000
+                ));
+                match fs::create_dir(&directory) {
+                    Ok(()) => return Self(directory),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("reserve tray settings fixture: {error}"),
+                }
+            }
+            panic!("could not reserve tray settings fixture after 64 collisions");
         }
         fn write(&self, bytes: &[u8]) {
             fs::write(self.0.join(SETTINGS_FILE), bytes).unwrap();
@@ -508,7 +569,7 @@ mod tests {
             try_read_updater_relay_in(&dir.0),
             Err(SettingsReadError::Unreadable(_))
         ));
-        // The lenient reader the writers use still treats every case as the defaults.
+        // Display readers still use defaults; writers instead refuse this input.
         assert!(read_updater_relay_in(&dir.0).enabled);
     }
 
@@ -589,5 +650,61 @@ mod tests {
         let fresh = Scratch::new();
         set_updater_relay_enabled_in(&fresh.0, false).unwrap();
         assert!(read_in(&fresh.0).tray_enabled);
+    }
+
+    #[test]
+    fn settings_writers_refuse_corrupt_or_unreadable_existing_documents_without_staging() {
+        let dir = Scratch::new();
+        let assert_unchanged = |before: &[u8]| {
+            assert_eq!(fs::read(dir.0.join(SETTINGS_FILE)).unwrap(), before);
+            assert!(fs::read_dir(&dir.0).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")));
+        };
+        for bytes in [
+            &b"not json"[..],
+            b"null",
+            b"[]",
+            b"\"text\"",
+            b"{\"updaterRelayEnabled\":false",
+        ] {
+            dir.write(bytes);
+            assert!(set_idle_minutes_in(&dir.0, Some(20))
+                .unwrap_err()
+                .contains("valid JSON object"));
+            assert_unchanged(bytes);
+            assert!(set_updater_relay_enabled_in(&dir.0, true)
+                .unwrap_err()
+                .contains("valid JSON object"));
+            assert_unchanged(bytes);
+        }
+        let bytes = br#"{"trayEnabled":false,"updaterRelayEnabled":false,"other":42}"#;
+        dir.write(bytes);
+        for (key, value) in [
+            (IDLE_MINUTES_KEY, Value::from(20)),
+            (UPDATER_RELAY_ENABLED_KEY, Value::Bool(true)),
+        ] {
+            let error = update_key_with_reader(&dir.0, key, value, |_| {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            })
+            .unwrap_err();
+            assert!(error.contains("Read existing tray settings"));
+            assert_unchanged(bytes);
+        }
+    }
+
+    #[test]
+    fn settings_scratch_root_is_removed_on_partial_setup_unwind() {
+        let mut root = None;
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let scratch = Scratch::new();
+            root = Some(scratch.0.clone());
+            scratch.write(b"partial fixture");
+            panic!("injected setup assertion failure");
+        }));
+        assert!(fault.is_err());
+        assert!(!root.unwrap().exists());
     }
 }

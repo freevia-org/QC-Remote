@@ -56,6 +56,15 @@ struct RawMidiEndpoint {
 }
 
 impl PerformanceMidi {
+    /// Release the cached raw-MIDI substream when its controller session is
+    /// retired. This is called on the MIDI owner thread after all earlier
+    /// sends have completed.
+    pub fn retire_endpoint(&mut self) {
+        self.endpoint = None;
+        self.device_id = None;
+        self.last_sent = None;
+    }
+
     pub fn send_for_device(
         &mut self,
         device_id: &str,
@@ -533,6 +542,43 @@ mod tests {
         };
         let file = OpenOptions::new().write(true).open(&node).unwrap();
         assert!(verify_open_node(&file, &candidate).is_err());
+    }
+
+    #[test]
+    fn retiring_endpoint_clears_cached_raw_midi_state() {
+        let fixture = SysfsFixture::new();
+        let node = fixture.dev.join("midiC0D0");
+        fs::write(&node, b"").unwrap();
+        let physical = PhysicalUsb {
+            path: fixture.sys.join("devices/usb/1-1"),
+            vendor_id: 0x152a,
+            product_id: 0x880a,
+        };
+        let endpoint = RawMidiEndpoint {
+            file: OpenOptions::new().write(true).open(&node).unwrap(),
+            candidate: Candidate {
+                name: "midiC0D0".into(),
+                path: node,
+                sysfs_device: fixture.sys.clone(),
+                generation: NodeGeneration {
+                    device: 0,
+                    inode: 0,
+                    rdev: 0,
+                    physical,
+                },
+            },
+        };
+        let mut midi = PerformanceMidi {
+            device_id: Some("fixture-device".into()),
+            last_sent: Some(Instant::now()),
+            endpoint: Some(endpoint),
+        };
+
+        midi.retire_endpoint();
+
+        assert!(midi.device_id.is_none());
+        assert!(midi.last_sent.is_none());
+        assert!(midi.endpoint.is_none());
     }
 
     #[test]

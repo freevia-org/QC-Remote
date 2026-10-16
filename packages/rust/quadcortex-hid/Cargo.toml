@@ -8,6 +8,7 @@ license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
 
 [dependencies]
 prost.workspace = true
+qc-owner-only-file = { path = "../qc-owner-only-file" }
 quadcortex = { path = "../quadcortex" }
 serde.workspace = true
 serde_json.workspace = true
@@ -17,6 +18,7 @@ uuid.workspace = true
 # Both full-duplex adapters rely on audited private hidapi backend details.
 # Re-audit src/backend/{windows,linux}.rs before changing this exact pin.
 [target.'cfg(windows)'.dependencies]
+qc-windows-process = { path = "../qc-windows-process" }
 hidapi = { version = "=2.6.7", default-features = false, features = ["windows-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

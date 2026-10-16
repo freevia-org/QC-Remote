@@ -212,7 +212,7 @@ export interface GridBlock {
 
 export interface FootswitchState {
   index: number;
-  active: boolean;
+  active?: boolean;
   assigned: boolean;
   color: string;
   momentary?: boolean;
@@ -242,7 +242,7 @@ export interface GridRoute {
   splitColumn?: number;
   mixColumn?: number;
   splitterModelId?: number;
-  splitMuted: boolean;
+  splitMuted?: boolean;
   inputWire?: string;
   outputWire?: string;
 }
@@ -355,6 +355,7 @@ export interface QcStateUpdate {
   blocks?: GridBlock[];
   routes?: GridRoute[];
   ioPorts?: IoPortState[];
+  ioSettingsError?: string;
   mode?: "PRESET" | "SCENE" | "STOMP" | "HYBRID" | "UNKNOWN";
   modeSlots?: ModeSlot[];
   footswitchModes?: ("PRESET" | "SCENE" | "STOMP")[];
@@ -460,6 +461,7 @@ export interface PresetSnapshot {
   blocks: GridBlock[];
   routes: GridRoute[];
   ioPorts?: IoPortState[];
+  ioSettingsError?: string;
   tempo: number;
   tempoLedEnabled?: boolean;
   tempoPulseEpochMs?: number;

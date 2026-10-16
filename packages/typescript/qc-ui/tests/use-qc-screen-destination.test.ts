@@ -10,6 +10,27 @@ register("./support/react-singleton-loader.mjs", import.meta.url);
 const { createElement } = (await import("react")).default;
 const { QC_DISABLED_CONTEXT_ACTIONS, qcContextActionHandler, useQcScreenDestination } = await import("../src/use-qc-screen-destination.ts");
 
+test("screen continuation lease expires synchronously on navigation and unmount", () => {
+  const host = mount();
+  const first = host.value.captureCurrent();
+  assert.equal(first(),true);
+  act(()=>host.value.open("looper-editor"));
+  assert.equal(first(),false);
+  const second = host.value.captureCurrent();
+  act(()=>host.value.setView((current)=>current));
+  assert.equal(second(),true, "functional no-op does not navigate");
+  act(()=>host.value.setPopup(null));
+  assert.equal(second(),true, "same popup does not navigate");
+  act(()=>host.value.setPopup("grid-menu"));
+  assert.equal(second(),false, "popup change navigates");
+  const navigated = host.value.captureCurrent();
+  act(()=>host.value.setView("tuner"));
+  assert.equal(navigated(),false);
+  const third = host.value.captureCurrent();
+  act(()=>host.renderer.unmount());
+  assert.equal(third(),false);
+});
+
 function mount() {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const seen: { current?: QcScreenDestination } = {};

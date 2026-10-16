@@ -5,6 +5,8 @@
 //! the small camelCase state-event contract consumed by `@qc-remote/core`.
 
 mod model_preset_catalog;
+#[cfg(test)]
+mod numeric_projection_tests;
 mod projection;
 pub use model_preset_catalog::{
     ModelPresetCatalog, Refusal, GLOBAL_EQ_MODEL_PRESET_HASH, PUBLISHED_ENTRY_LIMIT,
@@ -34,45 +36,37 @@ use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use thiserror::Error;
 
-/// Operational memory budget between full recalls, not a protocol index limit.
-const RETAINED_PARAMETER_OVERRIDE_LIMIT: usize = 65_536;
-// Includes both retained direct declarations and inherited parameter maps.
-const RETAINED_CATALOG_MODEL_LIMIT: usize = 65_536;
-const RETAINED_CATALOG_PARAMETER_LIMIT: usize = 65_536;
-const RETAINED_CATALOG_DYNAMIC_BYTES: usize = 32 * 1024 * 1024;
-
-#[derive(Default)]
-struct CatalogRetentionBudget {
-    parameters: usize,
-    bytes: usize,
-}
-
-impl CatalogRetentionBudget {
-    fn reserve(&mut self, parameters: usize, bytes: usize) -> Result<(), StateDecodeError> {
-        let count = self.parameters.saturating_add(parameters);
-        let total = self.bytes.saturating_add(bytes);
-        if count > RETAINED_CATALOG_PARAMETER_LIMIT || total > RETAINED_CATALOG_DYNAMIC_BYTES {
-            return Err(StateDecodeError::CatalogXml(
-                "retained model parameter budget exceeded".into(),
-            ));
-        }
-        self.parameters = count;
-        self.bytes = total;
-        Ok(())
-    }
-}
+// Software cache ceilings, not firmware index/count maxima. A session can
+// otherwise accumulate arbitrary sparse indices across individually small frames.
+const RETAINED_SPARSE_PARAMETER_LIMIT: usize = model_preset_catalog::RETAINED_ENTRY_LIMIT;
+const MODEL_CATALOG_MEMORY_LIMIT: usize = profile::MAX_INFLATED_BYTES * 4;
+const MODEL_CATALOG_CLONE_DEPTH_LIMIT: usize = 128;
 
 /// Errors produced while decoding QC protobuf payloads or the model catalog.
 #[derive(Debug, Error)]
 pub enum StateDecodeError {
+    /// Compatibility classification for sparse budget failures from consumers.
+    #[error("QC sparse parameter state exceeds its retained-entry limit; refresh the preset")]
+    ParameterRetentionLimit,
+    /// A selected scene did not name any of the eight declared scene slots.
+    #[error("QC selected scene {0} is outside the declared scene domain")]
+    InvalidSelectedScene(u32),
+    /// A projected numeric field was nonfinite; no firmware range is inferred.
+    #[error("QC protobuf type {message_type} field {field} is not finite")]
+    NonFiniteProjection {
+        /// Wire message family carrying the rejected value.
+        message_type: u16,
+        /// Public numeric evidence that cannot be represented.
+        field: &'static str,
+    },
+    /// A cumulative software cache budget was exceeded; no truncated state is valid.
+    #[error("QC state retention budget exceeded: {0}")]
+    RetentionLimit(&'static str),
     /// The payload is larger than its message type can legitimately carry: the
     /// type's inflation limit for a compressed envelope, or the raw frame
     /// ceiling, whichever is larger.
     #[error("QC state payload exceeds its message type's size limit")]
     PayloadLimit,
-    /// Sparse updates would exceed the retained parameter memory budget.
-    #[error("QC sparse parameter state exceeds its retained-entry limit; refresh the preset")]
-    ParameterRetentionLimit,
     /// The payload could not be parsed as the protobuf message for `message_type`.
     #[error("QC protobuf type {message_type} could not be decoded: {source}")]
     Protobuf {
@@ -167,6 +161,7 @@ impl StateUpdate {
             blocks: None,
             routes: None,
             io_ports: None,
+            io_settings_error: None,
             mode: None,
             mode_slots: None,
             footswitch_modes: None,
@@ -612,33 +607,6 @@ struct ParameterSpec {
 pub const LABELLED_END_SPAN: (f64, f64) = (-50.0, 50.0);
 
 impl ParameterSpec {
-    fn retained_dynamic_bytes(&self) -> usize {
-        self.name
-            .len()
-            .saturating_add(self.r#type.len())
-            .saturating_add(self.value_scale.len())
-            .saturating_add(self.units.len())
-            .saturating_add(self.minimum_label.as_ref().map_or(0, String::len))
-            .saturating_add(self.midpoint_label.as_ref().map_or(0, String::len))
-            .saturating_add(self.maximum_label.as_ref().map_or(0, String::len))
-            .saturating_add(self.options.iter().map(String::len).sum::<usize>())
-            .saturating_add(
-                self.options
-                    .len()
-                    .saturating_mul(std::mem::size_of::<String>()),
-            )
-            .saturating_add(
-                self.scale_points
-                    .len()
-                    .saturating_mul(std::mem::size_of::<ScalePoint>()),
-            )
-            .saturating_add(
-                self.enable_when_steps
-                    .len()
-                    .saturating_mul(std::mem::size_of::<u32>()),
-            )
-    }
-
     fn display_precision(&self) -> Option<u32> {
         if self.show_as_integer {
             return Some(0);
@@ -729,7 +697,57 @@ fn catalog_number(value: &str) -> Option<f64> {
         "LIN_SKEW" => Some(1.0),
         _ => None,
     };
-    symbolic.or_else(|| value.trim().parse().ok())
+    symbolic
+        .or_else(|| value.trim().parse().ok())
+        .filter(|value| value.is_finite())
+}
+
+fn validate_catalog_numeric_attributes(
+    attrs: &HashMap<String, String>,
+) -> Result<(), StateDecodeError> {
+    for key in ["min", "max", "skew", "xValues", "yValues"] {
+        if attrs.get(key).is_some_and(|values| {
+            values.split(',').any(|text| {
+                text.trim()
+                    .parse::<f64>()
+                    .is_ok_and(|value| !value.is_finite())
+            })
+        }) {
+            return Err(StateDecodeError::CatalogXml(format!(
+                "non-finite parameter {key}"
+            )));
+        }
+    }
+    if attrs
+        .get("skew")
+        .and_then(|text| catalog_number(text))
+        .is_some_and(|skew| skew <= 0.0 || !(1.0 / skew).is_finite())
+    {
+        return Err(StateDecodeError::CatalogXml(
+            "invalid parameter skew".into(),
+        ));
+    }
+    if attrs
+        .get("min")
+        .and_then(|text| catalog_number(text))
+        .zip(attrs.get("max").and_then(|text| catalog_number(text)))
+        .is_some_and(|(minimum, maximum)| !(maximum - minimum).is_finite())
+    {
+        return Err(StateDecodeError::CatalogXml(
+            "parameter span is not finite".into(),
+        ));
+    }
+    let x = number_list(attrs.get("xValues"));
+    let y = number_list(attrs.get("yValues"));
+    if x.windows(2)
+        .chain(y.windows(2))
+        .any(|pair| !(pair[1] - pair[0]).is_finite())
+    {
+        return Err(StateDecodeError::CatalogXml(
+            "parameter lookup span is not finite".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn split_text_list(value: Option<&String>) -> Vec<String> {
@@ -1002,6 +1020,15 @@ impl PresetSourceSnapshot {
     }
 }
 
+#[derive(Default)]
+struct PresetMetadataObservations {
+    labels: [Option<String>; 8],
+    colors: [Option<u32>; 8],
+    midi_sources: HashMap<u32, Vec<MidiOutMessage>>,
+    preset_load: Option<Vec<MidiOutMessage>>,
+    tempo_led: Option<bool>,
+}
+
 /// Stateful because scene selection, ModelRepo metadata, the active preset,
 /// and live parameter overrides arrive in independent QC messages.
 #[derive(Default)]
@@ -1024,11 +1051,38 @@ pub struct StateDecoder {
     licenses_enabled: Option<bool>,
     licenses_deactivated: Option<bool>,
     parameter_overrides: HashMap<(u32, u32, u32), f64>,
+    metadata_observations: PresetMetadataObservations,
+    // Projection evidence only: at most the 4x8 Grid addresses and eight
+    // relevant scene values per address, witnessed by the retained model id.
+    // The raw preset/capture-retarget source and address provenance are not rewritten.
+    scene_bypasses: HashMap<(u32, u32), (u32, BypassRecord)>,
+    sparse_state_invalidated: bool,
     inbound: InboundTelemetry,
     model_preset_catalog: ModelPresetCatalog,
 }
 
 impl StateDecoder {
+    fn withdraw_preset_authority(&mut self) -> StateUpdate {
+        self.preset = None;
+        self.preset_exact = false;
+        self.grid_layout_exact = false;
+        self.parameter_overrides.clear();
+        self.scene_bypasses.clear();
+        self.metadata_observations = Default::default();
+        self.state_revision = self.state_revision.saturating_add(1);
+        let mut update = StateUpdate::new("gridTopology");
+        update.grid_layout_complete = Some(false);
+        update.refresh_required = Some(true);
+        update
+    }
+
+    /// Name carried by the retained working buffer, never a catalog fallback.
+    pub(crate) fn preset_buffer_name(&self) -> Option<&str> {
+        match self.preset.as_ref()?.name.as_ref()? {
+            binary_preset::Name::Name(name) => Some(name.as_str()),
+        }
+    }
+
     /// Returns an opaque snapshot of the retained current preset.
     ///
     /// Returns `None` when no preset is retained, when the retained copy is no longer an exact full
@@ -1063,6 +1117,12 @@ impl StateDecoder {
     /// returns the decoder to its initial state.
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Sparse parameter retention was lost. Only a full preset or reset can
+    /// re-establish state; owners must publish this invalidation on decode Err.
+    pub fn sparse_state_invalidated(&self) -> bool {
+        self.sparse_state_invalidated
     }
 
     /// Which declared types reached [`Self::decode`] and produced nothing:
@@ -1371,8 +1431,11 @@ impl StateDecoder {
         // The local Cortex mutation changes the active scene value only when
         // this parameter is scene-enabled; all other values and metadata stay
         // byte-for-byte represented by the cloned protobuf fields.
-        let selected = if param_scene_mode(parameter) {
-            (self.active_scene as usize).min(parameter.param_values.len().saturating_sub(1))
+        // A singleton is the existing shared-value compatibility shape. A
+        // multi-value record must actually contain the active scene index;
+        // selecting its last value would edit another stored scene instead.
+        let selected = if param_scene_mode(parameter) && parameter.param_values.len() != 1 {
+            self.active_scene as usize
         } else {
             0
         };
@@ -1502,8 +1565,14 @@ impl StateDecoder {
         dispatched
     }
 
-    fn decode_midi_settings(&self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
+    fn decode_midi_settings(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<Vec<StateUpdate>, StateDecodeError> {
         let message: pa::MidiSettingsMessage = decode(8, payload)?;
+        if !is_update_action(message.action) || message.request_id.is_some() {
+            return Ok(Vec::new());
+        }
         let mut update = StateUpdate::new("midiOut");
         // A group that carries a source belongs to that source. A group that carries none is the
         // preset-load list: the desktop application's receiver files a group without a source
@@ -1518,8 +1587,18 @@ impl StateDecoder {
             message.general_midi_messages
         {
             for group in groups.messages {
+                if group.msg.len() > 12 {
+                    return Err(StateDecodeError::RetentionLimit("MIDI source slots"));
+                }
                 match group.source {
                     Some(pa::general_midi_message::Source::Source(source)) => {
+                        if source >= 10
+                            || sourced
+                                .iter()
+                                .any(|entry: &MidiOutSource| entry.source == source)
+                        {
+                            return Err(StateDecodeError::RetentionLimit("MIDI source identities"));
+                        }
                         sourced.push(MidiOutSource {
                             source,
                             messages: midi_slot_list(group.msg.iter()),
@@ -1545,7 +1624,30 @@ impl StateDecoder {
             }
         }
         if preset_load_seen {
+            if preset_load.len() > 12 {
+                return Err(StateDecodeError::RetentionLimit("preset-load MIDI slots"));
+            }
             update.preset_load_midi_out = Some(midi_slot_list(preset_load.iter()));
+        }
+        // Commit only after the entire bounded batch has been validated.
+        if let Some(sources) = &update.midi_out {
+            for source in sources {
+                self.metadata_observations
+                    .midi_sources
+                    .insert(source.source, source.messages.clone());
+            }
+        }
+        if let Some(messages) = &update.preset_load_midi_out {
+            self.metadata_observations.preset_load = Some(messages.clone());
+        }
+        if update
+            .midi_out
+            .as_ref()
+            .is_some_and(|sources| !sources.is_empty())
+            || update.preset_load_midi_out.is_some()
+        {
+            self.preset_exact = false;
+            self.state_revision = self.state_revision.saturating_add(1);
         }
         Ok(
             (update.midi_out.is_some() || update.preset_load_midi_out.is_some())
@@ -1575,22 +1677,26 @@ impl StateDecoder {
     fn decode_undo_redo(&self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
         let message: pa::UndoRedoMessage = decode(21, payload)?;
         let mut update = StateUpdate::new("history");
-        // `undoAvailable` and `redoAvailable` are this library's reading of the two lists, and
-        // an unsound one: the lists a unit pushes are fixed-length (twenty entries, mostly zero in
-        // every capture examined), so "has entries" is true whether or not anything can be undone.
-        // What the entries mean is not established. The lists travel unmodified beside the
-        // derived flags so a caller can apply a better reading.
-        update.undo_available = Some(!message.undo_frames.is_empty());
-        update.redo_available = Some(!message.redo_frames.is_empty());
+        // The device sends fixed-length lists even with no known undoable edit.
+        // Their entries have no established availability interpretation. Preserve raw evidence,
+        // but leave availability unknown rather than presenting list length as capability.
         update.undo_frames = Some(message.undo_frames);
         update.redo_frames = Some(message.redo_frames);
         Ok(vec![update])
     }
 
-    fn decode_scene_copy(&self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
-        let _: pa::SceneCopyMessage = decode(22, payload)?;
-        let mut update = StateUpdate::new("refresh");
-        update.refresh_required = Some(true);
+    fn decode_scene_copy(&mut self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
+        let message: pa::SceneCopyMessage = decode(22, payload)?;
+        if !is_update_action(message.action)
+            || message.request_id.is_some()
+            || !(0..8).contains(&message.from_index)
+            || !(0..8).contains(&message.to_index)
+        {
+            return Ok(Vec::new());
+        }
+        // Copy/swap changes scene parameters and bypasses, not just labels.
+        // Until a full publication arrives, no raw source is authoritative.
+        let update = self.withdraw_preset_authority();
         Ok(vec![update])
     }
 
@@ -1603,6 +1709,18 @@ impl StateDecoder {
 
     fn decode_cpu_load(&self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
         let message: pa::CpuLoadMessage = decode(26, payload)?;
+        if let Some(pa::cpu_load_message::CpuTotalLoad::CpuTotalLoad(value)) =
+            message.cpu_total_load
+        {
+            require_finite_projection(profile::MESSAGE_TYPE_CPU_LOAD, "total CPU load", value)?;
+        }
+        for column in message.chains.iter().flat_map(|chain| &chain.columns) {
+            require_finite_projection(
+                profile::MESSAGE_TYPE_CPU_LOAD,
+                "column CPU load",
+                column.cpu_load,
+            )?;
+        }
         let mut update = StateUpdate::new("cpuLoad");
         update.cpu_total_load = message.cpu_total_load.map(|value| match value {
             pa::cpu_load_message::CpuTotalLoad::CpuTotalLoad(load) => load,
@@ -1652,6 +1770,13 @@ impl StateDecoder {
 
     fn decode_bulk_operation(&self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
         let message: pa::BulkOperationMessage = decode(57, payload)?;
+        if let Some(pa::bulk_operation_message::Progress::Progress(value)) = message.progress {
+            require_finite_projection(
+                profile::MESSAGE_TYPE_BULK_OPERATION,
+                "bulk progress",
+                value,
+            )?;
+        }
         let mut update = StateUpdate::new("bulkOperation");
         update.bulk_operation = Some(BulkOperationState {
             message: message.progress_message.map(|value| match value {
@@ -1727,21 +1852,59 @@ impl StateDecoder {
         // Every early return below leaves the layout unproven; only the
         // fully applied move re-establishes it.
         self.grid_layout_exact = false;
+        // Raw bypass addresses are not proven to move with these model records.
+        // Never attach an old address's scene evidence to the destination model.
+        self.scene_bypasses.clear();
         self.state_revision = self.state_revision.saturating_add(1);
+        let unproven = || {
+            let mut update = StateUpdate::new("gridTopology");
+            update.grid_layout_complete = Some(false);
+            vec![update]
+        };
         let Some(preset) = self.preset.as_mut() else {
-            return Ok(Vec::new());
+            return Ok(unproven());
         };
 
+        // A batch is reconstructed from the single retained pre-state below.
+        // Reusing a source would fabricate copies; reusing a destination or
+        // moving into an unmoved occupied cell cannot prove the final layout.
+        // Preserve the bytes but leave topology unproven, as for an unresolved
+        // source/destination. This is a software-authority rule, not a claim
+        // about every batch shape firmware may publish.
+        let mut sources = HashSet::new();
+        let mut destinations = HashSet::new();
+        for item in &message.r#move {
+            if !sources.insert((item.from_row, item.from_col))
+                || !destinations.insert((item.to_row, item.to_col))
+            {
+                return Ok(unproven());
+            }
+        }
+        let mut empty_destinations = Vec::new();
+        for item in &message.r#move {
+            if !sources.contains(&(item.to_row, item.to_col)) {
+                match locate_model(preset, item.to_row, item.to_col) {
+                    Ok((_, _, model)) if model_hash(model).is_some_and(|id| id > 0) => {
+                        return Ok(unproven());
+                    }
+                    Ok((chain_index, model_index, _)) => {
+                        empty_destinations.push((chain_index, model_index));
+                    }
+                    Err(LocateError::Ambiguous) => return Ok(unproven()),
+                    _ => {}
+                }
+            }
+        }
         let mut moved = Vec::with_capacity(message.r#move.len());
         for item in &message.r#move {
             let Ok((chain_index, model_index, model)) =
                 locate_model(preset, item.from_row, item.from_col)
             else {
-                return Ok(Vec::new());
+                return Ok(unproven());
             };
             let model = model.clone();
             let Ok((destination_index, _)) = locate_chain(preset, item.to_row) else {
-                return Ok(Vec::new());
+                return Ok(unproven());
             };
             moved.push((
                 chain_index,
@@ -1752,8 +1915,19 @@ impl StateDecoder {
             ));
         }
         let mut removals: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (chain_index, model_index) in empty_destinations {
+            removals.entry(chain_index).or_default().push(model_index);
+        }
         for (chain_index, model_index, ..) in &moved {
             removals.entry(*chain_index).or_default().push(*model_index);
+        }
+        // Full recalls may address cells by vector position. Freeze those
+        // positions only after every lookup succeeds, before removing any
+        // source/empty destination can shift surviving cells.
+        for chain in &mut preset.chains {
+            for (index, model) in chain.models.iter_mut().enumerate() {
+                model.column = Some(model::Column::Column(model_column(model, index as u32)));
+            }
         }
         for (chain_index, indexes) in removals.iter_mut() {
             indexes.sort_unstable_by(|left, right| right.cmp(left));
@@ -2061,13 +2235,17 @@ impl StateDecoder {
         let minimum = spec.map(|item| item.minimum).unwrap_or(0.0);
         let maximum = spec.map(|item| item.maximum).unwrap_or(1.0);
         let units = spec.map(|item| item.units.clone()).unwrap_or_default();
-        let value_scale = if !options.is_empty() {
+        let scale_known = !options.is_empty()
+            || (spec.is_some_and(|item| item.scale_known)
+                && normalized_to_real(normalized, spec).is_finite());
+        let value_scale = if !scale_known {
+            "unknown"
+        } else if !options.is_empty() {
             "options"
         } else {
             spec.map(|item| item.value_scale.as_str())
                 .unwrap_or("unknown")
         };
-        let scale_known = !options.is_empty() || spec.is_some_and(|item| item.scale_known);
         let display_precision = spec.and_then(|item| item.display_precision());
         let display = if !options.is_empty() {
             let selected = ((normalized * (options.len().saturating_sub(1)) as f64).round()
@@ -2088,7 +2266,7 @@ impl StateDecoder {
             display_position: spec.map(|item| item.display_position).unwrap_or(index),
             name: spec
                 .map(|item| item.name.clone())
-                .unwrap_or_else(|| format!("Parameter {}", index + 1)),
+                .unwrap_or_else(|| format!("Parameter {}", u64::from(index) + 1)),
             normalized_value: Some(normalized),
             display_value: display,
             units,
@@ -2102,10 +2280,15 @@ impl StateDecoder {
             minimum,
             maximum,
             value_scale: value_scale.into(),
-            scale_exponent: spec.and_then(|item| item.scale_exponent),
-            scale_points: spec
-                .map(|item| item.scale_points.clone())
-                .unwrap_or_default(),
+            scale_exponent: scale_known
+                .then(|| spec.and_then(|item| item.scale_exponent))
+                .flatten(),
+            scale_points: if scale_known {
+                spec.map(|item| item.scale_points.clone())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             scale_known,
             display_precision,
             minimum_label: spec.and_then(|item| item.minimum_label.clone()),
@@ -2113,8 +2296,12 @@ impl StateDecoder {
             maximum_label: spec.and_then(|item| item.maximum_label.clone()),
             show_as_integer: spec.is_some_and(|item| item.show_as_integer),
             has_off_position: spec.is_some_and(ParameterSpec::has_off_position),
-            floor_display: spec.and_then(ParameterSpec::floor_display),
-            floor_normalized: spec.and_then(ParameterSpec::floor_normalized),
+            floor_display: scale_known
+                .then(|| spec.and_then(ParameterSpec::floor_display))
+                .flatten(),
+            floor_normalized: scale_known
+                .then(|| spec.and_then(ParameterSpec::floor_normalized))
+                .flatten(),
             steps: spec.and_then(|item| item.steps),
             scene_mode,
             options,
@@ -2335,11 +2522,42 @@ impl StateDecoder {
         else {
             return Ok(Vec::new());
         };
-        self.active_scene = scene.min(7);
+        if scene >= domain::SCENE_COUNT {
+            return Err(StateDecodeError::InvalidSelectedScene(scene));
+        }
+        // The sparse numeric cache is not scene-qualified. Rather than carry
+        // an active-scene edit into another scene (or revive its old raw value
+        // on return), require one event-driven full publication.
+        let invalidated = (self.active_scene != scene && !self.parameter_overrides.is_empty())
+            .then(|| self.withdraw_preset_authority());
+        self.active_scene = scene;
         self.state_revision = self.state_revision.saturating_add(1);
         let mut update = StateUpdate::new("scene");
         update.active_scene = Some(self.active_scene);
-        Ok(vec![update])
+        // Existing blocks are not republished/replaced: consumers use only
+        // these model-witnessed bypass fields, and clear missing evidence.
+        update.blocks = Some(if self.grid_layout_exact {
+            self.preset
+                .as_ref()
+                .map(|preset| {
+                    project_scene_bypasses(preset, &self.scene_bypasses, self.active_scene)
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        });
+        update.footswitch_states = self.projected_footswitch_states();
+        update.routes = Some(if self.grid_layout_exact {
+            self.preset
+                .as_ref()
+                .map(|preset| self.preset_routes(preset))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        });
+        let mut updates = vec![update];
+        updates.extend(invalidated);
+        Ok(updates)
     }
 
     fn decode_position(&mut self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
@@ -2378,7 +2596,11 @@ impl StateDecoder {
         let Some(pa::recall_preset_message::Preset::Preset(preset)) = message.preset else {
             return Ok(Vec::new());
         };
+        validate_preset_expression_projection(&preset, profile::MESSAGE_TYPE_RECALL_PRESET)?;
         self.parameter_overrides.clear();
+        self.metadata_observations = Default::default();
+        self.sparse_state_invalidated = false;
+        self.scene_bypasses = witnessed_scene_bypasses(&preset, &preset.bypass);
         self.preset = Some(preset);
         self.preset_exact = true;
         self.grid_layout_exact = true;
@@ -2394,17 +2616,26 @@ impl StateDecoder {
     /// controls, and splitter/mixer targets -- which differ only in the
     /// source iterator, the column/discriminator value, and whether the
     /// update kind is "parameter" or "laneControlParameter".
-    fn record_parameter_overrides<'a>(
+    fn record_parameter_overrides(
         &mut self,
-        params: impl Iterator<Item = (usize, &'a Param)>,
+        model: &Model,
         row: u32,
         column: u32,
         kind: &str,
         states: &mut Vec<StateUpdate>,
     ) {
-        for (parameter_pos, parameter) in params {
+        for (parameter_pos, parameter) in model.params.iter().enumerate() {
             let index = param_index(parameter, parameter_pos as u32);
-            let Some(value) = parameter.param_values.first().and_then(float_value) else {
+            let scene_mode = self.sparse_parameter_scene_mode(row, column, index, model, parameter);
+            if scene_mode.is_none() && parameter.param_values.len() > 1 {
+                continue;
+            }
+            let selected = if scene_mode == Some(true) && parameter.param_values.len() != 1 {
+                self.active_scene as usize
+            } else {
+                0
+            };
+            let Some(value) = parameter.param_values.get(selected).and_then(float_value) else {
                 continue;
             };
             if !(0.0..=1.0).contains(&value) {
@@ -2421,63 +2652,6 @@ impl StateDecoder {
         }
     }
 
-    /// Check the complete sparse update before changing retained state. Unknown
-    /// models and observations before a recall remain supported under this budget.
-    fn grid_parameter_budget_allows(&self, preset: &BinaryPreset) -> bool {
-        if self.parameter_overrides.len() > RETAINED_PARAMETER_OVERRIDE_LIMIT {
-            return false;
-        }
-        let mut new_keys = HashSet::new();
-        for (chain_pos, chain) in preset.chains.iter().enumerate() {
-            let row = chain_row(chain, chain_pos as u32);
-            if row >= domain::GRID_ROWS {
-                continue;
-            }
-            let splitter = match (
-                chain.splitter.is_empty(),
-                chain.combined_splitter.is_empty(),
-            ) {
-                (false, true) => chain.splitter.as_slice(),
-                (true, false) => chain.combined_splitter.as_slice(),
-                _ => &[],
-            };
-            let targets = chain
-                .models
-                .iter()
-                .enumerate()
-                .filter_map(|(pos, model)| {
-                    let column = model_column(model, pos as u32);
-                    (column < domain::GRID_COLUMNS).then_some((column, model))
-                })
-                .chain(chain.input_control.iter().map(|model| (10, model)))
-                .chain(chain.output_control.iter().map(|model| (11, model)))
-                .chain(splitter.iter().map(|model| (8, model)))
-                .chain(chain.mixer.iter().map(|model| (9, model)));
-            for (column, model) in targets {
-                for (pos, parameter) in model.params.iter().enumerate() {
-                    if !parameter
-                        .param_values
-                        .first()
-                        .and_then(float_value)
-                        .is_some_and(|value| (0.0..=1.0).contains(&value))
-                    {
-                        continue;
-                    }
-                    let key = (row, column, param_index(parameter, pos as u32));
-                    if !self.parameter_overrides.contains_key(&key) {
-                        new_keys.insert(key);
-                        if self.parameter_overrides.len() + new_keys.len()
-                            > RETAINED_PARAMETER_OVERRIDE_LIMIT
-                        {
-                            return false;
-                        }
-                    }
-                }
-            }
-        }
-        true
-    }
-
     fn decode_grid(&mut self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
         let message = decode::<pa::GridMessage>(profile::MESSAGE_TYPE_GRID, payload)?;
         if !matches!(
@@ -2489,15 +2663,29 @@ impl StateDecoder {
         let Some(pa::grid_message::Preset::Preset(preset)) = message.preset else {
             return Ok(Vec::new());
         };
+        if message.action == pa::message_action::Enum::Update as i32 {
+            validate_preset_expression_projection(&preset, profile::MESSAGE_TYPE_GRID)?;
+        }
+        if self.sparse_state_invalidated {
+            return Err(StateDecodeError::RetentionLimit("sparse parameter records"));
+        }
         if message.action == pa::message_action::Enum::Update as i32
-            && !self.grid_parameter_budget_allows(&preset)
+            && self.grid_parameter_mode_changes(&preset)
+        {
+            return Ok(vec![self.withdraw_preset_authority()]);
+        }
+        if message.action == pa::message_action::Enum::Update as i32
+            && !self.sparse_parameter_budget_fits(&preset)
         {
             self.parameter_overrides = HashMap::new();
+            self.metadata_observations = Default::default();
+            self.scene_bypasses.clear();
             self.preset = None;
             self.preset_exact = false;
             self.grid_layout_exact = false;
+            self.sparse_state_invalidated = true;
             self.state_revision = self.state_revision.saturating_add(1);
-            return Err(StateDecodeError::ParameterRetentionLimit);
+            return Err(StateDecodeError::RetentionLimit("sparse parameter records"));
         }
         let layout_was_exact = self.preset_exact || self.grid_layout_exact;
         self.preset_exact = false;
@@ -2507,8 +2695,10 @@ impl StateDecoder {
             // was exact stays exact.
             self.grid_layout_exact = layout_was_exact && self.preset.is_some();
             let mut states = self.apply_grid_removals(&preset);
+            let footswitch_states = self.projected_footswitch_states();
             for state in &mut states {
                 state.grid_layout_complete = Some(self.grid_layout_exact);
+                state.footswitch_states.clone_from(&footswitch_states);
             }
             return Ok(states);
         }
@@ -2522,6 +2712,31 @@ impl StateDecoder {
                 .preset
                 .as_ref()
                 .is_some_and(|retained| grid_update_preserves_layout(retained, &preset));
+        let bypass_projection = if self.grid_layout_exact {
+            if let Some(retained) = &self.preset {
+                let incoming = witnessed_scene_bypasses(retained, &preset.bypass);
+                let projection = project_scene_bypasses(retained, &incoming, self.active_scene);
+                self.scene_bypasses.extend(incoming);
+                projection
+            } else {
+                Vec::new()
+            }
+        } else {
+            // Topology no longer proves that any previous address still names
+            // its old model. Publish unknown, never a new raw bool for it.
+            let mut projection = self
+                .preset
+                .as_ref()
+                .map(|retained| {
+                    project_scene_bypasses(retained, &self.scene_bypasses, self.active_scene)
+                })
+                .unwrap_or_default();
+            for block in &mut projection {
+                block.bypassed = None;
+            }
+            self.scene_bypasses.clear();
+            projection
+        };
         let mut states = Vec::new();
         if layout_was_exact && !self.grid_layout_exact {
             let mut update = StateUpdate::new("gridTopology");
@@ -2532,16 +2747,32 @@ impl StateDecoder {
             self.apply_grid_tempo_update(delta);
         }
         let tempo = tempo_state(preset.tempo_program_data.first());
+        if tempo.led_enabled.is_some() {
+            self.metadata_observations.tempo_led = tempo.led_enabled;
+        }
         if tempo.bpm.is_some() || tempo.led_enabled.is_some() {
             let mut update = StateUpdate::new("tempo");
             update.tempo = tempo.bpm;
             update.tempo_led_enabled = tempo.led_enabled;
             states.push(update);
         }
-        let bypasses = bypass_updates(&preset.bypass, self.active_scene);
-        if !bypasses.is_empty() {
+        let bypasses = bypass_updates(&preset.bypass, self.active_scene)
+            .into_iter()
+            .filter(|update| {
+                bypass_projection.iter().any(|block| {
+                    block.row == update.row
+                        && block.column == update.column
+                        && block.bypassed == Some(update.bypassed)
+                })
+            })
+            .collect::<Vec<_>>();
+        if !bypass_projection.is_empty() {
             let mut update = StateUpdate::new("bypassBatch");
             update.bypass_updates = Some(bypasses);
+            // Unlike bool-only updates, this explicitly carries unknown for
+            // malformed active values, duplicate addresses or lost topology.
+            update.blocks = Some(bypass_projection);
+            update.footswitch_states = self.projected_footswitch_states();
             states.push(update);
         }
         for (chain_index, chain) in preset.chains.iter().enumerate() {
@@ -2554,13 +2785,7 @@ impl StateDecoder {
                 if column > 7 {
                     continue;
                 }
-                self.record_parameter_overrides(
-                    model.params.iter().enumerate(),
-                    row,
-                    column,
-                    "parameter",
-                    &mut states,
-                );
+                self.record_parameter_overrides(model, row, column, "parameter", &mut states);
             }
             for (discriminator, controls) in [
                 (10_u32, chain.input_control.as_slice()),
@@ -2568,7 +2793,7 @@ impl StateDecoder {
             ] {
                 for control in controls {
                     self.record_parameter_overrides(
-                        control.params.iter().enumerate(),
+                        control,
                         row,
                         discriminator,
                         "laneControlParameter",
@@ -2586,13 +2811,7 @@ impl StateDecoder {
             };
             for (column, targets) in [(8_u32, splitter_updates), (9_u32, chain.mixer.as_slice())] {
                 for target in targets {
-                    self.record_parameter_overrides(
-                        target.params.iter().enumerate(),
-                        row,
-                        column,
-                        "parameter",
-                        &mut states,
-                    );
+                    self.record_parameter_overrides(target, row, column, "parameter", &mut states);
                 }
             }
         }
@@ -2600,6 +2819,201 @@ impl StateDecoder {
             states.extend(self.preset_update(false));
         }
         Ok(states)
+    }
+
+    fn retained_parameter_model(&self, row: u32, column: u32) -> Option<&Model> {
+        let preset = self.preset.as_ref()?;
+        if column < domain::GRID_COLUMNS {
+            return locate_model(preset, row, column)
+                .ok()
+                .map(|(_, _, model)| model);
+        }
+        let (_, chain) = locate_chain(preset, row).ok()?;
+        match column {
+            8 => splitter_target(chain).map(|(model, _, _)| model),
+            9 => chain.mixer.first(),
+            10 => chain.input_control.first(),
+            11 => chain.output_control.first(),
+            _ => None,
+        }
+    }
+
+    fn sparse_parameter_scene_mode(
+        &self,
+        row: u32,
+        column: u32,
+        index: u32,
+        incoming: &Model,
+        parameter: &Param,
+    ) -> Option<bool> {
+        let mode = parameter.scene_mode.as_ref().or_else(|| {
+            if !self.grid_layout_exact {
+                return None;
+            }
+            self.retained_parameter_model(row, column)
+                .filter(|held| {
+                    model_hash(incoming).is_none() || model_hash(incoming) == model_hash(held)
+                })
+                .and_then(|model| {
+                    model
+                        .params
+                        .iter()
+                        .enumerate()
+                        .find(|(position, held)| param_index(held, *position as u32) == index)
+                        .and_then(|(_, held)| held.scene_mode.as_ref())
+                })
+        });
+        mode.map(|mode| matches!(mode, param::SceneMode::SceneMode(true)))
+    }
+
+    fn grid_parameter_mode_changes(&self, delta: &BinaryPreset) -> bool {
+        for (position, chain) in delta.chains.iter().enumerate() {
+            let row = chain_row(chain, position as u32);
+            let models = chain
+                .models
+                .iter()
+                .enumerate()
+                .map(|(position, model)| (model_column(model, position as u32), model));
+            let controls = [
+                (8, chain.splitter.as_slice()),
+                (8, chain.combined_splitter.as_slice()),
+                (9, chain.mixer.as_slice()),
+                (10, chain.input_control.as_slice()),
+                (11, chain.output_control.as_slice()),
+            ]
+            .into_iter()
+            .flat_map(|(column, models)| models.iter().map(move |model| (column, model)));
+            for (column, model) in models.chain(controls) {
+                for (position, parameter) in model.params.iter().enumerate() {
+                    let index = param_index(parameter, position as u32);
+                    if parameter.param_values.len() > 1 {
+                        match self.sparse_parameter_scene_mode(row, column, index, model, parameter)
+                        {
+                            Some(true)
+                                if parameter
+                                    .param_values
+                                    .get(self.active_scene as usize)
+                                    .is_none() =>
+                            {
+                                return true
+                            }
+                            None => return true,
+                            _ => {}
+                        }
+                        if self.sparse_parameter_scene_mode(row, column, index, model, parameter) == Some(true)
+                            && parameter.param_values.get(self.active_scene as usize).is_some_and(|value| {
+                                value.value.is_none() || matches!(value.value, Some(param_value::Value::FloatValue(value)) if !(0.0..=1.0).contains(&value))
+                            }) { return true; }
+                    }
+                    if parameter.scene_mode.is_none() {
+                        continue;
+                    }
+                    let held = self
+                        .retained_parameter_model(row, column)
+                        .filter(|held| {
+                            model_hash(model).is_none() || model_hash(model) == model_hash(held)
+                        })
+                        .and_then(|held| {
+                            held.params
+                                .iter()
+                                .enumerate()
+                                .find(|(position, parameter)| {
+                                    param_index(parameter, *position as u32) == index
+                                })
+                        })
+                        .map(|(_, parameter)| parameter);
+                    if held.is_none_or(|held| held.scene_mode != parameter.scene_mode) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn sparse_parameter_budget_fits(&self, delta: &BinaryPreset) -> bool {
+        let tempo = self
+            .preset
+            .as_ref()
+            .and_then(|preset| preset.tempo_program_data.first());
+        let mut tempo_count = tempo.map_or(0, |model| model.params.len());
+        if self.parameter_overrides.len().saturating_add(tempo_count)
+            > RETAINED_SPARSE_PARAMETER_LIMIT
+        {
+            return false;
+        }
+        let mut keys: HashSet<_> = self.parameter_overrides.keys().copied().collect();
+        let mut tempo_keys: HashSet<_> = tempo
+            .into_iter()
+            .flat_map(|model| model.params.iter().enumerate())
+            .map(|(position, parameter)| param_index(parameter, position as u32))
+            .collect();
+        let numeric = |parameter: &Param| {
+            parameter
+                .param_values
+                .iter()
+                .filter_map(float_value)
+                .any(|value| (0.0..=1.0).contains(&value))
+        };
+        if let Some(model) = delta.tempo_program_data.first() {
+            for (position, parameter) in model
+                .params
+                .iter()
+                .enumerate()
+                .filter(|(_, parameter)| numeric(parameter))
+            {
+                if tempo_keys.insert(param_index(parameter, position as u32)) {
+                    tempo_count = tempo_count.saturating_add(1);
+                }
+                if keys.len().saturating_add(tempo_count) > RETAINED_SPARSE_PARAMETER_LIMIT {
+                    return false;
+                }
+            }
+        }
+        for (position, chain) in delta.chains.iter().enumerate() {
+            let row = chain_row(chain, position as u32);
+            if row >= domain::GRID_ROWS {
+                continue;
+            }
+            let models = chain
+                .models
+                .iter()
+                .enumerate()
+                .filter_map(|(position, model)| {
+                    let column = model_column(model, position as u32);
+                    (column < domain::GRID_COLUMNS).then_some((column, model))
+                });
+            let splitter = match (
+                chain.splitter.is_empty(),
+                chain.combined_splitter.is_empty(),
+            ) {
+                (false, true) => chain.splitter.as_slice(),
+                (true, false) => chain.combined_splitter.as_slice(),
+                _ => &[],
+            };
+            let controls = [
+                (10, chain.input_control.as_slice()),
+                (11, chain.output_control.as_slice()),
+                (8, splitter),
+                (9, chain.mixer.as_slice()),
+            ]
+            .into_iter()
+            .flat_map(|(column, models)| models.iter().map(move |model| (column, model)));
+            for (column, model) in models.chain(controls) {
+                for (position, parameter) in model
+                    .params
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, parameter)| numeric(parameter))
+                {
+                    keys.insert((row, column, param_index(parameter, position as u32)));
+                    if keys.len().saturating_add(tempo_count) > RETAINED_SPARSE_PARAMETER_LIMIT {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// Merge a sparse Grid UPDATE's tempo block into the retained preset.
@@ -2623,19 +3037,6 @@ impl StateDecoder {
             else {
                 continue;
             };
-            // Only BPM and LED have a known sparse meaning. Preserve existing
-            // slots, but do not accumulate arbitrary new parameter indices.
-            if !matches!(index, 0 | 2)
-                && !retained.tempo_program_data.first().is_some_and(|block| {
-                    block
-                        .params
-                        .iter()
-                        .enumerate()
-                        .any(|(pos, item)| param_index(item, pos as u32) == index)
-                })
-            {
-                continue;
-            }
             if retained.tempo_program_data.is_empty() {
                 retained.tempo_program_data.push(Model::default());
             }
@@ -2737,6 +3138,8 @@ impl StateDecoder {
         }
         self.parameter_overrides
             .retain(|&(row, column, _), _| !targets.contains(&(row, column)));
+        self.scene_bypasses
+            .retain(|address, _| !targets.contains(address));
         targets
             .into_iter()
             .map(|(row, column)| {
@@ -2816,36 +3219,45 @@ impl StateDecoder {
         Ok(vec![update])
     }
 
-    fn decode_scene_label(&self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
+    fn decode_scene_label(&mut self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
         let message = decode::<pa::SceneLabelMessage>(profile::MESSAGE_TYPE_SCENE_LABEL, payload)?;
-        if !is_update_action(message.action) {
+        if !is_update_action(message.action) || message.request_id.is_some() {
             return Ok(Vec::new());
         }
         if !(0..domain::SCENE_COUNT as i32).contains(&message.index) {
             return Ok(Vec::new());
         }
         let mut update = StateUpdate::new("sceneLabel");
+        self.metadata_observations.labels[message.index as usize] = Some(message.label.clone());
+        self.preset_exact = false;
+        self.state_revision = self.state_revision.saturating_add(1);
         update.index = Some(message.index as u32);
         update.label = Some(message.label);
         Ok(vec![update])
     }
 
-    fn decode_scene_color(&self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
+    fn decode_scene_color(&mut self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
         let message = decode::<pa::SceneColorMessage>(profile::MESSAGE_TYPE_SCENE_COLOR, payload)?;
-        if !is_update_action(message.action) {
+        if !is_update_action(message.action) || message.request_id.is_some() {
             return Ok(Vec::new());
         }
         if message.index < 0 || message.index as u32 >= domain::SCENE_COUNT {
             return Ok(Vec::new());
         }
         let mut update = StateUpdate::new("sceneColor");
+        self.metadata_observations.colors[message.index as usize] = Some(message.color);
+        self.preset_exact = false;
+        self.state_revision = self.state_revision.saturating_add(1);
         update.index = Some(message.index as u32);
         update.color = Some(color_hex(message.color));
         update.raw_color = Some(message.color);
         Ok(vec![update])
     }
 
-    fn decode_global_tempo(&self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
+    fn decode_global_tempo(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<Vec<StateUpdate>, StateDecodeError> {
         let message =
             decode::<pa::GlobalTempoMessage>(profile::MESSAGE_TYPE_GLOBAL_TEMPO, payload)?;
         if !is_update_action(message.action) {
@@ -2866,6 +3278,9 @@ impl StateDecoder {
             return Ok(Vec::new());
         }
         let mut update = StateUpdate::new("tempo");
+        self.metadata_observations.tempo_led = state.led_enabled;
+        self.preset_exact = false;
+        self.state_revision = self.state_revision.saturating_add(1);
         update.tempo_led_enabled = state.led_enabled;
         Ok(vec![update])
     }
@@ -2873,6 +3288,114 @@ impl StateDecoder {
     fn decode_model_repo(&mut self, payload: &[u8]) -> Result<Vec<StateUpdate>, StateDecodeError> {
         let catalog = parse_model_repo(payload)?;
         Ok(self.install_catalog(catalog))
+    }
+
+    fn preset_blocks(&self, preset: &BinaryPreset) -> Vec<GridBlock> {
+        let bypasses = bypass_records(&preset.bypass);
+        let assignments = preset
+            .stomp_mode_assignments
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.stomp_index <= 7)
+            .map(|(order, item)| {
+                (
+                    (item.row, item.column),
+                    (item.stomp_index, order as u32, stomp_assignment_type(item)),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let mut blocks = Vec::new();
+        for (chain_index, chain) in preset.chains.iter().enumerate() {
+            let row = chain_row(chain, chain_index as u32);
+            for (model_index, model) in chain.models.iter().enumerate() {
+                let Some(model_id) = model_hash(model).filter(|value| *value != 0) else {
+                    continue;
+                };
+                let column = model_column(model, model_index as u32);
+                let info = self.catalog.get(&model_id);
+                blocks.push(GridBlock {
+                    id: format!("{row}:{column}"),
+                    model_id: Some(model_id),
+                    category_id: None,
+                    name: info
+                        .map(|item| item.name.clone())
+                        .unwrap_or_else(|| format!("Model {model_id}")),
+                    kind: info
+                        .map(|item| item.kind.clone())
+                        .unwrap_or_else(|| "utility".into()),
+                    // list_models and block_details both publish the curated
+                    // display vocabulary. Publishing the raw ModelRepo name here
+                    // gave the same block two categories across endpoints
+                    // ("Guitar Amplifier" vs "Guitar Amp"), so anything
+                    // filtering by category across endpoints silently missed.
+                    category: info.map(|item| display_category(&item.category)),
+                    plugin: info.map(|item| item.plugin_id.is_some()),
+                    plugin_id: info.and_then(|item| item.plugin_id.map(|id| id.to_string())),
+                    row,
+                    column,
+                    bypassed: self
+                        .scene_bypasses
+                        .get(&(row, column))
+                        .filter(|(witness, _)| *witness == model_id)
+                        .and_then(|(_, record)| bypass_value_for_scene(record, self.active_scene)),
+                    bypass_scene_mode: bypasses
+                        .get(&(row, column))
+                        .and_then(|record| record.scene_mode),
+                    bypass_address: bypasses
+                        .get(&(row, column))
+                        .map(|record| record.address.as_str().to_string()),
+                    catalog_category: info.map(|item| item.category.clone()),
+                    bypass_expression: model_bypass_expression(model),
+                    color: None,
+                    glyph: None,
+                    footswitch: assignments.get(&(row, column)).map(|value| value.0),
+                    footswitch_order: assignments.get(&(row, column)).map(|value| value.1),
+                    footswitch_assignment_type: assignments
+                        .get(&(row, column))
+                        .and_then(|value| value.2.clone()),
+                });
+            }
+        }
+        blocks
+    }
+
+    fn projected_footswitch_states(&self) -> Option<Vec<FootswitchState>> {
+        let preset = self.preset.as_ref()?;
+        Some(project_footswitch_states(
+            preset,
+            &self.preset_blocks(preset),
+        ))
+    }
+    fn preset_routes(&self, preset: &BinaryPreset) -> Vec<GridRoute> {
+        let mut routes = Vec::new();
+        for (chain_index, chain) in preset.chains.iter().enumerate() {
+            let row = chain_row(chain, chain_index as u32);
+            let input_id = chain_input(chain);
+            let output_id = chain_output(chain);
+            routes.push(GridRoute {
+                row,
+                input_id,
+                output_id,
+                input: input_id.map(input_label).unwrap_or_default(),
+                output: output_id.map(output_label).unwrap_or_default(),
+                input_wire: input_id.and_then(input_wire_name).map(str::to_string),
+                output_wire: output_id.and_then(output_wire_name).map(str::to_string),
+                split_column: chain
+                    .split_control_points
+                    .first()
+                    .and_then(|value| (value.split >= 0).then_some(value.split)),
+                mix_column: chain
+                    .split_control_points
+                    .first()
+                    .and_then(|value| (value.mix >= 0).then_some(value.mix)),
+                splitter_model_id: splitter_target(chain).map(|(_, model_id, _)| model_id),
+                split_muted: chain
+                    .mix_bypass
+                    .get(self.active_scene as usize)
+                    .map(|value| value.bypass),
+            });
+        }
+        routes
     }
 
     fn preset_update(&self, catalog_refresh: bool) -> Option<StateUpdate> {
@@ -2917,135 +3440,9 @@ impl StateDecoder {
                 .collect(),
         );
         update.scene_colors_argb = Some(preset.scene_colors.clone());
-        let bypasses = bypass_records(&preset.bypass);
-        let assignments = preset
-            .stomp_mode_assignments
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.stomp_index <= 7)
-            .map(|(order, item)| {
-                (
-                    (item.row, item.column),
-                    (item.stomp_index, order as u32, stomp_assignment_type(item)),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        let mut blocks = Vec::new();
-        let mut routes = Vec::new();
-        for (chain_index, chain) in preset.chains.iter().enumerate() {
-            let row = chain_row(chain, chain_index as u32);
-            let input_id = chain_input(chain);
-            let output_id = chain_output(chain);
-            routes.push(GridRoute {
-                row,
-                input_id,
-                output_id,
-                input: input_id.map(input_label).unwrap_or_default(),
-                output: output_id.map(output_label).unwrap_or_default(),
-                input_wire: input_id.and_then(input_wire_name).map(str::to_string),
-                output_wire: output_id.and_then(output_wire_name).map(str::to_string),
-                split_column: chain
-                    .split_control_points
-                    .first()
-                    .and_then(|value| (value.split >= 0).then_some(value.split)),
-                mix_column: chain
-                    .split_control_points
-                    .first()
-                    .and_then(|value| (value.mix >= 0).then_some(value.mix)),
-                splitter_model_id: splitter_target(chain).map(|(_, model_id, _)| model_id),
-                split_muted: chain
-                    .mix_bypass
-                    .get((self.active_scene as usize).min(chain.mix_bypass.len().saturating_sub(1)))
-                    .or_else(|| chain.mix_bypass.first())
-                    .is_some_and(|value| value.bypass),
-            });
-            for (model_index, model) in chain.models.iter().enumerate() {
-                let Some(model_id) = model_hash(model).filter(|value| *value != 0) else {
-                    continue;
-                };
-                let column = model_column(model, model_index as u32);
-                let info = self.catalog.get(&model_id);
-                blocks.push(GridBlock {
-                    id: format!("{row}:{column}"),
-                    model_id: Some(model_id),
-                    category_id: None,
-                    name: info
-                        .map(|item| item.name.clone())
-                        .unwrap_or_else(|| format!("Model {model_id}")),
-                    kind: info
-                        .map(|item| item.kind.clone())
-                        .unwrap_or_else(|| "utility".into()),
-                    // list_models and block_details both publish the curated
-                    // display vocabulary. Publishing the raw ModelRepo name here
-                    // gave the same block two categories across endpoints
-                    // ("Guitar Amplifier" vs "Guitar Amp"), so anything
-                    // filtering by category across endpoints silently missed.
-                    category: info.map(|item| display_category(&item.category)),
-                    plugin: info.map(|item| item.plugin_id.is_some()),
-                    plugin_id: info.and_then(|item| item.plugin_id.map(|id| id.to_string())),
-                    row,
-                    column,
-                    bypassed: bypasses.get(&(row, column)).and_then(|record| {
-                        record
-                            .values
-                            .get(
-                                (self.active_scene as usize)
-                                    .min(record.values.len().saturating_sub(1)),
-                            )
-                            .copied()
-                    }),
-                    bypass_scene_mode: bypasses
-                        .get(&(row, column))
-                        .and_then(|record| record.scene_mode),
-                    bypass_address: bypasses
-                        .get(&(row, column))
-                        .map(|record| record.address.as_str().to_string()),
-                    catalog_category: info.map(|item| item.category.clone()),
-                    bypass_expression: model_bypass_expression(model),
-                    color: None,
-                    glyph: None,
-                    footswitch: assignments.get(&(row, column)).map(|value| value.0),
-                    footswitch_order: assignments.get(&(row, column)).map(|value| value.1),
-                    footswitch_assignment_type: assignments
-                        .get(&(row, column))
-                        .and_then(|value| value.2.clone()),
-                });
-            }
-        }
-        update.footswitch_states = Some(
-            (0..domain::SCENE_COUNT)
-                .map(|index| {
-                    let mut targets = blocks
-                        .iter()
-                        .filter(|block| block.footswitch == Some(index))
-                        .collect::<Vec<_>>();
-                    targets.sort_by_key(|block| block.footswitch_order.unwrap_or(u32::MAX));
-                    FootswitchState {
-                        index,
-                        active: targets
-                            .first()
-                            .is_some_and(|block| block.bypassed == Some(false)),
-                        assigned: !targets.is_empty(),
-                        color: stomp_color(&targets),
-                        momentary: Some(
-                            preset
-                                .stomp_is_momentary
-                                .get(&index)
-                                .copied()
-                                .unwrap_or(false),
-                        ),
-                        label: Some(
-                            preset
-                                .single_stomp_labels
-                                .get(&index)
-                                .or_else(|| preset.stomp_labels.get(&index))
-                                .cloned()
-                                .unwrap_or_default(),
-                        ),
-                    }
-                })
-                .collect(),
-        );
+        let blocks = self.preset_blocks(preset);
+        let routes = self.preset_routes(preset);
+        update.footswitch_states = Some(project_footswitch_states(preset, &blocks));
         // Layout of a stored preset (observed on a CorOS 4.1.0 unit, 2026-10-07,
         // live read and a save-then-recall of a scratch slot): the general list
         // has 120 slots and source N occupies slots N * 12 to N * 12 + 11, so
@@ -3070,6 +3467,42 @@ impl StateDecoder {
                 .collect(),
         );
         update.preset_load_midi_out = Some(midi_slot_list(preset.midi_messages.iter()));
+        for index in 0..8 {
+            if let Some(label) = &self.metadata_observations.labels[index] {
+                update.scenes.as_mut().unwrap()[index] = scene_display_label(index, Some(label));
+                update.scene_labels_raw.as_mut().unwrap()[index] = label.clone();
+            }
+            if let Some(color) = self.metadata_observations.colors[index] {
+                let colors = update.scene_colors.as_mut().unwrap();
+                colors.resize(8, String::new());
+                colors[index] = color_hex(color);
+                // Do not pad a short raw list with invented numeric colors.
+                if let Some(raw) = update
+                    .scene_colors_argb
+                    .as_mut()
+                    .and_then(|colors| colors.get_mut(index))
+                {
+                    *raw = color;
+                }
+            }
+        }
+        let sources: Vec<_> = self
+            .metadata_observations
+            .midi_sources
+            .iter()
+            .map(|(source, messages)| MidiOutSource {
+                source: *source,
+                messages: messages.clone(),
+                preset_flat_offset: None,
+            })
+            .collect();
+        merge_midi_out_sources(update.midi_out.as_mut().unwrap(), &sources);
+        if let Some(messages) = &self.metadata_observations.preset_load {
+            update.preset_load_midi_out = Some(messages.clone());
+        }
+        if let Some(led) = self.metadata_observations.tempo_led {
+            update.tempo_led_enabled = Some(led);
+        }
         update.blocks = Some(blocks);
         update.routes = Some(routes);
         if catalog_refresh {
@@ -3077,6 +3510,52 @@ impl StateDecoder {
         }
         Some(update)
     }
+}
+
+pub(crate) fn merge_midi_out_sources(retained: &mut Vec<MidiOutSource>, updates: &[MidiOutSource]) {
+    for update in updates {
+        retained.retain(|source| source.source != update.source);
+        if !update.messages.is_empty() {
+            retained.push(update.clone());
+        }
+    }
+    retained.sort_by_key(|source| source.source);
+}
+
+fn project_footswitch_states(preset: &BinaryPreset, blocks: &[GridBlock]) -> Vec<FootswitchState> {
+    (0..domain::SCENE_COUNT)
+        .map(|index| {
+            let mut targets = blocks
+                .iter()
+                .filter(|block| block.footswitch == Some(index))
+                .collect::<Vec<_>>();
+            targets.sort_by_key(|block| block.footswitch_order.unwrap_or(u32::MAX));
+            FootswitchState {
+                index,
+                active: match targets.first() {
+                    Some(block) => block.bypassed.map(|bypassed| !bypassed),
+                    None => Some(false),
+                },
+                assigned: !targets.is_empty(),
+                color: stomp_color(&targets),
+                momentary: Some(
+                    preset
+                        .stomp_is_momentary
+                        .get(&index)
+                        .copied()
+                        .unwrap_or(false),
+                ),
+                label: Some(
+                    preset
+                        .single_stomp_labels
+                        .get(&index)
+                        .or_else(|| preset.stomp_labels.get(&index))
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+            }
+        })
+        .collect()
 }
 
 /// What an empty MIDI Out slot (wire type `0`) is published and compared as:
@@ -3247,6 +3726,64 @@ pub fn parse_model_repo(payload: &[u8]) -> Result<ModelCatalog, StateDecodeError
     };
     let repo = maybe_gunzip(&repo)?;
     Ok(ModelCatalog(parse_catalog(extract_xml(&repo)?)?))
+}
+
+fn require_finite_projection(
+    message_type: u16,
+    field: &'static str,
+    value: f32,
+) -> Result<(), StateDecodeError> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(StateDecodeError::NonFiniteProjection {
+            message_type,
+            field,
+        })
+    }
+}
+
+fn validate_preset_expression_projection(
+    preset: &BinaryPreset,
+    message_type: u16,
+) -> Result<(), StateDecodeError> {
+    let models = preset
+        .chains
+        .iter()
+        .flat_map(|chain| {
+            chain
+                .models
+                .iter()
+                .chain(&chain.splitter)
+                .chain(&chain.combined_splitter)
+                .chain(&chain.mixer)
+                .chain(&chain.input_control)
+                .chain(&chain.output_control)
+        })
+        .chain(&preset.tempo_program_data);
+    for model in models {
+        for expression in &model.bypass_expression {
+            require_finite_projection(
+                message_type,
+                "bypass expression minimum",
+                expression.expression_min,
+            )?;
+            require_finite_projection(
+                message_type,
+                "bypass expression maximum",
+                expression.expression_max,
+            )?;
+        }
+        for parameter in &model.params {
+            if let Some(param::ExpressionMin::ExpressionMin(value)) = parameter.expression_min {
+                require_finite_projection(message_type, "parameter expression minimum", value)?;
+            }
+            if let Some(param::ExpressionMax::ExpressionMax(value)) = parameter.expression_max {
+                require_finite_projection(message_type, "parameter expression maximum", value)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn decode<M: Message + Default>(message_type: u16, payload: &[u8]) -> Result<M, StateDecodeError> {
@@ -3476,8 +4013,11 @@ fn float_value(value: &crate::proto::ParamValue) -> Option<f32> {
 }
 
 fn normalized_parameter(parameter: &Param, scene: u32, options: &[String]) -> Option<f64> {
-    let selected = if param_scene_mode(parameter) {
-        (scene as usize).min(parameter.param_values.len().saturating_sub(1))
+    // A singleton is the established shared-value compatibility shape. A
+    // multi-value scene-mode record must contain the active index itself;
+    // another scene cannot supply current-value or verification evidence.
+    let selected = if param_scene_mode(parameter) && parameter.param_values.len() != 1 {
+        scene as usize
     } else {
         0
     };
@@ -3497,8 +4037,8 @@ fn normalized_parameter(parameter: &Param, scene: u32, options: &[String]) -> Op
 }
 
 fn effective_string_parameter(parameter: &Param, scene: u32) -> Option<&str> {
-    let selected = if param_scene_mode(parameter) {
-        (scene as usize).min(parameter.param_values.len().saturating_sub(1))
+    let selected = if param_scene_mode(parameter) && parameter.param_values.len() != 1 {
+        scene as usize
     } else {
         0
     };
@@ -3661,7 +4201,7 @@ struct BypassRecord {
 /// stands for one value across all scenes, and which of its entries then counts, has not been
 /// verified; callers take the entry for the active scene either way.
 fn bypass_records(rows: &[crate::proto::Bypass]) -> HashMap<(u32, u32), BypassRecord> {
-    let mut result = HashMap::new();
+    let mut result: HashMap<(u32, u32), BypassRecord> = HashMap::new();
     for (row_index, row) in rows.iter().enumerate() {
         let explicit_row = match row.row {
             Some(bypass::Row::Row(value)) => Some(value),
@@ -3681,11 +4221,20 @@ fn bypass_records(rows: &[crate::proto::Bypass]) -> HashMap<(u32, u32), BypassRe
                 Some(col_bypass::SceneMode::SceneMode(value)) => Some(value),
                 _ => None,
             };
+            let key = (
+                explicit_row.unwrap_or(row_index as u32),
+                explicit_column.unwrap_or(column_index as u32),
+            );
+            if let Some(existing) = result.get_mut(&key) {
+                // Conflicting selectors provide no authoritative ordering.
+                // Preserve the raw protobuf for writes, but never choose an
+                // arbitrary record as observed/verification bypass evidence.
+                // Further duplicates cannot restore a value for this key.
+                existing.values.clear();
+                continue;
+            }
             result.insert(
-                (
-                    explicit_row.unwrap_or(row_index as u32),
-                    explicit_column.unwrap_or(column_index as u32),
-                ),
+                key,
                 BypassRecord {
                     values: column.scene_bypass.iter().map(|item| item.bypass).collect(),
                     scene_mode,
@@ -3697,14 +4246,71 @@ fn bypass_records(rows: &[crate::proto::Bypass]) -> HashMap<(u32, u32), BypassRe
     result
 }
 
+fn project_scene_bypasses(
+    preset: &BinaryPreset,
+    records: &HashMap<(u32, u32), (u32, BypassRecord)>,
+    active_scene: u32,
+) -> Vec<GridBlock> {
+    let mut blocks = records
+        .iter()
+        .filter_map(|(&(row, column), (model_id, record))| {
+            if locate_model(preset, row, column)
+                .ok()
+                .and_then(|(_, _, model)| model_hash(model))
+                != Some(*model_id)
+            {
+                return None;
+            }
+            Some(GridBlock {
+                id: format!("{row}:{column}"),
+                row,
+                column,
+                model_id: Some(*model_id),
+                name: format!("Model {model_id}"),
+                kind: "utility".into(),
+                bypassed: bypass_value_for_scene(record, active_scene),
+                ..Default::default()
+            })
+        })
+        .collect::<Vec<_>>();
+    blocks.sort_by_key(|block| (block.row, block.column));
+    blocks
+}
+
+fn bypass_value_for_scene(record: &BypassRecord, active_scene: u32) -> Option<bool> {
+    let index = if record.scene_mode == Some(true) && record.values.len() != 1 {
+        active_scene as usize
+    } else {
+        (active_scene as usize).min(record.values.len().saturating_sub(1))
+    };
+    record.values.get(index).copied()
+}
+
+fn witnessed_scene_bypasses(
+    preset: &BinaryPreset,
+    rows: &[crate::proto::Bypass],
+) -> HashMap<(u32, u32), (u32, BypassRecord)> {
+    bypass_records(rows)
+        .into_iter()
+        .filter_map(|((row, column), mut record)| {
+            if row >= domain::GRID_ROWS || column >= domain::GRID_COLUMNS {
+                return None;
+            }
+            let (_, _, model) = locate_model(preset, row, column).ok()?;
+            let model_id = model_hash(model).filter(|id| *id != 0)?;
+            // Values past the known selectable scene domain cannot be selected.
+            // This is a bounded host projection, not a new firmware array-size claim.
+            record.values.truncate(domain::SCENE_COUNT as usize);
+            Some(((row, column), (model_id, record)))
+        })
+        .collect()
+}
+
 fn bypass_updates(rows: &[crate::proto::Bypass], active_scene: u32) -> Vec<BypassUpdate> {
     let mut updates = bypass_records(rows)
         .into_iter()
         .filter_map(|((row, column), record)| {
-            let bypassed = record
-                .values
-                .get((active_scene as usize).min(record.values.len().saturating_sub(1)))
-                .copied()?;
+            let bypassed = bypass_value_for_scene(&record, active_scene)?;
             Some(BypassUpdate {
                 row,
                 column,
@@ -3814,12 +4420,12 @@ fn tar_text(value: &[u8]) -> String {
 fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError> {
     let mut reader = Reader::from_reader(xml);
     reader.config_mut().trim_text(true);
-    let mut catalog: HashMap<u32, ModelInfo> = HashMap::new();
-    let mut budget = CatalogRetentionBudget::default();
+    let mut catalog = HashMap::new();
     let mut category = String::new();
     let mut category_hidden = false;
     let mut current: Option<u32> = None;
     let mut parameter_index = 0u32;
+    let mut retained_cost = 0usize;
     loop {
         match reader.read_event() {
             Ok(Event::Start(event)) | Ok(Event::Empty(event)) => {
@@ -3846,13 +4452,6 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                     current = attrs.get("id").and_then(|value| value.parse::<u32>().ok());
                     parameter_index = 0;
                     if let Some(id) = current {
-                        if !catalog.contains_key(&id)
-                            && catalog.len() >= RETAINED_CATALOG_MODEL_LIMIT
-                        {
-                            return Err(StateDecodeError::CatalogXml(
-                                "retained model entry budget exceeded".into(),
-                            ));
-                        }
                         let model_name = attrs
                             .get("name")
                             .cloned()
@@ -3877,56 +4476,42 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                         } else {
                             "utility"
                         };
-                        if let Some(previous) = catalog.get(&id) {
-                            budget.parameters -= previous.direct_parameters.len();
-                            budget.bytes -= previous.name.len()
-                                + previous.category.len()
-                                + previous.kind.len()
-                                + previous.based_on.len()
-                                + previous.sku.as_ref().map_or(0, String::len)
-                                + previous
-                                    .direct_parameters
-                                    .iter()
-                                    .map(ParameterSpec::retained_dynamic_bytes)
-                                    .sum::<usize>();
+                        let info = ModelInfo {
+                            name: model_name,
+                            category: category.clone(),
+                            kind: kind.into(),
+                            clone_id: attrs.get("clones").and_then(|value| value.parse().ok()),
+                            hidden: category_hidden
+                                || attrs
+                                    .get("hidden")
+                                    .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+                                || attrs
+                                    .get("internal")
+                                    .is_some_and(|value| value.eq_ignore_ascii_case("true")),
+                            based_on: attrs.get("basedOn").cloned().unwrap_or_default(),
+                            plugin_id: attrs
+                                .get("plugin_id")
+                                .map(|value| value.parse::<u64>())
+                                .transpose()
+                                .map_err(|_| {
+                                    StateDecodeError::CatalogXml("invalid plugin_id".into())
+                                })?,
+                            sku: attrs.get("sku").cloned(),
+                            ..Default::default()
+                        };
+                        let next_cost = retained_cost
+                            .saturating_sub(catalog.get(&id).map_or(0, catalog_model_cost))
+                            .saturating_add(catalog_model_cost(&info));
+                        if next_cost > MODEL_CATALOG_MEMORY_LIMIT
+                            || (catalog.len() >= RETAINED_ENTRY_LIMIT && !catalog.contains_key(&id))
+                        {
+                            return Err(StateDecodeError::RetentionLimit("model catalog metadata"));
                         }
-                        budget.reserve(
-                            0,
-                            model_name
-                                .len()
-                                .saturating_add(category.len())
-                                .saturating_add(kind.len())
-                                .saturating_add(attrs.get("basedOn").map_or(0, String::len))
-                                .saturating_add(attrs.get("sku").map_or(0, String::len)),
-                        )?;
-                        catalog.insert(
-                            id,
-                            ModelInfo {
-                                name: model_name,
-                                category: category.clone(),
-                                kind: kind.into(),
-                                clone_id: attrs.get("clones").and_then(|value| value.parse().ok()),
-                                hidden: category_hidden
-                                    || attrs
-                                        .get("hidden")
-                                        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
-                                    || attrs
-                                        .get("internal")
-                                        .is_some_and(|value| value.eq_ignore_ascii_case("true")),
-                                based_on: attrs.get("basedOn").cloned().unwrap_or_default(),
-                                plugin_id: attrs
-                                    .get("plugin_id")
-                                    .map(|value| value.parse::<u64>())
-                                    .transpose()
-                                    .map_err(|_| {
-                                        StateDecodeError::CatalogXml("invalid plugin_id".into())
-                                    })?,
-                                sku: attrs.get("sku").cloned(),
-                                ..Default::default()
-                            },
-                        );
+                        retained_cost = next_cost;
+                        catalog.insert(id, info);
                     }
                 } else if name.as_ref() == b"Parameter" {
+                    validate_catalog_numeric_attributes(&attrs)?;
                     if let Some(model) = current.and_then(|id| catalog.get_mut(&id)) {
                         let replacement = attrs
                             .get("replaces")
@@ -3991,7 +4576,7 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                                 || minimum.is_some_and(|value| value > 0.0));
                         let display_position_raw =
                             attrs.get("displayPos").and_then(|value| value.parse().ok());
-                        let parameter = ParameterSpec {
+                        let spec = ParameterSpec {
                             index,
                             name: raw_name.replace('_', " "),
                             r#type: kind.clone(),
@@ -4041,10 +4626,17 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
                             enable_when_steps: split_u32_list(attrs.get("toggleStep")),
                             replaces: replacement,
                         };
-                        budget.reserve(1, parameter.retained_dynamic_bytes())?;
-                        model.direct_parameters.push(parameter);
+                        retained_cost = retained_cost.saturating_add(catalog_parameter_cost(&spec));
+                        if retained_cost > MODEL_CATALOG_MEMORY_LIMIT {
+                            return Err(StateDecodeError::RetentionLimit(
+                                "model catalog parameters",
+                            ));
+                        }
+                        model.direct_parameters.push(spec);
                         if replacement.is_none() {
-                            parameter_index += 1;
+                            parameter_index = parameter_index.checked_add(1).ok_or(
+                                StateDecodeError::RetentionLimit("model catalog parameter indices"),
+                            )?;
                         }
                     }
                 }
@@ -4055,11 +4647,16 @@ fn parse_catalog(xml: &[u8]) -> Result<HashMap<u32, ModelInfo>, StateDecodeError
             _ => {}
         }
     }
-    let mut ids = catalog.keys().copied().collect::<Vec<_>>();
-    ids.sort_unstable();
-    let mut resolved = HashSet::new();
+    let ids = catalog.keys().copied().collect::<Vec<_>>();
+    let mut resolved = HashMap::new();
     for id in ids {
-        resolve_catalog_model(id, &mut catalog, &mut resolved, &mut budget)?;
+        resolve_catalog_model(
+            id,
+            &mut catalog,
+            &mut HashSet::new(),
+            &mut resolved,
+            &mut retained_cost,
+        )?;
     }
     for (model_id, model) in &mut catalog {
         let cab_category = model.category.to_ascii_lowercase().contains("cabsim");
@@ -4121,84 +4718,147 @@ fn cab_level_maximum_from_skew(parameter: &ParameterSpec) -> Option<f64> {
         .then_some(implied.round())
 }
 
+fn catalog_parameter_cost(spec: &ParameterSpec) -> usize {
+    // Owned string payload plus record/vector elements, including the separately
+    // retained direct and resolved copies. Container allocator slack is also
+    // bounded by these operational byte/count ceilings; this is not firmware data.
+    let strings = [&spec.name, &spec.r#type, &spec.value_scale, &spec.units]
+        .into_iter()
+        .chain(spec.options.iter())
+        .chain(spec.minimum_label.iter())
+        .chain(spec.midpoint_label.iter())
+        .chain(spec.maximum_label.iter())
+        .fold(0usize, |bytes, value| bytes.saturating_add(value.len()));
+    std::mem::size_of::<(u32, ParameterSpec)>()
+        .saturating_add(strings)
+        .saturating_add(
+            spec.scale_points
+                .len()
+                .saturating_mul(std::mem::size_of::<ScalePoint>()),
+        )
+        .saturating_add(
+            spec.enable_when_steps
+                .len()
+                .saturating_mul(std::mem::size_of::<u32>()),
+        )
+        .saturating_add(
+            spec.options
+                .len()
+                .saturating_mul(std::mem::size_of::<String>()),
+        )
+}
+
+fn catalog_model_cost(info: &ModelInfo) -> usize {
+    let metadata = [&info.name, &info.category, &info.kind, &info.based_on]
+        .into_iter()
+        .chain(info.sku.iter())
+        .fold(std::mem::size_of::<(u32, ModelInfo)>(), |bytes, value| {
+            bytes.saturating_add(value.len())
+        });
+    info.direct_parameters
+        .iter()
+        .chain(info.parameters.values())
+        .fold(metadata, |bytes, spec| {
+            bytes.saturating_add(catalog_parameter_cost(spec))
+        })
+}
+
 fn resolve_catalog_model(
     id: u32,
     catalog: &mut HashMap<u32, ModelInfo>,
-    resolved: &mut HashSet<u32>,
-    budget: &mut CatalogRetentionBudget,
+    visiting: &mut HashSet<u32>,
+    resolved: &mut HashMap<u32, usize>,
+    retained_cost: &mut usize,
 ) -> Result<(), StateDecodeError> {
-    // Heap-based dependency traversal avoids stack exhaustion. A completed
-    // model's direct parameters are never appended again for another child.
-    let mut path = Vec::new();
-    let mut visiting = HashSet::new();
-    let mut current = id;
-    while !resolved.contains(&current) {
-        let Some(item) = catalog.get(&current) else {
-            break;
-        };
-        if !visiting.insert(current) {
-            return Err(StateDecodeError::CatalogXml(
-                "cyclic model inheritance".into(),
-            ));
-        }
-        path.push(current);
-        let Some(base) = item.clone_id else {
-            break;
-        };
-        current = base;
+    if resolved.contains_key(&id) {
+        return Ok(());
     }
-    while let Some(current) = path.pop() {
-        let base = catalog.get(&current).and_then(|item| item.clone_id);
-        let mut prospective: BTreeMap<u32, &ParameterSpec> = base
+    if visiting.len() >= MODEL_CATALOG_CLONE_DEPTH_LIMIT {
+        return Err(StateDecodeError::RetentionLimit(
+            "model catalog clone depth",
+        ));
+    }
+    if !visiting.insert(id) {
+        return Err(StateDecodeError::CatalogXml(
+            "cyclic model clone ancestry".into(),
+        ));
+    }
+    let clone_id = catalog.get(&id).and_then(|item| item.clone_id);
+    if let Some(base) = clone_id {
+        resolve_catalog_model(base, catalog, visiting, resolved, retained_cost)?;
+    }
+    let depth = clone_id
+        .and_then(|base| resolved.get(&base))
+        .copied()
+        .unwrap_or(0)
+        .saturating_add(1);
+    if depth > MODEL_CATALOG_CLONE_DEPTH_LIMIT {
+        return Err(StateDecodeError::RetentionLimit(
+            "model catalog clone depth",
+        ));
+    }
+    if let Some(item) = catalog.get(&id) {
+        // Plan with borrowed specs. Reject amplification BEFORE cloning inherited
+        // payloads, and resolve each base exactly once regardless of map order.
+        let mut parameters: BTreeMap<u32, &ParameterSpec> = clone_id
             .and_then(|base| catalog.get(&base))
-            .map(|item| {
-                item.parameters
+            .map(|base| {
+                base.parameters
                     .iter()
-                    .map(|(key, value)| (*key, value))
+                    .map(|(index, spec)| (*index, spec))
                     .collect()
             })
             .unwrap_or_default();
-        if let Some(item) = catalog.get(&current) {
-            let mut next = prospective
-                .keys()
-                .next_back()
-                .map_or(0_u64, |value| u64::from(*value) + 1);
-            for direct in &item.direct_parameters {
-                let target = match direct.replaces {
-                    Some(target) => target,
-                    None => {
-                        let target = u32::try_from(next).map_err(|_| {
-                            StateDecodeError::CatalogXml("model parameter index overflow".into())
-                        })?;
-                        next += 1;
-                        target
-                    }
-                };
-                prospective.insert(target, direct);
-            }
+        let mut next = parameters
+            .keys()
+            .next_back()
+            .map(|value| value.checked_add(1))
+            .unwrap_or(Some(0))
+            .ok_or(StateDecodeError::CatalogXml(
+                "model parameter index overflow".into(),
+            ))?;
+        for direct in &item.direct_parameters {
+            let target = if let Some(replacement) = direct.replaces {
+                replacement
+            } else {
+                let target = next;
+                next = next.checked_add(1).ok_or(StateDecodeError::CatalogXml(
+                    "model parameter index overflow".into(),
+                ))?;
+                target
+            };
+            parameters.insert(target, direct);
         }
-        // Borrowed declarations make replacements cheap. Reserve the resulting
-        // map's aggregate bytes BEFORE cloning any inherited strings/vectors.
-        budget.reserve(
-            prospective.len(),
-            prospective
-                .values()
-                .map(|parameter| parameter.retained_dynamic_bytes())
-                .sum::<usize>(),
-        )?;
-        let parameters = prospective
+        let old_cost = item.parameters.values().fold(0usize, |bytes, spec| {
+            bytes.saturating_add(catalog_parameter_cost(spec))
+        });
+        let new_cost = parameters.values().fold(0usize, |bytes, spec| {
+            bytes.saturating_add(catalog_parameter_cost(spec))
+        });
+        let projected = retained_cost
+            .saturating_sub(old_cost)
+            .saturating_add(new_cost);
+        if projected > MODEL_CATALOG_MEMORY_LIMIT {
+            return Err(StateDecodeError::RetentionLimit(
+                "resolved model catalog parameters",
+            ));
+        }
+        let parameters = parameters
             .into_iter()
-            .map(|(index, parameter)| {
-                let mut parameter = (*parameter).clone();
-                parameter.index = index;
-                (index, parameter)
+            .map(|(index, spec)| {
+                let mut owned = (*spec).clone();
+                owned.index = index;
+                (index, owned)
             })
             .collect();
-        if let Some(item) = catalog.get_mut(&current) {
-            item.parameters = parameters;
-        }
-        resolved.insert(current);
+        catalog
+            .get_mut(&id)
+            .expect("the model being resolved remains present")
+            .parameters = parameters;
+        *retained_cost = projected;
     }
+    visiting.remove(&id);
+    resolved.insert(id, depth);
     Ok(())
 }
 
@@ -4207,48 +4867,109 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sparse_parameter_retention_is_preflighted_and_fails_closed() {
-        let mut decoder = recalled_layout_decoder();
-        for index in 0..RETAINED_PARAMETER_OVERRIDE_LIMIT as u32 {
-            decoder.parameter_overrides.insert((0, 1, index), 0.25);
+    fn malformed_catalog_numeric_metadata_is_refused_before_known_scale_projection() {
+        for attribute in [
+            "min='NaN' max='1'",
+            "min='0' max='inf'",
+            "min='0' max='1' skew='NaN'",
+            "min='0' max='1' skew='0'",
+            "min='0' max='1' skew='-1'",
+            "min='0' max='1' skew='1e-320'",
+            "min='-1e308' max='1e308'",
+            "min='0' max='1' xValues='0,NaN,1' yValues='0,0.5,1'",
+            "min='0' max='1' xValues='0,0.5,1' yValues='0,inf,1'",
+            "min='0' max='1' xValues='0,1' yValues='-1e308,1e308'",
+        ] {
+            let xml = format!(
+                "<Models><Model id='100'><Parameter name='LEVEL' {attribute}/></Model></Models>"
+            );
+            assert!(
+                matches!(
+                    parse_catalog(xml.as_bytes()),
+                    Err(StateDecodeError::CatalogXml(_))
+                ),
+                "{attribute}"
+            );
         }
-        // Replacement and duplicate observations need no extra retained key.
-        let update = |indices: &[u32]| {
+        let catalog = parse_catalog(
+            br#"<Models><Model id="100">
+          <Parameter name="LEVEL" min="-40" max="12" skew="LOG_SKEW"/>
+          <Parameter name="TABLE" min="0" max="1" xValues="0,0.5,1" yValues="-12,0,12"/>
+          <Parameter name="UNRESOLVED" min="MIN_INPUT_TRIM" max="MAX_INPUT_TRIM"/>
+        </Model></Models>"#,
+        )
+        .unwrap();
+        let specs = &catalog[&100].parameters;
+        assert_eq!(
+            specs.len(),
+            3,
+            "all declared numeric metadata fixtures must be checked"
+        );
+        assert_eq!(specs[&0].scale_exponent, Some(1.0 / 0.3));
+        assert_eq!(normalized_to_real(0.5, Some(&specs[&1])), 0.0);
+        assert!(
+            !specs[&2].scale_known,
+            "unknown firmware symbols remain unknown, not invented"
+        );
+        for spec in specs.values() {
+            assert!(spec.minimum.is_finite() && spec.maximum.is_finite());
+            assert!(spec.scale_exponent.is_none_or(f64::is_finite));
+        }
+    }
+
+    #[test]
+    fn sparse_parameter_growth_fails_atomically_and_stays_unavailable_until_full_recall() {
+        let mut decoder = recalled_layout_decoder();
+        let sparse = |params| {
             grid_push(
                 pa::message_action::Enum::Update,
                 vec![layout_chain(
                     0,
                     vec![Model {
                         column: Some(model::Column::Column(1)),
-                        params: indices
-                            .iter()
-                            .map(|index| numeric_param(*index, 0.75))
-                            .collect(),
+                        params,
                         ..Default::default()
                     }],
                 )],
             )
         };
-        decoder
-            .decode(profile::MESSAGE_TYPE_GRID, &update(&[0, 0]))
-            .unwrap();
+        let frame = sparse(
+            (0..RETAINED_SPARSE_PARAMETER_LIMIT as u32)
+                .map(|index| numeric_param(index, 0.5))
+                .collect(),
+        );
+        assert!(frame.len() < profile::MAX_FRAME_BYTES);
+        decoder.decode(profile::MESSAGE_TYPE_GRID, &frame).unwrap();
         assert_eq!(
             decoder.parameter_overrides.len(),
-            RETAINED_PARAMETER_OVERRIDE_LIMIT
+            RETAINED_SPARSE_PARAMETER_LIMIT
         );
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_GRID,
+                &sparse(vec![numeric_param(0, 0.75)]),
+            )
+            .unwrap();
         assert_eq!(decoder.parameter_overrides[&(0, 1, 0)], 0.75);
         assert!(matches!(
             decoder.decode(
                 profile::MESSAGE_TYPE_GRID,
-                &update(&[0, RETAINED_PARAMETER_OVERRIDE_LIMIT as u32])
+                &sparse(vec![numeric_param(u32::MAX, 0.5)])
             ),
-            Err(StateDecodeError::ParameterRetentionLimit)
+            Err(StateDecodeError::RetentionLimit("sparse parameter records"))
         ));
+        assert!(decoder.sparse_state_invalidated());
         assert!(decoder.parameter_overrides.is_empty());
         assert!(decoder.preset.is_none());
-        assert!(!decoder.preset_exact && !decoder.grid_layout_exact);
-        assert!(decoder.single_parameter_target_detail(0, 1, 0).is_none());
-        // A full authoritative recall restores usable state after invalidation.
+        assert!(decoder.block_details(0, 1).is_none());
+        assert!(decoder.move_block_operation(0, 1, 0, 4, None).is_err());
+        assert!(decoder
+            .decode(
+                profile::MESSAGE_TYPE_GRID,
+                &sparse(vec![numeric_param(0, 0.1)])
+            )
+            .is_err());
+        assert!(decoder.sparse_state_invalidated());
         decoder
             .decode(
                 profile::MESSAGE_TYPE_RECALL_PRESET,
@@ -4262,153 +4983,137 @@ mod tests {
                 .encode_to_vec(),
             )
             .unwrap();
-        assert!(decoder.preset_exact);
-        assert!(decoder.preset_source_snapshot().is_some());
-    }
-
-    #[test]
-    fn sparse_tempo_keeps_known_and_existing_slots_without_unknown_growth() {
-        let mut decoder = StateDecoder::new();
-        decoder.preset = Some(BinaryPreset {
-            tempo_program_data: vec![Model {
-                params: vec![numeric_param(9, 0.25)],
-                ..Default::default()
-            }],
-            ..Default::default()
-        });
-        for index in 10..4_106 {
-            decoder.apply_grid_tempo_update(&Model {
-                params: vec![numeric_param(index, 0.5)],
-                ..Default::default()
-            });
-        }
-        decoder.apply_grid_tempo_update(&Model {
-            params: vec![
-                numeric_param(0, 0.5),
-                numeric_param(2, 1.0),
-                numeric_param(9, 0.75),
-            ],
-            ..Default::default()
-        });
-        let params = &decoder.preset.as_ref().unwrap().tempo_program_data[0].params;
-        assert_eq!(params.len(), 3);
+        assert!(!decoder.sparse_state_invalidated());
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_GRID,
+                &sparse(vec![numeric_param(u32::MAX, 0.5)]),
+            )
+            .unwrap();
         assert_eq!(
-            params
-                .iter()
-                .enumerate()
-                .map(|(pos, p)| param_index(p, pos as u32))
-                .collect::<Vec<_>>(),
-            [9, 0, 2]
+            decoder.parameter_overrides.len(),
+            1,
+            "budget does not invent a numeric firmware index ceiling"
         );
-        assert_eq!(float_value(&params[0].param_values[0]), Some(0.75));
-        assert!(
-            tempo_state(decoder.preset.as_ref().unwrap().tempo_program_data.first())
-                .bpm
-                .is_some()
+        decoder.reset();
+        assert!(!decoder.sparse_state_invalidated());
+        let mut model = layout_model(99, 1);
+        model.params = vec![numeric_param(u32::MAX, 0.5)];
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_RECALL_PRESET,
+                &pa::RecallPresetMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    preset: Some(pa::recall_preset_message::Preset::Preset(BinaryPreset {
+                        chains: vec![layout_chain(0, vec![model])],
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        assert_eq!(
+            decoder.block_details(0, 1).unwrap().parameters[0].name,
+            "Parameter 4294967296"
         );
     }
 
     #[test]
-    fn catalogue_retention_refuses_small_payload_with_large_inherited_names() {
-        let name = "A".repeat(4_096);
-        let mut xml = String::from("<Models><Model id=\"0\">");
-        for _ in 0..128 {
-            xml.push_str(&format!("<Parameter name=\"{name}\" type=\"float\"/>"));
-        }
-        xml.push_str("</Model>");
-        for id in 1..=2_000 {
-            xml.push_str(&format!("<Model id=\"{id}\" clones=\"0\"/>"));
-        }
-        xml.push_str("</Models>");
-        assert!(xml.len() < profile::MAX_FRAME_BYTES);
-        assert!(
-            matches!(parse_catalog(xml.as_bytes()), Err(StateDecodeError::CatalogXml(ref message))
-            if message.contains("retained model parameter budget"))
+    fn sparse_tempo_growth_shares_the_retention_budget_and_never_partially_applies_overflow() {
+        let mut decoder = recalled_layout_decoder();
+        let tempo = |params| {
+            pa::GridMessage {
+                action: pa::message_action::Enum::Update as i32,
+                preset: Some(pa::grid_message::Preset::Preset(BinaryPreset {
+                    tempo_program_data: vec![Model {
+                        params,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }
+            .encode_to_vec()
+        };
+        let frame = tempo(
+            (0..RETAINED_SPARSE_PARAMETER_LIMIT as u32)
+                .map(|index| numeric_param(index, 0.5))
+                .collect(),
         );
-        let direct = format!(
-            "<Models><Model id=\"0\">{}</Model></Models>",
-            "<Parameter/>".repeat(RETAINED_CATALOG_PARAMETER_LIMIT + 1)
+        assert!(frame.len() < profile::MAX_FRAME_BYTES);
+        decoder.decode(profile::MESSAGE_TYPE_GRID, &frame).unwrap();
+        assert_eq!(
+            decoder.preset.as_ref().unwrap().tempo_program_data[0]
+                .params
+                .len(),
+            RETAINED_SPARSE_PARAMETER_LIMIT
         );
-        assert!(direct.len() < profile::MAX_FRAME_BYTES);
-        assert!(
-            matches!(parse_catalog(direct.as_bytes()), Err(StateDecodeError::CatalogXml(ref message))
-            if message.contains("retained model parameter budget"))
-        );
-        // Count and bytes are separate limits; one reservation cannot partially
-        // advance accounting when the other bound refuses it.
-        let mut budget = CatalogRetentionBudget::default();
-        budget.reserve(RETAINED_CATALOG_PARAMETER_LIMIT, 1).unwrap();
-        assert!(budget.reserve(1, 0).is_err());
-        assert_eq!(budget.parameters, RETAINED_CATALOG_PARAMETER_LIMIT);
-        let mut budget = CatalogRetentionBudget::default();
-        budget.reserve(1, RETAINED_CATALOG_DYNAMIC_BYTES).unwrap();
-        assert!(budget.reserve(0, 1).is_err());
-        assert_eq!(budget.bytes, RETAINED_CATALOG_DYNAMIC_BYTES);
-    }
-
-    #[test]
-    fn catalogue_model_budget_counts_new_ids_but_not_replacements() {
-        let mut xml = String::from("<Models>");
-        for id in 0..RETAINED_CATALOG_MODEL_LIMIT {
-            xml.push_str(&format!("<Model id=\"{id}\" name=\"\"/>"));
-        }
-        // Replacing an existing ID does not consume another retained entry.
-        let at_limit = format!("{xml}<Model id=\"0\" name=\"Replacement\"/></Models>");
-        let parsed = parse_catalog(at_limit.as_bytes()).unwrap();
-        assert_eq!(parsed.len(), RETAINED_CATALOG_MODEL_LIMIT);
-        assert_eq!(parsed[&0].name, "Replacement");
-        drop(parsed);
-        xml.push_str(&format!(
-            "<Model id=\"{}\"/></Models>",
-            RETAINED_CATALOG_MODEL_LIMIT
+        assert!(matches!(
+            decoder.decode(
+                profile::MESSAGE_TYPE_GRID,
+                &tempo(vec![numeric_param(0, 0.1), numeric_param(u32::MAX, 0.5)])
+            ),
+            Err(StateDecodeError::RetentionLimit(_))
         ));
-        assert!(xml.len() < profile::MAX_INFLATED_BYTES);
-        assert!(
-            matches!(parse_catalog(xml.as_bytes()), Err(StateDecodeError::CatalogXml(ref message))
-            if message.contains("retained model entry budget"))
-        );
+        assert!(decoder.sparse_state_invalidated());
+        assert!(decoder.preset.is_none());
+        assert!(decoder.parameter_overrides.is_empty());
     }
 
     #[test]
-    fn catalogue_inheritance_resolves_each_model_once_with_stable_indices() {
-        let xml = br#"<Models><Model id="100" name="Base">
-            <Parameter name="GAIN" type="float"/><Parameter name="LEVEL" type="float"/>
-            </Model><Model id="101" clones="100" name="Child">
-            <Parameter name="MODE" type="switch" replaces="0"/>
-            <Parameter name="EXTRA" type="float"/>
-            </Model><Model id="102" clones="100" name="Sibling"/>
-            <Model id="103" clones="101" name="Grandchild"/></Models>"#;
-        for _ in 0..16 {
-            let catalog = parse_catalog(xml).unwrap();
-            let names = |id| {
-                catalog[&id]
-                    .parameters
-                    .iter()
-                    .map(|(index, p)| (*index, p.name.as_str()))
-                    .collect::<Vec<_>>()
-            };
-            assert_eq!(names(100), [(0, "GAIN"), (1, "LEVEL")]);
-            assert_eq!(names(101), [(0, "MODE"), (1, "LEVEL"), (2, "EXTRA")]);
-            assert_eq!(names(102), names(100));
-            assert_eq!(names(103), names(101));
+    fn model_clone_resolution_resolves_each_base_once_and_rejects_cycles_depth_and_index_overflow()
+    {
+        let catalog = parse_catalog(br#"<Models><Model id="100"><Parameter name="A"/><Parameter name="B"/></Model><Model id="101" clones="100"/><Model id="102" clones="100"><Parameter name="C"/></Model></Models>"#).unwrap();
+        assert_eq!(catalog[&100].parameters.len(), 2);
+        assert_eq!(catalog[&101].parameters.len(), 2);
+        assert_eq!(catalog[&102].parameters.len(), 3);
+        assert_eq!(catalog[&102].parameters[&2].name, "C");
+        assert!(matches!(
+            parse_catalog(
+                br#"<Models><Model id="1" clones="2"/><Model id="2" clones="1"/></Models>"#
+            ),
+            Err(StateDecodeError::CatalogXml(_))
+        ));
+        assert!(matches!(parse_catalog(br#"<Models><Model id="1"><Parameter name="A" replaces="4294967295"/></Model><Model id="2" clones="1"/></Models>"#), Err(StateDecodeError::CatalogXml(_))));
+        let mut deep = String::from("<Models><Model id=\"0\"/>");
+        for index in 1..=MODEL_CATALOG_CLONE_DEPTH_LIMIT {
+            deep.push_str(&format!("<Model id=\"{index}\" clones=\"{}\"/>", index - 1));
         }
+        deep.push_str("</Models>");
+        assert!(matches!(
+            parse_catalog(deep.as_bytes()),
+            Err(StateDecodeError::RetentionLimit(
+                "model catalog clone depth"
+            ))
+        ));
     }
 
     #[test]
-    fn catalogue_rejects_cycles_and_index_overflow_without_recursive_resolution() {
-        for xml in [
-            br#"<Models><Model id="1" clones="1"/></Models>"#.as_slice(),
-            br#"<Models><Model id="1" clones="2"/><Model id="2" clones="1"/></Models>"#.as_slice(),
-            br#"<Models><Model id="1"><Parameter name="MAX" replaces="4294967295"/></Model><Model id="2" clones="1"><Parameter name="NEXT"/></Model></Models>"#.as_slice(),
-        ] {
-            assert!(matches!(parse_catalog(xml), Err(StateDecodeError::CatalogXml(_))));
+    fn bounded_model_repo_input_cannot_amplify_retained_clone_or_metadata_payloads() {
+        let name = "n".repeat(512 * 1024);
+        let mut clones = format!("<Models><Model id=\"0\"><Parameter name=\"{name}\"/></Model>");
+        for index in 1..150 {
+            clones.push_str(&format!("<Model id=\"{index}\" clones=\"0\"/>"));
         }
-        let mut xml = String::from("<Models><Model id=\"4095\"/>");
-        for id in 0..4_095 {
-            xml.push_str(&format!("<Model id=\"{id}\" clones=\"{}\"/>", id + 1));
+        clones.push_str("</Models>");
+        assert!(clones.len() < profile::MAX_FRAME_BYTES);
+        assert!(matches!(
+            parse_catalog(clones.as_bytes()),
+            Err(StateDecodeError::RetentionLimit(
+                "resolved model catalog parameters"
+            ))
+        ));
+        let mut metadata = format!("<Models><Category name=\"{name}\">");
+        for index in 0..150 {
+            metadata.push_str(&format!("<Model id=\"{index}\"/>"));
         }
-        xml.push_str("</Models>");
-        assert_eq!(parse_catalog(xml.as_bytes()).unwrap().len(), 4_096);
+        metadata.push_str("</Category></Models>");
+        assert!(metadata.len() < profile::MAX_FRAME_BYTES);
+        assert!(matches!(
+            parse_catalog(metadata.as_bytes()),
+            Err(StateDecodeError::RetentionLimit("model catalog metadata"))
+        ));
     }
 
     #[test]
@@ -4467,8 +5172,10 @@ mod tests {
             .decode(profile::MESSAGE_TYPE_UNDO_REDO, &history)
             .unwrap()
             .remove(0);
-        assert_eq!(history_state.undo_available, Some(true));
-        assert_eq!(history_state.redo_available, Some(true));
+        assert_eq!(history_state.undo_available, None);
+        assert_eq!(history_state.redo_available, None);
+        assert_eq!(history_state.undo_frames, Some(vec![1]));
+        assert_eq!(history_state.redo_frames, Some(vec![2]));
 
         let scene_copy = pa::SceneCopyMessage {
             action: pa::message_action::Enum::Update as i32,
@@ -5692,6 +6399,167 @@ mod tests {
     }
 
     #[test]
+    fn grid_move_ambiguous_batches_never_fabricate_exact_retained_layout() {
+        let seed = || {
+            let mut decoder = StateDecoder::new();
+            decoder.preset = Some(BinaryPreset {
+                chains: vec![Chain {
+                    row: Some(chain::Row::Row(0)),
+                    models: [77, 88]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(column, id)| Model {
+                            hash: Some(model::Hash::Hash(id)),
+                            column: Some(model::Column::Column(column as u32)),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            });
+            decoder.preset_exact = true;
+            decoder.grid_layout_exact = true;
+            decoder
+        };
+        let movement = |from_col, to_col| pa::GridMoveElement {
+            from_row: 0,
+            from_col,
+            to_row: 0,
+            to_col,
+            is_drop: true,
+        };
+        for moves in [
+            vec![movement(0, 2), movement(0, 3)],
+            vec![movement(0, 2), movement(1, 2)],
+            vec![movement(0, 1)],
+        ] {
+            let mut decoder = seed();
+            let before = decoder.preset.clone();
+            let updates = decoder
+                .decode(
+                    profile::MESSAGE_TYPE_GRID_MOVE,
+                    &pa::GridMoveMessage {
+                        r#move: moves,
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                )
+                .unwrap();
+            assert_eq!(updates.len(), 1);
+            assert_eq!(updates[0].kind, "gridTopology");
+            assert_eq!(updates[0].grid_layout_complete, Some(false));
+            assert!(
+                updates[0].blocks.is_none(),
+                "ambiguous batch cannot publish invented blocks"
+            );
+            assert_eq!(
+                decoder.preset, before,
+                "all retained bytes survive unknown topology"
+            );
+            assert!(!decoder.preset_exact);
+            assert!(!decoder.grid_layout_exact);
+            assert!(decoder.move_block_operation(0, 0, 0, 4, Some(77)).is_err());
+        }
+        for moves in [
+            vec![movement(0, 2)],
+            vec![movement(0, 2), movement(1, 3)],
+            vec![movement(0, 1), movement(1, 0)],
+        ] {
+            let mut decoder = seed();
+            let expected: Vec<_> = moves
+                .iter()
+                .map(|item| (item.to_col, if item.from_col == 0 { 77 } else { 88 }))
+                .collect();
+            let updates = decoder
+                .decode(
+                    profile::MESSAGE_TYPE_GRID_MOVE,
+                    &pa::GridMoveMessage {
+                        r#move: moves,
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                )
+                .unwrap();
+            assert_eq!(updates.len(), 1);
+            assert!(!decoder.preset_exact);
+            assert!(decoder.grid_layout_exact);
+            let models = &decoder.preset.as_ref().unwrap().chains[0].models;
+            assert_eq!(models.len(), 2, "moves preserve model count");
+            for (column, id) in expected {
+                assert_eq!(
+                    models
+                        .iter()
+                        .filter(|model| {
+                            model_column(model, u32::MAX) == column && model_hash(model) == Some(id)
+                        })
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn grid_move_preserves_implicit_survivor_coordinates_and_consumes_empty_destination() {
+        let mut decoder = StateDecoder::new();
+        // Actual full-preset compatibility shape: array positions address
+        // cells and a hash0 Model retains an empty destination.
+        decoder.preset = Some(BinaryPreset {
+            chains: vec![Chain {
+                models: [77, 88, 0]
+                    .into_iter()
+                    .map(|id| Model {
+                        hash: Some(model::Hash::Hash(id)),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        decoder.preset_exact = true;
+        decoder.grid_layout_exact = true;
+        let updates = decoder
+            .decode(
+                profile::MESSAGE_TYPE_GRID_MOVE,
+                &pa::GridMoveMessage {
+                    r#move: vec![pa::GridMoveElement {
+                        from_row: 0,
+                        from_col: 0,
+                        to_row: 0,
+                        to_col: 2,
+                        is_drop: true,
+                    }],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        assert_eq!(updates.len(), 1);
+        assert!(decoder.grid_layout_exact);
+        let models = &decoder.preset.as_ref().unwrap().chains[0].models;
+        assert_eq!(
+            models
+                .iter()
+                .enumerate()
+                .map(|(index, model)| { (model_hash(model), model_column(model, index as u32)) })
+                .collect::<Vec<_>>(),
+            [(Some(88), 1), (Some(77), 2)],
+            "source removal must not shift the unmoved block or retain a duplicate empty cell",
+        );
+        assert!(decoder.move_block_operation(0, 1, 0, 3, Some(88)).is_ok());
+        assert!(decoder.move_block_operation(0, 0, 0, 3, Some(77)).is_err());
+        let blocks = updates[0].blocks.as_ref().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks
+            .iter()
+            .any(|block| block.column == 1 && block.model_id == Some(88)));
+        assert!(blocks
+            .iter()
+            .any(|block| block.column == 2 && block.model_id == Some(77)));
+    }
+    #[test]
     fn grid_move_receiver_reconciles_cross_row_coordinates() {
         let mut decoder = StateDecoder::new();
         decoder.preset = Some(BinaryPreset {
@@ -5819,7 +6687,10 @@ mod tests {
                 .encode_to_vec(),
             )
             .unwrap();
-        assert!(updates.is_empty());
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].kind, "gridTopology");
+        assert_eq!(updates[0].grid_layout_complete, Some(false));
+        assert!(updates[0].blocks.is_none());
         assert_eq!(decoder.preset, before);
         assert!(!decoder.preset_exact);
     }
@@ -5879,7 +6750,10 @@ mod tests {
                 .encode_to_vec(),
             )
             .unwrap();
-        assert!(updates.is_empty());
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].kind, "gridTopology");
+        assert_eq!(updates[0].grid_layout_complete, Some(false));
+        assert!(updates[0].blocks.is_none());
         assert_eq!(
             decoder.preset, before,
             "an ambiguous destination row must not mutate the preset"
@@ -6712,7 +7586,10 @@ mod tests {
             Some("secondary")
         );
         assert_eq!(states[0].routes.as_ref().unwrap()[0].input, "In 1");
-        assert!(states[0].routes.as_ref().unwrap()[0].split_muted);
+        assert_eq!(
+            states[0].routes.as_ref().unwrap()[0].split_muted,
+            Some(true)
+        );
         let footswitch = &states[0].footswitch_states.as_ref().unwrap()[4];
         assert!(footswitch.assigned);
         assert!(footswitch.momentary.unwrap());
@@ -8135,6 +9012,99 @@ mod tests {
         }
     }
 
+    #[test]
+    fn split_mute_requires_the_exact_active_scene_record() {
+        let mut decoder = StateDecoder::new();
+        decoder.preset = Some(BinaryPreset {
+            chains: vec![Chain {
+                mix_bypass: vec![SceneBypass { bypass: true }; 2],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        decoder.active_scene = 1;
+        assert_eq!(
+            decoder.preset_update(false).unwrap().routes.unwrap()[0].split_muted,
+            Some(true)
+        );
+        decoder.active_scene = 7;
+        assert_eq!(
+            decoder.preset_update(false).unwrap().routes.unwrap()[0].split_muted,
+            None
+        );
+        decoder.preset.as_mut().unwrap().chains[0]
+            .mix_bypass
+            .clear();
+        decoder.active_scene = 0;
+        assert_eq!(
+            decoder.preset_update(false).unwrap().routes.unwrap()[0].split_muted,
+            None
+        );
+        decoder.preset.as_mut().unwrap().chains[0].mix_bypass =
+            vec![SceneBypass { bypass: false }; 8];
+        decoder.active_scene = 7;
+        assert_eq!(
+            decoder.preset_update(false).unwrap().routes.unwrap()[0].split_muted,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn split_mute_scene_ingest_updates_snapshot_without_replacing_routing() {
+        let mut decoder = StateDecoder::new();
+        decoder.grid_layout_exact = true;
+        decoder.preset = Some(BinaryPreset {
+            chains: vec![Chain {
+                mix_bypass: vec![SceneBypass { bypass: false }, SceneBypass { bypass: true }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let mut snapshot = crate::device::GatewaySnapshot::default();
+        snapshot.apply(&decoder.preset_update(false).unwrap());
+        assert_eq!(snapshot.routes[0].split_muted, Some(false));
+        snapshot.routes[0].input = "Retained topology label".into();
+        for (scene, expected) in [(1, Some(true)), (7, None), (0, Some(false))] {
+            let updates = decoder
+                .decode(
+                    profile::MESSAGE_TYPE_SCENE,
+                    &pa::SceneMessage {
+                        action: pa::message_action::Enum::Update as i32,
+                        selected_scene: Some(pa::scene_message::SelectedScene::SelectedScene(
+                            scene,
+                        )),
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                )
+                .unwrap();
+            for update in updates {
+                snapshot.apply(&update);
+            }
+            assert_eq!(snapshot.active_scene, scene);
+            assert_eq!(snapshot.routes[0].split_muted, expected);
+            assert_eq!(snapshot.routes[0].input, "Retained topology label");
+        }
+        decoder.grid_layout_exact = false;
+        snapshot.apply(
+            &decoder
+                .decode_scene(
+                    &pa::SceneMessage {
+                        action: pa::message_action::Enum::Update as i32,
+                        selected_scene: Some(pa::scene_message::SelectedScene::SelectedScene(1)),
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                )
+                .unwrap()
+                .remove(0),
+        );
+        assert_eq!(
+            snapshot.routes[0].split_muted, None,
+            "incomplete topology cannot witness a mute operand"
+        );
+    }
+
     fn preset_update_from(preset: BinaryPreset) -> StateUpdate {
         let mut decoder = StateDecoder::new();
         decoder
@@ -8149,6 +9119,564 @@ mod tests {
             )
             .unwrap()
             .remove(0)
+    }
+
+    #[test]
+    fn sparse_metadata_survives_reprojection_and_only_valid_full_replacement_clears_it() {
+        let mut decoder = StateDecoder::new();
+        let full = pa::RecallPresetMessage {
+            action: pa::message_action::Enum::Update as i32,
+            preset: Some(pa::recall_preset_message::Preset::Preset(BinaryPreset {
+                scene_labels: vec!["Original".into(); 8],
+                scene_colors: vec![0xff000000; 8],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        decoder
+            .decode(profile::MESSAGE_TYPE_RECALL_PRESET, &full)
+            .unwrap();
+        let source = decoder.preset_source_snapshot().unwrap();
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_SCENE_LABEL,
+                &pa::SceneLabelMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    index: 3,
+                    label: "Observed".into(),
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_SCENE_COLOR,
+                &pa::SceneColorMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    index: 3,
+                    color: 0xff123456,
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        decoder
+            .decode(
+                profile::MESSAGE_TYPE_GLOBAL_TEMPO,
+                &pa::GlobalTempoMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    params: vec![numeric_param(2, 1.0)],
+                    ..Default::default()
+                }
+                .encode_to_vec(),
+            )
+            .unwrap();
+        assert!(!decoder.preset_source_matches(&source));
+        assert!(decoder.preset_source_snapshot().is_none());
+        assert!(decoder
+            .decode(profile::MESSAGE_TYPE_RECALL_PRESET, &[0xff])
+            .is_err());
+        for catalog in [false, true] {
+            let update = decoder.preset_update(catalog).unwrap();
+            assert_eq!(update.scene_labels_raw.unwrap()[3], "Observed");
+            assert_eq!(update.scene_colors_argb.unwrap()[3], 0xff123456);
+            assert_eq!(update.tempo_led_enabled, Some(true));
+        }
+        decoder
+            .decode(profile::MESSAGE_TYPE_RECALL_PRESET, &full)
+            .unwrap();
+        let update = decoder.preset_update(false).unwrap();
+        assert_eq!(update.scene_labels_raw.unwrap()[3], "Original");
+        assert_eq!(update.scene_colors_argb.unwrap()[3], 0xff000000);
+        assert_eq!(update.tempo_led_enabled, None);
+        assert!(decoder.preset_source_snapshot().is_some());
+    }
+
+    #[test]
+    fn sparse_metadata_midi_merges_sources_and_refuses_unowned_or_invalid_batches_atomically() {
+        let mut decoder = StateDecoder::new();
+        decoder.preset = Some(BinaryPreset::default());
+        decoder.preset_exact = true;
+        let mut snapshot = crate::device::GatewaySnapshot::default();
+        let frame = |source, messages| pa::MidiSettingsMessage {
+            action: pa::message_action::Enum::Update as i32,
+            general_midi_messages: Some(
+                pa::midi_settings_message::GeneralMidiMessages::GeneralMidiMessages(
+                    pa::GeneralMidiMessages {
+                        messages: vec![pa::GeneralMidiMessage {
+                            source: Some(pa::general_midi_message::Source::Source(source)),
+                            msg: messages,
+                        }],
+                    },
+                ),
+            ),
+            ..Default::default()
+        };
+        for source in [1, 4] {
+            let updates = decoder
+                .decode(
+                    profile::MESSAGE_TYPE_MIDI_SETTINGS,
+                    &frame(source, vec![info(1, source)]).encode_to_vec(),
+                )
+                .unwrap();
+            snapshot.apply(&updates[0]);
+        }
+        assert_eq!(
+            snapshot
+                .midi_out
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|s| s.source)
+                .collect::<Vec<_>>(),
+            vec![1, 4]
+        );
+        let clear = decoder
+            .decode(
+                profile::MESSAGE_TYPE_MIDI_SETTINGS,
+                &frame(1, Vec::new()).encode_to_vec(),
+            )
+            .unwrap();
+        snapshot.apply(&clear[0]);
+        assert_eq!(
+            snapshot
+                .midi_out
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|s| s.source)
+                .collect::<Vec<_>>(),
+            vec![4]
+        );
+        assert_eq!(
+            decoder.preset_update(false).unwrap().midi_out.unwrap(),
+            snapshot.midi_out.clone().unwrap()
+        );
+        let revision = decoder.state_revision;
+        let mut tagged = frame(4, vec![info(1, 99)]);
+        tagged.request_id = Some(pa::midi_settings_message::RequestId::RequestId(7));
+        assert!(decoder
+            .decode(profile::MESSAGE_TYPE_MIDI_SETTINGS, &tagged.encode_to_vec())
+            .unwrap()
+            .is_empty());
+        tagged.request_id = None;
+        tagged.action = pa::message_action::Enum::Read as i32;
+        assert!(decoder
+            .decode(profile::MESSAGE_TYPE_MIDI_SETTINGS, &tagged.encode_to_vec())
+            .unwrap()
+            .is_empty());
+        assert!(decoder
+            .decode(
+                profile::MESSAGE_TYPE_MIDI_SETTINGS,
+                &frame(10, vec![info(1, 9)]).encode_to_vec()
+            )
+            .is_err());
+        assert!(decoder
+            .decode(
+                profile::MESSAGE_TYPE_MIDI_SETTINGS,
+                &frame(4, vec![info(1, 9); 13]).encode_to_vec()
+            )
+            .is_err());
+        assert_eq!(decoder.state_revision, revision);
+        assert_eq!(
+            decoder.preset_update(false).unwrap().midi_out.unwrap()[0].messages[0].param1,
+            4
+        );
+    }
+
+    #[test]
+    fn sparse_metadata_scene_copy_withdraws_source_and_requests_explicit_topology_repair() {
+        let mut decoder = StateDecoder::new();
+        decoder.preset = Some(BinaryPreset {
+            chains: vec![one_block_chain(0, 0)],
+            ..Default::default()
+        });
+        decoder.preset_exact = true;
+        decoder.grid_layout_exact = true;
+        let source = decoder.preset_source_snapshot().unwrap();
+        let message = pa::SceneCopyMessage {
+            action: pa::message_action::Enum::Update as i32,
+            from_index: 0,
+            to_index: 7,
+            ..Default::default()
+        };
+        let mut invalid = message;
+        invalid.to_index = 8;
+        assert!(decoder
+            .decode(profile::MESSAGE_TYPE_SCENE_COPY, &invalid.encode_to_vec())
+            .unwrap()
+            .is_empty());
+        assert!(decoder.preset_source_matches(&source));
+        let update = decoder
+            .decode(profile::MESSAGE_TYPE_SCENE_COPY, &message.encode_to_vec())
+            .unwrap()
+            .remove(0);
+        assert_eq!(update.kind, "gridTopology");
+        assert_eq!(update.grid_layout_complete, Some(false));
+        assert_eq!(update.refresh_required, Some(true));
+        assert!(!decoder.preset_source_matches(&source));
+        assert!(decoder.block_details(0, 0).is_none());
+        let mut snapshot = crate::device::GatewaySnapshot {
+            grid_layout_complete: true,
+            ..Default::default()
+        };
+        snapshot.apply(&update);
+        assert!(!snapshot.grid_layout_complete);
+    }
+
+    #[test]
+    fn sparse_scene_parameter_transition_revokes_source_until_real_full_refresh() {
+        for column in [0, 8, 9, 10, 11] {
+            let model = |a: f32| Model {
+                hash: Some(model::Hash::Hash(1234)),
+                column: Some(model::Column::Column(0)),
+                params: vec![Param {
+                    scene_mode: Some(param::SceneMode::SceneMode(true)),
+                    param_values: (0..8)
+                        .map(|scene| crate::proto::ParamValue {
+                            value: Some(param_value::Value::FloatValue(if scene == 0 {
+                                a
+                            } else {
+                                0.8
+                            })),
+                        })
+                        .collect(),
+                    ..numeric_param(0, a)
+                }],
+                ..Default::default()
+            };
+            let chain = |model: Model| Chain {
+                row: Some(chain::Row::Row(0)),
+                models: if column == 0 {
+                    vec![model.clone()]
+                } else {
+                    Vec::new()
+                },
+                splitter: if column == 8 {
+                    vec![model.clone()]
+                } else {
+                    Vec::new()
+                },
+                mixer: if column == 9 {
+                    vec![model.clone()]
+                } else {
+                    Vec::new()
+                },
+                split_control_points: if matches!(column, 8 | 9) {
+                    vec![crate::proto::SplitControlPoints { split: 2, mix: 7 }]
+                } else {
+                    Vec::new()
+                },
+                input_control: if column == 10 {
+                    vec![model.clone()]
+                } else {
+                    Vec::new()
+                },
+                output_control: if column == 11 {
+                    vec![model]
+                } else {
+                    Vec::new()
+                },
+                ..Default::default()
+            };
+            let full = |a| {
+                pa::RecallPresetMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    preset: Some(pa::recall_preset_message::Preset::Preset(BinaryPreset {
+                        chains: vec![chain(model(a))],
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }
+                .encode_to_vec()
+            };
+            let mut runtime = crate::device::state_runtime::DeviceStateRuntime::new();
+            runtime
+                .ingest(profile::MESSAGE_TYPE_RECALL_PRESET, &full(0.2))
+                .unwrap();
+            let detail = |state: &crate::device::state_runtime::DeviceStateRuntime| {
+                if column < 10 {
+                    state.block_details(0, column)
+                } else {
+                    state.lane_control_details(
+                        0,
+                        if column == 10 {
+                            "inputGate"
+                        } else {
+                            "laneOutput"
+                        },
+                    )
+                }
+            };
+            assert!(
+                (detail(&runtime).unwrap().parameters[0]
+                    .normalized_value
+                    .unwrap()
+                    - 0.2)
+                    .abs()
+                    < 0.00001
+            );
+            let sparse = Model {
+                params: vec![numeric_param(0, 0.4)],
+                ..model(0.2)
+            };
+            runtime
+                .ingest(
+                    profile::MESSAGE_TYPE_GRID,
+                    &pa::GridMessage {
+                        action: pa::message_action::Enum::Update as i32,
+                        preset: Some(pa::grid_message::Preset::Preset(BinaryPreset {
+                            chains: vec![chain(sparse)],
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                )
+                .unwrap();
+            assert!(
+                (detail(&runtime).unwrap().parameters[0]
+                    .normalized_value
+                    .unwrap()
+                    - 0.4)
+                    .abs()
+                    < 0.00001
+            );
+            let scene = |scene| {
+                pa::SceneMessage {
+                    action: pa::message_action::Enum::Update as i32,
+                    selected_scene: Some(pa::scene_message::SelectedScene::SelectedScene(scene)),
+                    ..Default::default()
+                }
+                .encode_to_vec()
+            };
+            runtime
+                .ingest(profile::MESSAGE_TYPE_SCENE, &scene(7))
+                .unwrap();
+            assert!(
+                detail(&runtime).is_none(),
+                "stale scalar is unavailable before full refresh, target {column}"
+            );
+            assert!(!runtime.snapshot().has_preset);
+            assert!(runtime.snapshot().preset_identity.is_none());
+            runtime
+                .ingest(profile::MESSAGE_TYPE_RECALL_PRESET, &full(0.4))
+                .unwrap();
+            assert!(
+                (detail(&runtime).unwrap().parameters[0]
+                    .normalized_value
+                    .unwrap()
+                    - 0.8)
+                    .abs()
+                    < 0.00001
+            );
+            // A sparse publication may carry a complete scene vector. Its
+            // active H value, not element A, owns both UI and verification.
+            // An omitted mode inherits the witnessed target's scene mode;
+            // singleton and non-scene vectors retain compatibility semantics.
+            for (count, held_mode, incoming_mode, expected) in [
+                (8, true, Some(true), Some(0.9_f64)),
+                (8, true, None, Some(0.9)),
+                (1, true, Some(true), Some(0.3)),
+                (2, true, Some(true), None),
+                (8, false, Some(false), Some(0.3)),
+            ] {
+                let mut held = model(0.2);
+                held.params[0].scene_mode = Some(param::SceneMode::SceneMode(held_mode));
+                runtime
+                    .ingest(
+                        profile::MESSAGE_TYPE_RECALL_PRESET,
+                        &pa::RecallPresetMessage {
+                            action: pa::message_action::Enum::Update as i32,
+                            preset: Some(pa::recall_preset_message::Preset::Preset(BinaryPreset {
+                                chains: vec![chain(held)],
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }
+                        .encode_to_vec(),
+                    )
+                    .unwrap();
+                let mut incoming = model(0.3);
+                incoming.params[0].scene_mode = incoming_mode.map(param::SceneMode::SceneMode);
+                incoming.params[0].param_values = (0..count)
+                    .map(|scene| crate::proto::ParamValue {
+                        value: Some(param_value::Value::FloatValue(if scene == 7 {
+                            0.9
+                        } else {
+                            0.3
+                        })),
+                    })
+                    .collect();
+                let observed = runtime
+                    .ingest(
+                        profile::MESSAGE_TYPE_GRID,
+                        &pa::GridMessage {
+                            action: pa::message_action::Enum::Update as i32,
+                            preset: Some(pa::grid_message::Preset::Preset(BinaryPreset {
+                                chains: vec![chain(incoming)],
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        }
+                        .encode_to_vec(),
+                    )
+                    .unwrap();
+                if let Some(expected) = expected {
+                    let current = detail(&runtime).unwrap().parameters[0]
+                        .normalized_value
+                        .unwrap();
+                    assert!(
+                        (current - expected).abs() < 0.00001,
+                        "target {column}, count {count}, mode {incoming_mode:?}"
+                    );
+                    assert!(observed.states.iter().any(|state| state
+                        .normalized_value
+                        .is_some_and(|value| (f64::from(value) - expected).abs() < 0.00001)));
+                    let predicate = crate::device::request::GatewayVerification::Parameter {
+                        row: 0,
+                        column,
+                        parameter_index: 0,
+                        value: expected,
+                        routing_model_id: None,
+                    };
+                    assert!(predicate.matches(
+                        runtime.snapshot(),
+                        detail(&runtime)
+                            .as_ref()
+                            .and_then(|details| details.parameters.first())
+                    ));
+                } else {
+                    assert!(
+                        detail(&runtime).is_none(),
+                        "absent H cannot be replaced by A at target {column}"
+                    );
+                    assert!(!runtime.snapshot().has_preset);
+                    assert!(observed
+                        .states
+                        .iter()
+                        .any(|state| state.refresh_required == Some(true)));
+                }
+            }
+            for case in [
+                "different-model",
+                "lost-layout",
+                "invalid-active-float",
+                "nonfinite-active-float",
+            ] {
+                runtime
+                    .ingest(profile::MESSAGE_TYPE_RECALL_PRESET, &full(0.4))
+                    .unwrap();
+                let grid = |incoming| {
+                    pa::GridMessage {
+                        action: pa::message_action::Enum::Update as i32,
+                        preset: Some(pa::grid_message::Preset::Preset(BinaryPreset {
+                            chains: vec![chain(incoming)],
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    }
+                    .encode_to_vec()
+                };
+                if case == "lost-layout" {
+                    // A refused batch withdraws topology for every target,
+                    // including controls outside the eight block columns.
+                    runtime
+                        .ingest(
+                            profile::MESSAGE_TYPE_GRID_MOVE,
+                            &pa::GridMoveMessage {
+                                r#move: [2, 3]
+                                    .into_iter()
+                                    .map(|to_col| pa::GridMoveElement {
+                                        from_row: 0,
+                                        from_col: 0,
+                                        to_row: 0,
+                                        to_col,
+                                        is_drop: true,
+                                    })
+                                    .collect(),
+                                ..Default::default()
+                            }
+                            .encode_to_vec(),
+                        )
+                        .unwrap();
+                    assert!(!runtime.snapshot().grid_layout_complete);
+                }
+                let mut incoming = model(0.3);
+                if matches!(case, "different-model" | "lost-layout") {
+                    incoming.params[0].scene_mode = None;
+                    if case == "different-model" {
+                        incoming.hash = Some(model::Hash::Hash(5678));
+                    }
+                } else {
+                    incoming.params[0].param_values[7].value = Some(
+                        param_value::Value::FloatValue(if case == "nonfinite-active-float" {
+                            f32::NAN
+                        } else {
+                            -0.1
+                        }),
+                    );
+                }
+                let observed = runtime
+                    .ingest(profile::MESSAGE_TYPE_GRID, &grid(incoming))
+                    .unwrap();
+                assert!(
+                    detail(&runtime).is_none(),
+                    "{case}: unknown active authority at target {column}"
+                );
+                assert!(!runtime.snapshot().has_preset);
+                assert!(observed
+                    .states
+                    .iter()
+                    .any(|state| state.refresh_required == Some(true)));
+                assert!(observed
+                    .states
+                    .iter()
+                    .all(|state| state.normalized_value.is_none()));
+            }
+            runtime
+                .ingest(profile::MESSAGE_TYPE_RECALL_PRESET, &full(0.4))
+                .unwrap();
+            runtime
+                .ingest(profile::MESSAGE_TYPE_SCENE, &scene(0))
+                .unwrap();
+            assert!(
+                (detail(&runtime).unwrap().parameters[0]
+                    .normalized_value
+                    .unwrap()
+                    - 0.4)
+                    .abs()
+                    < 0.00001,
+                "return must not resurrect old raw A"
+            );
+            let mut mode_only = numeric_param(0, 0.4);
+            mode_only.param_values.clear();
+            mode_only.scene_mode = Some(param::SceneMode::SceneMode(false));
+            runtime
+                .ingest(
+                    profile::MESSAGE_TYPE_GRID,
+                    &pa::GridMessage {
+                        action: pa::message_action::Enum::Update as i32,
+                        preset: Some(pa::grid_message::Preset::Preset(BinaryPreset {
+                            chains: vec![chain(Model {
+                                params: vec![mode_only],
+                                ..model(0.4)
+                            })],
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                )
+                .unwrap();
+            assert!(
+                !runtime.snapshot().has_preset,
+                "mode-only transition revokes even without a scalar override"
+            );
+            assert!(detail(&runtime).is_none());
+        }
     }
 
     fn one_block_chain(row: u32, column: u32) -> Chain {
@@ -8673,7 +10201,7 @@ mod tests {
     }
 
     #[test]
-    fn undo_and_redo_frames_travel_unmodified_and_a_fixed_length_list_always_reads_available() {
+    fn undo_and_redo_frames_travel_unmodified_without_inventing_availability() {
         let decode_history = |undo: Vec<i32>, redo: Vec<i32>| {
             StateDecoder::new()
                 .decode(
@@ -8689,19 +10217,24 @@ mod tests {
                 .unwrap()
                 .remove(0)
         };
-        // A unit pushes its undo list at a fixed length, mostly zero. The derived flag is true for
-        // a list of all zeros as well, which is why the raw list is exposed beside it.
+        // Nonempty, zero-filled and empty lists all remain uninterpreted raw evidence.
         let mut frames = vec![0; 20];
         frames[1] = 5;
         frames[2] = 5;
         let busy = decode_history(frames.clone(), Vec::new());
-        assert_eq!(busy.undo_available, Some(true));
-        assert_eq!(busy.redo_available, Some(false));
+        assert_eq!(busy.undo_available, None);
+        assert_eq!(busy.redo_available, None);
         assert_eq!(busy.undo_frames.as_deref(), Some(&frames[..]));
         assert_eq!(busy.redo_frames.as_deref(), Some(&[][..]));
         let idle = decode_history(vec![0; 20], Vec::new());
-        assert_eq!(idle.undo_available, Some(true));
+        assert_eq!(idle.undo_available, None);
+        assert_eq!(idle.redo_available, None);
         assert_eq!(idle.undo_frames.unwrap(), vec![0; 20]);
+        let empty = decode_history(Vec::new(), Vec::new());
+        assert_eq!(empty.undo_available, None);
+        assert_eq!(empty.redo_available, None);
+        assert_eq!(empty.undo_frames, Some(Vec::new()));
+        assert_eq!(empty.redo_frames, Some(Vec::new()));
     }
 
     #[test]

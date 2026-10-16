@@ -28,14 +28,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq as _;
 
+mod background;
+mod background_policy;
+#[cfg(windows)]
+mod stdio_pipe;
 mod wire;
-#[cfg(test)]
-use wire::read_frame_bytes;
 use wire::{
-    error, read_frame_bytes_limited, read_request, write_observer_action_response, write_response,
-    write_tcp_frame_before_deadline, Request, RESOURCE_READ_ORIGIN,
-    RESOURCE_READ_ORIGIN_CAPABILITY,
+    error, read_frame_bytes_limited, read_request, write_observer_action_response_with,
+    write_response, write_tcp_frame_before_deadline, write_tcp_response, Request,
+    RESOURCE_READ_ORIGIN, RESOURCE_READ_ORIGIN_CAPABILITY,
 };
+#[cfg(test)]
+use wire::{read_frame_bytes, write_observer_action_response};
 
 /// How often the phase publisher samples the worker's status.
 const PHASE_EVENT_POLL: Duration = Duration::from_millis(100);
@@ -64,6 +68,7 @@ fn phase_notification(status: &BrokerStatus) -> Value {
 /// about eleven seconds - so a host cannot ask `system.status` in the meantime.
 /// This is the only way it can learn, while that call is still pending,
 /// whether a Quad Cortex has actually answered or nothing is attached.
+#[cfg(any(not(windows), test))]
 fn publish_phase_changes<W: Write>(
     controller: &DeviceController,
     output: &Mutex<W>,
@@ -119,16 +124,64 @@ fn serve_stdio_request(
     handle(controller, performance_midi, request)
 }
 
+#[cfg(windows)]
 pub fn serve_stdio(controller: DeviceController, phase_events: bool) -> Result<(), String> {
+    let controller = Arc::new(controller);
+    let clock = Arc::new(crate::orphan_guard::RequestClock::started_now());
+    stdio_pipe::serve(controller, phase_events, clock)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn serve_stdio(
+    controller: DeviceController,
+    phase_events: bool,
+    #[cfg(target_os = "linux")] signals: crate::platform::shutdown::Pending,
+) -> Result<(), String> {
     let request_clock = Arc::new(crate::orphan_guard::RequestClock::started_now());
+    let performance_midi = Arc::new(PerformanceMidiWorkers::default());
+    #[cfg(target_os = "linux")]
+    let owner = StdioControllerOwner {
+        controller: Some(controller),
+        performance_midi: Arc::clone(&performance_midi),
+    };
+    #[cfg(target_os = "linux")]
+    let controller = owner
+        .controller
+        .as_ref()
+        .expect("stdio controller is owned");
+    #[cfg(not(target_os = "linux"))]
+    let controller = &controller;
     // The guard exits with `process::exit`, which skips the controller's Drop;
     // it stops the worker itself so the device still sees the disconnect.
     let worker_shutdown = controller.shutdown_handle();
+    #[cfg(target_os = "linux")]
+    let _signal_watch = signals.watch({
+        let midi = Arc::clone(&performance_midi);
+        let shutdown = worker_shutdown.clone();
+        move || {
+            retire_then_stop(
+                || midi.retire_all_devices(),
+                || {
+                    let _ = shutdown.stop_and_join(crate::worker::WORKER_EXIT_BUDGET);
+                },
+            );
+            std::process::exit(0);
+        }
+    })?;
     crate::orphan_guard::watch(
         crate::orphan_guard::parent_process_id(),
         Arc::clone(&request_clock),
-        move || {
-            let _ = worker_shutdown.stop_and_join(crate::worker::WORKER_EXIT_BUDGET);
+        {
+            let midi = Arc::clone(&performance_midi);
+            move || {
+                #[cfg(target_os = "linux")]
+                if !midi.retire_all_devices() {
+                    return;
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = &midi;
+                let _ = worker_shutdown.stop_and_join(crate::worker::WORKER_EXIT_BUDGET);
+            }
         },
     );
     let stdin = io::stdin();
@@ -136,7 +189,6 @@ pub fn serve_stdio(controller: DeviceController, phase_events: bool) -> Result<(
     let output = Arc::new(Mutex::new(io::stdout()));
     // All MIDI opens, sends, and closes run on per-device detached workers;
     // request handling only queues and waits for a bounded reply.
-    let performance_midi = Arc::new(PerformanceMidiWorkers::default());
     let event_output = Arc::clone(&output);
     let events = controller.subscribe_state_events();
     thread::Builder::new()
@@ -160,7 +212,7 @@ pub fn serve_stdio(controller: DeviceController, phase_events: bool) -> Result<(
     let stop_phase_events = AtomicBool::new(false);
     thread::scope(|scope| {
         if phase_events {
-            let (controller, output, stop) = (&controller, &*output, &stop_phase_events);
+            let (controller, output, stop) = (controller, &*output, &stop_phase_events);
             thread::Builder::new()
                 .name("qc-native-phase".into())
                 .spawn_scoped(scope, move || {
@@ -170,8 +222,10 @@ pub fn serve_stdio(controller: DeviceController, phase_events: bool) -> Result<(
         }
         let served = (|| {
             while let Some(request) = read_request(&mut input)? {
-                request_clock.start_request();
-                let response = serve_stdio_request(&controller, &performance_midi, request);
+                if !request_clock.start_request() {
+                    return Err("STDIO orphan retirement committed before request dispatch".into());
+                }
+                let response = serve_stdio_request(controller, &performance_midi, request);
                 request_clock.finish_request();
                 let mut output = output
                     .lock()
@@ -185,10 +239,317 @@ pub fn serve_stdio(controller: DeviceController, phase_events: bool) -> Result<(
     })
 }
 
+#[cfg(target_os = "linux")]
+struct StdioControllerOwner {
+    controller: Option<DeviceController>,
+    performance_midi: Arc<PerformanceMidiWorkers>,
+}
+
+#[cfg(target_os = "linux")]
+fn retire_then_stop(retire: impl FnOnce() -> bool, stop: impl FnOnce()) -> bool {
+    if !retire() {
+        return false;
+    }
+    stop();
+    true
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod stdio_shutdown_tests {
+    use super::{
+        retire_then_stop, PerformanceMidiEndpoint, PerformanceMidiReceipt, PerformanceMidiWorkers,
+        PERFORMANCE_MIDI_RETIRE_BUDGET,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn stdio_midi_registry_orders_retirement_closes_admission_and_exits_worker() {
+        struct TrackingEndpoint {
+            events: Arc<Mutex<Vec<&'static str>>>,
+            dropped: Arc<AtomicBool>,
+        }
+        impl PerformanceMidiEndpoint for TrackingEndpoint {
+            fn send(
+                &mut self,
+                _device_id: &str,
+                _controller: u8,
+                _value: u8,
+            ) -> Result<PerformanceMidiReceipt, String> {
+                self.events.lock().unwrap().push("send");
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "fake".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+
+            fn retire(&mut self) {
+                self.events.lock().unwrap().push("retire");
+            }
+        }
+        impl Drop for TrackingEndpoint {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let factory_events = Arc::clone(&events);
+        let factory_dropped = Arc::clone(&dropped);
+        let workers = PerformanceMidiWorkers::with_factory(move || {
+            Box::new(TrackingEndpoint {
+                events: Arc::clone(&factory_events),
+                dropped: Arc::clone(&factory_dropped),
+            })
+        });
+        workers.send("stdio-fixture", 1, 2, || {}).unwrap();
+        assert!(retire_then_stop(
+            || workers.retire_all_devices(),
+            || events.lock().unwrap().push("hid-stopped"),
+        ));
+        assert!(workers
+            .send("stdio-fixture", 3, 4, || {})
+            .err()
+            .expect("send after retirement must be rejected")
+            .contains("shutting down"));
+        assert_eq!(*events.lock().unwrap(), ["send", "retire", "hid-stopped"]);
+        drop(workers);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !dropped.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "MIDI worker did not exit after registry drop"
+        );
+    }
+
+    #[test]
+    fn stdio_retirement_timeout_keeps_worker_quarantined_without_native_leak() {
+        struct BlockingEndpoint {
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            dropped: Arc<AtomicBool>,
+        }
+        struct ReleaseGateOnDrop(Arc<(Mutex<bool>, Condvar)>);
+        impl Drop for ReleaseGateOnDrop {
+            fn drop(&mut self) {
+                let (released, changed) = &*self.0;
+                *released.lock().unwrap() = true;
+                changed.notify_all();
+            }
+        }
+        impl PerformanceMidiEndpoint for BlockingEndpoint {
+            fn send(
+                &mut self,
+                _device_id: &str,
+                _controller: u8,
+                _value: u8,
+            ) -> Result<PerformanceMidiReceipt, String> {
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "fake".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+
+            fn retire(&mut self) {
+                let (released, changed) = &*self.gate;
+                let mut released = released.lock().unwrap();
+                while !*released {
+                    released = changed.wait(released).unwrap();
+                }
+            }
+        }
+        impl Drop for BlockingEndpoint {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release_gate = ReleaseGateOnDrop(Arc::clone(&gate));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let factory_gate = Arc::clone(&gate);
+        let factory_dropped = Arc::clone(&dropped);
+        let workers = PerformanceMidiWorkers::with_factory(move || {
+            Box::new(BlockingEndpoint {
+                gate: Arc::clone(&factory_gate),
+                dropped: Arc::clone(&factory_dropped),
+            })
+        });
+        workers.send("stdio-timeout-fixture", 1, 2, || {}).unwrap();
+        let started = Instant::now();
+        let hid_stopped = AtomicBool::new(false);
+        assert!(!retire_then_stop(
+            || workers.retire_all_devices(),
+            || hid_stopped.store(true, Ordering::Release),
+        ));
+        assert!(!hid_stopped.load(Ordering::Acquire));
+        assert!(started.elapsed() < PERFORMANCE_MIDI_RETIRE_BUDGET + Duration::from_millis(250));
+        assert!(workers
+            .send("stdio-timeout-fixture", 3, 4, || {})
+            .err()
+            .expect("send after retirement timeout must be rejected")
+            .contains("shutting down"));
+
+        let (released, changed) = &*gate;
+        *released.lock().unwrap() = true;
+        changed.notify_all();
+        assert!(workers.retire_device("stdio-timeout-fixture"));
+        drop(workers);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !dropped.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "timed-out MIDI worker did not exit after gate release and registry drop"
+        );
+    }
+
+    #[test]
+    fn full_queue_retirement_closes_on_owner_before_cancelled_send_and_recovers() {
+        use super::{MidiCommand, MidiSendCommand, MIDI_CANCELLED};
+        struct Endpoint {
+            retired: Arc<AtomicBool>,
+            sends: Arc<std::sync::atomic::AtomicUsize>,
+            dropped: Arc<AtomicBool>,
+        }
+        impl PerformanceMidiEndpoint for Endpoint {
+            fn send(&mut self, _: &str, _: u8, _: u8) -> Result<PerformanceMidiReceipt, String> {
+                assert!(self.retired.load(Ordering::Acquire));
+                self.sends.fetch_add(1, Ordering::AcqRel);
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "fixture".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+            fn retire(&mut self) {
+                self.retired.store(true, Ordering::Release);
+            }
+        }
+        impl Drop for Endpoint {
+            fn drop(&mut self) {
+                self.dropped.store(true, Ordering::Release);
+            }
+        }
+        struct Release(Arc<(Mutex<bool>, Condvar)>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                let (open, changed) = &*self.0;
+                *open.lock().unwrap() = true;
+                changed.notify_all();
+            }
+        }
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let release = Release(Arc::clone(&gate));
+        let retired = Arc::new(AtomicBool::new(false));
+        let sends = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let factory_gate = Arc::clone(&gate);
+        let factory_retired = Arc::clone(&retired);
+        let factory_sends = Arc::clone(&sends);
+        let factory_dropped = Arc::clone(&dropped);
+        let workers = PerformanceMidiWorkers::with_factory(move || {
+            let (open, changed) = &*factory_gate;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = changed.wait(open).unwrap();
+            }
+            Box::new(Endpoint {
+                retired: Arc::clone(&factory_retired),
+                sends: Arc::clone(&factory_sends),
+                dropped: Arc::clone(&factory_dropped),
+            })
+        });
+        let (sender, _) = workers.get_or_start("full-queue-fixture").unwrap();
+        let (reply, _response) = std::sync::mpsc::channel();
+        let (_ack, acknowledged) = std::sync::mpsc::channel();
+        sender
+            .try_send(MidiCommand::Send(MidiSendCommand {
+                device_id: "full-queue-fixture".into(),
+                controller: 1,
+                value: 2,
+                validate: Box::new(|| panic!("cancelled fixture must not validate")),
+                state: Arc::new(std::sync::atomic::AtomicU8::new(MIDI_CANCELLED)),
+                reply,
+                acknowledged,
+            }))
+            .unwrap_or_else(|_| panic!("fixture queue must accept its first send"));
+        assert!(
+            !workers.retire_device("full-queue-fixture"),
+            "full queue cannot admit the Retire marker"
+        );
+        assert!(workers.workers.lock().unwrap()["full-queue-fixture"]
+            .retirement_pending
+            .load(Ordering::Acquire));
+        drop(release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while workers.workers.lock().unwrap()["full-queue-fixture"]
+            .retirement_pending
+            .load(Ordering::Acquire)
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(retired.load(Ordering::Acquire));
+        assert_eq!(sends.load(Ordering::Acquire), 0);
+        workers.send("full-queue-fixture", 3, 4, || {}).unwrap();
+        assert_eq!(sends.load(Ordering::Acquire), 1);
+        assert_eq!(
+            workers.workers.lock().unwrap().len(),
+            1,
+            "same owner recovered; no replacement"
+        );
+        drop(sender);
+        drop(workers);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !dropped.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            dropped.load(Ordering::Acquire),
+            "fixture endpoint retired on its owner"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for StdioControllerOwner {
+    fn drop(&mut self) {
+        if let Some(controller) = self.controller.take() {
+            if self.performance_midi.retire_all_devices() {
+                drop(controller);
+            } else {
+                // This function is the terminal stdio CLI path. Do not close
+                // HID before MIDI; process teardown retains final ownership.
+                eprintln!(
+                    "Retaining stdio HID owner until process teardown: MIDI close unacknowledged"
+                );
+                std::mem::forget(controller);
+            }
+        }
+    }
+}
+
 fn handle(
     controller: &DeviceController,
     performance_midi: &PerformanceMidiWorkers,
     request: Request,
+) -> Value {
+    handle_with_disconnect_admission(controller, performance_midi, request, None)
+}
+
+fn handle_with_disconnect_admission(
+    controller: &DeviceController,
+    performance_midi: &PerformanceMidiWorkers,
+    request: Request,
+    disconnect_admission: Option<Box<dyn Send>>,
 ) -> Value {
     let id = request.id.clone();
     if request.jsonrpc != "2.0" || id.as_u64().is_none_or(|id| id == 0) {
@@ -267,8 +628,9 @@ fn handle(
         Some(generated_gateway::BrokerDispatch::ResetSession) => controller
             .reset_session()
             .map(|outcome| reconnect_state(controller, outcome, "Communication session reset")),
-        Some(generated_gateway::BrokerDispatch::Disconnect) => controller
-            .disconnect()
+        Some(generated_gateway::BrokerDispatch::Disconnect) => performance_midi
+            .retire_controller(controller)
+            .and_then(|()| controller.disconnect_with_admission(disconnect_admission))
             .map(|_| connection_state(controller, "Quad Cortex session closed")),
         // The native broker implements the generated gateway contract without
         // exposing raw HID/protobuf details to either client.
@@ -413,6 +775,25 @@ fn handle(
         }
         Some(generated_gateway::BrokerDispatch::MovePreset) => {
             gateway_move_preset(controller, &request.params)
+        }
+        None if request.method == "broker.backupTarget" => controller
+            .backup_context()
+            .and_then(|context| serde_json::to_value(context).map_err(|error| error.to_string())),
+        None if request.method == "broker.createDeviceBackupBound" => {
+            gateway_create_backup_with(&request.params, || {
+                let context: DispatchContext = serde_json::from_value(
+                    request
+                        .params
+                        .get("context")
+                        .cloned()
+                        .ok_or("Backup session context is required")?,
+                )
+                .map_err(|_| "Invalid backup session context".to_string())?;
+                controller.create_backup_in_context(
+                    Duration::from_millis(profile::BACKUP_TOTAL_TIMEOUT_MS),
+                    Some(&context),
+                )
+            })
         }
         None if request.method == "device.status" => {
             serde_json::to_value(controller.status()).map_err(|error| error.to_string())
@@ -565,7 +946,7 @@ const STATE_UNAVAILABLE_PREFIX: &str = "STATE_UNAVAILABLE: ";
 /// What the USB writer puts in front of an owner refusal (`UsbError::Admission`).
 const ADMISSION_REFUSAL_PREFIX: &str = "USB command was not admitted: ";
 fn is_device_mutation(method: &str) -> bool {
-    generated_gateway::is_mutation_method(method)
+    method == "broker.createDeviceBackupBound" || generated_gateway::is_mutation_method(method)
 }
 
 fn is_quarantine_recovery(method: &str) -> bool {
@@ -580,6 +961,9 @@ fn is_quarantine_recovery(method: &str) -> bool {
 }
 
 fn flight_method_name(method: &str) -> &str {
+    if method == "broker.createDeviceBackupBound" {
+        return generated_gateway::rpc::CREATE_DEVICE_BACKUP;
+    }
     if generated_gateway::METHODS.contains(&method)
         || matches!(
             method,
@@ -703,7 +1087,7 @@ fn await_ready_status(controller: &DeviceController) -> BrokerStatus {
     // stream will announce a device plugged in later.
     let selected_device_id = controller.device_id();
     if controller.status().phase == "searching" {
-        if let Ok(devices) = quadcortex_hid::usb::connected_devices() {
+        if let Ok(devices) = controller.connected_devices() {
             let selected_is_present =
                 requested_device_is_present(selected_device_id.as_deref(), &devices);
             if !selected_is_present {
@@ -1109,6 +1493,12 @@ fn authoritative_preflight_result(readback: Value) -> Value {
 const PERFORMANCE_MIDI_LOCK_BUDGET: Duration = Duration::from_secs(3);
 const PERFORMANCE_MIDI_QUEUE_CAPACITY: usize = 1;
 const PERFORMANCE_MIDI_MAX_DEVICE_WORKERS: usize = 16;
+#[cfg(target_os = "linux")]
+const PERFORMANCE_MIDI_RETIRE_BUDGET: Duration = Duration::from_secs(3);
+// Software headroom across successive instances, not a firmware device count.
+// Native sends and endpoint close cannot be forcibly cancelled.
+static PERFORMANCE_MIDI_ORIGINALS: qc_native_platform::thread_owner::Budget =
+    qc_native_platform::thread_owner::Budget::new(PERFORMANCE_MIDI_MAX_DEVICE_WORKERS);
 
 trait PerformanceMidiEndpoint: Send + 'static {
     fn send(
@@ -1117,6 +1507,9 @@ trait PerformanceMidiEndpoint: Send + 'static {
         controller: u8,
         value: u8,
     ) -> Result<PerformanceMidiReceipt, String>;
+
+    #[cfg(target_os = "linux")]
+    fn retire(&mut self) {}
 }
 
 impl PerformanceMidiEndpoint for PerformanceMidi {
@@ -1128,6 +1521,11 @@ impl PerformanceMidiEndpoint for PerformanceMidi {
     ) -> Result<PerformanceMidiReceipt, String> {
         self.send_for_device(device_id, controller, value)
     }
+
+    #[cfg(target_os = "linux")]
+    fn retire(&mut self) {
+        self.retire_endpoint();
+    }
 }
 
 const MIDI_QUEUED: u8 = 0;
@@ -1135,7 +1533,7 @@ const MIDI_VALIDATING: u8 = 1;
 const MIDI_RUNNING: u8 = 2;
 const MIDI_CANCELLED: u8 = 3;
 
-struct MidiCommand {
+struct MidiSendCommand {
     device_id: String,
     controller: u8,
     value: u8,
@@ -1145,20 +1543,35 @@ struct MidiCommand {
     acknowledged: mpsc::Receiver<()>,
 }
 
+enum MidiCommand {
+    Send(MidiSendCommand),
+    #[cfg(target_os = "linux")]
+    Retire(mpsc::Sender<bool>),
+}
+
 struct MidiWorker {
+    // Fields drop in declaration order: disconnect queue before retirement.
     sender: mpsc::SyncSender<MidiCommand>,
     poisoned: Arc<AtomicBool>,
+    #[cfg(target_os = "linux")]
+    retirement_pending: Arc<AtomicBool>,
+    _original: qc_native_platform::thread_owner::Owned,
 }
 
 /// Per-device MIDI owners. Worker records are retained for the broker lifetime,
 /// including poisoned workers, so a timed-out WinMM call is never replaced.
 /// The map is capped to prevent arbitrary device identities growing threads.
-/// Dropping the registry disconnects the queues but never joins workers: a
-/// synchronous WinMM call and its later handle close cannot be cancelled, so
-/// a stuck worker remains detached until the call returns or the process exits.
+/// Dropping the registry disconnects queues and transfers unfinished originals
+/// to the shared bounded owner. Global permits survive send, endpoint close and
+/// native TLS teardown until the exact original is signalled and joined.
 struct PerformanceMidiWorkers {
     workers: Mutex<HashMap<String, MidiWorker>>,
+    #[cfg(target_os = "linux")]
+    admission: Mutex<()>,
+    #[cfg(target_os = "linux")]
+    closing: AtomicBool,
     factory: Arc<dyn Fn() -> Box<dyn PerformanceMidiEndpoint> + Send + Sync>,
+    worker_budget: &'static qc_native_platform::thread_owner::Budget,
     #[cfg(test)]
     budget: Duration,
 }
@@ -1175,7 +1588,12 @@ impl PerformanceMidiWorkers {
     ) -> Self {
         Self {
             workers: Mutex::new(HashMap::new()),
+            #[cfg(target_os = "linux")]
+            admission: Mutex::new(()),
+            #[cfg(target_os = "linux")]
+            closing: AtomicBool::new(false),
             factory: Arc::new(factory),
+            worker_budget: &PERFORMANCE_MIDI_ORIGINALS,
             #[cfg(test)]
             budget: PERFORMANCE_MIDI_LOCK_BUDGET,
         }
@@ -1197,12 +1615,42 @@ impl PerformanceMidiWorkers {
         let (sender, receiver) = mpsc::sync_channel::<MidiCommand>(PERFORMANCE_MIDI_QUEUE_CAPACITY);
         let poisoned = Arc::new(AtomicBool::new(false));
         let worker_poisoned = Arc::clone(&poisoned);
+        #[cfg(target_os = "linux")]
+        let retirement_pending = Arc::new(AtomicBool::new(false));
+        #[cfg(target_os = "linux")]
+        let worker_retirement_pending = Arc::clone(&retirement_pending);
         let factory = Arc::clone(&self.factory);
-        thread::Builder::new()
-            .name("qc-performance-midi".into())
-            .spawn(move || {
+        let original = qc_native_platform::thread_owner::Owned::spawn(
+            "qc-performance-midi",
+            self.worker_budget,
+            (),
+            move || {
                 let mut endpoint = factory();
                 while let Ok(command) = receiver.recv() {
+                    #[cfg(target_os = "linux")]
+                    let command = match command {
+                        MidiCommand::Send(command) => command,
+                        MidiCommand::Retire(reply) => {
+                            endpoint.retire();
+                            worker_retirement_pending.store(false, Ordering::Release);
+                            let _ = reply.send(true);
+                            continue;
+                        }
+                    };
+                    #[cfg(not(target_os = "linux"))]
+                    let MidiCommand::Send(command) = command;
+                    #[cfg(target_os = "linux")]
+                    if worker_retirement_pending.load(Ordering::Acquire) {
+                        // A full queue may have prevented the Retire marker
+                        // from entering. The same owner must still close after
+                        // its prior native call, even for a cancelled send.
+                        endpoint.retire();
+                        worker_retirement_pending.store(false, Ordering::Release);
+                        let _ = command.reply.send(Err(
+                            "Performance MIDI endpoint retired before this queued send".into(),
+                        ));
+                        continue;
+                    }
                     if command
                         .state
                         .compare_exchange(
@@ -1249,18 +1697,85 @@ impl PerformanceMidiWorkers {
                         worker_poisoned.store(true, Ordering::Release);
                     }
                 }
-                // Dropping PerformanceMidi, including WinMM close, stays on this
-                // worker. Shutdown never joins a potentially wedged native call.
-            })
-            .map_err(|error| format!("Could not start Performance MIDI worker: {error}"))?;
+                // Endpoint drop stays here; the original permit is retained
+                // past this body and native TLS teardown.
+            },
+        )
+        .map_err(|error| format!("Could not start Performance MIDI worker: {error}"))?;
         workers.insert(
             device_id.to_owned(),
             MidiWorker {
                 sender: sender.clone(),
                 poisoned: Arc::clone(&poisoned),
+                #[cfg(target_os = "linux")]
+                retirement_pending,
+                _original: original,
             },
         );
         Ok((sender, poisoned))
+    }
+
+    fn retire_controller(&self, controller: &DeviceController) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if let Some(device_id) = controller.device_id() {
+            if !self.retire_device(&device_id) {
+                return Err(format!("Performance MIDI endpoint for {device_id} is still draining; its QC session remains open"));
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = controller;
+        Ok(())
+    }
+
+    /// Ordered endpoint close without replacing or detaching the native owner.
+    /// Request callers hold request_lock across this barrier and HID release;
+    /// terminal callers close admission first. The worker clears pending only
+    /// after close, so that caller fence must prevent reopening before release.
+    #[cfg(target_os = "linux")]
+    fn retire_device(&self, device_id: &str) -> bool {
+        let (sender, pending) = {
+            let workers = self.workers.lock_recover();
+            let Some(worker) = workers.get(device_id) else {
+                return true;
+            };
+            (
+                worker.sender.clone(),
+                Arc::clone(&worker.retirement_pending),
+            )
+        };
+        let deadline = Instant::now() + PERFORMANCE_MIDI_RETIRE_BUDGET;
+        pending.store(true, Ordering::Release);
+        let (reply, retired) = mpsc::channel();
+        let mut command = MidiCommand::Retire(reply);
+        loop {
+            match sender.try_send(command) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Disconnected(_)) => return false,
+                Err(mpsc::TrySendError::Full(queued)) => {
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    command = queued;
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        retired
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or(false)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn retire_all_devices(&self) -> bool {
+        let admission = self.admission.lock_recover();
+        self.closing.store(true, Ordering::Release);
+        let devices: Vec<_> = self.workers.lock_recover().keys().cloned().collect();
+        drop(admission);
+        let mut retired = true;
+        for device in devices {
+            retired &= self.retire_device(&device);
+        }
+        retired
     }
 
     #[cfg(test)]
@@ -1333,14 +1848,29 @@ impl PerformanceMidiWorkers {
         on_enqueued: impl FnOnce(),
         on_ambiguous_timeout: impl FnOnce(),
     ) -> Result<PerformanceMidiReceipt, String> {
+        #[cfg(target_os = "linux")]
+        let admission = self.admission.lock_recover();
+        #[cfg(target_os = "linux")]
+        if self.closing.load(Ordering::Acquire) {
+            return Err("Performance MIDI workers are shutting down; request was not sent".into());
+        }
         let (sender, poisoned) = self.get_or_start(device_id)?;
+        #[cfg(target_os = "linux")]
+        if self.workers.lock_recover()[device_id]
+            .retirement_pending
+            .load(Ordering::Acquire)
+        {
+            return Err(
+                "Performance MIDI endpoint is still draining after a device release".into(),
+            );
+        }
         if poisoned.load(Ordering::Acquire) {
             return Err("Performance MIDI worker is poisoned after an ambiguous timeout".into());
         }
         let (reply, response) = mpsc::channel();
         let (acknowledge, acknowledged) = mpsc::channel();
         let state = Arc::new(std::sync::atomic::AtomicU8::new(MIDI_QUEUED));
-        let command = MidiCommand {
+        let command = MidiCommand::Send(MidiSendCommand {
             device_id: device_id.to_owned(),
             controller,
             value,
@@ -1348,7 +1878,7 @@ impl PerformanceMidiWorkers {
             state: Arc::clone(&state),
             reply,
             acknowledged,
-        };
+        });
         match sender.try_send(command) {
             Ok(()) => on_enqueued(),
             Err(mpsc::TrySendError::Full(_)) => {
@@ -1361,6 +1891,8 @@ impl PerformanceMidiWorkers {
                 return Err("Performance MIDI worker has stopped; request was not sent.".into())
             }
         }
+        #[cfg(target_os = "linux")]
+        drop(admission);
         match response.recv_timeout(budget) {
             Ok(result) => {
                 let _ = acknowledge.send(());
@@ -1760,11 +2292,10 @@ fn gateway_lane_control_parameter(
     if !result_is_verified(&result) {
         return Ok(result);
     }
-    let details = controller
-        .lane_control_details(row, control)?
-        .ok_or_else(|| {
-            "The write completed, but its lane control is absent from readback".to_string()
-        })?;
+    let Some(details) = controller.verified_write_details(&result, row, None, Some(control))?
+    else {
+        return Ok(result);
+    };
     if let Some(object) = result.as_object_mut() {
         object.insert(
             "block".into(),
@@ -1785,11 +2316,10 @@ fn gateway_lane_control_scene_mode(
     if !result_is_verified(&result) {
         return Ok(result);
     }
-    let details = controller
-        .lane_control_details(row, control)?
-        .ok_or_else(|| {
-            "The write completed, but its lane control is absent from readback".to_string()
-        })?;
+    let Some(details) = controller.verified_write_details(&result, row, None, Some(control))?
+    else {
+        return Ok(result);
+    };
     let parameter = details
         .parameters
         .iter()
@@ -1838,11 +2368,10 @@ fn gateway_lane_control_expression(
     if !result_is_verified(&result) {
         return Ok(result);
     }
-    let details = controller
-        .lane_control_details(row, control)?
-        .ok_or_else(|| {
-            "The write completed, but its lane control is absent from readback".to_string()
-        })?;
+    let Some(details) = controller.verified_write_details(&result, row, None, Some(control))?
+    else {
+        return Ok(result);
+    };
     if let Some(object) = result.as_object_mut() {
         object.insert(
             "block".into(),
@@ -1909,9 +2438,10 @@ fn gateway_parameter(
         if !result_is_verified(&result) {
             return Ok(result);
         }
-        let after = controller.block_details(row, column)?.ok_or_else(|| {
-            "The write completed, but its block is absent from readback".to_string()
-        })?;
+        let Some(after) = controller.verified_write_details(&result, row, Some(column), None)?
+        else {
+            return Ok(result);
+        };
         attach_parameter_block(&mut result, after)?;
         Ok(result)
     }
@@ -1944,9 +2474,9 @@ fn gateway_parameter_assignment(
     if !result_is_verified(&result) {
         return Ok(result);
     }
-    let block = controller
-        .block_details(row, column)?
-        .ok_or_else(|| "The write completed, but its block is absent from readback".to_string())?;
+    let Some(block) = controller.verified_write_details(&result, row, Some(column), None)? else {
+        return Ok(result);
+    };
     let parameter = block
         .parameters
         .iter()
@@ -2134,10 +2664,7 @@ fn gateway_operation(
     let verification_policy = runtime_request::gateway_write_verification_policy(method);
     let (plan, mut plan_fence) = plan_gateway_write(controller, method, params)?;
     if plan.is_noop() {
-        controller.validate_gateway_write_fence(&plan_fence)?;
-        let snapshot = controller
-            .gateway_snapshot()
-            .ok_or("No retained snapshot for no-op preflight")?;
+        let snapshot = controller.gateway_snapshot_for_plan(&plan_fence)?;
         let result = authoritative_preflight_result(
             serde_json::to_value(snapshot).map_err(|error| error.to_string())?,
         );
@@ -2513,10 +3040,27 @@ const CAPTURE_CATALOG_UNPUBLISHED: &str = "This Quad Cortex USB session has not 
 const GENERAL_SETTINGS_UNPUBLISHED: &str = "This Quad Cortex USB session has not published General Settings. Reconnect the device session to pull them again.";
 
 fn gateway_general_settings(controller: &DeviceController) -> Result<Value, String> {
-    let message = controller
+    gateway_general_settings_with(controller, |payload| {
+        GatewayResponseProjection::GeneralSettings.decode(payload)
+    })
+}
+
+pub(crate) fn gateway_general_settings_with(
+    controller: &DeviceController,
+    decode: impl FnOnce(&[u8]) -> Result<Value, String>,
+) -> Result<Value, String> {
+    let scope = controller.begin_gateway_read_scope("device.generalSettings", &Value::Null)?;
+    if controller
         .latest_message(profile::MESSAGE_TYPE_GENERAL_SETTINGS)
-        .ok_or_else(|| GENERAL_SETTINGS_UNPUBLISHED.to_string())?;
-    GatewayResponseProjection::GeneralSettings.decode(&message.payload)
+        .is_none()
+    {
+        return Err(GENERAL_SETTINGS_UNPUBLISHED.to_string());
+    }
+    controller.published_gateway_read_in_scope_with(
+        &scope,
+        profile::MESSAGE_TYPE_GENERAL_SETTINGS,
+        decode,
+    )
 }
 
 /// Type 3 is treated as session state, not a request/reply endpoint (BELIEVED:
@@ -2526,10 +3070,23 @@ fn gateway_general_settings(controller: &DeviceController) -> Result<Value, Stri
 const IO_SETTINGS_UNPUBLISHED: &str = "This Quad Cortex USB session has not published I/O settings. Reconnect the device session to pull them again.";
 
 fn gateway_io_settings(controller: &DeviceController) -> Result<Value, String> {
-    let message = controller
-        .latest_message(profile::MESSAGE_TYPE_IO_SETTINGS)
+    gateway_io_settings_with(controller, |payload| {
+        GatewayResponseProjection::IoSettings.decode(payload)
+    })
+}
+
+pub(crate) fn gateway_io_settings_with(
+    controller: &DeviceController,
+    decode: impl FnOnce(&[u8]) -> Result<Value, String>,
+) -> Result<Value, String> {
+    let scope = controller.begin_gateway_read_scope("device.ioSettings", &Value::Null)?;
+    let payload = controller
+        .retained_io_settings_in_scope(&scope)?
         .ok_or_else(|| IO_SETTINGS_UNPUBLISHED.to_string())?;
-    GatewayResponseProjection::IoSettings.decode(&message.payload)
+    let value = decode(&payload)?;
+    // A fresh owner's healthy state must never certify this old read.
+    controller.validate_io_settings_read(&scope)?;
+    Ok(value)
 }
 
 fn gateway_library_read(
@@ -2786,18 +3343,29 @@ const DESCRIPTOR_REFRESH_RETRY_FLOOR: Duration = Duration::from_secs(1);
 /// the heartbeat: any process opening the file without delete sharing for
 /// longer than `publish_atomically`'s rename budget fails one write, and a
 /// heartbeat that stopped there made every client treat this healthy broker
-/// as stale about two and a half minutes later. Only a released claim
-/// (`None`, at shutdown) ends the loop.
-fn refresh_descriptor_while_claimed<T>(
+/// as stale about two and a half minutes later. Releasing the claim or the
+/// owning server's stop token ends the loop.
+fn refresh_descriptor_while_claimed_until<T>(
     claim: &Mutex<Option<T>>,
     interval: Duration,
     retry_floor: Duration,
+    stop: &AtomicBool,
     mut write: impl FnMut(&mut T) -> Result<(), String>,
 ) {
     let mut delay = interval;
     let mut failures: u32 = 0;
     loop {
-        thread::sleep(delay);
+        let deadline = Instant::now() + delay;
+        while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(25)),
+            );
+        }
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
         let outcome = {
             let mut claim = claim.lock_recover();
             let Some(file) = claim.as_mut() else {
@@ -2966,6 +3534,10 @@ const BROKER_AUTH_MAX_FRAME_BYTES: usize = 4 * 1024;
 /// How many accepted sockets may be authenticating at once. Further
 /// connections are closed on accept, before any thread is spawned for them.
 const BROKER_MAX_PENDING_AUTHENTICATIONS: usize = 16;
+/// Software owner ceiling, not a firmware limit. The actual retained
+/// connection job keeps capacity until its original thread finishes/joins.
+const BROKER_MAX_CONNECTION_OWNERS: usize = 256;
+const BROKER_PROVIDER_MAX_UTF8_BYTES: usize = 4 * 1024;
 
 /// How many observer connections (trays) one broker will carry. There is one
 /// tray per machine; a growing list means connections are being abandoned
@@ -2975,13 +3547,18 @@ const MAX_OBSERVER_CONNECTIONS: usize = 8;
 
 /// Why this broker could not claim the descriptor slot, naming the broker that
 /// holds it when its descriptor can be read.
+/// Software document ceiling shared with the descriptor consumer; not a
+/// firmware limit. Diagnostics never justify unbounded allocation or a
+/// separate permission check followed by reopening another pathname occupant.
+const BROKER_DESCRIPTOR_DIAGNOSTIC_MAX_BYTES: usize = 128 * 1024;
 fn descriptor_claim_refusal(path: &Path) -> String {
-    let holder = std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|descriptor| descriptor["processId"].as_u64())
-        .map(|pid| format!(" (device broker process {pid})"))
-        .unwrap_or_default();
+    let holder =
+        qc_owner_only_file::read_owner_only_bounded(path, BROKER_DESCRIPTOR_DIAGNOSTIC_MAX_BYTES)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .and_then(|descriptor| descriptor["processId"].as_u64())
+            .map(|pid| format!(" (device broker process {pid})"))
+            .unwrap_or_default();
     format!(
         "Could not claim the device broker descriptor slot at {}; a broker{holder} is already \
          published there and keeps the Quad Cortex. This broker exits and the app attaches to \
@@ -3092,22 +3669,6 @@ fn write_descriptor(
     let json = serde_json::to_vec(descriptor)
         .map_err(|error| format!("Failed to serialize descriptor: {error}"))?;
     file.write(&json)
-}
-
-/// A Linux startup failure must remove only its own publication. The refresh
-/// worker observes the empty slot and stops; a replacement can elect safely.
-#[cfg(target_os = "linux")]
-struct PublicationCleanup(Arc<Mutex<Option<qc_owner_only_file::ClaimedFile>>>);
-
-#[cfg(target_os = "linux")]
-impl Drop for PublicationCleanup {
-    fn drop(&mut self) {
-        if let Some(claim) = self.0.lock_recover().take() {
-            if let Err(error) = claim.release() {
-                eprintln!("Could not clean up broker publication: {error}");
-            }
-        }
-    }
 }
 
 /// Requires the first frame a TCP client sends to be a `broker.authenticate`
@@ -3433,11 +3994,8 @@ fn dispatch_broker_client_request(
                     clients.idle_reopen_state(&controller).is_some()
                 };
                 if auto_connect && !idle_released {
-                    if let Err(message) = thread::Builder::new()
-                        .name("qc-selected-reconnect".into())
-                        .spawn(move || {
-                            let _ = controller.reconnect();
-                        })
+                    if let Err(message) =
+                        background_policy::selected(shared, connection_id, controller)
                     {
                         return error(request.id, -32002, &message.to_string());
                     }
@@ -3468,8 +4026,25 @@ fn dispatch_broker_client_request(
         let Some(existing) = connection_id.and_then(|id| clients.connections.get_mut(&id)) else {
             return error(request.id, -32600, "Connection is no longer attached");
         };
+        let selected = existing
+            .selected_device
+            .as_ref()
+            .unwrap_or(&shared.controller)
+            .clone();
+        if matches!(row.role, ConnectionRole::Participant) && clients.device_is_closing(&selected) {
+            return error(
+                request.id,
+                -32002,
+                "The selected device session is closing; attach again after it has closed",
+            );
+        }
+        let existing = clients
+            .connections
+            .get_mut(&connection_id.expect("live row checked"))
+            .expect("live row checked under the same accounting lock");
         row.selected_device = existing.selected_device.take();
         row.output = existing.output.take();
+        row.admission = Arc::clone(&existing.admission);
         *existing = row;
         return json!({"jsonrpc":"2.0", "id":request.id, "result":{"accepted":true}});
     }
@@ -3493,10 +4068,17 @@ fn dispatch_broker_client_request(
         request.method = generated_gateway::rpc::DISCONNECT.into();
     }
     let controller = shared.controller_for(connection_id);
-    if let Err(message) =
-        shared.prepare_idle_released_target(connection_id, &controller, &request.method)
-    {
-        return idle_reopen_error(request.id, &message);
+    // Dialog-bound exports must never reopen a session to make a stale fence
+    // appear usable. Their owner admission below is authoritative.
+    if !matches!(
+        request.method.as_str(),
+        "broker.backupTarget" | "broker.createDeviceBackupBound"
+    ) {
+        if let Err(message) =
+            shared.prepare_idle_released_target(connection_id, &controller, &request.method)
+        {
+            return idle_reopen_error(request.id, &message);
+        }
     }
     // `apps/windows/src-tauri`'s `Gateway::leave_shared_session_open` makes
     // this same "am I the sole client" check client-side, as an RPC-then-RPC
@@ -3525,18 +4107,16 @@ fn dispatch_broker_client_request(
     // stretch would block the accept loop from counting any new connection
     // for the duration - trading a narrow correctness race for a real
     // availability stall. Re-checking immediately before the effectful call
-    // instead narrows the window to essentially nothing without that cost.
+    // instead reserves closing admission under that lock after request_lock
+    // is acquired; new participants cannot join until disconnect acknowledges.
     if !forced_disconnect
         && request.method == generated_gateway::rpc::DISCONNECT
         && shared.disconnect_blocked_for(connection_id, &controller)
     {
         return json!({
-            "jsonrpc": "2.0",
-            "id": request.id,
-            "result": connection_state(
-                &controller,
-                "Another client is still attached; the shared session was left open"
-            )
+            "jsonrpc": "2.0", "id": request.id,
+            "result": connection_state(&controller,
+                "Another client is still attached; the shared session was left open")
         });
     }
     if runs_without_request_lock(&request.method) {
@@ -3565,18 +4145,23 @@ fn dispatch_broker_client_request(
     // The second, immediately-before-effect re-check: a second client could
     // have attached while this request queued behind `request_lock` (e.g.
     // behind another client's in-flight backup).
-    if !forced_disconnect
-        && request.method == generated_gateway::rpc::DISCONNECT
-        && shared.disconnect_blocked_for(connection_id, &controller)
-    {
-        return json!({
-            "jsonrpc": "2.0",
-            "id": request.id,
-            "result": connection_state(
-                &controller,
-                "Another client is still attached; the shared session was left open"
-            )
-        });
+    let _disconnect_admission =
+        if !forced_disconnect && request.method == generated_gateway::rpc::DISCONNECT {
+            match shared.reserve_disconnect_for(connection_id, &controller) {
+                Some(admission) => Some(admission),
+                None => {
+                    return json!({
+                        "jsonrpc": "2.0", "id": request.id,
+                        "result": connection_state(&controller,
+                            "Another client is still attached; the shared session was left open")
+                    })
+                }
+            }
+        } else {
+            None
+        };
+    if _disconnect_admission.is_some() {
+        shared.test_point("disconnect:reserved");
     }
     if request.method == generated_gateway::rpc::DISCONNECT {
         // The disconnect really runs now, under `request_lock`: the session is
@@ -3587,7 +4172,12 @@ fn dispatch_broker_client_request(
             .lock_recover()
             .forget_idle_release(&controller);
     }
-    handle(&controller, &shared.performance_midi, request)
+    handle_with_disconnect_admission(
+        &controller,
+        &shared.performance_midi,
+        request,
+        _disconnect_admission.map(|admission| Box::new(admission) as Box<dyn Send>),
+    )
 }
 
 /// The answer to every refused resource read, on TCP and on `--stdio`.
@@ -3770,8 +4360,12 @@ fn request_broker_shutdown_recording(
     clients.shutting_down = true;
     drop(clients);
     shared.observer_changed.notify_all();
-    shared.disconnect_devices();
-    json!({"jsonrpc":"2.0","id":request.id,"result":{"shutdown":true,"detail":"The device was released and the broker is shutting down"}})
+    let delivery = shared.disconnect_devices();
+    let detail = match delivery {
+        Ok(()) => "Device sessions closed; the broker is shutting down".to_owned(),
+        Err(message) => format!("Broker shutdown committed; {message}"),
+    };
+    json!({"jsonrpc":"2.0","id":request.id,"result":{"shutdown":true,"detail":detail}})
 }
 
 /// One request from a control connection (`qc-device-broker.exe --control`).
@@ -3870,6 +4464,9 @@ fn authenticate_and_serve_tcp_client(
     instance_id: &str,
     phase_events: bool,
 ) {
+    let Some(_owner) = connection_owner(&shared.clients, connection_id) else {
+        return;
+    };
     // Detach on every exit, a panic included: a connection thread that
     // unwound past a plain trailing call left its count and participant row
     // behind for good, so the idle grace never fired and disconnect and
@@ -3982,6 +4579,12 @@ fn serve_registered_tcp_connection(
     connection_id: u64,
     phase_events: bool,
 ) {
+    let Some(_owner) = connection_owner(&shared.clients, connection_id) else {
+        return;
+    };
+    let Ok(shutdown_socket) = input.try_clone() else {
+        return;
+    };
     // A control connection is nobody's session: no state frames for it.
     let control = shared.clients.lock_recover().is_control(connection_id);
     let events = Mutex::new(
@@ -3990,6 +4593,12 @@ fn serve_registered_tcp_connection(
     let stop = AtomicBool::new(false);
     let observer_action = Arc::new(AtomicBool::new(false));
     thread::scope(|scope| {
+        // Drop before the scope joins, including on unwind. This socket clone
+        // never needs the writer mutex to wake blocked readers and writers.
+        let _teardown = ConnectionTeardown {
+            stop: &stop,
+            socket: shutdown_socket,
+        };
         let push_output = &output;
         let push_stop = &stop;
         let push_events = &events;
@@ -4056,7 +4665,8 @@ fn serve_registered_tcp_connection(
                             if shared.clients.lock_recover().is_observer(connection_id) {
                                 continue;
                             }
-                            if write_response(&mut *output, &notification).is_err() {
+                            if write_tcp_response(&mut output, &notification).is_err() {
+                                let _ = output.shutdown(std::net::Shutdown::Both);
                                 return;
                             }
                         }
@@ -4087,13 +4697,15 @@ fn serve_registered_tcp_connection(
                         let observed = (
                             selected.device_id(),
                             status.phase.clone(),
+                            status.detail.clone(),
                             status.connected,
                             status.synchronized,
                         );
                         if published.as_ref() != Some(&observed) {
                             let mut notification = phase_notification(&status);
                             notification["params"]["deviceId"] = json!(selected.device_id());
-                            if write_response(&mut *writer, &notification).is_err() {
+                            if write_tcp_response(&mut writer, &notification).is_err() {
+                                let _ = writer.shutdown(std::net::Shutdown::Both);
                                 return;
                             }
                             published = Some(observed);
@@ -4142,7 +4754,7 @@ fn serve_registered_tcp_connection(
                         }
                     };
                     let mut writer = reader_output.lock_recover();
-                    if write_response(&mut *writer, &response).is_err() {
+                    if write_tcp_response(&mut writer, &response).is_err() {
                         let _ = writer.shutdown(std::net::Shutdown::Both);
                         break;
                     }
@@ -4173,7 +4785,7 @@ fn serve_registered_tcp_connection(
                     shared.finish_shutdown_after_response(&output, &response);
                     break;
                 }
-                if write_response(&mut *output.lock_recover(), &response).is_err() {
+                if write_tcp_response(&mut output.lock_recover(), &response).is_err() {
                     break;
                 }
                 continue;
@@ -4199,7 +4811,7 @@ fn serve_registered_tcp_connection(
                         -32002,
                         "An observer device action is already in progress",
                     );
-                    if write_response(&mut *output.lock_recover(), &response).is_err() {
+                    if write_tcp_response(&mut output.lock_recover(), &response).is_err() {
                         break;
                     }
                     continue;
@@ -4208,14 +4820,24 @@ fn serve_registered_tcp_connection(
                 let action_output = Arc::clone(&output);
                 let action_pending = Arc::clone(&observer_action);
                 let request_id = request.id.clone();
+                let retired_output = Arc::clone(&output);
+                let retired_pending = Arc::clone(&observer_action);
+                let action_owner = Arc::clone(&_owner);
+                let action_entered = Arc::new(AtomicBool::new(false));
+                let action_answered = Arc::new(AtomicBool::new(false));
+                let retired_entered = Arc::clone(&action_entered);
+                let retired_answered = Arc::clone(&action_answered);
                 let action_is_shutdown = request.method == "broker.shutdown";
                 let action_forced = request.params.get("force") == Some(&Value::Bool(true));
-                // This thread owns its references rather than joining the
-                // connection scope. EOF must remove the observer immediately,
-                // even if an already admitted device operation is still busy.
-                let spawned = thread::Builder::new()
-                    .name("qc-broker-observer-action".into())
-                    .spawn(move || {
+                // EOF removes the visible observer immediately, but the bounded
+                // owner retains its exact original and connection admission.
+                // A separate instance of the existing manager avoids blocking
+                // the policy/reopen pool with requests that wait on that pool.
+                let spawned = shared.observer_actions.schedule(
+                    [6, connection_id, 0],
+                    Instant::now(),
+                    background::Work::new(move |_| {
+                        action_entered.store(true, Ordering::Release);
                         let response = dispatch_broker_client_request(
                             &action_shared,
                             Some(connection_id),
@@ -4228,27 +4850,54 @@ fn serve_registered_tcp_connection(
                                 .lock_recover()
                                 .shutdown(std::net::Shutdown::Both);
                             action_pending.store(false, Ordering::Release);
+                            action_answered.store(true, Ordering::Release);
                             return;
                         }
-                        write_observer_action_response(
+                        write_observer_action_response_with(
                             &action_output,
                             &action_pending,
                             &response,
+                            write_tcp_response,
                             |writer| {
                                 let _ = writer.shutdown(std::net::Shutdown::Both);
                             },
                         );
-                    });
+                        action_answered.store(true, Ordering::Release);
+                    })
+                    .on_retired(move |_joined_without_panic| {
+                        if !retired_entered.load(Ordering::Acquire) {
+                            let response = error(
+                                request_id,
+                                -32002,
+                                "Observer device action was cancelled before dispatch",
+                            );
+                            write_observer_action_response_with(
+                                &retired_output,
+                                &retired_pending,
+                                &response,
+                                write_tcp_response,
+                                |writer| {
+                                    let _ = writer.shutdown(std::net::Shutdown::Both);
+                                },
+                            );
+                        } else if !retired_answered.load(Ordering::Acquire) {
+                            // An admitted request may already have affected the
+                            // device. Transport loss is ambiguous, never a false
+                            // pre-dispatch refusal or a second framed response.
+                            let _ = retired_output
+                                .lock_recover()
+                                .shutdown(std::net::Shutdown::Both);
+                            retired_pending.store(false, Ordering::Release);
+                        }
+                        // This callback runs after original signal/join, not
+                        // merely when its request body or thread-local scope ends.
+                        drop(action_owner);
+                    }),
+                );
                 if let Err(spawn_error) = spawned {
-                    observer_action.store(false, Ordering::Release);
-                    let response = error(
-                        request_id,
-                        -32002,
-                        &format!("Could not start observer device action: {spawn_error}"),
-                    );
-                    if write_response(&mut *output.lock_recover(), &response).is_err() {
-                        break;
-                    }
+                    // Failed admission also retires never-started Work and
+                    // sends its one refusal through the callback above.
+                    eprintln!("Could not admit observer device action: {spawn_error}");
                 }
                 continue;
             }
@@ -4309,20 +4958,33 @@ fn serve_registered_tcp_connection(
                     Err(_) => break,
                 },
             };
-            if write_response(&mut *output_guard, &response).is_err() {
+            if write_tcp_response(&mut output_guard, &response).is_err() {
                 break;
             }
         }
         // A committed shutdown or a failed write ended the queue while the
         // reader is still blocked on the socket. The inline loop simply
         // returned; here the scope cannot end until the reader does, so close
-        // the socket under it. After an ordinary EOF nothing is closed early:
-        // an observer action still running keeps its socket, as before.
+        // the socket without needing its writer mutex. The teardown guard also
+        // retires the connection on EOF; admitted observer effects retain their
+        // own operation ownership, but no longer retain a usable reply socket.
         if !reader_finished {
-            let _ = output.lock_recover().shutdown(std::net::Shutdown::Both);
+            let _ = _teardown.socket.shutdown(std::net::Shutdown::Both);
         }
         stop.store(true, Ordering::Release);
     });
+}
+
+struct ConnectionTeardown<'a> {
+    stop: &'a AtomicBool,
+    socket: TcpStream,
+}
+
+impl Drop for ConnectionTeardown<'_> {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+    }
 }
 
 /// Whether a connection holds its output lock across this request's dispatch.
@@ -4348,6 +5010,7 @@ impl ConnectionSubscription {
 
 #[derive(Default)]
 struct ConnectionInfo {
+    admission: Arc<()>,
     selected_device: Option<Arc<DeviceController>>,
     provider: String,
     role: ConnectionRole,
@@ -4384,8 +5047,11 @@ fn connection_hello(params: &Value) -> Result<ConnectionInfo, &'static str> {
         None => "",
         Some(Value::String(value)) => value,
         _ => return Err("provider must be a string"),
+    };
+    if provider.len() > BROKER_PROVIDER_MAX_UTF8_BYTES {
+        return Err("provider must not exceed 4096 UTF-8 bytes");
     }
-    .to_string();
+    let provider = provider.to_string();
     let minutes = match params.get("idlePolicyMinutes") {
         None | Some(Value::Null) => None,
         Some(value) => Some(
@@ -4418,6 +5084,7 @@ fn connection_hello(params: &Value) -> Result<ConnectionInfo, &'static str> {
         return Err("keepConnected requires an observer without an idle period");
     }
     Ok(ConnectionInfo {
+        admission: Arc::new(()),
         selected_device: None,
         keep_connected_since: keep_connected.then(Instant::now),
         provider,
@@ -4452,10 +5119,19 @@ struct ClientAccounting {
     /// continue to use this count, never the participant count.
     count: usize,
     shutting_down: bool,
+    /// New participants cannot join this device between the final sharing
+    /// check and the worker's disconnect acknowledgment.
+    closing_devices: Vec<Arc<DeviceController>>,
     next_connection_id: u64,
     connections: BTreeMap<u64, ConnectionInfo>,
+    // Bounded weak inventory under this mutex; rows and original jobs own
+    // the strong leases. Detached but unfinished jobs still consume slots.
+    connection_owners: Vec<std::sync::Weak<()>>,
     observer_idle_since: Option<Instant>,
     observer_timer_running: bool,
+    // Exact observer owner; retiring an old original cannot clear a queued
+    // replacement's flag. This marker is bounded by manager/job ownership.
+    observer_owner: Option<Arc<()>>,
     /// The broker's own icon hold: `Some` only while this process's
     /// notification icon is registered with the shell. `None` is the shipped
     /// broker, reaped by the five-second grace once no connection remains.
@@ -4492,6 +5168,11 @@ struct ClientAccounting {
 }
 
 impl ClientAccounting {
+    fn device_is_closing(&self, device: &Arc<DeviceController>) -> bool {
+        self.closing_devices
+            .iter()
+            .any(|closing| Arc::ptr_eq(closing, device))
+    }
     fn is_control(&self, id: u64) -> bool {
         self.connections.get(&id).is_some_and(|row| row.control)
     }
@@ -4653,16 +5334,32 @@ fn accept_or_refuse_client(clients: &Mutex<ClientAccounting>) -> bool {
 /// cannot pin an unbounded number of threads; the caller closes the socket.
 fn accept_client(clients: &Mutex<ClientAccounting>) -> Option<u64> {
     let mut clients = clients.lock_recover();
+    clients
+        .connection_owners
+        .retain(|owner| owner.strong_count() != 0);
     if clients.shutting_down
         || clients.pending_authentications() >= BROKER_MAX_PENDING_AUTHENTICATIONS
+        || clients.connection_owners.len() >= BROKER_MAX_CONNECTION_OWNERS
     {
         return None;
     }
     clients.count += 1;
     clients.next_connection_id += 1;
     let id = clients.next_connection_id;
-    clients.connections.insert(id, ConnectionInfo::default());
+    let row = ConnectionInfo::default();
+    clients
+        .connection_owners
+        .push(Arc::downgrade(&row.admission));
+    clients.connections.insert(id, row);
     Some(id)
+}
+
+fn connection_owner(clients: &Mutex<ClientAccounting>, id: u64) -> Option<Arc<()>> {
+    clients
+        .lock_recover()
+        .connections
+        .get(&id)
+        .map(|row| Arc::clone(&row.admission))
 }
 
 /// What every connection thread of one broker shares.
@@ -4688,8 +5385,24 @@ struct BrokerShared {
     descriptor_claim: Arc<Mutex<Option<qc_owner_only_file::ClaimedFile>>>,
     on_idle_shutdown: Arc<dyn Fn() + Send + Sync>,
     observer_changed: Condvar,
+    background: background::Manager,
+    observer_actions: background::Manager,
     /// Duration of a policy minute, injected only by in-module tests.
     observer_minute: Duration,
+}
+
+struct DisconnectAdmission {
+    clients: Arc<Mutex<ClientAccounting>>,
+    device: Arc<DeviceController>,
+}
+
+impl Drop for DisconnectAdmission {
+    fn drop(&mut self) {
+        self.clients
+            .lock_recover()
+            .closing_devices
+            .retain(|device| !Arc::ptr_eq(device, &self.device));
+    }
 }
 
 impl BrokerShared {
@@ -4790,6 +5503,15 @@ impl BrokerShared {
     /// participating on another device does not discount `device`'s holder.
     fn disconnect_blocked_for(&self, caller: Option<u64>, device: &Arc<DeviceController>) -> bool {
         let clients = self.clients.lock_recover();
+        Self::disconnect_blocked_under(&clients, &self.controller, caller, device)
+    }
+
+    fn disconnect_blocked_under(
+        clients: &ClientAccounting,
+        default: &Arc<DeviceController>,
+        caller: Option<u64>,
+        device: &Arc<DeviceController>,
+    ) -> bool {
         if clients.connections.is_empty() {
             return clients.disconnect_blocked(caller);
         }
@@ -4799,15 +5521,33 @@ impl BrokerShared {
             .filter(|(id, row)| {
                 Some(**id) != caller
                     && row.is_participant()
-                    && Arc::ptr_eq(
-                        row.selected_device.as_ref().unwrap_or(&self.controller),
-                        device,
-                    )
+                    && Arc::ptr_eq(row.selected_device.as_ref().unwrap_or(default), device)
             })
             .count();
         // A caller with no connection row (in-process) keeps its historical
         // allowance of one participant: itself.
         others > usize::from(caller.is_none())
+    }
+
+    /// Called only with request_lock already held: never hold clients while
+    /// waiting behind another operation. Authentication and hello promotion
+    /// share this accounting lock, so admission has a real linearization point.
+    fn reserve_disconnect_for(
+        &self,
+        caller: Option<u64>,
+        device: &Arc<DeviceController>,
+    ) -> Option<DisconnectAdmission> {
+        let mut clients = self.clients.lock_recover();
+        if clients.device_is_closing(device)
+            || Self::disconnect_blocked_under(&clients, &self.controller, caller, device)
+        {
+            return None;
+        }
+        clients.closing_devices.push(Arc::clone(device));
+        Some(DisconnectAdmission {
+            clients: Arc::clone(&self.clients),
+            device: Arc::clone(device),
+        })
     }
 
     fn select_device(&self, connection_id: u64, id: &str) -> Result<(), String> {
@@ -4858,6 +5598,12 @@ impl BrokerShared {
         if clients.shutting_down {
             return Err("Broker shutdown is already committed".into());
         }
+        if clients.device_is_closing(&selected) {
+            return Err(
+                "The selected device session is closing; select it again after it has closed"
+                    .into(),
+            );
+        }
         let row = clients
             .connections
             .get_mut(&connection_id)
@@ -4875,34 +5621,65 @@ impl BrokerShared {
     }
 
     fn release_unused_device_after_grace(&self, device: Arc<DeviceController>) {
-        let clients = Arc::clone(&self.clients);
-        let request_lock = Arc::clone(&self.request_lock);
-        let default = Arc::clone(&self.controller);
-        let spawned = thread::Builder::new()
-            .name("qc-device-idle-grace".into())
-            .spawn(move || {
-                thread::sleep(IDLE_SHUTDOWN_GRACE);
-                let _exclusive = request_lock.lock_recover();
-                let clients = clients.lock_recover();
-                let still_attached = clients.connections.values().any(|row| {
-                    Arc::ptr_eq(row.selected_device.as_ref().unwrap_or(&default), &device)
-                });
-                drop(clients);
-                if !still_attached {
-                    let _ = device.disconnect();
-                }
-            });
-        if let Err(error) = spawned {
+        if let Err(error) = background_policy::unused(self, device) {
             eprintln!("Could not start the device release grace thread; the unused device stays open: {error}");
         }
     }
 
-    fn disconnect_devices(&self) {
-        let _ = self.controller.disconnect();
-        for device in self.devices.lock_recover().iter() {
-            let _ = device.disconnect();
+    /// Called with request_lock held, preserving the existing unused-target
+    /// policy (ANY attached row, including observer/pending, keeps it open).
+    fn reserve_unused_device(
+        accounting: &Arc<Mutex<ClientAccounting>>,
+        default: &Arc<DeviceController>,
+        device: &Arc<DeviceController>,
+    ) -> Option<DisconnectAdmission> {
+        let mut clients = accounting.lock_recover();
+        if clients.shutting_down
+            || clients.device_is_closing(device)
+            || clients
+                .connections
+                .values()
+                .any(|row| Arc::ptr_eq(row.selected_device.as_ref().unwrap_or(default), device))
+        {
+            return None;
         }
+        clients.closing_devices.push(Arc::clone(device));
+        Some(DisconnectAdmission {
+            clients: Arc::clone(accounting),
+            device: Arc::clone(device),
+        })
+    }
+
+    fn disconnect_devices(&self) -> Result<(), String> {
+        // A failed close must not release ANY HID session while raw MIDI still
+        // owns the matching device. Request callers already hold admission.
+        for device in self.all_controllers() {
+            self.performance_midi.retire_controller(&device)?;
+        }
+        // Snapshot before waiting. Every logical session still closes even
+        // when another controller cannot verify its native teardown.
+        let failures: Vec<_> = self
+            .all_controllers()
+            .iter()
+            .filter_map(|device| {
+                device.disconnect().err().map(|message| {
+                    format!(
+                        "{}: {message}",
+                        device
+                            .device_id()
+                            .unwrap_or_else(|| "default device".into())
+                    )
+                })
+            })
+            .collect();
         self.test_point("disconnect_devices:done");
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            let message = failures.join("; ");
+            eprintln!("Device disconnect not verified: {message}");
+            Err(message)
+        }
     }
 
     /// Every controller this broker owns, copied out of `devices` before any
@@ -5057,7 +5834,20 @@ impl BrokerShared {
     }
 
     fn finish_shutdown(&self) -> crate::worker::WorkerShutdownReport {
-        self.disconnect_devices();
+        #[cfg(target_os = "linux")]
+        if !self.performance_midi.retire_all_devices() {
+            let report = crate::worker::WorkerShutdownReport {
+                outcomes: self
+                    .all_controllers()
+                    .iter()
+                    .map(|controller| (controller.device_id(), crate::worker::WorkerExit::TimedOut))
+                    .collect(),
+            };
+            eprintln!("MIDI retirement unacknowledged; HID and descriptor claim remain owned until process teardown");
+            (self.on_idle_shutdown)();
+            return report;
+        }
+        let _ = self.disconnect_devices();
         // `on_idle_shutdown` exits the process. Let the USB workers return
         // first, so a teardown a disconnect left in flight (an ack that timed
         // out inside the HID writer join) reaches the device before the
@@ -5076,12 +5866,14 @@ impl BrokerShared {
             eprintln!("QC device broker shutdown: {}", report.summary());
         }
         drop(controllers);
-        if let Some(claim) = self.descriptor_claim.lock_recover().take() {
-            if let Err(error) = claim.release() {
-                eprintln!(
-                    "Could not release {}: {error}",
-                    self.descriptor_path.display()
-                );
+        if report.all_verified() {
+            if let Some(claim) = self.descriptor_claim.lock_recover().take() {
+                if let Err(error) = claim.release() {
+                    eprintln!(
+                        "Could not release {}: {error}",
+                        self.descriptor_path.display()
+                    );
+                }
             }
         }
         (self.on_idle_shutdown)();
@@ -5145,6 +5937,16 @@ impl BrokerShared {
                 self.observer_changed.notify_all();
                 return Ok(());
             }
+            if clients.connections.get(&connection_id).is_some_and(|row| {
+                matches!(row.role, ConnectionRole::Participant)
+                    && clients
+                        .device_is_closing(row.selected_device.as_ref().unwrap_or(&self.controller))
+            }) {
+                return Err(
+                    "The selected device session is closing; attach again after it has closed"
+                        .into(),
+                );
+            }
             if let Some(row) = clients.connections.get_mut(&connection_id) {
                 row.authenticated = true;
                 if matches!(row.role, ConnectionRole::Participant) && !row.control {
@@ -5193,13 +5995,10 @@ impl BrokerShared {
             return;
         }
         clients.observer_timer_running = true;
+        let marker = Arc::new(());
+        clients.observer_owner = Some(Arc::clone(&marker));
         drop(clients);
-        let shared = Arc::clone(self);
-        if let Err(error) = thread::Builder::new()
-            .name("qc-broker-observer-backstop".into())
-            .spawn(move || shared.watch_observer_backstop())
-        {
-            self.clients.lock_recover().observer_timer_running = false;
+        if let Err(error) = background_policy::observer(self, marker) {
             eprintln!("Could not start the broker observer backstop: {error}");
         }
     }
@@ -5269,9 +6068,21 @@ impl BrokerShared {
         observers.into_iter().chain(tray).max()
     }
 
-    fn watch_observer_backstop(self: Arc<Self>) {
-        let mut clients = self.clients.lock_recover();
+    fn watch_observer_backstop(self: Arc<Self>, ticket: background::Ticket, marker: Arc<()>) {
         loop {
+            // Queue before clients is the admission order. Never test a
+            // ticket while retaining clients across a Condvar wake.
+            if !ticket.current() {
+                return;
+            }
+            let mut clients = self.clients.lock_recover();
+            if !clients
+                .observer_owner
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &marker))
+            {
+                return;
+            }
             if clients.shutting_down
                 || (clients.observers() == 0 && !clients.tray_holds_past_grace())
             {
@@ -5286,7 +6097,7 @@ impl BrokerShared {
                         // host. Only the device session is released.
                         clients.observer_timer_running = false;
                         drop(clients);
-                        self.release_idle_device();
+                        background_policy::release_idle(&self, Some(&ticket));
                         return;
                     }
                     // Accept, role changes, all counts, and shutdown commitment
@@ -5297,15 +6108,17 @@ impl BrokerShared {
                     self.finish_shutdown();
                     return;
                 }
-                (clients, _) = self
-                    .observer_changed
-                    .wait_timeout(clients, remaining)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                drop(
+                    self.observer_changed
+                        .wait_timeout(clients, remaining.min(Duration::from_millis(100)))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
             } else {
-                clients = self
-                    .observer_changed
-                    .wait(clients)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                drop(
+                    self.observer_changed
+                        .wait_timeout(clients, Duration::from_millis(100))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                );
             }
         }
     }
@@ -5384,36 +6197,9 @@ impl BrokerShared {
     /// devices are recorded as released and closed without letting go of
     /// `request_lock`, and a reopen reconnects only under `request_lock`, so a
     /// request arriving in between waits for the close and then reopens.
+    #[cfg(test)]
     fn release_idle_device(self: &Arc<Self>) {
-        let exclusive = self.request_lock.lock_recover();
-        let all = self.all_controllers();
-        let release = {
-            let mut clients = self.clients.lock_recover();
-            let release = !clients.shutting_down
-                && clients.resident
-                && !clients.idle_released
-                && clients.reopens_in_flight == 0
-                && clients.participants() == 0
-                && clients.pending_authentications() == 0;
-            if release {
-                clients.observer_idle_since = None;
-                clients.tray_idle_since = None;
-                clients.record_idle_release(all);
-            }
-            release
-        };
-        if release {
-            self.test_point("release_idle_device:recorded");
-            self.controller
-                .record_flight_event("resident broker released the idle device");
-            self.disconnect_devices();
-            drop(exclusive);
-            return;
-        }
-        drop(exclusive);
-        // Not released: whatever changed (a participant, residency lost) has
-        // its own path, but a backstop timer must not be left stopped.
-        self.update_observer_backstop();
+        background_policy::release_idle(self, None);
     }
 
     /// Called with the controller a request is about to reach, before it is
@@ -5544,47 +6330,7 @@ impl BrokerShared {
     /// A guard records a failure and releases the in-flight count however the
     /// thread ends, a panic included.
     fn spawn_idle_reopen(&self, controller: Arc<DeviceController>, attempt: u64) {
-        let guard = ReopenGuard {
-            clients: Arc::clone(&self.clients),
-            controller: Arc::clone(&controller),
-            attempt,
-            outcome: None,
-        };
-        let request_lock = Arc::clone(&self.request_lock);
-        let spawned = thread::Builder::new()
-            .name("qc-broker-idle-reopen".into())
-            .spawn(move || {
-                let mut guard = guard;
-                {
-                    let _exclusive = request_lock.lock_recover();
-                    {
-                        let clients = guard.clients.lock_recover();
-                        if clients.shutting_down {
-                            drop(clients);
-                            guard.outcome =
-                                Some(Err("broker shutdown is already committed".into()));
-                            return;
-                        }
-                        if !clients
-                            .idle_entry(&controller)
-                            .is_some_and(|entry| entry.reopening && entry.attempt == attempt)
-                        {
-                            // Taken over by a reconnect, reset or disconnect.
-                            drop(clients);
-                            guard.outcome = Some(Ok(()));
-                            return;
-                        }
-                    }
-                    controller
-                        .record_flight_event("resident broker reopening an idle-released device");
-                    if let Err(error) = idle_reconnect(&controller) {
-                        guard.outcome = Some(Err(error));
-                        return;
-                    }
-                }
-                guard.outcome = Some(idle_wait(&controller));
-            });
-        if let Err(error) = spawned {
+        if let Err(error) = background_policy::reopen(self, controller, attempt) {
             // The closure (and the guard inside it) was dropped unrun; the
             // guard already recorded a failure and released the count.
             eprintln!("Could not start reopening the Quad Cortex: {error}");
@@ -5627,46 +6373,7 @@ impl BrokerShared {
     /// otherwise never see a disconnect and live forever - holding the USB
     /// device, when started with `--auto-connect`.
     fn arm_idle_shutdown(self: &Arc<Self>) {
-        let shared = Arc::clone(self);
-        let grace = self.idle_grace();
-        let spawned = thread::Builder::new()
-            .name("qc-broker-tcp-grace".into())
-            .spawn(move || {
-                thread::sleep(grace);
-                let mut clients = shared.clients.lock_recover();
-                // An icon policy past the grace owns the reap; dropping it
-                // re-arms this grace (`set_tray_hold`).
-                if clients.shutting_down || clients.tray_holds_past_grace() {
-                    return;
-                }
-                if clients.count != 0 {
-                    // The last connection out re-arms it (`detach_client`).
-                    clients.reap_deferred = true;
-                    return;
-                }
-                if clients.reopens_in_flight != 0 {
-                    // Never exit, or release, under a running handshake.
-                    drop(clients);
-                    shared.arm_idle_shutdown();
-                    return;
-                }
-                if clients.resident {
-                    // The session's resident host outlives its last client;
-                    // only the device session is released. Dropping
-                    // residency re-arms this grace (`set_resident`).
-                    drop(clients);
-                    shared.release_idle_device();
-                    return;
-                }
-                // Committing here, under the same lock the accept loop
-                // checks, is what closes the race: no connection accepted
-                // after this point can have been counted before it, and no
-                // connection counted before this point is missed by it.
-                clients.shutting_down = true;
-                drop(clients);
-                shared.finish_shutdown();
-            });
-        if let Err(error) = spawned {
+        if let Err(error) = background_policy::idle(self) {
             // Without this thread an unattended broker never reaps itself.
             eprintln!("Could not start the device broker idle-shutdown grace thread: {error}");
         }
@@ -5709,6 +6416,12 @@ impl BrokerHandle {
     /// The worker's cached status: no USB traffic.
     pub fn status(&self) -> BrokerStatus {
         self.0.controller.status()
+    }
+
+    /// A non-blocking status projection for the in-process tray. A busy
+    /// device-state lock is not a failed broker heartbeat.
+    pub(crate) fn try_tray_status(&self) -> Option<BrokerStatus> {
+        self.0.controller.try_tray_status()
     }
 
     /// Whether this broker's Quad Cortex session is open, for the in-process
@@ -5808,6 +6521,18 @@ impl BrokerHandle {
     /// leaves the idle-released set, and with something open again the idle
     /// policy may release it later.
     pub fn reconnect(&self) -> Result<String, String> {
+        let _exclusive = self.0.request_lock.lock_recover();
+        {
+            let clients = self.0.clients.lock_recover();
+            if clients.shutting_down {
+                return Err("Broker shutdown is already committed".into());
+            }
+            if clients.reopens_in_flight != 0 {
+                return Err(
+                    "The Quad Cortex is already reopening; try Connect again in a moment".into(),
+                );
+            }
+        }
         let outcome = icon_reconnect(&self.0.controller);
         if outcome.is_ok() {
             {
@@ -5856,7 +6581,7 @@ impl BrokerHandle {
         // Recorded and closed under one `request_lock`, like the idle release.
         clients.record_idle_release(all);
         drop(clients);
-        self.0.disconnect_devices();
+        self.0.disconnect_devices()?;
         Ok("Disconnected. Connect starts the device session again.".to_owned())
     }
 
@@ -5899,7 +6624,7 @@ impl BrokerHandle {
         } else {
             // A worker that did not return is not a clean release; say so
             // rather than reporting success.
-            Ok(format!("Released; {}", report.summary()))
+            Ok(format!("Broker shutdown committed; {}", report.summary()))
         }
     }
 
@@ -5999,28 +6724,141 @@ pub fn serve_broker_tcp_with_published_hook(
     )
 }
 
-/// `serve_broker_tcp` with the deferred auto-connect action injected.
-#[cfg(test)]
-fn serve_broker_tcp_with_auto_connect(
-    controller: Arc<DeviceController>,
-    phase_events: bool,
-    descriptor_path: PathBuf,
-    on_idle_shutdown: Arc<dyn Fn() + Send + Sync>,
-    auto_connect: bool,
-    perform_auto_connect: impl FnOnce(&DeviceController) + Send + 'static,
-) -> Result<(), String> {
-    serve_broker_tcp_full(
-        controller,
-        phase_events,
-        descriptor_path,
-        on_idle_shutdown,
-        auto_connect,
-        perform_auto_connect,
-        |_| {},
-    )
+struct ServingJob {
+    thread: thread::JoinHandle<()>,
+    socket: Option<TcpStream>,
+    // Retained with the original handle until actual finish/join, including
+    // unknown-retirement storage. Function-return alone frees no capacity.
+    _connection_owner: Option<Arc<()>>,
 }
 
-#[allow(clippy::too_many_arguments)]
+struct ServingLifetime {
+    stop: Arc<AtomicBool>,
+    claim: Option<Arc<Mutex<Option<qc_owner_only_file::ClaimedFile>>>>,
+    shared: Option<Arc<BrokerShared>>,
+    jobs: Vec<ServingJob>,
+    cleanup_started: bool,
+}
+
+fn retained_serving_lifetimes() -> &'static Mutex<Vec<ServingLifetime>> {
+    static RETAINED: std::sync::OnceLock<Mutex<Vec<ServingLifetime>>> = std::sync::OnceLock::new();
+    RETAINED.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+impl ServingLifetime {
+    fn new(
+        stop: Arc<AtomicBool>,
+        claim: Arc<Mutex<Option<qc_owner_only_file::ClaimedFile>>>,
+    ) -> Self {
+        // Retirement callbacks may reenter admission. Extract original
+        // lifetime owners before any join/callback/publication release.
+        let retired = std::mem::take(&mut *retained_serving_lifetimes().lock_recover());
+        let mut unfinished = Vec::new();
+        let mut complete = Vec::new();
+        for mut lifetime in retired {
+            lifetime.reap_finished();
+            let background_done = lifetime.shared.as_ref().is_none_or(|shared| {
+                shared.background.acknowledged() && shared.observer_actions.acknowledged()
+            });
+            if lifetime.jobs.is_empty() && background_done {
+                complete.push(lifetime);
+            } else {
+                unfinished.push(lifetime);
+            }
+        }
+        retained_serving_lifetimes()
+            .lock_recover()
+            .extend(unfinished);
+        drop(complete);
+        Self {
+            stop,
+            claim: Some(claim),
+            shared: None,
+            jobs: Vec::new(),
+            cleanup_started: false,
+        }
+    }
+
+    fn reap_finished(&mut self) {
+        let mut index = 0;
+        while index < self.jobs.len() {
+            if crate::platform::process::thread_signalled(&self.jobs[index].thread) {
+                let job = self.jobs.swap_remove(index);
+                if job.thread.join().is_err() {
+                    eprintln!("An owned broker serving task panicked during retirement");
+                }
+            } else {
+                index += 1;
+            }
+        }
+    }
+}
+
+impl ServingLifetime {
+    fn finish(&mut self) -> Result<(), String> {
+        if self.cleanup_started {
+            return Ok(());
+        }
+        self.cleanup_started = true;
+        self.stop.store(true, Ordering::Release);
+        if let Some(shared) = &self.shared {
+            shared.clients.lock_recover().shutting_down = true;
+            // No clients lock is retained across cancellation callbacks.
+            shared.background.stop();
+            shared.observer_actions.stop();
+            shared.observer_changed.notify_all();
+        }
+        for job in &self.jobs {
+            if let Some(socket) = &job.socket {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+        }
+        let deadline = Instant::now() + crate::worker::WORKER_EXIT_BUDGET;
+        loop {
+            self.reap_finished();
+            let background_done = self.shared.as_ref().is_none_or(|shared| {
+                shared.background.acknowledged() && shared.observer_actions.acknowledged()
+            });
+            if (self.jobs.is_empty() && background_done) || Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let background_done = self.shared.as_ref().is_none_or(|shared| {
+            shared.background.acknowledged() && shared.observer_actions.acknowledged()
+        });
+        if !self.jobs.is_empty() || !background_done {
+            let error = format!("Broker serving cleanup has {} unacknowledged serving task(s), background acknowledged={background_done}; retaining exact handles, accounting and descriptor ownership", self.jobs.len());
+            retained_serving_lifetimes().lock_recover().push(Self {
+                stop: Arc::clone(&self.stop),
+                claim: self.claim.take(),
+                shared: self.shared.take(),
+                jobs: std::mem::take(&mut self.jobs),
+                cleanup_started: false,
+            });
+            return Err(error);
+        }
+        if let Some(claim) = self.claim.take() {
+            if let Some(file) = claim.lock_recover().take() {
+                if let Err(error) = file.release() {
+                    return Err(format!(
+                        "Could not retire the owned broker publication: {error}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ServingLifetime {
+    fn drop(&mut self) {
+        if let Err(error) = self.finish() {
+            eprintln!("{error}");
+        }
+    }
+}
+
 fn serve_broker_tcp_full(
     controller: Arc<DeviceController>,
     phase_events: bool,
@@ -6030,8 +6868,36 @@ fn serve_broker_tcp_full(
     perform_auto_connect: impl FnOnce(&DeviceController) + Send + 'static,
     on_published: impl FnOnce(BrokerHandle),
 ) -> Result<(), String> {
+    serve_broker_tcp_full_with_stop(
+        controller,
+        phase_events,
+        descriptor_path,
+        on_idle_shutdown,
+        auto_connect,
+        perform_auto_connect,
+        on_published,
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
+/// The normal server and in-process fixtures share the same owned startup and
+/// teardown path. The explicit token never changes authentication or dispatch.
+#[allow(clippy::too_many_arguments)]
+fn serve_broker_tcp_full_with_stop(
+    controller: Arc<DeviceController>,
+    phase_events: bool,
+    descriptor_path: PathBuf,
+    on_idle_shutdown: Arc<dyn Fn() + Send + Sync>,
+    auto_connect: bool,
+    perform_auto_connect: impl FnOnce(&DeviceController) + Send + 'static,
+    on_published: impl FnOnce(BrokerHandle),
+    stop: Arc<AtomicBool>,
+) -> Result<(), String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| format!("Could not bind the device broker TCP listener: {error}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("Could not make the broker listener cancellable: {error}"))?;
     let local_port = listener
         .local_addr()
         .map_err(|error| format!("Could not read the device broker TCP listener address: {error}"))?
@@ -6047,8 +6913,7 @@ fn serve_broker_tcp_full(
     let descriptor_file = try_claim_descriptor_slot(&descriptor_path)
         .map_err(|()| descriptor_claim_refusal(&descriptor_path))?;
     let descriptor_claim = Arc::new(Mutex::new(Some(descriptor_file)));
-    #[cfg(target_os = "linux")]
-    let _publication_cleanup = PublicationCleanup(Arc::clone(&descriptor_claim));
+    let mut serving = ServingLifetime::new(Arc::clone(&stop), Arc::clone(&descriptor_claim));
 
     // The empty registry is ready before publication; native endpoints are
     // created only by admitted per-device worker jobs.
@@ -6069,13 +6934,15 @@ fn serve_broker_tcp_full(
             .map_err(|error| format!("Could not publish the device broker descriptor: {error}"))?;
     }
     let refresh_claim = Arc::clone(&descriptor_claim);
-    thread::Builder::new()
+    let refresh_stop = Arc::clone(&stop);
+    let refresh = thread::Builder::new()
         .name("qc-broker-descriptor-refresh".into())
         .spawn(move || {
-            refresh_descriptor_while_claimed(
+            refresh_descriptor_while_claimed_until(
                 &refresh_claim,
                 DESCRIPTOR_REFRESH_INTERVAL,
                 DESCRIPTOR_REFRESH_RETRY_FLOOR,
+                &refresh_stop,
                 |file| {
                     descriptor.published_at_unix_ms = unix_time_ms();
                     write_descriptor(file, &descriptor)
@@ -6083,12 +6950,25 @@ fn serve_broker_tcp_full(
             )
         })
         .map_err(|error| format!("Could not start the descriptor refresh thread: {error}"))?;
+    serving.jobs.push(ServingJob {
+        thread: refresh,
+        socket: None,
+        _connection_owner: None,
+    });
 
     // The update relay's switch lives in the settings file beside the
     // descriptor; only a broker that has a descriptor can be told to turn it off.
     if let Some(directory) = descriptor_path.parent() {
         controller.configure_updater_relay(directory.to_path_buf());
     }
+    let exit_stop = Arc::clone(&stop);
+    let owned_exit: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        // Shutdown replies and native retirement happen before this callback.
+        // Merely setting clients.shutting_down earlier must not close sockets
+        // before the committed shutdown response has been delivered.
+        exit_stop.store(true, Ordering::Release);
+        on_idle_shutdown();
+    });
     let shared = Arc::new(BrokerShared {
         controller,
         devices: Mutex::new(Vec::new()),
@@ -6098,10 +6978,13 @@ fn serve_broker_tcp_full(
         descriptor_path,
         instance_id: instance_id.to_string(),
         descriptor_claim,
-        on_idle_shutdown,
+        on_idle_shutdown: owned_exit,
         observer_changed: Condvar::new(),
+        background: background::Manager::default(),
+        observer_actions: background::Manager::default(),
         observer_minute: Duration::from_secs(60),
     });
+    serving.shared = Some(Arc::clone(&shared));
     shared.arm_idle_shutdown();
     on_published(BrokerHandle(Arc::clone(&shared)));
 
@@ -6122,7 +7005,7 @@ fn serve_broker_tcp_full(
     // does for a `--stdio` broker started without `--auto-connect`.
     if auto_connect {
         let reconnect_controller = Arc::clone(&shared.controller);
-        thread::Builder::new()
+        let reconnect = thread::Builder::new()
             .name("qc-broker-tcp-auto-connect".into())
             .spawn(move || {
                 perform_auto_connect(&reconnect_controller);
@@ -6130,14 +7013,32 @@ fn serve_broker_tcp_full(
             .map_err(|error| {
                 format!("Could not start the deferred auto-connect thread: {error}")
             })?;
+        serving.jobs.push(ServingJob {
+            thread: reconnect,
+            socket: None,
+            _connection_owner: None,
+        });
     }
 
     let mut accept_backoff = AcceptBackoff::default();
-    for stream in listener.incoming() {
-        let stream = match stream {
-            Ok(stream) => {
+    while !stop.load(Ordering::Acquire) {
+        serving.reap_finished();
+        let stream = match listener.accept() {
+            Ok((stream, _)) => {
+                // Winsock accepts inherit the listener's nonblocking mode.
+                // Only accept is polled; framed authentication and connection
+                // readers require blocking sockets with explicit deadlines.
+                stream.set_nonblocking(false).map_err(|error| {
+                    format!(
+                        "Could not restore blocking mode for an accepted broker socket: {error}"
+                    )
+                })?;
                 accept_backoff.accepted();
                 stream
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(25));
+                continue;
             }
             Err(error) => {
                 // A persistent failure (handle exhaustion, WSAENOBUFS) used to
@@ -6149,6 +7050,9 @@ fn serve_broker_tcp_full(
                 continue;
             }
         };
+        let shutdown_socket = stream.try_clone().map_err(|error| {
+            format!("Could not retain broker client shutdown ownership: {error}")
+        })?;
         let Some(connection_id) = accept_client(&shared.clients) else {
             continue;
         };
@@ -6156,9 +7060,13 @@ fn serve_broker_tcp_full(
         let bearer_token = Arc::clone(&bearer_token);
         let instance_id = Arc::clone(&instance_id);
         let connection_shared = Arc::clone(&shared);
+        let connection_owner = connection_owner(&shared.clients, connection_id)
+            .expect("newly accepted row is owned before worker admission");
+        let thread_owner = Arc::clone(&connection_owner);
         let spawned = thread::Builder::new()
             .name("qc-broker-tcp-client".into())
             .spawn(move || {
+                let _connection_owner = thread_owner;
                 authenticate_and_serve_tcp_client(
                     stream,
                     &connection_shared,
@@ -6168,14 +7076,22 @@ fn serve_broker_tcp_full(
                     phase_events,
                 );
             });
-        if let Err(error) = spawned {
-            eprintln!("Could not start a broker TCP client thread: {error}");
-            // The closure that would decrement the count never ran, so undo
-            // the increment here to keep it balanced.
-            shared.detach_client(connection_id);
+        match spawned {
+            Ok(thread) => {
+                serving.jobs.push(ServingJob {
+                    thread,
+                    socket: Some(shutdown_socket),
+                    _connection_owner: Some(connection_owner),
+                });
+            }
+            Err(error) => {
+                eprintln!("Could not start a broker TCP client thread: {error}");
+                // The closure that would decrement the count never ran.
+                shared.detach_client(connection_id);
+            }
         }
     }
-    Ok(())
+    serving.finish()
 }
 
 #[cfg(test)]
@@ -6192,6 +7108,109 @@ mod resident_tests;
 pub(crate) mod test_support {
     use super::*;
 
+    pub(crate) struct RecoveryResource {
+        pub(crate) resource: Arc<dyn Send + Sync>,
+        pub(crate) armed: bool,
+    }
+    impl Drop for RecoveryResource {
+        fn drop(&mut self) {
+            if self.armed {
+                static RETAINED: Mutex<Vec<Arc<dyn Send + Sync>>> = Mutex::new(Vec::new());
+                RETAINED.lock_recover().push(Arc::clone(&self.resource));
+                eprintln!("serving cleanup unproven; original fixture resource retained");
+            }
+        }
+    }
+
+    pub(crate) struct FixtureJob<T: Send + 'static> {
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<T>>,
+        release_on_failure: Option<Arc<(Mutex<bool>, Condvar)>>,
+        shutdown_on_failure: Option<TcpStream>,
+    }
+    impl<T: Send + 'static> FixtureJob<T> {
+        pub(crate) fn is_finished(&self) -> bool {
+            self.thread
+                .as_ref()
+                .is_none_or(crate::platform::process::thread_signalled)
+        }
+        pub(crate) fn spawn_plain(work: impl FnOnce() -> T + Send + 'static) -> Self {
+            Self::spawn(move |_| work())
+        }
+        pub(crate) fn spawn_with_gate(
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            work: impl FnOnce() -> T + Send + 'static,
+        ) -> Self {
+            let mut job = Self::spawn_plain(work);
+            job.release_on_failure = Some(gate);
+            job
+        }
+        pub(crate) fn spawn_with_socket(
+            socket: TcpStream,
+            work: impl FnOnce() -> T + Send + 'static,
+        ) -> Self {
+            let mut job = Self::spawn_plain(work);
+            job.shutdown_on_failure = Some(socket);
+            job
+        }
+        pub(crate) fn spawn(work: impl FnOnce(Arc<AtomicBool>) -> T + Send + 'static) -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let owned_stop = Arc::clone(&stop);
+            Self {
+                stop,
+                thread: Some(thread::spawn(move || work(owned_stop))),
+                release_on_failure: None,
+                shutdown_on_failure: None,
+            }
+        }
+        pub(crate) fn join(self) -> thread::Result<T> {
+            self.join_with_budget(Duration::from_secs(5))
+        }
+        pub(crate) fn join_with_budget(mut self, budget: Duration) -> thread::Result<T> {
+            self.stop.store(true, Ordering::Release);
+            let deadline = Instant::now() + budget;
+            while !crate::platform::process::thread_signalled(self.thread.as_ref().unwrap()) {
+                assert!(Instant::now() < deadline, "fixture job did not retire");
+                thread::sleep(Duration::from_millis(5));
+            }
+            let result = self.thread.take().unwrap().join();
+            if result.is_ok() {
+                self.release_on_failure = None;
+                self.shutdown_on_failure = None;
+            }
+            result
+        }
+    }
+    impl<T: Send + 'static> Drop for FixtureJob<T> {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(socket) = self.shutdown_on_failure.take() {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+            if let Some(gate) = self.release_on_failure.take() {
+                let (released, changed) = &*gate;
+                *released.lock_recover() = true;
+                changed.notify_all();
+            }
+            let Some(job) = self.thread.take() else {
+                return;
+            };
+            let deadline = Instant::now() + Duration::from_secs(6);
+            while !crate::platform::process::thread_signalled(&job) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+            if crate::platform::process::thread_signalled(&job) {
+                let _ = job.join();
+            } else {
+                static RETAINED: Mutex<Vec<Box<dyn std::any::Any + Send>>> = Mutex::new(Vec::new());
+                RETAINED.lock_recover().push(Box::new(job));
+                eprintln!(
+                    "fixture job exit unacknowledged; exact handle and captured resources retained"
+                );
+            }
+        }
+    }
+
     pub(crate) fn handle() -> BrokerHandle {
         BrokerHandle(Arc::new(BrokerShared {
             controller: Arc::new(DeviceController::start_disconnected().expect("controller")),
@@ -6207,6 +7226,8 @@ pub(crate) mod test_support {
             descriptor_claim: Arc::new(Mutex::new(None)),
             on_idle_shutdown: Arc::new(|| {}),
             observer_changed: Condvar::new(),
+            background: background::Manager::default(),
+            observer_actions: background::Manager::default(),
             observer_minute: Duration::from_secs(60),
         }))
     }
@@ -6244,9 +7265,18 @@ pub(crate) mod test_support {
         handle.0.clients.lock_recover().tray_hold
     }
 
+    /// Run a tray regression assertion while retained device state is busy.
+    pub(crate) fn with_session_lock(handle: &BrokerHandle, assertion: impl FnOnce()) {
+        let _held = handle.0.controller.hold_session_lock_for_test();
+        assertion();
+    }
+
     /// Stop any timer the fixture armed from acting on it later.
     pub(crate) fn finish(handle: &BrokerHandle) {
         handle.0.clients.lock_recover().shutting_down = true;
+        handle.0.background.stop();
+        handle.0.observer_actions.stop();
+        handle.0.observer_changed.notify_all();
     }
 
     /// A real TCP broker on `descriptor_path`, in this process, on a
@@ -6257,40 +7287,38 @@ pub(crate) mod test_support {
     pub(crate) struct Served {
         pub(crate) handle: BrokerHandle,
         pub(crate) exited: Arc<AtomicBool>,
+        job: Option<FixtureJob<()>>,
+        resource: Arc<dyn Send + Sync>,
     }
-
-    /// A broker the test did not shut down (a resident one is never reaped
-    /// while it runs) would otherwise hold its descriptor claim, which
-    /// Windows will not let anyone delete, and refresh its descriptor for
-    /// the rest of the run, so its scratch directory could never be removed.
-    /// Dropped at the end of the test, or while a failed assertion unwinds,
-    /// it commits its shutdown, so no timer or refresh acts later, and
-    /// releases the claim and descriptor as its own exit would. A broker that
-    /// already exited is left as it is. `finish` only flips the shared
-    /// `shutting_down` flag; it does not join the connection's own threads,
-    /// so they can outlive this drop by a moment and still write into the
-    /// scratch directory — `remove_test_directory`'s retries, not this drop,
-    /// are what the directory's removal actually waits on.
     impl Drop for Served {
         fn drop(&mut self) {
-            if self.exited.load(Ordering::Acquire) {
-                return;
-            }
             finish(&self.handle);
-            let claim = self.handle.0.descriptor_claim.lock_recover().take();
-            if let Some(claim) = claim {
-                if let Err(error) = claim.release() {
-                    eprintln!(
-                        "test cleanup: could not release {}: {error}",
-                        self.handle.0.descriptor_path.display()
-                    );
-                }
+            let id = &self.handle.0.instance_id;
+            TEST_POINTS.lock_recover().retain(|(key, _, _)| key != id);
+            TEST_GRACE.lock_recover().retain(|(key, _)| key != id);
+            TEST_MINUTE.lock_recover().retain(|(key, _)| key != id);
+            drop(self.job.take());
+            let deadline = Instant::now() + IDLE_SHUTDOWN_GRACE + Duration::from_secs(2);
+            let retired = || {
+                Arc::strong_count(&self.handle.0) == 1
+                    && Arc::strong_count(&self.handle.0.clients) == 1
+                    && Arc::strong_count(&self.handle.0.request_lock) == 1
+            };
+            while !retired() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+            if !retired() {
+                let _retain = RecoveryResource {
+                    resource: Arc::clone(&self.resource),
+                    armed: true,
+                };
             }
         }
     }
 
     pub(crate) fn serve(
         descriptor_path: &Path,
+        resource: Arc<dyn Send + Sync>,
         configure: impl FnOnce(&BrokerHandle) + Send + 'static,
     ) -> Served {
         let controller =
@@ -6301,8 +7329,13 @@ pub(crate) mod test_support {
             Arc::new(move || flag.store(true, Ordering::Release));
         let (published_tx, published) = mpsc::channel();
         let path = descriptor_path.to_path_buf();
-        thread::spawn(move || {
-            let result = serve_broker_tcp_full(
+        let owned_resource = Arc::clone(&resource);
+        let job = FixtureJob::spawn(move |stop| {
+            let mut recovery = RecoveryResource {
+                resource: owned_resource,
+                armed: true,
+            };
+            let result = serve_broker_tcp_full_with_stop(
                 controller,
                 false,
                 path,
@@ -6313,22 +7346,38 @@ pub(crate) mod test_support {
                     configure(&handle);
                     let _ = published_tx.send(handle);
                 },
+                stop,
             );
             if let Err(error) = result {
                 panic!("the test broker did not serve: {error}");
             }
+            recovery.armed = false;
         });
         let handle = published
             .recv_timeout(Duration::from_secs(8))
             .expect("the test broker publishes promptly");
-        Served { handle, exited }
+        Served {
+            handle,
+            exited,
+            job: Some(job),
+            resource,
+        }
     }
 
     /// A shorter grace for every timer this broker arms from now on.
     pub(crate) fn set_grace(handle: &BrokerHandle, grace: Duration) {
-        TEST_GRACE
-            .lock_recover()
-            .push((handle.0.instance_id.clone(), grace));
+        {
+            let mut clocks = TEST_GRACE.lock_recover();
+            clocks.retain(|(id, _)| id != &handle.0.instance_id);
+            clocks.push((handle.0.instance_id.clone(), grace));
+        }
+        // Real serving has already admitted the initial default-five-second
+        // timer before its publication hook. Rebase only this fixture's still
+        // queued clock, not production policy or an already-admitted callback.
+        handle
+            .0
+            .background
+            .rebase_pending_deadline_for_test([1, 0, 0], Instant::now() + grace);
     }
 
     /// A shorter idle-policy minute for this broker from now on.
@@ -6364,6 +7413,276 @@ mod tcp_tests {
     use crate::worker::DecodedStateFrame;
     use quadcortex::state::StateUpdate;
 
+    struct ReleaseGate(Arc<(Mutex<bool>, Condvar)>);
+    impl Drop for ReleaseGate {
+        fn drop(&mut self) {
+            let (released, changed) = &*self.0;
+            *released.lock_recover() = true;
+            changed.notify_all();
+        }
+    }
+    struct ShutdownSocket(TcpStream);
+    impl Drop for ShutdownSocket {
+        fn drop(&mut self) {
+            let _ = self.0.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    #[test]
+    fn tray_status_never_waits_for_busy_device_state() {
+        let handle = test_support::handle();
+        {
+            let mut status = handle.0.controller.hold_status_lock_for_test();
+            status.phase = "ready".into();
+            status.connected = true;
+            status.synchronized = true;
+            status.active_preset_name = Some("Cached preset".into());
+        }
+
+        let owner = handle.0.controller.hold_session_lock_for_test();
+        let started = Instant::now();
+        let status = handle
+            .try_tray_status()
+            .expect("the cached status lock is free");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "tray status waited behind the retained device state"
+        );
+        assert_eq!(status.phase, "ready");
+        assert_eq!(status.active_preset_name.as_deref(), Some("Cached preset"));
+        drop(owner);
+
+        let status_lock = handle.0.controller.hold_status_lock_for_test();
+        let started = Instant::now();
+        assert!(handle.try_tray_status().is_none());
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "tray status waited behind a worker status update"
+        );
+        drop(status_lock);
+        test_support::finish(&handle);
+    }
+
+    #[test]
+    fn tcp_phase_notifications_publish_progress_detail_without_a_phase_transition() {
+        let shared = Arc::new(broker_shared_for_test());
+        {
+            let mut status = shared.controller.hold_status_lock_for_test();
+            status.phase = "syncing".into();
+            status.detail = "Opening session".into();
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let id = accept_client(&shared.clients).unwrap();
+        let connection_shared = Arc::clone(&shared);
+        let job = test_support::FixtureJob::spawn_plain(move || {
+            serve_broker_tcp_connection(server, &connection_shared, id, true);
+            connection_shared.detach_client(id);
+        });
+        let shutdown = ShutdownSocket(client.try_clone().unwrap());
+        let first = read_notification(&mut client, "device.phase").expect("first progress");
+        assert_eq!(first["params"]["phase"], "syncing");
+        assert_eq!(first["params"]["detail"], "Opening session");
+        shared.controller.hold_status_lock_for_test().detail = "Reading preset library".into();
+        let second = read_notification(&mut client, "device.phase").expect("same-phase progress");
+        assert_eq!(second["params"]["phase"], "syncing");
+        assert_eq!(second["params"]["detail"], "Reading preset library");
+        drop(shutdown);
+        job.join().unwrap();
+    }
+
+    #[test]
+    fn unread_tcp_response_is_bounded_and_socket_shutdown_retires_the_owned_writer_on_unwind() {
+        fn bounded_pair(listener: &TcpListener) -> (TcpStream, TcpStream) {
+            // Set receive capacity before the handshake, rather than racing
+            // Windows loopback's delayed ACKs and auto-grown receive window.
+            let socket =
+                socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+            socket.set_recv_buffer_size(4096).unwrap();
+            socket
+                .connect(&listener.local_addr().unwrap().into())
+                .unwrap();
+            // BSD kernels may round up well beyond the requested 4KiB. The
+            // effective buffer must still be far below our unchanged 8MiB frame.
+            assert!(socket.recv_buffer_size().unwrap() <= 2 * 1024 * 1024);
+            let client: TcpStream = socket.into();
+            let (server, _) = listener.accept().unwrap();
+            let server_socket = socket2::SockRef::from(&server);
+            // Winsock can complete a blocking send by accepting its buffer
+            // even when it exceeds SO_SNDBUF. Disable that test-only staging
+            // so completion requires peer acknowledgement, not admission.
+            // https://learn.microsoft.com/en-us/windows/win32/winsock/tcp-ip-specific-issues-2
+            #[cfg(windows)]
+            {
+                server_socket.set_send_buffer_size(0).unwrap();
+                assert_eq!(server_socket.send_buffer_size().unwrap(), 0);
+            }
+            #[cfg(not(windows))]
+            server_socket.set_send_buffer_size(4096).unwrap();
+            assert!(server_socket.send_buffer_size().unwrap() <= 2 * 1024 * 1024);
+            (client, server)
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let (client, mut server) = bounded_pair(&listener);
+        let response = json!({"id":1,"result":"x".repeat(8 * 1024 * 1024)});
+        let writer = test_support::FixtureJob::spawn_plain(move || {
+            let start = Instant::now();
+            let result = write_tcp_response(&mut server, &response);
+            (result, start.elapsed())
+        });
+        let shutdown = ShutdownSocket(client.try_clone().unwrap());
+        let (result, elapsed) = writer.join_with_budget(Duration::from_secs(7)).unwrap();
+        assert!(
+            result.is_err(),
+            "an unread multi-megabyte frame cannot complete"
+        );
+        assert!(elapsed < Duration::from_secs(6), "{elapsed:?}");
+        drop(shutdown);
+        drop(client);
+
+        let (client, mut server) = bounded_pair(&listener);
+        let finished = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&finished);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let response = json!({"id":2,"result":"x".repeat(8 * 1024 * 1024)});
+            let _writer = test_support::FixtureJob::spawn_plain(move || {
+                started_tx.send(()).unwrap();
+                let _ = write_tcp_response(&mut server, &response);
+                done.store(true, Ordering::Release);
+                let _ = finished_tx.send(());
+            });
+            let _shutdown = ShutdownSocket(client);
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(
+                finished_rx.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout),
+                "the owned writer must still be unfinished before socket shutdown"
+            );
+            panic!("injected reader assertion failure");
+        }));
+        let panic = unwind.expect_err("the injected reader failure must unwind");
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"injected reader assertion failure"),
+            "an earlier fixture assertion must not masquerade as the injected unwind"
+        );
+        assert!(
+            finished.load(Ordering::Acquire),
+            "writer retired before unwind returned"
+        );
+    }
+
+    #[test]
+    fn a_nonblocking_listener_preserves_delayed_authentication_and_persistent_requests() {
+        let path = scratch_descriptor_path("delayed-persistent-client");
+        let serve = start_broker_serve_for_test(&path);
+        let mut client = TcpStream::connect(("127.0.0.1", serve.port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let _shutdown = ShutdownSocket(client.try_clone().unwrap());
+        // The accepted connection must remain blocking while no request byte
+        // is present, even though the listener itself polls nonblocking.
+        thread::sleep(Duration::from_millis(150));
+        write_response(
+            &mut client,
+            &json!({"method":"broker.authenticate","params":{"token":serve.token},"id":0}),
+        )
+        .unwrap();
+        assert!(read_response_within(&mut client, Duration::from_secs(3))
+            .unwrap()
+            .get("result")
+            .is_some());
+        for _ in 0..2 {
+            thread::sleep(Duration::from_millis(150));
+            let reply = send_request(&mut client, "broker.clientCount", json!({}));
+            assert_eq!(
+                reply["result"]["clients"], 1,
+                "persistent participant remains attached"
+            );
+        }
+    }
+
+    #[test]
+    fn tcp_fixture_unwind_stops_the_real_listener_before_retiring_its_exclusive_root() {
+        let path = scratch_descriptor_path("serve-unwind");
+        let directory = path.root.0.clone();
+        let mut address = None;
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let serve = start_broker_serve_for_test(&path);
+            address = Some(std::net::SocketAddr::from(([127, 0, 0, 1], serve.port)));
+            panic!("injected fixture assertion failure");
+        }));
+        assert!(failure.is_err());
+        assert!(TcpStream::connect_timeout(&address.unwrap(), Duration::from_millis(200)).is_err());
+        drop(path);
+        assert!(
+            !directory.exists(),
+            "retired server cannot retain fixture bytes"
+        );
+    }
+
+    #[test]
+    fn descriptor_reader_unwind_signals_and_joins_before_retiring_its_root() {
+        let path = scratch_descriptor_path("reader-unwind");
+        let directory = path.root.0.clone();
+        let (entered, ready) = mpsc::channel();
+        let finished = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&finished);
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _reader = test_support::FixtureJob::spawn(move |stop| {
+                let _path = path;
+                entered.send(()).unwrap();
+                while !stop.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                done.store(true, Ordering::Release);
+            });
+            ready.recv_timeout(Duration::from_secs(1)).unwrap();
+            panic!("injected refresh assertion failure");
+        }));
+        assert!(failure.is_err());
+        assert!(finished.load(Ordering::Acquire));
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn published_callback_unwind_retires_the_common_server_before_releasing_its_claim() {
+        let path = scratch_descriptor_path("published-callback-unwind");
+        let directory = path.root.0.clone();
+        let mut recovery = test_support::RecoveryResource {
+            resource: path.root.clone(),
+            armed: true,
+        };
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = serve_broker_tcp_full_with_stop(
+                Arc::new(DeviceController::start_disconnected().unwrap()),
+                false,
+                path.to_path_buf(),
+                Arc::new(|| {}),
+                false,
+                |_| {},
+                |_| panic!("injected publication callback failure"),
+                Arc::new(AtomicBool::new(false)),
+            );
+        }));
+        assert!(failure.is_err());
+        // A live retained publisher must prevent this exact owner acquisition.
+        let claim =
+            try_claim_descriptor_slot(&path).expect("callback unwind retires publisher ownership");
+        claim.release().unwrap();
+        recovery.armed = false;
+        drop(recovery);
+        drop(path);
+        assert!(!directory.exists());
+    }
+
     fn descriptor_fixture() -> BrokerDescriptor {
         BrokerDescriptor {
             port: 54123,
@@ -6382,11 +7701,9 @@ mod tcp_tests {
         let mut claim = try_claim_descriptor_slot(&path).expect("claim");
         let mut descriptor = descriptor_fixture();
         write_descriptor(&mut claim, &descriptor).unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let reader_stop = Arc::clone(&stop);
         let reader_path = path.clone();
         let (ready, wait_ready) = mpsc::channel();
-        let reader = thread::spawn(move || {
+        let reader = test_support::FixtureJob::spawn(move |reader_stop| {
             let mut reads = 0;
             loop {
                 let bytes = std::fs::read(&reader_path).expect("published document stays readable");
@@ -6416,7 +7733,6 @@ mod tcp_tests {
                 "refresh retains election ownership"
             );
         }
-        stop.store(true, Ordering::Release);
         assert!(reader.join().unwrap() >= 10);
         let mut old_bytes = Vec::new();
         old_snapshot.read_to_end(&mut old_bytes).unwrap();
@@ -6452,7 +7768,7 @@ mod tcp_tests {
         let mut claim = try_claim_descriptor_slot(&path).expect("claim");
         write_descriptor(&mut claim, &descriptor_fixture()).unwrap();
         let shared = BrokerShared {
-            descriptor_path: path.clone(),
+            descriptor_path: path.to_path_buf(),
             descriptor_claim: Arc::new(Mutex::new(Some(claim))),
             ..broker_shared_for_test()
         };
@@ -6504,7 +7820,7 @@ mod tcp_tests {
         let result = serve_broker_tcp_full(
             Arc::new(DeviceController::start_disconnected().expect("controller")),
             false,
-            path.clone(),
+            path.to_path_buf(),
             Arc::new(|| {}),
             false,
             |_| {},
@@ -6551,34 +7867,39 @@ mod tcp_tests {
     /// A fresh directory per call. The PID alone is not unique: Windows
     /// reuses PIDs, and a predecessor's `.claim` sidecar outlives it (see
     /// `a_stale_claim_from_a_same_pid_predecessor_never_blocks_a_fixture`).
-    fn scratch_descriptor_path(name: &str) -> PathBuf {
-        let dir = crate::device_lease::testing::temp_directory().join(format!(
-            "qc-broker-tcp-test-{name}-{}-{}",
-            std::process::id(),
-            generate_token(8)
-        ));
-        crate::device_lease::testing::create_directory(&dir).expect("scratch dir");
-        let path = dir.join("device-broker.json");
-        let _ = std::fs::remove_file(&path);
-        path
+    #[derive(Clone)]
+    struct ScratchDescriptor {
+        path: PathBuf,
+        root: Arc<crate::device_lease::testing::FixtureRoot>,
+    }
+    impl std::ops::Deref for ScratchDescriptor {
+        type Target = PathBuf;
+        fn deref(&self) -> &Self::Target {
+            &self.path
+        }
+    }
+    impl AsRef<Path> for ScratchDescriptor {
+        fn as_ref(&self) -> &Path {
+            &self.path
+        }
+    }
+    fn scratch_descriptor_path(name: &str) -> ScratchDescriptor {
+        let root = crate::device_lease::testing::fresh_root(&format!("rpc-{name}"));
+        ScratchDescriptor {
+            path: root.0.join("device-broker.json"),
+            root,
+        }
     }
 
-    /// `scratch_descriptor_path`, with its directory removed by the returned
-    /// guard. Bind the guard first, so every claim, file and client the test
-    /// opens there is closed before it runs.
-    fn guarded_scratch_descriptor_path(name: &str) -> (ScratchDirectory, PathBuf) {
+    // Both names reuse the original exact-root ownership. Fixture workers and
+    // TestServe keep this same Arc until real retirement, including unwind.
+    fn guarded_scratch_descriptor_path(name: &str) -> (OwnedScratch, ScratchDescriptor) {
         let path = scratch_descriptor_path(name);
-        let guard = ScratchDirectory::new(&path, BrokerExit::NotServed);
-        (guard, path)
+        (OwnedScratch(path.clone()), path)
     }
 
-    /// `guarded_scratch_descriptor_path` for a test that serves an in-process
-    /// broker there: hand the guard the broker with `served_by` as soon as it
-    /// is up, and the directory waits for that broker's own exit.
-    fn broker_scratch_descriptor_path(name: &str) -> (ScratchDirectory, PathBuf) {
-        let path = scratch_descriptor_path(name);
-        let guard = ScratchDirectory::new(&path, BrokerExit::Starting);
-        (guard, path)
+    fn broker_scratch_descriptor_path(name: &str) -> (OwnedScratch, ScratchDescriptor) {
+        guarded_scratch_descriptor_path(name)
     }
 
     /// A broker test process that ends before its idle-shutdown grace
@@ -6618,94 +7939,33 @@ mod tcp_tests {
     /// panics: the descriptor, its `.claim` sidecar and their directory.
     /// `remove_dir` is not recursive, so nothing else is ever swept; on a
     /// passing test anything left over fails it instead.
-    struct OwnedScratch(PathBuf);
+    struct OwnedScratch(ScratchDescriptor);
 
     impl Drop for OwnedScratch {
         fn drop(&mut self) {
-            let dir = self.0.parent().expect("fixture directory").to_path_buf();
-            let removals = [
-                std::fs::remove_file(&self.0),
-                std::fs::remove_file(qc_owner_only_file::claim_path(&self.0)),
-                std::fs::remove_dir(&dir),
-            ];
-            for removal in removals {
-                if let Err(error) = removal {
-                    if error.kind() != std::io::ErrorKind::NotFound && !thread::panicking() {
-                        panic!("could not clean up {}: {error}", dir.display());
+            // The exclusive root's final Arc owns retirement. Other admitted
+            // readers/server workers retain the same root until they finish.
+            if Arc::strong_count(&self.0.root) == 1 {
+                let removals = [
+                    std::fs::remove_file(&self.0.path),
+                    std::fs::remove_file(qc_owner_only_file::claim_path(&self.0.path)),
+                    std::fs::remove_dir(&self.0.root.0),
+                ];
+                for removal in removals {
+                    if let Err(error) = removal {
+                        if error.kind() != std::io::ErrorKind::NotFound && !thread::panicking() {
+                            panic!("could not clean up {}: {error}", self.0.root.0.display());
+                        }
                     }
                 }
             }
         }
     }
 
-    /// Whether an in-process broker serves from a scratch directory, and so
-    /// may still hold its `.claim` and refresh its descriptor there.
-    enum BrokerExit {
-        NotServed,
-        /// Being started: until it is handed over, its exit cannot be seen.
-        Starting,
-        /// The flag the broker sets once its shutdown released the claim.
-        Served(Arc<AtomicBool>),
-    }
-
-    /// Removes one fixture call's whole directory when dropped, on success
-    /// and while a failed assertion unwinds. Best effort and never a panic: a
-    /// broker that has not exited, or a removal that keeps failing, leaves
-    /// the directory and says so on stderr. Unlike `OwnedScratch` it does not
-    /// fail a passing test over what is left.
-    struct ScratchDirectory {
-        directory: PathBuf,
-        broker: BrokerExit,
-    }
-
-    impl ScratchDirectory {
-        fn new(descriptor_path: &Path, broker: BrokerExit) -> Self {
-            let directory = descriptor_path.parent().expect("fixture directory");
-            Self {
-                directory: directory.to_path_buf(),
-                broker,
-            }
-        }
-
-        fn served_by(&mut self, serve: &TestServe) {
-            self.broker = BrokerExit::Served(Arc::clone(&serve.exited));
-        }
-
-        /// The broker's own exit: the grace period that starts once the
-        /// test's clients are gone, then its bounded worker shutdown.
-        fn broker_exited(&self) -> bool {
-            let exited = match &self.broker {
-                BrokerExit::NotServed => return true,
-                BrokerExit::Starting => return false,
-                BrokerExit::Served(exited) => exited,
-            };
-            let deadline = Instant::now()
-                + IDLE_SHUTDOWN_GRACE
-                + crate::worker::WORKER_EXIT_BUDGET
-                + Duration::from_secs(5);
-            while !exited.load(Ordering::Acquire) && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(20));
-            }
-            exited.load(Ordering::Acquire)
-        }
-    }
-
-    impl Drop for ScratchDirectory {
-        fn drop(&mut self) {
-            if !self.broker_exited() {
-                eprintln!(
-                    "test cleanup: its broker has not exited; {} left in place",
-                    self.directory.display()
-                );
-                return;
-            }
-            let removed = crate::device_lease::testing::remove_test_directory(&self.directory);
-            if let Err(error) = removed {
-                eprintln!(
-                    "test cleanup: could not remove {}: {error}",
-                    self.directory.display()
-                );
-            }
+    impl OwnedScratch {
+        fn served_by(&mut self, _serve: &TestServe) {
+            // TestServe already holds the exact root, original worker and broker
+            // handle; its retained ownership, not an exit flag, gates cleanup.
         }
     }
 
@@ -6720,6 +7980,50 @@ mod tcp_tests {
         token: String,
         controller: Arc<DeviceController>,
         exited: Arc<AtomicBool>,
+        job: Option<test_support::FixtureJob<()>>,
+        handle: BrokerHandle,
+        _root: Arc<crate::device_lease::testing::FixtureRoot>,
+    }
+    impl Drop for TestServe {
+        fn drop(&mut self) {
+            test_support::finish(&self.handle);
+            drop(self.job.take());
+            let deadline = Instant::now() + IDLE_SHUTDOWN_GRACE + Duration::from_secs(2);
+            let retired = || {
+                Arc::strong_count(&self.handle.0) == 1
+                    && Arc::strong_count(&self.handle.0.clients) == 1
+                    && Arc::strong_count(&self.handle.0.request_lock) == 1
+            };
+            while !retired() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+            if !retired() {
+                static RETAINED: Mutex<
+                    Vec<(BrokerHandle, Arc<crate::device_lease::testing::FixtureRoot>)>,
+                > = Mutex::new(Vec::new());
+                RETAINED
+                    .lock_recover()
+                    .push((self.handle.clone(), Arc::clone(&self._root)));
+                eprintln!("TCP fixture resources unacknowledged; exact handle and root retained");
+            }
+        }
+    }
+    struct RetainRootOnFailure {
+        root: Arc<crate::device_lease::testing::FixtureRoot>,
+        armed: bool,
+    }
+    impl Drop for RetainRootOnFailure {
+        fn drop(&mut self) {
+            if self.armed {
+                static RETAINED: Mutex<Vec<Arc<crate::device_lease::testing::FixtureRoot>>> =
+                    Mutex::new(Vec::new());
+                RETAINED.lock_recover().push(Arc::clone(&self.root));
+                eprintln!(
+                    "serve failure cleanup unproven; exact root retained at {}",
+                    self.root.0.display()
+                );
+            }
+        }
     }
 
     impl TestServe {
@@ -6728,7 +8032,7 @@ mod tcp_tests {
         }
     }
 
-    fn start_broker_serve_for_test(descriptor_path: &Path) -> TestServe {
+    fn start_broker_serve_for_test(descriptor_path: &ScratchDescriptor) -> TestServe {
         start_broker_serve_for_test_full(descriptor_path, false, |controller| {
             let _ = controller.reconnect();
         })
@@ -6738,14 +8042,14 @@ mod tcp_tests {
     /// the deferred auto-connect action injected, so a test can hold the
     /// simulated handshake open and observe what the broker does meanwhile.
     fn start_broker_serve_for_test_with_auto_connect(
-        descriptor_path: &Path,
+        descriptor_path: &ScratchDescriptor,
         perform_auto_connect: impl FnOnce(&DeviceController) + Send + 'static,
     ) -> TestServe {
         start_broker_serve_for_test_full(descriptor_path, true, perform_auto_connect)
     }
 
     fn start_broker_serve_for_test_full(
-        descriptor_path: &Path,
+        descriptor_path: &ScratchDescriptor,
         auto_connect: bool,
         perform_auto_connect: impl FnOnce(&DeviceController) + Send + 'static,
     ) -> TestServe {
@@ -6760,6 +8064,8 @@ mod tcp_tests {
         let on_idle_shutdown_exited = Arc::clone(&exited);
         let on_idle_shutdown: Arc<dyn Fn() + Send + Sync> =
             Arc::new(move || on_idle_shutdown_exited.store(true, Ordering::Release));
+        let root = Arc::clone(&descriptor_path.root);
+        let job_root = Arc::clone(&root);
         let descriptor_path = descriptor_path.to_path_buf();
 
         // The port is OS-assigned inside `serve_broker_tcp`, so read it back
@@ -6770,35 +8076,34 @@ mod tcp_tests {
         // ready before publication; publication never opens a device endpoint.
         let (ready_tx, ready_rx) = mpsc::channel();
         let path_for_serve = descriptor_path.clone();
-        thread::spawn(move || {
-            let path_for_wait = path_for_serve.clone();
-            thread::spawn(move || {
-                for _ in 0..500 {
-                    if let Ok(bytes) = std::fs::read(&path_for_wait) {
-                        if let Ok(descriptor) = serde_json::from_slice::<Value>(&bytes) {
-                            if let Some(port) = descriptor.get("port").and_then(Value::as_u64) {
-                                let _ = ready_tx.send(port as u16);
-                                return;
-                            }
-                        }
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                }
-            });
-            let _ = serve_broker_tcp_with_auto_connect(
+        let job = test_support::FixtureJob::spawn(move |stop| {
+            let mut root_guard = RetainRootOnFailure {
+                root: job_root,
+                armed: true,
+            };
+            let result = serve_broker_tcp_full_with_stop(
                 controller_for_serve,
                 false,
                 path_for_serve,
                 on_idle_shutdown,
                 auto_connect,
                 perform_auto_connect,
+                move |handle| {
+                    let _ = ready_tx.send(handle);
+                },
+                stop,
             );
+            if let Err(error) = result {
+                panic!("test broker failed: {error}");
+            }
+            root_guard.armed = false;
         });
-        let port = ready_rx
+        let handle = ready_rx
             .recv_timeout(Duration::from_secs(8))
             .expect("broker publishes its descriptor promptly");
         let bytes = std::fs::read(&descriptor_path).expect("descriptor file readable");
         let descriptor: Value = serde_json::from_slice(&bytes).expect("descriptor is JSON");
+        let port = descriptor["port"].as_u64().expect("published port") as u16;
         let token = descriptor["bearerToken"]
             .as_str()
             .expect("descriptor carries a bearer token")
@@ -6809,11 +8114,20 @@ mod tcp_tests {
             token,
             controller,
             exited,
+            job: Some(job),
+            handle,
+            _root: root,
         }
     }
 
     fn authenticated_tcp_client(port: u16, token: &str) -> TcpStream {
         let mut client = TcpStream::connect(("127.0.0.1", port)).expect("connects to broker");
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read budget");
+        client
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("write budget");
         client.set_nodelay(true).expect("nodelay");
         write_response(
             &mut client,
@@ -6840,12 +8154,21 @@ mod tcp_tests {
     }
 
     fn send_request(client: &mut TcpStream, method: &str, params: Value) -> Value {
+        client
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .expect("write budget");
         write_response(
             client,
             &json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}),
         )
         .expect("request sent");
+        let deadline = Instant::now() + Duration::from_secs(5);
         loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "matching response deadline expired");
+            client
+                .set_read_timeout(Some(remaining))
+                .expect("read budget");
             let response = read_frame_value(client)
                 .expect("response readable")
                 .expect("response present");
@@ -6894,11 +8217,12 @@ mod tcp_tests {
         let id = accept_client(&shared.clients).unwrap();
         let connection_shared = Arc::clone(&shared);
         let (ended, wait_ended) = mpsc::channel();
-        let connection = thread::spawn(move || {
-            serve_broker_tcp_connection(server, &connection_shared, id, false);
-            connection_shared.detach_client(id);
-            ended.send(()).unwrap();
-        });
+        let connection =
+            test_support::FixtureJob::spawn_with_socket(server.try_clone().unwrap(), move || {
+                serve_broker_tcp_connection(server, &connection_shared, id, false);
+                connection_shared.detach_client(id);
+                ended.send(()).unwrap();
+            });
         assert!(observer_hello(&mut client, json!(1))
             .get("result")
             .is_some());
@@ -6941,6 +8265,95 @@ mod tcp_tests {
     #[test]
     fn observer_policy_and_detachment_are_live_while_its_device_action_waits() {
         assert_observer_policy_and_detachment_during_action("test.blockedAction");
+    }
+
+    #[test]
+    fn observer_action_retains_connection_admission_after_actual_socket_eof() {
+        let shared = Arc::new(broker_shared_for_test());
+        let (mut client, server) = socket_pair();
+        let id = accept_client(&shared.clients).unwrap();
+        let weak_owner = Arc::downgrade(&connection_owner(&shared.clients, id).unwrap());
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (entered, ready) = mpsc::channel();
+        let action_gate = Arc::clone(&gate);
+        TEST_POINTS.lock_recover().push((
+            shared.instance_id.clone(),
+            "disconnect:after_precheck",
+            Arc::new(move || {
+                let _ = entered.send(());
+                let (released, changed) = &*action_gate;
+                let released = released.lock_recover();
+                let (released, _) = changed
+                    .wait_timeout_while(released, Duration::from_secs(5), |released| !*released)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *released {
+                    Ok(())
+                } else {
+                    Err("fixture action gate timed out".into())
+                }
+            }),
+        ));
+        struct ReleaseGate {
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            instance: String,
+        }
+        impl Drop for ReleaseGate {
+            fn drop(&mut self) {
+                *self.gate.0.lock_recover() = true;
+                self.gate.1.notify_all();
+                TEST_POINTS
+                    .lock_recover()
+                    .retain(|(instance, _, _)| instance != &self.instance);
+            }
+        }
+        // Armed before the connection/action starts, including assertion unwind.
+        let release = ReleaseGate {
+            gate,
+            instance: shared.instance_id.clone(),
+        };
+        let serving = Arc::clone(&shared);
+        let connection =
+            test_support::FixtureJob::spawn_with_socket(server.try_clone().unwrap(), move || {
+                serve_broker_tcp_connection(server, &serving, id, false);
+                serving.detach_client(id);
+            });
+        assert!(observer_hello(&mut client, json!(15))
+            .get("result")
+            .is_some());
+        write_response(
+            &mut client,
+            &json!({"jsonrpc":"2.0", "id":17,
+            "method":generated_gateway::rpc::DISCONNECT, "params":{}}),
+        )
+        .unwrap();
+        ready
+            .recv_timeout(Duration::from_secs(2))
+            .expect("actual observer action entered before request lock");
+        drop(client);
+        connection.join().unwrap();
+        assert_eq!(
+            shared.clients.lock_recover().count,
+            0,
+            "EOF still detaches the visible observer immediately"
+        );
+        let admitted_while_action_alive = weak_owner.strong_count() > 0;
+        // Release before asserting the regression so the pre-fix detached task
+        // never remains blocked. Its final live-connection check prevents I/O.
+        drop(release);
+        shared.background.stop();
+        shared.observer_actions.stop();
+        let until = Instant::now() + Duration::from_secs(3);
+        while Arc::strong_count(&shared) > 1 && Instant::now() < until {
+            let _ = shared.background.acknowledged();
+            let _ = shared.observer_actions.acknowledged();
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            Arc::strong_count(&shared),
+            1,
+            "controlled action body and timer captures retired"
+        );
+        assert!(admitted_while_action_alive, "a detached observer action must retain its exact connection admission until original retirement");
     }
 
     #[test]
@@ -6988,9 +8401,167 @@ mod tcp_tests {
         assert!(!action_pending.load(Ordering::Acquire));
     }
 
-    fn read_response_within(client: &mut TcpStream, within: Duration) -> Option<Value> {
-        client.set_read_timeout(Some(within)).unwrap();
+    #[test]
+    fn an_entered_observer_action_failure_closes_transport_without_false_predispatch_refusal() {
+        let shared = Arc::new(broker_shared_for_test());
+        let (mut client, server) = socket_pair();
+        let id = accept_client(&shared.clients).unwrap();
+        TEST_POINTS.lock_recover().push((
+            shared.instance_id.clone(),
+            "disconnect:after_precheck",
+            Arc::new(|| panic!("injected failure after observer dispatch entered")),
+        ));
+        struct HookOwner(String);
+        impl Drop for HookOwner {
+            fn drop(&mut self) {
+                TEST_POINTS
+                    .lock_recover()
+                    .retain(|(instance, _, _)| instance != &self.0);
+            }
+        }
+        let _hook = HookOwner(shared.instance_id.clone());
+        let serving = Arc::clone(&shared);
+        let connection =
+            test_support::FixtureJob::spawn_with_socket(server.try_clone().unwrap(), move || {
+                serve_broker_tcp_connection(server, &serving, id, false);
+                serving.detach_client(id);
+            });
+        assert!(observer_hello(&mut client, json!(15))
+            .get("result")
+            .is_some());
+        write_response(
+            &mut client,
+            &json!({"jsonrpc":"2.0", "id":18,
+            "method":generated_gateway::rpc::DISCONNECT, "params":{}}),
+        )
+        .unwrap();
+        client.set_nonblocking(true).unwrap();
+        let close_deadline = Instant::now() + Duration::from_secs(2);
+        let mut byte = [0_u8; 1];
         loop {
+            match client.peek(&mut byte) {
+                Ok(0) => break,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::ConnectionAborted
+                            | io::ErrorKind::BrokenPipe
+                    ) =>
+                {
+                    break
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < close_deadline,
+                        "a silent open socket is not acknowledged transport closure"
+                    );
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Ok(_) => {
+                    // Drain only existing notifications. A request response,
+                    // incomplete frame or timeout cannot masquerade as EOF.
+                    client.set_nonblocking(false).unwrap();
+                    let remaining = close_deadline.saturating_duration_since(Instant::now());
+                    assert!(
+                        !remaining.is_zero(),
+                        "transport did not close before its fixture deadline"
+                    );
+                    client.set_read_timeout(Some(remaining)).unwrap();
+                    let frame = read_frame_value(&mut client)
+                        .expect("complete pending notification")
+                        .expect("notification body");
+                    assert!(
+                        frame.get("id").is_none(),
+                        "an admitted action failure must not claim a no-write refusal: {frame}"
+                    );
+                    client.set_nonblocking(true).unwrap();
+                }
+                Err(error) => panic!("unproven transport closure: {error}"),
+            }
+        }
+        drop(client);
+        connection.join().unwrap();
+        shared.background.stop();
+        shared.observer_actions.stop();
+        let until = Instant::now() + Duration::from_secs(3);
+        while !(shared.background.acknowledged() && shared.observer_actions.acknowledged()) {
+            assert!(
+                Instant::now() < until,
+                "controlled original dispatchers must retire"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(shared.clients.lock_recover().count, 0);
+    }
+
+    #[test]
+    fn a_never_started_observer_action_refuses_once_and_keeps_the_socket_usable() {
+        let shared = Arc::new(broker_shared_for_test());
+        shared.observer_actions.stop();
+        let (mut client, server) = socket_pair();
+        let id = accept_client(&shared.clients).unwrap();
+        let weak_owner = Arc::downgrade(&connection_owner(&shared.clients, id).unwrap());
+        let serving = Arc::clone(&shared);
+        let connection =
+            test_support::FixtureJob::spawn_with_socket(server.try_clone().unwrap(), move || {
+                serve_broker_tcp_connection(server, &serving, id, false);
+                serving.detach_client(id);
+            });
+        assert!(observer_hello(&mut client, json!(15))
+            .get("result")
+            .is_some());
+        write_response(
+            &mut client,
+            &json!({"jsonrpc":"2.0", "id":22,
+            "method":generated_gateway::rpc::DISCONNECT, "params":{}}),
+        )
+        .unwrap();
+        let refusal = read_response_within(&mut client, Duration::from_secs(2)).unwrap();
+        assert_eq!(refusal["id"], 22);
+        assert_eq!(refusal["error"]["code"], -32002);
+        assert!(refusal["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("before dispatch"));
+        write_response(
+            &mut client,
+            &json!({"jsonrpc":"2.0", "id":23, "method":"system.status", "params":{}}),
+        )
+        .unwrap();
+        let next = read_response_within(&mut client, Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            next["id"], 23,
+            "never-started retirement sends no duplicate refusal"
+        );
+        assert!(next.get("result").is_some());
+        drop(client);
+        connection.join().unwrap();
+        shared.background.stop();
+        let until = Instant::now() + Duration::from_secs(3);
+        while !shared.background.acknowledged() {
+            assert!(
+                Instant::now() < until,
+                "controlled policy dispatcher must retire"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(shared.observer_actions.acknowledged());
+        assert_eq!(
+            weak_owner.strong_count(),
+            0,
+            "never-started admission is retired after socket exit"
+        );
+    }
+
+    fn read_response_within(client: &mut TcpStream, within: Duration) -> Option<Value> {
+        let deadline = Instant::now() + within;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            client.set_read_timeout(Some(remaining)).unwrap();
             match read_frame_value(client) {
                 Ok(Some(frame)) if frame.get("id").is_some() => return Some(frame),
                 Ok(Some(_notification)) => continue,
@@ -7012,10 +8583,11 @@ mod tcp_tests {
         let (server, _) = listener.accept().unwrap();
         let id = accept_client(&shared.clients).unwrap();
         let connection_shared = Arc::clone(&shared);
-        let connection = thread::spawn(move || {
-            serve_broker_tcp_connection(server, &connection_shared, id, false);
-            connection_shared.detach_client(id);
-        });
+        let connection =
+            test_support::FixtureJob::spawn_with_socket(server.try_clone().unwrap(), move || {
+                serve_broker_tcp_connection(server, &connection_shared, id, false);
+                connection_shared.detach_client(id);
+            });
         let operation = shared.request_lock.lock_recover();
         write_response(
             &mut client,
@@ -7128,10 +8700,11 @@ mod tcp_tests {
         let (server, _) = listener.accept().unwrap();
         let id = accept_client(&shared.clients).unwrap();
         let connection_shared = Arc::clone(&shared);
-        let connection = thread::spawn(move || {
-            serve_broker_tcp_connection(server, &connection_shared, id, false);
-            connection_shared.detach_client(id);
-        });
+        let connection =
+            test_support::FixtureJob::spawn_with_socket(server.try_clone().unwrap(), move || {
+                serve_broker_tcp_connection(server, &connection_shared, id, false);
+                connection_shared.detach_client(id);
+            });
         let operation = shared.request_lock.lock_recover();
         write_response(
             &mut client,
@@ -7194,10 +8767,11 @@ mod tcp_tests {
         let (server, _) = listener.accept().unwrap();
         let id = accept_client(&shared.clients).unwrap();
         let connection_shared = Arc::clone(&shared);
-        let connection = thread::spawn(move || {
-            serve_broker_tcp_connection(server, &connection_shared, id, false);
-            connection_shared.detach_client(id);
-        });
+        let connection =
+            test_support::FixtureJob::spawn_with_socket(server.try_clone().unwrap(), move || {
+                serve_broker_tcp_connection(server, &connection_shared, id, false);
+                connection_shared.detach_client(id);
+            });
         // The long request: hold the operation lock it needs, as a running
         // backup does, so nothing here depends on timing or a device.
         let operation = shared.request_lock.lock_recover();
@@ -7263,7 +8837,7 @@ mod tcp_tests {
         let held = shared.request_lock.lock_recover();
         let pending = Arc::clone(&shared);
         let request = rpc_request(generated_gateway::rpc::DISCONNECT);
-        let worker = thread::spawn(move || {
+        let worker = test_support::FixtureJob::spawn_plain(move || {
             dispatch_broker_client_request(&pending, Some(observer), request)
         });
         shared.detach_client(observer);
@@ -7301,7 +8875,7 @@ mod tcp_tests {
         let pending = Arc::clone(&shared);
         let mut request = rpc_request("broker.shutdown");
         request.params = json!({"force":true});
-        let worker = thread::spawn(move || {
+        let worker = test_support::FixtureJob::spawn_plain(move || {
             request_broker_shutdown_after_precheck(&pending, request, Some(observer), || {
                 started.send(()).unwrap()
             })
@@ -7553,6 +9127,8 @@ mod tcp_tests {
     fn shutdown_refuses_participants_then_forces_and_flushes_its_response() {
         let (mut scratch, path) = broker_scratch_descriptor_path("observer-shutdown");
         let serve = start_broker_serve_for_test(&path);
+        let instance_id = serve.handle.0.instance_id.clone();
+        let release_marker = BrokerReleaseMarker::path_for(&path, &instance_id);
         scratch.served_by(&serve);
         let mut observer = authenticated_tcp_client(serve.port, &serve.token);
         assert!(observer_hello(&mut observer, json!(15))
@@ -7583,6 +9159,17 @@ mod tcp_tests {
         }
         assert!(!serve.alive());
         assert!(!path.exists());
+        drop(observer);
+        drop(participant);
+        drop(serve); // Join the original serve/peer actors before fixture cleanup.
+        let marker: BrokerReleaseMarker =
+            serde_json::from_slice(&std::fs::read(&release_marker).unwrap()).unwrap();
+        assert_eq!(marker.instance_id, instance_id);
+        assert!(marker.forced);
+        assert!(qc_owner_only_file::is_owner_only(&release_marker).unwrap());
+        // Forced release is intentionally durable in production. Retire only
+        // this fixture's verified generation marker, not arbitrary leftovers.
+        std::fs::remove_file(release_marker).unwrap();
     }
 
     #[test]
@@ -7658,7 +9245,7 @@ mod tcp_tests {
         let stalled = output.lock().unwrap();
         let waiting = Arc::clone(&shared);
         let waiting_output = Arc::clone(&output);
-        let worker = thread::spawn(move || {
+        let worker = test_support::FixtureJob::spawn_plain(move || {
             let response = request_broker_shutdown(&waiting, rpc_request("broker.shutdown"));
             assert_eq!(response["result"]["shutdown"], true);
             waiting.finish_shutdown_after_response(&waiting_output, &response);
@@ -7953,7 +9540,7 @@ mod tcp_tests {
         let body = serde_json::to_vec(&auth_frame("expected")).unwrap();
         let mut frame = (body.len() as u32).to_be_bytes().to_vec();
         frame.extend_from_slice(&body);
-        let drip = thread::spawn(move || {
+        let drip = test_support::FixtureJob::spawn_plain(move || {
             let mut client = client;
             for byte in frame {
                 if client.write_all(&[byte]).is_err() {
@@ -8051,7 +9638,7 @@ mod tcp_tests {
     }
 
     #[test]
-    fn pending_authentications_are_capped_but_authenticated_clients_are_not() {
+    fn pending_authentication_budget_is_distinct_from_the_total_owner_budget() {
         let shared = Arc::new(broker_shared_for_test());
         let pending: Vec<u64> = (0..BROKER_MAX_PENDING_AUTHENTICATIONS)
             .map(|_| accept_client(&shared.clients).unwrap())
@@ -8180,11 +9767,12 @@ mod tcp_tests {
             Some(original)
         );
         let serving = Arc::clone(&shared);
-        let connection = thread::spawn(move || {
-            assert!(authenticate_tcp_client(&mut server, "expected", "instance").is_ok());
-            serve_broker_tcp_connection(server, &serving, participant, false);
-            serving.detach_client(participant);
-        });
+        let connection =
+            test_support::FixtureJob::spawn_with_socket(server.try_clone().unwrap(), move || {
+                assert!(authenticate_tcp_client(&mut server, "expected", "instance").is_ok());
+                serve_broker_tcp_connection(server, &serving, participant, false);
+                serving.detach_client(participant);
+            });
         write_response(
             &mut client,
             &json!({"id":0,"method":"broker.authenticate","params":{"token":"expected"}}),
@@ -8324,7 +9912,7 @@ mod tcp_tests {
         let (started_tx, started_rx) = mpsc::channel();
         let (response_tx, response_rx) = mpsc::channel();
         let waiting = Arc::clone(&shared);
-        let worker = thread::spawn(move || {
+        let worker = test_support::FixtureJob::spawn_plain(move || {
             response_tx
                 .send(request_broker_shutdown_after_precheck(
                     &waiting,
@@ -8452,13 +10040,28 @@ mod tcp_tests {
         let client = authenticated_tcp_client(serve.port, &serve.token);
         drop(client);
 
+        // The peer's drop precedes the server observing EOF and retiring its
+        // connection actors. Measure grace only once detach is observed.
+        let detach_deadline = Instant::now() + Duration::from_secs(3);
+        while serve.handle.0.clients.lock_recover().count != 0 {
+            assert!(
+                Instant::now() < detach_deadline,
+                "server did not observe client departure"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(serve.handle.0.idle_grace(), Duration::from_secs(5));
+        let disconnected_at = std::time::Instant::now();
         thread::sleep(Duration::from_millis(500));
         assert!(
             serve.alive(),
-            "the broker must not exit immediately on the last disconnect"
+            "the broker must remain alive through the idle-shutdown grace period"
         );
 
-        thread::sleep(Duration::from_secs(5));
+        let deadline = disconnected_at + IDLE_SHUTDOWN_GRACE + Duration::from_secs(3);
+        while serve.alive() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
         assert!(
             !serve.alive(),
             "the broker must exit after the 5s grace period with no new client"
@@ -8511,6 +10114,11 @@ mod tcp_tests {
         release: mpsc::Sender<()>,
         finished: Arc<AtomicBool>,
     }
+    impl Drop for GatedReconnect {
+        fn drop(&mut self) {
+            let _ = self.release.send(());
+        }
+    }
 
     fn gated_reconnect() -> (
         GatedReconnect,
@@ -8520,7 +10128,7 @@ mod tcp_tests {
         let finished = Arc::new(AtomicBool::new(false));
         let finished_by_reconnect = Arc::clone(&finished);
         let perform_auto_connect = move |_: &DeviceController| {
-            let _ = released.recv();
+            let _ = released.recv_timeout(Duration::from_secs(5));
             finished_by_reconnect.store(true, Ordering::Release);
         };
         (GatedReconnect { release, finished }, perform_auto_connect)
@@ -8642,8 +10250,86 @@ mod tcp_tests {
             descriptor_claim: Arc::new(Mutex::new(None)),
             on_idle_shutdown: Arc::new(|| {}),
             observer_changed: Condvar::new(),
+            background: background::Manager::default(),
+            observer_actions: background::Manager::default(),
             observer_minute: Duration::from_secs(60),
         }
+    }
+
+    #[test]
+    fn icon_connect_waits_for_release_admission_and_refuses_committed_shutdown() {
+        let shared = Arc::new(broker_shared_for_test());
+        shared.clients.lock_recover().idle_released = true;
+        let exclusive = shared.request_lock.lock_recover();
+        let handle = BrokerHandle(Arc::clone(&shared));
+        let (started, admitted) = std::sync::mpsc::channel();
+        let (result, completed) = std::sync::mpsc::channel();
+        let original = thread::spawn(move || {
+            started.send(()).unwrap();
+            result.send(handle.reconnect()).unwrap();
+        });
+        admitted.recv_timeout(Duration::from_secs(2)).unwrap();
+        let early = completed.recv_timeout(Duration::from_millis(100));
+        shared.clients.lock_recover().shutting_down = true;
+        drop(exclusive);
+        // Release the actual barrier before joining the original on every
+        // assertion path; no test ever starts a real USB reconnect.
+        original.join().unwrap();
+        assert!(
+            early.is_err(),
+            "Connect must not bypass an in-progress release"
+        );
+        let outcome = completed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(outcome
+            .unwrap_err()
+            .contains("shutdown is already committed"));
+        assert!(shared.clients.lock_recover().idle_released);
+    }
+
+    #[test]
+    fn unverified_shutdown_retains_descriptor_until_actual_worker_retirement() {
+        struct Release(Arc<AtomicBool>);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let release = Arc::new(AtomicBool::new(false));
+        let _release = Release(Arc::clone(&release));
+        let (_scratch, path) = broker_scratch_descriptor_path("shutdown-retains-claim");
+        let shared = BrokerShared {
+            controller: Arc::new(DeviceController::with_stuck_worker_for_test(Arc::clone(
+                &release,
+            ))),
+            descriptor_path: path.to_path_buf(),
+            descriptor_claim: Arc::new(Mutex::new(Some(
+                qc_owner_only_file::ClaimedFile::try_claim(&path).unwrap(),
+            ))),
+            ..broker_shared_for_test()
+        };
+        let report = shared.finish_shutdown();
+        assert!(!report.all_verified());
+        assert!(shared.descriptor_claim.lock_recover().is_some());
+        assert!(
+            qc_owner_only_file::ClaimedFile::try_claim(&path).is_err(),
+            "unknown original still excludes a successor"
+        );
+        release.store(true, Ordering::Release);
+        let deadline = Instant::now() + crate::worker::WORKER_EXIT_BUDGET;
+        while !shared.controller.fixture_worker_acknowledged() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            shared.controller.fixture_worker_acknowledged(),
+            "original worker did not acknowledge retirement before the bounded deadline"
+        );
+        let report = shared.finish_shutdown();
+        assert!(report.all_verified(), "{}", report.summary());
+        assert!(shared.descriptor_claim.lock_recover().is_none());
+        qc_owner_only_file::ClaimedFile::try_claim(&path)
+            .unwrap()
+            .release()
+            .unwrap();
     }
 
     #[test]
@@ -8875,11 +10561,12 @@ mod tcp_tests {
 
         let registration_blocked = shared.clients.lock_recover();
         let serving = Arc::clone(&shared);
-        let connection = thread::spawn(move || {
-            authenticate_and_serve_tcp_client(
-                server, &serving, second, "expected", "instance", false,
-            )
-        });
+        let connection =
+            test_support::FixtureJob::spawn_with_socket(server.try_clone().unwrap(), move || {
+                authenticate_and_serve_tcp_client(
+                    server, &serving, second, "expected", "instance", false,
+                )
+            });
         write_response(
             &mut client,
             &json!({"id":0,"method":"broker.authenticate","params":{"token":"expected"}}),
@@ -9003,11 +10690,12 @@ mod tcp_tests {
         )
         .unwrap();
         let serving = Arc::clone(&shared);
-        let connection = thread::spawn(move || {
-            authenticate_and_serve_tcp_client(
-                server, &serving, pending, "expected", "instance", false,
-            )
-        });
+        let connection =
+            test_support::FixtureJob::spawn_with_socket(server.try_clone().unwrap(), move || {
+                authenticate_and_serve_tcp_client(
+                    server, &serving, pending, "expected", "instance", false,
+                )
+            });
         client
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -9045,20 +10733,22 @@ mod tcp_tests {
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let (holding_tx, holding_rx) = mpsc::channel::<()>();
         let holder_shared = Arc::clone(&shared);
-        let holder = thread::spawn(move || {
+        let holder = test_support::FixtureJob::spawn_plain(move || {
             let _held = holder_shared
                 .request_lock
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let _ = holding_tx.send(());
-            let _ = release_rx.recv();
+            let _ = release_rx.recv_timeout(Duration::from_secs(2));
         });
         // Only proceed once the holder thread genuinely holds `request_lock`,
         // so the disconnect sent below is provably queued behind it.
-        holding_rx.recv().expect("holder thread took the lock");
+        holding_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("holder thread took the lock");
 
         let dispatch_shared = Arc::clone(&shared);
-        let dispatching = thread::spawn(move || {
+        let dispatching = test_support::FixtureJob::spawn_plain(move || {
             dispatch_broker_request(&dispatch_shared, rpc_request("device.disconnect"))
         });
 
@@ -9204,7 +10894,7 @@ mod tcp_tests {
 
         let (answered_tx, answered) = mpsc::channel();
         let waiting = Arc::clone(&shared);
-        let client = thread::spawn(move || {
+        let client = test_support::FixtureJob::spawn_plain(move || {
             let response = dispatch_broker_request(&waiting, rpc_request("device.snapshot"));
             let _ = answered_tx.send(response);
         });
@@ -9229,8 +10919,132 @@ mod tcp_tests {
     /// after the budget, the caller gets an unknown outcome and quarantines
     /// subsequent writes before releasing the lock.
     #[test]
+    fn midi_registry_drop_keeps_global_admission_until_endpoint_close_retires() {
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        struct ClosingEndpoint {
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            entered: Arc<AtomicBool>,
+        }
+        impl PerformanceMidiEndpoint for ClosingEndpoint {
+            fn send(&mut self, _: &str, _: u8, _: u8) -> Result<PerformanceMidiReceipt, String> {
+                panic!("this fixture must not send native MIDI");
+            }
+        }
+        impl Drop for ClosingEndpoint {
+            fn drop(&mut self) {
+                self.entered.store(true, Ordering::Release);
+                let (lock, changed) = &*self.gate;
+                let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+                drop(
+                    changed
+                        .wait_timeout_while(guard, Duration::from_secs(30), |released| !*released),
+                );
+            }
+        }
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release = ReleaseGate(Arc::clone(&gate));
+        let entered = Arc::new(AtomicBool::new(false));
+        let (g, e) = (Arc::clone(&gate), Arc::clone(&entered));
+        let mut pool = PerformanceMidiWorkers::with_factory(move || {
+            Box::new(ClosingEndpoint {
+                gate: Arc::clone(&g),
+                entered: Arc::clone(&e),
+            })
+        });
+        pool.worker_budget = &BUDGET;
+        let (sender, _) = pool.get_or_start("fixture").unwrap();
+        drop(sender);
+        drop(pool);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !entered.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(
+            entered.load(Ordering::Acquire),
+            "actual endpoint destructor must enter"
+        );
+        assert_eq!(BUDGET.count(), 1);
+        assert!(
+            BUDGET.reserve().is_err(),
+            "replacement instance must not bypass original cap"
+        );
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while BUDGET.count() != 0 && Instant::now() < deadline {
+            qc_native_platform::thread_owner::reap();
+            thread::yield_now();
+        }
+        assert_eq!(BUDGET.count(), 0, "actual original must retire and join");
+        assert!(BUDGET.reserve().is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn midi_registry_drop_keeps_admission_through_native_tls_teardown() {
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        struct TlsGate(Arc<(Mutex<bool>, Condvar)>, Arc<AtomicBool>);
+        impl Drop for TlsGate {
+            fn drop(&mut self) {
+                self.1.store(true, Ordering::Release);
+                let guard = self.0 .0.lock().unwrap_or_else(|e| e.into_inner());
+                drop(
+                    self.0
+                         .1
+                        .wait_timeout_while(guard, Duration::from_secs(30), |released| !*released),
+                );
+            }
+        }
+        thread_local! { static GATE: std::cell::RefCell<Option<TlsGate>> = const { std::cell::RefCell::new(None) }; }
+        struct NoMidi;
+        impl PerformanceMidiEndpoint for NoMidi {
+            fn send(&mut self, _: &str, _: u8, _: u8) -> Result<PerformanceMidiReceipt, String> {
+                panic!("this fixture must not send native MIDI");
+            }
+        }
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release = ReleaseGate(Arc::clone(&gate));
+        let entered = Arc::new(AtomicBool::new(false));
+        let (g, e) = (Arc::clone(&gate), Arc::clone(&entered));
+        let mut pool = PerformanceMidiWorkers::with_factory(move || {
+            GATE.with(|slot| *slot.borrow_mut() = Some(TlsGate(Arc::clone(&g), Arc::clone(&e))));
+            Box::new(NoMidi)
+        });
+        pool.worker_budget = &BUDGET;
+        let (sender, _) = pool.get_or_start("fixture").unwrap();
+        drop(sender);
+        drop(pool);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !entered.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(
+            entered.load(Ordering::Acquire),
+            "native TLS destructor must enter"
+        );
+        qc_native_platform::thread_owner::reap();
+        assert_eq!(BUDGET.count(), 1, "body completion is not native exit");
+        assert!(BUDGET.reserve().is_err());
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while BUDGET.count() != 0 && Instant::now() < deadline {
+            qc_native_platform::thread_owner::reap();
+            thread::yield_now();
+        }
+        assert_eq!(
+            BUDGET.count(),
+            0,
+            "signal plus join releases original admission"
+        );
+    }
+
+    #[test]
     fn a_stuck_performance_midi_lock_gives_up_after_its_budget_instead_of_hanging_forever() {
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release_gate = ReleaseGate(Arc::clone(&gate));
         let started = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let factory_gate = Arc::clone(&gate);
@@ -9248,7 +11062,7 @@ mod tcp_tests {
         let callback_quarantined = Arc::clone(&quarantined);
         let workers = Arc::new(workers);
         let caller = Arc::clone(&workers);
-        let request = thread::spawn(move || {
+        let request = test_support::FixtureJob::spawn_with_gate(Arc::clone(&gate), move || {
             caller.send("test-device", 1, 2, move || {
                 callback_quarantined.store(true, Ordering::Release);
             })
@@ -9280,6 +11094,7 @@ mod tcp_tests {
     #[test]
     fn a_queued_midi_timeout_is_atomically_cancelled_before_dispatch() {
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release_gate = ReleaseGate(Arc::clone(&gate));
         let started = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let factory_gate = Arc::clone(&gate);
@@ -9295,7 +11110,9 @@ mod tcp_tests {
         pool.budget = Duration::from_secs(1);
         let pool = Arc::new(pool);
         let first_pool = Arc::clone(&pool);
-        let first = thread::spawn(move || first_pool.send("queued-device", 1, 2, || {}));
+        let first = test_support::FixtureJob::spawn_with_gate(Arc::clone(&gate), move || {
+            first_pool.send("queued-device", 1, 2, || {})
+        });
         let deadline = Instant::now() + Duration::from_secs(1);
         while !started.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::yield_now();
@@ -9321,6 +11138,7 @@ mod tcp_tests {
     #[test]
     fn queued_midi_revalidates_session_fence_before_native_send() {
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release_gate = ReleaseGate(Arc::clone(&gate));
         let started = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let factory_gate = Arc::clone(&gate);
@@ -9334,7 +11152,9 @@ mod tcp_tests {
             })
         }));
         let first_workers = Arc::clone(&workers);
-        let first = thread::spawn(move || first_workers.send("fenced-device", 1, 2, || {}));
+        let first = test_support::FixtureJob::spawn_with_gate(Arc::clone(&gate), move || {
+            first_workers.send("fenced-device", 1, 2, || {})
+        });
         let deadline = Instant::now() + Duration::from_secs(1);
         while !started.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::yield_now();
@@ -9346,7 +11166,7 @@ mod tcp_tests {
         let second_workers = Arc::clone(&workers);
         let (result_tx, result_rx) = mpsc::channel();
         let (queued_tx, queued_rx) = mpsc::channel();
-        let second = thread::spawn(move || {
+        let second = test_support::FixtureJob::spawn_plain(move || {
             let validator_generation = Arc::clone(&expected_generation);
             let result = second_workers.send_with_budget_and_validator_notified(
                 "fenced-device",
@@ -9396,6 +11216,7 @@ mod tcp_tests {
     #[test]
     fn midi_timeout_during_fence_validation_cancels_before_native_dispatch() {
         let validator_gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release_gate = ReleaseGate(Arc::clone(&validator_gate));
         let validator_entered = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let endpoint_gate = Arc::new((Mutex::new(true), Condvar::new()));
@@ -9413,24 +11234,25 @@ mod tcp_tests {
         let run_entered = Arc::clone(&validator_entered);
         let quarantine = Arc::new(AtomicBool::new(false));
         let run_quarantine = Arc::clone(&quarantine);
-        let timed_out = thread::spawn(move || {
-            run_workers.send_with_budget_and_validator(
-                "validation-timeout-device",
-                1,
-                2,
-                Duration::from_millis(500),
-                move || {
-                    run_entered.store(true, Ordering::Release);
-                    let (released, changed) = &*run_gate;
-                    let mut released = released.lock().unwrap();
-                    while !*released {
-                        released = changed.wait(released).unwrap();
-                    }
-                    Ok(())
-                },
-                move || run_quarantine.store(true, Ordering::Release),
-            )
-        });
+        let timed_out =
+            test_support::FixtureJob::spawn_with_gate(Arc::clone(&validator_gate), move || {
+                run_workers.send_with_budget_and_validator(
+                    "validation-timeout-device",
+                    1,
+                    2,
+                    Duration::from_millis(500),
+                    move || {
+                        run_entered.store(true, Ordering::Release);
+                        let (released, changed) = &*run_gate;
+                        let mut released = released.lock().unwrap();
+                        while !*released {
+                            released = changed.wait(released).unwrap();
+                        }
+                        Ok(())
+                    },
+                    move || run_quarantine.store(true, Ordering::Release),
+                )
+            });
         let deadline = Instant::now() + Duration::from_secs(2);
         while !validator_entered.load(Ordering::Acquire) && Instant::now() < deadline {
             thread::yield_now();
@@ -9491,6 +11313,7 @@ mod tcp_tests {
     fn a_stuck_midi_wait_releases_request_lock_for_other_clients_once_its_budget_expires() {
         let shared = Arc::new(broker_shared_for_test());
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release_gate = ReleaseGate(Arc::clone(&gate));
         let started = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let factory_gate = Arc::clone(&gate);
@@ -9507,7 +11330,7 @@ mod tcp_tests {
         let workers = Arc::new(pool);
         let request_lock = Arc::clone(&shared.request_lock);
         let midi_workers = Arc::clone(&workers);
-        let midi_client = thread::spawn(move || {
+        let midi_client = test_support::FixtureJob::spawn_with_gate(Arc::clone(&gate), move || {
             let _exclusive = request_lock.lock().unwrap();
             midi_workers.send("stuck-device", 1, 2, || {}).map(|_| ())
         });

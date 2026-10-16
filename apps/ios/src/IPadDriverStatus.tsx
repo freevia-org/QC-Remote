@@ -8,10 +8,14 @@ export interface IPadDriverStatusProps {
   fullUsbReady: boolean;
   fullUsbRequirement: string;
   driverCompatibilityNote: string;
+  connectionMode: "auto" | "remote";
+  modeSwitching: boolean;
+  modeError: string;
+  onConnectionModeChange: (mode: "auto" | "remote") => void;
   children: ReactNode;
 }
 
-export function IPadDriverStatus({ driverHardwareSupported, driverOsSupported, fullUsbDriverBundled, fullUsbReady, fullUsbRequirement, driverCompatibilityNote, children }: IPadDriverStatusProps) {
+export function IPadDriverStatus({ driverHardwareSupported, driverOsSupported, fullUsbDriverBundled, fullUsbReady, fullUsbRequirement, driverCompatibilityNote, connectionMode, modeSwitching, modeError, onConnectionModeChange, children }: IPadDriverStatusProps) {
   const [midiChannel, setMidiChannel] = useState(1);
   const [driverReady, setDriverReady] = useState(fullUsbReady);
   const [checkingDriver, setCheckingDriver] = useState(false);
@@ -60,6 +64,13 @@ export function IPadDriverStatus({ driverHardwareSupported, driverOsSupported, f
         : "DriverKit requires iPadOS 16 or later on an M-series iPad. Update iPadOS and use a supported iPad for direct USB HID control."}</span>
       <span className="ios-ipad-driver-build-state">{driverReady ? "The USB driver service is available to this app." : !fullUsbDriverBundled ? `The driver is not bundled in this app build. ${fullUsbRequirement}.` : "The driver is bundled, but its USB service is unavailable. Connect the QC and check the DriverKit entitlement and Settings › Privacy & Security › Drivers."} Existing paired-host control remains available below.</span>
       <span className="ios-ipad-driver-compatibility">{driverCompatibilityNote}</span>
+      <div className="ios-ipad-connection-mode" role="group" aria-label="iPad connection route">
+        <span>Connection route</span>
+        <button type="button" disabled={modeSwitching} aria-pressed={connectionMode === "auto"} onClick={() => onConnectionModeChange("auto")}>Direct USB when available</button>
+        <button type="button" disabled={modeSwitching} aria-pressed={connectionMode === "remote"} onClick={() => onConnectionModeChange("remote")}>Paired host</button>
+      </div>
+      {modeError && <span className="ios-ipad-mode-error" role="alert">{modeError}</span>}
+      <span className="ios-ipad-forwarding-note">The current iPad DriverKit path does not provide the QC internet request forwarder. Use Paired host for QC account sign-in, cloud requests, and CorOS update traffic; forwarding requires a paired computer running a compatible QC Remote host.</span>
       <button type="button" className="ios-ipad-driver-refresh" disabled={checkingDriver} onClick={() => void refreshDriverReadiness()}>{checkingDriver ? "Checking DriverKit…" : "Check DriverKit availability"}</button>
     </aside>
     <section className="ios-ipad-midi-channel" aria-label="Quad Cortex MIDI channel">

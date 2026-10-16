@@ -48,7 +48,7 @@ test("the CPU Monitor is an overlay on the live Grid, never a second Grid", () =
   assert.ok(display.includes("    cpuMonitor,"), "the display passes the monitor to the surface");
   for (const [name, source] of [["windows", windows], ["android", android]] as const) {
     assert.ok(!source.includes("<CorOsCpuMonitor"), `${name} must not render the fixture Grid wrapper`);
-    assert.ok(source.includes("const cpuTelemetry = useQcCpuTelemetry();"), `${name} uses the shared CPU telemetry hook`);
+    assert.ok(source.includes("const cpuTelemetry = useQcCpuTelemetry(qcController.lifetime);"), `${name} binds the shared CPU telemetry hook to its physical session`);
     assert.ok(source.includes("cpu: cpuTelemetry"), `${name} feeds every state batch to the hook`);
     assert.ok(!/setCpu(?:Load|Columns)|useState<CpuColumnLoad|cpuMonitor/.test(source), `${name} keeps no CPU state or monitor of its own`);
   }

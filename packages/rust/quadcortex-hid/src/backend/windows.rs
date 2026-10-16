@@ -20,8 +20,12 @@ pub(crate) struct SharedWindowsHid(UnsafeCell<HidDevice>);
 // calls write. The windows-native backend touches disjoint read_state and
 // write_state RefCells, read_pending is RX-only and the native handle is
 // immutable. Both lanes hold an `Arc` clone, so the handle outlives any lane
-// still running (HidIo joins both on drop; `finish_writes` may detach a wedged
-// writer, which keeps its clone). Audited against hidapi 2.6.7 only: the crate Cargo.toml
+// still running. HidIo bounds observation of both original RX/TX threads and
+// retains unacknowledged join owners rather than detaching them. The closure's
+// NativeLifetime drops this native handle before its host lease capability;
+// the original thread owner separately retains local admission through native
+// thread signal and join. Native-handle destruction stays on the I/O thread,
+// since kernel cancellation may block. Audited against hidapi 2.6.7 only: the crate Cargo.toml
 // pins `hidapi = "=2.6.7"`, and this impl is unsound against a backend that
 // shares state between the lanes. Re-audit it before bumping the pin.
 unsafe impl Sync for SharedWindowsHid {}

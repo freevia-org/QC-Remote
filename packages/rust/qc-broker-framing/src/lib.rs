@@ -280,44 +280,53 @@ mod tests {
     fn tcp_read_uses_one_deadline_across_partial_header_and_restores_timeout() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        // Establish the pair before starting a worker: connection failure must
+        // not detach a thread blocked forever in accept().
+        let mut client = TcpStream::connect_timeout(&address, Duration::from_secs(5)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let (accepted_tx, accepted_rx) = mpsc::channel();
         let (first_byte_tx, first_byte_rx) = mpsc::channel();
         let (first_byte_sent_tx, first_byte_sent_rx) = mpsc::channel();
         let (read_finished_tx, read_finished_rx) = mpsc::channel();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            accepted_tx.send(()).unwrap();
-            first_byte_rx
+        thread::scope(|scope| {
+            let server = scope.spawn(move || {
+                accepted_tx.send(()).unwrap();
+                first_byte_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("client releases first byte");
+                stream.write_all(&[0]).unwrap();
+                first_byte_sent_tx.send(()).unwrap();
+                read_finished_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("client reports read result");
+                let _ = stream.write_all(&[0, 0, 1, b'x']);
+            });
+            accepted_rx
                 .recv_timeout(Duration::from_secs(5))
-                .expect("client releases first byte");
-            stream.write_all(&[0]).unwrap();
-            first_byte_sent_tx.send(()).unwrap();
-            read_finished_rx
+                .expect("server accepted client");
+            let previous_timeout = Some(Duration::from_secs(2));
+            client.set_read_timeout(previous_timeout).unwrap();
+            // Start the absolute deadline before allowing the server to send the
+            // first header byte. The server holds the tail until this read has
+            // returned, so scheduler delays cannot turn the test into a success.
+            let deadline = Instant::now() + Duration::from_millis(10);
+            first_byte_tx.send(()).unwrap();
+            first_byte_sent_rx
                 .recv_timeout(Duration::from_secs(5))
-                .expect("client reports read result");
-            let _ = stream.write_all(&[0, 0, 1, b'x']);
+                .expect("server sent a partial header");
+            let error = read_tcp_frame_before_deadline(&mut client, 16, deadline).unwrap_err();
+            read_finished_tx.send(()).unwrap();
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ));
+            assert_eq!(client.read_timeout().unwrap(), previous_timeout);
+            server.join().unwrap();
         });
-        let mut client = TcpStream::connect(address).unwrap();
-        accepted_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("server accepted client");
-        let previous_timeout = Some(Duration::from_secs(2));
-        client.set_read_timeout(previous_timeout).unwrap();
-        // Start the absolute deadline before allowing the server to send the
-        // first header byte. The server holds the tail until this read has
-        // returned, so scheduler delays cannot turn the test into a success.
-        let deadline = Instant::now() + Duration::from_millis(10);
-        first_byte_tx.send(()).unwrap();
-        first_byte_sent_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("server sent a partial header");
-        let error = read_tcp_frame_before_deadline(&mut client, 16, deadline).unwrap_err();
-        read_finished_tx.send(()).unwrap();
-        assert!(matches!(
-            error.kind(),
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-        ));
-        assert_eq!(client.read_timeout().unwrap(), previous_timeout);
-        server.join().unwrap();
     }
 }

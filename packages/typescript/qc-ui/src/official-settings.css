@@ -266,6 +266,10 @@
   .volume-assignments em.is-headphones { width: 8.25cqw; justify-content: center; }
   .volume-assignments em.is-headphones svg { width: 3cqw; height: 3cqw; color: var(--qc-screen-text-primary); fill: currentColor; stroke: none; }
   .volume-assignments > span > button { width: 8.25cqw; height: 5.5cqw; margin-top: 1.125cqw; display: grid; place-items: center; padding: 0; border: 0; border-radius: .75cqw; background: var(--qc-screen-accent); color: var(--qc-screen-accent); }
+  /* Unknown live assignments have text, not the observed checkbox SVG's
+     own dark backing. Keep the unavailable dash readable without changing
+     either observed state or the explicit static reference markup. */
+  .volume-assignments > span > button:not([aria-pressed]) { background: var(--qc-screen-surface-raised); color: var(--qc-screen-text-primary); }
   .volume-assignments > span > button svg { --qc-screen-glyph-size: 24px; width: 24px; height: 24px; border-radius: .5cqw; background: var(--qc-editor-disabled); fill: currentColor; stroke: none; }
   .volume-assignments > span > button svg path { fill: currentColor; }
 

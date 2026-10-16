@@ -33,7 +33,7 @@
 //! below pins the bytes both sides agree on.
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -44,6 +44,7 @@ pub const USER_QUIT_EXTENSION: &str = "user-quit.json";
 /// progress holds it until its broker publishes; nobody elects while a live
 /// broker answers, so a Quit rarely waits at all.
 pub const LOCK_BUDGET: Duration = Duration::from_secs(2);
+const MAX_RECORD_BYTES: u64 = 8 * 1024;
 
 /// Which user action quit the broker. Informational: every source stands the
 /// same way.
@@ -129,7 +130,19 @@ pub fn publish_within(
 /// The record, if any. `Some(Err(_))` is a record that cannot be read: it
 /// still stands (fail closed), it just names no instance.
 pub fn read(descriptor: &Path) -> Option<Result<UserQuitRecord, String>> {
-    match fs::read(path_for(descriptor)) {
+    let bounded_read = || -> io::Result<Vec<u8>> {
+        let file = fs::File::open(path_for(descriptor))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_RECORD_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_RECORD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "User Quit record exceeds 8 KiB",
+            ));
+        }
+        Ok(bytes)
+    };
+    match bounded_read() {
         Ok(bytes) => Some(serde_json::from_slice(&bytes).map_err(|error| error.to_string())),
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => Some(Err(error.to_string())),
@@ -270,6 +283,20 @@ mod tests {
             !crate::resident::election_path(&descriptor).exists(),
             "every operation released the election lock"
         );
+    }
+
+    #[test]
+    fn oversized_quit_record_still_stands_and_cannot_be_withdrawn() {
+        let scratch = Scratch::new("oversized");
+        let descriptor = scratch.descriptor();
+        let path = path_for(&descriptor);
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_RECORD_BYTES + 1).unwrap();
+        drop(file);
+        assert!(matches!(read(&descriptor), Some(Err(_))));
+        assert_eq!(withdraw(&descriptor, "quit"), Ok(Withdrawal::NotOurs));
+        assert_eq!(fs::metadata(&path).unwrap().len(), MAX_RECORD_BYTES + 1);
+        assert_eq!(clear(&descriptor), Ok(true));
     }
 
     /// A withdrawal compares and removes in one step under the lock: a record

@@ -10,6 +10,7 @@ compile_error!("quadcortex-hid supports Windows, Linux and macOS hosts");
 mod backend;
 pub mod flight;
 pub mod latest_cache;
+mod retained_io;
 pub mod usb;
 
 pub use flight::FlightRecorder;

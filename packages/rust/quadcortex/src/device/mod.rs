@@ -632,6 +632,8 @@ pub struct GatewaySnapshot {
     /// Input and output port states, merged by port kind and id, when reported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub io_ports: Option<Vec<IoPortState>>,
+    /// Sticky software-retention failure; the I/O projection is unknown until session reset.
+    pub io_settings_error: String,
     /// Preset tempo in beats per minute.
     pub tempo: u32,
     /// Whether the tempo LED is enabled.
@@ -701,6 +703,7 @@ impl Default for GatewaySnapshot {
             grid_layout_complete: false,
             routes: Vec::new(),
             io_ports: None,
+            io_settings_error: String::new(),
             tempo: 120,
             tempo_led_enabled: false,
             master_volume: 0,
@@ -735,7 +738,43 @@ impl GatewaySnapshot {
     /// does not track are ignored.
     pub fn apply(&mut self, state: &StateUpdate) {
         match state.kind.as_str() {
-            "scene" => self.active_scene = state.active_scene.unwrap_or(self.active_scene),
+            "scene" => {
+                self.active_scene = state.active_scene.unwrap_or(self.active_scene);
+                // Scene changes never replace routing. Adopt only the mute
+                // observation for the same witnessed route, or withdraw it.
+                for route in &mut self.routes {
+                    route.split_muted = state
+                        .routes
+                        .as_ref()
+                        .and_then(|routes| {
+                            routes.iter().find(|observed| {
+                                observed.row == route.row
+                                    && observed.input_id == route.input_id
+                                    && observed.output_id == route.output_id
+                                    && observed.split_column == route.split_column
+                                    && observed.mix_column == route.mix_column
+                                    && observed.splitter_model_id == route.splitter_model_id
+                            })
+                        })
+                        .and_then(|observed| observed.split_muted);
+                }
+                if let Some(projection) = &state.blocks {
+                    for block in &mut self.blocks {
+                        block.bypassed = projection
+                            .iter()
+                            .find(|observed| {
+                                observed.row == block.row
+                                    && observed.column == block.column
+                                    && observed.model_id.is_some()
+                                    && observed.model_id == block.model_id
+                            })
+                            .and_then(|observed| observed.bypassed);
+                    }
+                }
+                if state.footswitch_states.is_some() {
+                    self.footswitch_states.clone_from(&state.footswitch_states);
+                }
+            }
             "dirty" => {
                 if let Some(value) = state.dirty {
                     self.dirty = value;
@@ -798,6 +837,17 @@ impl GatewaySnapshot {
                             *current = raw;
                         }
                     }
+                }
+            }
+            "midiOut" => {
+                if let Some(sources) = &state.midi_out {
+                    crate::state::merge_midi_out_sources(
+                        self.midi_out.get_or_insert_with(Vec::new),
+                        sources,
+                    );
+                }
+                if let Some(messages) = &state.preset_load_midi_out {
+                    self.preset_load_midi_out = Some(messages.clone());
                 }
             }
             "position" => {
@@ -896,6 +946,14 @@ impl GatewaySnapshot {
                 }
             }
             "ioPorts" => {
+                if state.io_settings_error.is_some() {
+                    self.io_ports = None;
+                    self.io_settings_error = state.io_settings_error.clone().unwrap_or_default();
+                    return;
+                }
+                if !self.io_settings_error.is_empty() {
+                    return;
+                }
                 if let Some(updates) = &state.io_ports {
                     let ports = self.io_ports.get_or_insert_with(Vec::new);
                     for update in updates {
@@ -905,12 +963,22 @@ impl GatewaySnapshot {
                         {
                             current.clone_from(update);
                         } else {
+                            if ports.len() >= crate::responses::MAX_RETAINED_IO_RECORDS {
+                                self.io_ports = None;
+                                self.io_settings_error =
+                                    crate::responses::ResponseDecodeError::RetainedIoBudget
+                                        .to_string();
+                                return;
+                            }
                             ports.push(update.clone());
                         }
                     }
                 }
             }
             "blockRemoved" => {
+                if state.footswitch_states.is_some() {
+                    self.footswitch_states.clone_from(&state.footswitch_states);
+                }
                 if let (Some(row), Some(column)) = (state.row, state.column) {
                     self.blocks
                         .retain(|block| block.row != row || block.column != column);
@@ -920,6 +988,12 @@ impl GatewaySnapshot {
                 }
             }
             "gridTopology" => {
+                if state.refresh_required == Some(true) {
+                    self.has_preset = false;
+                    self.preset_identity = None;
+                    self.preset_revision = self.preset_revision.wrapping_add(1);
+                    self.address_revision = self.address_revision.saturating_add(1);
+                }
                 if let Some(value) = state.grid_layout_complete {
                     self.grid_layout_complete = value;
                 }
@@ -945,6 +1019,22 @@ impl GatewaySnapshot {
                 }
             }
             "bypassBatch" => {
+                if state.footswitch_states.is_some() {
+                    self.footswitch_states.clone_from(&state.footswitch_states);
+                }
+                if let Some(projection) = &state.blocks {
+                    for observed in projection {
+                        if let Some(block) = self.blocks.iter_mut().find(|block| {
+                            block.row == observed.row
+                                && block.column == observed.column
+                                && observed.model_id.is_some()
+                                && observed.model_id == block.model_id
+                        }) {
+                            block.bypassed = observed.bypassed;
+                        }
+                    }
+                    return;
+                }
                 for update in state.bypass_updates.iter().flatten() {
                     if let Some(block) = self
                         .blocks

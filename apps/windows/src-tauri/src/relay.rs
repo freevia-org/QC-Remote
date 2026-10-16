@@ -4,6 +4,7 @@ use qc_relay_client::{
     RemoteConnector, Usage,
 };
 use serde::Serialize;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,6 +13,10 @@ use tokio::sync::watch;
 const CREDENTIAL_SERVICE: &str = "QC Remote";
 const LEGACY_CREDENTIAL_SERVICE: &str = "QC Control";
 const CREDENTIAL_ACCOUNT: &str = "outbound-public-relay-v1";
+const PENDING_REVOCATIONS_ACCOUNT: &str = "outbound-public-relay-pending-revocations-v1";
+const WITHDRAWAL_TIMEOUT: Duration = Duration::from_secs(20);
+const PENDING_WITHDRAWAL_DETAIL: &str =
+    "This computer is unpaired locally. Cloud withdrawal is pending; retry withdrawal when online.";
 const ACCESS_MODE_ACCOUNT: &str = "outbound-public-relay-access-v1";
 const AUTO_APPROVE_REMOTE_ACTIONS_ACCOUNT: &str = "outbound-public-relay-auto-approve-actions-v1";
 /// The name this computer registers under, and declares when it opens a
@@ -44,6 +49,8 @@ pub struct RelayStatus {
     /// clear; the persisted latch is authoritative in that case.
     pub remote_enabled: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pending_revocation: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub needs_repair: bool,
     pub state: ConnectionState,
     pub access_mode: AccessMode,
@@ -68,11 +75,36 @@ pub struct BrowserPairingProgress {
     pub status: Option<RelayStatus>,
 }
 
+#[derive(Default)]
+struct BrowserPairingState {
+    generation: u64,
+    session: Option<HostPairingSession>,
+}
+
+impl BrowserPairingState {
+    fn invalidate(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.session = None;
+        self.generation
+    }
+
+    fn publish(&mut self, generation: u64, session: HostPairingSession) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.session = Some(session);
+        true
+    }
+
+    fn claim(&mut self, generation: u64) -> bool {
+        self.generation == generation && self.session.take().is_some()
+    }
+}
+
 pub struct RelayBridge {
     lifecycle: Mutex<()>,
     lifecycle_generation: AtomicU64,
-    lease: Mutex<Option<crate::background_host::HostLease>>,
-    task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    task: Mutex<Option<crate::relay_task::Owned>>,
     stop: Mutex<Option<watch::Sender<bool>>>,
     state: Mutex<watch::Receiver<ConnectionState>>,
     access: watch::Sender<AccessMode>,
@@ -86,8 +118,8 @@ pub struct RelayBridge {
     storage_ready: std::sync::atomic::AtomicBool,
     reconcile_pending: Arc<std::sync::atomic::AtomicBool>,
     last_error: Mutex<Option<String>>,
-    pending_browser_pairing: Mutex<Option<HostPairingSession>>,
-    browser_pairing_generation: AtomicU64,
+    pending_browser_pairing: Arc<Mutex<BrowserPairingState>>,
+    pending_revocation: std::sync::atomic::AtomicBool,
 }
 
 impl Default for RelayBridge {
@@ -97,7 +129,6 @@ impl Default for RelayBridge {
         Self {
             lifecycle: Mutex::new(()),
             lifecycle_generation: AtomicU64::new(0),
-            lease: Mutex::new(None),
             task: Mutex::new(None),
             stop: Mutex::new(None),
             state: Mutex::new(state),
@@ -112,8 +143,8 @@ impl Default for RelayBridge {
             storage_ready: std::sync::atomic::AtomicBool::new(false),
             reconcile_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_error: Mutex::new(None),
-            pending_browser_pairing: Mutex::new(None),
-            browser_pairing_generation: AtomicU64::new(0),
+            pending_browser_pairing: Arc::new(Mutex::new(BrowserPairingState::default())),
+            pending_revocation: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -204,9 +235,11 @@ impl RelayBridge {
         let state = self.connection_state()?;
         let remote_enabled =
             crate::access_policy_store::effective_remote_enabled(&access_policy_directory());
+        let pending_revocation = self.pending_revocation.load(Ordering::Acquire);
         Ok(RelayStatus {
             paired: credential.is_some() && !needs_repair,
             remote_enabled,
+            pending_revocation,
             needs_repair,
             state,
             access_mode: *self.access.borrow(),
@@ -218,6 +251,12 @@ impl RelayBridge {
                     "Remote access now uses Google sign-in. Pair this device again to continue."
                         .into(),
                 )
+            } else if pending_revocation {
+                Some(if credential.is_none() {
+                    PENDING_WITHDRAWAL_DETAIL.into()
+                } else {
+                    "A previous cloud authorization still needs to be withdrawn; retry withdrawal when online.".into()
+                })
             } else if !remote_enabled && credential.is_some() {
                 Some("This computer is unpaired for remote use. Pair it again to enable the remote route.".into())
             } else {
@@ -258,8 +297,11 @@ impl RelayBridge {
             .map_err(|_| "Relay credential cache timestamp lock was poisoned")? =
             Some(Instant::now());
         let credentials = load_credentials().await?;
+        let pending_revocations = load_pending_revocations_async().await?;
         if self.credential_generation.load(Ordering::Acquire) == generation {
             self.cache_credentials(credentials)?;
+            self.pending_revocation
+                .store(!pending_revocations.is_empty(), Ordering::Release);
         }
         Ok(())
     }
@@ -389,16 +431,15 @@ impl RelayBridge {
         if !crate::access_policy_store::effective_remote_enabled(&directory) {
             return Err("Remote hosting is disabled. Pair this device again to enable it.".into());
         }
+        let permit = crate::relay_task::Permit::acquire()?;
         let lease =
             crate::background_host::HostLease::try_acquire(&directory, "remote-mcp-host.lock")?
-                .ok_or("Remote MCP is hosted by the background tray")?;
+                .ok_or(
+                    "Remote MCP is hosted by the background tray or a previous host is retiring",
+                )?;
         let credentials = begin_credential_connection(credentials).await?;
         self.publish_start_if_current(lifecycle_generation, generation, &directory, move || {
             self.stop_inner();
-            *self
-                .lease
-                .lock()
-                .map_err(|_| "Relay lease lock was poisoned")? = Some(lease);
             let (state_tx, state_rx) = watch::channel(ConnectionState::Stopped);
             crate::host_presence::set_remote_state(state_rx.clone());
             let (stop_tx, stop_rx) = watch::channel(false);
@@ -424,6 +465,7 @@ impl RelayBridge {
             .with_credential_status(Arc::new(record_credential_status))
             .with_replacement_ack(Arc::new(acknowledge_replacement));
             let task = tauri::async_runtime::spawn(client.run());
+            let task = crate::relay_task::Owned::new(task, lease, permit);
             *self
                 .task
                 .lock()
@@ -471,12 +513,10 @@ impl RelayBridge {
         }
         if let Ok(mut task) = self.task.lock() {
             if let Some(handle) = task.take() {
-                handle.abort();
+                handle.retire();
             }
         }
-        if let Ok(mut lease) = self.lease.lock() {
-            lease.take();
-        }
+        crate::relay_task::reap();
         if let Ok(mut state) = self.state.lock() {
             *state = watch::channel(ConnectionState::Stopped).1;
         }
@@ -553,31 +593,15 @@ impl RelayBridge {
         endpoint: &str,
     ) -> Result<BrowserPairingOffer, String> {
         let _operation = credential_lease("relay-pairing-operation.lock")?;
-        // Starting another flow invalidates any poll already in flight. The
-        // slot lock makes this generation change atomic with its pending value.
-        let generation = {
-            let mut pending = self
-                .pending_browser_pairing
-                .lock()
-                .map_err(|_| "Browser pairing lock was poisoned")?;
-            *pending = None;
-            self.browser_pairing_generation
-                .fetch_add(1, Ordering::AcqRel)
-                .wrapping_add(1)
-        };
+        let generation = self.try_pairing_state()?.invalidate();
         let session = begin_host_pairing(endpoint, RELAY_DEVICE_NAME, RELAY_PLATFORM).await?;
         let offer = BrowserPairingOffer {
             pair_url: session.pair_url.clone(),
             expires_at: session.expires_at,
         };
-        let mut pending = self
-            .pending_browser_pairing
-            .lock()
-            .map_err(|_| "Browser pairing lock was poisoned")?;
-        if self.browser_pairing_generation.load(Ordering::Acquire) != generation {
-            return Err("Browser pairing was canceled or replaced before it could start".into());
+        if !self.try_pairing_state()?.publish(generation, session) {
+            return Err("Browser pairing was cancelled or replaced".into());
         }
-        *pending = Some(session);
         if let Ok(mut detail) = self.last_error.lock() {
             *detail = Some("Finish secure sign-in in your browser".into());
         }
@@ -589,18 +613,21 @@ impl RelayBridge {
         device_name: &str,
         adapter: Arc<dyn DeviceAdapter>,
     ) -> Result<BrowserPairingProgress, String> {
-        let (session, generation) = {
-            let pending = self
-                .pending_browser_pairing
-                .lock()
-                .map_err(|_| "Browser pairing lock was poisoned")?;
+        let (generation, session) = {
+            let pending = self.try_pairing_state()?;
             (
-                pending.clone().ok_or("Start browser pairing first")?,
-                self.browser_pairing_generation.load(Ordering::Acquire),
+                pending.generation,
+                pending
+                    .session
+                    .clone()
+                    .ok_or("Start browser pairing first")?,
             )
         };
         if session.expires_at < now_millis() {
-            self.discard_browser_pairing(generation);
+            let mut pending = self.try_pairing_state()?;
+            if pending.generation == generation {
+                pending.invalidate();
+            }
             return Err(
                 "The browser pairing session expired. Start it again from QC Remote.".into(),
             );
@@ -608,7 +635,7 @@ impl RelayBridge {
         let _operation = credential_lease("relay-pairing-operation.lock")?;
         let held = load_credentials().await?;
         let Some(code) = poll_host_pairing(&session.endpoint, &session).await? else {
-            if !self.browser_pairing_is_pending(generation) {
+            if !self.browser_pairing_is_pending(generation)? {
                 return Err("Browser pairing was canceled before sign-in completed".into());
             }
             return Ok(BrowserPairingProgress {
@@ -616,122 +643,166 @@ impl RelayBridge {
                 status: None,
             });
         };
-        // This is the cancellation boundary for the one-shot redemption. Once
-        // claimed, redemption and local adoption form one transaction; a later
-        // Cancel cannot discard a receipt that may already have been created.
-        if !self.claim_browser_pairing_redemption(generation) {
+        // Claim makes redemption one-shot, not uncancellable. The owned
+        // credential worker checks this generation again at the store commit;
+        // a cancelled mint is retired through the durable withdrawal journal.
+        if !self.claim_browser_pairing_redemption(generation)? {
             return Err("Browser pairing was canceled before its code could be redeemed".into());
         }
         // Redeeming a code is one-shot, including an ambiguous transport failure.
         self.credential_generation.fetch_add(1, Ordering::AcqRel);
         let credentials =
             pair_replacing(&session.endpoint, &code, device_name, held.as_ref()).await?;
-        adopt_credentials(credentials, held.as_ref()).await?;
+        adopt_credentials_bound(
+            credentials,
+            held.as_ref(),
+            Some((self.pending_browser_pairing.clone(), generation)),
+        )
+        .await?;
         set_remote_session_enabled(true).await?;
         self.start_inner(adapter).await?;
-        *self
-            .pending_browser_pairing
-            .lock()
-            .map_err(|_| "Browser pairing lock was poisoned")? = None;
         Ok(BrowserPairingProgress {
             state: "paired".into(),
             status: Some(self.status()?),
         })
     }
 
-    pub fn cancel_browser_pairing(&self) {
-        self.invalidate_pending_browser_pairing();
-        if let Ok(mut detail) = self.last_error.lock() {
-            *detail = None;
-        }
-    }
-
-    fn browser_pairing_is_pending(&self, generation: u64) -> bool {
-        self.pending_browser_pairing.lock().is_ok_and(|pending| {
-            pending.is_some()
-                && self.browser_pairing_generation.load(Ordering::Acquire) == generation
+    fn try_pairing_state(&self) -> Result<std::sync::MutexGuard<'_, BrowserPairingState>, String> {
+        self.pending_browser_pairing.try_lock().map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => "Browser pairing is committing or busy. Try again after the current operation finishes; it has not been cancelled.".into(),
+            std::sync::TryLockError::Poisoned(_) => "Browser pairing lock was poisoned; no pairing was changed".into(),
         })
     }
 
-    fn claim_browser_pairing_redemption(&self, generation: u64) -> bool {
-        let Ok(mut pending) = self.pending_browser_pairing.lock() else {
-            return false;
-        };
-        if pending.is_none()
-            || self.browser_pairing_generation.load(Ordering::Acquire) != generation
-        {
-            return false;
+    pub fn cancel_browser_pairing(&self) -> Result<(), String> {
+        self.invalidate_pending_browser_pairing()?;
+        if let Ok(mut detail) = self.last_error.lock() {
+            *detail = None;
         }
-        *pending = None;
-        self.browser_pairing_generation
-            .fetch_add(1, Ordering::AcqRel);
-        true
+        Ok(())
     }
 
-    fn discard_browser_pairing(&self, generation: u64) {
-        if let Ok(mut pending) = self.pending_browser_pairing.lock() {
-            if self.browser_pairing_generation.load(Ordering::Acquire) == generation {
-                *pending = None;
-                self.browser_pairing_generation
-                    .fetch_add(1, Ordering::AcqRel);
-            }
-        }
+    fn browser_pairing_is_pending(&self, generation: u64) -> Result<bool, String> {
+        let pending = self.try_pairing_state()?;
+        Ok(pending.generation == generation && pending.session.is_some())
     }
 
-    fn invalidate_pending_browser_pairing(&self) {
-        if let Ok(mut pending) = self.pending_browser_pairing.lock() {
-            *pending = None;
-            self.browser_pairing_generation
-                .fetch_add(1, Ordering::AcqRel);
-        } else {
-            // Poisoning must still prevent a poll already holding an older
-            // token from crossing the adoption boundary.
-            self.browser_pairing_generation
-                .fetch_add(1, Ordering::AcqRel);
-        }
+    fn claim_browser_pairing_redemption(&self, generation: u64) -> Result<bool, String> {
+        Ok(self.try_pairing_state()?.claim(generation))
     }
 
-    /// Disable this host locally before withdrawing the pairing at the relay.
-    ///
-    /// The persisted session latch blocks resident hosts before either network
-    /// or keyring I/O begins. Clearing only the local store leaves the relay
-    /// honouring a credential the user believes they have revoked. The local
-    /// clear still happens if the relay cannot be reached, and the reason is
-    /// surfaced so they can retry while the relay still holds it.
+    fn invalidate_pending_browser_pairing(&self) -> Result<(), String> {
+        self.try_pairing_state()?.invalidate();
+        Ok(())
+    }
+
+    /// Disable request admission before retaining and retiring cloud receipts.
     pub async fn unpair(&self) -> Result<RelayStatus, String> {
         let _operation = credential_lease("relay-pairing-operation.lock")?;
+        let expected = load_credentials().await?;
         self.credential_generation.fetch_add(1, Ordering::AcqRel);
-        // Invalidate any startup that is awaiting keyring I/O before starting
-        // network withdrawal or local deletion.
         self.stop();
-        self.invalidate_pending_browser_pairing();
-        // Persist the remote-session revocation before any network or keyring
-        // operation. If either later operation fails, resident/headless hosts
-        // still deny every new remote invocation.
-        if let Err(error) = set_remote_session_enabled(false).await {
-            if let Ok(mut detail) = self.last_error.lock() {
-                *detail = Some(format!("Remote hosting was stopped, but its disabled state could not be saved: {error}"));
-            }
-            return Err(error);
-        }
-        let stored = load_credentials().await?;
-        let withdrawal = match stored.as_ref() {
-            Some(credentials) => revoke(credentials).await,
-            None => Ok(()),
-        };
-        clear_credentials_if_current(stored).await?;
+        set_remote_session_enabled(false).await?;
+        self.invalidate_pending_browser_pairing()?;
+        let pending = prepare_withdrawal(true, expected).await?;
         self.cache_credentials(None)?;
+        self.pending_revocation
+            .store(!pending.is_empty(), Ordering::Release);
+        let remains = retire_journal(pending).await?;
+        self.pending_revocation.store(remains, Ordering::Release);
         if let Ok(mut detail) = self.last_error.lock() {
-            *detail = match &withdrawal {
-                Ok(()) => None,
-                Err(_) => Some(
-                    "This computer was unpaired locally, but QC Remote Cloud could not be reached to withdraw the pairing. Unpair again while online."
-                        .to_string(),
-                ),
-            };
+            *detail = remains.then(|| PENDING_WITHDRAWAL_DETAIL.into());
         }
         self.status()
     }
+
+    /// Retry only withdrawn receipts; never clear or stop a new active pairing.
+    pub async fn retry_withdrawal(&self) -> Result<RelayStatus, String> {
+        let _operation = credential_lease("relay-pairing-operation.lock")?;
+        let pending = prepare_withdrawal(false, None).await?;
+        let remains = retire_journal(pending).await?;
+        self.pending_revocation.store(remains, Ordering::Release);
+        if let Ok(mut detail) = self.last_error.lock() {
+            *detail = remains.then(|| PENDING_WITHDRAWAL_DETAIL.into());
+        }
+        self.status()
+    }
+}
+
+/// Journal before removing active access, then retire each credential once.
+/// A failed or interrupted request leaves the journal retryable; revocation
+/// accepts already-withdrawn credentials, so ambiguous outcomes are safe to retry.
+#[cfg(test)]
+async fn withdraw_pairing<S, C, R, RF>(
+    stored: Option<Credentials>,
+    mut pending: Vec<Credentials>,
+    mut save: S,
+    clear_active: C,
+    mut revoke_one: R,
+    timeout: Duration,
+) -> Result<bool, String>
+where
+    S: FnMut(&[Credentials]) -> Result<(), String>,
+    C: FnOnce() -> Result<(), String>,
+    R: FnMut(Credentials) -> RF,
+    RF: Future<Output = Result<(), String>>,
+{
+    let mut arriving = stored;
+    while let Some(mut credential) = arriving {
+        arriving = credential.previous_credential.take().map(|value| *value);
+        if !pending
+            .iter()
+            .any(|entry| same_credential(Some(entry), Some(&credential)))
+        {
+            pending.push(credential);
+        }
+    }
+    save(&pending)?;
+    clear_active()?;
+    let deadline = tokio::time::Instant::now() + timeout;
+    while let Some(credential) = pending.first().cloned() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero()
+            || !matches!(
+                tokio::time::timeout(remaining, revoke_one(credential)).await,
+                Ok(Ok(()))
+            )
+        {
+            return Ok(true);
+        }
+        pending.remove(0);
+        save(&pending)?;
+    }
+    Ok(false)
+}
+
+fn pending_revocations_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(CREDENTIAL_SERVICE, PENDING_REVOCATIONS_ACCOUNT)
+        .map_err(|_| "The system credential store is unavailable".to_string())
+}
+
+fn load_pending_revocations() -> Result<Vec<Credentials>, String> {
+    match pending_revocations_entry()?.get_password() {
+        Ok(value) => serde_json::from_str(&value)
+            .map_err(|_| "The pending cloud withdrawal record is invalid".into()),
+        Err(keyring::Error::NoEntry) => Ok(Vec::new()),
+        Err(_) => Err("Could not read the pending cloud withdrawal record".into()),
+    }
+}
+
+fn store_pending_revocations(entries: &[Credentials]) -> Result<(), String> {
+    let entry = pending_revocations_entry()?;
+    if entries.is_empty() {
+        return match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err("Could not clear the pending cloud withdrawal record".into()),
+        };
+    }
+    let encoded =
+        serde_json::to_string(entries).map_err(|_| "Could not encode pending cloud withdrawals")?;
+    entry
+        .set_password(&encoded)
+        .map_err(|_| "Could not store pending cloud withdrawals".into())
 }
 
 fn now_millis() -> u64 {
@@ -994,7 +1065,11 @@ pub(crate) fn acknowledge_replacement(expected: &Credentials, previous_device_id
                     .as_ref()
                     .is_some_and(|previous| previous.device_id == previous_device_id)
             {
-                held.previous_credential = None;
+                retain_older_replacement_receipts(
+                    &mut held,
+                    load_pending_revocations,
+                    store_pending_revocations,
+                )?;
                 store_credentials_sync(&held)?;
             }
             Ok(())
@@ -1030,39 +1105,307 @@ async fn adopt_credentials(
     incoming: Credentials,
     expected: Option<&Credentials>,
 ) -> Result<(), String> {
+    adopt_credentials_bound(incoming, expected, None).await
+}
+
+type PairingFence = (Arc<Mutex<BrowserPairingState>>, u64);
+
+async fn adopt_credentials_bound(
+    incoming: Credentials,
+    expected: Option<&Credentials>,
+    fence: Option<PairingFence>,
+) -> Result<(), String> {
     let expected = expected.cloned();
     let mut stored = incoming.clone();
-    let refusal = crate::credential_io::shared()?
+    // Keep the complete outcome, including worker admission/read/store errors.
+    // Every failure after minting must retire the incoming-only capability.
+    let adoption = match crate::credential_io::shared() {
+        Err(error) => Err(error),
+        Ok(worker) => {
+            worker
+                .write(move || {
+                    with_pairing_fence(fence.as_ref(), || {
+                        store_adopted_credentials(&mut stored, expected.as_ref())
+                    })
+                })
+                .await
+        }
+    };
+    finish_adoption(incoming, adoption).await
+}
+
+fn with_pairing_fence<F>(fence: Option<&PairingFence>, commit: F) -> Result<Option<String>, String>
+where
+    F: FnOnce() -> Result<Option<String>, String>,
+{
+    let pending = fence
+        .map(|(state, _)| {
+            state
+                .lock()
+                .map_err(|_| "Browser pairing lock was poisoned".to_owned())
+        })
+        .transpose()?;
+    if let (Some((_, generation)), Some(pending)) = (fence, pending.as_ref()) {
+        if pending.generation != *generation {
+            return Ok(Some("Browser pairing was cancelled or replaced".into()));
+        }
+    }
+    // This guard lives through the synchronous store commit inside the owned
+    // worker. No MutexGuard crosses an await; Cancel shares this exact lock.
+    commit()
+}
+
+fn store_adopted_credentials(
+    incoming: &mut Credentials,
+    expected: Option<&Credentials>,
+) -> Result<Option<String>, String> {
+    let _mutation = credential_lease("relay-credential-state.lock")?;
+    let held = load_credentials_sync()?;
+    if !same_credential(held.as_ref(), expected) {
+        return Ok(Some(
+            "Pairing changed while the new receipt was pending; no credential was overwritten"
+                .into(),
+        ));
+    }
+    let refusal = owner_change_refusal(
+        held.as_ref().and_then(|value| value.pairing.as_ref()),
+        incoming.pairing.as_ref(),
+        held.as_ref().is_some_and(|value| value.credential_rejected),
+        held.is_some(),
+    );
+    if refusal.is_none() {
+        incoming.previous_credential = replacement_predecessor(held)?;
+        store_credentials_sync(incoming)?;
+    }
+    Ok(refusal)
+}
+
+fn replacement_predecessor(held: Option<Credentials>) -> Result<Option<Box<Credentials>>, String> {
+    // Bound serialized nesting without ever dropping an unacknowledged receipt.
+    // The active pairing stays unchanged if its history needs withdrawal first.
+    let mut cursor = held.as_ref();
+    let mut depth = 0;
+    while let Some(previous) = cursor {
+        depth += 1;
+        if depth > 32 {
+            return Err(
+                "Pairing repair history needs withdrawal; unpair before pairing again.".into(),
+            );
+        }
+        cursor = previous.previous_credential.as_deref();
+    }
+    Ok(held.map(Box::new))
+}
+
+/// The relay acknowledges only the immediate predecessor, not its ancestors.
+/// Journal every older receipt before removing its withdrawal capability from
+/// active state. An interrupted journal/store sequence is idempotently retryable.
+fn retain_older_replacement_receipts<L, S>(
+    held: &mut Credentials,
+    load: L,
+    save: S,
+) -> Result<(), String>
+where
+    L: FnOnce() -> Result<Vec<Credentials>, String>,
+    S: FnOnce(&[Credentials]) -> Result<(), String>,
+{
+    let mut arriving = held
+        .previous_credential
+        .as_ref()
+        .and_then(|previous| previous.previous_credential.as_deref())
+        .cloned();
+    if arriving.is_some() {
+        let mut pending = load()?;
+        while let Some(mut credential) = arriving {
+            arriving = credential.previous_credential.take().map(|value| *value);
+            if !pending
+                .iter()
+                .any(|entry| same_credential(Some(entry), Some(&credential)))
+            {
+                pending.push(credential);
+            }
+        }
+        save(&pending)?;
+    }
+    held.previous_credential = None;
+    Ok(())
+}
+
+async fn finish_adoption(
+    incoming: Credentials,
+    adoption: Result<Option<String>, String>,
+) -> Result<(), String> {
+    finish_adoption_with(incoming, adoption, retire_refused_credential).await
+}
+
+async fn finish_adoption_with<R, RF>(
+    mut incoming: Credentials,
+    adoption: Result<Option<String>, String>,
+    retire: R,
+) -> Result<(), String>
+where
+    R: FnOnce(Credentials) -> RF,
+    RF: Future<Output = Result<(), String>>,
+{
+    let reason = match adoption {
+        Ok(None) => return Ok(()),
+        Ok(Some(reason)) | Err(reason) => reason,
+    };
+    incoming.previous_credential = None;
+    match retire(incoming).await {
+        Ok(()) => Err(reason),
+        Err(withdrawal) => Err(format!("{reason}. {withdrawal}")),
+    }
+}
+
+async fn retire_refused_credential(incoming: Credentials) -> Result<(), String> {
+    let recorded = update_pending_receipt(incoming.clone(), true).await;
+    let withdrawal = tokio::time::timeout(WITHDRAWAL_TIMEOUT, revoke(&incoming)).await;
+    match withdrawal {
+        Ok(Ok(())) if recorded.is_ok() => update_pending_receipt(incoming, false).await.map(|_| ()),
+        Ok(Ok(())) => Ok(()),
+        failed => {
+            let reason = match failed {
+                Err(_) => "Cloud withdrawal timed out".to_owned(),
+                Ok(Err(reason)) => reason,
+                _ => unreachable!(),
+            };
+            Err(match recorded {
+                Ok(_) => format!("{reason}; cloud withdrawal remains pending"),
+                Err(store) => format!("{reason}; the withdrawal could not be recorded ({store})"),
+            })
+        }
+    }
+}
+
+// The production journal operations run on the serialized credential worker.
+// Each mutation reloads and merges under the cross-process state lease.
+async fn update_pending_receipt(credential: Credentials, keep: bool) -> Result<bool, String> {
+    crate::credential_io::shared()?
         .write(move || {
             let _mutation = credential_lease("relay-credential-state.lock")?;
-            let held = load_credentials_sync()?;
-            if !same_credential(held.as_ref(), expected.as_ref()) {
-                return Ok(Some(
-                    "Pairing changed while the new receipt was pending; no credential was overwritten"
-                        .into(),
-                ));
+            let mut entries = load_pending_revocations()?;
+            entries.retain(|entry| !same_credential(Some(entry), Some(&credential)));
+            if keep {
+                entries.push(credential);
             }
-            let refusal = owner_change_refusal(
-                held.as_ref().and_then(|value| value.pairing.as_ref()),
-                stored.pairing.as_ref(),
-                held.as_ref().is_some_and(|value| value.credential_rejected),
-                held.is_some(),
-            );
-            if refusal.is_none() {
-                stored.previous_credential = held.map(|mut previous| {
-                    previous.previous_credential = None;
-                    Box::new(previous)
-                });
-                store_credentials_sync(&stored)?;
-            }
-            Ok(refusal)
+            store_pending_revocations(&entries)?;
+            Ok(!entries.is_empty())
         })
-        .await?;
-    if let Some(reason) = refusal {
-        let _ = revoke(&incoming).await;
-        return Err(reason);
+        .await
+}
+
+async fn prepare_withdrawal(
+    clear: bool,
+    expected: Option<Credentials>,
+) -> Result<Vec<Credentials>, String> {
+    crate::credential_io::shared()?
+        .write(move || {
+            let _mutation = credential_lease("relay-credential-state.lock")?;
+            prepare_withdrawal_with(
+                clear,
+                expected.as_ref(),
+                load_credentials_sync,
+                load_pending_revocations,
+                store_pending_revocations,
+                clear_credentials_sync,
+            )
+        })
+        .await
+}
+
+fn prepare_withdrawal_with<L, P, S, C>(
+    clear: bool,
+    expected: Option<&Credentials>,
+    load: L,
+    pending: P,
+    save: S,
+    clear_active: C,
+) -> Result<Vec<Credentials>, String>
+where
+    L: FnOnce() -> Result<Option<Credentials>, String>,
+    P: FnOnce() -> Result<Vec<Credentials>, String>,
+    S: FnOnce(&[Credentials]) -> Result<(), String>,
+    C: FnOnce() -> Result<(), String>,
+{
+    let mut pending = pending()?;
+    if clear {
+        let mut arriving = load()?;
+        // The async operation lease can retire when its caller is dropped.
+        // Compare inside this worker's state lease before journaling or clearing,
+        // so a replacement adopted by another process is never withdrawn.
+        if !same_credential(arriving.as_ref(), expected) {
+            return Err(
+                "Pairing changed while unpairing; the replacement was left untouched".into(),
+            );
+        }
+        while let Some(mut credential) = arriving {
+            arriving = credential.previous_credential.take().map(|value| *value);
+            if !pending
+                .iter()
+                .any(|entry| same_credential(Some(entry), Some(&credential)))
+            {
+                pending.push(credential);
+            }
+        }
+        // The production caller holds one lease through journaling and clear.
+        save(&pending)?;
+        clear_active()?;
     }
-    Ok(())
+    Ok(pending)
+}
+
+async fn retire_journal(pending: Vec<Credentials>) -> Result<bool, String> {
+    for credential in pending {
+        if matches!(
+            tokio::time::timeout(WITHDRAWAL_TIMEOUT, revoke(&credential)).await,
+            Ok(Ok(()))
+        ) {
+            update_pending_receipt(credential, false).await?;
+        }
+    }
+    load_pending_revocations_async()
+        .await
+        .map(|entries| !entries.is_empty())
+}
+
+async fn load_pending_revocations_async() -> Result<Vec<Credentials>, String> {
+    crate::credential_io::shared()?
+        .read(Duration::from_secs(5), load_pending_revocations)
+        .await
+}
+
+/// Unlike active unpairing, a newly minted receipt may be retired directly if
+/// the credential store is unavailable: it was never the active local route.
+#[cfg(test)]
+async fn retire_unadopted<J, R, RF>(
+    credential: Credentials,
+    mut journal: J,
+    revoke_one: R,
+    timeout: Duration,
+) -> Result<(), String>
+where
+    J: FnMut(&Credentials, bool) -> Result<(), String>,
+    R: FnOnce(Credentials) -> RF,
+    RF: Future<Output = Result<(), String>>,
+{
+    let recorded = journal(&credential, true);
+    let withdrawal = tokio::time::timeout(timeout, revoke_one(credential.clone())).await;
+    match withdrawal {
+        Ok(Ok(())) if recorded.is_ok() => journal(&credential, false),
+        Ok(Ok(())) => Ok(()),
+        failed => {
+            let reason = match failed {
+                Err(_) => "Cloud withdrawal timed out".to_owned(),
+                Ok(Err(reason)) => reason,
+                Ok(Ok(())) => unreachable!(),
+            };
+            Err(match recorded {
+                Ok(()) => format!("{reason}; cloud withdrawal remains pending"),
+                Err(store) => format!("{reason}; the withdrawal could not be recorded ({store})"),
+            })
+        }
+    }
 }
 
 fn store_credentials_sync(credentials: &Credentials) -> Result<(), String> {
@@ -1091,24 +1434,6 @@ fn clear_credentials_sync() -> Result<(), String> {
                 .into(),
         ),
     }
-}
-
-async fn clear_credentials_if_current(expected: Option<Credentials>) -> Result<(), String> {
-    crate::credential_io::shared()?
-        .write(move || {
-            // Keep both the cross-process lease and compare-and-clear inside
-            // the worker transaction. Dropping the async caller cannot release
-            // the lease while the native keyring deletion is still running.
-            let _mutation = credential_lease("relay-credential-state.lock")?;
-            let held = load_credentials_sync()?;
-            if !same_credential(held.as_ref(), expected.as_ref()) {
-                return Err(
-                    "Pairing changed while unpairing; the replacement was left untouched".into(),
-                );
-            }
-            clear_credentials_sync()
-        })
-        .await
 }
 
 #[cfg(test)]
@@ -1242,7 +1567,7 @@ mod tests {
             expires_at: u64::MAX,
             protocol: "fixture".into(),
         };
-        *bridge.pending_browser_pairing.lock().unwrap() = Some(HostPairingSession {
+        bridge.pending_browser_pairing.lock().unwrap().session = Some(HostPairingSession {
             endpoint: "https://pair.example.invalid".into(),
             session_id: "fixture-session".into(),
             receiver_secret: "fixture-secret".into(),
@@ -1250,9 +1575,7 @@ mod tests {
             expires_at: u64::MAX,
             protocol: "fixture".into(),
         });
-        bridge
-            .browser_pairing_generation
-            .store(generation, Ordering::Release);
+        bridge.pending_browser_pairing.lock().unwrap().generation = generation;
 
         // Simulate a network poll that has started but whose returned code
         // has not yet reached the local one-shot redemption boundary.
@@ -1262,39 +1585,606 @@ mod tests {
         let poll = tokio::spawn(async move {
             let _ = poll_started_tx.send(());
             receipt_rx.await.unwrap();
-            polling_bridge.claim_browser_pairing_redemption(generation)
+            polling_bridge
+                .claim_browser_pairing_redemption(generation)
+                .unwrap()
         });
         poll_started_rx.await.unwrap();
 
-        bridge.cancel_browser_pairing();
+        bridge.cancel_browser_pairing().unwrap();
         let _ = receipt_tx.send(());
 
         assert!(!poll.await.unwrap());
-        assert!(bridge.pending_browser_pairing.lock().unwrap().is_none());
+        assert!(bridge
+            .pending_browser_pairing
+            .lock()
+            .unwrap()
+            .session
+            .is_none());
 
         // A valid, current poll must be able to claim the adoption boundary,
         // and that one-shot claim cannot be reused.
         let current = RelayBridge::default();
-        *current.pending_browser_pairing.lock().unwrap() = Some(session());
-        current
-            .browser_pairing_generation
-            .store(7, Ordering::Release);
-        assert!(current.claim_browser_pairing_redemption(7));
-        assert!(!current.claim_browser_pairing_redemption(7));
+        current.pending_browser_pairing.lock().unwrap().session = Some(session());
+        current.pending_browser_pairing.lock().unwrap().generation = 7;
+        assert!(current.claim_browser_pairing_redemption(7).unwrap());
+        assert!(!current.claim_browser_pairing_redemption(7).unwrap());
 
         // A stale poll cannot clear a replacement session while refusing its
         // claim; the replacement remains available to its own generation.
         let replacement = RelayBridge::default();
-        *replacement.pending_browser_pairing.lock().unwrap() = Some(session());
+        replacement.pending_browser_pairing.lock().unwrap().session = Some(session());
         replacement
-            .browser_pairing_generation
-            .store(9, Ordering::Release);
-        assert!(!replacement.claim_browser_pairing_redemption(8));
+            .pending_browser_pairing
+            .lock()
+            .unwrap()
+            .generation = 9;
+        assert!(!replacement.claim_browser_pairing_redemption(8).unwrap());
         assert!(replacement
             .pending_browser_pairing
             .lock()
             .unwrap()
+            .session
             .is_some());
+    }
+
+    fn pairing_session(id: &str) -> HostPairingSession {
+        HostPairingSession {
+            endpoint: "https://qcrc.freevia.org".into(),
+            session_id: id.into(),
+            receiver_secret: "fixture-secret".into(),
+            pair_url: "https://qcrc.freevia.org/pair".into(),
+            expires_at: u64::MAX,
+            protocol: "fixture".into(),
+        }
+    }
+
+    #[test]
+    fn a_cancelled_or_replaced_browser_flow_cannot_publish_or_consume_an_offer() {
+        let mut state = BrowserPairingState::default();
+        let old = state.invalidate();
+        let current = state.invalidate();
+        assert!(state.publish(current, pairing_session("new")));
+        assert!(!state.publish(old, pairing_session("slow-old")));
+        assert!(!state.claim(old));
+        assert_eq!(state.session.as_ref().unwrap().session_id, "new");
+        assert!(state.claim(current));
+        assert!(
+            !state.claim(current),
+            "one-shot redemption cannot be attempted twice"
+        );
+        let cancelled = state.invalidate();
+        state.invalidate();
+        assert!(!state.publish(cancelled, pairing_session("cancelled")));
+        assert!(!state.claim(cancelled));
+        assert!(state.session.is_none());
+    }
+
+    fn withdrawal_credential(id: &str) -> Credentials {
+        serde_json::from_value(serde_json::json!({
+            "endpoint":"https://qcrc.freevia.org", "deviceId":id,
+            "deviceCredential":"fixture-only-withdrawal-credential"
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn inside_commit_stall_refuses_cancel_and_poll_without_blocking_callers() {
+        struct NeverInvoke;
+        #[async_trait::async_trait]
+        impl DeviceAdapter for NeverInvoke {
+            async fn ready(&self) -> bool {
+                panic!("no device readiness probe")
+            }
+            async fn invoke(
+                &self,
+                _: &str,
+                _: serde_json::Value,
+            ) -> Result<serde_json::Value, qc_relay_client::DeviceError> {
+                panic!("no device invocation")
+            }
+        }
+        let bridge = Arc::new(RelayBridge::default());
+        let generation = bridge.pending_browser_pairing.lock().unwrap().generation;
+        let fence = (bridge.pending_browser_pairing.clone(), generation);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let task = tokio::spawn(async move {
+            crate::credential_io::shared()
+                .unwrap()
+                .write(move || {
+                    with_pairing_fence(Some(&fence), || {
+                        let _ = started.send(());
+                        waiting
+                            .recv_timeout(Duration::from_secs(2))
+                            .map_err(|error| error.to_string())?;
+                        Ok(None)
+                    })
+                })
+                .await
+        });
+        ready.await.unwrap();
+        let before = Instant::now();
+        let cancel = bridge.cancel_browser_pairing().unwrap_err();
+        assert!(cancel.contains("has not been cancelled"));
+        assert!(bridge
+            .poll_browser_pairing("fixture", Arc::new(NeverInvoke))
+            .await
+            .unwrap_err()
+            .contains("busy"));
+        assert!(bridge
+            .claim_browser_pairing_redemption(generation)
+            .unwrap_err()
+            .contains("busy"));
+        assert!(
+            before.elapsed() < Duration::from_millis(500),
+            "no browser-state caller waits for started OS I/O"
+        );
+        let _ = release.send(());
+        assert!(
+            task.await.unwrap().unwrap().is_none(),
+            "already-linearized healthy commit completes"
+        );
+        bridge.cancel_browser_pairing().unwrap();
+        assert_ne!(
+            bridge.pending_browser_pairing.lock().unwrap().generation,
+            generation
+        );
+    }
+
+    #[tokio::test]
+    async fn credential_worker_post_mint_cancel_prevents_store_and_retires_incoming() {
+        use std::sync::atomic::AtomicBool;
+        let state = Arc::new(Mutex::new(BrowserPairingState::default()));
+        let generation = state.lock().unwrap().invalidate();
+        let fence = (state.clone(), generation);
+        let committed = Arc::new(AtomicBool::new(false));
+        let commit_flag = committed.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, waiting) = std::sync::mpsc::channel();
+        let task = tokio::spawn(async move {
+            crate::credential_io::shared()
+                .unwrap()
+                .write(move || {
+                    let _ = started.send(());
+                    waiting
+                        .recv_timeout(Duration::from_secs(2))
+                        .map_err(|error| error.to_string())?;
+                    with_pairing_fence(Some(&fence), || {
+                        commit_flag.store(true, Ordering::Release);
+                        Ok(None)
+                    })
+                })
+                .await
+        });
+        ready.await.unwrap();
+        state.lock().unwrap().invalidate();
+        let _ = release.send(());
+        let adoption = task.await.unwrap();
+        assert!(!committed.load(Ordering::Acquire));
+        let error = finish_adoption_with(withdrawal_credential("minted"), adoption, |receipt| {
+            assert_eq!(receipt.device_id, "minted");
+            assert!(receipt.previous_credential.is_none());
+            std::future::ready(Ok(()))
+        })
+        .await
+        .unwrap_err();
+        assert!(error.contains("cancelled or replaced"));
+        let generation = state.lock().unwrap().invalidate();
+        let fence = (state.clone(), generation);
+        let healthy_commit = committed.clone();
+        let adoption = crate::credential_io::shared()
+            .unwrap()
+            .write(move || {
+                with_pairing_fence(Some(&fence), || {
+                    assert!(
+                        fence.0.try_lock().is_err(),
+                        "generation mutex remains held through the complete commit"
+                    );
+                    healthy_commit.store(true, Ordering::Release);
+                    Ok(None)
+                })
+            })
+            .await;
+        assert!(
+            committed.load(Ordering::Acquire),
+            "current receipt commits normally"
+        );
+        let retired = std::cell::Cell::new(false);
+        finish_adoption_with(withdrawal_credential("healthy-current"), adoption, |_| {
+            retired.set(true);
+            std::future::ready(Ok(()))
+        })
+        .await
+        .unwrap();
+        assert!(!retired.get(), "healthy adoption does not enter withdrawal");
+    }
+
+    #[tokio::test]
+    async fn credential_worker_adoption_faults_retire_receipt_and_preserve_error() {
+        for fault in ["keyring read failed", "keyring store failed"] {
+            let adoption = crate::credential_io::shared()
+                .unwrap()
+                .write(move || with_pairing_fence(None, || Err(fault.into())))
+                .await;
+            let retired = Arc::new(Mutex::new(Vec::new()));
+            let capture = retired.clone();
+            let mut receipt = withdrawal_credential("minted");
+            receipt.previous_credential = Some(Box::new(withdrawal_credential("healthy")));
+            let error = finish_adoption_with(receipt, adoption, move |receipt| {
+                assert!(receipt.previous_credential.is_none());
+                capture.lock().unwrap().push(receipt.device_id);
+                std::future::ready(Err("withdrawal pending".into()))
+            })
+            .await
+            .unwrap_err();
+            assert!(error.contains(fault));
+            assert!(error.contains("withdrawal pending"));
+            assert_eq!(*retired.lock().unwrap(), vec!["minted"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn credential_worker_journal_failure_preserves_active_and_retry_skips_active_read() {
+        use std::sync::atomic::AtomicBool;
+        let cleared = Arc::new(AtomicBool::new(false));
+        let capture = cleared.clone();
+        let error = crate::credential_io::shared()
+            .unwrap()
+            .write(move || {
+                prepare_withdrawal_with(
+                    true,
+                    Some(&withdrawal_credential("held")),
+                    || Ok(Some(withdrawal_credential("held"))),
+                    || Ok(Vec::new()),
+                    |_| Err("journal write failed".into()),
+                    || {
+                        capture.store(true, Ordering::Release);
+                        Ok(())
+                    },
+                )
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error, "journal write failed");
+        assert!(!cleared.load(Ordering::Acquire));
+        let receipts = crate::credential_io::shared()
+            .unwrap()
+            .write(|| {
+                prepare_withdrawal_with(
+                    false,
+                    None,
+                    || panic!("journal-only retry must not load new active pairing"),
+                    || Ok(vec![withdrawal_credential("old")]),
+                    |_| panic!("no stale full-journal write"),
+                    || panic!("no active clear"),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(receipts[0].device_id, "old");
+    }
+
+    #[test]
+    fn withdrawal_preserves_a_replacement_pairing_before_journal_or_clear() {
+        let old = withdrawal_credential("old");
+        for expected in [Some(&old), None] {
+            let replacement = withdrawal_credential("replacement");
+            let error = prepare_withdrawal_with(
+                true,
+                expected,
+                || Ok(Some(replacement.clone())),
+                || Ok(vec![withdrawal_credential("pending")]),
+                |_| panic!("a replacement must not be added to the withdrawal journal"),
+                || panic!("a replacement must not be cleared"),
+            )
+            .unwrap_err();
+            assert!(error.contains("replacement was left untouched"));
+        }
+    }
+
+    #[test]
+    fn withdrawal_journals_the_expected_pairing_chain_before_clearing() {
+        use std::cell::RefCell;
+        let mut expected = withdrawal_credential("current");
+        expected.previous_credential = Some(Box::new(withdrawal_credential("previous")));
+        let operations = RefCell::new(Vec::new());
+        let receipts = prepare_withdrawal_with(
+            true,
+            Some(&expected),
+            || Ok(Some(expected.clone())),
+            || Ok(vec![withdrawal_credential("pending")]),
+            |entries| {
+                assert_eq!(entries.len(), 3);
+                operations.borrow_mut().push("journal");
+                Ok(())
+            },
+            || {
+                operations.borrow_mut().push("clear");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*operations.borrow(), vec!["journal", "clear"]);
+        assert_eq!(receipts[1].device_id, "current");
+        assert_eq!(receipts[2].device_id, "previous");
+    }
+
+    #[tokio::test]
+    async fn failed_adoption_retires_only_the_minted_receipt_and_preserves_the_store_error() {
+        let mut incoming = withdrawal_credential("minted");
+        incoming.previous_credential = Some(Box::new(withdrawal_credential("healthy")));
+        let error = finish_adoption_with(incoming, Err("keyring write failed".into()), |retired| {
+            assert_eq!(retired.device_id, "minted");
+            assert!(
+                retired.previous_credential.is_none(),
+                "healthy active access is never retired on adoption failure"
+            );
+            std::future::ready(Err("withdrawal also failed".into()))
+        })
+        .await
+        .unwrap_err();
+        assert!(error.contains("keyring write failed"));
+        assert!(error.contains("withdrawal also failed"));
+    }
+
+    #[tokio::test]
+    async fn an_unadopted_receipt_is_withdrawn_even_when_its_journal_cannot_be_written() {
+        use std::cell::Cell;
+        let sent = Cell::new(false);
+        retire_unadopted(
+            withdrawal_credential("minted"),
+            |_, _| Err("keyring unavailable".into()),
+            |credential| {
+                assert_eq!(credential.device_id, "minted");
+                sent.set(true);
+                std::future::ready(Ok(()))
+            },
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert!(sent.get());
+    }
+
+    #[tokio::test]
+    async fn journal_only_retry_keeps_a_new_active_pairing() {
+        use std::cell::RefCell;
+        let active = withdrawal_credential("healthy");
+        let journal = RefCell::new(vec![withdrawal_credential("older-refused")]);
+        let pending = journal.borrow().clone();
+        assert!(!withdraw_pairing(
+            None,
+            pending,
+            |entries| {
+                *journal.borrow_mut() = entries.to_vec();
+                Ok(())
+            },
+            || Ok(()),
+            |credential| {
+                assert_eq!(credential.device_id, "older-refused");
+                std::future::ready(Ok(()))
+            },
+            Duration::from_secs(1)
+        )
+        .await
+        .unwrap());
+        assert_eq!(active.device_id, "healthy");
+        assert!(journal.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn offline_unpair_removes_active_access_and_retries_the_journal_after_restart() {
+        use std::cell::RefCell;
+        let active = RefCell::new(Some(withdrawal_credential("device-a")));
+        let journal = RefCell::new(Vec::<Credentials>::new());
+        let stored = active.borrow().clone();
+        assert!(withdraw_pairing(
+            stored,
+            Vec::new(),
+            |entries| {
+                *journal.borrow_mut() = entries.to_vec();
+                Ok(())
+            },
+            || {
+                active.borrow_mut().take();
+                Ok(())
+            },
+            |_| {
+                assert!(
+                    active.borrow().is_none(),
+                    "access is removed before the network call"
+                );
+                std::future::ready(Err("offline".into()))
+            },
+            Duration::from_secs(1)
+        )
+        .await
+        .unwrap());
+        assert!(active.borrow().is_none());
+        // A fresh process sees the separate persisted journal, never an active
+        // credential. A repeat unpair must still send the original capability.
+        let encoded = serde_json::to_string(&*journal.borrow()).unwrap();
+        let restored: Vec<Credentials> = serde_json::from_str(&encoded).unwrap();
+        let retired = RefCell::new(Vec::new());
+        assert!(!withdraw_pairing(
+            None,
+            restored,
+            |entries| {
+                *journal.borrow_mut() = entries.to_vec();
+                Ok(())
+            },
+            || Ok(()),
+            |credential| {
+                retired.borrow_mut().push(credential.device_id);
+                std::future::ready(Ok(()))
+            },
+            Duration::from_secs(1)
+        )
+        .await
+        .unwrap());
+        assert_eq!(*retired.borrow(), vec!["device-a"]);
+        assert!(journal.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn partial_withdrawal_retains_the_unacknowledged_predecessor_only() {
+        use std::cell::RefCell;
+        let mut current = withdrawal_credential("new");
+        current.previous_credential = Some(Box::new(withdrawal_credential("old")));
+        let journal = RefCell::new(Vec::<Credentials>::new());
+        assert!(withdraw_pairing(
+            Some(current),
+            Vec::new(),
+            |entries| {
+                *journal.borrow_mut() = entries.to_vec();
+                Ok(())
+            },
+            || Ok(()),
+            |credential| std::future::ready(if credential.device_id == "new" {
+                Ok(())
+            } else {
+                Err("unreachable".into())
+            }),
+            Duration::from_secs(1)
+        )
+        .await
+        .unwrap());
+        assert_eq!(journal.borrow().len(), 1);
+        assert_eq!(journal.borrow()[0].device_id, "old");
+        assert!(journal.borrow()[0].previous_credential.is_none());
+    }
+
+    #[test]
+    fn replacement_repair_keeps_all_withdrawal_receipts_until_durable_ack_journaling() {
+        use std::cell::RefCell;
+        let mut middle = withdrawal_credential("middle");
+        middle.previous_credential =
+            replacement_predecessor(Some(withdrawal_credential("oldest"))).unwrap();
+        let mut newest = withdrawal_credential("newest");
+        newest.previous_credential = replacement_predecessor(Some(middle)).unwrap();
+        assert_eq!(
+            newest
+                .previous_credential
+                .as_ref()
+                .unwrap()
+                .previous_credential
+                .as_ref()
+                .unwrap()
+                .device_id,
+            "oldest"
+        );
+        let before = newest.clone();
+        assert!(retain_older_replacement_receipts(
+            &mut newest,
+            || Ok(Vec::new()),
+            |_| Err("journal unavailable".into())
+        )
+        .is_err());
+        assert_eq!(
+            serde_json::to_value(&newest).unwrap(),
+            serde_json::to_value(&before).unwrap()
+        );
+        let journal = RefCell::new(vec![withdrawal_credential("unrelated")]);
+        retain_older_replacement_receipts(
+            &mut newest,
+            || Ok(journal.borrow().clone()),
+            |entries| {
+                *journal.borrow_mut() = entries.to_vec();
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(newest.previous_credential.is_none());
+        assert_eq!(
+            journal
+                .borrow()
+                .iter()
+                .map(|entry| entry.device_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["unrelated", "oldest"]
+        );
+        // If journaling landed but the active store failed, replay must retain
+        // the oldest capability exactly once, alongside unrelated withdrawals.
+        let mut replay = before;
+        retain_older_replacement_receipts(
+            &mut replay,
+            || Ok(journal.borrow().clone()),
+            |entries| {
+                *journal.borrow_mut() = entries.to_vec();
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(journal.borrow().len(), 2);
+        assert!(journal
+            .borrow()
+            .iter()
+            .all(|entry| entry.previous_credential.is_none()));
+    }
+
+    #[test]
+    fn replacement_repair_excessive_history_refuses_without_discarding_the_active_chain() {
+        let mut held = withdrawal_credential("seed");
+        for index in 0..32 {
+            let mut next = withdrawal_credential(&format!("next-{index}"));
+            next.previous_credential = Some(Box::new(held));
+            held = next;
+        }
+        let retained = held.clone();
+        assert!(replacement_predecessor(Some(held)).is_err());
+        let mut cursor = Some(&retained);
+        let mut count = 0;
+        while let Some(credential) = cursor {
+            count += 1;
+            cursor = credential.previous_credential.as_deref();
+        }
+        assert_eq!(count, 33);
+    }
+
+    #[tokio::test]
+    async fn a_failed_journal_write_never_discards_the_only_withdrawal_capability() {
+        use std::cell::Cell;
+        let cleared = Cell::new(false);
+        let sent = Cell::new(false);
+        assert!(withdraw_pairing(
+            Some(withdrawal_credential("held")),
+            Vec::new(),
+            |_| Err("credential store unavailable".into()),
+            || {
+                cleared.set(true);
+                Ok(())
+            },
+            |_| {
+                sent.set(true);
+                std::future::ready(Ok(()))
+            },
+            Duration::from_secs(1)
+        )
+        .await
+        .is_err());
+        assert!(!cleared.get());
+        assert!(!sent.get());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_withdrawal_is_bounded_and_keeps_its_retry_capability() {
+        use std::cell::RefCell;
+        let journal = RefCell::new(Vec::<Credentials>::new());
+        assert!(withdraw_pairing(
+            Some(withdrawal_credential("stalled")),
+            Vec::new(),
+            |entries| {
+                *journal.borrow_mut() = entries.to_vec();
+                Ok(())
+            },
+            || Ok(()),
+            |_| std::future::pending::<Result<(), String>>(),
+            Duration::from_millis(1)
+        )
+        .await
+        .unwrap());
+        assert_eq!(journal.borrow()[0].device_id, "stalled");
     }
 
     #[test]

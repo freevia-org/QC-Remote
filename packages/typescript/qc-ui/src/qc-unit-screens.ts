@@ -1,5 +1,6 @@
 import type { GatewayTransport } from "@qc-remote/client";
 import { QC_DEVICE_SCREEN_GESTURES } from "./device-screen-navigation.ts";
+import { captureGatewaySession } from "./gateway-session.ts";
 import { classifyQcGraphicsTree, hasUnrecognizedQcScreenOverlay, type QcObservedScreenKind } from "./use-adaptive-screen-polling.ts";
 
 /**
@@ -227,6 +228,7 @@ const CLOSES_ONCE: readonly QcCloseTarget[] = ["preset-menu", "scene-selector", 
  * particular screen has no measured way (a full-screen editor's menu).
  */
 export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, target: QcOpenTarget, beforeGesture?: () => void, detail: QcRouteDetail = {}): Promise<QcOpenOnUnit> {
+  gateway = captureGatewaySession(gateway as GatewayTransport).gateway;
   const first = (await gateway.graphicsTree()).tree;
   if (hasUnrecognizedQcScreenOverlay(first)) return "busy";
   const current = classifyQcGraphicsTree(first);
@@ -320,6 +322,7 @@ export async function openOnUnit(gateway: RouteGateway, poll: QcScreenPoll, targ
  * still-open dialog is reported.
  */
 export async function closeOnUnit(gateway: RouteGateway, poll: QcScreenPoll, target: QcCloseTarget, beforeGesture?: () => void, detail: QcRouteDetail = {}): Promise<boolean> {
+  gateway = captureGatewaySession(gateway as GatewayTransport).gateway;
   const point = target === "preset-menu" ? menuButton
     : target === "cpu-monitor" ? G.cpuClose
     : target === "scene-selector" ? G.sceneIndicator

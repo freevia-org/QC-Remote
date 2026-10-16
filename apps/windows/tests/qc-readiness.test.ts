@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_CONNECT_STALL_MS, QC_ORPHANED_DISCOVERING_MS, QC_READY_INVENTORY_REFOLLOWS, QC_REFOLLOW_RESTORE_AFTER_LIVE_MS, qcAutomaticConnectHeld, qcConnectionDuringBrokerPhase, qcFollowReadyInventory, qcInventoryDeviceReady, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcWatchConnectStall } from "../src/qc-readiness.ts";
+import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_CONNECT_STALL_MS, QC_ORPHANED_DISCOVERING_MS, QC_READY_INVENTORY_REFOLLOWS, QC_REFOLLOW_RESTORE_AFTER_LIVE_MS, qcAutomaticConnectHeld, qcConnectionDuringBrokerPhase, qcFollowReadyInventory, qcInventoryDeviceReady, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcWatchConnectStall, qcShouldFollowDevicePhase } from "../src/qc-readiness.ts";
+
+test("pushed detection cannot undo failed Disconnect; user Connect permits the selected QC again", () => {
+  for (const phase of ["connecting", "handshaking", "syncing", "ready"]) {
+    assert.equal(qcShouldFollowDevicePhase({ phase, deviceId: "qc-a" }, "qc-a", true), false, phase);
+    assert.equal(qcShouldFollowDevicePhase({ phase, deviceId: "qc-a" }, "qc-a", false), true, phase);
+    assert.equal(qcShouldFollowDevicePhase({ phase }, "qc-a", false), true, "shared-pool event omits id");
+    assert.equal(qcShouldFollowDevicePhase({ phase, deviceId: "qc-b" }, "qc-a", false), false, "another QC");
+  }
+  assert.equal(qcShouldFollowDevicePhase({ phase: "searching" }, undefined, false), false);
+});
 
 // The broker's startup phases as 2badc68 ("Report responsive USB startup
 // progress") defines them: "searching" is enumeration finding nothing,

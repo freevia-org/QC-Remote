@@ -26,7 +26,9 @@ export function findLooperXBlock(snapshot: Pick<PresetSnapshot, "blocks">): Grid
 export interface QcLooperScreenOptions {
   captureSessionCurrent?(): () => boolean;
   snapshot: Pick<PresetSnapshot, "blocks">;
-  looper: { run(command: string, value?: number | null): Promise<void | boolean> };
+  looper: { run(command: string, value?: number | null): Promise<boolean>; captureContinuation(): () => boolean };
+  /** Screen-generation lease captured by the shared screen renderer. */
+  current?(): boolean;
   grid: { openBlock(block: GridBlock): Promise<unknown> };
   setView: QcScreenDestination["setView"];
   /** Host flag that opens the block editor with its parameter menu showing. */
@@ -38,11 +40,12 @@ export interface QcLooperScreenOptions {
  * Leave the Looper X screen: tell the unit first, and only then clear the
  * view, so the app never shows the Grid while the unit is still in Looper.
  */
-export async function closeQcLooperScreen({ looper, setView, captureSessionCurrent }: Pick<QcLooperScreenOptions, "looper" | "setView" | "captureSessionCurrent">): Promise<void> {
-  const current = captureSessionCurrent?.() ?? (() => true);
-  if (!current()) return;
-  if (await looper.run("close") === false || !current()) return;
-  setView(null);
+export async function closeQcLooperScreen({ looper, setView, current, captureSessionCurrent }: Pick<QcLooperScreenOptions, "looper" | "setView" | "current" | "captureSessionCurrent">): Promise<void> {
+  const hostCurrent = captureSessionCurrent?.() ?? (() => true);
+  const context = looper.captureContinuation();
+  if (!hostCurrent() || !context() || current?.() === false) return;
+  const accepted = await looper.run("close");
+  if (accepted && hostCurrent() && context() && current?.() !== false) setView(null);
 }
 
 /** What the Looper X screen's Parameters, Menu and Close buttons do. */
@@ -50,10 +53,12 @@ export function qcLooperScreenActions(options: QcLooperScreenOptions) {
   const { snapshot, looper, grid, setView, setParameterMenuInitiallyOpen, notice } = options;
   const current = options.captureSessionCurrent?.() ?? (() => true);
   const openEditor = async (what: "parameters" | "menu") => {
-    if (!current()) return;
+    const context = looper.captureContinuation();
+    if (!current() || !context() || options.current?.() === false) return;
     const block = findLooperXBlock(snapshot);
     if (!block) { notice(`Add a Looper X block to this preset before opening its ${what}.`); return; }
-    if (await looper.run("performMode", 1) === false || !current()) return;
+    const accepted = await looper.run("performMode", 1);
+    if (!accepted || !current() || !context() || options.current?.() === false) return;
     if (what === "menu") setParameterMenuInitiallyOpen(true);
     setView(null);
     await grid.openBlock(block);
@@ -61,6 +66,6 @@ export function qcLooperScreenActions(options: QcLooperScreenOptions) {
   return {
     onParameters: () => openEditor("parameters"),
     onMenu: () => openEditor("menu"),
-    onClose: () => closeQcLooperScreen({ looper, setView, captureSessionCurrent: () => current })
+    onClose: () => closeQcLooperScreen({ looper, setView, current: options.current, captureSessionCurrent: () => current })
   };
 }

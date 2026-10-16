@@ -18,9 +18,9 @@ export function CorOsTunerScreen({ workflow, onClose }: { workflow: TunerWorkflo
   const offset = settings?.referenceOffsetHz ?? 0;
   const reference = settings?.referenceHz ?? 440 + offset;
   const muted = settings?.muted ?? false;
-  const meterEnabled = settings?.meterEnabled ?? false;
+  const meterEnabled = settings?.meterEnabled;
   const disabled = workflow.pending || workflow.loading || !workflow.available || !settings;
-  const meter = typeof settings?.meter === "number" ? Math.max(-50, Math.min(50, settings.meter)) : undefined;
+  const meter = typeof settings?.meter === "number" && Number.isFinite(settings.meter) ? Math.max(-50, Math.min(50, settings.meter)) : undefined;
 
   const inputLabel = TUNER_INPUTS.find(([value]) => value === (settings?.inputPortId ?? 1))?.[1] ?? "INPUT 1";
   return <section className="coros-tuner tuner-official" aria-label="Tuner">
@@ -32,7 +32,7 @@ export function CorOsTunerScreen({ workflow, onClose }: { workflow: TunerWorkflo
       <span>-50</span>
       {meter !== undefined && <strong className="tuner-reading">{meter.toFixed(1)}</strong>}
       <i />
-      <b style={meter === undefined ? undefined : { transform: `translateX(${meter * 3}px)` }} />
+      {meter !== undefined && <b style={{ transform: `translateX(${meter * 3}px)` }} />}
       <span>+50</span>
     </div>
     <footer>
@@ -53,10 +53,11 @@ export function CorOsTunerScreen({ workflow, onClose }: { workflow: TunerWorkflo
       </section>
       <section>
         <span>LIVE TUNER</span>
-        <button type="button" className="tuner-meter-toggle" disabled={disabled} aria-pressed={meterEnabled} onClick={() => void workflow.setMeterEnabled(!meterEnabled)}>
-          <QcPillToggle index={meterEnabled ? 0 : 1} />
+        <button type="button" className="tuner-meter-toggle" disabled={disabled || meterEnabled === undefined} aria-pressed={meterEnabled} onClick={() => { if (meterEnabled !== undefined) void workflow.setMeterEnabled(!meterEnabled); }}>
+          {meterEnabled !== undefined && <QcPillToggle index={meterEnabled ? 0 : 1} />}
           <span><b>Yes</b></span><span><b>No</b></span>
         </button>
+        {meterEnabled === undefined && <small role="status">Live tuner state unavailable.</small>}
       </section>
     </footer>
     {!workflow.available && <p role="status">Tuner settings are unavailable for this device.</p>}

@@ -24,7 +24,7 @@ import {
   type PresetFolder,
   type PresetSnapshot
 } from "@qc-remote/client";
-import { demoSnapshot, QC_CATEGORY_COLORS, QC_HARDWARE_COLORS, QC_SCENE_COLORS, SHARED_QC_ACTIONS, trimTrailingSlashes } from "@qc-remote/core";
+import { demoSnapshot, footswitchIntent, hybridModeIndex, selectModeSlotInSnapshot, QC_CATEGORY_COLORS, QC_HARDWARE_COLORS, QC_SCENE_COLORS, SHARED_QC_ACTIONS, trimTrailingSlashes } from "@qc-remote/core";
 import {
   defaultParameterValues,
   normalizedToReal,
@@ -40,7 +40,9 @@ import {
  *
  * Only the "build presets and move around" surface is simulated - the Grid,
  * parameters, scenes, routing, tempo, master volume, footswitch modes and the
- * preset library. Everything else the real device offers (tuner, global EQ,
+ * preset library and saved user device presets. Device presets can be saved
+ * from the shared editor; listing/applying them is currently a Demo store
+ * extension, not a shared UI picker. Everything else the real device offers (tuner, global EQ,
  * physical I/O, MIDI, looper, captures, IRs, screen mirroring, backups, the
  * device's own undo stack) rejects with the same "Connect the Quad Cortex
  * before ..." wording today's static demo mode already uses for the tuner and
@@ -143,6 +145,13 @@ export interface VirtualSetlist {
   presets: Record<number, VirtualPreset>;
 }
 
+/** A Demo user device preset stores effective parameter values, not Grid/scene bindings. */
+export interface VirtualModelPreset {
+  modelId: number;
+  name: string;
+  parameterValues: Record<number, number>;
+}
+
 export interface VirtualDeviceState {
   version: 1;
   /** Changes on every session reset; part of the preset identity. */
@@ -161,6 +170,8 @@ export interface VirtualDeviceState {
   };
   current: { setlistKey: string; position: number; dirty: boolean; preset: VirtualPreset };
   setlists: VirtualSetlist[];
+  /** Optional so existing version 1 libraries remain readable. */
+  modelPresets?: VirtualModelPreset[];
 }
 
 /** A Grid block as the virtual device publishes it: the real shape plus its parameter values. */
@@ -396,6 +407,11 @@ function demoFactorySetlist(catalogue: CatalogueIndex): VirtualSetlist {
 
 /** Add or refresh the built-in library without disturbing any user setlist. */
 function withDemoFactoryLibrary(state: VirtualDeviceState, catalogue: CatalogueIndex): VirtualDeviceState {
+  const alreadyHasFactory = state.setlists.some((setlist) => setlist.isFactory || trimKey(setlist.key) === trimKey(DEMO_FACTORY_SETLIST_KEY));
+  // A valid legacy library at the software limit stays valid without the
+  // synthetic factory list. Never delete user content or make its next save
+  // unreadable merely to add optional Demo content.
+  if (!alreadyHasFactory && state.setlists.length >= LIBRARY_SETLIST_LIMIT) return state;
   state.setlists = [
     ...state.setlists.filter((setlist) => !setlist.isFactory && trimKey(setlist.key) !== trimKey(DEMO_FACTORY_SETLIST_KEY)),
     demoFactorySetlist(catalogue)
@@ -442,7 +458,7 @@ function starterState(catalogue: CatalogueIndex, session: string): VirtualDevice
 function isVirtualDeviceState(value: unknown): value is VirtualDeviceState {
   const candidate = value as Partial<VirtualDeviceState> | null;
   return !!candidate && candidate.version === 1 && typeof candidate.session === "string"
-    && typeof candidate.addressRevision === "number" && !!candidate.device && !!candidate.current
+    && Number.isSafeInteger(candidate.addressRevision) && candidate.addressRevision! >= 1 && !!candidate.device && !!candidate.current
     && Array.isArray(candidate.setlists);
 }
 
@@ -632,11 +648,29 @@ function readPreset(value: unknown, index: CatalogueIndex, where: string): Virtu
   };
 }
 
-type VirtualLibrary = Pick<VirtualDeviceState, "device" | "current" | "setlists">;
+function readModelPresets(value: unknown, index: CatalogueIndex): VirtualModelPreset[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 1_000) invalid("The Demo device presets", "must be a list of at most 1000 entries");
+  const seen = new Set<string>();
+  return value.map((entry) => {
+    if (!isRecord(entry) || !isIntegerIn(entry.modelId, 1, 0x7fff_ffff) || typeof entry.name !== "string") invalid("The Demo device preset", "needs a model and name");
+    const model = index.model(entry.modelId);
+    if (!model || model.hidden) invalid("The Demo device preset", "names no selectable model");
+    const name = validateName(entry.name, "Device preset name", 80);
+    const key = JSON.stringify([entry.modelId, name]);
+    if (seen.has(key)) invalid("The Demo device presets", "repeat a model/name identity");
+    seen.add(key);
+    const { parameterValues } = readParameterState(entry, "The Demo device preset");
+    const parameterIds = new Set(model.parameters.map((parameter) => parameter.index));
+    if (Object.keys(parameterValues).some((parameter) => !parameterIds.has(Number(parameter)))) invalid("The Demo device preset", "holds a parameter belonging to another model");
+    return { modelId: entry.modelId, name, parameterValues };
+  });
+}
+
+type VirtualLibrary = Pick<VirtualDeviceState, "device" | "current" | "setlists" | "modelPresets">;
 
 /** Check and copy a whole demo library (a version 1 store document). Session and revision are the receiver's own. */
-function readLibrary(value: unknown, index: CatalogueIndex): VirtualLibrary {
-  const where = "The pasted demo library";
+function readLibrary(value: unknown, index: CatalogueIndex, where = "The pasted demo library"): VirtualLibrary {
   if (!isRecord(value) || value.version !== 1) invalid(where, "is not a version 1 demo device document");
   const { device, current, setlists } = value;
   if (!isRecord(device)) invalid(where, "has no device settings");
@@ -662,6 +696,10 @@ function readLibrary(value: unknown, index: CatalogueIndex): VirtualLibrary {
       invalid(at, "needs a key, a name and a presets object");
     }
     if (keys.has(trimKey(setlist.key))) invalid(at, `repeats the setlist ${JSON.stringify(setlist.key)}`);
+    // This flag changes migration and write authority, so an unknown or
+    // malformed factory marker cannot be silently filtered out on open.
+    if (setlist.isFactory !== undefined && typeof setlist.isFactory !== "boolean") invalid(at, "has an invalid factory marker");
+    if (setlist.isFactory === true && trimKey(setlist.key) !== trimKey(DEMO_FACTORY_SETLIST_KEY)) invalid(at, "marks an unknown factory setlist; retain this document for recovery");
     keys.add(trimKey(setlist.key));
     const presets: Record<number, VirtualPreset> = {};
     for (const [slot, preset] of Object.entries(setlist.presets)) {
@@ -689,7 +727,8 @@ function readLibrary(value: unknown, index: CatalogueIndex): VirtualLibrary {
       sceneBypassBehavior: sceneBypassBehavior as VirtualDeviceState["device"]["sceneBypassBehavior"]
     },
     current: { setlistKey: current.setlistKey, position: current.position, dirty: current.dirty, preset: readPreset(current.preset, index, `${where}, active preset`) },
-    setlists: library
+    setlists: library,
+    ...(value.modelPresets === undefined ? {} : { modelPresets: readModelPresets(value.modelPresets, index) })
   };
 }
 
@@ -719,6 +758,7 @@ function presetFromSnapshot(index: CatalogueIndex, snapshot: PresetSnapshot): { 
     const model = index.model(block.modelId);
     if (!model || model.hidden) { skip("the demo device does not simulate this model"); continue; }
     if (blockAt(preset, block.row, block.column)) { skip("another block already holds that cell"); continue; }
+    if (typeof block.bypassed !== "boolean") throw new Error(`The copied preset has no observed bypass state for row ${block.row + 1}, column ${block.column + 1}. Nothing was pasted.`);
     const parameterValues = index.defaults(model.id);
     for (const [key, value] of Object.entries(block.parameterValues ?? {})) {
       const parameter = Number(key);
@@ -726,7 +766,7 @@ function presetFromSnapshot(index: CatalogueIndex, snapshot: PresetSnapshot): { 
     }
     preset.blocks.push({
       row: block.row, column: block.column, modelId: block.modelId,
-      sceneBypassed: perScene(block.bypassed === true),
+      sceneBypassed: perScene(block.bypassed),
       parameterValues,
       ...(isIntegerIn(block.footswitch, 0, QC_SCENE_COUNT - 1) ? {
         footswitch: block.footswitch,
@@ -743,7 +783,10 @@ function presetFromSnapshot(index: CatalogueIndex, snapshot: PresetSnapshot): { 
     if (isIntegerIn(route.outputId, 0, 0xffff)) target.outputId = route.outputId;
     if (isIntegerIn(route.splitColumn, 0, QC_GRID_COLUMNS - 1)) target.splitColumn = route.splitColumn;
     if (isIntegerIn(route.mixColumn, 0, QC_GRID_COLUMNS - 1)) target.mixColumn = route.mixColumn;
-    target.splitMuted = perScene(route.splitMuted === true);
+    if ((target.splitColumn !== undefined || target.mixColumn !== undefined) && typeof route.splitMuted !== "boolean") {
+      throw new Error(`The copied preset has no observed splitter/mixer mute state for row ${route.row + 1}. Nothing was pasted.`);
+    }
+    target.splitMuted = perScene(route.splitMuted ?? false);
   }
   for (const state of snapshot.footswitchStates ?? []) {
     const stomp = preset.stomps[state.index];
@@ -828,10 +871,15 @@ export class VirtualDeviceStore {
       catch (error) { throw new Error(`The virtual device store is not valid JSON: ${(error as Error).message}`); }
       // Never replace a document this version cannot read: it is the user's library.
       if (!isVirtualDeviceState(parsed)) throw new Error("The virtual device store is not a version 1 virtual device document.");
+      // A valid envelope does not prove its nested user library is readable.
+      // Reuse the import validator before any migration or projection, while
+      // retaining legitimate store-only metadata and never overwriting bytes.
+      readLibrary(parsed, index, "The stored demo library");
       // Version 1 predates the built-in Demo factory library. Add it in memory
       // on open and refresh its canonical content on later app versions; the
       // first ordinary write persists the migration alongside the user's data.
       state = withDemoFactoryLibrary(parsed, index);
+      if (state.modelPresets !== undefined) state.modelPresets = readModelPresets(state.modelPresets, index);
     }
     return new VirtualDeviceStore(options.storage, index, state, options.now ?? Date.now, newSessionId);
   }
@@ -862,6 +910,23 @@ export class VirtualDeviceStore {
 
   /** The active preset exactly as the demo device keeps it: every scene's values, lanes and expressions. */
   currentPreset(): VirtualPreset { return clone(this.stateValue.current.preset); }
+
+  /** Demo transfer extension: no block model-preset picker exists in the shared gateway UI yet. */
+  listModelPresets(modelId: number): VirtualModelPreset[] {
+    return clone((this.stateValue.modelPresets ?? []).filter((preset) => preset.modelId === modelId));
+  }
+
+  applyModelPreset(row: number, column: number, modelId: number, name: string, expectedPresetName: string, expectedPresetIdentity: string): Promise<void> {
+    return this.update((state) => {
+      assertPreset(state, expectedPresetName, expectedPresetIdentity);
+      assertCell(row, column);
+      const block = requireBlock(state.current.preset, row, column, modelId);
+      const saved = state.modelPresets?.find((preset) => preset.modelId === modelId && preset.name === name);
+      if (!saved) throw new Error("That device preset is not stored for this model.");
+      for (const [parameter, value] of Object.entries(saved.parameterValues)) writeValue(block, Number(parameter), state.current.preset.activeScene, value);
+      state.current.dirty = true;
+    });
+  }
 
   /**
    * Replace the active preset with a pasted one. `preset` is untrusted and is
@@ -920,6 +985,10 @@ export class VirtualDeviceStore {
       state.device = library.device;
       state.current = library.current;
       state.setlists = library.setlists;
+      // Absence is a valid legacy library, not permission to retain the
+      // receiver's prior user device presets during a full replacement.
+      if (library.modelPresets === undefined) delete state.modelPresets;
+      else state.modelPresets = library.modelPresets;
       withDemoFactoryLibrary(state, this.index);
       state.session = this.newSessionId();
       state.addressRevision += 1;
@@ -1354,7 +1423,8 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
 
   const toggleStomp = (state: VirtualDeviceState, footswitch: number): string => {
     const preset = state.current.preset;
-    const targets = preset.blocks.filter((block) => block.footswitch === footswitch);
+    const targets = preset.blocks.filter((block) => block.footswitch === footswitch)
+      .sort((left, right) => (left.footswitchOrder ?? Infinity) - (right.footswitchOrder ?? Infinity));
     if (!targets.length) return `Footswitch ${sceneLetter(footswitch)} has no assigned block.`;
     const scene = preset.activeScene;
     const engage = targets[0].sceneBypassed[scene];
@@ -1459,23 +1529,30 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
         const block = requireBlock(state.current.preset, row, column, expectedModelId);
         const model = index.model(modelId);
         if (!model || model.hidden) throw new Error(`Model ${modelId} is not a selectable QC model`);
-        if (block.modelId === modelId) return done(`${model.name} left unchanged`, state, false);
+        const changed = block.modelId !== modelId;
+        if (!changed) return done(`${model.name} is already selected`, state, false);
         block.modelId = modelId;
         block.parameterValues = index.defaults(modelId);
-        // Scene values and expression operands belong to the old model's
-        // parameter catalogue, not to the replacement's parameter indices.
+        // Indices belong to one model. Keep common block bypass/footswitch
+        // metadata, but never reinterpret an old model's parameter bindings.
         delete block.sceneValues;
         delete block.expressions;
         edited(state);
-        return done(`${model.name} replaced the selected device`, state);
+        return done(`${model.name} replaced the selected device`, state, changed);
       });
     },
     createModelPreset(row, column, modelHash, name, expectedPresetName, expectedPresetIdentity) {
       return store.update((state) => {
         assertPreset(state, expectedPresetName, expectedPresetIdentity);
-        requireBlock(state.current.preset, row, column, modelHash);
-        validateName(name, "Device preset name", 80);
-        return done(`Saved ${name} as a user device preset`, state, true);
+        const block = requireBlock(state.current.preset, row, column, modelHash);
+        const savedName = validateName(name, "Device preset name", 80);
+        const saved = readModelPresets([{ modelId: modelHash, name: savedName, parameterValues: effectiveValues(block, state.current.preset.activeScene) }], index)[0];
+        const presets = state.modelPresets ??= [];
+        const existing = presets.findIndex((preset) => preset.modelId === modelHash && preset.name === savedName);
+        if (existing < 0 && presets.length >= 1_000) throw new Error("The Demo device already contains 1000 user device presets.");
+        if (existing < 0) presets.push(saved);
+        else presets[existing] = saved;
+        return done(`Saved ${savedName} as a user device preset`, state, true);
       });
     },
     setLooperStompAssignments(assignments, expectedAssignments) {
@@ -1492,12 +1569,12 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
         assertCell(row, column);
         const block = requireBlock(state.current.preset, row, column, expectedModelId);
         block.parameterValues = index.defaults(block.modelId);
-        // Scene-mode values take precedence over parameterValues in every
-        // projection. Reset those values too, retaining the mode assignment.
-        for (const key of Object.keys(block.sceneValues ?? {})) {
-          const value = block.parameterValues[Number(key)];
-          if (value === undefined) delete block.sceneValues![Number(key)];
-          else block.sceneValues![Number(key)] = perScene(value);
+        // Demo policy: reset the current effective values, without inventing
+        // hardware all-scene reset semantics or discarding scene/expression
+        // bindings. Other scenes retain their own observed values.
+        for (const [parameter, scenes] of Object.entries(block.sceneValues ?? {})) {
+          const value = block.parameterValues[Number(parameter)];
+          if (value !== undefined) scenes[state.current.preset.activeScene] = value;
         }
         edited(state);
         return done("Block parameters reset to defaults", state);
@@ -1846,18 +1923,22 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
         assertPreset(state, expectedPresetName, expectedPresetIdentity);
         assertMode(state, expectedMode);
         assertInteger(footswitch, 0, QC_SCENE_COUNT - 1, "index");
-        if (state.device.mode === "SCENE") {
-          selectScene(state, footswitch);
-          return done(`Scene ${sceneLetter(footswitch)} selected`, state);
+        const intent = footswitchIntent(snapshot(state), footswitch);
+        if (intent.kind === "select-scene") {
+          selectScene(state, intent.scene);
+          return done(`Scene ${sceneLetter(intent.scene)} selected`, state);
         }
-        if (state.device.mode === "PRESET") {
+        if (intent.kind === "select-preset") {
           refuseDirty(state);
-          const position = Math.floor(state.current.position / 8) * 8 + footswitch;
+          const position = intent.position;
           load(state, state.current.setlistKey, position);
           return done(`Preset ${virtualSlotName(position)} recalled`, state);
         }
-        // STOMP, and HYBRID's stomp half: toggle the blocks assigned to the switch.
-        return done(toggleStomp(state, footswitch), state);
+        if (intent.kind === "toggle-stomp") return done(toggleStomp(state, intent.index), state);
+        if (state.device.mode === "STOMP" || state.device.footswitchModes[hybridModeIndex(footswitch)] === "STOMP") {
+          return done(toggleStomp(state, footswitch), state, false);
+        }
+        throw new Error(`Footswitch ${sceneLetter(footswitch)} has no observed action to simulate.`);
       });
     },
     selectModeSlot(slot, expectedPresetName, expectedPresetIdentity) {
@@ -1865,7 +1946,18 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
         assertPreset(state, expectedPresetName, expectedPresetIdentity);
         const target = state.device.modeSlots.find((candidate) => candidate.slot === slot);
         if (!target) throw new Error("slot must be 0, 1 or 2");
-        state.device.mode = target.mode;
+        if (target.mode === "HYBRID") {
+          const before = snapshot(state);
+          const projected = selectModeSlotInSnapshot(before, target.slot);
+          if (projected === before || !projected.footswitchModes) throw new Error("That HYBRID slot has no observed ordered roles to simulate.");
+          state.device.mode = projected.mode;
+          state.device.footswitchModes = [...projected.footswitchModes];
+        } else if (target.mode === "PRESET" || target.mode === "SCENE" || target.mode === "STOMP") {
+          state.device.mode = target.mode;
+          state.device.footswitchModes = [target.mode, target.mode];
+        } else {
+          throw new Error("That slot has no observed mode to simulate.");
+        }
         return done(`${target.label} mode selected`, state);
       });
     },
@@ -2002,6 +2094,7 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
     },
     createSetlist(name) {
       return store.update((state) => {
+        if (state.setlists.length >= LIBRARY_SETLIST_LIMIT) throw new Error(`The demo device already contains the maximum of ${LIBRARY_SETLIST_LIMIT} setlists.`);
         const setlistName = validateName(name, "setlist name", 64);
         if (state.setlists.some((setlist) => setlist.name.toLowerCase() === setlistName.toLowerCase())) {
           throw new Error(`A setlist named ${JSON.stringify(setlistName)} already exists.`);
@@ -2025,6 +2118,7 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
     },
     duplicateSetlist(sourceSetlistKey, expectedSourceName) {
       return store.update((state) => {
+        if (state.setlists.length >= LIBRARY_SETLIST_LIMIT) throw new Error(`The demo device already contains the maximum of ${LIBRARY_SETLIST_LIMIT} setlists.`);
         const source = setlistOf(state, sourceSetlistKey);
         if (!source) throw new Error("The selected source setlist no longer exists. Refresh and retry.");
         if (source.name !== expectedSourceName) throw new Error(`The selected source changed from ${JSON.stringify(expectedSourceName)} to ${JSON.stringify(source.name)}. Refresh and retry.`);

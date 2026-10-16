@@ -28,12 +28,16 @@ test("the row says what it does in plain words", () => {
   assert.equal(UPDATER_RELAY_LABEL, "Internet for the Quad Cortex");
   assert.equal(
     UPDATER_RELAY_EXPLANATION,
-    "Lets the Quad Cortex use this computer's internet connection to reach Neural DSP's servers (neuraldsp.com, plus any extra domain you add) for updates while it is connected over USB. QC Remote only passes the Quad Cortex's own requests through; they include the unit's serial number and its own credentials, which go to the address the unit asks for: Neural DSP's, or an extra domain you added."
+    "Lets the connected Quad Cortex use this computer's internet for Neural DSP account sign-in, cloud requests and CorOS updates. Requests go to the addresses supplied by the unit and can include credentials and its serial number. QC Remote forwards them in memory without keeping traffic logs. Turn this off to stop forwarding."
   );
   // The row names the recipient and what it receives, not only the privacy page.
   assert.match(UPDATER_RELAY_EXPLANATION, /Neural DSP/);
   assert.match(UPDATER_RELAY_EXPLANATION, /serial number/);
   assert.match(UPDATER_RELAY_EXPLANATION, /credentials/);
+  assert.match(UPDATER_RELAY_EXPLANATION, /account sign-in, cloud requests/);
+  assert.match(UPDATER_RELAY_EXPLANATION, /addresses supplied by the unit/);
+  assert.match(UPDATER_RELAY_EXPLANATION, /without keeping traffic logs/);
+  assert.doesNotMatch(UPDATER_RELAY_EXPLANATION, /extra domain|allowlist/);
 });
 
 test("relay diagnostics are read defensively, and an older broker's silence is null", () => {
@@ -112,7 +116,7 @@ test("the live line reports a request in flight, a declined request and the last
   );
   assert.equal(
     updaterRelayStatusLine(true, summarizeUpdaterRelay({ lastOutcome: "refused:domain-not-allowed" })),
-    "On. Declined the Quad Cortex's last request: only neuraldsp.com addresses and the extra domains you added are passed through."
+    "On. The background component declined the Quad Cortex's last request."
   );
   assert.equal(
     updaterRelayStatusLine(true, summarizeUpdaterRelay({ lastOutcome: "completed" })),
