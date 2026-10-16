@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_CONNECT_STALL_MS, QC_ORPHANED_DISCOVERING_MS, QC_READY_INVENTORY_REFOLLOWS, QC_REFOLLOW_RESTORE_AFTER_LIVE_MS, qcAutomaticConnectHeld, qcConnectionDuringBrokerPhase, qcFollowReadyInventory, qcInventoryDeviceReady, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcWatchConnectStall, qcShouldFollowDevicePhase } from "../src/qc-readiness.ts";
+import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, QC_FOLLOW_RETRY_MAX_MS, QC_FOLLOW_RETRY_MIN_MS, QC_FOLLOW_STABLE_LIVE_MS, QC_ORPHANED_DISCOVERING_MS, QC_SESSION_LEFT_OPEN_NOTICE, qcAutomaticConnectHeld, qcBackgroundDeviceLive, qcConnectionDuringBrokerPhase, qcDisconnectClosedSession, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcFollowRetryDelay, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcShouldFollowDevicePhase, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, qcWatchConnectStall, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect } from "../src/qc-readiness.ts";
 
 test("pushed detection cannot undo failed Disconnect; user Connect permits the selected QC again", () => {
   for (const phase of ["connecting", "handshaking", "syncing", "ready"]) {
@@ -91,49 +91,105 @@ test("`connecting` is `opening` on the live phase path and on the reconnect-resu
   assert.equal(result.detail, "Quad Cortex found; opening its USB session");
 });
 
-// The inventory poll's safety net: a tray resident that never pushes
-// `device.phase` left the window on the demo, beside a tray showing the QC
-// connected, until someone clicked Reconnect.
-type Connection = Parameters<typeof qcFollowReadyInventory>[0]["connection"];
+// The window mirrors the broker: broker truth comes from the 2 s inventory
+// poll (qcObserveBroker), and the follow (qcFollowBroker) connects whenever
+// that truth reads the device ready and the window is not live, unless the
+// user's Disconnect, their Demo choice, a tray release or a Quit holds it.
+type Connection = Parameters<typeof qcFollowBroker>[0]["connection"];
 const demoFallback: Connection = { phase: "ready", detail: "Demo device on this computer", demo: false, source: "virtual" };
 const failedConnect: Connection = { phase: "needs-attention", detail: "The Quad Cortex was released from the tray", demo: true, source: "device" };
 const liveDevice: Connection = { phase: "ready", detail: "Connected", demo: false, source: "device", lastSync: "2026-10-12T00:00:00.000Z" };
 const userDisconnected: Connection = { phase: "disconnected", detail: "Quad Cortex disconnected", demo: true, source: "device" };
 const failedDisconnect: Connection = { phase: "needs-attention", detail: "The Quad Cortex session could not be closed", demo: true, source: "device" };
-const idleWindow = { inventoryReady: true, followed: false, refollows: 0, liveSessionLost: false, liveSince: null, now: 0, userDisconnected: false, connectInFlight: false, connection: demoFallback, demoCanYield: true };
+const POLL_MS = 2000;
 
-test("a device the broker already has ready is followed from an idle window", () => {
-  assert.deepEqual(qcFollowReadyInventory(idleWindow), { connect: true, followed: true, refollows: 0, liveSessionLost: false, liveSince: null });
-  assert.deepEqual(qcFollowReadyInventory({ ...idleWindow, connection: failedConnect }), { connect: true, followed: true, refollows: 0, liveSessionLost: false, liveSince: null });
-});
+const answered = (inventoryReady: boolean, instanceId: string | null = "broker-1"): QcBrokerObservation => ({ kind: "answered", inventoryReady, instanceId });
+const unreachable: QcBrokerObservation = { kind: "unreachable" };
+/** A `device.phase` detection push before any poll answered: ready, with no instance id. */
+const detectionPush: QcBrokerObservation = { kind: "answered", inventoryReady: true };
 
-test("a window already live with the device does not connect again, and spends the edge", () => {
-  assert.deepEqual(qcFollowReadyInventory({ ...idleWindow, connection: liveDevice }), { connect: false, followed: true, refollows: 0, liveSessionLost: false, liveSince: 0 });
-});
+/**
+ * App's follow loop, observation by observation, on a fake monotonic clock
+ * that advances by the real poll's 2 s. A connect it decides holds every
+ * later decision for `attemptPolls` polls (the handshake), as App's
+ * qcAutomaticConnectHeld does; the caller then says how it ended (`goLive`,
+ * `failConnect`).
+ */
+function windowPolls(start: Connection = demoFallback, attemptPolls = 0) {
+  let truth: QcBrokerTruth = QC_BROKER_TRUTH_UNKNOWN;
+  let follow: QcFollowState = QC_FOLLOW_INITIAL;
+  let latch: QcUserDisconnect | null = null;
+  let connection = start;
+  let now = 0;
+  let heldPolls = 0;
+  let demoGaveUp = false;
+  const connects: number[] = [];
+  const sim = {
+    held: false,
+    demoCanYield: true,
+    get now() { return now; },
+    get truth() { return truth; },
+    get follow() { return follow; },
+    get latch() { return latch; },
+    get latched() { return qcUserDisconnectHolds(latch); },
+    get demoGaveUp() { return demoGaveUp; },
+    get connects() { return connects; },
+    get connection() { return connection; },
+    observe(observation: QcBrokerObservation) {
+      now += POLL_MS;
+      truth = qcObserveBroker(truth, observation);
+      latch = qcUserDisconnectAfter(latch, truth);
+      const connectHeld = sim.held || heldPolls > 0;
+      if (heldPolls > 0) heldPolls -= 1;
+      const step = qcFollowBroker({ follow, truth, now, userDisconnect: latch, connectHeld, connection, demoCanYield: sim.demoCanYield });
+      follow = step.follow;
+      latch = step.userDisconnect;
+      demoGaveUp = step.demoGaveUp;
+      if (step.connect) { connects.push(now); heldPolls = attemptPolls; }
+      return step.connect;
+    },
+    ready(instanceId: string | null = "broker-1") { return sim.observe(answered(true, instanceId)); },
+    notReady(instanceId: string | null = "broker-1") { return sim.observe(answered(false, instanceId)); },
+    refused() { return sim.observe(unreachable); },
+    push() { return sim.observe(detectionPush); },
+    /** Polls for about `ms`, each made by `poll`; returns how many connected. */
+    for(ms: number, poll: () => boolean) { let count = 0; for (let waited = 0; waited < ms; waited += POLL_MS) if (poll()) count += 1; return count; },
+    /** Polls that read ready while every connect they start fails back to `fallback`. */
+    failing(ms: number, fallback: Connection, poll: () => boolean = () => sim.ready()) {
+      return sim.for(ms, () => { const connected = poll(); if (connected) connection = fallback; return connected; });
+    },
+    goLive() { connection = liveDevice; },
+    failConnect(fallback: Connection = demoFallback) { connection = fallback; },
+    /** beginLiveRecovery: the health check lost the session; back on the demo. */
+    loseLive() { follow = qcRecordLiveSessionLoss(follow); connection = demoFallback; },
+    disconnect(outcome: Connection = userDisconnected) { latch = qcLatchUserDisconnect(truth); connection = outcome; },
+    userConnect() { latch = null; follow = qcFollowAfterUserConnect(follow); },
+    setConnection(next: Connection) { connection = next; }
+  };
+  return sim;
+}
+const gapsOf = (times: readonly number[]) => times.slice(1).map((at, index) => at - times[index]);
 
-test("a connect in flight neither fires nor spends the edge, so its miss is followed once it ends", () => {
-  const during = qcFollowReadyInventory({ ...idleWindow, connectInFlight: true });
-  assert.deepEqual(during, { connect: false, followed: false, refollows: 0, liveSessionLost: false, liveSince: null });
-  assert.deepEqual(qcFollowReadyInventory({ ...idleWindow, followed: during.followed }), { connect: true, followed: true, refollows: 0, liveSessionLost: false, liveSince: null });
-});
-
-test("a connect in flight after the edge was used stays quiet and keeps it used", () => {
-  assert.deepEqual(qcFollowReadyInventory({ ...idleWindow, followed: true, connectInFlight: true }), { connect: false, followed: true, refollows: 0, liveSessionLost: false, liveSince: null });
-});
-
-test("a Disconnect that failed is not undone while the device stays ready", () => {
-  // Pressed during sync, so no poll ever saw the window live and the edge is
-  // unspent; the close failed, so the inventory still reads ready, and
-  // "needs-attention" alone would be followed.
-  const afterFailedDisconnect = { ...idleWindow, connection: failedDisconnect, userDisconnected: true };
-  assert.deepEqual(qcFollowReadyInventory(afterFailedDisconnect), { connect: false, followed: false, refollows: 0, liveSessionLost: false, liveSince: null });
-  // The latch alone holds it: the same state without it would connect.
-  assert.equal(qcFollowReadyInventory({ ...afterFailedDisconnect, userDisconnected: false }).connect, true);
-});
-
-test("a deliberate Disconnect or Demo choice is never overridden", () => {
-  assert.equal(qcFollowReadyInventory({ ...idleWindow, connection: userDisconnected }).connect, false);
-  assert.equal(qcFollowReadyInventory({ ...idleWindow, demoCanYield: false }).connect, false);
+test("broker truth keeps what the broker answered apart from a poll that failed", () => {
+  let truth = qcObserveBroker(QC_BROKER_TRUTH_UNKNOWN, answered(true));
+  assert.deepEqual(truth, { reachable: true, deviceReady: true, answeredReady: true, instanceId: "broker-1", generation: 0, readyEdges: 1 });
+  truth = qcObserveBroker(truth, unreachable);
+  assert.deepEqual(truth, { reachable: false, deviceReady: false, answeredReady: true, instanceId: "broker-1", generation: 0, readyEdges: 1 }, "gray now, answer kept");
+  truth = qcObserveBroker(truth, answered(true));
+  assert.equal(truth.readyEdges, 1, "ready again after a failed poll is no new edge");
+  assert.equal(truth.generation, 0, "nor a new generation");
+  truth = qcObserveBroker(truth, answered(false));
+  truth = qcObserveBroker(truth, answered(true));
+  assert.equal(truth.readyEdges, 2, "an answered not-ready, then ready: an edge");
+  truth = qcObserveBroker(truth, answered(true, "broker-2"));
+  assert.equal(truth.generation, 1, "a different instance is a new generation");
+  assert.equal(truth.readyEdges, 3, "and its ready device a new session, with no gap seen");
+  truth = qcObserveBroker(truth, unreachable);
+  truth = qcObserveBroker(truth, detectionPush);
+  assert.equal(truth.generation, 1, "an answer without an instance id never moves the generation");
+  assert.equal(truth.readyEdges, 3, "nor makes an edge after a failed poll");
+  assert.equal(qcSameBrokerTruth(truth, qcObserveBroker(truth, answered(true, "broker-2"))), true, "nothing to redraw");
+  assert.equal(qcSameBrokerTruth(truth, qcObserveBroker(truth, unreachable)), false);
 });
 
 test("only a connected device in the ready phase counts as ready", () => {
@@ -145,7 +201,6 @@ test("only a connected device in the ready phase counts as ready", () => {
   }
   assert.equal(qcInventoryDeviceReady([{ id: "qc-1" }]), false);
   assert.equal(qcInventoryDeviceReady([]), false);
-  assert.deepEqual(qcFollowReadyInventory({ ...idleWindow, inventoryReady: false }), { connect: false, followed: false, refollows: 0, liveSessionLost: false, liveSince: null });
 });
 
 test("the selected device decides, and several without a selection decide nothing", () => {
@@ -157,374 +212,397 @@ test("the selected device decides, and several without a selection decide nothin
   assert.equal(qcInventoryDeviceReady(devices, null), false);
 });
 
-test("at most one connect per transition into ready, a refused one included", () => {
-  // Poll by poll: ready -> connect; the attempt is refused and the window is
-  // back on the demo while the device stays ready -> nothing more; the device
-  // leaves ready -> re-armed; ready again -> exactly one more connect.
-  let followed = false;
-  const poll = (inventoryReady: boolean) => {
-    const step = qcFollowReadyInventory({ ...idleWindow, inventoryReady, followed });
-    followed = step.followed;
-    return step.connect;
-  };
-  const connects = [true, true, true, false, true, true].map(poll);
-  assert.deepEqual(connects, [true, false, false, false, true, false]);
+test("the poll's failure path clears every green row, keeping ids and names", () => {
+  const rows = [{ id: "qc-1", name: "Quad Cortex 1", connected: true, phase: "ready" }, { id: "qc-2", name: "Quad Cortex 2", connected: true, phase: "syncing" }];
+  const cleared = qcInventoryWhenUnreachable(rows);
+  assert.deepEqual(cleared, [
+    { id: "qc-1", name: "Quad Cortex 1", connected: false, phase: "disconnected" },
+    { id: "qc-2", name: "Quad Cortex 2", connected: false, phase: "disconnected" }
+  ]);
+  assert.equal(qcInventoryWhenUnreachable(cleared), cleared, "a broker that stays away changes nothing more");
+  assert.deepEqual(qcInventoryWhenUnreachable([]), []);
+  // The same poll's truth: the selected device reads not ready at once.
+  const app = windowPolls(liveDevice);
+  app.ready();
+  app.refused();
+  assert.equal(app.truth.deviceReady, false);
 });
 
-// A window that was live and lost its session to its own live-health check
-// (beginLiveRecovery) while the broker stayed ready: no new edge, no push.
-// Each poll advances a fake monotonic clock by the real poll's 2 s.
-const POLL_MS = 2000;
-type Carried = Pick<Parameters<typeof qcFollowReadyInventory>[0], "followed" | "refollows" | "liveSessionLost" | "liveSince">;
-function windowPolls() {
-  let carried: Carried = { followed: false, refollows: 0, liveSessionLost: false, liveSince: null };
-  let now = 0;
-  const app = {
-    get now() { return now; },
-    poll(connection: Connection, inventoryReady = true) {
-      now += POLL_MS;
-      const step = qcFollowReadyInventory({ ...idleWindow, ...carried, inventoryReady, connection, now });
-      carried = { followed: step.followed, refollows: step.refollows, liveSessionLost: step.liveSessionLost, liveSince: step.liveSince };
-      return step.connect;
-    },
-    // Polls that all find the window live for about `ms`.
-    stayLive(ms: number) { for (let waited = 0; waited < ms; waited += POLL_MS) app.poll(liveDevice); },
-    // Time passing with no decision at all: every poll threw.
-    pollsRefused(ms: number) { now += ms; },
-    // What beginLiveRecovery records before it returns to the demo.
-    loseLiveSession() { carried = { ...carried, liveSessionLost: true, liveSince: null }; },
-    // What the user's own Connect clears in App's connect().
-    userConnect() { carried = { ...carried, refollows: 0, liveSessionLost: false }; },
-    // A `device.phase` push before any poll answered (qcPhaseListenerMayFollow):
-    // the same decision as a poll that finds the device ready, at the same
-    // moment, with the user's Disconnect latch as App holds it.
-    push(connection: Connection, latched = false) {
-      const step = qcFollowReadyInventory({ ...idleWindow, ...carried, inventoryReady: true, connection, now, userDisconnected: latched });
-      carried = { followed: step.followed, refollows: step.refollows, liveSessionLost: step.liveSessionLost, liveSince: step.liveSince };
-      return step.connect;
-    },
-    // What App records for a lost session or a pending follow: beginLiveRecovery,
-    // a connect the watchdog gave up on, the demo fallback's retry (userAction
-    // false), a failed USB-tab resume (true).
-    recordLoss(userAction = false) { carried = qcRecordLiveSessionLoss(carried, userAction); },
-    get carried() { return carried; }
-  };
-  return app;
-}
-
-test("a live session lost while the broker stays ready is followed once more on the same edge", () => {
-  const app = windowPolls();
-  assert.equal(app.poll(liveDevice), false);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), true);
+test("a device held behind the demo is shown live only while the demo is active and the broker says so", () => {
+  const synchronized = { platform: "Windows", gatewayAvailable: true, message: "", usbDiagnostics: { phase: "ready", detail: "", connected: true, synchronized: true } };
+  const ready = qcObserveBroker(QC_BROKER_TRUTH_UNKNOWN, answered(true));
+  assert.equal(qcBackgroundDeviceLive(true, true, ready, synchronized), true);
+  assert.equal(qcBackgroundDeviceLive(false, true, ready, synchronized), false, "nothing held");
+  assert.equal(qcBackgroundDeviceLive(true, false, ready, synchronized), false, "no demo: an idle USB panel never offers Disconnect for a stale flag");
+  assert.equal(qcBackgroundDeviceLive(true, true, qcObserveBroker(ready, unreachable), synchronized), false, "broker quit or released");
+  assert.equal(qcBackgroundDeviceLive(true, true, qcObserveBroker(ready, answered(false)), synchronized), false, "cable out");
+  assert.equal(qcBackgroundDeviceLive(true, true, ready, { ...synchronized, gatewayAvailable: false }), false, "status poll failed");
+  assert.equal(qcBackgroundDeviceLive(true, true, ready, { ...synchronized, usbDiagnostics: { ...synchronized.usbDiagnostics, synchronized: false } }), false);
+  assert.equal(qcBackgroundDeviceLive(true, true, QC_BROKER_TRUTH_UNKNOWN, synchronized), false, "no poll has answered yet");
 });
 
-test("a re-follow that fails before going live is not retried", () => {
-  const app = windowPolls();
-  app.stayLive(QC_REFOLLOW_RESTORE_AFTER_LIVE_MS * 3);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), true);
-  // Refused or incomplete: back on the demo, or needs-attention, and never
-  // live, so no new loss and no give-back, however long it sits there.
-  for (let poll = 0; poll < 100; poll += 1) {
-    assert.equal(app.poll(poll % 2 ? demoFallback : failedConnect), false, `poll ${poll}`);
+test("Stop demo resumes only a device still live behind it, and otherwise clears the stale held flag", () => {
+  assert.deepEqual(qcStopDemoOutcome(true), { resume: true, clearHeld: false });
+  assert.deepEqual(qcStopDemoOutcome(false), { resume: false, clearHeld: true });
+});
+
+test("a device the broker already has ready is followed from an idle window, at once", () => {
+  for (const start of [demoFallback, failedConnect]) {
+    const app = windowPolls(start);
+    assert.equal(app.ready(), true, start.phase);
   }
 });
 
-test("a second loss on the same edge is followed once the session stayed live long enough", () => {
-  const app = windowPolls();
-  app.poll(liveDevice);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), true);
-  app.stayLive(QC_REFOLLOW_RESTORE_AFTER_LIVE_MS + POLL_MS);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), true);
+test("a window already live with the device does not connect again", () => {
+  const app = windowPolls(liveDevice);
+  assert.equal(app.for(10 * 60_000, () => app.ready()), 0);
 });
 
-test("a second loss after a short live period (a flapping health check) is not followed", () => {
+test("broker quits (tray Quit or release) and restarts without a Disconnect: the window goes live again, every time", () => {
   const app = windowPolls();
-  app.poll(liveDevice);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), true);
-  app.stayLive(QC_REFOLLOW_RESTORE_AFTER_LIVE_MS - 2 * POLL_MS);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), false);
-  // Live long enough only in total, across a drop: the drop restarts it.
-  app.stayLive(QC_REFOLLOW_RESTORE_AFTER_LIVE_MS / 2);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), false);
-});
-
-test("a health check that keeps failing gets at most two connects per edge, then one per restore interval", () => {
-  assert.equal(QC_READY_INVENTORY_REFOLLOWS, 1);
-  // One cycle: the session is lost, the window polls on the demo beside a
-  // ready broker, and any connect reaches live for `liveMs` before the next loss.
-  const run = (app: ReturnType<typeof windowPolls>, liveMs: number, cycles: number) => {
-    const connectedAt: number[] = [];
-    for (let cycle = 0; cycle < cycles; cycle += 1) {
-      app.loseLiveSession();
-      for (let poll = 0; poll < 3; poll += 1) {
-        if (!app.poll(demoFallback)) continue;
-        connectedAt.push(app.now);
-        app.stayLive(liveMs);
-        break;
-      }
-    }
-    return connectedAt;
-  };
-  for (const liveMs of [0, POLL_MS, 10_000, QC_REFOLLOW_RESTORE_AFTER_LIVE_MS - POLL_MS]) {
-    // Failing sooner than the restore interval: never more than the budget.
-    const spent = windowPolls();
-    spent.poll(liveDevice);
-    assert.equal(run(spent, liveMs, 50).length, QC_READY_INVENTORY_REFOLLOWS, `spent edge, live ${liveMs} ms`);
-    assert.equal(run(windowPolls(), liveMs, 50).length, 1 + QC_READY_INVENTORY_REFOLLOWS, `unspent edge, live ${liveMs} ms`);
+  for (let cycle = 0; cycle < 6; cycle += 1) {
+    const before = `broker-${cycle}`;
+    const after = `broker-${cycle + 1}`;
+    if (cycle === 0) { assert.equal(app.ready(before), true); app.goLive(); }
+    assert.equal(app.for(10_000, () => app.ready(before)), 0, `cycle ${cycle}: live`);
+    // Quit: the health check loses the session, and the host refuses every
+    // poll for the released generation for as long as it is away.
+    app.loseLive();
+    assert.equal(app.for(5 * 60_000, () => app.refused()), 0, `cycle ${cycle}: away`);
+    assert.equal(app.connection.source, "virtual", "on the demo meanwhile");
+    // A new generation answers; its device takes a moment, then reads ready.
+    assert.equal(app.notReady(after), false, `cycle ${cycle}: starting`);
+    assert.equal(app.ready(after), true, `cycle ${cycle}: followed`);
+    app.goLive();
   }
-  for (const liveMs of [QC_REFOLLOW_RESTORE_AFTER_LIVE_MS + POLL_MS, QC_REFOLLOW_RESTORE_AFTER_LIVE_MS * 2]) {
-    // Failing later than that: followed every time, but never two re-follows
-    // closer together than the restore interval.
-    const spent = windowPolls();
-    spent.poll(liveDevice);
-    const connectedAt = run(spent, liveMs, 50);
-    assert.equal(connectedAt.length, 50, `live ${liveMs} ms`);
-    for (let index = 1; index < connectedAt.length; index += 1) {
-      assert.ok(connectedAt[index] - connectedAt[index - 1] >= QC_REFOLLOW_RESTORE_AFTER_LIVE_MS, `live ${liveMs} ms, connect ${index}`);
-    }
+  assert.equal(app.connects.length, 7, "the first connect and one per restart");
+});
+
+test("a broker that crashes and comes back already connected is followed without any gap observed", () => {
+  const app = windowPolls();
+  assert.equal(app.ready("broker-1"), true);
+  app.goLive();
+  app.loseLive();
+  assert.equal(app.ready("broker-2"), true, "a new instance is a new generation, ready or not before");
+});
+
+test("USB unplug and replug without a Disconnect: followed on every replug, however often", () => {
+  const app = windowPolls();
+  assert.equal(app.ready(), true);
+  app.goLive();
+  for (let cycle = 0; cycle < 8; cycle += 1) {
+    app.loseLive();
+    assert.equal(app.for(6_000, () => app.notReady()), 0, `cycle ${cycle}: unplugged`);
+    assert.equal(app.for(12_000, () => app.notReady()), 0, `cycle ${cycle}: handshaking`);
+    assert.equal(app.ready(), true, `cycle ${cycle}: replugged and ready`);
+    app.goLive();
+    assert.equal(app.for(4_000, () => app.ready()), 0);
   }
 });
 
-test("only a new edge, the user's Connect or a long live session gives the re-follow back", () => {
-  const app = windowPolls();
-  const loseAndPoll = () => { app.poll(liveDevice); app.loseLiveSession(); return app.poll(demoFallback); };
-  assert.equal(loseAndPoll(), true);
-  assert.equal(loseAndPoll(), false);
-  // The device leaves ready and returns: a new edge, followed, and a fresh
-  // re-follow with it.
-  assert.equal(app.poll(demoFallback, false), false);
-  assert.equal(app.poll(demoFallback), true);
-  assert.equal(loseAndPoll(), true);
-  assert.equal(loseAndPoll(), false);
-  // The user's Connect hands back exactly one more.
+test("from an idle or failed window, a follow that keeps failing is retried at a growing interval, never given up", () => {
+  const app = windowPolls(failedConnect);
+  app.failing(30 * 60_000, failedConnect);
+  const gaps = gapsOf(app.connects);
+  assert.ok(app.connects.length > 25, `still converging after 30 min: ${app.connects.length}`);
+  // Each wait starts at the first poll that sees the attempt over.
+  assert.deepEqual(gaps.slice(0, 5), [4_000, 8_000, 16_000, 32_000, 60_000].map((delay) => delay + POLL_MS));
+  for (const gap of gaps) assert.ok(gap >= QC_FOLLOW_RETRY_MIN_MS && gap <= QC_FOLLOW_RETRY_MAX_MS + POLL_MS, `gap ${gap}`);
+  assert.equal(app.demoGaveUp, false, "not a demo: nothing to protect");
+  assert.equal(qcFollowRetryDelay(1), QC_FOLLOW_RETRY_MIN_MS);
+  assert.equal(qcFollowRetryDelay(50), QC_FOLLOW_RETRY_MAX_MS);
+});
+
+test("the retry wait is measured from the end of a long attempt, not from its start", () => {
+  const handshakePolls = 10;
+  const app = windowPolls(failedConnect, handshakePolls);
+  app.failing(5 * 60_000, failedConnect);
+  const gaps = gapsOf(app.connects);
+  assert.equal(gaps[0], (handshakePolls + 1) * POLL_MS + QC_FOLLOW_RETRY_MIN_MS);
+  assert.equal(gaps[1], (handshakePolls + 1) * POLL_MS + 2 * QC_FOLLOW_RETRY_MIN_MS);
+});
+
+test("failed polls never restart the backoff: one failed poll in three still settles on the ceiling", () => {
+  // The probe: ten minutes of a broker that reads ready while every connect
+  // fails, with one poll in three failing outright.
+  const app = windowPolls(failedConnect);
+  let poll = 0;
+  const connects = app.failing(10 * 60_000, failedConnect, () => (poll += 1) % 3 === 0 ? app.refused() : app.ready());
+  // About 4 ramp-up attempts, then one per ceiling interval: near 14, nowhere near 100.
+  assert.ok(connects >= 8 && connects <= 16, `${connects} connects`);
+  assert.ok(gapsOf(app.connects).slice(-4).every((gap) => gap >= QC_FOLLOW_RETRY_MAX_MS), `${gapsOf(app.connects).slice(-4)}`);
+});
+
+test("a working demo is taken over at most three times on one ready edge, then stays, and says so", () => {
+  const app = windowPolls(demoFallback);
+  const connects = app.failing(30 * 60_000, demoFallback);
+  assert.equal(connects, QC_FOLLOW_DEMO_ATTEMPTS);
+  assert.equal(app.demoGaveUp, true, "App surfaces a Connect notice for this");
+  // A new answered ready edge (replug) starts over.
+  app.notReady();
+  assert.equal(app.ready(), true, "a new edge");
+  assert.equal(app.demoGaveUp, false);
+  app.failConnect(demoFallback);
+  app.failing(30 * 60_000, demoFallback);
+  assert.equal(app.connects.length, 2 * QC_FOLLOW_DEMO_ATTEMPTS);
+  // So does a new broker generation, and so does the user's Connect.
+  assert.equal(app.ready("broker-2"), true);
+  app.failConnect(demoFallback);
+  app.failing(30 * 60_000, demoFallback, () => app.ready("broker-2"));
+  assert.equal(app.connects.length, 3 * QC_FOLLOW_DEMO_ATTEMPTS);
   app.userConnect();
-  assert.equal(loseAndPoll(), true);
-  assert.equal(loseAndPoll(), false);
+  assert.equal(app.ready("broker-2"), true, "the user's Connect starts over");
 });
 
-test("a recorded loss restarts the live measurement, even when another path heals it unseen", () => {
-  // The function only sees `liveSince`; App clears it with every recorded
-  // loss (beginLiveRecovery). Time live before that loss earns nothing.
+test("short live sessions do not trip the demo cap; a session that drops soon after every connect backs off to the ceiling", () => {
   const app = windowPolls();
-  app.poll(liveDevice);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), true);
-  app.stayLive(QC_REFOLLOW_RESTORE_AFTER_LIVE_MS - 10_000);
-  // Lost and healed (by the phase listener, say) between two polls.
-  app.loseLiveSession();
-  app.stayLive(20_000);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), false);
+  app.for(20 * 60_000, () => {
+    const connected = app.ready();
+    if (connected) app.goLive();
+    else if (app.connection.source === "device") app.loseLive();
+    return connected;
+  });
+  assert.ok(app.connects.length > QC_FOLLOW_DEMO_ATTEMPTS, `each reached live, so none counts against the demo: ${app.connects.length}`);
+  assert.equal(app.demoGaveUp, false);
+  const gaps = gapsOf(app.connects);
+  assert.ok(gaps.every((gap) => gap >= QC_FOLLOW_RETRY_MIN_MS), "never back to back");
+  assert.ok(gaps.slice(-3).every((gap) => gap >= QC_FOLLOW_RETRY_MAX_MS), `settles on the ceiling: ${gaps.slice(-3)}`);
 });
 
-test("a gap with live polls on both sides and no recorded loss counts as live time", () => {
-  // Documents what continuity means here: only polls and recorded losses can
-  // break it, so refused polls between two live ones do not.
+test("the answer to the user's Disconnect decides whether a latch is kept", () => {
+  const latch = qcLatchUserDisconnect(QC_BROKER_TRUTH_UNKNOWN);
+  const closed = { phase: "disconnected" as const, detail: "Quad Cortex disconnected", demo: true, source: "device" as const };
+  assert.equal(qcDisconnectClosedSession(closed), true);
+  assert.deepEqual(qcDisconnectOutcome(latch, closed), { closed: true, connection: closed, latch, notice: "Quad Cortex disconnected" });
+  assert.equal(qcDisconnectClosedSession({ phase: "disconnected", detail: "Disconnected this window. The Quad Cortex session stays open while another QC Remote window or MCP client is still using it" }), false);
+});
+
+test("a Disconnect the broker answers with the session left open never bounces through a reconnect, and keeps its reason", () => {
   const app = windowPolls();
-  app.poll(liveDevice);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), true);
-  app.poll(liveDevice);
-  app.pollsRefused(QC_REFOLLOW_RESTORE_AFTER_LIVE_MS);
-  app.poll(liveDevice);
-  app.loseLiveSession();
-  assert.equal(app.poll(demoFallback), true);
+  app.ready();
+  app.goLive();
+  app.ready();
+  // The user's Disconnect; the broker leaves the shared session open.
+  app.disconnect();
+  const leftOpen = { phase: "ready" as const, detail: "Another client is still attached; the shared session was left open", demo: false, source: "device" as const };
+  assert.equal(qcDisconnectClosedSession(leftOpen), false);
+  const outcome = qcDisconnectOutcome(app.latch, leftOpen);
+  assert.equal(outcome.closed, false);
+  assert.equal(outcome.connection.phase, "disconnected", "never shown ready from the raw, unsynchronized answer");
+  assert.equal(outcome.notice, leftOpen.detail, "the broker's reason is what stays on screen");
+  assert.equal(qcUserDisconnectHolds(outcome.latch), true, "held while App restores Live without a reconnect");
+  app.setConnection(outcome.connection);
+  // The broker keeps reading the device ready: no follow fires meanwhile.
+  assert.equal(app.for(60_000, () => app.ready()), 0, "no automatic device.reconnect");
+  // A reason-less answer still says why.
+  assert.equal(qcDisconnectOutcome(app.latch, { ...leftOpen, phase: "ready", detail: "" }).notice, QC_SESSION_LEFT_OPEN_NOTICE);
+  // App's restore succeeded: Live again, the latch dropped with it, and
+  // nothing more to follow.
+  app.userConnect();
+  app.goLive();
+  assert.equal(app.for(60_000, () => app.ready()), 0);
+});
+test("a session that stayed live starts the attempts over; a new edge or generation does too", () => {
+  const app = windowPolls(failedConnect);
+  app.failing(4 * 60_000, failedConnect);
+  assert.ok(app.follow.attempts > 3);
+  app.ready();
+  app.goLive();
+  app.for(QC_FOLLOW_STABLE_LIVE_MS + 2 * POLL_MS, () => app.ready());
+  assert.equal(app.follow.attempts, 0, "stable live time");
+  app.loseLive();
+  assert.equal(app.ready(), true, "and the next loss is followed at once");
+  app.failConnect(failedConnect);
+  assert.equal(app.ready(), false, "inside the first backoff");
+  assert.equal(app.notReady(), false);
+  assert.equal(app.ready(), true, "a new answered ready edge does not wait for the backoff");
+  app.failConnect(failedConnect);
+  assert.equal(app.ready("broker-9"), true, "nor does a new broker generation");
 });
 
-test("the inventory leaving ready while the window is live drops its live measurement", () => {
-  const step = qcFollowReadyInventory({ ...idleWindow, inventoryReady: false, connection: liveDevice, followed: true, refollows: 1, liveSince: 0, now: 10_000 });
-  assert.deepEqual(step, { connect: false, followed: false, refollows: 0, liveSessionLost: false, liveSince: null });
-});
-
-test("a clock that goes backwards only delays the give-back", () => {
-  const spent = { ...idleWindow, followed: true, refollows: 1, connection: liveDevice, liveSince: 50_000 };
-  assert.equal(qcFollowReadyInventory({ ...spent, now: 1_000 }).refollows, 1);
-  assert.equal(qcFollowReadyInventory({ ...spent, now: 50_000 + QC_REFOLLOW_RESTORE_AFTER_LIVE_MS - 1 }).refollows, 1);
-  assert.equal(qcFollowReadyInventory({ ...spent, now: 50_000 + QC_REFOLLOW_RESTORE_AFTER_LIVE_MS }).refollows, 0);
-});
-
-test("a loss recorded before a tray release is followed once the polls resume", () => {
-  // The release itself is not visible here: `broker.devices` is refused, the
-  // poll throws, and this function is never called. Modelled as time passing
-  // with no decision; the explicit reconnect that ends the release (from the
-  // paired relay, say) leaves the broker ready and the window on the demo.
+test("a connect in flight, a gave-up reconnect still unsettled, or a command holds every follow", () => {
   const app = windowPolls();
-  app.poll(liveDevice);
-  app.loseLiveSession();
-  app.pollsRefused(5 * 60_000);
-  assert.equal(app.poll(demoFallback), true);
-  assert.equal(app.poll(demoFallback), false);
+  app.held = true;
+  assert.equal(app.for(5 * 60_000, () => app.ready()), 0);
+  app.held = false;
+  assert.equal(app.ready(), true, "followed once it settles, with no attempt spent while held");
+  for (const state of [{ awaitingDetection: true }, { commandPending: true }, { demoPending: true }, { reconnectsOutstanding: 1 }]) {
+    assert.equal(qcAutomaticConnectHeld({ awaitingDetection: false, commandPending: false, demoPending: false, reconnectsOutstanding: 0, ...state }), true);
+  }
+  assert.equal(qcAutomaticConnectHeld({ awaitingDetection: false, commandPending: false, demoPending: false, reconnectsOutstanding: 0 }), false);
 });
 
-test("a lost live session still yields to a Disconnect, a Demo choice and a connect in flight", () => {
-  const lost = { ...idleWindow, followed: true, liveSessionLost: true };
-  const held = { connect: false, followed: true, refollows: 0, liveSessionLost: true, liveSince: null };
-  assert.deepEqual(qcFollowReadyInventory({ ...lost, userDisconnected: true }), held);
-  assert.deepEqual(qcFollowReadyInventory({ ...lost, demoCanYield: false }), held);
-  assert.deepEqual(qcFollowReadyInventory({ ...lost, connection: userDisconnected }), held);
-  // A connect in flight (the phase listener's, say) keeps the loss pending
-  // and leaves the re-follow unspent, so a miss is followed once it ends; the
-  // window is not live meanwhile, so a live measurement starts over.
-  assert.deepEqual(qcFollowReadyInventory({ ...lost, connectInFlight: true, liveSince: -QC_REFOLLOW_RESTORE_AFTER_LIVE_MS }), held);
-  assert.deepEqual(qcFollowReadyInventory(lost), { connect: true, followed: true, refollows: 1, liveSessionLost: false, liveSince: null });
+test("a deliberate Demo choice or a stopped demo is never overridden", () => {
+  const chosen = windowPolls();
+  chosen.demoCanYield = false;
+  assert.equal(chosen.for(5 * 60_000, () => chosen.ready()), 0);
+  const stopped = windowPolls({ phase: "disconnected", detail: "Demo device stopped. Its presets stay saved on this computer.", demo: true, source: "device" });
+  assert.equal(stopped.for(5 * 60_000, () => stopped.ready()), 0);
 });
 
-test("a lost live session that something else brought back live is answered, not followed", () => {
-  // The phase listener's connect reached live before a poll saw the demo.
-  assert.deepEqual(
-    qcFollowReadyInventory({ ...idleWindow, followed: true, refollows: 1, liveSessionLost: true, connection: liveDevice, now: 5000 }),
-    { connect: false, followed: true, refollows: 1, liveSessionLost: false, liveSince: 5000 }
-  );
+test("the user's Disconnect stays disconnected across polls, a failed Disconnect included", () => {
+  const app = windowPolls();
+  app.ready();
+  app.goLive();
+  app.ready();
+  app.disconnect(failedDisconnect);
+  // The close failed: the broker keeps the device open and ready.
+  assert.equal(app.for(10 * 60_000, () => app.ready()), 0);
+  assert.equal(app.latched, true);
+  // A Connect of their own lifts it.
+  app.userConnect();
+  assert.equal(app.ready(), true);
 });
 
-// Who decides an automatic follow. The poll, from what `broker.devices`
-// answered; a `device.phase` push only while no poll has ever answered
-// (qcPhaseListenerMayFollow), through the same bounded, latch-aware decision;
-// the demo fallback's retry never, it only records a pending follow.
+test("the user's Disconnect holds while the device stays closed, and a poll that answered before the close never lifts it", () => {
+  const app = windowPolls();
+  app.notReady();
+  // Pressed during sync: the last poll saw the device not ready yet, and the
+  // next one still reads it ready before the close lands.
+  app.disconnect(failedDisconnect);
+  assert.equal(app.ready(), false);
+  assert.equal(app.latched, true);
+  assert.equal(app.for(10 * 60_000, () => app.notReady()), 0, "closed: nothing to follow");
+  assert.equal(app.latched, true);
+});
 
-test("a push decides by itself only until the first inventory poll answers", () => {
-  assert.equal(qcPhaseListenerMayFollow(false), true);
+test("failed polls while the same broker keeps the device open never lift the user's Disconnect", () => {
+  const app = windowPolls();
+  app.ready();
+  app.goLive();
+  app.disconnect(failedDisconnect);
+  for (let blip = 0; blip < 10; blip += 1) {
+    assert.equal(app.refused(), false);
+    assert.equal(app.ready(), false, `blip ${blip}`);
+  }
+  assert.equal(app.latched, true);
+});
+
+test("the user's Disconnect is lifted by an answered not-ready -> ready device session, and then dropped once live", () => {
+  const app = windowPolls();
+  app.ready();
+  app.goLive();
+  app.disconnect();
+  app.notReady();
+  assert.equal(app.latched, true);
+  assert.equal(app.ready(), true, "the device closed and came back ready: a session the broker opened");
+  assert.equal(app.latched, false);
+  assert.equal(app.latch?.lifted, true, "kept while the Disconnect's own state is left");
+  app.goLive();
+  app.ready();
+  assert.equal(app.latch, null, "dropped once live");
+});
+
+test("a new broker generation alone never lifts the user's Disconnect (owner decision)", () => {
+  const app = windowPolls();
+  app.ready("broker-1");
+  app.goLive();
+  app.disconnect(failedDisconnect);
+  assert.equal(app.for(60_000, () => app.ready("broker-1")), 0);
+  // The broker restarts - or this window's own host respawned it - and the
+  // new generation opens the device by itself, even through a full
+  // not-ready -> ready sequence.
+  assert.equal(app.for(20_000, () => app.refused()), 0);
+  assert.equal(app.ready("broker-2"), false, "a new generation, ready at once");
+  assert.equal(app.notReady("broker-2"), false);
+  assert.equal(app.for(10 * 60_000, () => app.ready("broker-2")), 0, "and a session edge inside it");
+  assert.equal(app.latched, true);
+  app.userConnect();
+  assert.equal(app.ready("broker-2"), true, "only the user's Connect");
+});
+
+test("only the Disconnect's own state is followed once lifted: a stopped demo or a Demo choice is not", () => {
+  const lifted: QcUserDisconnect = { generation: 0, sawNotReady: true, lifted: true };
+  const truth = qcObserveBroker(QC_BROKER_TRUTH_UNKNOWN, answered(true));
+  const decide = (connection: Connection, userDisconnect: QcUserDisconnect | null = lifted, demoCanYield = true) =>
+    qcFollowBroker({ follow: QC_FOLLOW_INITIAL, truth, now: 0, userDisconnect, connectHeld: false, connection, demoCanYield }).connect;
+  assert.equal(decide(userDisconnected), true);
+  assert.equal(decide({ phase: "disconnected", detail: "Demo device stopped.", demo: true, source: "device" }), true, "App drops the latch on Stop demo, so this state never meets a lifted one");
+  assert.equal(decide(userDisconnected, null), false, "no latch: a disconnected window stays idle");
+  assert.equal(decide(demoFallback, lifted, false), false, "the user's Demo choice");
+  assert.equal(qcUserDisconnectHolds({ ...lifted, lifted: false }), true);
+  assert.equal(qcUserDisconnectHolds(lifted), false);
+  assert.equal(qcUserDisconnectHolds(null), false);
+});
+
+test("a tray release or a recorded Quit is never reconnected automatically", () => {
+  // The host refuses broker.devices for the released generation and the
+  // broker's own status with it, so every poll fails for as long as nothing
+  // newer is attached - recorded losses and an expired backoff included.
+  const app = windowPolls();
+  app.ready();
+  app.goLive();
+  app.loseLive();
+  assert.equal(app.for(60 * 60_000, () => app.refused()), 0);
+  assert.equal(app.truth.deviceReady, false);
+  // A push decides by itself only until the first poll answered, so a phase
+  // event from anywhere cannot reconnect a window whose polls are refused.
   assert.equal(qcPhaseListenerMayFollow(true), false);
+  assert.equal(qcPhaseListenerMayFollow(false), true);
 });
 
-test("a detection push (before any poll answered) follows an unspent edge exactly once", () => {
-  const app = windowPolls();
-  assert.equal(app.push(demoFallback), true);
-  for (let push = 0; push < 20; push += 1) assert.equal(app.push(demoFallback), false, `push ${push}`);
-  assert.equal(app.poll(demoFallback), false);
+test("detection pushes follow once, then wait like the polls, and never restart the backoff after a failed poll", () => {
+  // Before any poll answered, App feeds each push as an answered ready with
+  // no instance id.
+  const app = windowPolls(failedConnect);
+  assert.equal(app.push(), true, "an unspent edge is followed once");
+  app.failConnect(failedConnect);
+  assert.equal(app.push(), false, "a second push is inside the backoff");
+  assert.equal(app.refused(), false);
+  const edges = app.truth.readyEdges;
+  app.push();
+  assert.equal(app.truth.readyEdges, edges, "a push after a failed poll is no new edge");
+  assert.equal(app.truth.generation, 0, "and no new generation");
+  assert.ok(app.follow.attempts >= 1, "the attempts were not started over");
+  // A burst of pushes over ten minutes is still paced by the backoff.
+  const connects = app.failing(10 * 60_000, failedConnect, () => app.push());
+  assert.ok(connects <= 14, `${connects} connects`);
 });
 
-test("a detection push never undoes the user's Disconnect, a failed one included", () => {
-  for (const connection of [failedDisconnect, userDisconnected, demoFallback]) {
-    const app = windowPolls();
-    for (let push = 0; push < 10; push += 1) assert.equal(app.push(connection, true), false, `${connection.phase} push ${push}`);
-    // The latch holds it without spending anything.
-    assert.equal(app.carried.followed, false);
+test("a push never undoes the user's Disconnect", () => {
+  for (const phase of ["connecting", "handshaking", "syncing", "ready"]) {
+    assert.equal(qcShouldFollowDevicePhase({ phase }, undefined, qcUserDisconnectHolds({ generation: 0, sawNotReady: false, lifted: false })), false, phase);
   }
-  const lost = windowPolls();
-  lost.poll(liveDevice);
-  lost.recordLoss();
-  assert.equal(lost.push(demoFallback, true), false);
-  assert.equal(lost.carried.liveSessionLost, true);
-});
-
-test("pushes spend the re-follow budget the poll spends", () => {
   const app = windowPolls();
-  app.poll(liveDevice);
-  app.recordLoss();
-  assert.equal(app.push(demoFallback), true);
-  app.poll(liveDevice);
-  app.recordLoss();
-  assert.equal(app.push(demoFallback), false);
-  assert.equal(app.poll(demoFallback), false);
-  // A push followed the loss, so the poll does not follow it again.
-  const first = windowPolls();
-  first.poll(liveDevice);
-  first.recordLoss();
-  assert.equal(first.push(demoFallback), true);
-  assert.equal(first.poll(demoFallback), false);
+  app.push();
+  app.goLive();
+  app.disconnect(failedDisconnect);
+  assert.equal(app.for(60_000, () => app.push()), 0);
+  assert.equal(app.latched, true, "a push is no answered not-ready");
 });
 
-test("a push on a spent edge is followed by a poll only after one saw the device leave ready", () => {
+test("a connect given up by the watchdog is followed again once its reconnect settles, under the backoff", () => {
+  // The watchdog itself never connects; App records the abandoned connect as
+  // a lost session, and the reconnect it left outstanding holds the follow.
+  const app = windowPolls(failedConnect);
+  assert.equal(app.ready(), true);
+  app.failConnect(failedConnect);
+  app.held = true;
+  assert.equal(app.for(5 * 60_000, () => app.ready()), 0);
+  app.held = false;
+  assert.equal(app.ready(), false, "the wait starts when it settled");
+  assert.equal(app.for(QC_FOLLOW_RETRY_MIN_MS, () => app.ready()), 1);
+  // A Disconnect after an abandoned connect is still never undone.
+  app.disconnect(failedDisconnect);
+  assert.equal(app.for(10 * 60_000, () => app.ready()), 0);
+});
+
+test("a recorded loss restarts the live measurement; a user-action loss and the user's Connect restart the attempts", () => {
+  const spent: QcFollowState = { attempts: 3, nextAt: 99_000, inFlight: false, fromDemo: true, demoFailures: 2, liveSince: 5_000, seenGeneration: 0, seenReadyEdges: 1 };
+  assert.deepEqual(qcRecordLiveSessionLoss(spent), { ...spent, liveSince: null });
+  assert.deepEqual(qcRecordLiveSessionLoss(spent, true), { ...spent, liveSince: null, attempts: 0, nextAt: null, demoFailures: 0 });
+  assert.deepEqual(qcFollowAfterUserConnect(spent), { ...spent, attempts: 0, nextAt: null, demoFailures: 0 });
+});
+
+test("a session lost before any poll saw it live for long is not credited as stable time", () => {
   const app = windowPolls();
-  assert.equal(app.poll(demoFallback), true);
-  // Spent and no loss pending: neither the push nor the poll follows.
-  assert.equal(app.push(demoFallback), false);
-  assert.equal(app.poll(demoFallback), false);
-  // A poll that reads the device not ready re-arms; the next ready one follows.
-  assert.equal(app.poll(demoFallback, false), false);
-  assert.equal(app.poll(demoFallback), true);
-});
-
-test("the demo retry is a pending follow: the next poll decides it, within the budget", () => {
-  // The edge follow failed after a push arrived during it.
-  const app = windowPolls();
-  assert.equal(app.poll(demoFallback), true);
-  app.recordLoss();
-  assert.equal(app.poll(demoFallback), true);
-  // The same again: the budget is spent, so the retry is not followed.
-  app.recordLoss();
-  assert.equal(app.poll(demoFallback), false);
-  // With the user's Disconnect latched nothing follows it either.
-  const latched = windowPolls();
-  latched.poll(liveDevice);
-  latched.recordLoss();
-  assert.equal(qcFollowReadyInventory({ ...idleWindow, ...latched.carried, userDisconnected: true }).connect, false);
-});
-
-test("a retry recorded while the polls are refused (tray release, Quit) connects nothing until a poll reads the device ready", () => {
-  const app = windowPolls();
-  app.poll(liveDevice);
-  app.recordLoss();
-  // Every poll throws: no decision is made at all, however long.
-  app.pollsRefused(10 * 60_000);
-  assert.equal(app.carried.liveSessionLost, true);
-  // Only a poll that the broker answers with the device ready may follow it.
-  assert.equal(app.poll(demoFallback, false), false);
-  assert.equal(app.carried.liveSessionLost, false);
-  assert.equal(app.poll(demoFallback), true);
-});
-
-test("a gave-up reconnect still unsettled holds every automatic follow, as a connect in flight does", () => {
-  const idle = { awaitingDetection: false, commandPending: false, demoPending: false, reconnectsOutstanding: 0 };
-  assert.equal(qcAutomaticConnectHeld(idle), false);
-  assert.equal(qcAutomaticConnectHeld({ ...idle, awaitingDetection: true }), true);
-  assert.equal(qcAutomaticConnectHeld({ ...idle, commandPending: true }), true);
-  assert.equal(qcAutomaticConnectHeld({ ...idle, demoPending: true }), true);
-  assert.equal(qcAutomaticConnectHeld({ ...idle, reconnectsOutstanding: 1 }), true);
-  // The loss the watchdog records stays pending through the overlap, for a
-  // push and a poll alike, and is followed once the request settles.
-  const app = windowPolls();
-  assert.equal(app.poll(demoFallback), true);
-  app.recordLoss();
-  const overlap = { ...idleWindow, ...app.carried, connectInFlight: qcAutomaticConnectHeld({ ...idle, reconnectsOutstanding: 1 }) };
-  for (const connection of [demoFallback, failedConnect]) {
-    const step = qcFollowReadyInventory({ ...overlap, connection });
-    assert.equal(step.connect, false, connection.phase);
-    assert.equal(step.liveSessionLost, true, connection.phase);
-  }
-  assert.equal(app.poll(failedConnect), true);
-});
-
-// A failed USB-tab resume (resumeDeviceSession) returns to the demo beside a
-// broker that may still hold the device ready, on an edge already spent.
-
-test("a failed USB-tab resume is followed once, even with the budget spent", () => {
-  const app = windowPolls();
-  app.poll(liveDevice);
-  app.recordLoss();
-  assert.equal(app.poll(demoFallback), true);
-  // Back live, then the user stepped to the demo with the device held.
-  app.poll(liveDevice);
-  app.poll(demoFallback);
-  assert.equal(app.poll(demoFallback), false);
-  // Without a record, nothing would follow it.
-  assert.equal(app.carried.liveSessionLost, false);
-  app.recordLoss(true);
-  assert.deepEqual(app.carried, { followed: true, refollows: 0, liveSessionLost: true, liveSince: null });
-  assert.equal(app.poll(demoFallback), true);
-  assert.equal(app.poll(demoFallback), false);
-});
-
-test("a failed resume never lifts the user's Disconnect latch", () => {
-  const app = windowPolls();
-  app.poll(liveDevice);
-  app.recordLoss(true);
-  assert.equal(app.push(demoFallback, true), false);
-  assert.equal(qcFollowReadyInventory({ ...idleWindow, ...app.carried, userDisconnected: true }).connect, false);
-});
-
-test("an automatic loss keeps the budget it had; only the user's choice gives it back", () => {
-  const spent = { followed: true, refollows: 1, liveSessionLost: false, liveSince: 5_000 };
-  assert.deepEqual(qcRecordLiveSessionLoss(spent), { followed: true, refollows: 1, liveSessionLost: true, liveSince: null });
-  assert.deepEqual(qcRecordLiveSessionLoss(spent, true), { followed: true, refollows: 0, liveSessionLost: true, liveSince: null });
+  app.ready();
+  app.goLive();
+  app.for(QC_FOLLOW_STABLE_LIVE_MS - 10_000, () => app.ready());
+  app.loseLive();
+  app.goLive();
+  app.for(20_000, () => app.ready());
+  assert.ok(app.follow.liveSince !== null && app.now - app.follow.liveSince < QC_FOLLOW_STABLE_LIVE_MS);
 });
 
 // The connect watchdog (qcWatchConnectStall): a connect() whose answer never
@@ -634,22 +712,4 @@ test("the watchdog leaves every other state alone, a user's Disconnect included"
     const dog = watchdog({ connection, connect: null, otherWorkPending: false });
     assert.equal(ticksUntilAbandon(dog, 500), Infinity, `${connection.source} ${connection.phase}`);
   }
-});
-
-test("a connect given up by the watchdog is followed once more within the budget, then held", () => {
-  // The watchdog itself never connects; App records the abandoned connect as
-  // a lost session and the bounded follow decides once the request settled.
-  const app = windowPolls();
-  assert.equal(app.poll(demoFallback), true);
-  app.recordLoss();
-  assert.equal(app.poll(failedConnect), true);
-  for (let cycle = 0; cycle < 20; cycle += 1) {
-    app.recordLoss();
-    assert.equal(app.poll(cycle % 2 ? demoFallback : failedConnect), false, `cycle ${cycle}`);
-    assert.equal(app.push(demoFallback), false, `cycle ${cycle} push`);
-  }
-  // A Disconnect after an abandoned connect is still never undone.
-  app.userConnect();
-  app.recordLoss();
-  assert.equal(app.push(demoFallback, true), false);
 });

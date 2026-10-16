@@ -15,7 +15,7 @@ import { saveOpenedWorkspaceCopy } from "./workspace-copy";
 import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
 import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
-import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_CONNECT_STALL_MS, qcFollowReadyInventory, qcInventoryDeviceReady, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
+import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
 import { DEFAULT_BROKER_TRAY_STATUS, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
 import appPackage from "../package.json";
@@ -216,30 +216,24 @@ export function App() {
   const selectedPhysicalRef = useRef<string | undefined>(undefined);
   // Assigned every render below, beside the phase listener it backs up, so
   // this effect's one closure always decides against current state.
-  const followReadyInventory = useRef<(inventoryReady: boolean) => void>(() => undefined);
-  const readyInventoryFollowed = useRef(false);
-  // The safety net's capped second chance on the same edge: a live session
-  // this window lost (beginLiveRecovery) while the broker stayed ready, the
-  // re-follows spent on such losses, and since when the polls have seen the
-  // current session live (performance.now(), which never jumps back). The
-  // budget is qcFollowReadyInventory's; the user's Connect also restores it.
-  const readyInventoryRefollows = useRef(0);
-  const liveSessionLost = useRef(false);
-  const readyInventoryLiveSince = useRef<number | null>(null);
-  // From the user's Disconnect, failed or not, until their own Connect: no
-  // automatic follow (qcFollowReadyInventory, whoever calls it) may undo it.
-  const userDisconnected = useRef(false);
+  const followReadyInventory = useRef<(observation: QcBrokerObservation) => void>(() => undefined);
+  // Broker truth as the inventory poll last saw it (qcObserveBroker): the ref
+  // for decisions, the state for what the USB tabs draw.
+  const brokerTruth = useRef<QcBrokerTruth>(QC_BROKER_TRUTH_UNKNOWN);
+  const [brokerTruthView, setBrokerTruthView] = useState<QcBrokerTruth>(QC_BROKER_TRUTH_UNKNOWN);
+  // The automatic follow's backoff and live measurement (qcFollowBroker,
+  // performance.now(), which never jumps back). The user's Connect restarts it.
+  const followState = useRef<QcFollowState>(QC_FOLLOW_INITIAL);
+  // Whether this window already said it stopped taking over the demo (qcFollowBroker's demoGaveUp).
+  const followDemoGaveUpNoticed = useRef(false);
+  // From the user's Disconnect, failed or not, until their own Connect or a
+  // new device session the broker reports (an answered not-ready, then ready,
+  // in the same broker generation); a new generation alone never lifts it
+  // (qcUserDisconnectAfter).
+  const userDisconnected = useRef<QcUserDisconnect | null>(null);
   // Only refs, so any render's copy (beginLiveRecovery keeps its first) is current.
   const recordLiveSessionLoss = (userAction = false) => {
-    const next = qcRecordLiveSessionLoss({
-      followed: readyInventoryFollowed.current,
-      refollows: readyInventoryRefollows.current,
-      liveSessionLost: liveSessionLost.current,
-      liveSince: readyInventoryLiveSince.current
-    }, userAction);
-    readyInventoryRefollows.current = next.refollows;
-    liveSessionLost.current = next.liveSessionLost;
-    readyInventoryLiveSince.current = next.liveSince;
+    followState.current = qcRecordLiveSessionLoss(followState.current, userAction);
   };
   // The connect watchdog's running observation (qcWatchConnectStall), the
   // connect() it watches (numbered per attempt, with where it started from),
@@ -271,8 +265,14 @@ export function App() {
           setSelectedPhysicalId(inventory.selectedDeviceId);
         }
         inventoryPollAnswered.current = true;
-        followReadyInventory.current(qcInventoryDeviceReady(inventory.devices, selectedPhysicalRef.current));
-      } catch { /* Preserve the last inventory during broker recovery. */ }
+        followReadyInventory.current({ kind: "answered", inventoryReady: qcInventoryDeviceReady(inventory.devices, selectedPhysicalRef.current), instanceId: inventory.brokerInstanceId });
+      } catch {
+        if (disposed) return;
+        // Not the last answer: the broker quit, was released or cannot be
+        // reached, so nothing it said earlier may stay green.
+        setPhysicalQcDevices((previous) => qcInventoryWhenUnreachable(previous));
+        followReadyInventory.current({ kind: "unreachable" });
+      }
       finally { if (!disposed) timer = window.setTimeout(() => void refresh(), 2000); }
     };
     void refresh();
@@ -322,6 +322,8 @@ export function App() {
   // itself: it requires connection.source === "device", which is false for
   // the whole time the demo is the active routing target.
   const [deviceHeldInBackground, setDeviceHeldInBackground] = useState(false);
+  // What the USB tab and Stop demo may claim: held, and still live per broker.
+  const backgroundDeviceLive = qcBackgroundDeviceLive(deviceHeldInBackground, connection.source === "virtual", brokerTruthView, runtime);
   const qcTransport = useMemo(() => createWindowsQcTransport(activeGateway, () => snapshotRef.current), [activeGateway]);
   connectionRef.current = connection;
   // beginLiveRecovery is memoized far above returnToDemoDevice's own
@@ -338,8 +340,8 @@ export function App() {
     if (current.source !== "device" || current.demo || current.phase !== "ready") return;
     nativeStateAvailable.current = false;
     // For the automatic follow, decided by the inventory poll (and by a phase
-    // push only before any poll answered), which answers this loss within one
-    // bounded budget when the broker stays ready (qcFollowReadyInventory).
+    // push only before any poll answered), which follows the broker again for
+    // as long as it reads the device ready (qcFollowBroker, with backoff).
     // The loss also restarts the live measurement, so a drop another path
     // heals before any poll sees it is not counted as live time.
     recordLiveSessionLoss();
@@ -351,7 +353,7 @@ export function App() {
     // never actually routed to. Real hardware is followed again from the
     // background by the broker-phase listener below when the broker pushes a
     // phase (qcShouldConnectOnDetection allows it once the demo is the
-    // active, ready session), and by the inventory poll's capped re-follow
+    // active, ready session), and by the inventory poll's follow
     // when a broker that stays ready pushes nothing - the same mechanisms
     // that already follow any other failed connect, rather than the tight
     // no-full-reconnect polling loop this path used to lean on (see the
@@ -1301,9 +1303,8 @@ export function App() {
   const connect = async (mode: "reconnect" | "reset" = "reconnect", physicalId?: string, userAction = false) => {
     if (physicalId && (commandPending || demoPending || awaitingDetection.current || connectionRef.current.phase === "syncing")) return;
     if (userAction) {
-      userDisconnected.current = false;
-      readyInventoryRefollows.current = 0;
-      liveSessionLost.current = false;
+      userDisconnected.current = null;
+      followState.current = qcFollowAfterUserConnect(followState.current);
     }
     const attempt = connectionAttempts.begin();
     // Tried from a working demo session: the demo's preset must not sit on
@@ -1437,7 +1438,9 @@ export function App() {
         setNotice("Wait for the current device command to finish before disconnecting.");
         return;
       }
-      userDisconnected.current = true;
+      userDisconnected.current = qcLatchUserDisconnect(brokerTruth.current);
+      // Nothing stays held behind a demo once the user disconnects.
+      setDeviceHeldInBackground(false);
       demoDeviceSession.useDevice();
       const attempt = connectionAttempts.begin();
       resetCommands();
@@ -1460,10 +1463,47 @@ export function App() {
         nativeStateAvailable.current = false;
         liveSyncFailures.current = 0;
         resetCommands();
-        connectionRef.current = next;
-        setConnection(next);
-        setNotice(next.detail);
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnected", result: "success", detail: next.detail }]);
+        // A session the broker left open for another client never closed
+        // (qcDisconnectOutcome): the latch stays held so no follow bounces
+        // the window through a reconnect, and Live is restored below without
+        // one, the way resumeDeviceSession resumes a background session.
+        const outcome = qcDisconnectOutcome(userDisconnected.current, next);
+        userDisconnected.current = outcome.latch;
+        connectionRef.current = outcome.connection;
+        setConnection(outcome.connection);
+        setNotice(outcome.notice);
+        if (outcome.closed) {
+          setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnected", result: "success", detail: outcome.notice }]);
+          return;
+        }
+        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnect-left-open", result: "warning", detail: outcome.notice }]);
+        try {
+          const verifiedRuntime = await tauriTransport.runtimeStatus();
+          if (!attempt.current() || !operationCurrent()) return;
+          if (!runtimeHasSynchronizedQc(verifiedRuntime)) {
+            throw new Error(verifiedRuntime.usbDiagnostics?.detail || "The Quad Cortex preset is not synchronized");
+          }
+          const current = await tauriTransport.currentSnapshot();
+          if (!attempt.current() || !operationCurrent()) return;
+          setRuntime(verifiedRuntime);
+          clearUndo();
+          presetWorkflow.resetCache();
+          setSnapshot(current);
+          setSelectedBlockId("");
+          const ready = { phase: "ready" as const, detail: outcome.notice, demo: false, source: "device" as const, lastSync: new Date().toISOString() };
+          // The session never closed, so there is no Disconnect left to hold.
+          userDisconnected.current = null;
+          connectionRef.current = ready;
+          setConnection(ready);
+          setNotice(outcome.notice);
+          setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-kept-live", result: "warning", detail: `${outcome.notice}. The Quad Cortex stays live in this window; no reconnect was needed.` }]);
+        } catch (error) {
+          if (!attempt.current() || !operationCurrent()) return;
+          // Not restored: the latch stays held and the reason stays on screen.
+          const detail = error instanceof Error ? error.message : String(error);
+          setNotice(outcome.notice);
+          setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-kept-live-failed", result: "warning", detail: `${outcome.notice}. Live could not be restored without a reconnect: ${detail}` }]);
+        }
       } catch (error) {
         if (!attempt.current() || !operationCurrent()) return;
         const detail = error instanceof Error ? error.message : String(error);
@@ -1602,10 +1642,10 @@ export function App() {
           && demoDeviceSession.source === "virtual"
           && demoCanYieldToDevice.current) {
         reconnectAfterCurrentAttempt.current = false;
-        // A device seen during the failed attempt: recorded as a pending
-        // follow only. The next inventory poll that reads it ready decides,
-        // within the shared re-follow budget and the user's Disconnect latch,
-        // and a poll refused after a tray release or Quit decides nothing.
+        // A device seen during the failed attempt: the next inventory poll
+        // that reads it ready decides (qcFollowBroker, under its backoff and
+        // the user's Disconnect latch); a poll refused after a tray release or
+        // Quit decides nothing. Only the live measurement restarts here.
         recordLiveSessionLoss();
       }
     }
@@ -1618,7 +1658,8 @@ export function App() {
       setNotice("Wait for the current command to finish before stopping the demo device.");
       return;
     }
-    if (deviceHeldInBackground) {
+    const stopOutcome = qcStopDemoOutcome(backgroundDeviceLive);
+    if (stopOutcome.resume) {
       // A Quad Cortex stayed connected behind the demo (see startDemoDevice's
       // keepDeviceInBackground): "stop" has nothing truthful to go idle to,
       // since hardware is still attached and ready, so it resumes that device
@@ -1626,7 +1667,12 @@ export function App() {
       void resumeDeviceSession();
       return;
     }
+    // A flag left from a device that is no longer live behind the demo.
+    if (stopOutcome.clearHeld) setDeviceHeldInBackground(false);
     connectionAttempts.begin();
+    // Its "disconnected" is the user's idle choice, which a lifted Disconnect
+    // latch must not turn into a follow (qcFollowBroker).
+    userDisconnected.current = null;
     // The demo's preset leaves the Grid with the demo itself, before the
     // device-sourced idle state is shown, so it is never paired with that
     // state or with the error of a later Connect that fails.
@@ -1960,7 +2006,7 @@ export function App() {
   useEffect(() => onDevicePhase(({ phase, detail, deviceId }) => {
     // Legacy/shared-pool phase notifications can omit deviceId. They still
     // describe the selected controller; only reject an explicit different id.
-    if (!qcShouldFollowDevicePhase({ phase, deviceId }, selectedPhysicalRef.current, userDisconnected.current)) return;
+    if (!qcShouldFollowDevicePhase({ phase, deviceId }, selectedPhysicalRef.current, qcUserDisconnectHolds(userDisconnected.current))) return;
     if (awaitingDetection.current) {
       reconnectAfterCurrentAttempt.current = true;
       beginSyncProgress();
@@ -1978,8 +2024,8 @@ export function App() {
     // an inventory poll has answered, the poll decides from what the broker
     // reports (it follows a ready device within 2 s, and never after a tray
     // release or Quit); before that, for a broker the poll cannot read, this
-    // push decides through the same bounded, latch-aware decision.
-    if (qcPhaseListenerMayFollow(inventoryPollAnswered.current)) followReadyInventory.current(true);
+    // push decides through the same latch-aware decision.
+    if (qcPhaseListenerMayFollow(inventoryPollAnswered.current)) followReadyInventory.current({ kind: "answered", inventoryReady: true });
   }), []);
   // The watchdog for a connection nothing will finish: a connect() whose
   // device.reconnect never answers holds the host's gateway, and with it the
@@ -2001,7 +2047,7 @@ export function App() {
     if (step.abandon === "return-to-demo" || step.abandon === "needs-attention") {
       // Supersede it first, so its late answer is ignored whatever happens
       // next; drop a retry it collected; and record the loss, which the
-      // bounded follow answers only after the abandoned request has settled
+      // follow (qcFollowBroker) answers only after the abandoned request has settled
       // (reconnectsOutstanding keeps every automatic follow held until then).
       connectionAttempts.begin();
       awaitingDetection.current = false;
@@ -2023,7 +2069,7 @@ export function App() {
     } else if (step.abandon === "retry-fallback") {
       // The fallback this state announced, refused earlier by a command
       // that has since finished. It opens the demo only; following the
-      // device from there is the bounded follow's decision.
+      // device from there is the follow's decision (qcFollowBroker).
       returnToDemoDevice("the earlier return to the demo device did not start");
     }
   };
@@ -2031,24 +2077,31 @@ export function App() {
     const timer = window.setInterval(() => watchConnectStall.current(), 2000);
     return () => window.clearInterval(timer);
   }, []);
-  // The inventory poll's safety net for a broker that never pushes its phase.
-  followReadyInventory.current = (inventoryReady) => {
-    const step = qcFollowReadyInventory({
-      inventoryReady,
-      followed: readyInventoryFollowed.current,
-      refollows: readyInventoryRefollows.current,
-      liveSessionLost: liveSessionLost.current,
-      liveSince: readyInventoryLiveSince.current,
+  // Every settled inventory poll (and, before any poll answered, a detection
+  // push) updates broker truth and decides whether the window follows it.
+  followReadyInventory.current = (observation) => {
+    const truth = qcObserveBroker(brokerTruth.current, observation);
+    if (!qcSameBrokerTruth(brokerTruth.current, truth)) setBrokerTruthView(truth);
+    brokerTruth.current = truth;
+    userDisconnected.current = qcUserDisconnectAfter(userDisconnected.current, truth);
+    const step = qcFollowBroker({
+      follow: followState.current,
+      truth,
       now: performance.now(),
-      userDisconnected: userDisconnected.current,
-      connectInFlight: qcAutomaticConnectHeld({ awaitingDetection: awaitingDetection.current, commandPending, demoPending, reconnectsOutstanding: reconnectsOutstanding.current }),
+      userDisconnect: userDisconnected.current,
+      connectHeld: qcAutomaticConnectHeld({ awaitingDetection: awaitingDetection.current, commandPending, demoPending, reconnectsOutstanding: reconnectsOutstanding.current }),
       connection: connectionRef.current,
       demoCanYield: demoCanYieldToDevice.current
     });
-    readyInventoryFollowed.current = step.followed;
-    readyInventoryRefollows.current = step.refollows;
-    liveSessionLost.current = step.liveSessionLost;
-    readyInventoryLiveSince.current = step.liveSince;
+    followState.current = step.follow;
+    userDisconnected.current = step.userDisconnect;
+    // Never over the user's own Demo choice: there the window was not trying.
+    if (step.demoGaveUp && demoCanYieldToDevice.current && !followDemoGaveUpNoticed.current) {
+      followDemoGaveUpNoticed.current = true;
+      const detail = `The broker reports the Quad Cortex ready, but ${QC_FOLLOW_DEMO_ATTEMPTS} automatic connections did not synchronize it. Staying on the demo device; select its USB tab or Connect to try again.`;
+      setNotice(detail);
+      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "automatic-connect-paused", result: "warning", detail }]);
+    } else if (!step.demoGaveUp) followDemoGaveUpNoticed.current = false;
     if (step.connect) void connectOnDetection.current();
   };
 
@@ -3272,7 +3325,7 @@ export function App() {
       demoPending={demoPending}
       onStartDemo={() => void startDemoDevice()}
       onStopDemo={stopDemoDevice}
-      deviceHeldInBackground={deviceHeldInBackground}
+      deviceHeldInBackground={backgroundDeviceLive}
       onResumeDevice={() => void resumeDeviceSession()}
       onClearEvents={() => setConnectionEvents([])}
       onOpenChange={setAppMenuOpen}
