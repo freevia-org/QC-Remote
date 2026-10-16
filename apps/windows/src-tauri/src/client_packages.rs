@@ -128,6 +128,7 @@ const ANTIGRAVITY_STATE_RPC_PATH: &str =
 #[cfg(windows)]
 const EXTERNAL_TOOL_TIMEOUT: Duration = Duration::from_secs(10);
 const ANTIGRAVITY_OPERATION_BUDGET: Duration = Duration::from_secs(10);
+#[cfg(any(windows, test))]
 const ANTIGRAVITY_MAX_PORTS: usize = 16;
 thread_local! { static TOOL_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) }; }
 fn with_tool_deadline<T>(deadline: Instant, action: impl FnOnce() -> T) -> T {
@@ -159,6 +160,7 @@ async fn within_antigravity_budget<T>(
             "Google Antigravity refresh reached its total operation deadline.".to_string()
         })?
 }
+#[cfg(any(windows, test))]
 fn validate_antigravity_ports(ports: &[u16]) -> Result<(), String> {
     if ports.is_empty()
         || ports.len() > ANTIGRAVITY_MAX_PORTS

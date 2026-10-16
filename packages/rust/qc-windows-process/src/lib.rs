@@ -252,7 +252,12 @@ struct ProcessEntry {
 
 #[cfg(windows)]
 fn process_entries() -> Option<Vec<ProcessEntry>> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    process_entries_checked().ok()
+}
+
+#[cfg(windows)]
+fn process_entries_checked() -> std::io::Result<Vec<ProcessEntry>> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
@@ -260,14 +265,24 @@ fn process_entries() -> Option<Vec<ProcessEntry>> {
     // SAFETY: plain snapshot call; the handle is checked and closed below.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
-        return None;
+        return Err(std::io::Error::last_os_error());
     }
+    struct Snapshot(HANDLE);
+    impl Drop for Snapshot {
+        fn drop(&mut self) {
+            // SAFETY: this guard uniquely owns the successful snapshot handle.
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+    let snapshot = Snapshot(snapshot);
     // SAFETY: an all-zero PROCESSENTRY32W is a valid initial value.
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
     let mut found = Vec::new();
     // SAFETY: `snapshot` is valid and `entry` is a correctly sized, writable local.
-    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    let mut more = unsafe { Process32FirstW(snapshot.0, &mut entry) } != 0;
     while more {
         let length = entry
             .szExeFile
@@ -280,11 +295,20 @@ fn process_entries() -> Option<Vec<ProcessEntry>> {
             image_name: String::from_utf16_lossy(&entry.szExeFile[..length]),
         });
         // SAFETY: `snapshot` and `entry` remain valid for this iteration.
-        more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        more = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
     }
-    // SAFETY: `snapshot` is a valid handle returned above.
-    unsafe { CloseHandle(snapshot) };
-    Some(found)
+    // Never mistake an interrupted/failed walk for a complete process table.
+    process_snapshot_end(std::io::Error::last_os_error())?;
+    Ok(found)
+}
+
+#[cfg(windows)]
+fn process_snapshot_end(error: std::io::Error) -> std::io::Result<()> {
+    if error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES as i32) {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
 /// Every running process whose executable file name equals `image_name`
@@ -292,8 +316,14 @@ fn process_entries() -> Option<Vec<ProcessEntry>> {
 /// An empty list when the process table cannot be read.
 #[cfg(windows)]
 pub fn processes_by_image(image_name: &str) -> Vec<ProcessInfo> {
-    process_entries()
-        .unwrap_or_default()
+    processes_by_image_checked(image_name).unwrap_or_default()
+}
+
+/// A complete native snapshot or an error, never an unavailable table treated
+/// as an empty one. Per-process inaccessible metadata remains explicitly None.
+#[cfg(windows)]
+pub fn processes_by_image_checked(image_name: &str) -> std::io::Result<Vec<ProcessInfo>> {
+    Ok(process_entries_checked()?
         .into_iter()
         .filter(|entry| entry.image_name.eq_ignore_ascii_case(image_name))
         .map(|entry| ProcessInfo {
@@ -301,7 +331,7 @@ pub fn processes_by_image(image_name: &str) -> Vec<ProcessInfo> {
             created_at: os_process_created_at(entry.pid),
             command_line: process_command_line(entry.pid),
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(not(windows))]
@@ -711,6 +741,34 @@ mod tests {
                 || line.to_lowercase().contains(&name.to_lowercase()),
             "{line}"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn checked_native_scan_preserves_identity_and_rejects_incomplete_walks() {
+        let exe = std::env::current_exe().unwrap();
+        let rows = processes_by_image_checked(exe.file_name().unwrap().to_str().unwrap()).unwrap();
+        let own = rows
+            .iter()
+            .find(|row| row.pid == std::process::id())
+            .unwrap();
+        assert_eq!(own.created_at, os_process_created_at(std::process::id()));
+        assert!(own
+            .command_line
+            .as_ref()
+            .is_some_and(|line| !line.is_empty()));
+        assert!(process_snapshot_end(std::io::Error::from_raw_os_error(18)).is_ok());
+        for code in [0, 5, 6] {
+            assert_eq!(
+                process_snapshot_end(std::io::Error::from_raw_os_error(code))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(code)
+            );
+        }
+        assert!(processes_by_image_checked("qc-no-such-image-0000.exe")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

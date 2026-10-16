@@ -434,53 +434,37 @@ fn process_is_alive(pid: u32) -> bool {
 /// other process on the machine can share.
 #[cfg(windows)]
 fn discover_brokers(descriptor_path: &Path) -> Vec<(u32, u64)> {
-    // Capture each generation before reading its command line, and keep that
-    // identity through the query and retirement. A replacement PID is refused.
-    let native = qc_native_platform::process::processes_by_image("qc-device-broker.exe");
-    let output = client_packages::run(Command::new(system_tools::powershell_exe())
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.CommandLine -like '*--broker-serve*' } | ForEach-Object { @{ pid = $_.ProcessId; commandLine = $_.CommandLine } })",
-        ]).stderr(Stdio::piped()), PROCESS_CLEANUP_TIMEOUT)
-        .expect("powershell runs");
-    assert!(
-        output.status.success(),
-        "the process query failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let values: Vec<Value> =
-        serde_json::from_slice(&output.stdout).expect("process query JSON array");
+    // One checked OS snapshot replaces the redundant PowerShell/WMI walk.
+    // Unavailable tables/metadata never become proof that scratch is unused.
+    let native = qc_native_platform::process::processes_by_image_checked("qc-device-broker.exe")
+        .expect("complete native process table required for owned broker discovery");
     let mut matches = Vec::new();
-    for value in values {
-        if !windows_command_serves_descriptor(
-            value["commandLine"].as_str().expect("process command line"),
-            descriptor_path,
-        ) {
-            continue;
-        }
-        let pid =
-            u32::try_from(value["pid"].as_u64().expect("process PID")).expect("process PID range");
-        let Some(original) = native.iter().find(|process| process.pid == pid) else {
-            assert!(!process_is_alive(pid), "publisher appeared during discovery; retain scratch rather than adopt a new generation");
+    for original in native {
+        let pid = original.pid;
+        let Some(command_line) = original.command_line.as_deref() else {
+            assert!(!process_is_alive(pid), "live broker candidate command line is unreadable; retain scratch rather than infer absence");
             continue;
         };
-        let created = original
-            .created_at
-            .expect("discovered publisher creation identity");
-        assert!(
-            original
-                .command_line
-                .as_deref()
-                .is_some_and(|line| windows_command_serves_descriptor(line, descriptor_path)),
-            "native discovered publisher command line must match the exact descriptor"
-        );
+        if !windows_command_serves_descriptor(command_line, descriptor_path) {
+            continue;
+        }
         if !process_is_alive(pid) {
             continue;
         }
-        let now = qc_native_platform::process::os_process_created_at(pid)
-            .expect("discovered publisher identity remains readable");
+        let Some(created) = original.created_at else {
+            assert!(
+                !process_is_alive(pid),
+                "live publisher creation identity is unreadable; retain scratch"
+            );
+            continue;
+        };
+        let Some(now) = qc_native_platform::process::os_process_created_at(pid) else {
+            assert!(
+                !process_is_alive(pid),
+                "live publisher identity became unreadable; retain scratch"
+            );
+            continue;
+        };
         if now == created {
             matches.push((pid, created));
         }

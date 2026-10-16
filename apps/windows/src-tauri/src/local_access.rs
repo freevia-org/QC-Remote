@@ -1853,7 +1853,7 @@ fn listener_policy_result_transaction<T>(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 fn start_listener_slot(
     slot: &Mutex<Option<RunningLocalAccess>>,
     last_error: &Mutex<Option<String>>,
@@ -3257,7 +3257,9 @@ mod tests {
             hook();
         }
     }
+    #[cfg(windows)]
     struct ListenerExitHookGuard(PathBuf);
+    #[cfg(windows)]
     impl Drop for ListenerExitHookGuard {
         fn drop(&mut self) {
             lock_recover(&LISTENER_EXIT_HOOKS).retain(|(path, _)| path != &self.0);

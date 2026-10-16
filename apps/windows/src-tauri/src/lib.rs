@@ -2545,11 +2545,11 @@ fn acknowledge_app_launch(app: &AppHandle) {
 
 // Software headroom for explicit GUI relaunch acknowledgments, not device
 // capacity. A stuck original retains admission and its AppHandle until join.
-#[cfg(all(any(windows, target_os = "linux"), not(test)))]
+#[cfg(all(any(windows, target_os = "linux", target_os = "macos"), not(test)))]
 static RELAUNCH_ACKNOWLEDGMENTS: qc_native_platform::thread_owner::Budget =
     qc_native_platform::thread_owner::Budget::new(4);
 
-#[cfg(any(windows, all(target_os = "linux", not(test))))]
+#[cfg(any(windows, all(any(target_os = "linux", target_os = "macos"), not(test))))]
 fn start_relaunch_acknowledgment(
     budget: &'static qc_native_platform::thread_owner::Budget,
     resource: impl Send + 'static,

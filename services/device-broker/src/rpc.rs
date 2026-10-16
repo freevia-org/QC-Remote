@@ -9546,13 +9546,28 @@ mod tcp_tests {
         let client = authenticated_tcp_client(serve.port, &serve.token);
         drop(client);
 
+        // The peer's drop precedes the server observing EOF and retiring its
+        // connection actors. Measure grace only once detach is observed.
+        let detach_deadline = Instant::now() + Duration::from_secs(3);
+        while serve.handle.0.clients.lock_recover().count != 0 {
+            assert!(
+                Instant::now() < detach_deadline,
+                "server did not observe client departure"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(serve.handle.0.idle_grace(), Duration::from_secs(5));
+        let disconnected_at = std::time::Instant::now();
         thread::sleep(Duration::from_millis(500));
         assert!(
             serve.alive(),
-            "the broker must not exit immediately on the last disconnect"
+            "the broker must remain alive through the idle-shutdown grace period"
         );
 
-        thread::sleep(Duration::from_secs(5));
+        let deadline = disconnected_at + IDLE_SHUTDOWN_GRACE + Duration::from_secs(3);
+        while serve.alive() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
         assert!(
             !serve.alive(),
             "the broker must exit after the 5s grace period with no new client"
