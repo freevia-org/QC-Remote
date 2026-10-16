@@ -42,7 +42,7 @@ base64.workspace = true
 ctr = { version = "0.9", optional = true }
 flate2 = "1"
 prost.workspace = true
-quick-xml = "0.41"
+quick-xml = "0.42"
 serde.workspace = true
 serde_json.workspace = true
 sha1 = { version = "0.10", optional = true }
