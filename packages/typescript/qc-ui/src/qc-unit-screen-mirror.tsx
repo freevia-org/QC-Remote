@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { GatewayTransport } from "@qc-remote/client";
 import type { PresetLifetime, PresetOperation } from "@qc-remote/core";
-import { captureGatewaySession } from "./gateway-session";
+import { captureGatewaySession } from "./gateway-session.ts";
 import { isUnitFrame } from "./qc-unit-screens.ts";
 import "./unit-mirror.css";
 
@@ -16,6 +16,11 @@ import "./unit-mirror.css";
 export function QcUnitScreenMirror({ gateway, lifetime, intervalMs = 700, onReturnToGrid, captureSessionCurrent }: { gateway: Pick<GatewayTransport, "captureScreen">; lifetime?: PresetLifetime; intervalMs?: number; onReturnToGrid?(): void; captureSessionCurrent?(): () => boolean }) {
   const [image, setImage] = useState<{ gateway: typeof gateway; origin?: PresetOperation; current(): boolean; value?: string; status: "loading" | "ready" | "error" }>();
   const mounted = useRef(true);
+  // Hosts build this probe factory inline, so its identity changes on every host render. It is read through a ref: as an
+  // effect dependency it restarted the capture loop (cancelling the in-flight capture) on each host render, and a host that
+  // renders more often than the unit answers never showed a picture.
+  const hostProbe = useRef(captureSessionCurrent);
+  hostProbe.current = captureSessionCurrent;
   const returnOrigin = lifetime?.checkpoint();
   const returnHostCurrent = captureSessionCurrent?.() ?? (() => true);
   const returnSession = captureGatewaySession(gateway as GatewayTransport, () => mounted.current && returnHostCurrent() && (!returnOrigin || lifetime!.currentSession(returnOrigin)));
@@ -31,7 +36,7 @@ export function QcUnitScreenMirror({ gateway, lifetime, intervalMs = 700, onRetu
       const token = ++generation;
       origin = lifetime?.checkpoint();
       const capturedOrigin = origin;
-      const hostCurrent = captureSessionCurrent?.() ?? (() => true);
+      const hostCurrent = hostProbe.current?.() ?? (() => true);
       const session = captureGatewaySession(gateway as GatewayTransport, () => !disposed && token === generation
         && hostCurrent() && (!capturedOrigin || lifetime!.currentSession(capturedOrigin)));
       setImage({ gateway, origin: capturedOrigin, current: session.current, status: "loading" });
@@ -51,7 +56,7 @@ export function QcUnitScreenMirror({ gateway, lifetime, intervalMs = 700, onRetu
     });
     restart();
     return () => { mounted.current = false; disposed = true; generation++; clearTimeout(timer); unsubscribe?.(); };
-  }, [gateway, lifetime, intervalMs, captureSessionCurrent]);
+  }, [gateway, lifetime, intervalMs]);
   const currentImage = image?.gateway === gateway && image.current() ? image : undefined;
   return <QcUnitPicture src={currentImage?.value}>
     {!currentImage?.value && <div className="unit-mirror-status" role="status">
