@@ -66,42 +66,56 @@ export function presetTitlePresentation(name: string, dirty: boolean) {
   const effectiveDirty = dirty || nameCarriesDirtyMarker;
   const unsaved = cleanName.toLocaleLowerCase() === "unsaved";
   const text = `${cleanName}${effectiveDirty ? "*" : ""}`;
-  // The unit sizes the title from the string it was sent, so a clean name that
-  // ends in a space is fitted with that space even though the space draws
-  // nothing. A dirty title is fitted as drawn: no frame shows where the marker
-  // sits relative to such a space.
-  const trailingSpace = effectiveDirty || !name.trim() ? "" : name.slice(name.trimEnd().length);
   return {
     text,
-    fitText: `${text}${trailingSpace}`,
     dimmed: unsaved && !effectiveDirty,
     italic: effectiveDirty
   };
 }
 
-/* The Grid header, measured on two unit frames at 800x480 (a one-digit and a
-   three-character bank) and the five others that share it. The bank and slot
-   are one 70px run at x 12, baseline 77, with no tracking: "7F" puts its 7 at
-   ink 16 and its F at 60, and "32H" puts its digits at 13, 57 and 101, which
-   are IBM Plex Bold's own 42px advances. The name starts 15px after that run
-   (110 after "7F", 162 after "32H"), and a render of the same string at the
-   fitted size, origin and baseline differs from the unit's pixels by under
-   three levels on average.
+/* The Grid header, measured on unit frames at 800x480. The bank and slot are
+   one 70px run at x 12, baseline 77, with no tracking: "7F" puts its 7 at ink
+   16 and its F at 60, and "32H" puts its digits at 13, 57 and 101, which are
+   IBM Plex Bold's own 42px advances. The name starts 15px after that run (110
+   after "7F", 162 after "32H"), and a render of the same string at the fitted
+   size, origin and baseline differs from the unit's pixels by under three
+   levels on average.
 
-   The name's size is an integer, as in every unit frame: 50 and 50 and 45 on
-   three names whose natural widths differ by 14%, none in between. It is the
-   largest integer whose advance still ends by x 558.5 - three frames bracket
-   that edge to within a pixel (the 45px name ends at 550.7..560.5, the first
-   50px at 559.9..568.8, the 39px one at 558.5..568.7). The baseline follows
-   the size down from the bank's 77 by 0.375 of the size lost - 69 at 50, 68
-   at 45, 66 at 40 - and sits on whole pixels, a half going up. */
+   The name's size is not "the largest integer that ends by an edge". Nine
+   frames, with the name's advance at 70px (Chrome, IBM Plex Bold) and the
+   origin it starts from, give:
+
+     advance   origin   size        advance   origin   size
+       306      117       70           599      110      50
+       444      110       70           619      116      50
+       517      118       63           684      111      45
+       519      111       63           712      162      ~40
+
+   No single right edge explains those: the 599 name ends at 538 at its 50px
+   while the 684 name still ends at 551 at its 45px and the 517 name at 583 at
+   its 63px, so an edge that keeps 599 below 51px would not let the others
+   grow that far. What does fit all nine is an edge near 590 together with a
+   short ladder of sizes: the fit is floored to an integer, then to the largest
+   rung of 70, 63, 50, 45, 40 that is not above it (the 599 name fits 56 and
+   draws at 50; the 684 name fits 48 and draws at 45; 517 and 519 fit 63). The
+   edge is only bracketed, to x 583..600 by the frames; 590 is its middle.
+   Nothing yet shows a rung between 50 and 63, between 40 and 45 or below 40,
+   so those follow the step of five the 50, 45, 40 run suggests (35, 30, 25),
+   with 22 as the floor; a name that fits 51..62 is drawn at 50 until a frame
+   says otherwise.
+
+   The baseline follows the size down from the bank's 77 by 0.375 of the size
+   lost - 69 at 50, 68 at 45, 66 at 40 - and sits on whole pixels, a half going
+   up. */
 export const PRESET_BANK_SIZE = 70;
 export const PRESET_BANK_X = 12;
 export const PRESET_BANK_BASELINE = 77;
 export const PRESET_TITLE_GUTTER = 15;
 export const PRESET_TITLE_MIN_SIZE = 22;
-export const GRID_TITLE_RIGHT_EDGE = 558.5;
+export const GRID_TITLE_RIGHT_EDGE = 590;
 export const PRESET_TITLE_BASELINE_RISE = 0.375;
+/** The sizes the unit draws a title at, largest first; PRESET_TITLE_MIN_SIZE is the last resort below them. */
+export const PRESET_TITLE_SIZES = [70, 63, 50, 45, 40, 35, 30, 25] as const;
 
 export function presetTitleLayout(locationWidth: number, titleWidthAtFullSize: number) {
   // locationWidth is the bank run's advance at PRESET_BANK_SIZE, so one gutter
@@ -109,9 +123,10 @@ export function presetTitleLayout(locationWidth: number, titleWidthAtFullSize: n
   const gutter = PRESET_TITLE_GUTTER;
   const start = PRESET_BANK_X + Math.max(0, locationWidth) + gutter;
   const maxWidth = Math.max(180, GRID_TITLE_RIGHT_EDGE - start);
-  // Advances scale linearly with size, so the largest integer that fits is a floor.
+  // Advances scale linearly with size, so the largest integer that fits is a floor,
+  // and the unit draws the largest rung of its ladder that is not above it.
   const fitted = Math.floor(PRESET_BANK_SIZE * maxWidth / Math.max(1, titleWidthAtFullSize) + 1e-6);
-  const fontSize = Math.max(PRESET_TITLE_MIN_SIZE, Math.min(PRESET_BANK_SIZE, fitted));
+  const fontSize = PRESET_TITLE_SIZES.find((size) => size <= fitted) ?? PRESET_TITLE_MIN_SIZE;
   return {
     start,
     gutter,
