@@ -2850,6 +2850,16 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "nix",
+      "version": "0.31.3",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/nix-rust/nix",
+      "licenseTextHashes": [
+        "b9b039b5058cfe9680025ca12f8591df832666baef9f469ea8ba24e73a7fee60"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "num-conv",
       "version": "0.2.2",
       "license": "MIT OR Apache-2.0",
@@ -6224,7 +6234,7 @@
     {
       "ecosystem": "cargo",
       "name": "zip",
-      "version": "8.6.0",
+      "version": "9.0.4",
       "license": "MIT",
       "sourceUrl": "https://github.com/zip-rs/zip2",
       "licenseTextHashes": [
@@ -10099,7 +10109,7 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:zip@8.6.0"
+        "cargo:zip@9.0.4"
       ]
     },
     {
@@ -11374,7 +11384,8 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:nix@0.30.1"
+        "cargo:nix@0.30.1",
+        "cargo:nix@0.31.3"
       ]
     },
     {

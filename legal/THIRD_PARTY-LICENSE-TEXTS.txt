@@ -7030,7 +7030,7 @@ THE SOFTWARE.
 ================================================================================
 SHA-256: 6ac8711fb340c62ce0a4ecd463342d3fa0e8e70de697c863a2e1c0c53006003c
 Source file names: LICENSE
-Applies to: cargo:zip@8.6.0
+Applies to: cargo:zip@9.0.4
 --------------------------------------------------------------------------------
 The MIT License (MIT)
 
@@ -13600,7 +13600,7 @@ Creator: Person: Daniel Thompson-Yvetot
 ================================================================================
 SHA-256: b9b039b5058cfe9680025ca12f8591df832666baef9f469ea8ba24e73a7fee60
 Source file names: LICENSE
-Applies to: cargo:nix@0.30.1
+Applies to: cargo:nix@0.30.1, cargo:nix@0.31.3
 --------------------------------------------------------------------------------
 The MIT License (MIT)
 
