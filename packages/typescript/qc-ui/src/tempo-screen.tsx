@@ -1,5 +1,5 @@
 import { closeUserOpenedTarget, escapeUserOpenedTarget } from "./user-open-focus";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PresetSnapshot, TempoSettings } from "@qc-remote/client";
 import { sceneLetter } from "@qc-remote/core";
 import { QcPillToggle } from "./qc-pill-toggle";
@@ -9,7 +9,7 @@ import { QcSceneSelector } from "./qc-shared-controls";
 import { QcUiIcon } from "./theme-icons";
 import { tempoVolumePosition } from "./tempo-volume-taper";
 import { useRotaryValue } from "./use-rotary-gesture";
-import { TEMPO_ROUTINGS, TEMPO_SOUNDS, TEMPO_SUBDIVISIONS, TEMPO_TIME_SIGNATURES, type TempoWorkflow } from "./use-tempo-workflow";
+import { TEMPO_ROUTINGS, TEMPO_SOUNDS, tempoSubdivisionOptions, TEMPO_TIME_SIGNATURES, type TempoWorkflow } from "./use-tempo-workflow";
 import "./official-tempo.css";
 
 export interface TempoScreenProps {
@@ -43,7 +43,7 @@ function TempoDial({ className, label, valueText, value, min, max, step, origin,
   label: string;
   /** The value as the screen prints it beside the dial. */
   valueText: string;
-  value: number;
+  value: number | undefined;
   min: number;
   max: number;
   step: number;
@@ -58,13 +58,14 @@ function TempoDial({ className, label, valueText, value, min, max, step, origin,
 }) {
   const clamp = (next: number) => Math.max(min, Math.min(max, next));
   const gesture = useRotaryValue({
-    value, step, disabled, onDraftChange, onCommit,
+    value: value ?? min, step, disabled: disabled || value === undefined, onDraftChange, onCommit,
     quantize: (next) => clamp(Math.round(next / step) * step),
     pixelsPerStep: TEMPO_DIAL_PIXELS_PER_STEP,
     wheelSettleMs: TEMPO_DIAL_WHEEL_SETTLE_MS
   });
-  return <QcRotaryControl className={`tempo-dial${className ? ` ${className}` : ""}`} disabled={disabled} label={label} value={value} min={min} max={max} valueText={valueText} gesture={gesture}>
-    <QcRotaryDial value={position ? position(clamp(value)) : (clamp(value) - min) / (max - min)} origin={origin === undefined ? undefined : (clamp(origin) - min) / (max - min)} accent={accent} />
+  if (value === undefined) return <span className={`tempo-dial${className ? ` ${className}` : ""}`} role="status" aria-label={`${label}: Unavailable`}>—</span>;
+  return <QcRotaryControl className={`tempo-dial${className ? ` ${className}` : ""}`} disabled={disabled || value === undefined} label={label} value={value ?? min} min={min} max={max} valueText={valueText} gesture={gesture}>
+    {value !== undefined && <QcRotaryDial value={position ? position(clamp(value)) : (clamp(value) - min) / (max - min)} origin={origin === undefined ? undefined : (clamp(origin) - min) / (max - min)} accent={accent} />}
   </QcRotaryControl>;
 }
 
@@ -110,27 +111,36 @@ function CorOsTempoSession({ workflow, snapshot, queueTempo, onSelectScene, onCl
   // retires drafts and rotary settle timers on preset, scene or tempo-mode changes.
   const [ownerCurrent] = useState(() => captureSessionCurrent?.() ?? (() => true));
   const { settings, tempoClock, pending, loading } = workflow;
-  const mode: NonNullable<TempoSettings["mode"]> = settings?.mode ?? "PRESET";
+  const mode = settings?.mode;
   const globalMode = mode === "GLOBAL";
-  const ledEnabled = settings?.ledEnabled ?? true;
-  const running = settings?.running ?? false;
-  const volumeDb = settings?.volumeDb ?? 0;
-  const pan = settings?.pan ?? PAN_CENTER;
-  const timeSignature = settings?.timeSignature ?? "4/4";
-  const subdivision = settings?.subdivision ?? "1/4";
-  const sound = settings?.sound ?? "BLIP";
-  const routing = settings?.routing ?? "MULTI";
-  const committedBpm = globalMode ? settings?.globalBpm ?? snapshot.tempo : snapshot.tempo;
+  const ledEnabled = settings?.ledEnabled;
+  const running = settings?.running;
+  const volumeDb = settings?.volumeDb;
+  const pan = settings?.pan;
+  const timeSignature = settings?.timeSignature;
+  const subdivision = settings?.subdivision;
+  const sound = settings?.sound;
+  const routing = settings?.routing;
+  const committedBpm = globalMode ? settings?.globalBpm : mode === "PRESET" && !snapshot.unobserved?.includes("tempo") ? snapshot.tempo : undefined;
+  // PRESET BPM belongs to this preset; switching GLOBAL/PRESET changes the target.
+  const bpmContext = `${snapshot.stateVersion?.session ?? ""}:${globalMode ? "GLOBAL" : mode === "PRESET" ? `PRESET:${snapshot.presetIdentity ?? ""}:${snapshot.setlistKey}:${snapshot.presetPosition}` : "UNKNOWN"}`;
+  const latestBpmContext = useRef(bpmContext);
+  const bpmEpoch = useRef(0);
+  if (latestBpmContext.current !== bpmContext) bpmEpoch.current += 1;
+  latestBpmContext.current = bpmContext;
+  const admittedBpmEpoch = bpmEpoch.current;
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   // Transient drag state for the three continuous dials: overrides the
   // committed/live value only while the user is actively dragging/nudging,
   // the same pattern the block editor's callers use their own drafts for.
-  const [draftBpm, setDraftBpm] = useState<number>();
+  const [draftBpm, setDraftBpm] = useState<{ context: string; epoch: number; value: number }>();
   const [draftVolume, setDraftVolume] = useState<number>();
   const [draftPan, setDraftPan] = useState<number>();
-  const displayBpm = draftBpm ?? committedBpm;
-  const displayVolume = draftVolume ?? volumeDb;
-  const displayPan = draftPan ?? pan;
+  const displayBpm = committedBpm === undefined ? undefined : draftBpm?.context === bpmContext && draftBpm.epoch === admittedBpmEpoch ? draftBpm.value : committedBpm;
+  const displayVolume = volumeDb === undefined ? undefined : draftVolume ?? volumeDb;
+  const displayPan = pan === undefined ? undefined : draftPan ?? pan;
 
   // currentTempoClock()'s currentBeat indexing (0- vs 1-based) is not
   // confirmed anywhere in this codebase; this is a best-effort, non-live
@@ -138,18 +148,18 @@ function CorOsTempoSession({ workflow, snapshot, queueTempo, onSelectScene, onCl
   // static single-dot default, not a claim about the real indexing.
   const activeBeat = tempoClock?.available && typeof tempoClock.currentBeat === "number"
     ? ((Math.trunc(tempoClock.currentBeat) % 4) + 4) % 4
-    : 0;
+    : undefined;
 
   const disabled = pending || loading;
 
   const commitBpm = (bpm: number) => {
-    if (!ownerCurrent()) return;
+    if (!ownerCurrent() || !mounted.current || committedBpm === undefined || latestBpmContext.current !== bpmContext || bpmEpoch.current !== admittedBpmEpoch) return;
     setDraftBpm(undefined);
     if (globalMode) void workflow.setGlobalBpm(bpm);
     else queueTempo(bpm, "Encoder");
   };
-  const commitVolume = (value: number) => { if (!ownerCurrent()) return; setDraftVolume(undefined); void workflow.setVolumeDb(value); };
-  const commitPan = (value: number) => { if (!ownerCurrent()) return; setDraftPan(undefined); void workflow.setPan(value); };
+  const commitVolume = (value: number) => { if (!ownerCurrent() || volumeDb === undefined) return; setDraftVolume(undefined); void workflow.setVolumeDb(value); };
+  const commitPan = (value: number) => { if (!ownerCurrent() || pan === undefined) return; setDraftPan(undefined); void workflow.setPan(value); };
 
   // A device screen, not a window-level dialog: the host passes it as the
   // surface's screenContent so it fills the bezel's own 800x480 canvas.
@@ -161,7 +171,7 @@ function CorOsTempoSession({ workflow, snapshot, queueTempo, onSelectScene, onCl
           <button type="button" aria-label="Close Tempo and Metronome" onClick={(event) => closeUserOpenedTarget(event.currentTarget, onClose, workflow.returnFocusTarget)}><QcUiIcon kind="check" /></button>
         </header>
         <div className="tempo-display">
-          <strong>{Math.round(displayBpm)}</strong>
+          <strong>{displayBpm === undefined ? "—" : Math.round(displayBpm)}</strong>
           <small>BPM = QUARTERS</small>
           <div>
             {[0, 1, 2, 3].map((beat) => <i key={beat} className={beat === activeBeat ? "is-active" : ""} />)}
@@ -170,55 +180,59 @@ function CorOsTempoSession({ workflow, snapshot, queueTempo, onSelectScene, onCl
         <div className="tempo-controls">
           <section className="tempo-control is-tempo">
             <span>TEMPO</span>
-            <TempoDial label="Tempo" valueText={`${Math.round(displayBpm)} BPM`} value={displayBpm} min={BPM_MIN} max={BPM_MAX} step={1} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftBpm(value); }} onCommit={commitBpm} />
-            <strong>{Math.round(displayBpm)}<span className="tempo-unit"> BPM</span></strong>
+            <TempoDial key={bpmContext} label="Tempo" valueText={`${displayBpm === undefined ? "—" : Math.round(displayBpm)} BPM`} value={displayBpm} min={BPM_MIN} max={BPM_MAX} step={1} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent() && mounted.current && latestBpmContext.current === bpmContext && bpmEpoch.current === admittedBpmEpoch) setDraftBpm({ context: bpmContext, epoch: admittedBpmEpoch, value }); }} onCommit={commitBpm} />
+            <strong>{displayBpm === undefined ? "—" : Math.round(displayBpm)}<span className="tempo-unit"> BPM</span></strong>
           </section>
-          <button type="button" className={`tempo-control is-radio${disabled ? " is-pending" : ""}`} disabled={disabled} aria-pressed={globalMode} aria-label={`Tempo Mode: ${globalMode ? "Global" : "Preset"}`} onClick={() => void workflow.setMode(globalMode ? "PRESET" : "GLOBAL")}>
+          <button type="button" className={`tempo-control is-radio${disabled ? " is-pending" : ""}`} disabled={disabled || mode === undefined} aria-pressed={mode === undefined ? undefined : globalMode} aria-label={`Tempo Mode: ${mode === undefined ? "Unavailable" : globalMode ? "Global" : "Preset"}`} onClick={() => { if (!disabled && mode !== undefined) void workflow.setMode(globalMode ? "PRESET" : "GLOBAL"); }}>
             <span>MODE <b className="tempo-info" title="GLOBAL MODE shares Tempo and Metronome settings across every preset. PRESET MODE stores them in each preset.">i</b></span>
-            <QcPillToggle index={globalMode ? 0 : 1} />
+            {mode !== undefined && <QcPillToggle index={globalMode ? 0 : 1} />}
             <span className={globalMode ? "is-active" : undefined}>Global</span>
-            <span className={globalMode ? undefined : "is-active"}>Preset</span>
+            <span className={mode === "PRESET" ? "is-active" : undefined}>Preset</span>
           </button>
-          <button type="button" className={`tempo-control is-radio${disabled ? " is-pending" : ""}`} disabled={disabled} aria-pressed={ledEnabled} aria-label={`Tempo LED: ${ledEnabled ? "On" : "Off"}`} onClick={() => void workflow.setLedEnabled(!ledEnabled)}>
+          <button type="button" className={`tempo-control is-radio${disabled ? " is-pending" : ""}`} disabled={disabled || ledEnabled === undefined} aria-pressed={ledEnabled} aria-label={`Tempo LED: ${ledEnabled === undefined ? "Unavailable" : ledEnabled ? "On" : "Off"}`} onClick={() => { if (!disabled && ledEnabled !== undefined) void workflow.setLedEnabled(!ledEnabled); }}>
             <span>TEMPO LED</span>
-            <QcPillToggle index={ledEnabled ? 0 : 1} />
+            {ledEnabled !== undefined && <QcPillToggle index={ledEnabled ? 0 : 1} />}
             <span className={ledEnabled ? "is-active" : undefined}>On</span>
-            <span className={ledEnabled ? undefined : "is-active"}>Off</span>
+            <span className={ledEnabled === false ? "is-active" : undefined}>Off</span>
           </button>
           <section className="tempo-control is-volume">
             <span>VOLUME</span>
-            <TempoDial label="Volume" valueText={`${displayVolume.toFixed(1)} dB`} value={displayVolume} min={VOLUME_MIN} max={VOLUME_MAX} step={.5} position={tempoVolumePosition} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftVolume(value); }} onCommit={commitVolume} />
-            <strong>{displayVolume.toFixed(1)}<span className="tempo-unit"> dB</span></strong>
+            <TempoDial label="Volume" valueText={`${displayVolume === undefined ? "—" : displayVolume.toFixed(1)} dB`} value={displayVolume} min={VOLUME_MIN} max={VOLUME_MAX} step={.5} position={tempoVolumePosition} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftVolume(value); }} onCommit={commitVolume} />
+            <strong>{displayVolume === undefined ? "—" : displayVolume.toFixed(1)}<span className="tempo-unit"> dB</span></strong>
           </section>
           <section className="tempo-control is-mute">
-            <button type="button" disabled={disabled} onClick={() => void workflow.setRunning(!running)}>{running ? "MUTE" : "UNMUTE"}</button>
+            <button type="button" disabled={disabled || running === undefined} onClick={() => { if (!disabled && running !== undefined) void workflow.setRunning(!running); }}>{running === undefined ? "Unavailable" : running ? "MUTE" : "UNMUTE"}</button>
           </section>
           <section className="tempo-control is-pan">
             <span>PAN</span>
-            <TempoDial label="Pan" valueText={panLabel(displayPan)} value={displayPan} min={PAN_MIN} max={PAN_MAX} step={.02} origin={PAN_CENTER} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftPan(value); }} onCommit={commitPan} />
-            <strong>{panLabel(displayPan)}</strong>
+            <TempoDial label="Pan" valueText={displayPan === undefined ? "—" : panLabel(displayPan)} value={displayPan} min={PAN_MIN} max={PAN_MAX} step={.02} origin={PAN_CENTER} disabled={disabled} onDraftChange={(value) => { if (ownerCurrent()) setDraftPan(value); }} onCommit={commitPan} />
+            <strong>{displayPan === undefined ? "—" : panLabel(displayPan)}</strong>
           </section>
           <section className="tempo-control is-select">
             <span>T/SIGNATURE</span>
-            <div className="tempo-select"><select value={timeSignature} disabled={disabled} onChange={(event) => void workflow.setTimeSignature(event.target.value as NonNullable<TempoSettings["timeSignature"]>)}>
+            <div className="tempo-select"><select value={timeSignature ?? ""} disabled={disabled} onChange={(event) => void workflow.setTimeSignature(event.target.value as NonNullable<TempoSettings["timeSignature"]>)}>
+              {timeSignature === undefined && <option value="" disabled>Unavailable</option>}
               {TEMPO_TIME_SIGNATURES.map((value) => <option key={value} value={value}>{value}</option>)}
             </select></div>
           </section>
           <section className="tempo-control is-select">
             <span>SUBDIVISIONS</span>
-            <div className="tempo-select"><select value={subdivision} disabled={disabled} onChange={(event) => void workflow.setSubdivision(event.target.value as NonNullable<TempoSettings["subdivision"]>)}>
-              {TEMPO_SUBDIVISIONS.map((value) => <option key={value} value={value}>{value}</option>)}
+            <div className="tempo-select"><select value={subdivision ?? ""} disabled={disabled || !settings?.timeSignature} onChange={(event) => void workflow.setSubdivision(event.target.value as NonNullable<TempoSettings["subdivision"]>)}>
+              {subdivision === undefined && <option value="" disabled>Unavailable</option>}
+              {tempoSubdivisionOptions(settings?.timeSignature).map((value) => <option key={value} value={value}>{value}</option>)}
             </select></div>
           </section>
           <section className="tempo-control is-select">
             <span>SOUND</span>
-            <div className="tempo-select"><select value={sound} disabled={disabled} onChange={(event) => void workflow.setSound(event.target.value as NonNullable<TempoSettings["sound"]>)}>
+            <div className="tempo-select"><select value={sound ?? ""} disabled={disabled} onChange={(event) => void workflow.setSound(event.target.value as NonNullable<TempoSettings["sound"]>)}>
+              {sound === undefined && <option value="" disabled>Unavailable</option>}
               {TEMPO_SOUNDS.map((value) => <option key={value} value={value}>{value}</option>)}
             </select></div>
           </section>
           <section className="tempo-control is-select">
             <span>ROUTING</span>
-            <div className="tempo-select"><select value={routing} disabled={disabled} onChange={(event) => void workflow.setRouting(event.target.value as NonNullable<TempoSettings["routing"]>)}>
+            <div className="tempo-select"><select value={routing ?? ""} disabled={disabled} onChange={(event) => void workflow.setRouting(event.target.value as NonNullable<TempoSettings["routing"]>)}>
+              {routing === undefined && <option value="" disabled>Unavailable</option>}
               {TEMPO_ROUTINGS.map((value) => <option key={value} value={value}>{value}</option>)}
             </select></div>
           </section>

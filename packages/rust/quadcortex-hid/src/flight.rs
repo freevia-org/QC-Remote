@@ -1,11 +1,59 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs;
+use std::io::Read;
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 const MAX_ENTRIES: usize = 256;
 const MAX_INCIDENTS: usize = 4;
+const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_TEXT_BYTES: usize = 512;
+
+fn bounded_text(text: String) -> String {
+    let mut end = text.len().min(MAX_TEXT_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+fn read_document(path: &Path) -> Option<FlightDocument> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .ok()?
+        .take(MAX_DOCUMENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return None;
+    }
+    let mut document: FlightDocument = serde_json::from_slice(&bytes).ok()?;
+    while document.entries.len() > MAX_ENTRIES {
+        document.entries.pop_front();
+    }
+    while document.incidents.len() > MAX_INCIDENTS {
+        document.incidents.pop_front();
+    }
+    for entries in std::iter::once(&mut document.entries).chain(
+        document
+            .incidents
+            .iter_mut()
+            .map(|incident| &mut incident.entries),
+    ) {
+        while entries.len() > MAX_ENTRIES {
+            entries.pop_front();
+        }
+        for entry in entries {
+            entry.event = bounded_text(std::mem::take(&mut entry.event));
+        }
+    }
+    for incident in &mut document.incidents {
+        incident.reason = bounded_text(std::mem::take(&mut incident.reason));
+    }
+    Some(document)
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -87,9 +135,8 @@ impl FlightRecorder {
     fn open_with_fallback(path: Option<PathBuf>, fallback: Option<PathBuf>) -> Self {
         let mut document = path
             .as_deref()
-            .and_then(|path| fs::read(path).ok())
-            .or_else(|| fallback.as_deref().and_then(|path| fs::read(path).ok()))
-            .and_then(|bytes| serde_json::from_slice::<FlightDocument>(&bytes).ok())
+            .and_then(read_document)
+            .or_else(|| fallback.as_deref().and_then(read_document))
             .unwrap_or_else(|| FlightDocument {
                 version: 2,
                 entries: VecDeque::new(),
@@ -107,7 +154,7 @@ impl FlightRecorder {
         self.push(FlightEntry {
             at_unix_ms: now_unix_ms(),
             process_id: std::process::id(),
-            event: event.into(),
+            event: bounded_text(event.into()),
             message_type: None,
             report_count: None,
             repeat_count: None,
@@ -144,7 +191,7 @@ impl FlightRecorder {
     /// write throttle: a process or device failure is exactly when orderly
     /// Drop cannot be relied upon.
     pub fn incident(&mut self, reason: impl Into<String>) {
-        let reason = reason.into();
+        let reason = bounded_text(reason.into());
         let at_unix_ms = now_unix_ms();
         self.event(format!("incident-{reason}"));
         self.document.incidents.push_back(FlightIncident {
@@ -156,7 +203,6 @@ impl FlightRecorder {
             self.document.incidents.pop_front();
         }
         self.persist();
-        self.last_persisted_at = Instant::now();
     }
 
     fn push(&mut self, entry: FlightEntry) {
@@ -171,12 +217,12 @@ impl FlightRecorder {
         if entry.message_type.is_some() {
             if let Some(last) = self.document.entries.back_mut() {
                 if last.event == entry.event && last.message_type == entry.message_type {
-                    let repeats = last.repeat_count.unwrap_or(1) + 1;
+                    let repeats = last.repeat_count.unwrap_or(1).saturating_add(1);
                     last.first_at_unix_ms.get_or_insert(last.at_unix_ms);
                     last.at_unix_ms = entry.at_unix_ms;
                     last.repeat_count = Some(repeats);
                     last.report_count = match (last.report_count, entry.report_count) {
-                        (Some(total), Some(added)) => Some(total + added),
+                        (Some(total), Some(added)) => Some(total.saturating_add(added)),
                         (total, added) => total.or(added),
                     };
                     self.maybe_persist();
@@ -221,20 +267,34 @@ impl FlightRecorder {
         // shutdown.
         if self.last_persisted_at.elapsed() >= Duration::from_secs(1) {
             self.persist();
-            self.last_persisted_at = Instant::now();
         }
     }
 
-    fn persist(&self) {
+    fn persist(&mut self) -> bool {
+        self.persist_with(qc_owner_only_file::publish_atomically)
+    }
+
+    // A failed checkpoint must preserve both the previous complete document
+    // and retry eligibility. The publisher owns exclusive staging and atomic
+    // replacement; this seam tests the recorder's behavior without pretending
+    // to inject an OS partial-write fault.
+    fn persist_with(&mut self, publish: impl FnOnce(&Path, &[u8]) -> Result<(), String>) -> bool {
         let Some(path) = self.path.as_deref() else {
-            return;
+            return false;
         };
         if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
+            if fs::create_dir_all(parent).is_err() {
+                return false;
+            }
         }
-        if let Ok(document) = serde_json::to_vec_pretty(&self.document) {
-            let _ = fs::write(path, document);
+        let Ok(document) = serde_json::to_vec_pretty(&self.document) else {
+            return false;
+        };
+        if publish(path, &document).is_err() {
+            return false;
         }
+        self.last_persisted_at = Instant::now();
+        true
     }
 
     #[cfg(test)]
@@ -266,6 +326,129 @@ fn now_unix_ms() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            for _ in 0..64 {
+                let directory = std::env::temp_dir().join(format!(
+                    "qc-flight-review-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match fs::create_dir(&directory) {
+                    Ok(()) => return Self(directory),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("reserve flight fixture: {error}"),
+                }
+            }
+            panic!("reserve fresh flight fixture");
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn restored_records_are_bounded_and_counter_saturation_cannot_panic() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("flight.json");
+        let entry = FlightEntry {
+            at_unix_ms: 1,
+            process_id: 1,
+            event: "inbound".into(),
+            message_type: Some(42),
+            report_count: Some(usize::MAX),
+            repeat_count: Some(u32::MAX),
+            first_at_unix_ms: Some(1),
+        };
+        let entries: VecDeque<_> = std::iter::repeat_n(entry, MAX_ENTRIES + 1).collect();
+        let document = FlightDocument {
+            version: 2,
+            entries: entries.clone(),
+            incidents: (0..MAX_INCIDENTS + 1)
+                .map(|_| FlightIncident {
+                    at_unix_ms: 1,
+                    reason: "é".repeat(MAX_TEXT_BYTES),
+                    entries: entries.clone(),
+                })
+                .collect(),
+        };
+        fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let mut restored = FlightRecorder::open(Some(path));
+        assert_eq!(restored.document.entries.len(), MAX_ENTRIES);
+        assert_eq!(restored.document.incidents.len(), MAX_INCIDENTS);
+        assert!(restored
+            .document
+            .incidents
+            .iter()
+            .all(|incident| incident.entries.len() == MAX_ENTRIES
+                && incident.reason.len() <= MAX_TEXT_BYTES));
+        restored.inbound(42, 1);
+        let last = restored.document.entries.back().unwrap();
+        assert_eq!(last.repeat_count, Some(u32::MAX));
+        assert_eq!(last.report_count, Some(usize::MAX));
+        restored.event("é".repeat(MAX_TEXT_BYTES));
+        assert_eq!(
+            restored.document.entries.back().unwrap().event.len(),
+            MAX_TEXT_BYTES
+        );
+        let mut oversized = String::with_capacity(1024 * 1024);
+        oversized.push_str("event");
+        restored.event(oversized);
+        let retained = &restored.document.entries.back().unwrap().event;
+        assert_eq!(retained, "event");
+        assert!(retained.capacity() <= MAX_TEXT_BYTES);
+    }
+
+    #[test]
+    fn failed_checkpoint_preserves_incidents_and_retry_success_reopens_the_complete_history() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("flight.json");
+        let mut recorder = FlightRecorder::open(Some(path.clone()));
+        recorder.incident("prior-incident");
+        let previous = fs::read(&path).unwrap();
+        recorder.event("later-event");
+        recorder.last_persisted_at = Instant::now() - Duration::from_secs(2);
+        let retry_at = recorder.last_persisted_at;
+        assert!(!recorder.persist_with(|_, _| Err("injected publication failure".into())));
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(recorder.last_persisted_at, retry_at);
+        assert!(recorder.last_persisted_at.elapsed() >= Duration::from_secs(1));
+        assert!(recorder.persist_with(qc_owner_only_file::publish_atomically));
+        assert!(recorder.last_persisted_at > retry_at);
+        let reopened = FlightRecorder::open(Some(path));
+        assert_eq!(reopened.document.incidents.len(), 1);
+        assert_eq!(reopened.document.incidents[0].reason, "prior-incident");
+        assert!(reopened
+            .document
+            .entries
+            .iter()
+            .any(|entry| entry.event == "later-event"));
+        assert_eq!(
+            fs::read_dir(&scratch.0).unwrap().count(),
+            1,
+            "no stage remains"
+        );
+    }
+
+    #[test]
+    fn oversized_persisted_record_is_not_loaded() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("oversized.json");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_DOCUMENT_BYTES + 1)
+            .unwrap();
+        assert!(read_document(&path).is_none());
+        let restored = FlightRecorder::open(Some(path));
+        assert!(restored.document.entries.is_empty());
+        assert!(restored.document.incidents.is_empty());
+    }
 
     #[test]
     fn recorder_is_bounded_and_contains_no_payload_field() {
@@ -460,11 +643,8 @@ mod tests {
 
     #[test]
     fn recorder_flushes_on_drop() {
-        let path = std::env::temp_dir().join(format!(
-            "qc-flight-recorder-{}-{}.json",
-            std::process::id(),
-            now_unix_ms()
-        ));
+        let scratch = Scratch::new();
+        let path = scratch.0.join("flight.json");
         {
             let mut recorder = FlightRecorder::open(Some(path.clone()));
             recorder.event("physical-transfer-test");

@@ -40,6 +40,11 @@ pub const LATEST_MESSAGE_CACHE_MAX_ENTRIES: usize = 128;
 /// Most payload bytes a latest-message cache holds across every entry.
 pub const LATEST_MESSAGE_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 
+/// Cloud envelopes can carry credentials, signed URLs, and account responses.
+/// They belong to the forwarding exchange, never to a reusable state cache.
+pub const fn is_private_cloud_message(message_type: u16) -> bool {
+    matches!(message_type, 18 | 29 | 30 | 31 | 41 | 58 | 61)
+}
 // The bounds cover every declared type and the observed traffic.
 const _: () = assert!(LATEST_MESSAGE_CACHE_MAX_ENTRIES > 72);
 const _: () =
@@ -120,8 +125,15 @@ fn check_latest_message_within(
 /// touched; the caller logs and counts the returned reason.
 pub fn insert_latest_message(
     latest: &mut HashMap<u16, IncomingMessage>,
-    incoming: IncomingMessage,
+    mut incoming: IncomingMessage,
 ) -> Result<(), LatestCacheRejection> {
+    if is_private_cloud_message(incoming.message_type) {
+        if let Some(mut previous) = latest.remove(&incoming.message_type) {
+            previous.payload.fill(0);
+        }
+        incoming.payload.fill(0);
+        return Ok(());
+    }
     insert_latest_message_within(
         latest,
         incoming,
@@ -152,6 +164,21 @@ fn insert_latest_message_within(
 mod tests {
     use super::*;
 
+    #[test]
+    fn cloud_credentials_and_signed_urls_never_enter_the_latest_cache() {
+        let mut latest = HashMap::new();
+        for kind in [18, 29, 30, 31, 41, 58, 61] {
+            latest.insert(kind, message(kind, 32));
+            assert_eq!(
+                insert_latest_message(&mut latest, message(kind, 64)),
+                Ok(())
+            );
+            assert!(!latest.contains_key(&kind));
+        }
+        assert_eq!(insert_latest_message(&mut latest, message(60, 8)), Ok(()));
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[&60].payload.len(), 8);
+    }
     fn message(message_type: u16, bytes: usize) -> IncomingMessage {
         IncomingMessage {
             observation: None,

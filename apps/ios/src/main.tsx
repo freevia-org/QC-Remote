@@ -8,6 +8,7 @@ import { App } from "@qc-remote/android-src/App";
 import { QCIosNativeBridge } from "../native-bridge";
 import { IPhoneMidiController } from "./IPhoneMidiController";
 import { IPadDriverStatus } from "./IPadDriverStatus";
+import { getIosConnectionMode, setIosConnectionMode, type IosConnectionMode } from "./ios-services";
 import "@qc-remote/theme/theme.css";
 import "@qc-remote/android-src/styles.css";
 import "./ios-midi.css";
@@ -25,9 +26,17 @@ function IosApp() {
     driverHardwareSupported: false,
     fullUsbDriverBundled: false, fullUsbReady: false, fullUsbRequirement: "", driverCompatibilityNote: "", driverEntitlementRequired: false
   });
+  const [connectionMode, setConnectionMode] = React.useState<IosConnectionMode>(getIosConnectionMode() ?? "auto");
+  const [modeSwitching, setModeSwitching] = React.useState(false);
+  const [modeError, setModeError] = React.useState("");
+  const modeSwitchInFlight = React.useRef(false);
   React.useEffect(() => {
     if (Capacitor.isNativePlatform()) void QCIosNativeBridge.platformCapabilities()
-      .then((capabilities) => setPlatform({ ...capabilities, family: capabilities.deviceFamily }))
+      .then((capabilities) => {
+        setPlatform({ ...capabilities, family: capabilities.deviceFamily });
+        const savedMode = getIosConnectionMode();
+        setConnectionMode(savedMode === "remote" ? "remote" : capabilities.deviceFamily === "iphone" ? "midi" : "auto");
+      })
       .catch(() => setPlatform({
         family: "iphone", deviceFamily: "iphone", supportsUsbMidi: true, sharedProtocolRuntimeBundled: false, driverHardwareSupported: false, driverOsSupported: false,
         fullUsbDriverBundled: false, fullUsbReady: false,
@@ -36,9 +45,45 @@ function IosApp() {
         driverEntitlementRequired: true
       }));
   }, []);
+  const changeConnectionMode = async (mode: IosConnectionMode) => {
+    if (modeSwitchInFlight.current || mode === connectionMode) return;
+    modeSwitchInFlight.current = true;
+    setModeSwitching(true);
+    setModeError("");
+    try {
+      await setIosConnectionMode(mode);
+      setConnectionMode(mode);
+    } catch (error) {
+      setModeError(error instanceof Error ? error.message : "Could not change the connection route.");
+    } finally {
+      modeSwitchInFlight.current = false;
+      setModeSwitching(false);
+    }
+  };
   if (platform === null) return <div className="ios-midi-loading" aria-label="Loading QC Remote" />;
-  if (platform.family === "iphone") return <IPhoneMidiController />;
-  if (platform.family === "ipad") return <IPadDriverStatus driverHardwareSupported={platform.driverHardwareSupported} driverOsSupported={platform.driverOsSupported} fullUsbDriverBundled={platform.fullUsbDriverBundled} fullUsbReady={platform.fullUsbReady} fullUsbRequirement={platform.fullUsbRequirement} driverCompatibilityNote={platform.driverCompatibilityNote}><App /></IPadDriverStatus>;
+  if (platform.family === "iphone") return <div className="ios-iphone-shell">
+    <nav className="ios-connection-mode" aria-label="iPhone connection mode">
+      <button type="button" disabled={modeSwitching} aria-pressed={connectionMode !== "remote"} onClick={() => void changeConnectionMode("midi")}>Direct USB MIDI</button>
+      <button type="button" disabled={modeSwitching} aria-pressed={connectionMode === "remote"} onClick={() => void changeConnectionMode("remote")}>Paired host</button>
+      {modeError && <p className="ios-mode-error" role="alert">{modeError}</p>}
+    </nav>
+    <div className={connectionMode === "remote" ? "ios-iphone-content is-remote" : "ios-iphone-content is-midi"}>
+      {connectionMode === "remote" ? <App key={connectionMode} /> : <IPhoneMidiController />}
+    </div>
+  </div>;
+  if (platform.family === "ipad") return <IPadDriverStatus
+    driverHardwareSupported={platform.driverHardwareSupported}
+    driverOsSupported={platform.driverOsSupported}
+    fullUsbDriverBundled={platform.fullUsbDriverBundled}
+    fullUsbReady={platform.fullUsbReady}
+    fullUsbRequirement={platform.fullUsbRequirement}
+    driverCompatibilityNote={platform.driverCompatibilityNote}
+    connectionMode={connectionMode === "remote" ? "remote" : "auto"}
+    modeSwitching={modeSwitching}
+    modeError={modeError}
+    onConnectionModeChange={(mode) => void changeConnectionMode(mode)}>
+    <App key={connectionMode} />
+  </IPadDriverStatus>;
   return <App />;
 }
 

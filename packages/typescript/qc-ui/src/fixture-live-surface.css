@@ -548,7 +548,7 @@
    the block's own state, not its position in the row - the third tile carried
    the rule only because `Digital Flanger` happens to be the bypassed block on
    gig-view and gig-view-live-tuner. */
-.gig-tiles > :is(button.is-bypassed, button.is-empty, article.gig-stomp-tile.is-bypassed, article.gig-stomp-tile.is-empty) { color: var(--qc-screen-text-primary); }
+.gig-tiles > :is(button.is-bypassed, button.is-empty, article.gig-stomp-tile.is-bypassed, article.gig-stomp-tile.is-empty, article.gig-stomp-tile.is-unavailable) { color: var(--qc-screen-text-primary); }
 .gig-device-icon { position: absolute; left: 7%; top: 4%; width: 40%; aspect-ratio: 1; }
 .gig-device-icon > svg { width: 100%; height: 100%; }
 .gig-edit { position: absolute; right: 34%; top: 9%; width: 17px; height: 17px; border: 2px solid currentColor; background: var(--qc-transparent); color: inherit; font-size: 14px; line-height: 12px; text-align: center; }

@@ -74,7 +74,13 @@ function fraction(current?: number, total?: number): string {
  * `activeWhenTrue` says which of the two options (index 0) means `true`. */
 function TwoOptionDetail(props: { title: string; body: readonly string[]; label?: string; options: readonly [string, string]; value: boolean | undefined; activeWhenTrue: 0 | 1; pending: boolean; onChange(next: boolean): void }) {
   const { title, body, label, options, value, activeWhenTrue, pending, onChange } = props;
-  const boolValue = value ?? false;
+  if (typeof value !== "boolean") return <>
+    <h1>{title}</h1>
+    {body.map((text, index) => <p key={index} className={`settings-body is-${index}`}>{text}</p>)}
+    {label && <span className="settings-field-label">{label}</span>}
+    <UnknownBooleanChoice className="settings-toggle" label={title} pending={pending} labels={[options[activeWhenTrue], options[activeWhenTrue === 0 ? 1 : 0]]} onChange={onChange} />
+  </>;
+  const boolValue = value;
   const active = boolValue ? activeWhenTrue : (activeWhenTrue === 0 ? 1 : 0);
   const toggle = () => { if (!pending) onChange(!boolValue); };
   return <>
@@ -86,6 +92,27 @@ function TwoOptionDetail(props: { title: string; body: readonly string[]; label?
       {options.map((option, index) => <span key={option} className={index === active ? "is-active" : ""}>{option}</span>)}
     </button>
   </>;
+}
+
+/** An absent observation is not Off. Absolute choices remain usable without
+ * inverting an invented previous value; native admission/readback still owns
+ * whether a write can succeed. */
+function UnknownBooleanChoice(props: { className?: string; label: string; pending: boolean; labels?: readonly [string, string]; onChange(next: boolean): void }) {
+  return <select className={props.className} aria-label={props.label} value="" disabled={props.pending}
+    onChange={(event) => { const value = event.target.value; if (!props.pending && (value === "true" || value === "false")) props.onChange(value === "true"); }}>
+    <option value="" disabled>Unavailable</option>
+    <option value="true">{props.labels?.[0] ?? "On"}</option>
+    <option value="false">{props.labels?.[1] ?? "Off"}</option>
+  </select>;
+}
+
+function MidiBooleanControl(props: { label: string; value: boolean | undefined; pending: boolean; onChange(next: boolean): void }) {
+  if (typeof props.value !== "boolean") return <UnknownBooleanChoice className="settings-midi-toggle" label={props.label} pending={props.pending} onChange={props.onChange} />;
+  const value = props.value;
+  return <button type="button" className="settings-midi-toggle" disabled={props.pending} aria-pressed={value} onClick={() => { if (!props.pending) props.onChange(!value); }}>
+    <QcPillToggle index={value ? 0 : 1} />
+    <QcPillToggleLabels labels={["On", "Off"]} index={value ? 0 : 1} />
+  </button>;
 }
 
 const DEVICE_COPY = DEVICE_SETTINGS_COPY;
@@ -113,7 +140,13 @@ function DeviceDetail({ row, workflow }: { row: DeviceSettingsDeviceRow; workflo
           <b><QcDeviceCategoryGlyph label={categoryLabel} /></b>
           {([1, 2, 3, 4] as const).map((rowNumber) => {
             const field = (`row${rowNumber}` as const);
-            const bypassed = Boolean(rows?.[field]);
+            const observed = rows?.[field];
+            if (typeof observed !== "boolean") return <div key={rowNumber} className="settings-global-bypass-row">
+              <span>ROW {rowNumber}</span>
+              <UnknownBooleanChoice label={`${categoryLabel} row ${rowNumber} bypass`} pending={pending}
+                labels={["Bypassed", "Active"]} onChange={(value) => void workflow.setGlobalBypass(key, rowNumber, value)} />
+            </div>;
+            const bypassed = observed;
             return <button type="button" key={rowNumber} className={pending ? "is-pending" : undefined} disabled={pending} aria-pressed={bypassed} onClick={() => void workflow.setGlobalBypass(key, rowNumber, !bypassed)}>
               <span>ROW {rowNumber}</span>
               <i className={bypassed ? "is-bypassed" : undefined}><QcUiIcon kind="power-toggle" /></i>
@@ -172,7 +205,7 @@ function DeviceDetail({ row, workflow }: { row: DeviceSettingsDeviceRow; workflo
     onChange={(next) => void workflow.setDynamicDelayCompensation(next)} />;
   if (row === "hold") {
     const index = settings?.holdTimingIndex ?? HOLD_TIMING_STEPS_MS.findIndex((ms) => ms === settings?.holdTimingMs);
-    const active = index >= 0 ? index : 3;
+    const active = Number.isInteger(index) && index >= 0 && index < HOLD_TIMING_STEPS_MS.length ? index : -1;
     return <>
       <h1>Hold Timing</h1>
       <p className="settings-body is-0">{HOLD_TIMING_BODY}</p>
@@ -183,48 +216,37 @@ function DeviceDetail({ row, workflow }: { row: DeviceSettingsDeviceRow; workflo
     </>;
   }
   // row === "midi"
-  const midiChannel = settings?.midiChannel ?? 1;
+  const midiChannel = settings?.midiChannel ?? "";
   return <div className="settings-midi-detail">
     <h1>MIDI Settings</h1>
     <div>
       <b>i</b><span>MIDI Channel</span>
       <select value={midiChannel} disabled={pending} onChange={(event) => void workflow.setMidiChannel(Number(event.target.value))}>
+        <option value="" disabled>Unavailable</option>
         {Array.from({ length: 17 }, (_, index) => index + 1).map((channel) => <option key={channel} value={channel}>{channel === 17 ? "OMNI" : channel}</option>)}
       </select>
     </div>
     <div>
       <b>i</b><span>MIDI Thru</span>
-      <button type="button" className="settings-midi-toggle" disabled={pending} aria-pressed={workflow.midiThru} onClick={() => void workflow.setMidiThru(!workflow.midiThru)}>
-        {/* generalSettings() reports no readable `midiThru` field at all - the
-            pill shows this hook's own last-written intent
-            (use-device-settings-workflow.ts's `midiThru`), not an
-            authoritative device readback, until the first write here. */}
-        <QcPillToggle index={workflow.midiThru ? 0 : 1} />
-        <QcPillToggleLabels labels={["On", "Off"]} index={workflow.midiThru ? 0 : 1} />
-      </button>
+      <MidiBooleanControl label="MIDI Thru" value={workflow.midiThru} pending={pending} onChange={(next) => void workflow.setMidiThru(next)} />
     </div>
     {([
       ["MIDI Over USB", settings?.midiOverUsb, (next: boolean) => workflow.setMidiOverUsb(next)],
       ["Ignore Duplicate PC", settings?.ignoreDuplicatePc, (next: boolean) => workflow.setIgnoreDuplicatePc(next)]
     ] as const).map(([label, value, onChange]) => <div key={label}>
       <b>i</b><span>{label}</span>
-      <button type="button" className="settings-midi-toggle" disabled={pending} aria-pressed={Boolean(value)} onClick={() => void onChange(!value)}>
-        <QcPillToggle index={value ? 0 : 1} />
-        <QcPillToggleLabels labels={["On", "Off"]} index={value ? 0 : 1} />
-      </button>
+      <MidiBooleanControl label={label} value={value} pending={pending} onChange={(next) => void onChange(next)} />
     </div>)}
     <div>
       <b>i</b><span>MIDI Clock Out</span>
-      <select value={settings?.midiClockOut ?? "off"} disabled={pending} onChange={(event) => void workflow.setMidiClockOut(event.target.value as MidiClockOutValue)}>
+      <select value={settings?.midiClockOut ?? ""} disabled={pending} onChange={(event) => void workflow.setMidiClockOut(event.target.value as MidiClockOutValue)}>
+        <option value="" disabled>Unavailable</option>
         {MIDI_CLOCK_OUT_VALUES.map((value) => <option key={value} value={value}>{value === "off" ? "OFF" : value === "midiDinOnly" ? "MIDI DIN Only" : value === "usbMidiOnly" ? "USB MIDI Only" : "Both USB and DIN MIDI"}</option>)}
       </select>
     </div>
     <div>
       <b>i</b><span>MIDI Clock In</span>
-      <button type="button" className="settings-midi-toggle" disabled={pending} aria-pressed={Boolean(settings?.midiClockIn)} onClick={() => void workflow.setMidiClockIn(!settings?.midiClockIn)}>
-        <QcPillToggle index={settings?.midiClockIn ? 0 : 1} />
-        <QcPillToggleLabels labels={["On", "Off"]} index={settings?.midiClockIn ? 0 : 1} />
-      </button>
+      <MidiBooleanControl label="MIDI Clock In" value={settings?.midiClockIn} pending={pending} onChange={(next) => void workflow.setMidiClockIn(next)} />
     </div>
   </div>;
 }
@@ -268,8 +290,7 @@ function MasterVolumeDetail({ workflow }: { workflow: DeviceSettingsWorkflow }) 
   ];
   const toggle = (field: keyof NonNullable<typeof assignment>) => {
     if (!assignment || pending) return;
-    const next = { ...assignment, [field]: !assignment[field] };
-    void workflow.setMasterVolumeAssignment(next.out12, next.out34, next.send12, next.headphones);
+    void workflow.setMasterVolumeOutput(field, !assignment[field]);
   };
   return <>
     <h1>Master Volume Knob Assignment</h1>
@@ -278,7 +299,7 @@ function MasterVolumeDetail({ workflow }: { workflow: DeviceSettingsWorkflow }) 
     <div className="volume-assignments">
       {fields.map(([label, value, field]) => <span key={label}>
         <em className={field === "headphones" ? "is-headphones" : undefined} aria-label={field === "headphones" ? "Headphones" : undefined}>{field === "headphones" ? null : label}</em>
-        <button type="button" disabled={pending || assignment === undefined} aria-pressed={Boolean(value)} aria-label={`Assign master volume to ${label}`} onClick={() => toggle(field)}>{value && <QcUiIcon kind="check" />}</button>
+        <button type="button" disabled={pending || assignment === undefined} aria-pressed={value} aria-label={`Assign master volume to ${label}`} title={value === undefined ? "Master volume assignment has not been observed." : undefined} onClick={() => toggle(field)}>{value === undefined ? "—" : value && <QcUiIcon kind="check" />}</button>
       </span>)}
     </div>
   </>;

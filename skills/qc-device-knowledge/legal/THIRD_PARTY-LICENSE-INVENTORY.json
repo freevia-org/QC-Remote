@@ -4,7 +4,7 @@
   "generatedFrom": [
     "package-lock.json",
     "Cargo.lock files and target-filtered Cargo metadata",
-    "Android releaseRuntimeClasspath, cached Maven POMs, and canonical Apache 2.0 text when referenced by exact Maven license metadata",
+    "Android releaseRuntimeClasspath, cached Maven POMs, Cargo-packaged JVM artifact manifests, and canonical Apache 2.0 text when supported by exact component license metadata",
     "bundled asset manifest and adjacent license files"
   ],
   "components": [
@@ -33,6 +33,17 @@
         "1bc86297d03201537284dc3f7bc105c8ab7b053b3372d96ab935bc54acc7a430",
         "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
         "a21c914647d33e48cb4d213dfb0749dbb45491514da9d3a8ffc4763cf456217d"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "aes",
+      "version": "0.8.4",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/block-ciphers",
+      "licenseTextHashes": [
+        "33e996382660b2bac31ae8ec48e5dc8ddf44e52ddce0612457301404c9a29111",
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
       ]
     },
     {
@@ -419,6 +430,7 @@
       "version": "0.6.2",
       "license": "MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
         "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
@@ -656,6 +668,17 @@
       "sourceUrl": "https://github.com/chronotope/chrono",
       "licenseTextHashes": [
         "ce4a94c006fa5d157d196768fdba0b21d26f58e5599e8fccfa9ea374433e4ece"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "cipher",
+      "version": "0.4.4",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/traits",
+      "licenseTextHashes": [
+        "92f01fc7ca904e16f13e27d4897e507b5446e42516bb7efacc4c5ed189008c31",
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
       ]
     },
     {
@@ -903,6 +926,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "ctr",
+      "version": "0.9.2",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/block-modes",
+      "licenseTextHashes": [
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4",
+        "f3bd9e2e7745e49db37c28033e4da290df8cf528aa21369d6861699804c5e5dd"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "darling_core",
       "version": "0.23.0",
       "license": "MIT",
@@ -1096,11 +1130,10 @@
       "version": "0.3.1",
       "license": "Zlib OR Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
-        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
-        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
-        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
       ]
     },
     {
@@ -2002,18 +2035,6 @@
     },
     {
       "ecosystem": "cargo",
-      "name": "hyper-rustls",
-      "version": "0.27.9",
-      "license": "Apache-2.0 OR ISC OR MIT",
-      "sourceUrl": "https://github.com/rustls/hyper-rustls",
-      "licenseTextHashes": [
-        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
-        "a3320aa8d192a02cc2c9f31ebcceb861d71b737acdff1397d0d8a49361e86e73",
-        "af6da3f3f6b4929e02f81fd890835fd6d70ffddae12a8d735c0d7f294ac5ffd7"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
       "name": "hyper-util",
       "version": "0.1.20",
       "license": "MIT",
@@ -2211,6 +2232,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "inout",
+      "version": "0.1.4",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/utils",
+      "licenseTextHashes": [
+        "71366a4092ad07b6fc29c4aa94ceeac8b892f7a24fcdedf8df7cba8112cdc15b",
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "ipnet",
       "version": "2.12.1",
       "license": "MIT OR Apache-2.0",
@@ -2319,6 +2351,29 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "jni-macros",
+      "version": "0.22.4",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/jni-rs/jni-rs",
+      "licenseTextEvidence": {
+        "kind": "cargo-package-manifest",
+        "cargoPackage": {
+          "name": "jni-macros",
+          "version": "0.22.4",
+          "license": "MIT OR Apache-2.0",
+          "sourceUrl": "https://github.com/jni-rs/jni-rs",
+          "manifestSha256": "c473e169667d41adddd70480939538b814cbd45006f942ba33e2c83558402719"
+        },
+        "selectedLicense": "Apache-2.0",
+        "canonicalTextSha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+      },
+      "selectedLicense": "Apache-2.0",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "jni-sys-macros",
       "version": "0.4.1",
       "license": "MIT OR Apache-2.0",
@@ -2359,6 +2414,29 @@
       "licenseTextHashes": [
         "6c1dcd86d8ae78f23d17a31a5382b9b5fb7ee82947bb5a67e5e6134f6cb069a4",
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "jni",
+      "version": "0.22.4",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/jni-rs/jni-rs",
+      "licenseTextEvidence": {
+        "kind": "cargo-package-manifest",
+        "cargoPackage": {
+          "name": "jni",
+          "version": "0.22.4",
+          "license": "MIT OR Apache-2.0",
+          "sourceUrl": "https://github.com/jni-rs/jni-rs",
+          "manifestSha256": "c49920826559d3b55b635c743ca9b2a463db421541782c6896aad28d43599640"
+        },
+        "selectedLicense": "Apache-2.0",
+        "canonicalTextSha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+      },
+      "selectedLicense": "Apache-2.0",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
       ]
     },
     {
@@ -2453,7 +2531,7 @@
       "name": "libappindicator-sys",
       "version": "0.9.0",
       "license": "Apache-2.0 OR MIT",
-      "sourceUrl": "https://github.com/tauri-apps/libappindicator-rs",
+      "sourceUrl": "https://crates.io/crates/libappindicator-sys/0.9.0",
       "licenseTextHashes": [
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
         "d2c4a2667e88ca68ced937efa2768130e147896bcf8d9bcaaa7aeb19124a76ba"
@@ -2787,11 +2865,10 @@
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
-        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
-        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
-        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
       ]
     },
     {
@@ -2800,11 +2877,10 @@
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
-        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
-        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
-        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
       ]
     },
     {
@@ -2813,11 +2889,10 @@
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
-        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
-        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
-        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
       ]
     },
     {
@@ -2826,6 +2901,7 @@
       "version": "4.1.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
         "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
@@ -2837,11 +2913,10 @@
       "version": "0.1.1",
       "license": "Zlib OR Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
-        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
-        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
-        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
       ]
     },
     {
@@ -2850,6 +2925,7 @@
       "version": "0.3.2",
       "license": "MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
         "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
@@ -2861,11 +2937,10 @@
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
-        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
-        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
-        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
       ]
     },
     {
@@ -2874,11 +2949,10 @@
       "version": "0.3.2",
       "license": "Zlib OR Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
-        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab",
-        "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
-        "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c"
+        "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
       ]
     },
     {
@@ -2887,6 +2961,7 @@
       "version": "0.6.4",
       "license": "MIT",
       "sourceUrl": "https://github.com/madsmtm/objc2",
+      "selectedLicense": "MIT",
       "licenseTextHashes": [
         "07c7993a082dd28479b2f48dd4ab9fac71bd97aeeecaa4cd89ef863fb3867c67",
         "1aa0a34224480ff916817aafd48263c880fe53a1d116261a7bb8c952ee0173ab"
@@ -3775,6 +3850,39 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "rustls-platform-verifier-android",
+      "version": "0.1.1",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
+      "licenseTextEvidence": {
+        "kind": "cargo-bundled-maven",
+        "cargoPackage": {
+          "name": "rustls-platform-verifier-android",
+          "version": "0.1.1",
+          "license": "MIT OR Apache-2.0",
+          "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
+          "manifestSha256": "34de6835ef5df615acadc4071bb9d38565b23fbe5a9087a7cf30cc7ccfe02a20"
+        },
+        "artifactPom": {
+          "group": "rustls",
+          "name": "rustls-platform-verifier",
+          "version": "0.1.1",
+          "sha256": "5468629ab3793f4768c0527b8ecca25219a00b5d9503d1ad657cc664c87e9081"
+        },
+        "artifactAar": {
+          "name": "rustls-platform-verifier-0.1.1.aar",
+          "sha256": "667292cadd8fa589229dd0f716541236a761f29b774930868d218175633830fd"
+        },
+        "selectedLicense": "Apache-2.0",
+        "canonicalTextSha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+      },
+      "selectedLicense": "Apache-2.0",
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "rustls-platform-verifier",
       "version": "0.7.0",
       "license": "MIT OR Apache-2.0",
@@ -3837,6 +3945,16 @@
       "licenseTextHashes": [
         "65314a6c96683f76f7495709bb0ddecb4eaa6fa244b28f23c4812ef8e5524066",
         "739620ea44ad8f99e96ea272e583b63a7d44a83a71250d7550b2544ea6b49fbf"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "schannel",
+      "version": "0.1.29",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/steffengy/schannel-rs",
+      "licenseTextHashes": [
+        "1ecbb241444ad7feca24a4a99f13ffa757eef72e5f9eae08ba8d6ffb268c14fc"
       ]
     },
     {
@@ -4195,6 +4313,17 @@
       "licenseTextHashes": [
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
         "aaac889d0a4a18753c87911502e36f2e04185d0c8bab33b42895c8bcc2570cfd"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "simd_cesu8",
+      "version": "1.2.0",
+      "license": "Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/seancroach/simd_cesu8",
+      "licenseTextHashes": [
+        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
       ]
     },
     {
@@ -7845,6 +7974,40 @@
       ]
     },
     {
+      "ecosystem": "gradle",
+      "name": "rustls:rustls-platform-verifier",
+      "version": "0.1.1",
+      "license": "MIT OR Apache-2.0",
+      "selectedLicense": "Apache-2.0",
+      "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
+      "licenseSource": "locked Cargo package manifest (bundled Maven artifact)",
+      "licenseTextEvidence": {
+        "kind": "cargo-bundled-maven",
+        "cargoPackage": {
+          "name": "rustls-platform-verifier-android",
+          "version": "0.1.1",
+          "license": "MIT OR Apache-2.0",
+          "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
+          "manifestSha256": "34de6835ef5df615acadc4071bb9d38565b23fbe5a9087a7cf30cc7ccfe02a20"
+        },
+        "artifactPom": {
+          "group": "rustls",
+          "name": "rustls-platform-verifier",
+          "version": "0.1.1",
+          "sha256": "5468629ab3793f4768c0527b8ecca25219a00b5d9503d1ad657cc664c87e9081"
+        },
+        "artifactAar": {
+          "name": "rustls-platform-verifier-0.1.1.aar",
+          "sha256": "667292cadd8fa589229dd0f716541236a761f29b774930868d218175633830fd"
+        },
+        "selectedLicense": "Apache-2.0",
+        "canonicalTextSha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+      },
+      "licenseTextHashes": [
+        "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+      ]
+    },
+    {
       "ecosystem": "npm",
       "name": "@capacitor/android",
       "version": "8.5.2",
@@ -8583,6 +8746,15 @@
       ]
     },
     {
+      "sha256": "1ecbb241444ad7feca24a4a99f13ffa757eef72e5f9eae08ba8d6ffb268c14fc",
+      "names": [
+        "LICENSE.md"
+      ],
+      "components": [
+        "cargo:schannel@0.1.29"
+      ]
+    },
+    {
       "sha256": "1f6efa554fb0411e6e32c720076b20e046098431637e70a6b6842e662fed6015",
       "names": [
         "LICENSE-APACHE"
@@ -8757,6 +8929,9 @@
     {
       "sha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
       "names": [
+        "Apache License 2.0 (canonical; declared by Cargo package jni-macros@0.22.4, manifest SHA-256 c473e169667d41adddd70480939538b814cbd45006f942ba33e2c83558402719)",
+        "Apache License 2.0 (canonical; declared by Cargo package jni@0.22.4, manifest SHA-256 c49920826559d3b55b635c743ca9b2a463db421541782c6896aad28d43599640)",
+        "Apache License 2.0 (canonical; declared by Cargo package rustls-platform-verifier-android@0.1.1, manifest SHA-256 34de6835ef5df615acadc4071bb9d38565b23fbe5a9087a7cf30cc7ccfe02a20; bundled AAR SHA-256 667292cadd8fa589229dd0f716541236a761f29b774930868d218175633830fd)",
         "Apache License 2.0 (canonical; declared by Maven POM androidx.annotation:annotation-experimental@1.4.1, SHA-256 fe57b228417f4d7c677903dc61fb4a7cf993d603499de26d8d8113e477cc4f1b)",
         "Apache License 2.0 (canonical; declared by Maven POM androidx.annotation:annotation-jvm@1.8.1, SHA-256 d49203733aa6fae046c3a3de4e796eed347595755486a64273989844759750b4)",
         "Apache License 2.0 (canonical; declared by Maven POM androidx.annotation:annotation@1.8.1, SHA-256 b71225974ec087eb96c25ef6819f55b1c22f530e85ca446ba735fb66ed04ff5c)",
@@ -8814,6 +8989,8 @@
         "cargo:embed_plist@1.2.2",
         "cargo:encoding_rs@0.8.35",
         "cargo:encoding_rs@0.8.41",
+        "cargo:jni-macros@0.22.4",
+        "cargo:jni@0.22.4",
         "cargo:lru-slab@0.1.2",
         "cargo:lru-slab@0.1.3",
         "cargo:multiversion-macros@0.9.0",
@@ -8823,6 +9000,7 @@
         "cargo:quinn-udp@0.5.15",
         "cargo:quinn@0.11.11",
         "cargo:quinn@0.11.12",
+        "cargo:rustls-platform-verifier-android@0.1.1",
         "cargo:rustls-platform-verifier@0.7.0",
         "cargo:serialize-to-javascript-impl@0.1.2",
         "cargo:serialize-to-javascript@0.1.2",
@@ -8879,7 +9057,8 @@
         "gradle:org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm@1.8.1",
         "gradle:org.jetbrains.kotlinx:kotlinx-coroutines-core@1.8.1",
         "gradle:org.jetbrains:annotations@23.0.0",
-        "gradle:org.jspecify:jspecify@1.0.0"
+        "gradle:org.jspecify:jspecify@1.0.0",
+        "gradle:rustls:rustls-platform-verifier@0.1.1"
       ]
     },
     {
@@ -9082,6 +9261,7 @@
         "cargo:serde_path_to_error@0.1.20",
         "cargo:serde_repr@0.1.21",
         "cargo:servo_arc@0.4.3",
+        "cargo:simd_cesu8@1.2.0",
         "cargo:syn@1.0.109",
         "cargo:syn@2.0.119",
         "cargo:syn@3.0.4",
@@ -9136,6 +9316,15 @@
       ],
       "components": [
         "cargo:web-time@1.1.0"
+      ]
+    },
+    {
+      "sha256": "33e996382660b2bac31ae8ec48e5dc8ddf44e52ddce0612457301404c9a29111",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:aes@0.8.4"
       ]
     },
     {
@@ -9892,6 +10081,15 @@
       ]
     },
     {
+      "sha256": "71366a4092ad07b6fc29c4aa94ceeac8b892f7a24fcdedf8df7cba8112cdc15b",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:inout@0.1.4"
+      ]
+    },
+    {
       "sha256": "7357445bac398c76c0aef75a587009fe406d40de6a79789eb5b7ecbbad317ef2",
       "names": [
         "LICENSE"
@@ -10427,18 +10625,12 @@
       ]
     },
     {
-      "sha256": "93bbf912f82f210f3f67f515f79f383103e90ffad00c5b518fcc49698b73f0d1",
+      "sha256": "92f01fc7ca904e16f13e27d4897e507b5446e42516bb7efacc4c5ed189008c31",
       "names": [
-        "https://github.com/spdx/license-list-data/blob/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/Zlib.txt (SHA-256 bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d)"
+        "LICENSE-MIT"
       ],
       "components": [
-        "cargo:dispatch2@0.3.1",
-        "cargo:objc2-app-kit@0.3.2",
-        "cargo:objc2-core-foundation@0.3.2",
-        "cargo:objc2-core-graphics@0.3.2",
-        "cargo:objc2-exception-helper@0.1.1",
-        "cargo:objc2-io-surface@0.3.2",
-        "cargo:objc2-web-kit@0.3.2"
+        "cargo:cipher@0.4.4"
       ]
     },
     {
@@ -10529,7 +10721,6 @@
         "cargo:html5ever@0.39.0",
         "cargo:httparse@1.10.1",
         "cargo:hyper-rustls@0.27.10",
-        "cargo:hyper-rustls@0.27.9",
         "cargo:idna@1.1.0",
         "cargo:idna_adapter@1.2.2",
         "cargo:indexmap@1.9.3",
@@ -10584,6 +10775,7 @@
         "cargo:servo_arc@0.4.3",
         "cargo:signal-hook-registry@1.4.8",
         "cargo:signal-hook@0.3.18",
+        "cargo:simd_cesu8@1.2.0",
         "cargo:smallvec@1.15.2",
         "cargo:smallvec@1.16.1",
         "cargo:socket2@0.6.5",
@@ -10785,7 +10977,6 @@
       ],
       "components": [
         "cargo:hyper-rustls@0.27.10",
-        "cargo:hyper-rustls@0.27.9",
         "cargo:rustls-native-certs@0.8.4",
         "cargo:rustls@0.23.46"
       ]
@@ -10910,7 +11101,6 @@
       ],
       "components": [
         "cargo:hyper-rustls@0.27.10",
-        "cargo:hyper-rustls@0.27.9",
         "cargo:rustls-native-certs@0.8.4",
         "cargo:rustls@0.23.46"
       ]
@@ -11142,21 +11332,6 @@
         "cargo:tracing-attributes@0.1.31",
         "cargo:tracing-core@0.1.36",
         "cargo:tracing@0.1.44"
-      ]
-    },
-    {
-      "sha256": "c274f80372d90c012937370f0e1f15087d22e308ef98b27cea5dc0d2d088366c",
-      "names": [
-        "https://github.com/spdx/license-list-data/blob/d46e94e2c78ceede1cfc63cfa0396472d2798d4c/text/Apache-2.0.txt (SHA-256 074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff)"
-      ],
-      "components": [
-        "cargo:dispatch2@0.3.1",
-        "cargo:objc2-app-kit@0.3.2",
-        "cargo:objc2-core-foundation@0.3.2",
-        "cargo:objc2-core-graphics@0.3.2",
-        "cargo:objc2-exception-helper@0.1.1",
-        "cargo:objc2-io-surface@0.3.2",
-        "cargo:objc2-web-kit@0.3.2"
       ]
     },
     {
@@ -11621,12 +11796,16 @@
         "LICENSE-APACHE"
       ],
       "components": [
+        "cargo:aes@0.8.4",
         "cargo:block-buffer@0.10.4",
         "cargo:chacha20@0.10.2",
+        "cargo:cipher@0.4.4",
         "cargo:cpufeatures@0.2.17",
         "cargo:cpufeatures@0.3.1",
         "cargo:crypto-common@0.1.7",
+        "cargo:ctr@0.9.2",
         "cargo:digest@0.10.7",
+        "cargo:inout@0.1.4",
         "cargo:sha1@0.10.7",
         "cargo:sha2@0.10.9"
       ]
@@ -11772,6 +11951,15 @@
       "components": [
         "cargo:dirs-sys@0.5.0",
         "cargo:dirs@6.0.0"
+      ]
+    },
+    {
+      "sha256": "f3bd9e2e7745e49db37c28033e4da290df8cf528aa21369d6861699804c5e5dd",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:ctr@0.9.2"
       ]
     },
     {

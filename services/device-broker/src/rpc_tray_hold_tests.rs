@@ -4,17 +4,56 @@
 //! it may keep the device past the shipped grace only while the icon shows.
 use super::*;
 
-fn shared_with_minute(minute: Duration) -> (Arc<BrokerShared>, mpsc::Receiver<()>) {
-    shared_with_minute_at(
-        minute,
-        std::env::temp_dir().join(format!("qc-broker-hold-unused-{}.json", generate_token(8))),
-    )
+struct TrayFixture {
+    shared: Arc<BrokerShared>,
+    root: Arc<crate::device_lease::testing::FixtureRoot>,
+}
+impl std::ops::Deref for TrayFixture {
+    type Target = Arc<BrokerShared>;
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+impl Drop for TrayFixture {
+    fn drop(&mut self) {
+        self.shared.clients.lock_recover().shutting_down = true;
+        self.shared.observer_changed.notify_all();
+        let deadline = Instant::now() + IDLE_SHUTDOWN_GRACE + Duration::from_secs(2);
+        let retired = || {
+            Arc::strong_count(&self.shared) == 1
+                && Arc::strong_count(&self.shared.clients) == 1
+                && Arc::strong_count(&self.shared.request_lock) == 1
+        };
+        while !retired() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        if !retired() {
+            static RETAINED: Mutex<
+                Vec<(
+                    Arc<BrokerShared>,
+                    Arc<crate::device_lease::testing::FixtureRoot>,
+                )>,
+            > = Mutex::new(Vec::new());
+            RETAINED
+                .lock_recover()
+                .push((Arc::clone(&self.shared), Arc::clone(&self.root)));
+            eprintln!(
+                "tray fixture resources unacknowledged; exact shared state and root retained"
+            );
+        }
+    }
+}
+
+fn shared_with_minute(minute: Duration) -> (TrayFixture, mpsc::Receiver<()>) {
+    let root = crate::device_lease::testing::fresh_root("tray-hold");
+    shared_with_minute_at(minute, root.0.join("device-broker.json"), root)
 }
 
 fn shared_with_minute_at(
     minute: Duration,
     descriptor_path: PathBuf,
-) -> (Arc<BrokerShared>, mpsc::Receiver<()>) {
+    root: Arc<crate::device_lease::testing::FixtureRoot>,
+) -> (TrayFixture, mpsc::Receiver<()>) {
     let (tx, rx) = mpsc::channel();
     let shared = Arc::new(BrokerShared {
         controller: Arc::new(DeviceController::start_disconnected().expect("controller")),
@@ -29,9 +68,11 @@ fn shared_with_minute_at(
             let _ = tx.send(());
         }),
         observer_changed: Condvar::new(),
+        background: background::Manager::default(),
+        observer_actions: background::Manager::default(),
         observer_minute: minute,
     });
-    (shared, rx)
+    (TrayFixture { shared, root }, rx)
 }
 
 fn attach_participant(shared: &Arc<BrokerShared>) -> u64 {
@@ -52,6 +93,30 @@ fn wait_for(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
         thread::sleep(Duration::from_millis(1));
     }
     predicate()
+}
+
+#[test]
+fn tray_fixture_unwind_wakes_its_never_holder_before_retiring_the_root() {
+    let scratch = QuitScratch::new();
+    let directory = scratch.0.clone();
+    let mut weak = None;
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (shared, _shutdown) = shared_with_minute_at(
+            Duration::from_secs(60),
+            scratch.descriptor(),
+            Arc::clone(&scratch.1),
+        );
+        weak = Some(Arc::downgrade(&shared.shared));
+        shared.set_tray_hold(Some(IdlePolicy::Never));
+        panic!("injected tray assertion failure");
+    }));
+    assert!(failure.is_err());
+    assert!(
+        weak.unwrap().upgrade().is_none(),
+        "Never watcher retired its fixture reference"
+    );
+    drop(scratch);
+    assert!(!directory.exists());
 }
 
 #[test]
@@ -326,22 +391,15 @@ fn the_icon_lists_authenticated_participants_only() {
 
 /// One test's own scratch directory: a fresh random name created exclusively,
 /// removed when the test ends or unwinds.
-struct QuitScratch(PathBuf);
+struct QuitScratch(PathBuf, Arc<crate::device_lease::testing::FixtureRoot>);
 
 impl QuitScratch {
     fn new() -> Self {
-        let directory = std::env::temp_dir().join(format!("qc-user-quit-{}", generate_token(16)));
-        std::fs::create_dir(&directory).expect("a scratch directory of this test's own");
-        Self(directory)
+        let root = crate::device_lease::testing::fresh_root("user-quit");
+        Self(root.0.clone(), root)
     }
     fn descriptor(&self) -> PathBuf {
         self.0.join("device-broker.json")
-    }
-}
-
-impl Drop for QuitScratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -355,7 +413,11 @@ fn recorded_quit(shared: &BrokerShared) -> Option<crate::user_quit::UserQuitReco
 #[test]
 fn the_icons_unforced_quit_records_the_users_quit() {
     let scratch = QuitScratch::new();
-    let (shared, shutdown) = shared_with_minute_at(Duration::from_secs(60), scratch.descriptor());
+    let (shared, shutdown) = shared_with_minute_at(
+        Duration::from_secs(60),
+        scratch.descriptor(),
+        Arc::clone(&scratch.1),
+    );
     let handle = BrokerHandle(Arc::clone(&shared));
     assert!(handle.quit_by_user(false).is_ok());
     shutdown
@@ -378,7 +440,11 @@ fn the_icons_unforced_quit_records_the_users_quit() {
 #[test]
 fn the_icons_forced_quit_records_the_users_quit_and_the_release() {
     let scratch = QuitScratch::new();
-    let (shared, shutdown) = shared_with_minute_at(Duration::from_secs(60), scratch.descriptor());
+    let (shared, shutdown) = shared_with_minute_at(
+        Duration::from_secs(60),
+        scratch.descriptor(),
+        Arc::clone(&scratch.1),
+    );
     let handle = BrokerHandle(Arc::clone(&shared));
     let _window = attach_participant(&shared);
     assert!(handle.quit_by_user(true).is_ok());
@@ -398,7 +464,11 @@ fn the_icons_forced_quit_records_the_users_quit_and_the_release() {
 #[test]
 fn a_quit_that_does_not_commit_records_nothing_and_says_why() {
     let scratch = QuitScratch::new();
-    let (shared, shutdown) = shared_with_minute_at(Duration::from_secs(60), scratch.descriptor());
+    let (shared, shutdown) = shared_with_minute_at(
+        Duration::from_secs(60),
+        scratch.descriptor(),
+        Arc::clone(&scratch.1),
+    );
     let handle = BrokerHandle(Arc::clone(&shared));
     let _participant = attach_participant(&shared);
     assert!(handle
@@ -413,6 +483,7 @@ fn a_quit_that_does_not_commit_records_nothing_and_says_why() {
     let (unwritable, unwritable_shutdown) = shared_with_minute_at(
         Duration::from_secs(60),
         not_a_directory.join("device-broker.json"),
+        Arc::clone(&blocked.1),
     );
     let error = BrokerHandle(Arc::clone(&unwritable))
         .quit_by_user(false)
@@ -431,7 +502,11 @@ fn a_quit_that_does_not_commit_records_nothing_and_says_why() {
 #[test]
 fn a_forced_quit_whose_release_marker_fails_withdraws_its_record() {
     let scratch = QuitScratch::new();
-    let (shared, shutdown) = shared_with_minute_at(Duration::from_secs(60), scratch.descriptor());
+    let (shared, shutdown) = shared_with_minute_at(
+        Duration::from_secs(60),
+        scratch.descriptor(),
+        Arc::clone(&scratch.1),
+    );
     // A directory where the marker file would go: its atomic publish fails.
     std::fs::create_dir(BrokerReleaseMarker::path_for(
         &shared.descriptor_path,
@@ -453,7 +528,11 @@ fn a_forced_quit_whose_release_marker_fails_withdraws_its_record() {
 #[test]
 fn an_exit_that_is_not_a_users_quit_records_none() {
     let scratch = QuitScratch::new();
-    let (shared, shutdown) = shared_with_minute_at(Duration::from_secs(60), scratch.descriptor());
+    let (shared, shutdown) = shared_with_minute_at(
+        Duration::from_secs(60),
+        scratch.descriptor(),
+        Arc::clone(&scratch.1),
+    );
     assert!(BrokerHandle(Arc::clone(&shared))
         .release_and_exit(false)
         .is_ok());

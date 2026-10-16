@@ -1,5 +1,5 @@
 import { closeUserOpenedTarget, escapeUserOpenedTarget } from "./user-open-focus";
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ModesConfigurationWorkflow } from "./use-modes-configuration-workflow.ts";
 export { useModesConfigurationWorkflow } from "./use-modes-configuration-workflow.ts";
 export type { ModesConfigurationWorkflow, ModesConfigurationWorkflowOptions } from "./use-modes-configuration-workflow.ts";
@@ -45,23 +45,32 @@ export function ModesConfigurationScreen({ workflow, onClose, returnFocusTarget 
   const [announcement, setAnnouncement] = useState("");
   // The long press that splits a hybrid ends with any other gesture: a drag to
   // merge, the pointer leaving, a release or a cancel. Re-arming clears first.
-  const hold = useHoldGesture<number>({ onHold: (index) => split(index) });
+  const contextKey = `${workflow.contextVersion}:${slots?.join(",") ?? "unavailable"}`;
+  const context = useRef({ key: contextKey, epoch: 0 });
+  if (context.current.key !== contextKey) context.current = { key: contextKey, epoch: context.current.epoch + 1 };
+  const instance = useId();
+  const renderedEpoch = context.current.epoch;
+  const entryCurrent = () => renderedEpoch === context.current.epoch;
+  const hold = useHoldGesture<{ index: number; epoch: number }>({ onHold: ({ index, epoch }) => {
+    if (epoch === context.current.epoch) split(index);
+  } });
+  useEffect(() => { hold.cancel(); setSelected(null); }, [contextKey, hold]);
   const cancelHold = () => hold.cancel();
   const disabled = loading || pending || !slots;
   const split = (index: number) => {
-    if (!slots) return;
+    if (!entryCurrent() || disabled || !slots) return;
     const next = splitModeSlot(slots, index);
     if (!next) { setAnnouncement("This hybrid cannot be split while three modes are already in the cycle."); return; }
     setSelected(null); void commit(next);
   };
   const merge = (source: number, target: number) => {
-    if (!slots) return;
+    if (!entryCurrent() || disabled || !slots) return;
     const next = mergeModeSlots(slots, source, target);
     if (!next) { setAnnouncement("Only two different base modes can form a hybrid."); return; }
     setSelected(null); void commit(next);
   };
   const activate = (index: number) => {
-    if (!slots) return;
+    if (!entryCurrent() || disabled || !slots) return;
     if (selected === null) {
       setSelected(index);
       setAnnouncement(`Selected ${QC_MODE_CYCLES[slots[index]]}. Select another mode to create a hybrid, or drag this mode onto it.`);
@@ -90,18 +99,10 @@ export function ModesConfigurationScreen({ workflow, onClose, returnFocusTarget 
       <div aria-label="Modes in cycle">
         {(slots ?? []).map((mode, index) => <button type="button" key={`${mode}-${index}`} disabled={disabled} aria-pressed={selected === index} aria-label={`${QC_MODE_CYCLES[mode] ?? `Unknown mode ${mode}`}, cycle position ${index + 1}. Select another mode to combine.`}
           draggable={!disabled} onClick={() => { if (hold.consumeFired()) return; activate(index); }}
-          onDragStart={(event) => { cancelHold(); event.dataTransfer.setData("text/qc-mode-index", String(index)); event.dataTransfer.effectAllowed = "move"; }}
+          onDragStart={(event) => { cancelHold(); if (!entryCurrent() || disabled) { event.preventDefault(); return; } event.dataTransfer.setData("text/qc-mode-index", String(index)); event.dataTransfer.setData("text/qc-mode-context", `${instance}:${renderedEpoch}`); event.dataTransfer.effectAllowed = "move"; }}
           onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }}
-          onDrop={(event) => {
-            event.preventDefault();
-            const sourceText = event.dataTransfer.getData("text/qc-mode-index");
-            // An unrelated drag has no mode payload; Number("") would turn
-            // it into the first mode and commit an unintended hybrid.
-            if (disabled || !/^\d+$/.test(sourceText)) return;
-            const source = Number(sourceText);
-            if (Number.isInteger(source) && source < (slots?.length ?? 0)) merge(source, index);
-          }}
-          onPointerDown={() => { if (mode >= 3) hold.start(index); else cancelHold(); }}
+          onDrop={(event) => { event.preventDefault(); if (!entryCurrent() || disabled || event.dataTransfer.getData("text/qc-mode-context") !== `${instance}:${renderedEpoch}`) return; const sourceText = event.dataTransfer.getData("text/qc-mode-index"); const source = Number(sourceText); if (/^\d+$/.test(sourceText) && Number.isInteger(source) && source < (slots?.length ?? 0)) merge(source, index); }}
+          onPointerDown={() => { if (!entryCurrent() || disabled) return; if (mode >= 3) hold.start({ index, epoch: renderedEpoch }); else cancelHold(); }}
           onPointerUp={cancelHold}
           onPointerLeave={cancelHold}
           onPointerCancel={cancelHold}>

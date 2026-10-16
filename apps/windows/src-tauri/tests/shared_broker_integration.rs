@@ -1,12 +1,13 @@
 //! Real two-process (in fact three-process) integration test for the shared
 //! device broker (Task 5 of the shared-device-broker plan).
 //!
-//! Every assertion here is made by inspecting real OS processes with native
+//! The broker-convergence assertions inspect real OS processes with native
 //! process identity APIs and by making real requests over the real wire protocol through
 //! the app's own attach-or-elect logic, each run in its OWN process rather
 //! than in-process - that is the entire point of this file: proving
 //! convergence at the OS-process level, not merely inside one Rust process's
-//! data structures. Nothing here mocks a process boundary.
+//! data structures. Cleanup-only fault tests additionally inject observation
+//! errors; those synthetic seams do not substitute for the real-process cases.
 //!
 //! # Harness processes
 //!
@@ -46,7 +47,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 // The settings file the app's Settings window writes. Brokers started here
@@ -66,6 +67,299 @@ const HARNESS_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// The broker's own zero-client grace period is 5s; this is that plus margin,
 /// per the brief.
 const BROKER_GRACE_PERIOD_MARGIN: Duration = Duration::from_secs(6);
+const PROCESS_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+// Software diagnostic envelope, not a device/firmware limit. Select and read
+// the tail from the same held file; growth after the seek cannot increase I/O
+// or retained allocation. Concurrent growth may not be included in this sample.
+const DIAGNOSTIC_TAIL_BYTES: usize = 16 * 1024;
+fn read_diagnostic_tail(
+    input: &mut (impl std::io::Read + std::io::Seek),
+) -> std::io::Result<Vec<u8>> {
+    use std::io::SeekFrom;
+    let end = std::io::Seek::seek(input, SeekFrom::End(0))?;
+    std::io::Seek::seek(
+        input,
+        SeekFrom::Start(end.saturating_sub(DIAGNOSTIC_TAIL_BYTES as u64)),
+    )?;
+    let mut bytes = Vec::new();
+    let mut bounded = std::io::Read::take(input, DIAGNOSTIC_TAIL_BYTES as u64);
+    std::io::Read::read_to_end(&mut bounded, &mut bytes)?;
+    Ok(bytes)
+}
+
+// Reuse the production suspended/job-contained helper, including its bounded
+// pipe pumps and descendant cleanup. Integration probes must not introduce an
+// unbounded PATH-resolved PowerShell/taskkill process of their own.
+#[cfg(windows)]
+#[path = "../src/client_packages"]
+mod client_packages {
+    #[path = "owned_tool.rs"]
+    mod owned_tool;
+    pub(super) fn run(
+        command: &mut std::process::Command,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<std::process::Output> {
+        owned_tool::run(command, timeout)
+    }
+}
+#[cfg(windows)]
+#[path = "../src/system_tools.rs"]
+mod system_tools;
+
+fn reap_child_within(child: &mut Child, timeout: Duration) -> std::io::Result<bool> {
+    observe_exit_within(timeout, || child.try_wait().map(|status| status.is_some()))
+}
+
+fn observe_exit_within(
+    timeout: Duration,
+    mut exited: impl FnMut() -> std::io::Result<bool>,
+) -> std::io::Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if exited()? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+// Never silently drop the sole original Child after a failed termination.
+// Failed owners remain attributed until the test executable exits; the root is
+// retained too, and the test fails rather than claiming successful cleanup.
+fn retain_failed_child(child: Child, root: &Path) {
+    static RETAINED: OnceLock<Mutex<Vec<(Child, PathBuf)>>> = OnceLock::new();
+    RETAINED
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((child, root.to_path_buf()));
+}
+
+#[derive(Clone)]
+struct TestRoot(Arc<TestRootOwner>);
+struct TestRootOwner {
+    path: PathBuf,
+    brokers: Mutex<Vec<(u32, u64)>>,
+    failed_child: std::sync::atomic::AtomicBool,
+}
+impl std::ops::Deref for TestRoot {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0.path
+    }
+}
+impl AsRef<Path> for TestRoot {
+    fn as_ref(&self) -> &Path {
+        self
+    }
+}
+impl TestRoot {
+    fn record_broker(&self, pid: u32) {
+        // Status names a PID, not its generation. Adopt only the publisher's
+        // own descriptor identity, never a fresh PID lookup after readiness.
+        let value: Value = serde_json::from_slice(
+            &fs::read(self.join("device-broker.json")).expect("ready broker descriptor"),
+        )
+        .expect("ready descriptor JSON");
+        assert_eq!(
+            value["processId"].as_u64(),
+            Some(u64::from(pid)),
+            "ready descriptor names the same publisher"
+        );
+        let created = value["processCreatedAt"]
+            .as_u64()
+            .expect("publisher creation identity");
+        let mut brokers = self.0.brokers.lock().unwrap_or_else(|e| e.into_inner());
+        if !brokers.contains(&(pid, created)) {
+            brokers.push((pid, created));
+        }
+    }
+}
+
+#[cfg(windows)]
+fn retire_broker(pid: u32, created: u64) -> std::io::Result<()> {
+    use windows_sys::Win32::{Foundation::*, System::Threading::*};
+    // A retained HANDLE, not a second lookup by PID, is the termination target.
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    };
+    if handle.is_null() {
+        return if !process_is_alive(pid) {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        };
+    }
+    struct Handle(HANDLE);
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+    let handle = Handle(handle);
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut start, mut end, mut kernel, mut user) = (zero, zero, zero, zero);
+    if unsafe { GetProcessTimes(handle.0, &mut start, &mut end, &mut kernel, &mut user) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let actual = (u64::from(start.dwHighDateTime) << 32) | u64::from(start.dwLowDateTime);
+    if actual != created {
+        return Ok(());
+    } // PID reused: never terminate replacement.
+    if unsafe { WaitForSingleObject(handle.0, 0) } == WAIT_OBJECT_0 {
+        return Ok(());
+    }
+    if unsafe { TerminateProcess(handle.0, 1) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { WaitForSingleObject(handle.0, PROCESS_CLEANUP_TIMEOUT.as_millis() as u32) }
+        != WAIT_OBJECT_0
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "owned broker did not terminate",
+        ));
+    }
+    Ok(())
+}
+#[cfg(unix)]
+fn retire_broker(pid: u32, created: u64) -> std::io::Result<()> {
+    if !process_is_alive(pid) {
+        return Ok(());
+    }
+    match qc_native_platform::process::os_process_created_at(pid) {
+        Some(actual) if actual != created => return Ok(()),
+        None => {
+            return Err(std::io::Error::other(
+                "owned broker creation identity is unavailable",
+            ))
+        }
+        _ => {}
+    }
+    // Signal only the fresh private descriptor's recorded generation.
+    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) } != 0 && process_is_alive(pid) {
+        return Err(std::io::Error::last_os_error());
+    }
+    if !wait_until(PROCESS_CLEANUP_TIMEOUT, || {
+        !process_is_alive(pid)
+            || qc_native_platform::process::os_process_created_at(pid)
+                .is_some_and(|actual| actual != created)
+    }) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "owned broker did not terminate",
+        ));
+    }
+    Ok(())
+}
+impl Drop for TestRootOwner {
+    fn drop(&mut self) {
+        // Harnesses retain this Arc, so their original Children are retired
+        // before the last root owner reaches this destructor.
+        let cleanup = (|| -> Result<(), String> {
+            let mut problems = Vec::new();
+            if self.failed_child.load(std::sync::atomic::Ordering::Acquire) {
+                problems.push("an original harness Child could not be reaped".to_owned());
+            }
+            // A harness can be killed before either readiness or descriptor
+            // publication. Enumerate only this fresh exact descriptor namespace
+            // before deleting bytes; an unavailable query refuses cleanup.
+            let discovered = std::panic::catch_unwind(|| {
+                discover_brokers(&self.path.join("device-broker.json"))
+            });
+            match discovered {
+                Ok(discovered) => self
+                    .brokers
+                    .get_mut()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend(discovered),
+                Err(_) => problems.push("owned broker process inspection failed".to_owned()),
+            }
+            // Startup can fail before status.json. The fresh private descriptor
+            // still records the publisher's creation identity in that case.
+            match fs::read(self.path.join("device-broker.json")) {
+                Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+                    Ok(value) => {
+                        if let (Some(pid), Some(created)) = (
+                            value["processId"]
+                                .as_u64()
+                                .and_then(|p| u32::try_from(p).ok()),
+                            value["processCreatedAt"].as_u64(),
+                        ) {
+                            self.brokers
+                                .get_mut()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push((pid, created));
+                        } else {
+                            problems
+                                .push("descriptor publisher identity is unavailable".to_owned());
+                        }
+                    }
+                    Err(error) => {
+                        problems.push(format!("descriptor publisher JSON cannot be read: {error}"))
+                    }
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    problems.push(format!("descriptor publisher cannot be read: {error}"))
+                }
+            }
+            let brokers = self.brokers.get_mut().unwrap_or_else(|e| e.into_inner());
+            if brokers.iter().any(|(pid, created)| {
+                process_is_alive(*pid)
+                    && !qc_native_platform::process::os_process_created_at(*pid)
+                        .is_some_and(|actual| actual != *created)
+            }) {
+                wait_until(BROKER_GRACE_PERIOD_MARGIN, || {
+                    brokers.iter().all(|(pid, created)| {
+                        !process_is_alive(*pid)
+                            || qc_native_platform::process::os_process_created_at(*pid)
+                                .is_some_and(|actual| actual != *created)
+                    })
+                });
+            }
+            for &(pid, created) in brokers.iter() {
+                if let Err(error) = retire_broker(pid, created) {
+                    problems.push(format!("owned broker {pid} cleanup failed: {error}"));
+                }
+            }
+            // A discovery fault never skips independently known owners. It
+            // still forbids deleting bytes an unidentified owner may be using.
+            if !problems.is_empty() {
+                return Err(problems.join("; "));
+            }
+            match fs::remove_dir_all(&self.path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e.to_string()),
+            }
+        })();
+        if let Err(error) = cleanup {
+            let message = format!(
+                "owned broker fixture cleanup failed; retained {}: {error}",
+                self.path.display()
+            );
+            if std::thread::panicking() {
+                eprintln!("{message}");
+            } else {
+                panic!("{message}");
+            }
+        }
+    }
+}
 
 struct PreparedExecutables {
     harness: PathBuf,
@@ -139,28 +433,118 @@ fn process_is_alive(pid: u32) -> bool {
 /// given `--descriptor-path` under this test's own fresh directory, which no
 /// other process on the machine can share.
 #[cfg(windows)]
+fn discover_brokers(descriptor_path: &Path) -> Vec<(u32, u64)> {
+    // One checked OS snapshot replaces the redundant PowerShell/WMI walk.
+    // Unavailable tables/metadata never become proof that scratch is unused.
+    let native = qc_native_platform::process::processes_by_image_checked("qc-device-broker.exe")
+        .expect("complete native process table required for owned broker discovery");
+    let mut matches = Vec::new();
+    for original in native {
+        let pid = original.pid;
+        let Some(command_line) = original.command_line.as_deref() else {
+            assert!(!process_is_alive(pid), "live broker candidate command line is unreadable; retain scratch rather than infer absence");
+            continue;
+        };
+        if !windows_command_serves_descriptor(command_line, descriptor_path) {
+            continue;
+        }
+        if !process_is_alive(pid) {
+            continue;
+        }
+        let Some(created) = original.created_at else {
+            assert!(
+                !process_is_alive(pid),
+                "live publisher creation identity is unreadable; retain scratch"
+            );
+            continue;
+        };
+        let Some(now) = qc_native_platform::process::os_process_created_at(pid) else {
+            assert!(
+                !process_is_alive(pid),
+                "live publisher identity became unreadable; retain scratch"
+            );
+            continue;
+        };
+        if now == created {
+            matches.push((pid, created));
+        }
+    }
+    matches
+}
+
 fn brokers_serving(descriptor_path: &Path) -> Vec<u32> {
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--broker-serve*' } \
-             | ForEach-Object { '{0} {1}' -f $_.ProcessId, $_.CommandLine }",
-        ])
-        .output()
-        .expect("powershell runs");
-    assert!(
-        output.status.success(),
-        "the process query failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let descriptor_path = descriptor_path.to_string_lossy();
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|line| line.contains(descriptor_path.as_ref()))
-        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+    discover_brokers(descriptor_path)
+        .into_iter()
+        .map(|(pid, _)| pid)
         .collect()
+}
+
+#[cfg(windows)]
+fn windows_command_serves_descriptor(command: &str, descriptor_path: &Path) -> bool {
+    use std::os::windows::ffi::OsStringExt;
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn CommandLineToArgvW(command: *const u16, count: *mut i32) -> *mut *mut u16;
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LocalFree(memory: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    }
+    let command: Vec<u16> = command.encode_utf16().chain(Some(0)).collect();
+    let mut count = 0;
+    // SAFETY: command is NUL terminated; count is writable. The allocated
+    // argument array remains alive until every argument is copied below.
+    let arguments = unsafe { CommandLineToArgvW(command.as_ptr(), &mut count) };
+    assert!(
+        !arguments.is_null(),
+        "process command line cannot be parsed"
+    );
+    struct Args(*mut *mut u16);
+    impl Drop for Args {
+        fn drop(&mut self) {
+            unsafe {
+                LocalFree(self.0.cast());
+            }
+        }
+    }
+    let owned = Args(arguments);
+    let mut copied = Vec::new();
+    for index in 0..count as usize {
+        let pointer = unsafe { *owned.0.add(index) };
+        let mut len = 0;
+        while unsafe { *pointer.add(len) } != 0 {
+            len += 1;
+        }
+        copied.push(std::ffi::OsString::from_wide(unsafe {
+            std::slice::from_raw_parts(pointer, len)
+        }));
+    }
+    copied.iter().any(|argument| argument == "--broker-serve")
+        && copied
+            .windows(2)
+            .any(|pair| pair[0] == "--descriptor-path" && Path::new(&pair[1]) == descriptor_path)
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_broker_query_matches_exact_descriptor_argument_not_a_substring() {
+    let path = Path::new(r"C:\owned fixture\device-broker.json");
+    assert!(windows_command_serves_descriptor(
+        r#"broker.exe --broker-serve --descriptor-path "C:\owned fixture\device-broker.json""#,
+        path
+    ));
+    assert!(!windows_command_serves_descriptor(
+        r#"broker.exe --broker-serve --descriptor-path "C:\owned fixture\device-broker.json.backup""#,
+        path
+    ));
+    assert!(!windows_command_serves_descriptor(
+        r#"broker.exe prefix--broker-serve --descriptor-path "C:\owned fixture\device-broker.json""#,
+        path
+    ));
+    assert!(!windows_command_serves_descriptor(
+        r#"broker.exe --broker-serve --other "C:\owned fixture\device-broker.json""#,
+        path
+    ));
 }
 
 #[cfg(unix)]
@@ -174,7 +558,7 @@ fn command_serves_descriptor(arguments: &[&[u8]], descriptor_path: &[u8]) -> boo
 }
 
 #[cfg(unix)]
-fn brokers_serving(descriptor_path: &Path) -> Vec<u32> {
+fn discover_brokers(descriptor_path: &Path) -> Vec<(u32, u64)> {
     use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
 
     let own_uid = fs::metadata("/proc/self")
@@ -221,7 +605,7 @@ fn brokers_serving(descriptor_path: &Path) -> Vec<u32> {
             && qc_native_platform::process::os_process_is_alive(pid)
             && qc_native_platform::process::os_process_created_at(pid) == Some(identity)
         {
-            pids.push(pid);
+            pids.push((pid, identity));
         }
     }
     pids.sort_unstable();
@@ -284,10 +668,13 @@ fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
 /// on: a real crash runs no destructors either).
 #[cfg(windows)]
 fn kill_pid_from_outside(pid: u32) {
-    let output = Command::new("taskkill")
-        .args(["/F", "/PID", &pid.to_string()])
-        .output()
-        .expect("taskkill runs");
+    let output = client_packages::run(
+        Command::new(system_tools::system32_directory().join("taskkill.exe"))
+            .args(["/F", "/PID", &pid.to_string()])
+            .stderr(Stdio::piped()),
+        PROCESS_CLEANUP_TIMEOUT,
+    )
+    .expect("taskkill runs");
     assert!(
         output.status.success() || !process_is_alive(pid),
         "taskkill could not end pid {pid}: {}",
@@ -309,14 +696,13 @@ fn kill_pid_from_outside(pid: u32) {
         Some(identity),
         "owned harness identity is stable before kill"
     );
-    let output = Command::new("/bin/kill")
-        .args(["-KILL", "--", &pid.to_string()])
-        .output()
-        .expect("Linux /bin/kill is available");
+    // No helper process or pipe wait is needed for a signal. The caller still
+    // retains the original unreaped Child throughout this crash simulation.
+    let sent = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) } == 0;
     assert!(
-        output.status.success() || !os_process_is_alive(pid),
+        sent || !os_process_is_alive(pid),
         "SIGKILL could not end owned harness pid {pid}: {}",
-        String::from_utf8_lossy(&output.stderr)
+        std::io::Error::last_os_error()
     );
 }
 
@@ -324,7 +710,8 @@ fn kill_pid_from_outside(pid: u32) {
 /// `shared_broker_integration_harness` test, attached to (or hosting) the
 /// shared broker at `descriptor_path`.
 struct Harness {
-    child: Child,
+    child: Option<Child>,
+    root: TestRoot,
     pid: u32,
     control_dir: PathBuf,
     status_path: PathBuf,
@@ -341,13 +728,13 @@ struct HarnessStatus {
 }
 
 impl Harness {
-    fn spawn(harness_binary: &Path, root: &Path, name: &str, descriptor_path: &Path) -> Self {
+    fn spawn(harness_binary: &Path, root: &TestRoot, name: &str, descriptor_path: &Path) -> Self {
         Self::spawn_with_role(harness_binary, root, name, descriptor_path, false)
     }
 
     fn spawn_with_role(
         harness_binary: &Path,
-        root: &Path,
+        root: &TestRoot,
         name: &str,
         descriptor_path: &Path,
         observer: bool,
@@ -390,7 +777,8 @@ impl Harness {
         let pid = child.id();
 
         Self {
-            child,
+            child: Some(child),
+            root: root.clone(),
             pid,
             control_dir,
             status_path,
@@ -410,10 +798,12 @@ impl Harness {
         );
         let contents = fs::read_to_string(&self.status_path).expect("status file is readable");
         let value: Value = serde_json::from_str(&contents).expect("status file is valid JSON");
-        HarnessStatus {
+        let status = HarnessStatus {
             hosting: value["hosting"].as_bool().expect("hosting is a bool"),
             broker_pid: value["brokerPid"].as_u64().expect("brokerPid is a number") as u32,
-        }
+        };
+        self.root.record_broker(status.broker_pid);
+        status
     }
 
     /// Drops a trigger file into this harness's control directory, waits for
@@ -452,13 +842,18 @@ impl Harness {
             if path.exists() {
                 return true;
             }
-            exited = self.child.try_wait().unwrap_or_else(|error| {
-                panic!(
-                    "harness pid {} could not be queried: {error}\n{}",
-                    self.pid,
-                    self.diagnostics()
-                )
-            });
+            exited = self
+                .child
+                .as_mut()
+                .expect("owned Child")
+                .try_wait()
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "harness pid {} could not be queried: {error}\n{}",
+                        self.pid,
+                        self.diagnostics()
+                    )
+                });
             exited.is_some()
         });
         assert!(
@@ -471,9 +866,10 @@ impl Harness {
     }
 
     fn diagnostics(&self) -> String {
-        let tail = |path: &Path| match fs::read(path) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(16 * 1024)..])
-                .into_owned(),
+        let tail = |path: &Path| match fs::File::open(path)
+            .and_then(|mut input| read_diagnostic_tail(&mut input))
+        {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(error) => format!("<could not read {}: {error}>", path.display()),
         };
         format!(
@@ -490,19 +886,47 @@ impl Harness {
     /// deliberately avoids relying on.
     fn kill(mut self) {
         kill_pid_from_outside(self.pid);
-        let _ = self.child.wait();
+        assert!(
+            reap_child_within(
+                self.child.as_mut().expect("owned Child"),
+                PROCESS_CLEANUP_TIMEOUT
+            )
+            .expect("query original harness Child"),
+            "original harness Child did not exit within cleanup deadline"
+        );
     }
 }
 
 impl Drop for Harness {
     fn drop(&mut self) {
         // A failed assertion must not leave a helper attached indefinitely.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            if !matches!(
+                reap_child_within(&mut child, PROCESS_CLEANUP_TIMEOUT),
+                Ok(true)
+            ) {
+                self.root
+                    .0
+                    .failed_child
+                    .store(true, std::sync::atomic::Ordering::Release);
+                retain_failed_child(child, &self.root);
+                let message = format!(
+                    "original harness Child {} could not be reaped; retained {}",
+                    self.pid,
+                    self.root.display()
+                );
+                if std::thread::panicking() {
+                    eprintln!("{message}");
+                } else {
+                    panic!("{message}");
+                }
+            }
+        }
     }
 }
 
-fn spike_root(name: &str) -> PathBuf {
+fn spike_root(name: &str) -> TestRoot {
     let root = env::temp_dir().join(format!(
         "qc-broker-tray-{name}-{}-{}",
         std::process::id(),
@@ -512,7 +936,11 @@ fn spike_root(name: &str) -> PathBuf {
             .as_nanos()
     ));
     create_private_test_directory(&root).expect("private spike scratch directory");
-    root
+    TestRoot(Arc::new(TestRootOwner {
+        path: root,
+        brokers: Mutex::new(Vec::new()),
+        failed_child: std::sync::atomic::AtomicBool::new(false),
+    }))
 }
 
 fn create_private_test_directory(path: &Path) -> std::io::Result<()> {
@@ -544,6 +972,279 @@ fn broker_test_roots_are_private_for_the_linux_directory_guard() {
 }
 
 #[test]
+fn integration_scratch_is_removed_on_assertion_unwind() {
+    let mut path = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let root = spike_root("unwind-root");
+        path = Some(root.to_path_buf());
+        fs::write(root.join("owned-log"), b"temporary diagnostics").unwrap();
+        panic!("injected primary assertion");
+    }));
+    assert_eq!(
+        result.unwrap_err().downcast_ref::<&str>(),
+        Some(&"injected primary assertion")
+    );
+    assert!(
+        !path.unwrap().exists(),
+        "unwind removes the attributed scratch tree"
+    );
+}
+
+#[test]
+fn diagnostic_tail_reads_only_its_held_envelope_even_when_an_open_log_grows() {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    struct Meter {
+        file: fs::File,
+        read: usize,
+        grow_after_end: bool,
+    }
+    impl Read for Meter {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let count = self.file.read(output)?;
+            self.read += count;
+            Ok(count)
+        }
+    }
+    impl Seek for Meter {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            let offset = self.file.seek(position)?;
+            if matches!(position, SeekFrom::End(0)) && self.grow_after_end {
+                self.grow_after_end = false;
+                self.file.set_len(offset + 1024 * 1024)?;
+            }
+            Ok(offset)
+        }
+    }
+    let root = spike_root("diagnostic-held-tail");
+    let path = root.join("owned.log");
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    // Sparse local fixture: no harness/broker/device session is started. Two MiB is
+    // sufficient to expose the old whole-file read through an actual meter.
+    file.set_len(2 * 1024 * 1024).unwrap();
+    let sentinel = b"owned diagnostic tail";
+    file.seek(SeekFrom::End(-(sentinel.len() as i64))).unwrap();
+    file.write_all(sentinel).unwrap();
+    let mut input = Meter {
+        file,
+        read: 0,
+        grow_after_end: false,
+    };
+    let bytes = read_diagnostic_tail(&mut input).unwrap();
+    assert_eq!(bytes.len(), 16 * 1024);
+    assert!(bytes.ends_with(sentinel));
+    assert_eq!(
+        input.read,
+        16 * 1024,
+        "a bounded displayed tail must not hide an unbounded underlying read"
+    );
+    input.read = 0;
+    input.grow_after_end = true;
+    let bytes = read_diagnostic_tail(&mut input).unwrap();
+    assert_eq!(bytes.len(), 16 * 1024);
+    assert!(
+        bytes.ends_with(sentinel),
+        "sample remains bound to the held end before concurrent growth"
+    );
+    assert_eq!(
+        input.read,
+        16 * 1024,
+        "growth after seek cannot expand the retained envelope"
+    );
+    assert_eq!(fs::metadata(&path).unwrap().len(), 3 * 1024 * 1024);
+    drop(input);
+}
+
+#[test]
+fn integration_root_waits_for_its_last_harness_owner() {
+    let root = spike_root("root-owner-order");
+    let path = root.to_path_buf();
+    let last_owner = root.clone();
+    drop(root);
+    assert!(
+        path.is_dir(),
+        "a harness owner retains its live scratch bytes"
+    );
+    drop(last_owner);
+    assert!(!path.exists());
+}
+
+#[test]
+fn unacknowledged_harness_cleanup_refuses_root_removal_and_reports_recovery_path() {
+    let root = spike_root("retained-cleanup-failure");
+    let path = root.to_path_buf();
+    fs::write(root.join("owned-log"), b"recovery diagnostics").unwrap();
+    // Inject only the cleanup acknowledgement seam; no process is launched.
+    root.0
+        .failed_child
+        .store(true, std::sync::atomic::Ordering::Release);
+    let failure =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(root))).unwrap_err();
+    let message = failure
+        .downcast_ref::<String>()
+        .expect("named cleanup failure");
+    let kept = fs::read(path.join("owned-log"));
+    fs::remove_dir_all(&path).unwrap(); // test owns the injected, process-free bytes
+    assert!(
+        message.contains("original harness Child could not be reaped"),
+        "{message}"
+    );
+    assert!(
+        message.contains(path.to_string_lossy().as_ref()),
+        "{message}"
+    );
+    assert_eq!(kept.unwrap(), b"recovery diagnostics");
+}
+
+#[test]
+fn original_child_poll_is_bounded_and_wait_errors_do_not_prove_exit() {
+    let started = Instant::now();
+    let mut calls = 0;
+    assert!(!observe_exit_within(Duration::from_millis(20), || {
+        calls += 1;
+        Ok(false)
+    })
+    .unwrap());
+    assert!(calls >= 2, "a running child is polled until the bound");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "a stalled child cannot hang cleanup"
+    );
+    let error = observe_exit_within(Duration::from_secs(5), || {
+        Err(std::io::Error::other("injected observation error"))
+    })
+    .unwrap_err();
+    assert_eq!(error.to_string(), "injected observation error");
+    assert!(
+        observe_exit_within(Duration::ZERO, || Ok(true)).unwrap(),
+        "an acknowledged exit succeeds even at the deadline"
+    );
+}
+
+#[test]
+fn harness_assertion_unwind_reaps_original_child_before_removing_scratch() {
+    let mut path = None;
+    let mut pid = None;
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let root = spike_root("harness-unwind");
+        path = Some(root.to_path_buf());
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = Command::new(system_tools::system32_directory().join("ping.exe"));
+            c.args(["-n", "60", "127.0.0.1"]);
+            c
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = Command::new("/bin/sleep");
+            c.arg("60");
+            c
+        };
+        let child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let child_pid = child.id();
+        let harness = Harness {
+            child: Some(child),
+            root: root.clone(),
+            pid: child_pid,
+            control_dir: root.to_path_buf(),
+            status_path: root.join("never-ready.json"),
+            request_counter: 0,
+            stdout_path: root.join("stdout.log"),
+            stderr_path: root.join("stderr.log"),
+        };
+        pid = Some(child_pid);
+        fs::write(root.join("owned-log"), b"temporary").unwrap();
+        assert!(harness.child.is_some(), "original Child remains owned");
+        panic!("injected harness assertion");
+    }));
+    assert_eq!(
+        failure.unwrap_err().downcast_ref::<&str>(),
+        Some(&"injected harness assertion")
+    );
+    assert!(
+        !process_is_alive(pid.unwrap()),
+        "the original harness process was ended before root removal"
+    );
+    assert!(!path.unwrap().exists());
+}
+
+#[test]
+fn broker_assertion_unwind_retires_owned_descendant_before_removing_scratch() {
+    let binary = locate_harness_binary();
+    let mut path = None;
+    let mut broker = None;
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let root = spike_root("broker-unwind");
+        path = Some(root.to_path_buf());
+        let mut harness = Harness::spawn(
+            &binary,
+            &root,
+            "participant",
+            &root.join("device-broker.json"),
+        );
+        broker = Some(harness.wait_ready().broker_pid);
+        assert_eq!(harness.request(), "ok");
+        panic!("injected broker assertion");
+    }));
+    assert_eq!(
+        failure.unwrap_err().downcast_ref::<&str>(),
+        Some(&"injected broker assertion")
+    );
+    assert!(
+        !process_is_alive(broker.unwrap()),
+        "the owned descendant is gone before scratch is removed"
+    );
+    assert!(!path.unwrap().exists());
+}
+
+#[test]
+fn malformed_publisher_diagnostics_do_not_skip_a_previously_owned_broker_cleanup() {
+    let binary = locate_harness_binary();
+    let mut path = None;
+    let mut broker = None;
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let root = spike_root("malformed-publisher-unwind");
+        path = Some(root.to_path_buf());
+        let descriptor = root.join("device-broker.json");
+        let mut harness = Harness::spawn(&binary, &root, "participant", &descriptor);
+        broker = Some(harness.wait_ready().broker_pid);
+        fs::write(&descriptor, b"injected unreadable publisher JSON").unwrap();
+        fs::write(root.join("retained-log"), b"recovery diagnostics").unwrap();
+        panic!("injected primary after publisher corruption");
+    }));
+    let path = path.expect("fixture acquired");
+    let gone = !process_is_alive(broker.expect("owned generation recorded"));
+    let retained = fs::read(path.join("retained-log"));
+    // The injection deliberately forbids automatic root removal; this test can
+    // remove its own bytes only after proving the independent owner is gone.
+    if gone {
+        fs::remove_dir_all(&path).unwrap();
+    }
+    assert_eq!(
+        failure.unwrap_err().downcast_ref::<&str>(),
+        Some(&"injected primary after publisher corruption")
+    );
+    assert!(
+        gone,
+        "a malformed descriptor cannot bypass known broker cleanup"
+    );
+    assert_eq!(
+        retained.unwrap(),
+        b"recovery diagnostics",
+        "discovery faults retain attributed recovery bytes"
+    );
+}
+
+#[test]
 fn an_early_harness_exit_reports_its_captured_diagnostics() {
     let root = spike_root("diagnostic-failure");
     let stdout_path = root.join("stdout.log");
@@ -569,8 +1270,9 @@ fn an_early_harness_exit_reports_its_captured_diagnostics() {
         .unwrap();
     let mut harness = Harness {
         pid: child.id(),
-        child,
-        control_dir: root.clone(),
+        child: Some(child),
+        root: root.clone(),
+        control_dir: root.to_path_buf(),
         status_path: root.join("never-ready.json"),
         request_counter: 0,
         stdout_path,
@@ -715,15 +1417,7 @@ fn no_observer_ever_preserves_the_pre_change_count_guard_and_reap_behavior() {
 fn two_real_processes_converge_on_one_shared_broker_and_survive_host_handoff() {
     let harness_binary = locate_harness_binary();
 
-    let root = env::temp_dir().join(format!(
-        "qc-shared-broker-integration-test-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    create_private_test_directory(&root).expect("private test root directory");
+    let root = spike_root("host-handoff");
     // Next to `device-broker.json`, exactly the pairing
     // `device_broker_election_path` (`descriptor_path.with_extension
     // ("election")`) produces in the app itself.

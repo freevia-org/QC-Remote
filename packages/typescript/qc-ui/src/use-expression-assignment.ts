@@ -5,6 +5,7 @@ import { useLatestValueWriter } from "./latest-value-writer.ts";
 import type { BlockDetails, GridBlock, LaneControl } from "@qc-remote/client";
 import type { DeviceMutationWorkflowOptions } from "./workflow-options";
 import type { ExpressionAssignmentAddress, ExpressionAssignmentState, ExpressionAssignmentTarget } from "./expression-assignment";
+import { captureGatewaySession } from "./gateway-session.ts";
 
 export interface ExpressionAssignmentOptions extends DeviceMutationWorkflowOptions {
   onClosePanel?(): void;
@@ -75,7 +76,7 @@ export function useExpressionAssignment(options: ExpressionAssignmentOptions) {
   }), [held, options.gateway]);
   // Undo entries outlive individual edits; bind them to the originating
   // device session, while the history workflow supplies the current preset.
-  const historyGateway = useMemo(() => new Proxy(options.gateway, {
+  const hostHistoryGateway = useMemo(() => new Proxy(options.gateway, {
     get(target, key) {
       const method = Reflect.get(target, key);
       if (typeof method !== "function") return method;
@@ -109,8 +110,39 @@ export function useExpressionAssignment(options: ExpressionAssignmentOptions) {
   // against the details it was written over until those details are replaced.
   const physicalSession = useMemo(() => ({ gateway: options.gateway, key: options.sessionKey, connected, session: snapshot.stateVersion?.session }),
     [options.gateway, options.sessionKey, connected, snapshot.stateVersion?.session]);
-  const ranges = useLatestValueWriter<ExpressionRange>({ pending, setPending, resetKey: held, commandSessionKey: options.commandSessionKey ?? physicalSession });
+  const ranges = useLatestValueWriter<ExpressionRange>({ pending, setPending, lifetime: options.lifetime, resetKey: held, commandSessionKey: options.commandSessionKey ?? physicalSession });
   const [written, setWritten] = useState<ReadonlyMap<string, { details: BlockDetails; range: ExpressionRange }>>(() => new Map());
+  const generation = useRef(0);
+  const mounted = useRef(true);
+  const opened = useRef(false);
+  const latestOperation = useRef({ gateway, snapshot, connected });
+  latestOperation.current = { gateway, snapshot, connected };
+  const reset = useCallback(() => {
+    generation.current += 1;
+    opened.current = false;
+    ranges.cancel();
+    setWritten(new Map());
+    setOpen(false);
+  }, [ranges.cancel]);
+  useEffect(() => {
+    mounted.current = true;
+    // The writer's own teardown drops queued work and retains pending until
+    // an already-admitted USB write settles. No disposed view may publish it.
+    return () => { mounted.current = false; generation.current += 1; };
+  }, []);
+  // External identity replacement creates a new held owner/gateway. An
+  // identity accepted by this owner's own write must keep its range editor.
+  useEffect(reset, [reset, gateway, connected, snapshot.setlistKey, snapshot.presetPosition, snapshot.activeScene]);
+  useEffect(() => options.lifetime?.subscribe(reset), [options.lifetime, reset]);
+  const capture = () => {
+    const epoch = generation.current;
+    const origin = options.lifetime?.checkpoint();
+    return captureGatewaySession(gateway, () => held.current() && mounted.current && opened.current && epoch === generation.current
+      && latestOperation.current.connected && latestOperation.current.gateway === gateway
+      && latestOperation.current.snapshot.setlistKey === snapshot.setlistKey && latestOperation.current.snapshot.presetPosition === snapshot.presetPosition
+      && latestOperation.current.snapshot.activeScene === snapshot.activeScene
+      && (!origin || Boolean(options.lifetime?.current(origin))));
+  };
 
   useEffect(() => {
     setOpen(false);
@@ -125,42 +157,54 @@ export function useExpressionAssignment(options: ExpressionAssignmentOptions) {
 
   const openAssignment = useCallback((details: BlockDetails, target: ExpressionAssignmentAddress = BLOCK_ADDRESS) => {
     if (!held.current()) return;
+    generation.current += 1;
+    ranges.cancel();
+    setWritten(new Map());
+    opened.current = true;
     setPedal(1);
     setAddress(target);
     const firstAssignable = details.parameters.find((parameter) => parameter.expressionAssignable && parameter.writable)?.index;
     setSelected(target.kind === "block" && details.bypassExpression ? "bypass" : firstAssignable ?? (target.kind === "block" ? "bypass" : 0));
     setOpen(true);
-  }, [held]);
+  }, [held, ranges.cancel]);
 
-  const close = useCallback(() => { if (held.current()) setOpen(false); }, [held]);
+  const close = reset;
 
   const findBlock = useCallback((details: BlockDetails): GridBlock | undefined =>
     snapshot.blocks.find((candidate) => candidate.row === details.row && candidate.column === details.column), [snapshot.blocks]);
 
   const assign = useCallback((details: BlockDetails, target: ExpressionAssignmentTarget) => {
-    if (!held.current()) return;
+    const operation = capture();
+    const gateway = operation.gateway;
+    const historyOrigin = options.lifetime?.checkpoint();
+    const historyGateway = captureGatewaySession(hostHistoryGateway, () => !historyOrigin || Boolean(options.lifetime?.currentSession(historyOrigin))).gateway;
+    const report = (error: unknown) => { if (operation.current()) fail(error); };
     if (address.kind === "lane") {
       if (target === "bypass") return; // Unreachable from the UI - see the module comment - but never wire it if it is.
       if (!connected) { notice("Connect the Quad Cortex before assigning an expression pedal."); return; }
       const parameter = details.parameters.find((candidate) => candidate.index === target);
       if (!parameter) return;
       ranges.runCommand(async () => {
+        if (!operation.current()) return;
         const minimum = parameter.expressionMinimum ?? 0;
         const maximum = parameter.expressionMaximum ?? 1;
         notice(`Assigning ${parameter.name} to Expression ${pedal}…`);
-        const result = await gateway.setLaneControlExpression(details.row, address.control, target, pedal, minimum, maximum, held.snapshot.presetName, requirePresetIdentity(held.snapshot));
+        const result = await gateway.setLaneControlExpression(details.row, address.control, target, pedal, minimum, maximum, snapshot.presetName, requirePresetIdentity(snapshot));
+        operation.assertCurrent();
         if (result.snapshot) reconcile(result.snapshot);
         notice(result.detail);
-      }, fail);
+      }, report);
       return;
     }
     const block = findBlock(details);
     if (!connected || !block?.modelId) { notice(!connected ? "Connect the Quad Cortex before assigning an expression pedal." : "Refresh the live Grid before assigning this block."); return; }
     ranges.runCommand(async () => {
+      if (!operation.current()) return;
       if (target === "bypass") {
         const before = details.bypassExpression;
         notice(`Assigning ${details.name}'s bypass to Expression ${pedal}…`);
-        const result = await gateway.setExpressionBypass(details.row, details.column, pedal, (before?.mode ?? 0) as 0 | 1 | 2, before?.invert ?? false, before?.delayMs ?? 0, before?.latchEmulation ?? false, requireModelId(block), held.snapshot.presetName, requirePresetIdentity(held.snapshot));
+        const result = await gateway.setExpressionBypass(details.row, details.column, pedal, (before?.mode ?? 0) as 0 | 1 | 2, before?.invert ?? false, before?.delayMs ?? 0, before?.latchEmulation ?? false, requireModelId(block), snapshot.presetName, requirePresetIdentity(snapshot));
+        operation.assertCurrent();
         if (result.snapshot) reconcile(result.snapshot);
         recordHistory({ label: `${details.name} bypass expression`, execute: (current) => historyGateway.setExpressionBypass(details.row, details.column, (before?.pedal ?? 0) as 0 | 1 | 2, (before?.mode ?? 0) as 0 | 1 | 2, before?.invert ?? false, before?.delayMs ?? 0, before?.latchEmulation ?? false, requireModelId(block), current.presetName, requirePresetIdentity(current)), redo: (current) => historyGateway.setExpressionBypass(details.row, details.column, pedal, (before?.mode ?? 0) as 0 | 1 | 2, before?.invert ?? false, before?.delayMs ?? 0, before?.latchEmulation ?? false, requireModelId(block), current.presetName, requirePresetIdentity(current)) });
         notice(result.detail);
@@ -170,15 +214,18 @@ export function useExpressionAssignment(options: ExpressionAssignmentOptions) {
         const minimum = parameter.expressionMinimum ?? 0;
         const maximum = parameter.expressionMaximum ?? 1;
         notice(`Assigning ${parameter.name} to Expression ${pedal}…`);
-        const result = await gateway.setParameterExpression(details.row, details.column, target, pedal, minimum, maximum, requireModelId(block), held.snapshot.presetName, requirePresetIdentity(held.snapshot));
+        const result = await gateway.setParameterExpression(details.row, details.column, target, pedal, minimum, maximum, requireModelId(block), snapshot.presetName, requirePresetIdentity(snapshot));
+        operation.assertCurrent();
         if (result.snapshot) reconcile(result.snapshot);
         notice(result.detail);
       }
-    }, fail);
-  }, [address, connected, fail, findBlock, gateway, historyGateway, notice, pedal, ranges.runCommand, reconcile, recordHistory, snapshot]);
+    }, report);
+  }, [address, connected, fail, findBlock, gateway, hostHistoryGateway, notice, pedal, ranges.runCommand, reconcile, recordHistory, snapshot]);
 
   const setRange = useCallback((details: BlockDetails, index: number, minimum: number, maximum: number) => {
-    if (!held.current() || !connected) return;
+    if (!connected) return;
+    const operation = capture();
+    const gateway = operation.gateway;
     const target = address;
     const block = target.kind === "lane" ? undefined : findBlock(details);
     if (target.kind !== "lane" && !block?.modelId) return;
@@ -188,21 +235,25 @@ export function useExpressionAssignment(options: ExpressionAssignmentOptions) {
         ? gateway.setLaneControlExpression(details.row, target.control, index, pedal, range.minimum, range.maximum, held.snapshot.presetName, requirePresetIdentity(held.snapshot))
         : gateway.setParameterExpression(details.row, details.column, index, pedal, range.minimum, range.maximum, requireModelId(block!), held.snapshot.presetName, requirePresetIdentity(held.snapshot)),
       accept: (result, range) => {
+        if (!operation.current()) return;
         if (result.snapshot) reconcile(result.snapshot);
         setWritten((previous) => new Map(previous).set(key, { details, range }));
       },
-      error: fail
+      error: (error) => { if (operation.current()) fail(error); }
     });
   }, [address, connected, fail, findBlock, gateway, pedal, ranges.submit, reconcile, snapshot]);
 
   const unassign = useCallback((details: BlockDetails, target: ExpressionAssignmentTarget) => {
-    if (!held.current()) return;
+    const operation = capture();
+    const gateway = operation.gateway;
+    const report = (error: unknown) => { if (operation.current()) fail(error); };
     if (target === "bypass") {
       if (address.kind === "lane") return; // Unreachable from the UI - a lane control has no bypass tile - but never wire it if it is.
       const block = findBlock(details);
       if (!connected || !block?.modelId) { notice(!connected ? "Connect the Quad Cortex before clearing an expression assignment." : "Refresh the live Grid before clearing this assignment."); return; }
       const before = details.bypassExpression;
       ranges.runCommand(async () => {
+        if (!operation.current()) return;
         notice(`Clearing ${details.name}'s bypass expression assignment…`);
         try {
         // Matches the required clear exactly: pedal 0. Unlike a
@@ -215,11 +266,12 @@ export function useExpressionAssignment(options: ExpressionAssignmentOptions) {
         // assignment, exactly as the assign call above threads `before`
         // through its own write, is what leaves the block's bypass info as it
         // was rather than overwriting it with STOP/false/0/false.
-        const result = await gateway.setExpressionBypass(details.row, details.column, 0, (before?.mode ?? 0) as 0 | 1 | 2, before?.invert ?? false, before?.delayMs ?? 0, before?.latchEmulation ?? false, requireModelId(block), held.snapshot.presetName, requirePresetIdentity(held.snapshot));
+        const result = await gateway.setExpressionBypass(details.row, details.column, 0, (before?.mode ?? 0) as 0 | 1 | 2, before?.invert ?? false, before?.delayMs ?? 0, before?.latchEmulation ?? false, requireModelId(block), snapshot.presetName, requirePresetIdentity(snapshot));
+        operation.assertCurrent();
         if (result.snapshot) reconcile(result.snapshot);
         notice(result.detail);
-        } catch (error) { fail(error); }
-      }, fail);
+        } catch (error) { report(error); }
+      }, report);
       return;
     }
     const index = target;
@@ -228,33 +280,41 @@ export function useExpressionAssignment(options: ExpressionAssignmentOptions) {
     if (address.kind === "lane") {
       if (!connected) { notice("Connect the Quad Cortex before clearing an expression assignment."); return; }
       ranges.runCommand(async () => {
+        if (!operation.current()) return;
         notice(`Clearing ${parameter.name}'s expression assignment…`);
         try {
         // Matches the required clear exactly: pedal 0, range reset to
         // 0/1 - not "pedal 0 with the existing range".
-        const result = await gateway.setLaneControlExpression(details.row, address.control, index, 0, 0, 1, held.snapshot.presetName, requirePresetIdentity(held.snapshot));
+        const result = await gateway.setLaneControlExpression(details.row, address.control, index, 0, 0, 1, snapshot.presetName, requirePresetIdentity(snapshot));
+        operation.assertCurrent();
         if (result.snapshot) reconcile(result.snapshot);
         notice(result.detail);
-        } catch (error) { fail(error); }
-      }, fail);
+        } catch (error) { report(error); }
+      }, report);
       return;
     }
     const block = findBlock(details);
     if (!connected || !block?.modelId) { notice(!connected ? "Connect the Quad Cortex before clearing an expression assignment." : "Refresh the live Grid before clearing this assignment."); return; }
     ranges.runCommand(async () => {
+      if (!operation.current()) return;
       notice(`Clearing ${parameter.name}'s expression assignment…`);
       try {
       // Matches the required clear exactly: pedal 0, range reset to
       // 0/1 - not "pedal 0 with the existing range".
-      const result = await gateway.setParameterExpression(details.row, details.column, index, 0, 0, 1, requireModelId(block), held.snapshot.presetName, requirePresetIdentity(held.snapshot));
+      const result = await gateway.setParameterExpression(details.row, details.column, index, 0, 0, 1, requireModelId(block), snapshot.presetName, requirePresetIdentity(snapshot));
+      operation.assertCurrent();
       if (result.snapshot) reconcile(result.snapshot);
       notice(result.detail);
-      } catch (error) { fail(error); }
-    }, fail);
+      } catch (error) { report(error); }
+    }, report);
   }, [address, connected, fail, findBlock, gateway, notice, ranges.runCommand, reconcile, snapshot]);
 
   const assignmentFor = useCallback((details: BlockDetails): ExpressionAssignmentState | undefined => {
-    if (!held.current() || !open) return undefined;
+    if (!open) return undefined;
+    // These callbacks belong to this exact opening, not whichever panel is
+    // open when a retained event finally runs.
+    const epoch = generation.current;
+    const entryCurrent = () => held.current() && mounted.current && opened.current && generation.current === epoch;
     // The slider being dragged, or the range last written over these details,
     // is what the panel shows; the other bound of a drag comes from it too.
     let shown = details;
@@ -270,15 +330,15 @@ export function useExpressionAssignment(options: ExpressionAssignmentOptions) {
       details: shown,
       address,
       pedal,
-      onPedalChange: (value) => { if (held.current()) setPedal(value); },
+      onPedalChange: (value) => { if (entryCurrent()) setPedal(value); },
       selected,
-      onSelect: (value) => { if (held.current()) setSelected(value); },
+      onSelect: (value) => { if (entryCurrent()) setSelected(value); },
       // A range slider stays live while its own value is being written.
       pending: pending && !ranges.active,
-      onAssign: (target) => void assign(details, target),
-      onSetRange: (index, minimum, maximum) => void setRange(details, index, minimum, maximum),
-      onUnassign: (target) => void unassign(details, target),
-      onClose: () => { if (held.current()) { close(); onClosePanel?.(); } }
+      onAssign: (target) => { if (entryCurrent()) void assign(details, target); },
+      onSetRange: (index, minimum, maximum) => { if (entryCurrent()) void setRange(details, index, minimum, maximum); },
+      onUnassign: (target) => { if (entryCurrent()) void unassign(details, target); },
+      onClose: () => { if (entryCurrent()) { close(); onClosePanel?.(); } }
     };
   }, [address, assign, close, onClosePanel, open, pedal, pending, ranges.active, ranges.drafts, selected, setRange, unassign, written]);
 

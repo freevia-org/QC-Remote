@@ -3,11 +3,10 @@
 // Provider-neutral stdio-to-Streamable-HTTP bridge. It discovers the endpoint
 // published by the running QC Remote app for the current Windows user. This
 // process never loads device code, starts the broker, or opens USB.
-const { createHmac, randomBytes, timingSafeEqual } = require("node:crypto");
-const { readFile } = require("node:fs/promises");
-const { mkdirSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
+const { createHmac, randomBytes, randomUUID, timingSafeEqual } = require("node:crypto");
+const { open } = require("node:fs/promises");
+const { closeSync, fsyncSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } = require("node:fs");
 const path = require("node:path");
-const readline = require("node:readline");
 
 const STATE_OVERRIDE = "QC_REMOTE_LOCAL_MCP_STATE";
 const TIMEOUT_OVERRIDE = "QC_REMOTE_LOCAL_MCP_TIMEOUT_MS";
@@ -65,7 +64,432 @@ const IDENTITY_CONTEXT = "qc-remote-local-identity-v1";
 const IDENTITY_TIMEOUT_MS = 2000;
 const IDENTITY_NONCE_BYTES = 32;
 
+// Best-effort diagnostic output has an independent, small software envelope.
+// A stalled stderr never blocks RPC/control input or becomes an unbounded log.
+function createBridgeDiagnostics(output, options = {}) {
+  const lineBytes = options.lineBytes ?? 4096;
+  const queueBytes = options.queueBytes ?? 64 * 1024;
+  const queueMessages = options.queueMessages ?? 16;
+  const records = new Set();
+  let bytes = 0;
+  let dropped = 0;
+  let attached = false;
+  let stopped = false;
+  let closed = false;
+  let closeObserved = false;
+  let stopPromise;
+  let notifyStop;
+  const suppress = () => { dropped = Math.min(Number.MAX_SAFE_INTEGER, dropped + 1); return false; };
+  const detach = () => {
+    if (!attached) return;
+    attached = false;
+    output.removeListener("error", onError);
+    output.removeListener("close", onClose);
+  };
+  const complete = (record) => {
+    if (!records.delete(record)) return;
+    bytes -= record.bytes.length;
+    record.bytes = undefined;
+    if (stopped && !records.size && closeObserved) { detach(); notifyStop?.(true); }
+    if (!stopped && !closed && dropped) {
+      const count = dropped;
+      dropped = 0;
+      write(`[qc-remote-mcp] ${count} diagnostic messages were suppressed while stderr was congested.\n`);
+    }
+  };
+  const onError = () => {
+    closed = true;
+    // Error is not a write-callback/closed-handle acknowledgement. Keep every
+    // exact queued buffer charged until its callback or the stream closes.
+    try { output.destroy(); } catch {}
+  };
+  const onClose = () => {
+    closed = true;
+    closeObserved = true;
+    for (const record of [...records]) complete(record);
+    if (stopped) { detach(); notifyStop?.(true); }
+  };
+  function write(value) {
+    if (stopped || closed) return suppress();
+    // Slice UTF16 first so even a large parser diagnostic is bounded before
+    // UTF8 encoding/queue retention. Iterate code points to avoid cutting UTF8.
+    const original = String(value);
+    const sample = original.slice(0, lineBytes);
+    let text = "";
+    let length = 0;
+    for (const character of sample) {
+      const count = Buffer.byteLength(character);
+      if (count > lineBytes - 1 - length) break;
+      text += character;
+      length += count;
+    }
+    if (!text.endsWith("\n")) text += "\n";
+    const required = Buffer.byteLength(text);
+    if (records.size >= queueMessages || required > queueBytes - bytes) return suppress();
+    const record = { bytes: Buffer.from(text) };
+    records.add(record);
+    bytes += record.bytes.length;
+    if (!attached) {
+      attached = true;
+      output.on("error", onError);
+      output.on("close", onClose);
+    }
+    try { output.write(record.bytes, (error) => { if (error) closed = true; complete(record); }); }
+    catch { closed = true; try { output.destroy(); } catch {} }
+    return true;
+  }
+  function stop() {
+    if (stopPromise) return stopPromise;
+    stopped = true;
+    if (!records.size) { if (!output.destroyed || closeObserved) detach(); return Promise.resolve(true); }
+    stopPromise = new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => finish(false), options.stopWithinMs ?? 500);
+      const finish = (acknowledged) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(acknowledged);
+      };
+      notifyStop = finish;
+      // Do not report delivery: destruction cancels this process's own stderr
+      // stream. Only callback/close releases queued originals and their bytes.
+      try { output.destroy(); } catch { finish(false); }
+    });
+    return stopPromise;
+  }
+  return { write, stop, snapshot: () => ({ bytes, messages: records.size, dropped, stopped, closed }) };
+}
+
+
+// These are software envelopes, not Quad Cortex firmware limits.
+function createBridgeEnvelope(options = {}) {
+  const backendBytes = options.backendBytes ?? 16 * 1024 * 1024;
+  const requestBytes = options.requestBytes ?? 4 * 1024 * 1024;
+  const batchBytes = options.batchBytes ?? 4 * requestBytes;
+  const controlBytes = options.controlBytes ?? 64 * 1024;
+  const controlCount = 4;
+  const ordinaryCount = 8;
+  const overhead = options.overhead ?? 4096;
+  // rmcp structured(value): escaped text JSON + structuredContent + optional
+  // base64 image. The request id is bounded by the individual request envelope.
+  const replyBytes = 4 * backendBytes + overhead + requestBytes;
+  const controlReplyBytes = 2 * controlBytes + overhead;
+  // Account bytes/strings/parsed-JSON allowance/output before retaining them.
+  // Shared charging, not eight independent full-size reservations, bounds the
+  // simultaneous retained responses/output. Saturation is a truthful failure.
+  // This is an accounted retention budget, not a promise about JS-engine heap
+  // implementation overhead, GC timing, kernel buffers or OS hard deadlines.
+  const retainedBytes = options.retainedBytes
+    ?? 6 * replyBytes + batchBytes + 4 * controlReplyBytes + 16 * 1024 * 1024;
+  for (const value of [backendBytes, requestBytes, batchBytes, controlBytes, replyBytes, retainedBytes]) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid bridge software envelope");
+  }
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  const abort = new AbortController();
+  let fatal;
+  let used = 0;
+  let ordinary = 0;
+  let control = 0;
+  const outputs = new Set();
+  const writes = new Set();
+  let outputAttached = false;
+  let outputClosed = false;
+  const diagnostics = createBridgeDiagnostics(options.diagnosticOutput ?? process.stderr, options.diagnostics);
+  const fail = (error) => {
+    if (fatal) return fatal;
+    fatal = error instanceof Error ? error : new Error(String(error));
+    abort.abort(fatal);
+    input.destroy();
+    // Output cannot acknowledge more bytes. Close honestly, not a synthetic
+    // successful delivery or a replay of an already-dispatched tool mutation.
+    output.destroy();
+    return fatal;
+  };
+  const charge = (bytes) => {
+    if (fatal) throw fatal;
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > retainedBytes - used) {
+      throw new Error("Bridge aggregate retained-byte budget exhausted");
+    }
+    used += bytes;
+    let held = true;
+    return () => { if (held) { held = false; used -= bytes; } };
+  };
+  const retireWrite = (record) => {
+    if (!writes.delete(record)) return;
+    record.bytesLease(); record.textLease();
+  };
+  const onOutputError = (error) => {
+    fail(error);
+    for (const record of writes) record.finish(error);
+  };
+  const onOutputClose = () => {
+    outputClosed = true;
+    fail(new Error("Bridge stdout closed"));
+    for (const record of [...writes]) {
+      retireWrite(record);
+      record.finish(new Error("Bridge stdout closed before its queued answer was acknowledged"));
+    }
+  };
+  const decode = (bytes) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  const parseJson = (bytes) => {
+    // UTF16 text and decoded-object allowance remain charged until observation
+    // (including stdout acknowledgement) settles. No per-event lease escapes.
+    const textLease = charge(2 * bytes.length);
+    let objectLease;
+    try {
+      objectLease = charge(2 * bytes.length);
+      const value = JSON.parse(decode(bytes));
+      return { value, release: objectLease };
+    } catch (error) { objectLease?.(); throw error; }
+    finally { textLease(); }
+  };
+  const observeJson = async (bytes, observe) => {
+    const parsed = parseJson(bytes);
+    try { await observe(parsed.value); } finally { parsed.release(); }
+  };
+  const readBody = async (response, maximum, observe) => {
+    const declared = response.headers.get("content-length");
+    if (declared !== null && /^\d+$/.test(declared) && Number(declared) > maximum) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error("MCP body exceeds its software envelope");
+    }
+    if (!response.body) return;
+    const reader = response.body.getReader();
+    const pieces = [];
+    const leases = [];
+    let size = 0;
+    let complete = false;
+    let joinedLease;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { complete = true; break; }
+        if (value.byteLength > maximum - size) throw new Error("MCP body exceeds its software envelope");
+        leases.push(charge(value.byteLength));
+        pieces.push(Buffer.from(value));
+        size += value.byteLength;
+      }
+      joinedLease = charge(size);
+      let joined = Buffer.concat(pieces, size);
+      pieces.length = 0;
+      for (const release of leases.splice(0)) release();
+      if (!size) return;
+      const parsed = parseJson(joined);
+      joined = undefined;
+      joinedLease(); joinedLease = undefined;
+      try { await observe(parsed.value); } finally { parsed.release(); }
+    } finally {
+      if (!complete) await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+      for (const release of leases) release();
+      joinedLease?.();
+    }
+  };
+  const emit = (value) => {
+    if (fatal) return Promise.reject(fatal);
+    // A finite output queue also covers app-watch notifications, not just
+    // replies attached to the ordinary/control admission counters.
+    if (writes.size >= ordinaryCount + controlCount + 4) {
+      return Promise.reject(fail(new Error("Bridge stdout queue headroom exhausted")));
+    }
+    let textLease;
+    let bytesLease;
+    let bytes;
+    try {
+      const text = `${JSON.stringify(value)}\n`;
+      textLease = charge(2 * text.length);
+      bytesLease = charge(Buffer.byteLength(text));
+      bytes = Buffer.from(text);
+    } catch (error) {
+      textLease?.(); bytesLease?.();
+      return Promise.reject(fail(error));
+    }
+    const pending = new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(fail(error)); else resolve();
+      };
+      const timer = setTimeout(() => finish(new Error("Bridge stdout did not acknowledge its queued answer")), options.outputTimeoutMs ?? 5000);
+      const record = { finish, bytesLease, textLease };
+      writes.add(record);
+      if (!outputAttached) {
+        outputAttached = true;
+        output.on("error", onOutputError);
+        output.on("close", onOutputClose);
+      }
+      try {
+        output.write(bytes, (error) => { retireWrite(record); finish(error); });
+      } catch (error) { finish(error); }
+    });
+    outputs.add(pending);
+    void pending.finally(() => outputs.delete(pending)).catch(() => undefined);
+    return pending;
+  };
+  async function* lines(source, maximum) {
+    let pieces = [];
+    let leases = [];
+    let size = 0;
+    const release = () => {
+      pieces = [];
+      size = 0;
+      for (const done of leases.splice(0)) done();
+    };
+    try {
+      for await (const raw of source) {
+        const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+        let start = 0;
+        for (let index = 0; index <= chunk.length; index++) {
+          if (index !== chunk.length && chunk[index] !== 10) continue;
+          const length = index - start;
+          if (length > maximum - size) throw new Error("Bridge line exceeds its software envelope");
+          if (length) {
+            leases.push(charge(length));
+            pieces.push(Buffer.from(chunk.subarray(start, index)));
+            size += length;
+          }
+          if (index < chunk.length) {
+            const combined = charge(size);
+            try {
+              let line = Buffer.concat(pieces, size);
+              release();
+              if (line.length && line[line.length - 1] === 13) line = line.subarray(0, line.length - 1);
+              yield line;
+            } finally { combined(); }
+          }
+          start = index + 1;
+        }
+      }
+      if (size) {
+        const combined = charge(size);
+        try { yield Buffer.concat(pieces, size); } finally { combined(); }
+      }
+    } finally { release(); }
+  }
+  const events = async (response, maximum, observe) => {
+    if (!response.body) throw new Error("QC Remote returned an empty MCP event stream");
+    const data = [];
+    const leases = [];
+    let eventBytes = 0;
+    const release = () => {
+      data.length = 0;
+      eventBytes = 0;
+      for (const done of leases.splice(0)) done();
+    };
+    const flush = async () => {
+      if (!data.length) { release(); return; }
+      // The join is an additional UTF16 allocation; reserve before creating it.
+      const joinedLease = charge(2 * eventBytes);
+      let parsedLease;
+      let value;
+      try {
+        parsedLease = charge(2 * eventBytes);
+        value = JSON.parse(data.join("\n"));
+      } catch (error) { parsedLease?.(); throw error; }
+      finally { joinedLease(); release(); }
+      try { await observe(value); } finally { parsedLease(); }
+    };
+    try {
+      for await (const line of lines(response.body, maximum)) {
+        if (!line.length) { await flush(); continue; }
+        if (line.length + 1 > maximum - eventBytes) throw new Error("MCP event exceeds its software envelope");
+        eventBytes += line.length + 1;
+        if (line.length >= 5 && line.subarray(0, 5).toString("ascii") === "data:") {
+          const lease = charge(2 * line.length);
+          try {
+            const value = decode(line.subarray(5)).trimStart();
+            if (value) { data.push(value); leases.push(lease); } else lease();
+          } catch (error) { lease(); throw error; }
+        }
+      }
+      await flush();
+    } finally { release(); }
+  };
+  const isControl = (message) => message?.method === "ping"
+    || message?.method === "notifications/cancelled"
+    || message?.method === "notifications/initialized";
+  const admit = (message) => {
+    if (fatal) throw fatal;
+    if (output.destroyed || output.writableEnded) throw fail(new Error("Bridge stdout is no longer available"));
+    const bytes = Buffer.byteLength(JSON.stringify(message));
+    const reserved = isControl(message);
+    if (bytes > (reserved ? controlBytes : requestBytes)) return undefined;
+    if ((reserved ? control : ordinary) >= (reserved ? controlCount : ordinaryCount)) return undefined;
+    const retained = charge(2 * bytes);
+    if (reserved) control++; else ordinary++;
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      if (reserved) control--; else ordinary--;
+      retained();
+    };
+  };
+  return {
+    input, output, abort, diagnostics, charge, decode, observeJson, readBody, events, lines, emit, admit, isControl,
+    fetch: options.fetch ?? globalThis.fetch,
+    watchIntervalMs: options.watchIntervalMs ?? 2000,
+    requestBytes, batchBytes, controlBytes, replyBytes, controlReplyBytes,
+    signal: (within, extra) => AbortSignal.any([abort.signal, AbortSignal.timeout(within), ...(extra ? [extra] : [])]),
+    fail,
+    async settleOutput() {
+      await Promise.allSettled([...outputs]);
+      const until = performance.now() + 500;
+      const unknown = () => writes.size || (outputAttached && fatal && output.destroyed && !outputClosed && !output.closed);
+      while (unknown() && performance.now() < until) await new Promise((resolve) => setTimeout(resolve, 5));
+      if (unknown()) throw new Error("Bridge stdout original writes remain retained after unknown retirement");
+      if (outputAttached) {
+        output.removeListener("error", onOutputError);
+        output.removeListener("close", onOutputClose);
+        outputAttached = false;
+      }
+      if (fatal) throw fatal;
+    },
+    snapshot: () => ({ used, ordinary, control, pendingOutput: writes.size, retainedBytes, fatal: Boolean(fatal) }),
+  };
+}
+
+
+
+const MAX_DESCRIPTOR_BYTES = 128 * 1024;
+const MAX_SESSION_CACHE_BYTES = 16 * 1024 * 1024;
+async function readLocalText(file, maximum) {
+  const held = await open(file, "r");
+  try {
+    const bytes = Buffer.alloc(maximum + 1);
+    let used = 0;
+    while (used < bytes.length) {
+      const { bytesRead } = await held.read(bytes, used, bytes.length - used, null);
+      if (!bytesRead) break;
+      used += bytesRead;
+    }
+    if (used > maximum) throw new Error("Local MCP document exceeds its software envelope");
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, used));
+  } finally { await held.close(); }
+}
+function readLocalTextSync(file, maximum) {
+  const held = openSync(file, "r");
+  try {
+    const bytes = Buffer.alloc(maximum + 1);
+    let used = 0;
+    while (used < bytes.length) {
+      const count = readSync(held, bytes, used, bytes.length - used, null);
+      if (!count) break;
+      used += count;
+    }
+    if (used > maximum) throw new Error("Local MCP document exceeds its software envelope");
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, used));
+  } finally { closeSync(held); }
+}
+let bridgeEnvelope = createBridgeEnvelope();
+let runtimeStatePath;
+
 function statePaths() {
+  if (runtimeStatePath) return [path.resolve(runtimeStatePath)];
   if (process.env[STATE_OVERRIDE]) return [path.resolve(process.env[STATE_OVERRIDE])];
   // Claude Desktop launches extensions through a restricted host that can omit
   // LOCALAPPDATA even though it remains the current interactive Windows user.
@@ -184,26 +608,55 @@ function identityProof(token, instanceId, nonce) {
 // so a remembered success is precisely what would hand the token to whatever
 // binds that port after the crash. The Rust clients prove before every send for
 // the same reason; on loopback the check costs one small round trip.
-async function proveIdentity(current) {
+// Software limit shared with native local_identity.rs, not a firmware limit.
+const MAX_IDENTITY_PROOF_BYTES = 4096;
+async function identityEnvelope(response) {
+  const declared = response.headers.get("content-length");
+  if (declared !== null && /^\d+$/.test(declared) && Number(declared) > MAX_IDENTITY_PROOF_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new IdentityProofError("the published identity proof exceeds its software envelope budget");
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  let complete = false;
+  const parts = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) { complete = true; break; }
+      if (value.byteLength > MAX_IDENTITY_PROOF_BYTES - bytes) {
+        throw new IdentityProofError("the published identity proof exceeds its software envelope budget");
+      }
+      bytes += value.byteLength;
+      parts.push(Buffer.from(value));
+    }
+    return Buffer.concat(parts, bytes).toString("utf8");
+  } finally {
+    if (!complete) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+}
+async function proveIdentity(current, stopping) {
   if (!current.identityUrl) return;
   const nonce = randomBytes(IDENTITY_NONCE_BYTES).toString("base64url");
   let answer;
   try {
-    const response = await fetch(current.identityUrl, {
+    const response = await bridgeEnvelope.fetch(current.identityUrl, {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
       body: JSON.stringify({ nonce }),
       // The genuine listener answers in place; nothing legitimate redirects it.
       redirect: "error",
-      signal: AbortSignal.timeout(IDENTITY_TIMEOUT_MS),
+      signal: bridgeEnvelope.signal(IDENTITY_TIMEOUT_MS, stopping),
     });
     if (!response.ok) {
-      await response.text().catch(() => undefined);
+      await response.body?.cancel().catch(() => undefined);
       throw new IdentityProofError(
         `the published endpoint refused the identity check (HTTP ${response.status})`,
       );
     }
-    answer = JSON.parse(await response.text());
+    answer = JSON.parse(await identityEnvelope(response));
   } catch (error) {
     if (error instanceof IdentityProofError) throw error;
     const cause = error?.cause;
@@ -264,7 +717,7 @@ async function descriptor({ quiet = false } = {}) {
   const considered = statePaths();
   for (const stateFile of considered) {
     try {
-      valid.push(validateDescriptor(JSON.parse(await readFile(stateFile, "utf8"))));
+      valid.push(validateDescriptor(JSON.parse(await readLocalText(stateFile, MAX_DESCRIPTOR_BYTES))));
     } catch (error) {
       attempts.push({ stateFile, error, missing: error?.code === "ENOENT" });
     }
@@ -279,7 +732,7 @@ async function descriptor({ quiet = false } = {}) {
     valid.splice(valid.indexOf(candidate), 1);
     ignoredStale = true;
     if (quiet) continue;
-    process.stderr.write(
+    bridgeEnvelope.diagnostics.write(
       `[qc-remote-mcp] ignoring a descriptor QC Remote stopped refreshing ${Math.round((Date.now() - candidate.publishedAtUnixMs) / 1000)}s ago
 `,
     );
@@ -331,6 +784,17 @@ let establishedToken;
 let handshakeRequest;
 let initializedNotification;
 let handshakeInFlight;
+let stoppingBridge = false;
+let startedBridge = false;
+const backgroundStop = new AbortController();
+const backgroundOriginals = new Set();
+function ownBackground(action) {
+  if (stoppingBridge) return;
+  const original = Promise.resolve().then(action);
+  backgroundOriginals.add(original);
+  void original.finally(() => backgroundOriginals.delete(original)).catch(() => undefined);
+  return original;
+}
 let warnedToolContract = false;
 
 function requestTimeoutMs() {
@@ -339,34 +803,11 @@ function requestTimeoutMs() {
 }
 
 function emitJson(value) {
-  // One write per message keeps stdout lines whole while requests overlap.
-  process.stdout.write(`${JSON.stringify(value)}\n`);
+  return bridgeEnvelope.emit(value);
 }
 
-async function consumeEventStream(response, observe) {
-  if (!response.body) throw new Error("QC Remote returned an empty MCP event stream");
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let data = [];
-  const flush = () => {
-    if (data.length) observe(JSON.parse(data.join("\n")));
-    data = [];
-  };
-  for await (const chunk of response.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line) flush();
-      else if (line.startsWith("data:")) {
-        const value = line.slice(5).trimStart();
-        if (value) data.push(value);
-      }
-    }
-  }
-  buffer += decoder.decode();
-  if (buffer.startsWith("data:")) data.push(buffer.slice(5).trimStart());
-  flush();
+async function consumeEventStream(response, observe, maximum) {
+  return bridgeEnvelope.events(response, maximum, observe);
 }
 
 function warnOnToolContractSkew(current) {
@@ -378,7 +819,7 @@ function warnOnToolContractSkew(current) {
   // Non-fatal on purpose: a contract revision usually adds tools rather than
   // breaking the ones this client already knows, and refusing every request
   // would strand a working device behind a version mismatch.
-  process.stderr.write(
+  bridgeEnvelope.diagnostics.write(
     `[qc-remote-mcp] tool contract mismatch: this client was built against ${EXPECTED_TOOL_CONTRACT_SHA256} but QC Remote publishes ${published}. Reinstall the client package from the running QC Remote if a tool behaves unexpectedly.\n`,
   );
 }
@@ -396,28 +837,34 @@ class SessionExpiredError extends Error {
   }
 }
 
+class RequestOutcomeUnknownError extends Error {
+  constructor() {
+    super("WRITE_OUTCOME_AMBIGUOUS: QC Remote did not return a complete answer after this tool request was dispatched. The action may have completed. Do not retry automatically; inspect the Quad Cortex state before deciding what to do next.");
+    this.name = "RequestOutcomeUnknownError";
+  }
+}
+
 async function typedFailure(response) {
   try {
-    const body = await response.text();
-    if (!body.trim()) return undefined;
-    const parsed = JSON.parse(body);
-    if (!parsed || typeof parsed !== "object") return undefined;
-    const code = typeof parsed.code === "string" ? parsed.code : undefined;
-    const reason = typeof parsed.reason === "string" ? parsed.reason : undefined;
-    return code || reason ? { code, reason } : undefined;
-  } catch {
-    return undefined;
-  }
+    let typed;
+    await bridgeEnvelope.readBody(response, MAX_DESCRIPTOR_BYTES, (parsed) => {
+      if (!parsed || typeof parsed !== "object") return;
+      const code = typeof parsed.code === "string" && parsed.code.length <= 128 ? parsed.code : undefined;
+      const reason = typeof parsed.reason === "string" && parsed.reason.length <= 256 ? parsed.reason : undefined;
+      if (code || reason) typed = { code, reason };
+    });
+    return typed;
+  } catch { return undefined; }
 }
 
 async function readiness(current) {
   if (!current.healthUrl) return undefined;
   try {
     await proveIdentity(current);
-    const response = await fetch(current.healthUrl, {
+    const response = await bridgeEnvelope.fetch(current.healthUrl, {
       method: "GET",
       headers: { accept: "application/json", authorization: `Bearer ${current.token}` },
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+      signal: bridgeEnvelope.signal(HEALTH_TIMEOUT_MS),
     });
     return await typedFailure(response);
   } catch {
@@ -464,25 +911,24 @@ function diagnose(typed, status) {
   const label = [typed.code, typed.reason ? `(${typed.reason})` : undefined]
     .filter(Boolean)
     .join(" ");
-  process.stderr.write(`[qc-remote-mcp] HTTP ${status} ${label}
+  bridgeEnvelope.diagnostics.write(`[qc-remote-mcp] HTTP ${status} ${label}
 `);
   return adviceForReason(typed.reason) ?? adviceForReason(typed.code) ?? adviceForStatus(status);
 }
 
-async function failureFor(response, current) {
-  const typed = await typedFailure(response);
+async function failureFor(response, current, typed) {
   if (typed) return new Error(diagnose(typed, response.status));
   // The status is the diagnosis. Readiness is consulted only for a server-side
   // fault, where the device's state may actually explain it — asking after a
   // 401 would turn a rotated credential into "check your USB cable".
   if (response.status < 500) {
-    process.stderr.write(`[qc-remote-mcp] HTTP ${response.status} with no typed reason
+    bridgeEnvelope.diagnostics.write(`[qc-remote-mcp] HTTP ${response.status} with no typed reason
 `);
     return new Error(adviceForStatus(response.status));
   }
   const health = await readiness(current);
   const context = health ? adviceForReason(health.reason) : undefined;
-  process.stderr.write(
+  bridgeEnvelope.diagnostics.write(
     `[qc-remote-mcp] HTTP ${response.status} untyped; /health reports ${health?.code ?? "nothing"} ${health?.reason ?? ""}
 `,
   );
@@ -510,49 +956,81 @@ async function post(current, message, options = {}) {
   if (sent) headers["mcp-session-id"] = sent;
   if (protocolVersion) headers["mcp-protocol-version"] = protocolVersion;
   const timeoutMs = requestTimeoutMs();
-  let response;
+  let serverRejected = false;
+  let answered = false;
+  let dispatched = false;
   try {
-    response = await fetch(current.url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(message),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    let response;
+    try {
+      const body = JSON.stringify(message);
+      if (Buffer.byteLength(body) > bridgeEnvelope.requestBytes) throw new Error("MCP request exceeds its software envelope before dispatch");
+      const signal = bridgeEnvelope.signal(timeoutMs);
+      dispatched = true;
+      response = await bridgeEnvelope.fetch(current.url, { method: "POST", headers, body, signal });
+    } catch (error) {
+      if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+        throw new Error(`QC Remote timed out after ${timeoutMs} ms without answering. The app may be busy or not responding.`);
+      }
+      // Non-tool transport failures retain the offline fallback. A dispatched
+      // tool request is instead classified by the outer ambiguity boundary.
+      throw new AppUnavailableError(
+        `could not reach ${current.url}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const nextSession = response.headers.get("mcp-session-id");
+    if (nextSession) sessionId = nextSession;
+    if (response.status === 202 || response.status === 204) {
+      await response.body?.cancel().catch(() => undefined);
+      if (message.method === "tools/call" && canReply(message)) throw new RequestOutcomeUnknownError();
+      return;
+    }
+    // A request sent with no session id is answered 422 by the app, so a 404 is
+    // only ever "unknown session" - but only when an id was actually sent.
+    if (response.status === 404 && sent) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new SessionExpiredError(sent);
+    }
+    if (!response.ok) {
+      const typed = await typedFailure(response);
+      // Only explicit request-level rejection or a complete structured domain
+      // error is a known outcome. An untyped/truncated server error may have
+      // been raised after the tool's action completed.
+      serverRejected = [400, 401, 403, 404, 405, 413, 415, 422].includes(response.status) || typed !== undefined;
+      if (message.method === "tools/call" && !serverRejected) throw new RequestOutcomeUnknownError();
+      throw await failureFor(response, current, typed);
+    }
+    const observe = async (value) => {
+      // A malformed same-id envelope is not a completed JSON-RPC answer and
+      // must not escape before the single ambiguous-outcome reply below.
+      if (message.method === "tools/call" && canReply(message) && value?.id === message.id
+          && (value.jsonrpc !== "2.0" || (!Object.hasOwn(value, "result") && !Object.hasOwn(value, "error")))) return;
+      // Per the MCP spec the server may answer with a version it supports rather
+      // than the one that was proposed; later requests must carry that one.
+      if (options.negotiate && typeof value?.result?.protocolVersion === "string") {
+        protocolVersion = value.result.protocolVersion;
+      }
+      if (options.tap) options.tap(value);
+      if (canReply(message) && value?.jsonrpc === "2.0" && value.id === message.id
+          && (Object.hasOwn(value, "result") || Object.hasOwn(value, "error"))) answered = true;
+      if (!options.silent) await emitJson(value);
+    };
+    const contentType = response.headers.get("content-type") ?? "";
+    const maximum = bridgeEnvelope.isControl(message) ? bridgeEnvelope.controlReplyBytes : bridgeEnvelope.replyBytes;
+    if (contentType.includes("text/event-stream")) await consumeEventStream(response, observe, maximum);
+    else await bridgeEnvelope.readBody(response, maximum, observe);
+    if (message.method === "tools/call" && canReply(message) && !answered) throw new RequestOutcomeUnknownError();
   } catch (error) {
-    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
-      throw new Error(`QC Remote timed out after ${timeoutMs} ms without answering. The app may be busy or not responding.`);
+    // Identity verification above is pre-dispatch and remains an offline
+    // outcome. Once fetch has been admitted, neither a reset nor a truncated
+    // JSON/SSE answer proves that a tool mutation did not complete.
+    if (dispatched && message.method === "tools/call" && !serverRejected && !(error instanceof SessionExpiredError)) {
+      // An SSE transport failure after the actual response was delivered must
+      // not manufacture a second, conflicting reply for that request.
+      if (answered) return;
+      throw new RequestOutcomeUnknownError();
     }
-    // No HTTP status came back at all, so nothing is listening on the port the
-    // descriptor advertises: the app has closed since it published, or is still
-    // starting. Either way this is the app's absence, not a transport fault the
-    // user can act on.
-    throw new AppUnavailableError(
-      `could not reach ${current.url}: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    throw error;
   }
-  const nextSession = response.headers.get("mcp-session-id");
-  if (nextSession) sessionId = nextSession;
-  if (response.status === 202 || response.status === 204) return;
-  // A request sent with no session id is answered 422 by the app, so a 404 is
-  // only ever "unknown session" - but only when an id was actually sent.
-  if (response.status === 404 && sent) {
-    await response.text().catch(() => undefined);
-    throw new SessionExpiredError(sent);
-  }
-  if (!response.ok) throw await failureFor(response, current);
-  const observe = (value) => {
-    // Per the MCP spec the server may answer with a version it supports rather
-    // than the one that was proposed; later requests must carry that one.
-    if (options.negotiate && typeof value?.result?.protocolVersion === "string") {
-      protocolVersion = value.result.protocolVersion;
-    }
-    if (options.tap) options.tap(value);
-    if (!options.silent) emitJson(value);
-  };
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("text/event-stream")) return consumeEventStream(response, observe);
-  const body = await response.text();
-  if (body.trim()) observe(JSON.parse(body));
 }
 
 // A QC Remote restart publishes a new credential against a server that has no
@@ -624,19 +1102,47 @@ async function ensureSession(current) {
 function rememberSession(value) {
   const file = sessionCacheFile();
   if (!file) return;
+  let staged;
+  let descriptor;
+  let owned = false;
   try {
     mkdirSync(path.dirname(file), { recursive: true });
     // Every client on this machine shares one cache file, so two bridges can
     // write it at once. Stage and rename, as the app does for the descriptor,
     // or a concurrent reader can catch a half-written file and fall back to an
     // empty tool list for the rest of its session.
-    const staged = `${file}.${process.pid}.tmp`;
-    writeFileSync(staged, JSON.stringify(value));
+    const contents = JSON.stringify(value);
+    if (Buffer.byteLength(contents) > MAX_SESSION_CACHE_BYTES) throw new Error("Local MCP session catalog exceeds its software envelope");
+    for (let attempt = 0; attempt < 64; attempt++) {
+      staged = `${file}.${process.pid}.${randomUUID()}.tmp`;
+      try {
+        descriptor = openSync(staged, "wx", 0o600);
+        owned = true;
+        break;
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+      }
+    }
+    if (!owned) throw new Error("Could not reserve a unique local MCP session stage");
+    writeFileSync(descriptor, contents);
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
     renameSync(staged, file);
+    owned = false;
   } catch (error) {
-    process.stderr.write(
+    bridgeEnvelope.diagnostics.write(
       `[qc-remote-mcp] could not remember the local MCP session: ${error instanceof Error ? error.message : String(error)}\n`,
     );
+  } finally {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor); } catch {}
+    }
+    if (owned) {
+      try { unlinkSync(staged); } catch (error) {
+        if (error?.code !== "ENOENT") bridgeEnvelope.diagnostics.write(`[qc-remote-mcp] could not remove the owned session stage: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
+    }
   }
 }
 
@@ -644,7 +1150,7 @@ function rememberedSession() {
   const file = sessionCacheFile();
   if (!file) return undefined;
   try {
-    const value = JSON.parse(readFileSync(file, "utf8"));
+    const value = JSON.parse(readLocalTextSync(file, MAX_SESSION_CACHE_BYTES));
     return value && typeof value === "object" ? value : undefined;
   } catch {
     return undefined;
@@ -770,8 +1276,11 @@ function offlineReply(message) {
 // from memory. Stat-only polling: no request is made until the client sends one.
 let appWatch;
 function watchForApp() {
-  if (appWatch) return;
-  appWatch = setInterval(async () => {
+  if (appWatch || stoppingBridge) return;
+  let checking = false;
+  appWatch = setInterval(() => ownBackground(async () => {
+    if (checking || stoppingBridge) return;
+    checking = true;
     try {
       // Quiet for the announcement's reason, only more so. An app that exited
       // abnormally leaves an expired descriptor on disk permanently, and this
@@ -784,7 +1293,7 @@ function watchForApp() {
       // client to re-read its tools then would only earn another offline
       // answer and re-arm this loop, every two seconds, for as long as the
       // squatter holds the port.
-      await proveIdentity(await descriptor({ quiet: true }));
+      await proveIdentity(await descriptor({ quiet: true }), backgroundStop.signal);
     } catch {
       // Not the announcement's bare catch. That one was the only witness to its
       // own fault, so silence there left no record anywhere. This loop is armed
@@ -794,12 +1303,13 @@ function watchForApp() {
       // "still closed", the state the loop exists to wait out, on a clock the
       // user never set.
       return;
-    }
+    } finally { checking = false; }
+    if (stoppingBridge) return;
     clearInterval(appWatch);
     appWatch = undefined;
-    emitJson({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
-    emitJson({ jsonrpc: "2.0", method: "notifications/resources/list_changed" });
-  }, APP_WATCH_INTERVAL_MS);
+    void emitJson({ jsonrpc: "2.0", method: "notifications/tools/list_changed" }).catch(bridgeEnvelope.fail);
+    void emitJson({ jsonrpc: "2.0", method: "notifications/resources/list_changed" }).catch(bridgeEnvelope.fail);
+  }), bridgeEnvelope.watchIntervalMs);
   appWatch.unref();
 }
 
@@ -813,20 +1323,26 @@ async function handle(message) {
   try {
     await forward(message);
   } catch (error) {
+    if (error instanceof RequestOutcomeUnknownError) {
+      bridgeEnvelope.diagnostics.write(`[qc-remote-mcp] ${error.message}\n`);
+      if (canReply(message)) await emitJson({ jsonrpc: "2.0", id: message.id,
+        result: { content: [{ type: "text", text: error.message }], isError: true } });
+      return;
+    }
     if (error instanceof AppUnavailableError) {
       // Expected whenever QC Remote is simply not open. Diagnostics — descriptor
       // paths, transport wording — stay on stderr; the client gets a usable
       // session and one actionable sentence.
-      process.stderr.write(
+      bridgeEnvelope.diagnostics.write(
         `[qc-remote-mcp] QC Remote is not reachable: ${error.detail ?? error.message}\n`,
       );
-      if (canReply(message)) emitJson(offlineReply(message));
+      if (canReply(message)) await emitJson(offlineReply(message));
       if (handshakeRequest) watchForApp();
       return;
     }
     const detail = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`[qc-remote-mcp] ${detail}\n`);
-    if (canReply(message)) emitJson(unavailable(message, detail));
+    bridgeEnvelope.diagnostics.write(`[qc-remote-mcp] ${detail}\n`);
+    if (canReply(message)) await emitJson(unavailable(message, detail));
   }
 }
 
@@ -847,15 +1363,16 @@ async function releaseSession() {
     return;
   }
   try {
-    await fetch(current.url, {
+    const response = await bridgeEnvelope.fetch(current.url, {
       method: "DELETE",
       headers: {
         authorization: `Bearer ${current.token}`,
         "mcp-session-id": id,
         ...(protocolVersion ? { "mcp-protocol-version": protocolVersion } : {}),
       },
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+      signal: bridgeEnvelope.signal(HEALTH_TIMEOUT_MS),
     });
+    await response.body?.cancel().catch(() => undefined);
   } catch {
     // The app may already be gone; there is nothing left to release.
   }
@@ -880,25 +1397,28 @@ function announceWhileConnected() {
     // second session on this same process, and this is not per-interval news.
     if (warnedAnonymous) return;
     warnedAnonymous = true;
-    process.stderr.write(`[qc-remote-mcp] this bridge was started without ${CLIENT_ID_ARGUMENT}, so QC Remote cannot credit its heartbeat to a host and the LOCAL panel cannot show that host as connected.
+    bridgeEnvelope.diagnostics.write(`[qc-remote-mcp] this bridge was started without ${CLIENT_ID_ARGUMENT}, so QC Remote cannot credit its heartbeat to a host and the LOCAL panel cannot show that host as connected.
 `);
     return;
   }
   const report = announcementReport();
   const startedAt = performance.now();
-  const announce = async () => {
+  let checking = false;
+  const announce = () => ownBackground(async () => {
+    if (checking || stoppingBridge) return;
+    checking = true;
     try {
-      const line = report.observe(client, await attemptAnnouncement(client), performance.now() - startedAt);
+      const line = report.observe(client, await attemptAnnouncement(client, backgroundStop.signal), performance.now() - startedAt);
       if (line) {
-        process.stderr.write(`${line}
+        bridgeEnvelope.diagnostics.write(`${line}
 `);
       }
     } catch {
       // The announcement is telemetry, never a dependency: a fault in the
       // reporting must not take the MCP session with it, and the next tick
       // reports the same thing again anyway.
-    }
-  };
+    } finally { checking = false; }
+  });
   void announce();
   announcing = setInterval(announce, ANNOUNCE_INTERVAL_MS);
   announcing.unref();
@@ -956,7 +1476,7 @@ function announcementReport() {
 // the only record of why a working host reads as disconnected - and they are
 // the rate limiter's key, so each has to stay the same string for as long as
 // the same fault lasts.
-async function attemptAnnouncement(client) {
+async function attemptAnnouncement(client, stopping) {
   let current;
   try {
     current = await descriptor({ quiet: true });
@@ -964,22 +1484,23 @@ async function attemptAnnouncement(client) {
     if (error?.detail) return error.detail;
     return error instanceof Error ? error.message : String(error);
   }
+  if (stopping?.aborted || stoppingBridge) return "the bridge is shutting down";
   if (!current.rpcUrl) return "the published descriptor names no /rpc endpoint to announce to";
   try {
-    await proveIdentity(current);
+    await proveIdentity(current, stopping);
   } catch (error) {
     return error?.detail ?? (error instanceof Error ? error.message : String(error));
   }
   let response;
   try {
-    response = await fetch(current.rpcUrl, {
+    response = await bridgeEnvelope.fetch(current.rpcUrl, {
       method: "POST",
       headers: {
         authorization: `Bearer ${current.token}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({ rpc: "local.bridgeHeartbeat", params: { client } }),
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+      signal: bridgeEnvelope.signal(HEALTH_TIMEOUT_MS, stopping),
     });
   } catch (error) {
     // Node words every transport fault as "fetch failed" and puts the part that
@@ -994,40 +1515,75 @@ async function attemptAnnouncement(client) {
   }
   // A non-2xx means the app did not record this host, which is the only reason
   // the call exists; the previous version discarded the response unread.
+  await response.body?.cancel().catch(() => undefined);
   if (!response.ok) return `QC Remote refused the announcement (${response.status})`;
   return undefined;
 }
 
-async function main() {
-  const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+async function main(options = {}) {
+  if (startedBridge) throw new Error("This bridge module already owns a main invocation");
+  startedBridge = true;
+  bridgeEnvelope = options.envelope ?? createBridgeEnvelope(options);
+  runtimeStatePath = options.stateFile;
   const inFlight = new Set();
-  for await (const line of lines) {
-    if (!line.trim()) continue;
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch (error) {
-      process.stderr.write(`[qc-remote-mcp] ${error instanceof Error ? error.message : String(error)}\n`);
-      continue;
+  const own = (pending, release = () => {}) => {
+    inFlight.add(pending);
+    void pending.catch((error) => bridgeEnvelope.fail(error)).finally(() => {
+      release();
+      inFlight.delete(pending);
+    });
+  };
+  try {
+    for await (const line of bridgeEnvelope.lines(bridgeEnvelope.input, bridgeEnvelope.batchBytes)) {
+      if (!line.length) continue;
+      try {
+        await bridgeEnvelope.observeJson(line, (message) => {
+          // Legacy batches retain individual replies and do not wait behind an
+          // admitted tool. The whole line and each individual request are bounded.
+          const batch = Array.isArray(message) ? message : [message];
+          for (const single of batch) {
+            const release = bridgeEnvelope.admit(single);
+            if (release) { own(handle(single), release); continue; }
+            // Control overrun cannot silently lose a cancellation. A caller with
+            // no request id also cannot be told that refusal was delivered.
+            if (bridgeEnvelope.isControl(single) || !canReply(single)) {
+              throw new Error("Bridge control admission headroom exhausted");
+            }
+            own(emitJson({ jsonrpc:"2.0", id:single.id, error:{
+              code:-32000, message:"QC Remote bridge is busy; this request was not dispatched.",
+              data:{requestSent:false,retryable:true}
+            }}));
+          }
+        });
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          bridgeEnvelope.diagnostics.write(`[qc-remote-mcp] ${error.message}\n`);
+          continue;
+        }
+        throw error;
+      }
     }
-    // A pre-2025-06-18 client may send a batch. The app's MCP server has no
-    // batch variant, so forwarding the array whole reached nothing and, having
-    // no `id` of its own, produced no reply at all — the requests inside simply
-    // hung. Each element is dispatched on its own and answered on its own.
-    const batch = Array.isArray(message) ? message : [message];
-    for (const single of batch) {
-      // Dispatch without awaiting so stdin keeps draining: a cancellation or a
-      // ping must not queue behind a slow device call.
-      const pending = handle(single);
-      inFlight.add(pending);
-      void pending.catch(() => {}).finally(() => inFlight.delete(pending));
+  } catch (error) { bridgeEnvelope.fail(error); }
+  finally {
+    stoppingBridge = true;
+    if (appWatch) { clearInterval(appWatch); appWatch = undefined; }
+    if (announcing) { clearInterval(announcing); announcing = undefined; }
+    // Separate cancellation: EOF must not abort an accepted ordinary tool.
+    // Descriptor OS I/O has no hard cancellation claim; its exact background
+    // promise remains owned here until it really settles.
+    backgroundStop.abort(new Error("Bridge telemetry is stopping"));
+    await Promise.allSettled([...backgroundOriginals]);
+    await Promise.allSettled([...inFlight]);
+    await releaseSession();
+    try { await bridgeEnvelope.settleOutput(); }
+    finally {
+      if (!await bridgeEnvelope.diagnostics.stop()) throw new Error("Bridge diagnostic original writes remain retained after unknown retirement");
     }
   }
-  await Promise.allSettled([...inFlight]);
-  await releaseSession();
 }
 
-main().catch((error) => {
-  process.stderr.write(`[qc-remote-mcp] ${error instanceof Error ? error.message : String(error)}\n`);
+module.exports = { createBridgeEnvelope, main };
+if (require.main === module) main().catch((error) => {
+  bridgeEnvelope.diagnostics.write(`[qc-remote-mcp] ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

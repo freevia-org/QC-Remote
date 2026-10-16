@@ -169,6 +169,15 @@ final class RelayCredentialStore {
             record.getString(DEVICE_ID),"",record.getString(REVISION),false);
     }
 
+    /** Explicit local recovery for a legacy origin this build must never contact.
+     * This retires local authority only; it does not attest remote revocation. */
+    boolean discardForbiddenRevocation(Snapshot expected, boolean allowLoopback) throws Exception {
+        synchronized (MUTATION_LOCK) {
+            if (RelayEndpointPolicy.normalize(expected.endpoint, allowLoopback) != null) return false;
+            return completeRevocation(expected);
+        }
+    }
+
     boolean completeRevocation(Snapshot expected) throws Exception {
         synchronized (MUTATION_LOCK) {
             org.json.JSONArray pending=pendingRecords(),remaining=new org.json.JSONArray();

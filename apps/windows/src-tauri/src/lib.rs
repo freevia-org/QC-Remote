@@ -44,8 +44,10 @@ mod local_identity;
 mod local_stdio;
 mod loopback_http;
 mod os_version;
+mod owned_blocking;
 mod owner_only_file;
 mod relay;
+mod relay_task;
 mod remote_backup;
 mod remote_grants;
 mod remote_unlink;
@@ -145,10 +147,11 @@ fn emit_macos_menu_event(app: &tauri::AppHandle, event: &'static str) {
 use local_access::{test_local_mcp, LocalAccess, LocalAccessStatus};
 use relay::{BrowserPairingProgress, RelayBridge, RelayStatus};
 use virtual_device_store::{read_virtual_device_store, write_virtual_device_store};
+#[cfg(test)]
+use workspace::validate_native_backup;
 use workspace::{
-    backup_file_stem, safe_workspace_name, validate_backup_name, validate_native_backup,
-    validate_workspace, validate_workspace_path, write_workspace, MAX_NATIVE_BACKUP_BYTES,
-    MAX_WORKSPACE_BYTES,
+    backup_file_stem, safe_workspace_name, validate_backup_name, validate_workspace,
+    validate_workspace_path, write_native_backup, write_workspace,
 };
 
 pub fn run_local_mcp_bridge() -> Result<(), String> {
@@ -255,15 +258,6 @@ enum GatewayTransport {
         #[cfg_attr(not(test), allow(dead_code))]
         hosted_child: Option<Child>,
     },
-}
-
-impl GatewayTransport {
-    fn writer(&mut self) -> &mut dyn Write {
-        match self {
-            Self::OwnedChild { stdin, .. } => stdin,
-            Self::SharedBroker { stream, .. } => stream,
-        }
-    }
 }
 
 impl Drop for GatewayTransport {
@@ -502,18 +496,37 @@ fn spawn_injection(descriptor_path: &Path) -> Option<SpawnInjection> {
 }
 
 /// The attach outcome, replaced when a test asked for another arm. A real
-/// successful attach that is replaced drops its stream: the broker then has
-/// no client and ends through its own grace period, or through the test's
-/// handle.
+/// successful attach that is replaced normally drops its stream: the broker
+/// then has no client and ends through its own grace period, or through the
+/// test's handle. A live-retention fixture can explicitly own that client
+/// through `BrokerAttachHoldGuard` without duplicating process ownership.
 #[cfg(all(test, windows))]
 fn injected_attach_outcome(
     descriptor_path: &Path,
     real: Result<(TcpStream, String), SpawnedBrokerFailure>,
 ) -> Result<(TcpStream, String), SpawnedBrokerFailure> {
     match spawn_injection(descriptor_path).map(|injection| injection.attach_outcome) {
-        Some(AttachOverride::Unpublished) => Err(SpawnedBrokerFailure::Unpublished(
-            "injected: the broker did not publish".into(),
-        )),
+        Some(AttachOverride::Unpublished) => {
+            // A live-retention fixture may retain this actual client without
+            // owning any duplicate Child or process handle. Otherwise retain
+            // the normal behavior: dropping the connection starts idle grace.
+            if let Ok((stream, _)) = real {
+                let held = BROKER_ATTACH_HOLDS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .find(|(path, _)| path == descriptor_path)
+                    .map(|(_, held)| held.clone());
+                if let Some(held) = held {
+                    *held
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stream);
+                }
+            }
+            Err(SpawnedBrokerFailure::Unpublished(
+                "injected: the broker did not publish".into(),
+            ))
+        }
         Some(AttachOverride::PublishedFailure) => Err(SpawnedBrokerFailure::Published(
             BrokerAttachFailure::Unresponsive(
                 "injected: the published broker did not answer".into(),
@@ -527,6 +540,56 @@ fn injected_attach_outcome(
 #[cfg(all(test, windows))]
 static BROKER_SPAWN_SINKS: Mutex<Vec<(PathBuf, BrokerSpawnSink, SpawnInjection)>> =
     Mutex::new(Vec::new());
+
+#[cfg(all(test, windows))]
+type FixtureAttachHold = std::sync::Arc<Mutex<Option<TcpStream>>>;
+
+#[cfg(all(test, windows))]
+static BROKER_ATTACH_HOLDS: Mutex<Vec<(PathBuf, FixtureAttachHold)>> = Mutex::new(Vec::new());
+
+/// Retain a real client through fixture unwind and final same-Child cleanup.
+/// This does not duplicate ownership of the production slot's process.
+#[cfg(all(test, windows))]
+pub(crate) struct BrokerAttachHoldGuard {
+    path: PathBuf,
+    held: FixtureAttachHold,
+}
+
+#[cfg(all(test, windows))]
+impl BrokerAttachHoldGuard {
+    pub(crate) fn install(path: &Path) -> Self {
+        let held = FixtureAttachHold::default();
+        BROKER_ATTACH_HOLDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((path.to_owned(), held.clone()));
+        Self {
+            path: path.to_owned(),
+            held,
+        }
+    }
+
+    pub(crate) fn attached(&self) -> bool {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+}
+
+#[cfg(all(test, windows))]
+impl Drop for BrokerAttachHoldGuard {
+    fn drop(&mut self) {
+        BROKER_ATTACH_HOLDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(path, _)| path != &self.path);
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+}
 
 /// Called by `host_device_broker` on the very next line after the spawn.
 ///
@@ -696,6 +759,22 @@ struct LockFreeReads {
     intentional_release: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+struct GatewayWriteFailure {
+    message: String,
+    attempted: bool,
+}
+
+impl GatewayWriteFailure {
+    fn request_failure(self, method: &str) -> GatewayRequestFailure {
+        let failure = GatewayRequestFailure::Transport(self.message);
+        if self.attempted {
+            failure.after_dispatch(method)
+        } else {
+            failure
+        }
+    }
+}
+
 impl LockFreeReads {
     fn new(
         writer: TcpStream,
@@ -711,12 +790,54 @@ impl LockFreeReads {
 
     /// Every frame this connection sends goes through here, whichever path
     /// it came from.
-    fn write(&self, payload: &[u8]) -> Result<(), String> {
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|_| "Gateway writer lock was poisoned".to_string())?;
-        write_frame(&mut *writer, payload)
+    fn write(&self, payload: &[u8]) -> Result<(), GatewayWriteFailure> {
+        self.write_before(payload, std::time::Instant::now() + GATEWAY_WRITE_TIMEOUT)
+    }
+
+    fn write_before(
+        &self,
+        payload: &[u8],
+        deadline: std::time::Instant,
+    ) -> Result<(), GatewayWriteFailure> {
+        // Acquiring the shared frame writer is part of the same output budget.
+        // A refusal here proves no bytes from this request were dispatched.
+        let mut writer = loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(GatewayWriteFailure {
+                    message: "Gateway frame writer admission deadline elapsed".into(),
+                    attempted: false,
+                });
+            }
+            match self.writer.try_lock() {
+                Ok(writer) => break writer,
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(GatewayWriteFailure {
+                        message: "Gateway writer lock was poisoned".into(),
+                        attempted: false,
+                    })
+                }
+                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(
+                    deadline
+                        .saturating_duration_since(std::time::Instant::now())
+                        .min(std::time::Duration::from_millis(2)),
+                ),
+            }
+        };
+        qc_broker_framing::write_tcp_frame_before_deadline(
+            &mut writer,
+            payload,
+            quadcortex::domain::IPC_MAX_FRAME_BYTES,
+            deadline,
+        )
+        .map_err(|error| {
+            // A partial frame cannot safely be followed by another request.
+            // Retire this socket, never replay an admitted mutation.
+            let _ = writer.shutdown(Shutdown::Both);
+            GatewayWriteFailure {
+                message: error.to_string(),
+                attempted: true,
+            }
+        })
     }
 
     fn pending(
@@ -771,12 +892,15 @@ impl LockFreeReads {
             ));
         }
         let (waiter, reply) = mpsc::sync_channel(1);
+        let deadline = std::time::Instant::now() + LOCK_FREE_READ_TIMEOUT;
         self.pending().insert(id, waiter);
-        if let Err(error) = self.write(&payload) {
+        if let Err(error) = self.write_before(&payload, deadline) {
             self.pending().remove(&id);
-            return Err(GatewayRequestFailure::Transport(error));
+            return Err(error.request_failure(method));
         }
-        let response = match reply.recv_timeout(LOCK_FREE_READ_TIMEOUT) {
+        let response = match reply
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
             Ok(response) => response,
             Err(_) => {
                 self.pending().remove(&id);
@@ -939,6 +1063,9 @@ pub(crate) fn request_gateway(
                         Ok(result) => return Ok(result),
                         Err(failure @ GatewayRequestFailure::Remote { .. }) => return Err(failure),
                         Err(GatewayRequestFailure::Transport(_)) => {}
+                        Err(failure @ GatewayRequestFailure::UnansweredMutation(_)) => {
+                            return Err(failure)
+                        }
                     }
                 }
                 if when_busy == WhenGatewayBusy::Refuse {
@@ -966,6 +1093,7 @@ pub(crate) fn relay_gateway_request(
     params: Value,
     connection: ConnectionUse,
     stopped: Option<&std::sync::atomic::AtomicBool>,
+    admission: Option<&owned_blocking::Context>,
 ) -> Result<Value, GatewayRequestFailure> {
     let is_stopped =
         || stopped.is_some_and(|stopped| stopped.load(std::sync::atomic::Ordering::Acquire));
@@ -985,6 +1113,13 @@ pub(crate) fn relay_gateway_request(
             if is_stopped() {
                 return Err(stopping());
             }
+            // Cancellation and dispatch compete under the gateway's own lock.
+            // Queued requests must not dispatch after their caller has left.
+            if admission.is_some_and(|admission| !admission.begin_dispatch()) {
+                return Err(GatewayRequestFailure::Transport(
+                    "The request ended before gateway dispatch".into(),
+                ));
+            }
             let result = gateway.request_detailed_as(method, params, connection);
             if is_stopped() {
                 gateway.retire_current_process();
@@ -992,6 +1127,37 @@ pub(crate) fn relay_gateway_request(
             result
         },
     )
+}
+
+/// Retained native gateway work has a software admission ceiling, not a
+/// firmware/device limit. The relay's existing default invocation deadline is
+/// five minutes; a narrower outer caller deadline cancels this await sooner.
+static RELAY_GATEWAY_NATIVE_BUDGET: qc_native_platform::thread_owner::Budget =
+    qc_native_platform::thread_owner::Budget::new(8);
+const RELAY_GATEWAY_NATIVE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+pub(crate) async fn await_relay_gateway(
+    method: String,
+    budget: &'static qc_native_platform::thread_owner::Budget,
+    within: Duration,
+    action: impl FnOnce(owned_blocking::Context) -> Result<Value, GatewayRequestFailure>
+        + Send
+        + 'static,
+) -> Result<Value, DeviceError> {
+    match owned_blocking::run("qc-relay-gateway", budget, Instant::now() + within, action).await {
+        Ok(result) => result.map_err(device_error_from_gateway_failure),
+        Err(failure) => {
+            let message = format!("{} ({:?})", failure.message, failure.kind);
+            let failure = if failure.admitted && generated_gateway::is_mutation_method(&method) {
+                GatewayRequestFailure::UnansweredMutation(format!(
+                    "{message}. The admitted mutation may have reached the device; it was not replayed. Inspect current state before another mutation."
+                ))
+            } else {
+                GatewayRequestFailure::Transport(message)
+            };
+            Err(device_error_from_gateway_failure(failure))
+        }
+    }
 }
 
 /// Where the shared broker's descriptor lives, resolved from the Tauri
@@ -1045,12 +1211,29 @@ enum GatewayReaderMessage {
 
 enum GatewayRequestFailure {
     Transport(String),
+    /// Mutation dispatch was attempted, but no trustworthy reply established
+    /// its outcome. This transport loss must not advertise a safe replay.
+    UnansweredMutation(String),
     Remote {
         code: i64,
         message: String,
         retryable: bool,
         details: Option<Value>,
     },
+}
+
+impl GatewayRequestFailure {
+    fn after_dispatch(self, method: &str) -> Self {
+        match self {
+            Self::Transport(message)
+                if generated_gateway::is_mutation_method(method)
+                    || method == "broker.createDeviceBackupBound" =>
+            {
+                Self::UnansweredMutation(message)
+            }
+            other => other,
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -1079,14 +1262,22 @@ impl From<GatewayRequestFailure> for GatewayUiError {
                 message,
                 retryable: true,
             },
+            GatewayRequestFailure::UnansweredMutation(message) => Self {
+                code: "WRITE_OUTCOME_AMBIGUOUS".into(),
+                message,
+                retryable: false,
+            },
         }
     }
 }
 
 // Library mutations can contain several verified stages and backup is the
-// longest single RPC (three minutes). The desktop host still needs a hard
-// upper bound so a wedged child cannot hold the gateway mutex forever.
+// longest single RPC (three minutes). Reply waiting has a software deadline;
+// synchronous OS operations do not imply a hard kernel cancellation guarantee.
 const GATEWAY_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+// Local IPC output headroom, not a device/firmware limit. Both frame-writer
+// admission and all partial TCP writes share one absolute deadline.
+const GATEWAY_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Reported when a broker answer does not satisfy its generated result contract.
 /// Distinct from a transport fault so the session is not torn down for it.
 const GATEWAY_CONTRACT_ERROR_CODE: i64 = -32020;
@@ -1121,12 +1312,7 @@ impl GatewayProcess {
         else {
             return false;
         };
-        fs::read(release_marker_path)
-            .ok()
-            .and_then(|bytes| {
-                serde_json::from_slice::<generated_broker_surface::BrokerReleaseMarker>(&bytes).ok()
-            })
-            .is_some_and(|marker| marker.forced && marker.instance_id == *instance_id)
+        read_forced_release_marker(release_marker_path, instance_id)
     }
     /// `auto_connect` is set for a broker replacing a failed one, so it
     /// restores the device session the client already had without waiting to be
@@ -1146,6 +1332,8 @@ impl GatewayProcess {
     ) -> Result<Self, String> {
         // The one place every attach, election, shared spawn and private
         // `--stdio` child begins. Tests count it here; see `GatewayStartSeam`.
+        #[cfg(all(test, windows))]
+        require_native_test_state_root()?;
         #[cfg(test)]
         if let Some(starter) = gateway_start_seam(descriptor_path) {
             return starter(auto_connect);
@@ -1169,6 +1357,8 @@ impl GatewayProcess {
         auto_connect: bool,
         descriptor_path: &Path,
     ) -> Result<Self, String> {
+        #[cfg(windows)]
+        require_native_test_state_root()?;
         Self::start_shared(event_tx, auto_connect, descriptor_path)
     }
 
@@ -1326,7 +1516,8 @@ impl GatewayProcess {
         let status =
             self.request(rpc::RUNTIME_STATUS, json!({}))
                 .map_err(|failure| match failure {
-                    GatewayRequestFailure::Transport(message) => message,
+                    GatewayRequestFailure::Transport(message)
+                    | GatewayRequestFailure::UnansweredMutation(message) => message,
                     GatewayRequestFailure::Remote { message, .. } => message,
                 })?;
         check_gateway_api_version(&status, self.broker_pid)
@@ -1410,6 +1601,15 @@ impl GatewayProcess {
         let result = self.request_unchecked_as(method, params, origin)?;
         if matches!(method, "broker.devices" | "broker.selectDevice") {
             validate_broker_control_result(method, &result)?;
+        } else if method == "broker.backupTarget" {
+            serde_json::from_value::<quadcortex::device::owner::DispatchContext>(result.clone())
+                .map_err(|_| {
+                    GatewayRequestFailure::Transport(
+                        "Broker returned an invalid backup session context".into(),
+                    )
+                })?;
+        } else if method == "broker.createDeviceBackupBound" {
+            validate_gateway_result(rpc::CREATE_DEVICE_BACKUP, &result)?;
         } else {
             validate_gateway_result(method, &result)?;
         }
@@ -1453,29 +1653,66 @@ impl GatewayProcess {
         // request from interleaving with this frame.
         match &self.lock_free_reads {
             Some(reads) => reads.write(&payload),
-            None => write_frame(self.transport.writer(), &payload),
+            None => match &mut self.transport {
+                GatewayTransport::SharedBroker { stream, .. } => {
+                    qc_broker_framing::write_tcp_frame_before_deadline(
+                        stream,
+                        &payload,
+                        quadcortex::domain::IPC_MAX_FRAME_BYTES,
+                        std::time::Instant::now() + GATEWAY_WRITE_TIMEOUT,
+                    )
+                    .map_err(|error| {
+                        let _ = stream.shutdown(Shutdown::Both);
+                        GatewayWriteFailure {
+                            message: error.to_string(),
+                            attempted: true,
+                        }
+                    })
+                }
+                // Legacy private-child pipe path retains its existing policy;
+                // the TCP timeout does not claim cancellable Windows pipe I/O.
+                GatewayTransport::OwnedChild { stdin, .. } => {
+                    write_frame(stdin, &payload).map_err(|message| GatewayWriteFailure {
+                        message,
+                        attempted: true,
+                    })
+                }
+            },
         }
-        .map_err(GatewayRequestFailure::Transport)?;
+        .map_err(|failure| failure.request_failure(method))?;
 
         let response = match self.responses.recv_timeout(GATEWAY_RESPONSE_TIMEOUT) {
             Ok(GatewayReaderMessage::Response(value)) => value,
             Ok(GatewayReaderMessage::Failed(error)) => {
-                return Err(GatewayRequestFailure::Transport(error));
+                return Err(GatewayRequestFailure::Transport(error).after_dispatch(method));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 return Err(GatewayRequestFailure::Transport(format!(
                     "Gateway did not answer {method} within {} seconds",
                     GATEWAY_RESPONSE_TIMEOUT.as_secs()
-                )));
+                ))
+                .after_dispatch(method));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(GatewayRequestFailure::Transport(
                     "Gateway response channel closed".into(),
-                ));
+                )
+                .after_dispatch(method));
             }
         };
-        decode_gateway_response(response, id)
+        decode_gateway_response(response, id).map_err(|failure| failure.after_dispatch(method))
     }
+}
+
+fn read_forced_release_marker(path: &Path, instance_id: &str) -> bool {
+    // Same tiny local metadata contract as descriptors and user-Quit records:
+    // one held file, 128 KiB software ceiling, no firmware limit.
+    local_stdio::read_local_document(path)
+        .ok()
+        .and_then(|bytes| {
+            serde_json::from_slice::<generated_broker_surface::BrokerReleaseMarker>(&bytes).ok()
+        })
+        .is_some_and(|marker| marker.forced && marker.instance_id == instance_id)
 }
 
 /// One broker reply to request `id`: its result, or the broker's error. Shared
@@ -1568,6 +1805,11 @@ fn safe_gateway_failure_details(code: i64, data: Option<&Value>) -> Option<Value
 fn safe_gateway_error_details(data: Option<&Value>) -> Option<Value> {
     let source = data?.as_object()?;
     let mut details = serde_json::Map::new();
+    // The broker's typed idle-reopen refusal is stable readiness evidence.
+    // Do not forward arbitrary categories or infer this from overloaded -32002.
+    if source.get("category").and_then(Value::as_str) == Some("notConnected") {
+        details.insert("category".into(), Value::String("notConnected".into()));
+    }
     if let Some(code) = source.get("code").and_then(Value::as_str).filter(|code| {
         !code.is_empty()
             && code.len() <= 64
@@ -1630,6 +1872,16 @@ fn device_error_from_gateway_failure(failure: GatewayRequestFailure) -> DeviceEr
         GatewayRequestFailure::Transport(message) => {
             DeviceError::new("DEVICE_TRANSPORT", message, true)
         }
+        GatewayRequestFailure::UnansweredMutation(message) => DeviceError {
+            code: "WRITE_OUTCOME_AMBIGUOUS".into(),
+            message,
+            retryable: false,
+            user_action_required: Some(true),
+            details: Some(Box::new(
+                json!({"code":"WRITE_OUTCOME_AMBIGUOUS", "requestSent":true,
+                "retryable":false,"userActionRequired":true,"verification":"unknown"}),
+            )),
+        },
     }
 }
 
@@ -1837,6 +2089,11 @@ fn add_broker_session_arguments(command: &mut Command, auto_connect: bool) {
 
 /// Reads every frame the broker sends: notifications go to the webview,
 /// responses to the request waiting on the returned receiver.
+// Software process-wide headroom, including originals still retiring after a
+// reconnect. A body-completion notification does not release native admission.
+static GATEWAY_READER_THREADS: qc_native_platform::thread_owner::Budget =
+    qc_native_platform::thread_owner::Budget::new(16);
+
 struct GatewayReader {
     responses: mpsc::Receiver<GatewayReaderMessage>,
     completed: mpsc::Receiver<()>,
@@ -1869,11 +2126,29 @@ fn spawn_gateway_reader_with(
     intentional_release: std::sync::Arc<std::sync::atomic::AtomicBool>,
     lock_free_reads: Option<std::sync::Arc<LockFreeReads>>,
 ) -> Result<GatewayReader, String> {
+    spawn_gateway_reader_with_budget(
+        reader,
+        event_tx,
+        intentional_release,
+        lock_free_reads,
+        &GATEWAY_READER_THREADS,
+    )
+}
+
+fn spawn_gateway_reader_with_budget(
+    reader: impl Read + Send + 'static,
+    event_tx: Option<mpsc::SyncSender<DeviceEvent>>,
+    intentional_release: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    lock_free_reads: Option<std::sync::Arc<LockFreeReads>>,
+    budget: &'static qc_native_platform::thread_owner::Budget,
+) -> Result<GatewayReader, String> {
     let (response_tx, responses) = mpsc::channel();
     let (completion_tx, completed) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("qc-gateway-events".into())
-        .spawn(move || {
+    let original = qc_native_platform::thread_owner::Owned::spawn(
+        "qc-gateway-events",
+        budget,
+        (),
+        move || {
             let _completion = GatewayReaderCompletion(completion_tx);
             let mut reader = BufReader::new(reader);
             loop {
@@ -1929,8 +2204,14 @@ fn spawn_gateway_reader_with(
                     }
                 }
             }
-        })
-        .map_err(|error| format!("Could not start gateway event reader: {error}"))?;
+        },
+    )
+    .map_err(|error| format!("Could not start gateway event reader: {error}"))?;
+    // Transfer the exact original to the existing shared owner family. Future
+    // admissions reap acknowledged originals; active/unknown readers retain
+    // their permits through native TLS exit and successful original join.
+    // No GUI caller blocks waiting for a synchronous reader to retire.
+    drop(original);
     Ok(GatewayReader {
         responses,
         completed,
@@ -2262,6 +2543,31 @@ fn acknowledge_app_launch(app: &AppHandle) {
     }
 }
 
+// Software headroom for explicit GUI relaunch acknowledgments, not device
+// capacity. A stuck original retains admission and its AppHandle until join.
+#[cfg(all(any(windows, target_os = "linux", target_os = "macos"), not(test)))]
+static RELAUNCH_ACKNOWLEDGMENTS: qc_native_platform::thread_owner::Budget =
+    qc_native_platform::thread_owner::Budget::new(4);
+
+#[cfg(any(windows, all(any(target_os = "linux", target_os = "macos"), not(test))))]
+fn start_relaunch_acknowledgment(
+    budget: &'static qc_native_platform::thread_owner::Budget,
+    resource: impl Send + 'static,
+    action: impl FnOnce() + Send + 'static,
+) -> Result<(), String> {
+    let original = qc_native_platform::thread_owner::Owned::spawn(
+        "qc-user-quit-relaunch",
+        budget,
+        resource,
+        action,
+    )
+    .map_err(|error| error.to_string())?;
+    // Same shared owner family as the native reader/await work. Drop retains
+    // the exact original nonblockingly; later admissions reap actual joins.
+    drop(original);
+    Ok(())
+}
+
 /// `attach_or_host_device_broker` with an explicit overall budget.
 ///
 /// A published broker that is still running but does not answer is waited
@@ -2420,6 +2726,8 @@ enum HostAttempt {
 
 /// Run by the election winner only.
 fn host_device_broker(descriptor_path: &Path, auto_connect: bool) -> Result<HostAttempt, String> {
+    #[cfg(all(test, windows))]
+    require_native_test_state_root()?;
     // A broker may have been published between the failed attach and winning
     // the lock: the previous holder finished just before this one claimed it.
     // A descriptor that cannot be read is given one more chance after a pause,
@@ -2951,11 +3259,38 @@ fn resident_host_build_marker() -> String {
 /// file; never runs it.
 fn embeds_resident_host_marker(path: &Path) -> bool {
     let marker = resident_host_build_marker();
-    fs::read(path).is_ok_and(|bytes| {
-        bytes
+    std::fs::File::open(path)
+        .and_then(|mut file| reader_contains_resident_marker(&mut file, marker.as_bytes()))
+        .unwrap_or(false)
+}
+
+fn reader_contains_resident_marker(reader: &mut impl Read, marker: &[u8]) -> std::io::Result<bool> {
+    if marker.is_empty() {
+        return Ok(true);
+    }
+    // A binary has no JSON/document size limit. Keep only the fixed read
+    // window plus a marker-length overlap so split markers remain visible.
+    let mut bytes = vec![0u8; 8192 + marker.len() - 1];
+    let mut overlap = 0;
+    loop {
+        let read = match reader.read(&mut bytes[overlap..overlap + 8192]) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if read == 0 {
+            return Ok(false);
+        }
+        let available = overlap + read;
+        if bytes[..available]
             .windows(marker.len())
-            .any(|window| window == marker.as_bytes())
-    })
+            .any(|window| window == marker)
+        {
+            return Ok(true);
+        }
+        overlap = available.min(marker.len() - 1);
+        bytes.copy_within(available - overlap..available, 0);
+    }
 }
 
 /// The broker to spawn: the sidecar installed beside this executable, and in
@@ -3410,6 +3745,8 @@ impl Gateway {
         connection: ConnectionUse,
     ) -> Result<Value, GatewayRequestFailure> {
         let existing_only = connection == ConnectionUse::ExistingOnly;
+        #[cfg(all(test, windows))]
+        require_native_test_state_root().map_err(GatewayRequestFailure::Transport)?;
         // Before `respect_intentional_release`, which settles a failed
         // generation: that is recovery, and not a resource read's to start.
         if existing_only && self.process.is_none() {
@@ -3566,7 +3903,13 @@ impl Gateway {
                 retryable,
                 details,
             }) => {
-                if remote_failure_marks_disconnected(code, &message) {
+                if remote_failure_marks_disconnected(code, &message)
+                    || details
+                        .as_ref()
+                        .and_then(|value| value.get("category"))
+                        .and_then(Value::as_str)
+                        == Some("notConnected")
+                {
                     self.connected = false;
                 }
                 let detail = format!("[{code}] {message}");
@@ -3581,7 +3924,15 @@ impl Gateway {
                     Some(detail),
                 )
             }
-            Err(GatewayRequestFailure::Transport(message)) => {
+            Err(
+                failure @ (GatewayRequestFailure::Transport(_)
+                | GatewayRequestFailure::UnansweredMutation(_)),
+            ) => {
+                let (message, ambiguous) = match failure {
+                    GatewayRequestFailure::Transport(message) => (message, false),
+                    GatewayRequestFailure::UnansweredMutation(message) => (message, true),
+                    _ => unreachable!(),
+                };
                 self.intentional_release |= self.process.as_ref().is_some_and(|process| {
                     process
                         .intentional_release
@@ -3591,9 +3942,11 @@ impl Gateway {
                 self.connected = false;
                 let detail = message.clone();
                 (
-                    Err(GatewayRequestFailure::Transport(format!(
-                        "{message}. The failed command was not replayed; the communication session was cleared for a safe reconnect."
-                    ))),
+                    Err(if ambiguous {
+                        GatewayRequestFailure::UnansweredMutation(format!("{message}. The mutation may have reached the device; it was not replayed. Reconnect, inspect the current device state, and decide how to recover before another mutation."))
+                    } else {
+                        GatewayRequestFailure::Transport(format!("{message}. The failed command was not replayed; the communication session was cleared for a safe reconnect."))
+                    }),
                     "transport-error",
                     Some(detail),
                 )
@@ -3613,6 +3966,7 @@ impl Gateway {
         self.request_detailed(method, params)
             .map_err(|failure| match failure {
                 GatewayRequestFailure::Transport(message)
+                | GatewayRequestFailure::UnansweredMutation(message)
                 | GatewayRequestFailure::Remote { message, .. } => message,
             })
     }
@@ -3672,7 +4026,21 @@ fn unix_seconds() -> u64 {
         .as_secs()
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+fn runtime_health_path() -> PathBuf {
+    // Both health and inherited broker stderr belong to the original test
+    // PROCESS TREE, not to a request thread that may exit before its broker.
+    // The canonical producer removes this root only after its actual native
+    // descendants AND original host have acknowledged retirement.
+    require_native_test_state_root()
+        .expect("native test state requires the canonical owned Windows test launcher")
+        .join(format!("process-{}", std::process::id()))
+        .join("runtime-health.json")
+}
+
+// Non-Windows test launch/retirement policy is not changed by this Windows
+// original-producer correction; it requires its own portable owner review.
+#[cfg(all(test, not(windows)))]
 fn runtime_health_path() -> PathBuf {
     // Tests drive real gateways, and each request rewrites this record. The
     // installed app's own record - and its broker stderr log beside it - is
@@ -3680,6 +4048,49 @@ fn runtime_health_path() -> PathBuf {
     // directory, which a later test process sweeps once this one and every
     // broker spawned into it are proven gone (`test_health_dir`).
     test_health_dir::directory().join("runtime-health.json")
+}
+
+#[cfg(all(test, windows))]
+thread_local! {
+    // Pure per-thread failure injection; never mutates the parallel process
+    // environment and never enables a production executable behavior.
+    static TEST_STATE_ROOT_OVERRIDE: std::cell::RefCell<Option<Option<PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, windows))]
+fn require_native_test_state_root() -> Result<PathBuf, String> {
+    let configured = TEST_STATE_ROOT_OVERRIDE
+        .with(|root| root.borrow().clone())
+        .unwrap_or_else(|| std::env::var_os("QC_REMOTE_TEST_STATE_ROOT").map(PathBuf::from));
+    validate_native_test_state_root(configured.as_deref())
+}
+
+#[cfg(all(test, windows))]
+fn validate_native_test_state_root(root: Option<&Path>) -> Result<PathBuf, String> {
+    const GUIDANCE: &str = "Native tests requesting gateway health/stderr require the existing owned test producer: node scripts/test-windows-native.mjs --root . (private checkout: node .vendor/qc-remote-public/scripts/test-windows-native.mjs --root .). Standalone focused runners must opt in to nativeTestState on that same original-owned producer.";
+    let root = root
+        .filter(|root| root.is_absolute())
+        .ok_or_else(|| GUIDANCE.to_string())?;
+    let metadata = fs::symlink_metadata(root).map_err(|error| format!("{GUIDANCE} {error}"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "{GUIDANCE} Test state must be an existing non-link directory."
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(format!(
+                "{GUIDANCE} Test state must not be a reparse point."
+            ));
+        }
+    }
+    // This is a test-launch contract, not an OS security boundary. Only the
+    // launcher's internally allocated original-owner root authorizes deletion.
+    // Rust never deletes a caller-configured root or any historical directory.
+    Ok(root.to_path_buf())
 }
 
 #[cfg(not(test))]
@@ -3966,21 +4377,6 @@ fn gateway_attachment_with(
     }
 }
 
-fn relay_device_error(message: String) -> DeviceError {
-    let disconnected = message.contains("No Quad Cortex session")
-        || message.contains("not connected")
-        || message.contains("disconnected");
-    DeviceError::new(
-        if disconnected {
-            "NOT_CONNECTED"
-        } else {
-            "DEVICE_ERROR"
-        },
-        message,
-        disconnected,
-    )
-}
-
 #[async_trait::async_trait]
 impl DeviceAdapter for WindowsRelayAdapter {
     fn effective_access_mode(&self) -> Option<qc_relay_client::AccessMode> {
@@ -4037,19 +4433,24 @@ impl WindowsRelayAdapter {
                 let app = self.app.clone();
                 let method = method.to_owned();
                 async move {
-                    tauri::async_runtime::spawn_blocking(move || {
-                        relay_gateway_request(
-                            &app.state::<Mutex<Gateway>>(),
-                            &app.state::<LockFreeReadSlot>(),
-                            &method,
-                            params,
-                            connection,
-                            None,
-                        )
-                    })
+                    let method_for_action = method.clone();
+                    await_relay_gateway(
+                        method,
+                        &RELAY_GATEWAY_NATIVE_BUDGET,
+                        RELAY_GATEWAY_NATIVE_TIMEOUT,
+                        move |admission| {
+                            relay_gateway_request(
+                                &app.state::<Mutex<Gateway>>(),
+                                &app.state::<LockFreeReadSlot>(),
+                                &method_for_action,
+                                params,
+                                connection,
+                                None,
+                                Some(&admission),
+                            )
+                        },
+                    )
                     .await
-                    .map_err(|error| relay_device_error(error.to_string()))?
-                    .map_err(device_error_from_gateway_failure)
                 }
             },
         )
@@ -4181,8 +4582,8 @@ async fn poll_public_relay_browser_pairing(
 }
 
 #[tauri::command]
-fn cancel_public_relay_browser_pairing(state: State<'_, RelayBridge>) {
-    state.cancel_browser_pairing();
+fn cancel_public_relay_browser_pairing(state: State<'_, RelayBridge>) -> Result<(), String> {
+    state.cancel_browser_pairing()
 }
 
 #[tauri::command]
@@ -4193,6 +4594,13 @@ async fn start_public_relay(app: AppHandle, state: State<'_, RelayBridge>) -> Re
 #[tauri::command]
 async fn unpair_public_relay(state: State<'_, RelayBridge>) -> Result<RelayStatus, String> {
     state.unpair().await
+}
+
+#[tauri::command]
+async fn retry_public_relay_withdrawal(
+    state: State<'_, RelayBridge>,
+) -> Result<RelayStatus, String> {
+    state.retry_withdrawal().await
 }
 
 /// Whether the loopback MCP surface is on, whether it is actually listening,
@@ -4272,18 +4680,6 @@ async fn set_public_relay_access_mode(
 ) -> Result<RelayStatus, String> {
     state.set_access_mode(&mode).await?;
     state.status()
-}
-
-async fn background_gateway_request_params(
-    app: AppHandle,
-    method: &'static str,
-    params: Value,
-) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        with_gateway_params(app.state::<Mutex<Gateway>>(), method, params)
-    })
-    .await
-    .map_err(|error| error.to_string())?
 }
 
 /// One allowlisted gateway entrypoint shared with Android's native bridge.
@@ -4409,14 +4805,37 @@ async fn disconnect_broker_device(app: AppHandle) -> Result<Value, GatewayUiErro
 
 #[tauri::command]
 async fn create_device_backup(app: AppHandle, name: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        create_device_backup_with(
+            &name,
+            |method, params| with_gateway_params(app.state::<Mutex<Gateway>>(), method, params),
+            |file_name| {
+                rfd::FileDialog::new()
+                    .add_filter("Quad Cortex Backup", &["json"])
+                    .set_file_name(file_name)
+                    .save_file()
+            },
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn create_device_backup_with(
+    name: &str,
+    mut request: impl FnMut(&str, Value) -> Result<Value, String>,
+    choose_path: impl FnOnce(String) -> Option<PathBuf>,
+) -> Result<Value, String> {
     // Refuse an out-of-domain name before the dialog and before the transfer,
     // not after the device has already streamed the whole backup.
-    let clean_name = validate_backup_name(&name)?;
-    let Some(path) = rfd::FileDialog::new()
-        .add_filter("Quad Cortex Backup", &["json"])
-        .set_file_name(format!("{}.json", backup_file_stem(&clean_name)))
-        .save_file()
-    else {
+    let clean_name = validate_backup_name(name)?;
+    // Capture before the modal dialog, not when it eventually closes. The
+    // broker validates this session fence under its owner lock and at USB
+    // admission; a changed route or reconnect cannot silently export another QC.
+    let context = request("broker.backupTarget", json!({})).map_err(|error| format!(
+        "Could not bind this backup to the connected Quad Cortex: {error}. If the broker is outdated, restart QC Remote and its broker after updating."
+    ))?;
+    let Some(path) = choose_path(format!("{}.json", backup_file_stem(&clean_name))) else {
         return Ok(json!({ "cancelled": true }));
     };
     if path
@@ -4427,18 +4846,11 @@ async fn create_device_backup(app: AppHandle, name: String) -> Result<Value, Str
     {
         return Err("Quad Cortex backups must use the .json extension".into());
     }
-    let document = background_gateway_request_params(
-        app,
-        rpc::CREATE_DEVICE_BACKUP,
-        json!({ "name": clean_name }),
-    )
-    .await?;
-    validate_native_backup(&document)?;
-    let bytes = serde_json::to_vec(&document).map_err(|error| error.to_string())?;
-    if bytes.len() > MAX_NATIVE_BACKUP_BYTES {
-        return Err("The native backup exceeds the 32 MiB safety limit".into());
-    }
-    fs::write(&path, bytes).map_err(|error| format!("Could not save native backup: {error}"))?;
+    let document = request(
+        "broker.createDeviceBackupBound",
+        json!({ "name": clean_name, "context": context }),
+    )?;
+    write_native_backup(&path, &document)?;
     Ok(json!({
         "cancelled": false,
         "path": path.to_string_lossy(),
@@ -4474,12 +4886,7 @@ fn open_workspace() -> Result<Value, String> {
         return Ok(json!({ "cancelled": true }));
     };
     validate_workspace_path(&path)?;
-    let metadata =
-        fs::metadata(&path).map_err(|error| format!("Could not inspect workspace: {error}"))?;
-    if metadata.len() as usize > MAX_WORKSPACE_BYTES {
-        return Err("Workspace exceeds the 16 MiB size limit".into());
-    }
-    let bytes = fs::read(&path).map_err(|error| format!("Could not open workspace: {error}"))?;
+    let bytes = workspace::read_workspace_bytes(&path)?;
     let document: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("Invalid workspace JSON: {error}"))?;
     validate_workspace(&document)?;
@@ -4809,12 +5216,23 @@ fn export_diagnostics(report: Value) -> Result<Value, String> {
         return Ok(json!({ "cancelled": true }));
     };
     let bytes = serde_json::to_vec_pretty(&document).map_err(|error| error.to_string())?;
-    fs::write(&path, bytes).map_err(|error| format!("Could not export diagnostics: {error}"))?;
+    write_diagnostics_bytes_with(&path, &bytes, |file, bytes| file.write_all(bytes))
+        .map_err(|error| format!("Could not export diagnostics: {error}"))?;
     Ok(json!({
         "cancelled": false,
         "path": path.to_string_lossy(),
         "name": path.file_name().and_then(|value| value.to_str()).unwrap_or("QC Remote Diagnostics.json")
     }))
+}
+
+fn write_diagnostics_bytes_with(
+    path: &Path,
+    bytes: &[u8],
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    // Share the existing exclusive stage/sync/rename/disarm transaction.
+    // A selected existing export stays intact on partial writes or unwind.
+    workspace::write_document_with(path, |file| write(file, bytes))
 }
 
 fn chrono_free_timestamp() -> String {
@@ -4846,9 +5264,10 @@ pub fn run() {
         // launch's one clear point for a recorded Quit, off this thread
         // because the clear may wait for the election lock.
         let launched = app.clone();
-        if let Err(error) = std::thread::Builder::new()
-            .name("qc-user-quit-relaunch".into())
-            .spawn(move || acknowledge_app_launch(&launched))
+        if let Err(error) =
+            start_relaunch_acknowledgment(&RELAUNCH_ACKNOWLEDGMENTS, app.clone(), move || {
+                acknowledge_app_launch(&launched)
+            })
         {
             let error = format!("The reopen could not clear the recorded Quit: {error}");
             eprintln!("QC Remote: {error}");
@@ -5019,6 +5438,7 @@ pub fn run() {
             open_public_relay_pair_url,
             start_public_relay,
             unpair_public_relay,
+            retry_public_relay_withdrawal,
             set_public_relay_access_mode,
             gateway_invoke,
             acknowledge_user_connect,

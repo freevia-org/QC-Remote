@@ -91,6 +91,7 @@ fn run(
     let (finished, results) = mpsc::channel::<String>();
     let mut busy = false;
     let mut action_detail = String::new();
+    let mut device_status = crate::worker::BrokerStatus::default();
     loop {
         let now = Instant::now();
         if settings_at.is_none_or(|at| now.duration_since(at) >= SETTINGS_INTERVAL) {
@@ -119,6 +120,22 @@ fn run(
             busy = false;
             action_detail = detail;
         }
+        if let Some(mut current) = handle.try_tray_status() {
+            // The cached worker status knows the preset name immediately.
+            // Its address comes from the retained session state, which a
+            // device operation may legitimately hold. Keep the last address
+            // (and name when the cached frame has none) until that short
+            // authoritative read becomes available again.
+            if current.synchronized && device_status.synchronized {
+                if current.active_preset_location.is_none() {
+                    current.active_preset_location = device_status.active_preset_location.clone();
+                }
+                if current.active_preset_name.is_none() {
+                    current.active_preset_name = device_status.active_preset_name.clone();
+                }
+            }
+            device_status = current;
+        }
         let mut snapshot = Snapshot {
             participants: handle.participants_without_host(),
             host: host.clone(),
@@ -127,7 +144,7 @@ fn run(
             observed_at_unix_ms: unix_time_ms(),
             ..Snapshot::default()
         };
-        snapshot.apply_status(&handle.status());
+        snapshot.apply_status(&device_status);
         *shared
             .snapshot
             .lock()
@@ -307,6 +324,27 @@ fn app_beside(broker: &Path) -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use crate::resident::{DeviceReadinessProbe, RunningHost};
+
+    #[test]
+    fn busy_device_state_does_not_stop_the_tray_heartbeat() {
+        let handle = crate::rpc::test_support::handle();
+        let (notified_tx, notified_rx) = mpsc::channel();
+        crate::rpc::test_support::with_session_lock(&handle, || {
+            start(handle.clone(), None, move |_shared, _actions| {
+                Ok(Box::new(move || {
+                    let _ = notified_tx.send(());
+                    NotifyStatus::Retired
+                }))
+            })
+            .expect("tray state thread starts");
+            assert_eq!(
+                notified_rx.recv_timeout(Duration::from_secs(1)),
+                Ok(()),
+                "the tray heartbeat waited behind retained device state"
+            );
+        });
+        crate::rpc::test_support::finish(&handle);
+    }
 
     #[test]
     fn lost_ui_releases_registration_and_process_residency() {
@@ -565,15 +603,8 @@ mod tests {
 
     #[test]
     fn the_app_is_looked_up_only_beside_the_broker() {
-        let directory = std::env::temp_dir().join(format!(
-            "qc-broker-open-app-{}-{}",
-            std::process::id(),
-            line!()
-        ));
-        let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(&directory).unwrap();
-        // The removal at the end runs only when every assertion passed.
-        let _directory = crate::device_lease::testing::OwnedTestDirectory(directory.clone());
+        let owner = AppScratch::new();
+        let directory = &owner.0;
         #[cfg(windows)]
         let app_name = "qc-remote.exe";
         #[cfg(not(windows))]
@@ -582,6 +613,41 @@ mod tests {
         assert_eq!(app_beside(&broker), None);
         std::fs::write(directory.join(app_name), b"").unwrap();
         assert_eq!(app_beside(&broker), Some(directory.join(app_name)));
-        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    struct AppScratch(std::path::PathBuf);
+    impl AppScratch {
+        fn new() -> Self {
+            for _ in 0..64 {
+                let path = std::env::temp_dir().join(format!(
+                    "qc-broker-open-app-{:032x}",
+                    rand::random::<u128>()
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("reserve app path fixture: {error}"),
+                }
+            }
+            panic!("could not reserve app path fixture after 64 collisions");
+        }
+    }
+    impl Drop for AppScratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn app_path_fixture_root_is_removed_on_assertion_unwind() {
+        let mut root = None;
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let owner = AppScratch::new();
+            root = Some(owner.0.clone());
+            std::fs::write(owner.0.join("partial"), b"partial setup").unwrap();
+            panic!("injected fixture assertion failure");
+        }));
+        assert!(fault.is_err());
+        assert!(!root.unwrap().exists());
     }
 }

@@ -538,8 +538,12 @@ public final class QcRelayPlugin extends Plugin {
         if (pending == null) { call.resolve(new JSObject()); return; }
         String endpoint = normalizedEndpoint(pending.endpoint);
         if (endpoint == null) {
-            // Never send a retired credential outside the native origin policy.
-            finishUnpair(call,pending,false); return;
+            // Explicit Unpair may discard unusable local authority, but must
+            // not claim to have revoked it at the forbidden remote origin.
+            try { call.resolve(new JSObject().put("warning", discardForbiddenPendingRevocation(
+                new RelayCredentialStore(getContext()), pending))); }
+            catch (Exception unavailable) { call.reject("Could not discard the forbidden-origin withdrawal record.","PAIRING_STORAGE_ERROR"); }
+            return;
         }
         Request request = new Request.Builder()
             .url(endpoint + GeneratedRelayProfile.DEVICE_REVOKE_PATH + "?deviceId=" + Uri.encode(pending.deviceId))
@@ -578,7 +582,13 @@ public final class QcRelayPlugin extends Plugin {
         catch (Exception unavailable) { call.reject("Could not read pending cloud withdrawal.","PAIRING_STORAGE_ERROR"); return; }
         if (pending == null) { next.run(); return; }
         String endpoint=normalizedEndpoint(pending.endpoint);
-        if (endpoint == null) { call.reject("The pending withdrawal origin is not allowed.","INVALID_PAIRING"); return; }
+        if (endpoint == null) {
+            try {
+                String warning=discardForbiddenPendingRevocation(new RelayCredentialStore(getContext()),pending);
+                call.reject(warning + " Start pairing again to continue.","PAIRING_LOCAL_RECOVERY");
+            } catch (Exception unavailable) { call.reject("Could not discard the forbidden-origin withdrawal record.","PAIRING_STORAGE_ERROR"); }
+            return;
+        }
         Request request=new Request.Builder()
             .url(endpoint + GeneratedRelayProfile.DEVICE_REVOKE_PATH + "?deviceId=" + Uri.encode(pending.deviceId))
             .header("Authorization","Bearer " + pending.credential)
@@ -597,6 +607,14 @@ public final class QcRelayPlugin extends Plugin {
                 } catch (Exception unavailable) { call.reject("Could not confirm pending cloud withdrawal.","PAIRING_STORAGE_ERROR"); }
             }
         });
+    }
+
+    static String discardForbiddenPendingRevocation(RelayCredentialStore store,
+            RelayCredentialStore.Snapshot pending) throws Exception {
+        if (!store.discardForbiddenRevocation(pending,BuildConfig.DEBUG))
+            throw new IllegalStateException("The pending withdrawal changed or its origin is permitted.");
+        return "The legacy pairing's local withdrawal record was discarded without contacting its forbidden origin. "
+            + "Remote revocation could not be confirmed. Any other pending cloud withdrawal will be retried before pairing.";
     }
 
     private void startService() {

@@ -51,9 +51,9 @@ export function CorOsProductionScreenAudit({ view, snapshot }: { view: string; s
   } satisfies Partial<IoEqWorkflow> as IoEqWorkflow;
   const looper = {
     status: { state: 0, loopLength: 12_672_000, freeSamples: 12_672_000, oneShot: false, halfSpeed: false, redoAvailable: false },
-    loading: false, pending: false, async refresh() {}, async run() { return false; }
+    loading: false, pending: false, async refresh() {}, async run() { return false; }, captureContinuation: () => () => true
   };
-  const modes = { slots: [0, 6], loading: false, pending: false, async refresh() {}, async commit() {} };
+  const modes = { slots: [0, 6], contextVersion: 0, loading: false, pending: false, async refresh() {}, async commit() {} };
   // The audit never talks to a device. Its MIDI Out writes succeed locally so
   // Save and Clear all show their real outcome instead of a missing-method error.
   const midiOut: PresetMidiOutWorkflow = {

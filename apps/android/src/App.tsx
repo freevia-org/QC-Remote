@@ -1,12 +1,12 @@
 import { RemoteAccountDeletionLink } from "@qc-remote/ui";
 import { openRemoteAccountDeletionPage } from "./native-services";
 import { Capacitor } from "@capacitor/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { QC_SCENE_COUNT } from "@qc-remote/client";
 import { demoSnapshot, footswitchLeds, sceneLetter, type ControlAccessMode, type PublicRelayUsage } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_LEGAL, QC_LEGAL_DOCUMENTS, QC_VISUAL_ASSETS } from "@qc-remote/theme";
-import { ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, isConnectingPlaceholder, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, QcUiIcon, readControlAccessMode, refreshGridSnapshot, serializeDemoLibrary, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, useQcFollowSetting, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting } from "@qc-remote/ui";
+import { captureGatewaySession, ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, isConnectingPlaceholder, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, qcHardwareSwitchGestureKey, QcUiIcon, readControlAccessMode, refreshGridSnapshot, serializeDemoLibrary, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, useQcFollowSetting, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { androidGatewayTransport, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage } from "./native-services";
 import { useAndroidPrompts } from "./use-android-prompts";
@@ -16,7 +16,7 @@ import { startRelayReportingFailure } from "./relay-start.ts";
 import { pasteOwnedDemoLibrary } from "./demo-library-paste.ts";
 import { refreshOwnedNativeSnapshot } from "./native-session-refresh.ts";
 import { createBrowserPairingPoll } from "./browser-pairing-poll.ts";
-import { createControlAccessChange } from "./control-access-change.ts";
+import { createControlAccessChange, controlAccessPresentation } from "./control-access-change.ts";
 import { openOwnedLooper } from "./open-owned-looper.ts";
 import appPackage from "../package.json";
 import { qcStreamRestartClearsBulkOperation } from "@qc-remote/ui";
@@ -37,6 +37,7 @@ function AppMark({ onClick }: { onClick: () => void }) {
 
 export function App() {
   const native = Capacitor.isNativePlatform();
+  const iosPlatform = Capacitor.getPlatform() === "ios";
   const qcController = useQcController(demoSnapshot);
   const {
     snapshot, snapshotRef, setSnapshot, updateSnapshot,
@@ -53,15 +54,49 @@ export function App() {
   const editor = useBlockEditorSession();
   const { details: blockDetails } = editor;
   const [parameterMenuInitiallyOpen, setParameterMenuInitiallyOpen] = useState(false);
-  const [devicePending, setDevicePending] = useState(false);
+  const connectionPending = false; // USB connection progress retains its existing usbBusy owner.
+  const mutationBusy = useSyncExternalStore(qcController.lifetime.mutations.subscribe, qcController.lifetime.mutations.snapshot);
+  const devicePending = connectionPending || mutationBusy;
+  const setWorkflowPending = useCallback((_pending: boolean | ((current: boolean) => boolean)) => {}, []);
+  const appOperationMounted = useRef(true);
+  const appOperationEpoch = useRef(0);
+  useEffect(() => {
+    appOperationMounted.current = true;
+    return () => { appOperationMounted.current = false; appOperationEpoch.current++; };
+  }, []);
   const deviceConnection = useQcConnectionWorkflow({
     phase: native ? "discovering" : "disconnected",
-    detail: native ? "Looking for the Quad Cortex…" : "Android USB is unavailable in browser preview.",
+    detail: native ? (iosPlatform ? "Looking for a signed-in QC Remote host…" : "Looking for the Quad Cortex…") : "Android USB is unavailable in browser preview.",
     demo: true,
     source: "device"
   });
   const { connection, setConnection, transition: transitionConnection, attempts: connectionAttempts, busy: usbBusy } = deviceConnection;
   const [hardwareConnected, setHardwareConnected] = useState(false);
+  const [internetForwarding, setInternetForwarding] = useState<boolean>();
+  const [internetForwardingPending, setInternetForwardingPending] = useState(false);
+  const internetForwardingBusy = useRef(false);
+  useEffect(() => {
+    if (!native || iosPlatform) return;
+    let current = true;
+    void QcUsbNative.internetForwarding().then(({ enabled }) => {
+      if (current) setInternetForwarding(enabled);
+    }).catch(() => { if (current) setInternetForwarding(undefined); });
+    return () => { current = false; };
+  }, [native, iosPlatform]);
+  const changeInternetForwarding = async (enabled: boolean) => {
+    if (internetForwardingBusy.current) return;
+    internetForwardingBusy.current = true;
+    setInternetForwardingPending(true);
+    try {
+      const status = await QcUsbNative.setInternetForwarding({ enabled });
+      setInternetForwarding(status.enabled);
+    } catch {
+      setNotice("Could not change Internet forwarding. Try again.");
+    } finally {
+      internetForwardingBusy.current = false;
+      setInternetForwardingPending(false);
+    }
+  };
   const { deviceSuspended, deviceBulkBlocking, setDeviceSuspended, setDeviceBulkBlocking, resetSessionBlocks } = useAndroidSessionBlocks();
   const [catalogRevision, setCatalogRevision] = useState(0);
   const demoActive = connection.source === "virtual" && connection.phase === "ready";
@@ -76,7 +111,7 @@ export function App() {
   // Remember that edge and retry once if the owning attempt does not connect.
   const usbRetryRequested = useRef(false);
   const resumeHardwareInFlight = useRef(false);
-  const [notice, setNotice] = useState("Connect the Quad Cortex by USB. Use REMOTE to let an AI app control it.");
+  const [notice, setNotice] = useState(iosPlatform ? "Sign in to QC Remote Cloud to connect to your paired host." : "Connect the Quad Cortex by USB. Use REMOTE to let an AI app control it.");
   const [gridRefreshPending, setGridRefreshPending] = useState(false);
   const [usbWritesQuarantined, setUsbWritesQuarantined] = useState(false);
   const { observe: observeWriteHealth } = useWriteHealth({
@@ -110,12 +145,14 @@ export function App() {
         ? "Quad Cortex connection error"
         : "Quad Cortex disconnected";
   const [workflowPanel, setWorkflowPanel] = useState<"usb" | "remote" | "about" | "display" | "privacy" | "legal" | "notices" | null>(null);
-  const [usbPanelDetail, setUsbPanelDetail] = useState("Checking direct USB status…");
+  const [usbPanelDetail, setUsbPanelDetail] = useState(iosPlatform ? "Checking remote host status…" : "Checking direct USB status…");
   const screenDestination = useQcScreenDestination();
   const mobileScreenView = screenDestination.view;
   const setMobileScreenView = screenDestination.setView;
-  const cpuTelemetry = useQcCpuTelemetry();
+  const cpuTelemetry = useQcCpuTelemetry(qcController.lifetime);
   const modeChord = useRef<{ active: boolean; held: boolean; timer?: number }>({ active: false, held: false });
+  const modeChordEpoch = useRef(0);
+  const modeChordContext = useRef<string | undefined>(undefined);
   const controlContacts = useRef({ bankDown: false, tempo: false });
   const suppressControlTapUntil = useRef({ bankDown: 0, tempo: 0 });
   const connectAttemptLatch = useRef(new OwnedAttemptLatch());
@@ -185,7 +222,7 @@ export function App() {
     demo: corpusFixtureEnabled || demoActive || !native,
     source: connection.source,
     pending: devicePending,
-    setPending: setDevicePending,
+    setPending: setWorkflowPending,
     prompts: appPrompts,
     panels: {
       // Routing's advanced dialog, block management, and the generic scenes
@@ -227,13 +264,14 @@ export function App() {
     controller: qcController,
     gateway: activeGateway,
     connected: sessionReady,
-    demo: corpusFixtureEnabled || demoActive || !native,
+    demo: corpusFixtureEnabled,
     reconcile: reconcileWorkflowSnapshot,
     recordHistory: deviceHistory.record,
     notice: setNotice,
     fail: (error) => setNotice(error instanceof Error ? error.message : String(error))
   });
   const deviceWorkflowSession = {
+    lifetime: qcController.lifetime,
     commandSessionKey: deviceCommandSessionKey,
     sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
@@ -246,6 +284,8 @@ export function App() {
   const deviceSettingsWorkflow = useDeviceSettingsWorkflow({
     commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
+    ioSettingsError: snapshot.ioSettingsError,
+    lifetime: qcController.lifetime,
     sessionKey: `${connection.source}:${snapshot.stateVersion?.session ?? ""}:${hardwareConnected}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
       const attempt = connectionAttempts.capture();
@@ -255,22 +295,23 @@ export function App() {
     },
     connected: corpusFixtureEnabled || sessionReady,
     pending: devicePending,
-    setPending: setDevicePending,
+    setPending: setWorkflowPending,
     notice: setNotice,
     fail: (error) => setNotice(error instanceof Error ? error.message : String(error))
   });
   const tempoWorkflow = useTempoWorkflow({ ...deviceWorkflowSession,
     gateway: activeGateway,
+    lifetime: qcController.lifetime,
     connected: corpusFixtureEnabled || sessionReady,
     pending: devicePending,
-    setPending: setDevicePending,
+    setPending: setWorkflowPending,
     notice: setNotice,
     fail: (error) => setNotice(error instanceof Error ? error.message : String(error))
   });
   const workflowFailed = (error: unknown) => setNotice(error instanceof Error ? error.message : String(error));
-  const tunerWorkflow = useTunerWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
-  const looperWorkflow = useLooperXWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
-  const midiOutWorkflow = usePresetMidiOutWorkflow({ gateway: activeGateway, snapshot, demo: demoActive, onSaved: reconcileWorkflowSnapshot,
+  const tunerWorkflow = useTunerWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setWorkflowPending, notice: setNotice, fail: workflowFailed });
+  const looperWorkflow = useLooperXWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setWorkflowPending, notice: setNotice, fail: workflowFailed });
+  const midiOutWorkflow = usePresetMidiOutWorkflow({ lifetime: qcController.lifetime, gateway: activeGateway, snapshot, demo: demoActive, onSaved: reconcileWorkflowSnapshot,
     captureSessionCurrent: () => {
       const attempt = connectionAttempts.capture();
       const source = demoDeviceSession.source;
@@ -278,11 +319,11 @@ export function App() {
       return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
     }
   });
-  const modesWorkflow = useModesConfigurationWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed });
-  const ioEqWorkflow = useIoEqWorkflows({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setDevicePending, notice: setNotice, fail: workflowFailed, snapshot });
+  const modesWorkflow = useModesConfigurationWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setWorkflowPending, notice: setNotice, fail: workflowFailed });
+  const ioEqWorkflow = useIoEqWorkflows({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setWorkflowPending, notice: setNotice, fail: workflowFailed, snapshot });
   const deviceUndo = useQcDeviceUndo({ ...deviceWorkflowSession,
     history: deviceHistory, snapshot, gateway: activeGateway, presetLifetime: qcController.lifetime,
-    connected: sessionReady, pending: devicePending, setPending: setDevicePending,
+    connected: sessionReady, pending: devicePending, setPending: setWorkflowPending,
     notice: setNotice, fail: workflowFailed, reconcile: reconcileWorkflowSnapshot
   });
   const deviceViews = useQcDeviceViews({ ...deviceWorkflowSession,
@@ -304,6 +345,7 @@ export function App() {
   // never had an expression-pedal control on it at all; this reaches the
   // real device-accurate assignment screen instead.
   const expressionWorkflow = useExpressionAssignment({
+    lifetime: qcController.lifetime,
     commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
     sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
@@ -316,14 +358,15 @@ export function App() {
     snapshot,
     connected: sessionReady,
     pending: devicePending,
-    setPending: setDevicePending,
+    setPending: setWorkflowPending,
     reconcile: reconcileWorkflowSnapshot,
     recordHistory: deviceHistory.record,
     notice: setNotice,
     fail: (error) => setNotice(error instanceof Error ? error.message : String(error))
   });
   const parameterEditorBindings = qcParameterEditorBindings({
-    editorContextKey: `${deviceCommandSessionKey}:${qcController.lifetime.version}`,
+    editorContextKey: JSON.stringify([demoActive ? "demo" : "qc", qcController.lifetime.checkpoint().session, qcController.lifetime.version, snapshot.presetIdentity, selectedBlockId, editor.details?.modelId, snapshot.activeScene]),
+    referenceOnly: corpusFixtureEnabled,
     titlePresetMark: corpusFixtureEnabled && editor.details?.name === "Simple Gate",
     snapshot,
     selectedBlockId,
@@ -453,7 +496,7 @@ export function App() {
       if (result.synchronized) presetSynchronized.current = true;
       transitionConnection(presetSynchronized.current ? "connected" : "syncing");
       if (!presetSynchronized.current && isConnectingPlaceholder(snapshotRef.current)) setSnapshot(connectingPlaceholderSnapshot("synchronizing"));
-      if (announce) setNotice("Quad Cortex connected directly over USB.");
+      if (announce) setNotice(iosPlatform ? "Connected to the Quad Cortex through your paired QC Remote host." : "Quad Cortex connected directly over USB.");
     } catch (error) {
       if (!attempt.current()) return;
       usbSessionReady.current = false;
@@ -583,11 +626,12 @@ export function App() {
   }, [native]);
 
   useEffect(() => {
-    if (!relayWorkflow.status) return;
-    setControlAccessMode(relayWorkflow.status.accessMode);
+    const observed = relayWorkflow.accessModeObservation;
+    if (!observed) return;
+    setControlAccessMode(observed.value);
     setControlAccessModeVerified(true);
-    writeControlAccessMode(window.localStorage, relayWorkflow.status.accessMode);
-  }, [relayWorkflow.status]);
+    writeControlAccessMode(window.localStorage, observed.value);
+  }, [relayWorkflow.accessModeObservation]);
 
   const refreshRelayUsage = useCallback(async () => {
     if (!native || !relayWorkflow.status?.paired) { setRelayUsage(undefined); return; }
@@ -620,18 +664,21 @@ export function App() {
     // its virtual gateway deliberately has no looper transport.
     if (!demoActive && /\blooper\b/i.test(`${block.category ?? ""} ${block.name}`)) {
       const sessionCurrent = deviceWorkflowSession.captureSessionCurrent();
-      const lifetime = qcController.lifetime.checkpoint();
-      await openOwnedLooper({
-        current: () => sessionCurrent() && qcController.lifetime.current(lifetime),
-        open: () => looperWorkflow.run("open"),
-        show: () => setMobileScreenView("looper-editor")
-      });
+      const current = looperWorkflow.captureContinuation();
+      const destinationCurrent = screenDestination.captureCurrent();
+      if (!sessionCurrent() || !current() || !destinationCurrent()) return;
+      const accepted = await looperWorkflow.run("open");
+      if (sessionCurrent() && accepted && current() && destinationCurrent()) setMobileScreenView("looper-editor");
       return;
     }
     return gridWorkflow.openBlock(block);
   };
 
   const usbDiagnostics = async () => {
+    if (iosPlatform) {
+      const result = await androidUsbRuntimeDiagnostics();
+      return `${result.connected ? "Connected" : "Not connected"} through QC Remote Cloud. ${result.detail}`;
+    }
     if (!native) return "USB diagnostics are available in the installed Android app.";
     const runtimeDiagnostics = await androidUsbRuntimeDiagnostics();
     const result = runtimeDiagnostics.android;
@@ -680,7 +727,7 @@ export function App() {
     resetCommands();
     try {
       const opened = await demoDeviceSession.start(virtualDeviceStorage, attempt.current);
-      if (!opened) return;
+      if (!opened || !attempt.current()) return;
       const { connection: state, snapshot: current } = opened;
       activeSourceRef.current = "virtual";
       demoCanYieldToDevice.current = reason !== undefined;
@@ -714,35 +761,40 @@ export function App() {
   startDemoDeviceRef.current = startDemoDevice;
 
   const resumeHardwareDevice = async (knownConnected = false) => {
-    if (!native || devicePending || demoPending || resumeHardwareInFlight.current) return;
-    resumeHardwareInFlight.current = true;
-    if (!hardwareConnected && !knownConnected) {
-      try { await attemptUsbConnection(true); }
-      finally { resumeHardwareInFlight.current = false; }
-      return;
-    }
-    const attempt = connectionAttempts.begin();
-    setDevicePending(true);
+    if (!appOperationMounted.current || connectionPending) return;
+    const operationLease = qcController.lifetime.mutations.tryAcquire("host");
+    if (!operationLease) return;
+    const operationEpoch = appOperationEpoch.current;
+    const operationCurrent = () => appOperationMounted.current && operationEpoch === appOperationEpoch.current && operationLease.current();
     try {
-      const current = await androidGatewayTransport.currentSnapshot();
-      if (!attempt.current()) return;
-      demoDeviceSession.useDevice();
-      activeSourceRef.current = "device";
-      demoCanYieldToDevice.current = false;
-      deviceHistory.clear();
-      presetWorkflow.resetCache();
-      setSnapshot(current);
-      setSelectedBlockId("");
-      setConnection({ phase: "ready", detail: "Quad Cortex connected.", demo: false, source: "device", lastSync: new Date().toISOString() });
-      setNotice(`Quad Cortex active · ${current.presetLocation} · ${current.presetName}.`);
-    } catch (error) {
-      if (!attempt.current()) return;
-      setHardwareConnected(false);
-      setNotice(`The Quad Cortex connection was not available; the demo device remains active. ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setDevicePending(false);
-      resumeHardwareInFlight.current = false;
-    }
+      if (!native || devicePending || demoPending || resumeHardwareInFlight.current) return;
+      resumeHardwareInFlight.current = true;
+      if (!hardwareConnected && !knownConnected) {
+        try { await attemptUsbConnection(true); }
+        finally { resumeHardwareInFlight.current = false; }
+        return;
+      }
+      const attempt = connectionAttempts.begin();
+      try {
+        const current = await androidGatewayTransport.currentSnapshot();
+        if (!attempt.current() || !operationCurrent()) return;
+        demoDeviceSession.useDevice();
+        activeSourceRef.current = "device";
+        demoCanYieldToDevice.current = false;
+        deviceHistory.clear();
+        presetWorkflow.resetCache();
+        setSnapshot(current);
+        setSelectedBlockId("");
+        setConnection({ phase: "ready", detail: "Quad Cortex connected.", demo: false, source: "device", lastSync: new Date().toISOString() });
+        setNotice(`Quad Cortex active · ${current.presetLocation} · ${current.presetName}.`);
+      } catch (error) {
+        if (!attempt.current() || !operationCurrent()) return;
+        setHardwareConnected(false);
+        setNotice(`The Quad Cortex connection was not available; the demo device remains active. ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        resumeHardwareInFlight.current = false;
+      }
+    } finally { operationLease.release(); }
   };
   resumeHardwareDeviceRef.current = resumeHardwareDevice;
 
@@ -766,50 +818,57 @@ export function App() {
   };
 
   const copyDemoLibrary = async () => {
-    const store = virtualDeviceStoreOf(demoDeviceSession.virtual);
-    if (!store || demoDeviceSession.source !== "virtual") { setNotice("Start the demo device before copying its library."); return; }
+    if (!appOperationMounted.current || connectionPending) return;
+    const operationLease = qcController.lifetime.mutations.tryAcquire("session");
+    if (!operationLease) return;
+    const operationEpoch = appOperationEpoch.current;
+    const operationCurrent = () => appOperationMounted.current && operationEpoch === appOperationEpoch.current && operationLease.current();
     try {
-      const library = store.state;
-      const counts = demoLibraryCounts(library);
-      await navigator.clipboard.writeText(serializeDemoLibrary(library));
-      setNotice(`Copied ${counts.presets} demo preset${counts.presets === 1 ? "" : "s"} in ${counts.setlists} setlist${counts.setlists === 1 ? "" : "s"}.`);
-    } catch (error) { setNotice(error instanceof Error ? error.message : "The demo library could not be copied."); }
+      const store = virtualDeviceStoreOf(demoDeviceSession.virtual);
+      if (!store || demoDeviceSession.source !== "virtual") { setNotice("Start the demo device before copying its library."); return; }
+      const origin = qcController.lifetime.checkpoint();
+      const operation = captureGatewaySession(activeGateway, () => operationCurrent() && qcController.lifetime.currentSession(origin)
+        && demoDeviceSession.source === "virtual" && virtualDeviceStoreOf(demoDeviceSession.virtual) === store);
+      try {
+        const library = store.state;
+        const counts = demoLibraryCounts(library);
+        await navigator.clipboard.writeText(serializeDemoLibrary(library));
+        operation.assertCurrent();
+        setNotice(`Copied ${counts.presets} demo preset${counts.presets === 1 ? "" : "s"} in ${counts.setlists} setlist${counts.setlists === 1 ? "" : "s"}.`);
+      } catch (error) { if (operation.current()) setNotice(error instanceof Error ? error.message : "The demo library could not be copied."); }
+    } finally { operationLease.release(); }
   };
 
   const pasteDemoLibrary = async () => {
-    if (demoPasteInFlight.current) return;
-    const transport = demoDeviceSession.virtual;
-    const store = virtualDeviceStoreOf(transport);
-    if (!store || demoDeviceSession.source !== "virtual") { setNotice("Start the demo device before pasting a library."); return; }
-    const attempt = connectionAttempts.capture();
-    const current = () => attempt.current() && demoDeviceSession.source === "virtual" && demoDeviceSession.virtual === transport;
-    demoPasteInFlight.current = true;
-    setDemoPending(true);
+    if (!appOperationMounted.current || connectionPending) return;
+    const operationLease = qcController.lifetime.mutations.tryAcquire("session");
+    if (!operationLease) return;
+    const operationEpoch = appOperationEpoch.current;
+    const operationCurrent = () => appOperationMounted.current && operationEpoch === appOperationEpoch.current && operationLease.current();
     try {
-      await pasteOwnedDemoLibrary({
-        current,
-        async readLibrary() {
-          const text = await navigator.clipboard.readText();
-          if (!current()) return;
-          const parsed = parseDemoLibraryText(text);
-          if (!parsed.ok) { setNotice(parsed.message); return; }
-          const counts = demoLibraryCounts(parsed.document.library);
-          return { library: parsed.document.library, confirmation: `Replace the demo library on this phone with ${counts.presets} preset${counts.presets === 1 ? "" : "s"} in ${counts.setlists} setlist${counts.setlists === 1 ? "" : "s"}?` };
-        },
-        confirm: appPrompts.confirm,
-        replaceLibrary: (library) => store.replaceLibrary(library),
-        readSnapshot: () => transport!.currentSnapshot(),
-        applied(snapshot) {
-          const counts = demoLibraryCounts(store.state);
-          deviceHistory.clear();
-          presetWorkflow.resetCache();
-          reconcileWorkflowSnapshot(snapshot);
-          setSelectedBlockId("");
-          setNotice(`Demo library replaced: ${counts.presets} preset${counts.presets === 1 ? "" : "s"} in ${counts.setlists} setlist${counts.setlists === 1 ? "" : "s"}.`);
-        }
-      });
-    } catch (error) { if (current()) setNotice(error instanceof Error ? error.message : "The demo library could not be pasted."); }
-    finally { demoPasteInFlight.current = false; setDemoPending(false); }
+      const store = virtualDeviceStoreOf(demoDeviceSession.virtual);
+      if (!store || demoDeviceSession.source !== "virtual") { setNotice("Start the demo device before pasting a library."); return; }
+      const origin = qcController.lifetime.checkpoint();
+      const operation = captureGatewaySession(activeGateway, () => operationCurrent() && qcController.lifetime.currentSession(origin)
+        && demoDeviceSession.source === "virtual" && virtualDeviceStoreOf(demoDeviceSession.virtual) === store);
+      try {
+        const parsed = parseDemoLibraryText(await navigator.clipboard.readText());
+        operation.assertCurrent();
+        if (!parsed.ok) { setNotice(parsed.message); return; }
+        const counts = demoLibraryCounts(parsed.document.library);
+        if (!await appPrompts.confirm(`Replace the demo library on this phone with ${counts.presets} preset${counts.presets === 1 ? "" : "s"} in ${counts.setlists} setlist${counts.setlists === 1 ? "" : "s"}?`)) return;
+        operation.assertCurrent();
+        await store.replaceLibrary(parsed.document.library);
+        operation.assertCurrent();
+        const current = await operation.gateway.currentSnapshot();
+        operation.assertCurrent();
+        deviceHistory.clear();
+        presetWorkflow.resetCache();
+        reconcileWorkflowSnapshot(current);
+        setSelectedBlockId("");
+        setNotice(`Demo library replaced: ${counts.presets} preset${counts.presets === 1 ? "" : "s"} in ${counts.setlists} setlist${counts.setlists === 1 ? "" : "s"}.`);
+      } catch (error) { if (operation.current()) setNotice(error instanceof Error ? error.message : "The demo library could not be pasted."); }
+    } finally { operationLease.release(); }
   };
 
   const connectUsb = async () => {
@@ -825,7 +884,7 @@ export function App() {
       return;
     }
     try { setUsbPanelDetail(await usbDiagnostics()); }
-    catch (error) { setUsbPanelDetail(error instanceof Error ? error.message : "USB status could not be read."); }
+    catch (error) { setUsbPanelDetail(error instanceof Error ? error.message : iosPlatform ? "Remote host status could not be read." : "USB status could not be read."); }
   };
   const openRemoteStatusPanel = async () => {
     setWorkflowPanel("remote");
@@ -878,13 +937,15 @@ export function App() {
     const nativeModeSurfaceVisible = !blockDetails && !deviceSettingsWorkflow.open && !tempoWorkflow.open
       && (mobileScreenView === null || mobileScreenView === "gig");
     if (contacts.bankDown && contacts.tempo && !chord.active && nativeModeSurfaceVisible) {
-      chord.active = true;
-      chord.held = false;
+      const admitted: typeof chord = { active: true, held: false };
+      modeChord.current = admitted;
+      const contactEpoch = modeChordEpoch.current;
       suppressControlTapUntil.current = { bankDown: Number.POSITIVE_INFINITY, tempo: Number.POSITIVE_INFINITY };
-      chord.timer = window.setTimeout(() => {
-        chord.timer = undefined;
-        if (!modeChord.current.active || !deviceSettingsWorkflow.settings?.gigViewStompAccess) return;
-        modeChord.current.held = true;
+      admitted.timer = window.setTimeout(() => {
+        if (modeChord.current !== admitted || contactEpoch !== modeChordEpoch.current || !admitted.active) return;
+        admitted.timer = undefined;
+        if (!deviceSettingsWorkflow.settings?.gigViewStompAccess) return;
+        admitted.held = true;
         void deviceViews.toggle("gig");
       }, holdDelayMs);
       return;
@@ -908,12 +969,30 @@ export function App() {
     if (openTuner) { setWorkflowPanel(null); void deviceViews.open("tuner"); }
     else tempoWorkflow.openTempo();
   };
+  const hardwareGestureContextKey = JSON.stringify([demoActive ? "demo" : "qc", qcController.lifetime.checkpoint().session]);
+  // The mobile switches also close tuner/tempo screens and own the mode
+  // chord. A different pane/modal changes that meaning, not master volume.
+  const hardwareSwitchGestureKey = JSON.stringify([
+    qcHardwareSwitchGestureKey(hardwareGestureContextKey, snapshot, parameterEditorBindings),
+    mobileScreenView, deviceSettingsWorkflow.open, tempoWorkflow.open, workflowPanel
+  ]);
+  if (modeChordContext.current !== hardwareSwitchGestureKey) {
+    modeChordContext.current = hardwareSwitchGestureKey;
+    modeChordEpoch.current++;
+  }
+  useEffect(() => {
+    // Retirement cancels the old chord; releasing its contacts must not cycle a new device.
+    if (modeChord.current.timer !== undefined) window.clearTimeout(modeChord.current.timer);
+    modeChord.current = { active: false, held: false };
+    controlContacts.current = { bankDown: false, tempo: false };
+    suppressControlTapUntil.current = { bankDown: 0, tempo: 0 };
+  }, [hardwareSwitchGestureKey]);
   const display = createQcDeviceDisplay({
     captureSessionCurrent: deviceWorkflowSession.captureSessionCurrent,
-    screenGestureContextKey: deviceCommandSessionKey,
+    screenGestureContextKey: JSON.stringify([demoActive ? "demo" : "qc", qcController.lifetime.checkpoint().session, qcController.lifetime.version, snapshot.presetIdentity]),
     snapshot, selectedBlockId, pending: devicePending, destination: screenDestination, views: deviceViews, cpu: cpuTelemetry, undo: deviceUndo,
     workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow, scene: sceneWorkflow, preset: presetWorkflow, routing: routingWorkflow },
-    mirror: activeGateway,
+    mirror: activeGateway, mirrorLifetime: qcController.lifetime,
     selectScene: performanceWorkflow.selectScene, queueTempo: continuousControls.queueTempo, setParameterMenuInitiallyOpen, notice: setNotice,
     expressionAssignment, laneControlEditor, parameterEditor: parameterEditorBindings,
     openPreset: () => void presetWorkflow.openDirectory(), refresh: () => void presetWorkflow.refresh(), openRouting: routingWorkflow.openPicker,
@@ -922,14 +1001,14 @@ export function App() {
   });
   // The unit's own switches below the display light with the open parameter editor.
   const parameterLeds = display.hardwareLeds;
-  const mobileLed = (slot: number, fallback: { active: boolean; assigned: boolean; color: string }) => parameterLeds?.[slot] ?? fallback;
+  const mobileLed = (slot: number, fallback: { active?: boolean; assigned: boolean; color: string }) => parameterLeds?.[slot] ?? fallback;
 
   const configureRelay = async () => {
     if (!native) return;
     if (relayPaired) {
-      if (!window.confirm("Unpair this phone from the remote QC relay?")) return;
+      if (!await appPrompts.confirm(iosPlatform ? "Sign out of the QC Remote host connection on this iPhone?" : "Unpair this phone from the remote QC relay?")) return;
       const status = await relayWorkflow.unpair();
-      if (status?.detail) window.alert(status.detail);
+      if (status?.detail) setNotice(status.detail);
       return;
     }
     setBrowserRelayPairingPending(true);
@@ -955,24 +1034,29 @@ export function App() {
     failed: (error) => setNotice(`${error instanceof Error ? error.message : "Could not change the remote access mode."} Refresh remote status if the access mode is not confirmed.`)
   }), [native, relayWorkflow.setAccessMode, relayWorkflow.refresh]);
 
+  const controlAccess = controlAccessPresentation({
+    mode: controlAccessMode, verified: controlAccessModeVerified,
+    pending: controlAccessChangePending, busy: devicePending
+  });
+
   return <main className={`android-app${screenDimmed ? " screen-dimmed" : ""}`} onPointerDown={resetScreenDimmer} onKeyDown={resetScreenDimmer} onTouchStart={resetScreenDimmer}>
     <header className="mobile-header">
       <div className="mobile-brand"><AppMark onClick={() => setWorkflowPanel("about")} /><span><strong>{QC_BRAND.appName}</strong><small>v{appPackage.version}</small></span></div>
       <div className="connection-pills">
         <button className={`connection-pill phase-${remotePresentation.phase}`} onClick={() => void openRemoteStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "remote"} aria-label={`REMOTE ${remotePresentation.state}; open remote access details`}><i /> REMOTE</button>
-        <button className={`connection-pill phase-${usbIndicatorPhase}`} onClick={() => void openUsbStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "usb"} aria-label={`${demoActive ? "DEMO" : "USB"}; open device connection details`}><i /> {demoActive ? "DEMO" : "USB"}</button>
+        <button className={`connection-pill phase-${usbIndicatorPhase}`} onClick={() => void openUsbStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "usb"} aria-label={`${demoActive ? "DEMO" : iosPlatform ? "HOST" : "USB"}; open device connection details`}><i /> {demoActive ? "DEMO" : iosPlatform ? "HOST" : "USB"}</button>
       </div>
     </header>
 
     <section className="mobile-screen" aria-label="Quad Cortex display">
-      <QcDeviceDisplay display={display} presentation="display" formFactor={formFactor} skin={skin} onAction={handleSurfaceAction} onMasterVolumeInteractionStart={continuousControls.beginMasterVolumeInteraction} onMasterVolumeInteractionEnd={continuousControls.endMasterVolumeInteraction} />
+      <QcDeviceDisplay display={display} hardwareGestureContextKey={hardwareGestureContextKey} presentation="display" formFactor={formFactor} skin={skin} onAction={handleSurfaceAction} onMasterVolumeInteractionStart={continuousControls.beginMasterVolumeInteraction} onMasterVolumeInteractionEnd={continuousControls.endMasterVolumeInteraction} />
     </section>
 
     <nav className="quick-controls" aria-label="Quick device controls">
-      <div className="mobile-volume-control"><QcMasterVolumeKnob value={snapshot.masterVolume} readout={`${snapshot.masterVolume}`} onAction={handleSurfaceAction} onInteractionStart={continuousControls.beginMasterVolumeInteraction} onInteractionEnd={continuousControls.endMasterVolumeInteraction} /></div>
+      <div className="mobile-volume-control"><QcMasterVolumeKnob gestureContextKey={hardwareGestureContextKey} value={snapshot.masterVolume} readout={`${snapshot.masterVolume}`} onAction={handleSurfaceAction} onInteractionStart={continuousControls.beginMasterVolumeInteraction} onInteractionEnd={continuousControls.endMasterVolumeInteraction} /></div>
       <button type="button" className="mobile-device-view-control mobile-io-control" aria-label={ioViewOpen ? "I/O Settings, close view" : "Open I/O Settings"} aria-pressed={ioViewOpen} onClick={() => void deviceViews.toggle("io")}>I/O</button>
       <button type="button" className="mobile-device-view-control mobile-gig-control" aria-label={gigViewOpen ? "Gig View, close view" : "Open Gig View"} aria-pressed={gigViewOpen} onClick={() => void deviceViews.toggle("gig")}>GIG</button>
-      <div className="mobile-up-control"><QcHardwareSwitch role="bank:up" label={<QcUiIcon kind="up" />} ariaLabel="Previous preset" active={Boolean(parameterEditorBindings)} assigned={Boolean(parameterEditorBindings)} accent={QC_COLORS.hardware.whiteLed} onTap={() => {
+      <div className="mobile-up-control"><QcHardwareSwitch gestureContextKey={hardwareSwitchGestureKey} role="bank:up" label={<QcUiIcon kind="up" />} ariaLabel="Previous preset" active={Boolean(parameterEditorBindings)} assigned={Boolean(parameterEditorBindings)} accent={QC_COLORS.hardware.whiteLed} onTap={() => {
         if (mobileScreenView === "tuner") void deviceViews.close();
         else if (tempoWorkflow.open) tempoWorkflow.close();
         else pressSurfaceSwitch("bank:up");
@@ -981,11 +1065,11 @@ export function App() {
         const slot = index < 4 ? index : index + 1;
         const led = mobileLed(slot, switchLeds[index]);
         return <div className={`mobile-encoder-control mobile-encoder-${index}`} key={label}>
-          <QcHardwareSwitch role={`footswitch:${label}`} label={label} active={led.active} assigned={led.assigned} accent={led.color} onAction={handleSurfaceAction} />
+          <QcHardwareSwitch gestureContextKey={hardwareSwitchGestureKey} role={`footswitch:${label}`} label={label} active={led.active} assigned={led.assigned} accent={led.color} onAction={handleSurfaceAction} />
         </div>;
       })}
-      {(() => { const led = mobileLed(4, { active: false, assigned: false, color: QC_COLORS.hardware.whiteLed }); return <div className="mobile-down-control"><QcHardwareSwitch role="bank:down" label={<span className="mobile-down-glyph"><QcUiIcon kind="up" /></span>} ariaLabel="Next preset" active={led.active} assigned={led.assigned} accent={led.color} onContactChange={(pressed) => handleModeChordContact("bankDown", pressed)} onTap={() => { if (!controlTapSuppressed("bankDown")) pressSurfaceSwitch("bank:down"); }} onAction={handleSurfaceAction} /></div>; })()}
-      <div className="mobile-tempo-control"><QcHardwareSwitch role="tempo" label="" ariaLabel="TEMPO" readout={`${snapshot.tempo}`} active={parameterLeds ? parameterLeds[9].active : snapshot.tempoLedEnabled} assigned={parameterLeds ? parameterLeds[9].assigned : snapshot.tempoLedEnabled} accent={parameterLeds ? parameterLeds[9].color : QC_COLORS.device.tempoLed} pulseBpm={!parameterLeds && snapshot.tempoLedEnabled ? snapshot.tempo : undefined} pulseEpochMs={!parameterLeds ? snapshot.tempoPulseEpochMs : undefined} holdDelayMs={holdDelayMs} onContactChange={(pressed) => handleModeChordContact("tempo", pressed)} onTap={() => { if (!controlTapSuppressed("tempo")) pressSurfaceSwitch("tempo"); }} onDoubleTap={() => openTempoOrTuner("double-tap")} onHold={() => openTempoOrTuner("hold")} onAction={handleSurfaceAction} /></div>
+      {(() => { const led = mobileLed(4, { active: false, assigned: false, color: QC_COLORS.hardware.whiteLed }); return <div className="mobile-down-control"><QcHardwareSwitch gestureContextKey={hardwareSwitchGestureKey} role="bank:down" label={<span className="mobile-down-glyph"><QcUiIcon kind="up" /></span>} ariaLabel="Next preset" active={led.active} assigned={led.assigned} accent={led.color} onContactChange={(pressed) => handleModeChordContact("bankDown", pressed)} onTap={() => { if (!controlTapSuppressed("bankDown")) pressSurfaceSwitch("bank:down"); }} onAction={handleSurfaceAction} /></div>; })()}
+      <div className="mobile-tempo-control"><QcHardwareSwitch gestureContextKey={hardwareSwitchGestureKey} role="tempo" label="" ariaLabel="TEMPO" readout={`${snapshot.tempo}`} active={parameterLeds ? parameterLeds[9].active : snapshot.tempoLedEnabled} assigned={parameterLeds ? parameterLeds[9].assigned : snapshot.tempoLedEnabled} accent={parameterLeds ? parameterLeds[9].color : QC_COLORS.device.tempoLed} pulseBpm={!parameterLeds && snapshot.tempoLedEnabled ? snapshot.tempo : undefined} pulseEpochMs={!parameterLeds ? snapshot.tempoPulseEpochMs : undefined} holdDelayMs={holdDelayMs} onContactChange={(pressed) => handleModeChordContact("tempo", pressed)} onTap={() => { if (!controlTapSuppressed("tempo")) pressSurfaceSwitch("tempo"); }} onDoubleTap={() => openTempoOrTuner("double-tap")} onHold={() => openTempoOrTuner("hold")} onAction={handleSurfaceAction} /></div>
     </nav>
     <div className="mobile-status-notice" role="status">{notice}</div>
 
@@ -996,33 +1080,34 @@ export function App() {
         {workflowPanel === "usb" && <div className={`mobile-connection-panel${demoActive ? " is-demo" : ""}`}>
           <div className="dialog-kicker">DEVICE CONNECTION</div><h2 id="dialog-title">{demoActive ? "Demo device" : "Quad Cortex"}</h2>
           <div className="mobile-device-tabs" role="group" aria-label="Active device">
-            <button type="button" aria-pressed={!demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void (demoActive ? resumeHardwareDevice() : openUsbStatusPanel())}><i className={`panel-status-dot phase-${demoActive ? hardwareConnected ? "ready" : "idle" : usbIndicatorPhase}`} />Quad Cortex<small>USB</small></button>
+            <button type="button" aria-pressed={!demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void (demoActive ? resumeHardwareDevice() : openUsbStatusPanel())}><i className={`panel-status-dot phase-${demoActive ? hardwareConnected ? "ready" : "idle" : usbIndicatorPhase}`} />Quad Cortex<small>{iosPlatform ? "Remote host" : "USB"}</small></button>
             <button type="button" className="demo-device-tab" aria-pressed={demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => { if (!demoActive) void startDemoDevice(); }}>DEMO{demoPending && <small>Opening…</small>}</button>
           </div>
-          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${demoActive ? "demo" : usbIndicatorPhase}`} />{demoActive ? "Demo device ready" : usbStatusText}</span>{!demoActive && <button type="button" disabled={!native || usbBusy} onClick={() => void connectUsb().then(openUsbStatusPanel)}>{hardwareConnected ? "Reconnect" : "Connect"}</button>}{demoActive && !hardwareConnected && <button type="button" disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void resumeHardwareDevice()}>Connect Quad Cortex</button>}</div>
+          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${demoActive ? "demo" : usbIndicatorPhase}`} />{demoActive ? "Demo device ready" : usbStatusText}</span>{!demoActive && <button type="button" disabled={!native || usbBusy} onClick={() => void connectUsb().then(openUsbStatusPanel)}>{hardwareConnected ? "Reconnect" : iosPlatform ? "Sign in and connect" : "Connect"}</button>}{demoActive && !hardwareConnected && <button type="button" disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void resumeHardwareDevice()}>{iosPlatform ? "Connect to host" : "Connect Quad Cortex"}</button>}</div>
           <dl className="mobile-connection-details">
-            <div><dt>Connection</dt><dd>{demoActive ? "Local simulation · no hardware changes" : connection.detail || (hardwareConnected ? "The Quad Cortex is connected directly over USB." : "No Quad Cortex is connected directly over USB.")}</dd></div>
+            <div><dt>Connection</dt><dd>{demoActive ? "Local simulation · no hardware changes" : connection.detail || (hardwareConnected ? (iosPlatform ? "The Quad Cortex is connected through your paired QC Remote host." : "The Quad Cortex is connected directly over USB.") : (iosPlatform ? "Sign in to reach the Quad Cortex through a paired QC Remote host." : "No Quad Cortex is connected directly over USB."))}</dd></div>
             <div><dt>Current preset</dt><dd>{demoActive ? `${snapshot.presetLocation} · ${snapshot.presetName}` : hardwareConnected ? `${snapshot.presetLocation} · ${snapshot.presetName}` : "Not synchronized"}</dd></div>
             {!demoActive && snapshot.gridLayoutComplete === false && <div><dt>Grid</dt><dd role="status">{gridRefreshPending ? "Refreshing the current preset… Grid editing is paused." : "Grid layout is incomplete. Grid editing is paused until a fresh current-preset read succeeds."}</dd></div>}
             <div><dt>Status</dt><dd>{usbPanelDetail}</dd></div>
           </dl>
           <div className="mobile-panel-actions"><button disabled={!sessionReady || devicePending || demoPending} onClick={() => { setWorkflowPanel(null); void deviceViews.open("info"); }}>Device information</button></div>
+          {native && !iosPlatform && <><label className="mobile-setting-toggle"><input type="checkbox" checked={internetForwarding === true} disabled={internetForwarding === undefined || internetForwardingPending} onChange={(event) => void changeInternetForwarding(event.target.checked)} /> Allow the Quad Cortex to use this device’s Internet connection</label><p>Forwards the connected Quad Cortex’s cloud and update requests. Turning this off cancels active transfers.</p></>}
           {demoActive && <div className="mobile-panel-actions"><button disabled={devicePending || demoPending} onClick={() => void copyDemoLibrary()}>Copy library</button><button disabled={devicePending || demoPending} onClick={() => void pasteDemoLibrary()}>Paste library</button><button className="danger" disabled={devicePending || demoPending} onClick={stopDemoDevice}>Stop demo</button></div>}
         </div>}
         {workflowPanel === "remote" && <div className="mobile-connection-panel mobile-remote-panel">
-          <div className="dialog-kicker">REMOTE MCP ACCESS</div><h2 id="dialog-title">Quad Cortex pairing</h2>
-          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${remotePresentation.phase}`} />{remotePresentation.state}</span><ControlAccessSelect value={controlAccessMode} ariaLabel="MCP device access" disabled={devicePending || relayWorkflow.pending || controlAccessChangePending || !controlAccessModeVerified} onChange={(mode) => void changeControlAccessMode(mode)} /></div>
+          <div className="dialog-kicker">REMOTE MCP ACCESS</div><h2 id="dialog-title">{iosPlatform ? "QC Remote sign-in" : "Quad Cortex pairing"}</h2>
+          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${remotePresentation.phase}`} />{remotePresentation.state}</span><ControlAccessSelect value={controlAccessMode} ariaLabel="MCP device access" disabled={controlAccess.disabled} onChange={(mode) => void changeControlAccessMode(mode)} /></div>
           <p className="mobile-panel-description">{remotePresentation.detail}</p>
           <dl className="mobile-connection-details">
-            <div><dt>Pairing</dt><dd>{relayPaired ? relayWorkflow.status?.pairing?.email ?? "Paired" : browserRelayPairing ? "Waiting for browser sign-in" : "Not paired"}</dd></div>
-            <div><dt>Tunnel</dt><dd>{relayWorkflow.status?.state === "connected" ? "Connected" : relayWorkflow.status?.state?.replaceAll("_", " ") ?? "Checking"}</dd></div>
-            <div><dt>Control access</dt><dd>{controlAccessModeVerified ? controlAccessMode : "Not confirmed · refresh remote status"}</dd></div>
+            <div><dt>{iosPlatform ? "Account" : "Pairing"}</dt><dd>{relayPaired ? relayWorkflow.status?.pairing?.email ?? (iosPlatform ? "Signed in" : "Paired") : browserRelayPairing ? "Waiting for browser sign-in" : "Not paired"}</dd></div>
+            <div><dt>{iosPlatform ? "Host route" : "Tunnel"}</dt><dd>{relayWorkflow.status?.state === "connected" ? "Connected" : relayWorkflow.status?.state?.replaceAll("_", " ") ?? "Checking"}</dd></div>
+            <div><dt>Control access</dt><dd role="status">{controlAccess.readout}</dd></div>
           </dl>
           {browserRelayPairing && <p className="mobile-status-detail">Browser sign-in expires {new Date(browserRelayPairing.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>}
           {relayWorkflow.status?.endpoint && <p className="mobile-status-detail">Remote service: {relayWorkflow.status.endpoint}</p>}
           {relayUsage && <p className="mobile-status-detail">Today: {relayUsage.commands} remote command{relayUsage.commands === 1 ? "" : "s"}{relayUsage.lastCommandAt ? ` · last command ${new Date(relayUsage.lastCommandAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : " · no remote command yet"}</p>}
-          <p className="mobile-panel-footnote">Encrypted outbound connection · no inbound port is opened. On Android 7–9, native backups use app-private storage and are removed if QC Remote is uninstalled.</p>
-          <div className="mobile-panel-actions"><button className="primary mobile-primary-action" disabled={!native || relayWorkflow.pending || browserRelayPairingPending || Boolean(browserRelayPairing) || remotePresentation.action === "none" || remotePresentation.action === "checking"} onClick={() => void (remotePresentation.action === "reconnect" ? startRelayReportingFailure(relayWorkflow.start, setNotice) : configureRelay())}>{remotePresentation.primaryAction}</button><button aria-label="Refresh remote status" title="Refresh" disabled={!native || relayWorkflow.pending} onClick={() => { void relayWorkflow.refresh(); void refreshRelayUsage(); }}><QcUiIcon kind="refresh" /></button>{relayPaired && <button className="danger" disabled={relayWorkflow.pending} onClick={() => void configureRelay()}>Unpair</button>}</div>
+          <p className="mobile-panel-footnote">{iosPlatform ? "Encrypted sign-in connects this iPhone to a Quad Cortex already connected to a paired QC Remote host." : "Encrypted outbound connection · no inbound port is opened. On Android 7–9, native backups use app-private storage and are removed if QC Remote is uninstalled."}</p>
+          <div className="mobile-panel-actions"><button className="primary mobile-primary-action" disabled={!native || relayWorkflow.pending || browserRelayPairingPending || Boolean(browserRelayPairing) || remotePresentation.action === "none" || remotePresentation.action === "checking"} onClick={() => void (remotePresentation.action === "reconnect" ? startRelayReportingFailure(relayWorkflow.start, setNotice) : configureRelay())}>{remotePresentation.primaryAction}</button><button aria-label="Refresh remote status" title="Refresh" disabled={!native || relayWorkflow.pending} onClick={() => { void relayWorkflow.refresh().catch(() => setNotice("Could not confirm MCP control access. Refresh remote status to try again.")); void refreshRelayUsage(); }}><QcUiIcon kind="refresh" /></button>{relayPaired && <button className="danger" disabled={relayWorkflow.pending} onClick={() => void configureRelay()}>Unpair</button>}</div>
           <RemoteAccountDeletionLink disabled={!native} onOpen={() => {
             void openRemoteAccountDeletionPage().catch(() => setNotice("Could not open the account deletion page. Try again when a browser is available."));
           }} />

@@ -3507,7 +3507,7 @@ function PhysicalRoutingGrid({ snapshot, selected }: { snapshot: PresetSnapshot;
           const x = [101, 187, 273, 357, 443, 529, 615, 701][block.column] ?? 101;
           return (
             <g key={block.id}>
-              <QcDeviceGlyph block={block} x={x} y={41} />
+              <QcDeviceGlyph referenceOnly block={block} x={x} y={41} />
             </g>
           );
         })}
@@ -5598,7 +5598,7 @@ function CorOsReferenceDeviceBrowser({ snapshot, view }: { snapshot: PresetSnaps
         }
       : snapshot;
   return (
-    <CorOsOfficialGrid snapshot={gridSnapshot} browserChrome screenClassName="coros-device-browser-grid" letterTone={middle ? "var(--qc-palette-ff7100)" : undefined}>
+    <CorOsOfficialGrid referenceOnly snapshot={gridSnapshot} browserChrome screenClassName="coros-device-browser-grid" letterTone={middle ? "var(--qc-palette-ff7100)" : undefined}>
       <DeviceEmptySlotGlyph className={`coros-device-empty-slot${middle ? " is-row-4" : ""}`} />
       <button className="coros-device-dismiss" aria-label="Close device browser" />
       {/* The list is scrolled with a margin, so its thumb is drawn rather than
@@ -5776,10 +5776,11 @@ function CorOsOverlordSynth({ page }: { page: "main" | "oscillator" }) {
 export function CorOsScreenFixture({ view, snapshot, gigPresetList, deviceInformation, onClose = () => undefined, onEditScene, onSelectScene, onSelectModeSlot, onRecallGigPreset, onPressGigFootswitch, onEditGigBlock, onCopyGigScene, onSwapGigScene }: { view: CorOsScreenView; snapshot: PresetSnapshot; gigPresetList?: PresetList; deviceInformation?: CorOsDeviceInformation; onClose?: () => void; onEditScene?: (scene: number) => void; onSelectScene?: (scene: number) => void; onSelectModeSlot?: (slot: 0 | 1 | 2) => void; onRecallGigPreset?: (entry: PresetEntry) => void; onPressGigFootswitch?: (index: number) => void; onEditGigBlock?: (blockId: string) => void; onCopyGigScene?: (scene: number) => void; onSwapGigScene?: (scene: number) => void }) {
   if (view === "editor-overlord-synth" || view === "editor-overlord-synth-oscillator") return <CorOsOverlordSynth page={view.endsWith("oscillator") ? "oscillator" : "main"} />;
   if ((view as string) === "iconography-audit") return <IconographyAuditFixture />;
-  if (view === "grid-official-brit") return <CorOsOfficialGrid snapshot={snapshot} />;
+  if (view === "grid-official-brit") return <CorOsOfficialGrid referenceOnly snapshot={snapshot} />;
   if (view === "device-browser-dsp-limited")
     return (
       <CorOsOfficialGrid
+        referenceOnly
         browserChrome
         snapshot={{
           ...snapshot,

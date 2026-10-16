@@ -97,7 +97,7 @@ function DeviceInfoContent() {
         </dl>
       </> : <p role="status">{waitingLine(unanswered)}</p>}
       <p>The values on the screen are the ones the Quad Cortex reports about itself. Cloud account identifiers are not read or displayed, and none of this is included in diagnostics.</p>
-      <p>Software and firmware versions are not currently read from the connected device by this app.</p>
+      <p>Software and firmware versions are shown only when the connected unit reports them; unreported fields are identified on the screen.</p>
       {closeError && <p className="about-message" role="status">Could not close this window: {closeError}</p>}
     </div>
   </>;
@@ -109,13 +109,28 @@ function WorkspaceContent() {
   // Stays set until the main window answers, so a second press cannot open a
   // second save dialog behind the first.
   const [saving, setSaving] = useState(false);
+  const mounted = useRef(true);
+  const mountGeneration = useRef(0);
+  const saveFlight = useRef<object | undefined>(undefined);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; mountGeneration.current += 1; };
+  }, []);
   const saveCopy = () => {
-    if (saving) return;
+    if (!mounted.current || saveFlight.current || !workspace) return;
+    const token = {};
+    saveFlight.current = token;
+    const generation = mountGeneration.current;
+    const current = () => mounted.current && mountGeneration.current === generation;
     setSaving(true);
     setMessage("Waiting for the save dialog…");
-    requestWorkspaceSaveCopy()
-      .then(setMessage, (error: unknown) => setMessage(errorText(error)))
-      .finally(() => setSaving(false));
+    requestWorkspaceSaveCopy(workspace.documentId)
+      .then((line) => { if (current()) setMessage(line); }, (error: unknown) => { if (current()) setMessage(errorText(error)); })
+      .finally(() => {
+        if (saveFlight.current !== token) return;
+        saveFlight.current = undefined;
+        if (mounted.current) setSaving(false);
+      });
   };
   return <>
     <header className="help-window-header">
@@ -154,6 +169,13 @@ function SettingsContent() {
   // showing it until the next settings-state carries what was applied. A
   // refusal or no answer at all drops it, with the reason in the message line.
   const [pending, setPending] = useState<{ setting: SettingsSetting; value: unknown; answered: boolean }>();
+  const mounted = useRef(true);
+  const mountGeneration = useRef(0);
+  const changeFlight = useRef<object | undefined>(undefined);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; mountGeneration.current += 1; };
+  }, []);
   const [idleDraft, setIdleDraft] = useState("15");
   const lastIdleMinutes = useRef(15);
   useEffect(() => {
@@ -167,13 +189,23 @@ function SettingsContent() {
   useEffect(() => { setPending((current) => current?.answered ? undefined : current); }, [settings]);
   const waiting = pending !== undefined && !pending.answered;
   const change = (setting: SettingsSetting, value: unknown) => {
-    if (waiting) return;
+    if (!mounted.current || changeFlight.current) return;
+    const token = {};
+    changeFlight.current = token;
+    const generation = mountGeneration.current;
+    const current = () => mounted.current && mountGeneration.current === generation && changeFlight.current === token;
     setPending({ setting, value, answered: false });
     setMessage(undefined);
     requestSettingsChange(setting, value).then(
-      (line) => { setMessage(line); setPending((current) => current && { ...current, answered: true }); },
-      (error: unknown) => { setMessage(errorText(error)); setPending(undefined); }
-    );
+      (line) => { if (current()) { setMessage(line); setPending((pendingValue) => pendingValue && { ...pendingValue, answered: true }); } },
+      (error: unknown) => { if (current()) { setMessage(errorText(error)); setPending(undefined); } }
+    ).finally(() => {
+      // The native operation already admitted stays owned until its real
+      // response, even if the requesting window has since closed.
+      if (changeFlight.current !== token) return;
+      changeFlight.current = undefined;
+      if (mounted.current && mountGeneration.current !== generation) setPending(undefined);
+    });
   };
   const shown = <T,>(setting: SettingsSetting, current: T): T => pending?.setting === setting ? pending.value as T : current;
   const idleMinutes = shown("idle-disconnect-minutes", settings?.idleDisconnectMinutes ?? null);

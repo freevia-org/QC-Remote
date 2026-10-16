@@ -140,6 +140,9 @@ pub struct InboundTelemetrySnapshot {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InboundTelemetry {
     frames: u64,
+    // One unknown envelope can also be encrypted or fail inflation. Retain
+    // both diagnostic categories without counting that same frame twice.
+    undeclared_rejection_overlaps: u64,
     undeclared_types: BTreeMap<u32, u64>,
     undeclared_type_keys_dropped: u64,
     decode_failures: BTreeMap<u16, u64>,
@@ -188,12 +191,18 @@ impl InboundTelemetry {
             )
     }
 
+    /// Count a complete envelope whose raw type cannot be keyed by the
+    /// host's 16-bit trailer/outcome tables. No truncated type is invented.
+    pub(crate) fn record_unkeyed_envelope(&mut self) {
+        self.frames = self.frames.saturating_add(1);
+        self.revision = self.revision.saturating_add(1);
+    }
+
     /// A complete envelope, before anything decides what to do with it. The
     /// trailer bytes are tallied here so that a frame rejected further down
     /// still contributes the one datum nothing interprets.
     pub fn record_envelope(&mut self, message_type: u16, device_bytes: [u8; 2]) {
-        self.frames = self.frames.saturating_add(1);
-        self.revision = self.revision.saturating_add(1);
+        self.record_unkeyed_envelope();
         bump_bounded(
             &mut self.device_trailer_bytes,
             (message_type, device_bytes),
@@ -237,6 +246,11 @@ impl InboundTelemetry {
             "{} arrived encrypted and was dropped",
             describe_type(message_type)
         ));
+    }
+
+    pub(crate) fn record_undeclared_rejection_overlap(&mut self) {
+        self.undeclared_rejection_overlaps = self.undeclared_rejection_overlaps.saturating_add(1);
+        self.revision = self.revision.saturating_add(1);
     }
 
     /// A frame whose envelope declared a compressed body. Recorded whether
@@ -289,7 +303,15 @@ impl InboundTelemetry {
     /// Fold another accumulator's counts into this one.
     pub fn merge(&mut self, other: &InboundTelemetry) {
         self.frames = self.frames.saturating_add(other.frames);
-        merge_into(&mut self.undeclared_types, &other.undeclared_types);
+        self.undeclared_rejection_overlaps = self
+            .undeclared_rejection_overlaps
+            .saturating_add(other.undeclared_rejection_overlaps);
+        merge_bounded_into(
+            &mut self.undeclared_types,
+            &other.undeclared_types,
+            MAX_UNDECLARED_TYPE_KEYS,
+            &mut self.undeclared_type_keys_dropped,
+        );
         self.undeclared_type_keys_dropped = self
             .undeclared_type_keys_dropped
             .saturating_add(other.undeclared_type_keys_dropped);
@@ -301,7 +323,12 @@ impl InboundTelemetry {
         merge_into(&mut self.encrypted_rejections, &other.encrypted_rejections);
         merge_into(&mut self.compressed, &other.compressed);
         merge_into(&mut self.inflate_failures, &other.inflate_failures);
-        merge_into(&mut self.device_trailer_bytes, &other.device_trailer_bytes);
+        merge_bounded_into(
+            &mut self.device_trailer_bytes,
+            &other.device_trailer_bytes,
+            MAX_TRAILER_KEYS,
+            &mut self.device_trailer_keys_dropped,
+        );
         self.device_trailer_keys_dropped = self
             .device_trailer_keys_dropped
             .saturating_add(other.device_trailer_keys_dropped);
@@ -322,10 +349,15 @@ impl InboundTelemetry {
     pub fn snapshot(&self) -> InboundTelemetrySnapshot {
         InboundTelemetrySnapshot {
             frames: self.frames,
-            unacted_frames: total(&self.undeclared_types)
-                .saturating_add(total(&self.decode_failures))
-                .saturating_add(total(&self.encrypted_rejections))
-                .saturating_add(total(&self.inflate_failures)),
+            unacted_frames: u64::try_from(
+                wide_total(&self.undeclared_types)
+                    .saturating_add(u128::from(self.undeclared_type_keys_dropped))
+                    .saturating_add(wide_total(&self.decode_failures))
+                    .saturating_add(wide_total(&self.encrypted_rejections))
+                    .saturating_add(wide_total(&self.inflate_failures))
+                    .saturating_sub(u128::from(self.undeclared_rejection_overlaps)),
+            )
+            .unwrap_or(u64::MAX),
             no_state_handler_frames: total(&self.no_state_handler_types),
             undeclared_types: self.undeclared_types.clone(),
             undeclared_type_keys_dropped: self.undeclared_type_keys_dropped,
@@ -391,6 +423,29 @@ fn merge_into<K: Ord + Clone>(into: &mut BTreeMap<K, u64>, from: &BTreeMap<K, u6
     }
 }
 
+fn merge_bounded_into<K: Ord + Clone>(
+    into: &mut BTreeMap<K, u64>,
+    from: &BTreeMap<K, u64>,
+    limit: usize,
+    dropped: &mut u64,
+) {
+    for (key, count) in from {
+        if let Some(existing) = into.get_mut(key) {
+            *existing = existing.saturating_add(*count);
+        } else if into.len() < limit {
+            into.insert(key.clone(), *count);
+        } else {
+            *dropped = dropped.saturating_add(*count);
+        }
+    }
+}
+
+fn wide_total<K: Ord>(counts: &BTreeMap<K, u64>) -> u128 {
+    counts
+        .values()
+        .fold(0u128, |sum, count| sum.saturating_add(u128::from(*count)))
+}
+
 fn total<K: Ord>(counts: &BTreeMap<K, u64>) -> u64 {
     counts
         .values()
@@ -401,6 +456,34 @@ fn total<K: Ord>(counts: &BTreeMap<K, u64>) -> u64 {
 mod tests {
     use super::*;
     use crate::profile;
+
+    #[test]
+    fn overlapping_outcomes_subtract_before_final_saturation() {
+        let mut telemetry = InboundTelemetry::default();
+        telemetry.undeclared_types.insert(73, u64::MAX);
+        telemetry.encrypted_rejections.insert(73, u64::MAX);
+        telemetry.undeclared_rejection_overlaps = u64::MAX;
+        assert_eq!(telemetry.snapshot().unacted_frames, u64::MAX);
+        assert_eq!(telemetry.snapshot().undeclared_types[&73], u64::MAX);
+        assert_eq!(telemetry.snapshot().encrypted_rejections[&73], u64::MAX);
+
+        // Map totals must also remain wide until overlap subtraction.
+        telemetry.undeclared_types.insert(74, 7);
+        assert_eq!(telemetry.snapshot().unacted_frames, u64::MAX);
+
+        let mut left = InboundTelemetry::default();
+        left.undeclared_types.insert(73, u64::MAX - 1);
+        left.encrypted_rejections.insert(73, u64::MAX - 1);
+        left.undeclared_rejection_overlaps = u64::MAX - 1;
+        let mut right = InboundTelemetry::default();
+        right.undeclared_types.insert(73, 2);
+        right.encrypted_rejections.insert(73, 2);
+        right.undeclared_rejection_overlaps = 2;
+        left.merge(&right);
+        assert_eq!(left.snapshot().unacted_frames, u64::MAX);
+        assert_eq!(left.snapshot().undeclared_types[&73], u64::MAX);
+        assert_eq!(left.snapshot().encrypted_rejections[&73], u64::MAX);
+    }
 
     #[test]
     fn each_outcome_is_counted_in_its_own_bucket() {
@@ -545,6 +628,35 @@ mod tests {
     }
 
     #[test]
+    fn undeclared_observations_remain_unacted_after_key_admission_saturates() {
+        let mut telemetry = InboundTelemetry::default();
+        for number in 1_000..1_000 + (MAX_UNDECLARED_TYPE_KEYS as u32) * 2 {
+            telemetry.record_envelope(13, [0, 0]);
+            telemetry.record_undeclared_type(number);
+        }
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot.frames, (MAX_UNDECLARED_TYPE_KEYS * 2) as u64);
+        assert_eq!(snapshot.unacted_frames, snapshot.frames);
+        assert_eq!(snapshot.undeclared_types.len(), MAX_UNDECLARED_TYPE_KEYS);
+        assert_eq!(
+            snapshot.undeclared_type_keys_dropped,
+            MAX_UNDECLARED_TYPE_KEYS as u64
+        );
+        telemetry.record_undeclared_type(1_000);
+        assert_eq!(
+            telemetry.snapshot().unacted_frames,
+            snapshot.unacted_frames + 1
+        );
+        // Trailer saturation is metadata loss, not proof of an unused frame.
+        let mut usable = InboundTelemetry::default();
+        for number in 0..=MAX_TRAILER_KEYS as u16 {
+            usable.record_envelope(profile::MESSAGE_TYPE_SCENE, number.to_le_bytes());
+        }
+        assert_eq!(usable.snapshot().device_trailer_keys_dropped, 1);
+        assert_eq!(usable.snapshot().unacted_frames, 0);
+    }
+
+    #[test]
     fn merge_sums_both_halves_and_keeps_the_later_reason() {
         let mut transport = InboundTelemetry::default();
         transport.record_envelope(profile::MESSAGE_TYPE_SCENE, [1, 2]);
@@ -579,6 +691,64 @@ mod tests {
         assert_eq!(telemetry.revision(), after_envelope);
         telemetry.record_no_state_handler(profile::MESSAGE_TYPE_UNDO_REDO);
         assert!(telemetry.revision() > after_envelope);
+    }
+
+    #[test]
+    fn merging_disjoint_tallies_preserves_software_caps_and_known_counts() {
+        let mut first = InboundTelemetry::default();
+        let mut second = InboundTelemetry::default();
+        for value in 0..MAX_TRAILER_KEYS as u16 {
+            first.record_envelope(profile::MESSAGE_TYPE_SCENE, value.to_le_bytes());
+            let shifted = value + (MAX_TRAILER_KEYS / 2) as u16;
+            second.record_envelope(profile::MESSAGE_TYPE_SCENE, shifted.to_le_bytes());
+            second.record_envelope(profile::MESSAGE_TYPE_SCENE, shifted.to_le_bytes());
+        }
+        second.record_envelope(profile::MESSAGE_TYPE_SCENE, u16::MAX.to_le_bytes());
+        for value in 0..MAX_UNDECLARED_TYPE_KEYS as u32 {
+            first.record_undeclared_type(value + 1_000);
+            second.record_undeclared_type(value + 1_000 + (MAX_UNDECLARED_TYPE_KEYS / 2) as u32);
+            second.record_undeclared_type(value + 1_000 + (MAX_UNDECLARED_TYPE_KEYS / 2) as u32);
+        }
+        second.record_undeclared_type(u32::MAX);
+        first.merge(&second);
+        let snapshot = first.snapshot();
+        assert_eq!(snapshot.device_trailer_bytes.len(), MAX_TRAILER_KEYS);
+        assert_eq!(snapshot.undeclared_types.len(), MAX_UNDECLARED_TYPE_KEYS);
+        assert_eq!(
+            snapshot.undeclared_types[&(1_000 + (MAX_UNDECLARED_TYPE_KEYS / 2) as u32)],
+            3
+        );
+        let overlapping = (MAX_TRAILER_KEYS / 2) as u16;
+        assert_eq!(
+            snapshot
+                .device_trailer_bytes
+                .iter()
+                .find(|entry| entry.device_bytes == overlapping.to_le_bytes())
+                .unwrap()
+                .count,
+            3
+        );
+        assert_eq!(
+            snapshot.device_trailer_keys_dropped,
+            MAX_TRAILER_KEYS as u64 + 1
+        );
+        assert_eq!(
+            snapshot.undeclared_type_keys_dropped,
+            MAX_UNDECLARED_TYPE_KEYS as u64 + 1
+        );
+        assert_eq!(snapshot.frames, (MAX_TRAILER_KEYS * 3 + 1) as u64);
+        assert_eq!(
+            snapshot.unacted_frames,
+            (MAX_UNDECLARED_TYPE_KEYS * 3 + 1) as u64
+        );
+        // Existing admitted keys continue accumulating after saturation.
+        first.record_envelope(profile::MESSAGE_TYPE_SCENE, overlapping.to_le_bytes());
+        first.record_undeclared_type(1_000);
+        assert_eq!(first.snapshot().undeclared_types[&1_000], 2);
+        assert_eq!(
+            first.snapshot().device_trailer_bytes.len(),
+            MAX_TRAILER_KEYS
+        );
     }
 
     #[test]

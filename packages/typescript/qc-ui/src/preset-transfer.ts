@@ -185,7 +185,7 @@ function readBlock(value: unknown, position: number): VirtualGridBlock | undefin
     id: `${row}:${column}`, modelId, name,
     kind: GRID_KINDS.includes(value.kind as GridBlock["kind"]) ? value.kind as GridBlock["kind"] : "utility",
     row, column,
-    bypassed: value.bypassed === true
+    ...(typeof value.bypassed === "boolean" ? { bypassed: value.bypassed } : {})
   };
   if (typeof value.category === "string") block.category = value.category;
   if (isIntegerIn(value.footswitch, 0, QC_SCENE_COUNT - 1)) {
@@ -214,7 +214,7 @@ function readRoutes(value: unknown): GridRoute[] {
       row: route.row,
       input: typeof route.input === "string" ? route.input : "",
       output: typeof route.output === "string" ? route.output : "",
-      splitMuted: route.splitMuted === true,
+      ...(typeof route.splitMuted === "boolean" ? { splitMuted: route.splitMuted } : {}),
       ...(isIntegerIn(route.inputId, 0, 0xffff) ? { inputId: route.inputId } : {}),
       ...(isIntegerIn(route.outputId, 0, 0xffff) ? { outputId: route.outputId } : {}),
       ...(isIntegerIn(route.splitColumn, 0, QC_GRID_COLUMNS - 1) ? { splitColumn: route.splitColumn } : {}),
@@ -241,7 +241,7 @@ function readSnapshot(value: unknown): PresetSnapshot {
   const sceneColors = strings(value.sceneColors);
   const footswitchStates = Array.isArray(value.footswitchStates)
     ? value.footswitchStates.flatMap((state) => isRecord(state) && isIntegerIn(state.index, 0, QC_SCENE_COUNT - 1) ? [{
-      index: state.index, active: state.active === true, assigned: state.assigned === true,
+      index: state.index, ...(typeof state.active === "boolean" ? { active: state.active } : {}), assigned: state.assigned === true,
       color: typeof state.color === "string" ? state.color : "",
       ...(typeof state.momentary === "boolean" ? { momentary: state.momentary } : {}),
       ...(typeof state.label === "string" ? { label: state.label } : {})
@@ -462,6 +462,7 @@ export async function replayPresetOnDevice(options: ReplayPresetOptions): Promis
     let details;
     try {
       details = await gateway.blockDetails(block.row, block.column, presetName, identity);
+      if (details.modelId !== modelId || details.scene !== scene) throw new Error(`${Cell(block)} or its active scene changed while parameters were being read`);
     } catch (error) {
       report.failures.push(`${Cell(block)} (${block.name}) was added, but its parameters could not be read, so none of its ${values.length} values were set: ${errorText(error)}`);
       if (lost(error)) { report.notAttempted = incoming.length - position - 1; return report; }
@@ -531,7 +532,7 @@ export function presetReplaySummary(report: PresetReplayReport, document: Preset
     const shown = report.failures.slice(0, 3);
     parts.push(`${shown.join(". ")}${report.failures.length > shown.length ? `. And ${report.failures.length - shown.length} more refused.` : "."}`);
   }
-  parts.push("Bypass states, footswitch assignments, scene names, routing and tempo were not changed. Nothing is stored until you save the preset.");
+  parts.push("Bypass states, footswitch assignments, scene names, routing and tempo were not copied from the pasted preset. Nothing is stored until you save the preset.");
   return parts.join(" ");
 }
 
@@ -687,14 +688,30 @@ export function capturedPresetForDemo(store: VirtualDeviceStore, captured: Captu
   preset.activeScene = captured.activeScene;
   for (const block of preset.blocks) {
     const address = blockAddress(block.row, block.column);
+    // A complete capture must not turn unavailable scene evidence into an
+    // enabled block in the persisted Demo preset.
+    const sceneBypassed = captured.scenes.map((scene, sceneIndex) => {
+      const observed = scene.snapshot.blocks.find((candidate) => candidate.row === block.row && candidate.column === block.column);
+      if (observed?.modelId !== block.modelId || typeof observed.bypassed !== "boolean") {
+        throw new Error(`${captured.name}, ${Cell(block)}, Scene ${String.fromCharCode(65 + sceneIndex)}: bypass state unavailable or model changed. The setlist was not imported.`);
+      }
+      return observed.bypassed;
+    });
     const state = capturedParameterState(captured.scenes, (scene) => scene.blocks[address]);
     if (state) Object.assign(block, state);
-    block.sceneBypassed = captured.scenes.map((scene) => scene.snapshot.blocks.find((candidate) => candidate.row === block.row && candidate.column === block.column)?.bypassed === true);
+    block.sceneBypassed = sceneBypassed;
     const first = captured.scenes[0].blocks[address];
     if (first?.bypassExpression) block.bypassExpression = structuredClone(first.bypassExpression);
   }
   for (const route of preset.routes) {
-    route.splitMuted = captured.scenes.map((scene) => scene.snapshot.routes.find((candidate) => candidate.row === route.row)?.splitMuted === true);
+    route.splitMuted = captured.scenes.map((scene, sceneIndex) => {
+      const observed = scene.snapshot.routes.find((candidate) => candidate.row === route.row);
+      if ((route.splitColumn !== undefined || route.mixColumn !== undefined) && typeof observed?.splitMuted !== "boolean") {
+        throw new Error(`${captured.name}, row ${route.row + 1}, Scene ${String.fromCharCode(65 + sceneIndex)}: splitter/mixer mute state unavailable. The setlist was not imported.`);
+      }
+      // An unused route has no splitter/mixer whose mute state must be copied.
+      return observed?.splitMuted ?? false;
+    });
   }
   preset.lanes = {};
   for (let row = 0; row < QC_GRID_ROWS; row += 1) {

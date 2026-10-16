@@ -39,5 +39,6 @@ export function QcRotaryControl({ className, style, disabled, label, value, min,
     onWheel={gesture.onWheel}
     onKeyDown={gesture.onKeyDown}
     onKeyUp={gesture.onKeyUp}
+    onBlur={gesture.onBlur}
   >{children}</button>;
 }

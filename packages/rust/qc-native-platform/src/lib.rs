@@ -9,3 +9,4 @@ pub mod paths_macos;
 pub mod process;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod resident_marker;
+pub mod thread_owner;

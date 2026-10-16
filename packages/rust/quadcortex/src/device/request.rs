@@ -1070,7 +1070,7 @@ impl GatewayVerification {
                         .routes
                         .iter()
                         .find(|route| route.row == *row)
-                        .is_some_and(|route| route.split_muted == *muted)
+                        .is_some_and(|route| route.split_muted == Some(*muted))
             }
             Self::Preset {
                 setlist_key,
@@ -3907,7 +3907,10 @@ pub fn assert_expected_state(
             }
         }
         if let Some(expected) = params.get("expectedMuted").and_then(Value::as_bool) {
-            if route.split_muted != expected {
+            let actual = route.split_muted.ok_or(
+                "STATE_UNAVAILABLE: The active scene's splitter/mixer mute state was not reported",
+            )?;
+            if actual != expected {
                 return Err(
                     "The splitter/mixer mute state changed on the Quad Cortex. Refresh and retry."
                         .into(),
@@ -5756,6 +5759,75 @@ fn assert_global_eq_preset_announced(
         .map_err(|refusal| refusal.message())
 }
 
+fn validate_required_guard(method: &str, field: &str, params: &Value) -> Result<(), String> {
+    let value = params
+        .get(field)
+        .ok_or_else(|| format!("{field} is required to guard {method}"))?;
+    // Preserve the existing diagnostic for a missing usable preset-name guard.
+    if !value.as_str().is_some_and(|name| !name.is_empty()) {
+        if field == "expectedPresetName" {
+            return Err(format!("{field} is required to guard {method}"));
+        }
+        if field == "expectedPresetIdentity" {
+            return Err("A preset identity from current device state is required".into());
+        }
+    }
+    let unsigned_between = |minimum: u64, maximum: u64| {
+        value
+            .as_u64()
+            .is_some_and(|number| (minimum..=maximum).contains(&number))
+    };
+    let valid = match field {
+        "expectedPresetName" | "expectedPresetIdentity" => {
+            value.as_str().is_some_and(|text| !text.is_empty())
+        }
+        "expectedLabel" | "expectedColor" => value.is_string(),
+        "expectedMode" if method == "device.setGlobalTempo" => value
+            .as_str()
+            .is_some_and(|mode| matches!(mode, "PRESET" | "GLOBAL")),
+        "expectedMode" => value
+            .as_str()
+            .is_some_and(|mode| matches!(mode, "PRESET" | "SCENE" | "STOMP" | "HYBRID")),
+        "expectedScene" => unsigned_between(0, u64::from(domain::SCENE_COUNT - 1)),
+        "expectedTempo" | "expectedGlobalBpm" => unsigned_between(
+            u64::from(domain::MINIMUM_TEMPO_BPM),
+            u64::from(domain::MAXIMUM_TEMPO_BPM),
+        ),
+        "expectedValue" if method == "device.setMasterVolume" => unsigned_between(0, 100),
+        // Text parameters have no normalized numeric value. Their explicit null remains
+        // permitted only for a text write, never as a bypass of a numeric stale-value guard.
+        "expectedValue" => {
+            (value.is_null() && params.get("value").is_some_and(Value::is_string))
+                || value
+                    .as_f64()
+                    .is_some_and(|number| number.is_finite() && (0.0..=1.0).contains(&number))
+        }
+        "expectedBypassed" | "expectedMuted" => value.is_boolean(),
+        "expectedModelId" => value.is_null() || unsigned_between(0, u64::from(u32::MAX)),
+        "expectedFootswitch" => {
+            value.is_null() || unsigned_between(0, u64::from(domain::SCENE_COUNT - 1))
+        }
+        "expectedAssignmentType" => {
+            value.is_null()
+                || value
+                    .as_str()
+                    .is_some_and(|kind| matches!(kind, "primary" | "secondary"))
+        }
+        "expectedInputId" | "expectedOutputId" | "expectedSplitColumn" | "expectedMixColumn" => {
+            value.is_null()
+                || value
+                    .as_i64()
+                    .is_some_and(|number| i32::try_from(number).is_ok())
+        }
+        _ => return Err(format!("No native required-guard validator for {field}")),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("{field} has an invalid guard value for {method}"))
+    }
+}
+
 fn plan_gateway_write_inner(
     method: &str,
     params: &Value,
@@ -5856,12 +5928,7 @@ fn plan_gateway_write_inner(
         );
     }
     for field in required_guards {
-        let present = params.get(*field).is_some_and(|value| {
-            *field != "expectedPresetName" || value.as_str().is_some_and(|name| !name.is_empty())
-        });
-        if !present {
-            return Err(format!("{field} is required to guard {method}"));
-        }
+        validate_required_guard(method, field, params)?;
     }
     if method == "device.setLooperStompAssignments" {
         assert_expected_looper_assignments(params, state)?;
@@ -6595,7 +6662,7 @@ fn plan_gateway_write_inner(
 /// separate broker guard. Keep preset-level controls available while refusing
 /// operations whose row/column or routing target may now refer to a different
 /// block.
-fn gateway_method_requires_exact_grid(method: &str) -> bool {
+pub(crate) fn gateway_method_requires_exact_grid(method: &str) -> bool {
     matches!(
         method,
         "device.toggleBypass"

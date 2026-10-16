@@ -1,20 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { qcDeviceInformation } from "./device-information.ts";
 import type { DeviceIdentity, GatewayTransport, PresetList, PresetSnapshot } from "@qc-remote/client";
-import type { ObservedCorOsVersion } from "./cor-os-version.ts";
 import type { CorOsDeviceInformation } from "./coros-reference-settings-pane.tsx";
 import { closeQcLooperScreen } from "./qc-device-screen.ts";
-import { closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, unitScreen, untouchableUnitScreen, type QcScreenPoll } from "./qc-unit-screens.ts";
+import { closeOnUnit, DEFAULT_SCREEN_POLL, openOnUnit, untouchableUnitScreen, unitScreen, type QcScreenPoll } from "./qc-unit-screens.ts";
 import type { QcScreenDestination } from "./use-qc-screen-destination.ts";
+import { captureGatewaySession } from "./gateway-session.ts";
 import { useDeviceWorkflowSession } from "./use-device-workflow-session.ts";
+import type { ObservedCorOsVersion } from "./cor-os-version.ts";
+import type { PresetLifetime } from "@qc-remote/core";
 
 export type QcDeviceViewName = "tuner" | "gig" | "io" | "info";
 export type QcDeviceGesture = "tap" | "long-tap" | "swipe";
 
 export interface QcDeviceViewsOptions {
+  lifetime?: PresetLifetime;
   sessionKey?: unknown;
   captureSessionCurrent?(): () => boolean;
-  destination: Pick<QcScreenDestination, "view" | "setView" | "latch">;
+  destination: Pick<QcScreenDestination, "view" | "setView" | "latch" | "captureCurrent">;
   snapshot: Pick<PresetSnapshot, "setlistKey" | "deviceName">;
   session: {
     /** A demo or virtual device: nothing is sent to hardware. */
@@ -30,11 +33,10 @@ export interface QcDeviceViewsOptions {
   workflows: {
     performance: { showDeviceView(view: "tuner" | "gig", visible?: boolean): Promise<boolean> };
     tuner: { openTuner(): unknown };
-    looper: { run(command: string, value?: number | null): Promise<void | boolean> };
+    looper: { run(command: string, value?: number | null): Promise<boolean>; captureContinuation(): () => boolean };
     ioEq: { refresh(): Promise<unknown> };
-    preset: { presetList?: Pick<PresetList, "setlistKey">; loadDirectory(...args: [boolean, string, boolean]): unknown };
-    /** The CorOS version the unit's own Device Information screen last showed (use-device-settings-workflow.ts), if any. */
     deviceSettings?: { screenCorOsVersion?: ObservedCorOsVersion };
+    preset: { presetList?: Pick<PresetList, "setlistKey">; loadDirectory(...args: [boolean, string, boolean]): unknown };
   };
   notice(message: string): void;
   fail(error: unknown): void;
@@ -66,15 +68,53 @@ const isIoView = (view: string | null | undefined) => Boolean(view?.startsWith("
  * the demo device is projected locally by that command, never sent to hardware.
  */
 export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
-  const [deviceInformation, setDeviceInformation] = useState<{ key: unknown; value: CorOsDeviceInformation; identity?: DeviceIdentity; readAt?: number }>();
-  const lifetime = useDeviceWorkflowSession({ ...options, connected: options.session.sessionReady });
-  const latest = useRef({ ...lifetime.options, lifetime });
-  latest.current = { ...lifetime.options, lifetime };
+  const hostSession = useDeviceWorkflowSession({ ...options, connected: options.session.sessionReady });
+  options = hostSession.options;
+  const [deviceInformation, setDeviceInformation] = useState<{ key: unknown; value: CorOsDeviceInformation; identity: DeviceIdentity; readAt: number }>();
+  const [identitySessionRevision, setIdentitySessionRevision] = useState(0);
+  const identityReadGeneration = useRef(0);
+  const latest = useRef(options);
+  latest.current = options;
+  const operation = useRef(0);
+  const gestureOperation = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; operation.current += 1; gestureOperation.current += 1; }; }, []);
+  const beginFlow = () => {
+    const original = latest.current;
+    const generation = ++operation.current;
+    const checkpoint = original.lifetime?.checkpoint();
+    let destinationCurrent = original.destination.captureCurrent();
+    const initialView = original.destination.view;
+    let expectedView = initialView;
+    let committedExpected = true;
+    const viewCurrent = () => {
+      const shown = latest.current.destination.view;
+      if (shown === expectedView) committedExpected = true;
+      // React may not have committed our own setView yet. Once it has, never
+      // accept a later return to the old view as belonging to this operation.
+      return shown === expectedView || (!committedExpected && shown === initialView);
+    };
+    const captured = captureGatewaySession(original.gateway as GatewayTransport, () => mounted.current
+      && destinationCurrent()
+      && operation.current === generation && latest.current.gateway === original.gateway
+      && latest.current.session.demo === original.session.demo
+      && (!checkpoint || original.lifetime!.currentSession(checkpoint))
+      && viewCurrent());
+    return { ...captured, setView(view: typeof expectedView) {
+      captured.assertCurrent();
+      expectedView = view;
+      committedExpected = false;
+      original.destination.setView(view);
+      // Adopt only our own admitted transition. An unrelated ABA never
+      // refreshes this lease even if the visible view comes back equal.
+      destinationCurrent = original.destination.captureCurrent();
+    } };
+  };
 
   const close = useCallback(async () => {
-    if (!lifetime.current()) return;
-    const { destination, session, gateway, screenPoll, workflows, notice, fail, lifetime: owner } = latest.current;
-    if (!owner.current()) return;
+    if (!hostSession.current()) return;
+    const captured = beginFlow();
+    const { destination, session, workflows, notice, fail } = latest.current;
     const view = destination.view;
     if (isIoView(view)) {
       if (session.demo) {
@@ -85,31 +125,35 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
       if (session.hardwareReady) {
         try {
           // The unit has no command for this screen: it closes on a tap of its check button, and only if it is showing it.
-          const closed = await closeOnUnit(gateway, screenPoll ?? DEFAULT_SCREEN_POLL, "io");
+          const closed = await closeOnUnit(captured.gateway, latest.current.screenPoll ?? DEFAULT_SCREEN_POLL, "io");
+          if (!captured.current()) return;
           if (!closed) { notice("The Quad Cortex did not close I/O Settings."); return; }
         } catch (error) {
-          fail(error);
+          if (captured.current()) fail(error);
           return;
         }
       }
-      owner.apply(() => destination.setView(null));
+      destination.setView(null);
       return;
     }
-    if (view === "looper-editor") { await closeQcLooperScreen({ looper: workflows.looper, setView: (next) => owner.apply(() => destination.setView(next)), captureSessionCurrent: () => owner.current }); return; }
+    if (view === "looper-editor") { await closeQcLooperScreen({ looper: workflows.looper, setView: (view) => { if (captured.current()) destination.setView(view); } }); return; }
     const owned = isGigView(view) ? "gig" : isTunerView(view) ? "tuner" : undefined;
     if (!owned) { destination.setView(null); return; }
     // With nothing to tell (the unit is gone) the app's own view must still be able to close.
-    if (await workflows.performance.showDeviceView(owned, false) || (!session.demo && !session.hardwareReady)) owner.apply(() => destination.setView(null));
-  }, [lifetime.key]);
+    const closed = await workflows.performance.showDeviceView(owned, false);
+    if (captured.current() && (closed || (!session.demo && !session.hardwareReady))) destination.setView(null);
+  }, [hostSession.key]);
 
   const open = useCallback(async (view: QcDeviceViewName) => {
-    if (!lifetime.current()) return;
-    const { destination, snapshot, session, gateway, screenPoll, workflows, notice, fail, lifetime: owner } = latest.current;
-    if (!owner.current()) return;
+    if (!hostSession.current()) return;
+    const captured = beginFlow();
+    const { destination, snapshot, session, workflows, notice, fail } = latest.current;
+    const gateway = captured.gateway;
     if (view === "tuner" || view === "gig") {
       destination.latch.expectUnit(view);
-      if (!await workflows.performance.showDeviceView(view, true)) { owner.apply(() => destination.latch.cancelUnit(view)); return; }
-      if (!owner.current()) return;
+      const shown = await workflows.performance.showDeviceView(view, true);
+      if (!captured.current()) return;
+      if (!shown) { destination.latch.cancelUnit(view); return; }
       if (view === "tuner") workflows.tuner.openTuner();
       destination.setView(view);
       // The Gig list is the current setlist; load it when it is missing or belongs to another setlist.
@@ -131,19 +175,20 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
       try {
         // The unit has no command for this screen: it opens on a long downward drag, but only from its Grid.
         // Armed just before the drag is sent, so a refusal ("busy") leaves nothing behind to swallow the unit's own I/O Settings.
-        const shown = await openOnUnit(gateway, screenPoll ?? DEFAULT_SCREEN_POLL, "io", () => owner.apply(() => destination.latch.expectUnit("io")));
+        const shown = await openOnUnit(gateway, latest.current.screenPoll ?? DEFAULT_SCREEN_POLL, "io", () => { captured.assertCurrent(); destination.latch.expectUnit("io"); });
+        if (!captured.current()) return;
         if (shown !== "shown") {
           notice(shown === "busy"
             ? "Close the screen open on the Quad Cortex before opening I/O Settings."
             : "The Quad Cortex did not show I/O Settings.");
           return;
         }
-        if (!owner.current()) return;
         await workflows.ioEq.refresh();
-        owner.apply(() => destination.setView("io-overview"));
+        if (!captured.current()) return;
+        destination.setView("io-overview");
         notice("I/O Settings opened.");
       } catch (error) {
-        fail(error);
+        if (captured.current()) fail(error);
       }
       return;
     }
@@ -151,40 +196,73 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
       notice("Connect a Quad Cortex or start the Demo device before opening Device Information.");
       return;
     }
-    destination.setView("settings-info");
+    captured.setView("settings-info");
     try {
-      const identity=await gateway.identity();
-      owner.apply(() => setDeviceInformation({ key: owner.key, value: qcDeviceInformation(identity, snapshot.deviceName), identity, readAt: Date.now() }));
+      const identity = await gateway.identity();
+      if (!captured.current()) return;
+      setDeviceInformation({ key: hostSession.key, value: qcDeviceInformation(identity, snapshot.deviceName), identity, readAt: Date.now() });
     } catch (error) {
-      fail(error);
+      if (captured.current()) fail(error);
     }
-  }, [lifetime.key]);
+  }, [hostSession.key]);
 
   // Keep the unit's identity at hand once a session answers, so every window that shows it (the app's own
   // Device Information screen and the Windows Device Info window) has the real values without being asked.
   const sessionReady = options.session.sessionReady;
   useEffect(() => {
+    const lifetime = options.lifetime;
+    if (!lifetime) return;
+    let origin = lifetime.checkpoint();
+    return lifetime.subscribe(() => {
+      if (lifetime.currentSession(origin)) return;
+      origin = lifetime.checkpoint();
+      identityReadGeneration.current++;
+      if (!mounted.current) return;
+      setDeviceInformation(undefined);
+      setIdentitySessionRevision(version => version + 1);
+    });
+  }, [options.lifetime]);
+  useEffect(() => {
+    const readGeneration = ++identityReadGeneration.current;
     setDeviceInformation(undefined);
     if (!sessionReady) return;
     let current = true;
-    const { gateway, snapshot } = lifetime.options;
-    gateway.identity()
-      .then((identity) => { if (current) lifetime.apply(() => setDeviceInformation({ key: lifetime.key, value: qcDeviceInformation(identity, snapshot.deviceName), identity, readAt: Date.now() })); })
+    const source = options.gateway;
+    const name = options.snapshot.deviceName;
+    const checkpoint = options.lifetime?.checkpoint();
+    const captured = captureGatewaySession(source as GatewayTransport, () => current && mounted.current
+      && readGeneration === identityReadGeneration.current && latest.current.gateway === source
+      && latest.current.lifetime === options.lifetime && latest.current.session.sessionReady
+      && (!checkpoint || options.lifetime!.currentSession(checkpoint)));
+    captured.gateway.identity()
+      .then((identity) => {
+        if (!captured.current()) return;
+        const observed = qcDeviceInformation(identity, name);
+        setDeviceInformation({ key: hostSession.key, value: observed, identity, readAt: Date.now() });
+      })
       .catch(() => undefined);
     return () => { current = false; };
-  }, [sessionReady, lifetime.key]);
+  }, [sessionReady, options.gateway, options.snapshot.deviceName, options.lifetime, identitySessionRevision, hostSession.key]);
 
   const toggle = useCallback(async (view: "tuner" | "gig" | "io") => {
-    if (!lifetime.current()) return;
     const current = latest.current.destination.view;
     if (view === "gig" ? isGigView(current) : view === "tuner" ? isTunerView(current) : isIoView(current)) await close();
     else await open(view);
-  }, [close, open, lifetime.key]);
+  }, [close, open]);
 
   const forwardGesture = useCallback(async (x: number, y: number, toX: number, toY: number, kind: QcDeviceGesture) => {
-    if (!lifetime.current()) return;
-    const { session, gateway, notice, fail, lifetime: owner } = latest.current;
-    if (!owner.current()) return;
+    if (!hostSession.current()) return;
+    const { session, gateway: source, notice, fail } = latest.current;
+    const lifetime = latest.current.lifetime;
+    const checkpoint = lifetime?.checkpoint();
+    // A later screen gesture owns navigation intent even if the outer I/O
+    // view is unchanged. Its predecessor must not dispatch after its safety
+    // read finishes. Don't fence by inner-pane generation: the admitted
+    // gesture's own local click legitimately changes that pane before await.
+    const generation = ++gestureOperation.current;
+    const destinationCurrent = latest.current.destination.captureCurrent();
+    const captured = captureGatewaySession(source as GatewayTransport, () => mounted.current && gestureOperation.current === generation && destinationCurrent() && latest.current.gateway === source && !latest.current.session.demo && latest.current.session.hardwareReady && (!checkpoint || lifetime!.currentSession(checkpoint)));
+    const gateway = captured.gateway;
     if (session.demo) return;
     if (!session.hardwareReady) {
       notice("The Quad Cortex disconnected before the screen gesture could be sent.");
@@ -192,7 +270,9 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
     }
     try {
       // A screen that can start a download or an install is shown, never touched, by the app.
-      const refused = untouchableUnitScreen((await gateway.graphicsTree()).tree);
+      const screen = await gateway.graphicsTree();
+      captured.assertCurrent();
+      const refused = untouchableUnitScreen(screen.tree);
       if (refused) {
         notice(refused === "Settings"
           ? "The Quad Cortex is showing Settings. Its panes, including Updates, Power Functions and Factory Reset, are display only in the app; use the unit."
@@ -203,15 +283,14 @@ export function useQcDeviceViews(options: QcDeviceViewsOptions): QcDeviceViews {
       else if (kind === "tap") await gateway.tapScreen(x, y);
       else await gateway.swipeScreen(x, y, toX, toY);
     } catch (error) {
-      fail(error);
+      if (captured.current()) fail(error);
     }
-  }, [lifetime.key]);
+  }, [hostSession.key]);
 
   const screenCorOsVersion = options.workflows.deviceSettings?.screenCorOsVersion;
-  const currentRecord = deviceInformation?.key === lifetime.key ? deviceInformation : undefined;
-  // The CorOS row is whichever of the host's value and the Device Information screen's was obtained later.
+  const currentRecord = hostSession.current() && deviceInformation?.key === hostSession.key ? deviceInformation : undefined;
   const currentInformation = useMemo(() => !currentRecord ? undefined
-    : !screenCorOsVersion || !currentRecord.identity ? currentRecord.value
+    : !screenCorOsVersion ? currentRecord.value
     : { ...currentRecord.value, corOsVersion: qcDeviceInformation(currentRecord.identity, undefined, { identityReadAt: currentRecord.readAt, screen: screenCorOsVersion }).corOsVersion },
   [currentRecord, screenCorOsVersion]);
   return useMemo(() => ({ deviceInformation: currentInformation, open, close, toggle, forwardGesture }), [currentInformation, open, close, toggle, forwardGesture]);

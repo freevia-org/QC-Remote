@@ -17,6 +17,9 @@ export interface PublicRelayWorkflowOptions {
 export function usePublicRelayWorkflow(options: PublicRelayWorkflowOptions) {
   const { relay, enabled, pollIntervalMs = 0, autoStart = false, subscribe } = options;
   const [status, setStatus] = useState<PublicRelayStatus>();
+  // State-only native events carry no permission observation. Keep this marker
+  // separate so reconnect events cannot re-confirm a stale access mode.
+  const [accessModeObservation, setAccessModeObservation] = useState<{ value: ControlAccessMode }>();
   const [pending, setPending] = useState(false);
 
   const lifecycle = useRef(0);
@@ -44,7 +47,10 @@ export function usePublicRelayWorkflow(options: PublicRelayWorkflowOptions) {
         throw new Error("Relay operation was superseded");
       }
       const next = await operation(current);
-      if (current() && revision === mutationRevision.current) setStatus(next);
+      if (current() && revision === mutationRevision.current) {
+        setStatus(next);
+        setAccessModeObservation({ value: next.accessMode });
+      }
       return next;
     });
     mutationQueue.current = work.then(() => undefined, () => undefined);
@@ -83,6 +89,7 @@ export function usePublicRelayWorkflow(options: PublicRelayWorkflowOptions) {
     pendingCount.current = 0;
     setPending(false);
     setStatus(undefined);
+    setAccessModeObservation(undefined);
     return () => {
       active.current = false;
       lifecycle.current++;
@@ -108,6 +115,7 @@ export function usePublicRelayWorkflow(options: PublicRelayWorkflowOptions) {
         const next = await relay.status();
         if (!current() || mutation !== mutationRevision.current || read !== readRevision.current) return;
         setStatus(next);
+        setAccessModeObservation({ value: next.accessMode });
         const allowStart = bootstrapPending && autoStart && !autoStartSuppressed.current;
         bootstrapPending = false;
         if (allowStart && next.paired && next.state === "stopped") {
@@ -152,5 +160,5 @@ export function usePublicRelayWorkflow(options: PublicRelayWorkflowOptions) {
     };
   }, [autoStart, enabled, pollIntervalMs, relay, subscribe, run, startOperation]);
 
-  return { status, pending, refresh, pair, start, unpair, setAccessMode };
+  return { status, accessModeObservation, pending, refresh, pair, start, unpair, setAccessMode };
 }

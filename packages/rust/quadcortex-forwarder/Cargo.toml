@@ -1,0 +1,24 @@
+[package]
+name = "quadcortex-forwarder"
+version = "0.1.0"
+publish = false
+edition = "2021"
+description = "Request-owned transparent QC HTTP forwarding core"
+license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
+
+[dependencies]
+bytes.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper = { workspace = true, features = ["client", "http1", "http2"] }
+hyper-rustls = { workspace = true, features = ["http1", "http2", "rustls-platform-verifier"] }
+hyper-util = { workspace = true, features = ["client-legacy", "http1", "http2", "tokio"] }
+prost.workspace = true
+quadcortex = { path = "../quadcortex", features = ["cloud-forward"] }
+rustls = { workspace = true, default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "time", "net", "sync"] }
+tower-service.workspace = true
+url = "2"
+zeroize.workspace = true

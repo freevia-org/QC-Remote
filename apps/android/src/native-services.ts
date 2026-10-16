@@ -30,6 +30,8 @@ export type AndroidUsbDiagnostics = {
 };
 
 interface QcUsbNativePlugin {
+  internetForwarding(): Promise<{ enabled: boolean }>;
+  setInternetForwarding(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
   scan(): Promise<{ devices: QcUsbDevice[]; connected: boolean; synchronized: boolean }>;
   connect(options?: { allowPermissionPrompt?: boolean }): Promise<{ connected: boolean; synchronized: boolean; name: string; deviceId: number }>;
   disconnect(): Promise<void>;

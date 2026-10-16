@@ -61,6 +61,8 @@ export type DeviceInfoState = {
  * an empty table).
  */
 export type WorkspaceState = {
+  /** Opaque identity of the exact document displayed; never a document operand. */
+  documentId: string;
   name: string;
   /** ISO timestamp the workspace was saved at. */
   savedAt: string;
@@ -95,9 +97,9 @@ export const DEFAULT_BROKER_TRAY_STATUS: BrokerTrayStatus = {
 
 export type SettingsSetting = "form-factor" | "control-access-mode" | "follow-qc-screen" | "tray-enabled" | "idle-disconnect-minutes" | "updater-relay-enabled";
 
-/** The Settings row that lets the Quad Cortex use this computer's internet for updates. */
+/** The Settings row for internet requests initiated by the connected Quad Cortex. */
 export const UPDATER_RELAY_LABEL = "Internet for the Quad Cortex";
-export const UPDATER_RELAY_EXPLANATION = "Lets the Quad Cortex use this computer's internet connection to reach Neural DSP's servers (neuraldsp.com, plus any extra domain you add) for updates while it is connected over USB. QC Remote only passes the Quad Cortex's own requests through; they include the unit's serial number and its own credentials, which go to the address the unit asks for: Neural DSP's, or an extra domain you added.";
+export const UPDATER_RELAY_EXPLANATION = "Lets the connected Quad Cortex use this computer's internet for Neural DSP account sign-in, cloud requests and CorOS updates. Requests go to the addresses supplied by the unit and can include credentials and its serial number. QC Remote forwards them in memory without keeping traffic logs. Turn this off to stop forwarding.";
 
 /**
  * What the broker's update relay has done, reduced to what the row can say.
@@ -161,7 +163,7 @@ export function updaterRelayStatusLine(enabled: boolean, relay: UpdaterRelaySumm
   if (!relay) return "On.";
   if (relay.inFlight) return "On. Passing a request from the Quad Cortex through now.";
   if (relay.lastOutcome === DECLINED_OUTCOME) {
-    return "On. Declined the Quad Cortex's last request: only neuraldsp.com addresses and the extra domains you added are passed through.";
+    return "On. The background component declined the Quad Cortex's last request.";
   }
   if (relay.lastOutcome === "completed") return "On. The Quad Cortex's last request went through.";
   if (relay.lastOutcome) return "On. The Quad Cortex's last request did not complete.";

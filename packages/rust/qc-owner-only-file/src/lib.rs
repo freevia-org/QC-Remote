@@ -15,8 +15,49 @@ use std::{
 mod windows;
 #[cfg(windows)]
 pub use windows::{
-    create_owner_only_directory, is_owner_only, is_owner_only_directory, write_staged,
+    create_new_owner_only, create_owner_only_directory, is_owner_only, is_owner_only_directory,
+    write_staged,
 };
+
+/// Reserve a fresh empty regular file, protected and verified before any
+/// caller-supplied bytes. A collision is never replaced. The caller owns the
+/// returned handle and subsequent staging cleanup/publication.
+#[cfg(unix)]
+pub fn create_new_owner_only(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let checked = file
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .and_then(|()| {
+            if unix_owner_only(&file)? {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Fresh file is not owner-private",
+                ))
+            }
+        });
+    if let Err(error) = checked {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn create_new_owner_only(_path: &Path) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Owner-only file protection is unsupported",
+    ))
+}
 
 /// Create a directory protected to the current user, or accept an existing
 /// directory only when its ownership and permissions already meet that policy.
@@ -114,13 +155,8 @@ pub fn write_staged(path: &Path, contents: &[u8]) -> Result<(), String> {
 
 #[cfg(unix)]
 fn write_staged_unix(path: &Path, contents: &[u8]) -> io::Result<()> {
-    use std::{io::Write, os::unix::fs::OpenOptionsExt};
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)?;
+    use std::io::Write;
+    let mut file = create_new_owner_only(path)?;
     let result = file.write_all(contents).and_then(|()| file.sync_all());
     if result.is_err() {
         let _ = fs::remove_file(path);
@@ -178,17 +214,75 @@ fn unix_owner_only(file: &File) -> io::Result<bool> {
 /// never a symlink or a replacement opened after the permission check.
 #[cfg(unix)]
 pub fn read_owner_only(path: &Path) -> io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut file = open_unix_document(path)?;
-    if !unix_owner_only(&file)? {
+    read_owner_only_bounded(path, usize::MAX)
+}
+
+/// Read one verified owner-private regular file through the same held handle,
+/// refusing content larger than `maximum_bytes`, including growth after metadata.
+/// This bounds bytes allocated/read, not the duration of an already-started OS read.
+#[cfg(any(unix, windows))]
+pub fn read_owner_only_bounded(path: &Path, maximum_bytes: usize) -> io::Result<Vec<u8>> {
+    #[cfg(unix)]
+    let mut file = {
+        let file = open_unix_document(path)?;
+        if !unix_owner_only(&file)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Credential file is not a current-user, owner-only regular file",
+            ));
+        }
+        file
+    };
+    #[cfg(windows)]
+    let mut file = windows::open_owner_only_document(path)?;
+    if file.metadata()?.len() > maximum_bytes as u64 {
         return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "Credential file is not a current-user, owner-only regular file",
+            io::ErrorKind::InvalidData,
+            "Owner-only document exceeds its byte budget",
         ));
     }
+    read_with_byte_budget(&mut file, maximum_bytes)
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn read_owner_only_bounded(_path: &Path, _maximum_bytes: usize) -> io::Result<Vec<u8>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Owner-only reading is unsupported on this platform",
+    ))
+}
+
+/// Collect from an already-open reader with a finite software byte ceiling.
+/// This primitive alone does not verify filesystem ownership or permissions;
+/// use [`read_owner_only_bounded`] when that protection is required.
+pub fn read_with_byte_budget(
+    reader: &mut impl io::Read,
+    maximum_bytes: usize,
+) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(bytes)
+    let mut chunk = [0_u8; 8192];
+    loop {
+        // Observe at most one byte beyond the budget, never append that byte.
+        let capacity = maximum_bytes
+            .saturating_sub(bytes.len())
+            .saturating_add(1)
+            .min(chunk.len());
+        let read = match reader.read(&mut chunk[..capacity]) {
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if read == 0 {
+            return Ok(bytes);
+        }
+        if read > maximum_bytes.saturating_sub(bytes.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Owner-only document exceeds its byte budget",
+            ));
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
 }
 
 /// Stage a complete owner-only document beside its destination, then replace
@@ -212,18 +306,45 @@ pub fn publish_atomically(path: &Path, contents: &[u8]) -> Result<(), String> {
     // belong to an older process generation and is never ours to delete.
     #[cfg(unix)]
     let temporary = stage_unix(contents, next_path).map_err(|error| error.to_string())?;
-    #[cfg(not(unix))]
-    let temporary = next_path();
-    #[cfg(not(unix))]
-    if let Err(error) = write_staged(&temporary, contents) {
-        let _ = fs::remove_file(&temporary);
-        return Err(error);
+    #[cfg(windows)]
+    let temporary = windows::stage_fresh(contents, next_path)?;
+    #[cfg(not(any(unix, windows)))]
+    let temporary = {
+        let _ = (contents, next_path);
+        return Err("Owner-only publication is unsupported on this platform".into());
+        #[allow(unreachable_code)]
+        PathBuf::new()
+    };
+    publish_reserved_stage_with(OwnedPublicationStage(Some(temporary)), path, |from, to| {
+        fs::rename(from, to)
+    })
+}
+
+// Own only the name freshly reserved by our staging API. Caller-controlled parents and
+// same-user hostile path replacement are outside this module's publication trust boundary.
+// In particular this is unwind cleanup, not a certification against adversarial path swaps.
+struct OwnedPublicationStage(Option<PathBuf>);
+impl Drop for OwnedPublicationStage {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_file(path);
+        }
     }
+}
+
+fn publish_reserved_stage_with(
+    mut stage: OwnedPublicationStage,
+    path: &Path,
+    mut rename: impl FnMut(&Path, &Path) -> io::Result<()>,
+) -> Result<(), String> {
     for attempt in 0..50 {
-        match fs::rename(&temporary, path) {
-            Ok(()) => return Ok(()),
+        match rename(stage.0.as_ref().expect("reserved stage is armed"), path) {
+            Ok(()) => {
+                // Ownership transferred; never delete a new occupant at the old source name.
+                stage.0 = None;
+                return Ok(());
+            }
             Err(error) if attempt == 49 => {
-                let _ = fs::remove_file(&temporary);
                 return Err(format!("Could not publish {}: {error}", path.display()));
             }
             Err(_) => std::thread::sleep(Duration::from_millis(2)),
@@ -424,15 +545,224 @@ pub fn release_if_unclaimed(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn scratch(name: &str) -> PathBuf {
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn fresh_owner_only_opener_protects_before_write_and_preserves_collisions() {
+        use std::io::Write;
+        let path = scratch("private-empty-open");
+        let mut file = create_new_owner_only(&path).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        assert!(is_owner_only(&path).unwrap());
+        file.write_all(b"owner-private bytes").unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        assert_eq!(
+            create_new_owner_only(&path).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"owner-private bytes");
+        assert!(is_owner_only(&path).unwrap());
+    }
+
+    struct Scratch(PathBuf);
+
+    impl std::ops::Deref for Scratch {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for Scratch {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let directory = self.0.parent().expect("scratch owns a fresh parent");
+            if let Err(error) = fs::remove_dir_all(directory) {
+                if error.kind() != io::ErrorKind::NotFound {
+                    eprintln!(
+                        "Could not clean owned test directory {}: {error}",
+                        directory.display()
+                    );
+                }
+            }
+        }
+    }
+
+    fn scratch(name: &str) -> Scratch {
         static NEXT: AtomicU64 = AtomicU64::new(0);
-        let directory = std::env::temp_dir().join(format!(
-            "qc-owner-claim-{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&directory).unwrap();
-        directory.join("device-broker.json")
+        for _ in 0..64 {
+            let directory = std::env::temp_dir().join(format!(
+                "qc-owner-claim-{name}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match fs::create_dir(&directory) {
+                Ok(()) => return Scratch(directory.join("device-broker.json")),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("Could not reserve test directory: {error}"),
+            }
+        }
+        panic!("Could not reserve a fresh test directory");
+    }
+
+    #[test]
+    fn owned_test_directories_are_removed_on_assertion_unwind() {
+        let mut root = None;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let path = scratch("assertion-unwind");
+            root = Some(path.parent().unwrap().to_owned());
+            fs::write(&path, b"partial fixture").unwrap();
+            panic!("injected fixture failure");
+        }));
+        assert!(outcome.is_err());
+        assert!(!root.unwrap().exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn publication_rename_unwind_cleans_owned_stage_without_changing_previous_document() {
+        let destination = scratch("rename-unwind");
+        write_staged(&destination, b"previous complete bytes").unwrap();
+        let temporary = destination.with_extension("owned.tmp");
+        write_staged(&temporary, b"new complete bytes").unwrap();
+        let collision = destination.with_extension("unowned.tmp");
+        fs::write(&collision, b"other owner's bytes").unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            publish_reserved_stage_with(
+                OwnedPublicationStage(Some(temporary.clone())),
+                &destination,
+                |_, _| panic!("injected rename unwind"),
+            )
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"previous complete bytes");
+        assert!(!temporary.exists());
+        assert_eq!(fs::read(&collision).unwrap(), b"other owner's bytes");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn publication_success_disarms_stage_before_a_new_source_name_occupant() {
+        let destination = scratch("rename-disarm");
+        let temporary = destination.with_extension("owned.tmp");
+        write_staged(&temporary, b"complete successor").unwrap();
+        publish_reserved_stage_with(
+            OwnedPublicationStage(Some(temporary.clone())),
+            &destination,
+            |from, to| {
+                fs::rename(from, to)?;
+                fs::write(from, b"new occupant after transfer")?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"complete successor");
+        assert_eq!(
+            fs::read(&temporary).unwrap(),
+            b"new occupant after transfer"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn bounded_owner_reader_accepts_exact_bytes_and_refuses_oversize() {
+        let path = scratch("bounded-read");
+        write_staged(&path, b"private bytes").unwrap();
+        assert_eq!(
+            read_owner_only_bounded(&path, 13).unwrap(),
+            b"private bytes"
+        );
+        assert_eq!(
+            read_owner_only_bounded(&path, 12).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            read_owner_only_bounded(&path, 0).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        publish_atomically(&path, b"").unwrap();
+        assert_eq!(read_owner_only_bounded(&path, 0).unwrap(), Vec::<u8>::new());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn owner_reader_growth_after_metadata_is_still_bounded_on_the_held_file() {
+        use std::io::Write;
+        let path = scratch("growing-read");
+        write_staged(&path, b"old").unwrap();
+        #[cfg(unix)]
+        let mut reader = open_unix_document(&path).unwrap();
+        #[cfg(windows)]
+        let mut reader = windows::open_owner_only_document(&path).unwrap();
+        assert_eq!(reader.metadata().unwrap().len(), 3);
+        let mut writer = OpenOptions::new().append(true).open(&path).unwrap();
+        writer.write_all(b" growth").unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        assert_eq!(
+            read_with_byte_budget(&mut reader, 3).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(read_owner_only_bounded(&path, 10).unwrap(), b"old growth");
+    }
+
+    #[test]
+    fn bounded_reader_observes_only_one_extra_byte_and_preserves_io_errors() {
+        struct Counting {
+            read: usize,
+        }
+        impl io::Read for Counting {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                bytes.fill(1);
+                self.read += bytes.len();
+                Ok(bytes.len())
+            }
+        }
+        let mut reader = Counting { read: 0 };
+        assert_eq!(
+            read_with_byte_budget(&mut reader, 17).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(reader.read, 18);
+        struct InterruptedOnce {
+            interrupted: bool,
+            bytes: io::Cursor<Vec<u8>>,
+        }
+        impl io::Read for InterruptedOnce {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "injected interruption",
+                    ));
+                }
+                io::Read::read(&mut self.bytes, bytes)
+            }
+        }
+        let mut interrupted = InterruptedOnce {
+            interrupted: false,
+            bytes: io::Cursor::new(b"ok".to_vec()),
+        };
+        assert_eq!(read_with_byte_budget(&mut interrupted, 2).unwrap(), b"ok");
+        struct Failure;
+        impl io::Read for Failure {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected read refusal",
+                ))
+            }
+        }
+        assert_eq!(
+            read_with_byte_budget(&mut Failure, 17).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
 
     #[cfg(unix)]

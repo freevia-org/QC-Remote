@@ -2145,6 +2145,31 @@ mod tests {
     }
 
     #[test]
+    fn malformed_selected_scene_is_not_coherent_initialization_seed_evidence() {
+        let scene = |value| {
+            pa::SceneMessage {
+                action: pa::message_action::Enum::Update as i32,
+                selected_scene: Some(pa::scene_message::SelectedScene::SelectedScene(value)),
+                ..Default::default()
+            }
+            .encode_to_vec()
+        };
+        for value in [crate::domain::SCENE_COUNT, u32::MAX] {
+            let mut seed = SeedEvidence::default();
+            seed.observe_message(profile::MESSAGE_TYPE_SCENE, &scene(value));
+            assert!(
+                !seed.satisfies_type(profile::MESSAGE_TYPE_SCENE),
+                "malformed native scene {value} cannot certify the scene seed"
+            );
+        }
+        for value in [0, crate::domain::SCENE_COUNT - 1] {
+            let mut seed = SeedEvidence::default();
+            seed.observe_message(profile::MESSAGE_TYPE_SCENE, &scene(value));
+            assert!(seed.satisfies_type(profile::MESSAGE_TYPE_SCENE));
+        }
+    }
+
+    #[test]
     fn malformed_or_empty_seed_messages_never_satisfy_readiness() {
         let mut runtime = InitializationRuntime::start_post_boot(0, 41);
         runtime.observe_message(profile::MESSAGE_TYPE_RECALL_PRESET, &[]);

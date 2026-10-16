@@ -67,10 +67,17 @@ export function AboutWindowContent({ appVersion, openExternal, openHelpWindow, l
   // remount and hands the second pass the promise the first one already made.
   const inFlight = useRef(new Map<string, Promise<string>>());
   const mounted = useRef(true);
+  const statusOwner = useRef({ tab, generation: 0 });
+  const changeTab = (next: AboutTab) => {
+    if (next !== statusOwner.current.tab) {
+      statusOwner.current = { tab: next, generation: statusOwner.current.generation + 1 };
+    }
+    setTab(next);
+  };
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    return () => { mounted.current = false; statusOwner.current.generation += 1; };
   }, []);
 
   const activeDocument = LEGAL_DOCUMENTS.find((item) => item.id === documentId) ?? LEGAL_DOCUMENTS[0];
@@ -101,12 +108,15 @@ export function AboutWindowContent({ appVersion, openExternal, openHelpWindow, l
   // resolving with it, or takes the caller's `success` line, and either way
   // the text lands in the panel.
   const report = async (run: () => Promise<string | void>, success?: string) => {
+    if (!mounted.current || statusOwner.current.tab !== tab) return;
+    const generation = statusOwner.current.generation;
+    const current = () => mounted.current && statusOwner.current.generation === generation && statusOwner.current.tab === tab;
     try {
       const outcome = await run();
       const detail = typeof outcome === "string" ? outcome : success;
-      if (detail) setMessage(detail);
+      if (current() && detail) setMessage(detail);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      if (current()) setMessage(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -125,7 +135,7 @@ export function AboutWindowContent({ appVersion, openExternal, openHelpWindow, l
     event.preventDefault();
     event.stopPropagation();
     const entry = ABOUT_TABS[target];
-    setTab(entry.id);
+    changeTab(entry.id);
     tabButtons.current.get(entry.id)?.focus();
   };
 
@@ -144,7 +154,7 @@ export function AboutWindowContent({ appVersion, openExternal, openHelpWindow, l
           tabIndex={tab === entry.id ? 0 : -1}
           ref={(node) => { tabButtons.current.set(entry.id, node); }}
           className={tab === entry.id ? "is-active" : undefined}
-          onClick={() => setTab(entry.id)}
+          onClick={() => changeTab(entry.id)}
         >{entry.label}</button>)}
       </div>
     </header>

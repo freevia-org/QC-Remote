@@ -187,7 +187,7 @@ export function onFeedbackIssueKind(handler: (kind: IssueKind) => void): () => v
   let disposed = false;
   let unlisten: (() => void) | undefined;
   void listenTauri<string>(FEEDBACK_ISSUE_KIND_EVENT, ({ payload }) => {
-    if (payload === "bug" || payload === "feature") handler(payload);
+    if (!disposed && (payload === "bug" || payload === "feature")) handler(payload);
   }).then((stop) => { if (disposed) stop(); else unlisten = stop; })
     .catch((error: unknown) => { console.error(`QC Remote could not listen for ${FEEDBACK_ISSUE_KIND_EVENT}:`, error); });
   return () => { disposed = true; unlisten?.(); };
@@ -276,11 +276,49 @@ function answerMainWindowRequests(routes: ReadonlyArray<{ request: string; resul
   if (!window.__TAURI_INTERNALS__) return () => undefined;
   let disposed = false;
   const unlisteners: Array<() => void> = [];
+  const pendingAdmissions = new Set<() => void>();
   for (const { request, result, run } of routes) {
-    void import("@tauri-apps/api/event").then(({ emit }) => listenTauri<MainWindowRequest>(request, async ({ payload }) => {
+    void import("@tauri-apps/api/event").then(({ emit }) => {
+      if (disposed) return;
+      return listenTauri<MainWindowRequest>(request, async ({ payload }) => {
       const send = (outcome: MainWindowResult) => emit(result, outcome)
         .catch((error: unknown) => { console.error(`QC Remote could not send ${result}:`, error); });
-      await send({ id: payload.id, accepted: true, ok: true, message: "" });
+      const cancelled = () => send({ id: payload.id, ok: false, message: "The main window closed before this request started. Reopen it and try again." });
+      // This listener owns no request until it acknowledges it. A replacement
+      // listener may be handling this new event while native unlisten settles.
+      if (disposed) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let releaseAdmission: () => void = () => undefined;
+      const unavailable = new Promise<boolean>((resolve) => {
+        releaseAdmission = () => resolve(false);
+        pendingAdmissions.add(releaseAdmission);
+        timer = setTimeout(releaseAdmission, DIAGNOSTICS_ANSWER_TIMEOUT_MS);
+      });
+      let accepted: boolean;
+      try {
+        // Native emit can deliver accepted before its IPC receipt settles.
+        // Bound receipt admission separately; failed delivery never admits run.
+        accepted = await Promise.race([
+          emit(result, { id: payload.id, accepted: true, ok: true, message: "" } satisfies MainWindowResult)
+            .then(() => true, (error: unknown) => {
+              console.error(`QC Remote could not acknowledge ${request}:`, error);
+              return false;
+            }),
+          unavailable
+        ]);
+      } finally {
+        clearTimeout(timer);
+        pendingAdmissions.delete(releaseAdmission);
+      }
+      // Disposal/stalled acknowledgement refuses this listener's unstarted
+      // handler. Do not await another native receipt before returning. This
+      // doesn't claim cancellation of IPC or any other listener's action.
+      if (disposed) { void cancelled(); return; }
+      if (!accepted) {
+        void send({ id: payload.id, ok: false, message: "This window did not start the request because its acknowledgement could not be completed. Check the current state before trying again." });
+        return;
+      }
+      // Once run starts, its real result settles even after this listener closes.
       let outcome: MainWindowResult;
       try {
         outcome = { id: payload.id, ok: true, message: await run(payload.value) };
@@ -288,10 +326,11 @@ function answerMainWindowRequests(routes: ReadonlyArray<{ request: string; resul
         outcome = { id: payload.id, ok: false, message: error instanceof Error ? error.message : String(error) };
       }
       await send(outcome);
-    })).then((unlisten) => { if (disposed) unlisten(); else unlisteners.push(unlisten); })
+      });
+    }).then((unlisten) => { if (!unlisten) return; if (disposed) unlisten(); else unlisteners.push(unlisten); })
       .catch((error: unknown) => { console.error(`QC Remote could not answer ${request}:`, error); });
   }
-  return () => { disposed = true; for (const unlisten of unlisteners) unlisten(); };
+  return () => { disposed = true; for (const release of pendingAdmissions) release(); for (const unlisten of unlisteners) unlisten(); };
 }
 
 let mainWindowRequestCount = 0;
@@ -315,33 +354,53 @@ async function askMainWindow(ask: { request: string; result: string; value?: unk
   if (!window.__TAURI_INTERNALS__) {
     throw new Error("Desktop runtime is not active. Start with npm run tauri:dev.");
   }
-  const { emit } = await import("@tauri-apps/api/event");
   mainWindowRequestCount += 1;
   const id = `${Date.now()}-${mainWindowRequestCount}`;
   let settle: (outcome: MainWindowResult) => void = () => undefined;
   const answer = new Promise<MainWindowResult>((resolve) => { settle = resolve; });
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
+  let finished = false;
+  let acknowledged = false;
   const noAnswer = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(ask.noAnswer)), DIAGNOSTICS_ANSWER_TIMEOUT_MS);
+    timer = setTimeout(() => { expired = true; reject(new Error(ask.noAnswer)); }, DIAGNOSTICS_ANSWER_TIMEOUT_MS);
   });
   // Observed here as well as in the race below, so a timeout that fires while
   // the request is still being sent is never an unhandled rejection.
   noAnswer.catch(() => undefined);
-  const unlisten = await listenTauri<MainWindowResult>(ask.result, ({ payload }) => {
-    if (payload.id !== id) return;
-    if (!payload.accepted) { settle(payload); return; }
-    // A save dialog may stay open indefinitely once the main window has the
-    // request; everything else keeps its limit.
-    if (ask.afterAccept === "unbounded") clearTimeout(timer);
-  });
+  let unlisten: (() => void) | undefined;
   try {
-    await emit(ask.request, { id, value: ask.value } satisfies MainWindowRequest);
+    const { emit } = await Promise.race([import("@tauri-apps/api/event"), noAnswer]);
+    if (expired) throw new Error(ask.noAnswer);
+    // Registration is native work already started: if it finishes after the
+    // deadline, its actual unlistener is still owned and retired exactly once.
+    const listening = listenTauri<MainWindowResult>(ask.result, ({ payload }) => {
+      if (finished || expired || payload.id !== id) return;
+      if (!payload.accepted) { settle(payload); return; }
+      acknowledged = true;
+      // A save dialog may stay open indefinitely once the main window has the
+      // request; everything else keeps its limit.
+      if (ask.afterAccept === "unbounded") clearTimeout(timer);
+    }).then((stop) => {
+      if (finished || expired) stop();
+      else unlisten = stop;
+    });
+    await Promise.race([listening, noAnswer]);
+    if (expired) throw new Error(ask.noAnswer);
+    // The result/acceptance can arrive before the native emit promise settles.
+    // Don't let a stalled emit bypass the bound or strand an accepted save.
+    void emit(ask.request, { id, value: ask.value } satisfies MainWindowRequest)
+      .catch((error: unknown) => {
+        if (!finished && !acknowledged) settle({ id, ok: false, message: error instanceof Error ? error.message : String(error) });
+        else if (!finished) console.error(`QC Remote emit failed after the main window accepted ${ask.request}:`, error);
+      });
     const outcome = await Promise.race([answer, noAnswer]);
     if (!outcome.ok) throw new Error(outcome.message);
     return outcome.message;
   } finally {
+    finished = true;
     clearTimeout(timer);
-    unlisten();
+    unlisten?.();
   }
 }
 
@@ -425,8 +484,8 @@ export const SETTINGS_EVENTS = {
 } as const;
 
 /** What a Settings or Workspace window says when the main window never acknowledges its request. */
-export const SETTINGS_NO_ANSWER = "The main window isn't responding, so the change was not applied. Try again, or close this window and reopen Settings from the main window.";
-export const WORKSPACE_NO_ANSWER = "The main window isn't responding, so no copy was saved. Try again, or close this window and reopen the workspace from the main window.";
+export const SETTINGS_NO_ANSWER = "The main window isn't responding. The change may still finish; reopen Settings to check its current value before trying again.";
+export const WORKSPACE_NO_ANSWER = "The main window isn't responding. The save may still finish; check the destination before trying again.";
 
 /** A window's own state event and the request that asks the main window for it. */
 type WindowStateEvents = { stateRequest: string; state: string };
@@ -463,13 +522,13 @@ export function serveAppWindowRequests(handlers: {
   setBrokerTrayEnabled: (enabled: unknown) => Promise<string>;
   setIdleDisconnectMinutes: (minutes: unknown) => Promise<string>;
   setUpdaterRelayEnabled: (enabled: unknown) => Promise<string>;
-  saveWorkspaceCopy: () => Promise<string>;
+  saveWorkspaceCopy: (documentId: unknown) => Promise<string>;
 }): () => void {
   if (!window.__TAURI_INTERNALS__) return () => undefined;
   let disposed = false;
   const unlisteners: Array<() => void> = [];
   const on = (event: string, run: () => void) => {
-    void listenTauri<unknown>(event, () => run())
+    void listenTauri<unknown>(event, () => { if (!disposed) run(); })
       .then((unlisten) => { if (disposed) unlisten(); else unlisteners.push(unlisten); })
       .catch((error: unknown) => { console.error(`QC Remote could not answer ${event}:`, error); });
   };
@@ -483,7 +542,7 @@ export function serveAppWindowRequests(handlers: {
     { request: SETTINGS_EVENTS.trayEnabledRequest, result: SETTINGS_EVENTS.trayEnabledResult, run: handlers.setBrokerTrayEnabled },
     { request: SETTINGS_EVENTS.idleMinutesRequest, result: SETTINGS_EVENTS.idleMinutesResult, run: handlers.setIdleDisconnectMinutes },
     { request: SETTINGS_EVENTS.updaterRelayRequest, result: SETTINGS_EVENTS.updaterRelayResult, run: handlers.setUpdaterRelayEnabled },
-    { request: WORKSPACE_EVENTS.saveCopyRequest, result: WORKSPACE_EVENTS.saveCopyResult, run: () => handlers.saveWorkspaceCopy() }
+    { request: WORKSPACE_EVENTS.saveCopyRequest, result: WORKSPACE_EVENTS.saveCopyResult, run: handlers.saveWorkspaceCopy }
   ]);
   return () => { disposed = true; stopAnswering(); for (const unlisten of unlisteners) unlisten(); };
 }
@@ -510,22 +569,33 @@ export function subscribeWindowState<State>(events: WindowStateEvents, handler: 
   let answered = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let unlisten: (() => void) | undefined;
-  const awaitAnswer = (then: () => void) => {
-    timer = setTimeout(() => { if (!answered && !disposed) then(); }, DIAGNOSTICS_ANSWER_TIMEOUT_MS);
+  let emitRequest: (() => Promise<void>) | undefined;
+  const send = () => {
+    if (disposed || !emitRequest) return;
+    void emitRequest().catch((error: unknown) => { console.error(`QC Remote could not ask for ${events.state}:`, error); });
   };
+  // Import, native listener admission and emit may themselves be delayed.
+  // Count both answer windows from subscription entry, never from their
+  // completion. Late read-only state is still accepted for recovery.
+  timer = setTimeout(() => {
+    if (disposed || answered) return;
+    send();
+    if (disposed || answered) return;
+    timer = setTimeout(() => { if (!disposed && !answered) onNoAnswer?.(); }, DIAGNOSTICS_ANSWER_TIMEOUT_MS);
+  }, DIAGNOSTICS_ANSWER_TIMEOUT_MS);
   void import("@tauri-apps/api/event").then(async ({ emit }) => {
-    const stop = await listenTauri<State>(events.state, ({ payload }) => { answered = true; handler(payload); });
+    if (disposed) return;
+    const stop = await listenTauri<State>(events.state, ({ payload }) => {
+      if (!disposed) { answered = true; clearTimeout(timer); handler(payload); }
+    });
     if (disposed) { stop(); return; }
     unlisten = stop;
-    await emit(events.stateRequest);
-    awaitAnswer(() => {
-      emit(events.stateRequest)
-        .catch((error: unknown) => { console.error(`QC Remote could not ask again for ${events.state}:`, error); })
-        .finally(() => { if (!disposed) awaitAnswer(() => onNoAnswer?.()); });
-    });
+    emitRequest = () => emit(events.stateRequest);
+    send();
   }).catch((error: unknown) => {
     console.error(`QC Remote could not follow ${events.state}:`, error);
-    if (!disposed) onNoAnswer?.();
+    clearTimeout(timer);
+    if (!disposed && !answered) onNoAnswer?.();
   });
   return () => { disposed = true; clearTimeout(timer); unlisten?.(); };
 }
@@ -554,8 +624,8 @@ export function requestSettingsChange(setting: SettingsSetting, value: unknown):
  * diagnostics does. Resolves with the outcome line; rejects with the failure,
  * or with `WORKSPACE_NO_ANSWER` when the main window never acknowledges.
  */
-export function requestWorkspaceSaveCopy(): Promise<string> {
-  return askMainWindow({ request: WORKSPACE_EVENTS.saveCopyRequest, result: WORKSPACE_EVENTS.saveCopyResult, afterAccept: "unbounded", noAnswer: WORKSPACE_NO_ANSWER });
+export function requestWorkspaceSaveCopy(documentId: string): Promise<string> {
+  return askMainWindow({ request: WORKSPACE_EVENTS.saveCopyRequest, result: WORKSPACE_EVENTS.saveCopyResult, value: documentId, afterAccept: "unbounded", noAnswer: WORKSPACE_NO_ANSWER });
 }
 
 export interface LocalClientPackageResult {

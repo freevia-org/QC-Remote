@@ -11,9 +11,7 @@ use super::*;
 use crate::device::owner::SessionRuntime;
 use crate::device::request::plan_gateway_write;
 use crate::device::session::SessionDriver;
-use crate::device::GatewaySnapshot;
 use crate::proto::cortex_protobuf_v2 as pa;
-use crate::state::GridBlock;
 use prost::Message;
 
 const ADD: &str = "device.addBlock";
@@ -60,6 +58,8 @@ fn state_without_catalog() -> DeviceStateRuntime {
 
 fn state_with(xml: &[u8]) -> DeviceStateRuntime {
     let mut state = state_without_catalog();
+    // Catalog guards are isolated against an otherwise complete current Grid.
+    state.snapshot_mut().grid_layout_complete = true;
     state.install_model_catalog(model_repo(xml));
     state
 }
@@ -307,34 +307,57 @@ fn pinning_needs_a_listed_model_but_unpinning_does_not() {
 
 #[test]
 fn a_planned_replace_is_admitted_only_against_the_installed_catalog() {
-    let snapshot = GatewaySnapshot {
-        preset_name: "Live".into(),
-        grid_layout_complete: true,
-        has_preset: true,
-        blocks: vec![GridBlock {
-            id: "0:0".into(),
-            model_id: Some(41),
-            row: 0,
-            column: 0,
-            ..Default::default()
-        }],
-        ..GatewaySnapshot::default()
-    };
+    let mut state = DeviceStateRuntime::new();
+    let recall = pa::RecallPresetMessage {
+        action: pa::message_action::Enum::Update as i32,
+        preset: Some(pa::recall_preset_message::Preset::Preset(
+            crate::proto::BinaryPreset {
+                name: Some(crate::proto::binary_preset::Name::Name("Live".into())),
+                chains: vec![crate::proto::Chain {
+                    models: vec![crate::proto::Model {
+                        hash: Some(crate::proto::model::Hash::Hash(41)),
+                        column: Some(crate::proto::model::Column::Column(0)),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    state
+        .ingest(crate::profile::MESSAGE_TYPE_RECALL_PRESET, &recall)
+        .unwrap();
+    assert!(state.snapshot().has_preset);
+    assert!(state.snapshot().grid_layout_complete);
+    assert_eq!(state.snapshot().preset_name, "Live");
+    assert!(state
+        .snapshot()
+        .blocks
+        .iter()
+        .any(|block| block.row == 0 && block.column == 0 && block.model_id == Some(41)));
     let params = |model_id: u32| {
         json!({"row": 0, "column": 0, "modelId": model_id, "expectedModelId": 41,
             "expectedPresetName": "Live"})
     };
     // Planning does not consult the catalog; admission does.
-    let plan = plan_gateway_write(REPLACE, &params(42), Some(&snapshot)).unwrap();
-    let unlisted = plan_gateway_write(REPLACE, &params(99999), Some(&snapshot)).unwrap();
-    let mut state = DeviceStateRuntime::new();
-    *state.snapshot_mut() = snapshot;
+    let plan = plan_gateway_write(REPLACE, &params(42), Some(state.snapshot())).unwrap();
+    let unlisted = plan_gateway_write(REPLACE, &params(99999), Some(state.snapshot())).unwrap();
 
     assert_eq!(
         DispatchOperands::capture(REPLACE, &params(42), &plan.write, &state).unwrap_err(),
         UNAVAILABLE
     );
     state.install_model_catalog(model_repo(LISTED));
+    assert_eq!(state.snapshot().preset_name, "Live");
+    assert!(state.snapshot().grid_layout_complete);
+    assert!(state
+        .snapshot()
+        .blocks
+        .iter()
+        .any(|block| block.row == 0 && block.column == 0 && block.model_id == Some(41)));
     let operands = DispatchOperands::capture(REPLACE, &params(42), &plan.write, &state).unwrap();
     assert!(operands.validate(&state).is_ok());
     assert_eq!(
@@ -487,6 +510,7 @@ fn live_owner() -> (SessionRuntime, u64) {
     let connection = owner.opened(0).unwrap();
     owner.lifecycle = Some(SessionDriver::start(7, "session".into(), 0));
     owner.state.snapshot_mut().has_preset = true;
+    owner.state.snapshot_mut().grid_layout_complete = true;
     owner.state.install_model_catalog(model_repo(LISTED));
     (owner, connection)
 }

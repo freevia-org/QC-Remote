@@ -1,6 +1,7 @@
 import type { ConnectionState, GatewayTransport, PresetSnapshot } from "@qc-remote/client";
 import { createVirtualGatewayTransport, VirtualDeviceStore, type VirtualDeviceStorage } from "./virtual-gateway.ts";
 import type { MeasuredParameterDefaults, VirtualModelCatalogue } from "./virtual-device-defaults.ts";
+import { registerGatewayRoute } from "./gateway-session.ts";
 
 /** Runtime resources bundled by every QC Remote host that offers the demo device. */
 export const DEMO_PARAMETER_SCALES_URL = "./reference/qc-live-parameter-scales.json";
@@ -82,6 +83,7 @@ export function createDemoDeviceSession(
   opener: (storage: VirtualDeviceStorage) => Promise<GatewayTransport> = openDemoDevice
 ): DemoDeviceSession {
   let source: DemoDeviceSource = "device";
+  let revision = 0;
   let virtualTransport: GatewayTransport | undefined;
   const active = (): GatewayTransport => {
     if (source === "device") return device;
@@ -105,11 +107,12 @@ export function createDemoDeviceSession(
       return delegate;
     }
   });
+  registerGatewayRoute(gateway, { active, revision: () => revision });
   return {
     gateway,
     get source() { return source; },
     get virtual() { return virtualTransport; },
-    useDevice() { source = "device"; },
+    useDevice() { revision += 1; source = "device"; },
     async start(storage, shouldActivate = () => true) {
       // Do not switch routing until the virtual device has opened and answered
       // both readiness reads. A corrupt store therefore leaves a live QC alone.
@@ -118,6 +121,7 @@ export function createDemoDeviceSession(
       const snapshot = await transport.currentSnapshot();
       if (!shouldActivate()) return undefined;
       virtualTransport = transport;
+      revision += 1;
       source = "virtual";
       return { transport, connection, snapshot };
     }

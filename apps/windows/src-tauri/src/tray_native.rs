@@ -42,6 +42,15 @@ pub fn is_running() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct HeldMarker(Handle);
+    impl Drop for HeldMarker {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // Only the exact handle created by this fixture is owned.
+                unsafe { CloseHandle(self.0 as isize) };
+            }
+        }
+    }
     #[test]
     fn the_marker_reads_running_exactly_while_a_holder_keeps_it() {
         let name = format!(
@@ -54,11 +63,36 @@ mod tests {
         );
         assert!(!running_named(&name));
         // SAFETY: default security, a terminated name read during the call.
-        let held = unsafe { CreateMutexW(std::ptr::null_mut(), 0, wide(&name).as_ptr()) };
-        assert!(!held.is_null());
+        let held =
+            HeldMarker(unsafe { CreateMutexW(std::ptr::null_mut(), 0, wide(&name).as_ptr()) });
+        assert!(!held.0.is_null());
         assert!(running_named(&name));
-        unsafe { CloseHandle(held as isize) };
+        drop(held);
         assert!(!running_named(&name));
+    }
+
+    #[test]
+    fn fixture_marker_handle_is_retired_when_an_assertion_unwinds() {
+        let name = format!(
+            "Local\\QCRemote.ResidentUnwindTest.{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let result = std::panic::catch_unwind(|| {
+            let held =
+                HeldMarker(unsafe { CreateMutexW(std::ptr::null_mut(), 0, wide(&name).as_ptr()) });
+            assert!(!held.0.is_null());
+            assert!(running_named(&name));
+            panic!("injected assertion failure after owning the marker");
+        });
+        assert!(result.is_err());
+        assert!(
+            !running_named(&name),
+            "the actual fixture marker must not survive unwind"
+        );
     }
 
     #[test]

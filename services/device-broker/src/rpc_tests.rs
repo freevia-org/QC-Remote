@@ -23,7 +23,7 @@ fn startup_failure_releases_only_the_claim_it_published() {
     let fail_after_publication = || -> Result<(), String> {
         let claim = qc_owner_only_file::ClaimedFile::try_claim(&path).unwrap();
         let slot = Arc::new(Mutex::new(Some(claim)));
-        let _cleanup = PublicationCleanup(Arc::clone(&slot));
+        let _cleanup = ServingLifetime::new(Arc::new(AtomicBool::new(false)), Arc::clone(&slot));
         slot.lock_recover()
             .as_mut()
             .unwrap()
@@ -56,26 +56,46 @@ fn reconnect_waits_only_when_the_requested_qc_is_present() {
 
 #[test]
 fn a_reconnect_for_an_absent_qc_returns_searching_without_waiting_for_a_handshake() {
-    // The early return needs a successful enumeration; after an error
-    // `await_ready_status` deliberately falls back to the ready wait.
-    if quadcortex_hid::usb::connected_devices().is_err() {
-        return;
-    }
-    let dir = std::env::temp_dir().join(format!("qc-absent-ready-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    crate::device_lease::testing::create_directory(&dir).unwrap();
-    // Removed even when an assertion fails; the controller and its lease in
-    // this directory are declared later, so they drop first.
-    let _dir = crate::device_lease::testing::OwnedTestDirectory(dir.clone());
+    // Always exercise absence, including on hosts where HID cannot initialize.
+    // The caller witness distinguishes this RPC's discovery from its worker's.
+    let caller = std::thread::current().id();
+    let rpc_discoveries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = Arc::clone(&rpc_discoveries);
+    let root = crate::device_lease::testing::fresh_root("absent-ready");
+    let dir = root.0.clone();
     // An id that matches nothing HID can enumerate, so this test can never
     // open a real Quad Cortex, and a lease of its own so it never contends
     // with a running broker.
-    let controller = DeviceController::start_for_device_with_lease(
+    let controller = DeviceController::start_for_device_with_test_discovery(
         Some("no-such-device".into()),
         true,
         dir.join("device-owner.json"),
+        move || {
+            if std::thread::current().id() == caller {
+                observed.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(Vec::new())
+        },
     )
     .expect("controller starts");
+    struct RootOwner(
+        crate::worker::WorkerShutdown,
+        Arc<crate::device_lease::testing::FixtureRoot>,
+    );
+    impl Drop for RootOwner {
+        fn drop(&mut self) {
+            if !matches!(
+                self.0.stop_and_join(crate::worker::WORKER_EXIT_BUDGET),
+                crate::worker::WorkerExit::Joined | crate::worker::WorkerExit::NoWorker
+            ) {
+                static RETAINED: Mutex<Vec<Arc<crate::device_lease::testing::FixtureRoot>>> =
+                    Mutex::new(Vec::new());
+                RETAINED.lock_recover().push(Arc::clone(&self.1));
+                eprintln!("absent-ready worker exit unacknowledged; exact root retained");
+            }
+        }
+    }
+    let root_owner = RootOwner(controller.shutdown_handle(), Arc::clone(&root));
     assert_eq!(controller.status().phase, "searching");
     let started = Instant::now();
     let status = await_ready_status(&controller);
@@ -87,7 +107,9 @@ fn a_reconnect_for_an_absent_qc_returns_searching_without_waiting_for_a_handshak
     assert_eq!(status.phase, "searching");
     assert!(!status.connected);
     assert!(!status.synchronized);
+    assert!(rpc_discoveries.load(Ordering::SeqCst) > 0);
     drop(controller);
+    drop(root_owner);
 }
 
 #[test]
@@ -159,6 +181,13 @@ fn phase_events_publish_each_visible_status_change() {
     let output = Mutex::new(Vec::<u8>::new());
     let stop = AtomicBool::new(false);
     thread::scope(|scope| {
+        struct StopOnDrop<'a>(&'a AtomicBool);
+        impl Drop for StopOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _stop_on_unwind = StopOnDrop(&stop);
         let publisher = scope.spawn(|| publish_phase_changes(&controller, &output, &stop));
         // Several polls against an unchanged phase still yield one frame.
         thread::sleep(PHASE_EVENT_POLL * 3);
@@ -1977,11 +2006,12 @@ fn a_failed_descriptor_refresh_is_retried_until_the_claim_is_released() {
     let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let refresher = {
         let (claim, attempts) = (Arc::clone(&claim), Arc::clone(&attempts));
-        thread::spawn(move || {
-            refresh_descriptor_while_claimed(
+        test_support::FixtureJob::spawn(move |stop| {
+            refresh_descriptor_while_claimed_until(
                 &claim,
                 Duration::from_millis(20),
                 Duration::from_millis(1),
+                &stop,
                 |written| {
                     // Three failures in a row, then every write lands.
                     if attempts.fetch_add(1, Ordering::SeqCst) < 3 {
@@ -2018,6 +2048,39 @@ fn a_failed_descriptor_refresh_is_retried_until_the_claim_is_released() {
     refresher.join().unwrap();
 }
 
+#[test]
+fn heartbeat_fixture_unwind_stops_its_original_job_even_while_the_claim_remains() {
+    let claim = Arc::new(Mutex::new(Some(0_u32)));
+    let finished = Arc::new(AtomicBool::new(false));
+    let (ready, entered) = mpsc::channel();
+    let owned_claim = Arc::clone(&claim);
+    let done = Arc::clone(&finished);
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _refresher = test_support::FixtureJob::spawn(move |stop| {
+            refresh_descriptor_while_claimed_until(
+                &owned_claim,
+                Duration::from_millis(1),
+                Duration::from_millis(1),
+                &stop,
+                |written| {
+                    *written += 1;
+                    let _ = ready.send(());
+                    Ok(())
+                },
+            );
+            done.store(true, Ordering::Release);
+        });
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        panic!("injected heartbeat assertion failure");
+    }));
+    assert!(failure.is_err());
+    assert!(finished.load(Ordering::Acquire));
+    assert!(
+        claim.lock_recover().is_some(),
+        "stop ownership, not claim removal, ended the worker"
+    );
+}
+
 /// A failed `accept` backs off instead of spinning, and only
 /// the first of a run (then every hundredth) is logged.
 #[test]
@@ -2049,6 +2112,174 @@ fn the_descriptor_claim_refusal_reads_as_one_sentence_run() {
         message.contains("attaches to that one instead."),
         "{message}"
     );
+}
+
+#[test]
+fn unused_grace_reservation_admits_no_new_participant_until_retirement() {
+    let shared = test_support::handle().0;
+    // The actual admission helper is taken under the same production lock,
+    // after finding no holder, rather than repeating an independent predicate.
+    let reserve = || {
+        let _request = shared.request_lock.lock_recover();
+        BrokerShared::reserve_unused_device(&shared.clients, &shared.controller, &shared.controller)
+    };
+    let admission = reserve().unwrap();
+    let newcomer = accept_client(&shared.clients).unwrap();
+    let refused = shared.mark_client_authenticated(newcomer).unwrap_err();
+    assert!(refused.contains("closing"));
+    assert!(!shared.clients.lock_recover().connections[&newcomer].authenticated);
+    drop(admission);
+    shared.mark_client_authenticated(newcomer).unwrap();
+    assert!(
+        reserve().is_none(),
+        "a real current holder keeps the device open"
+    );
+    shared.detach_client(newcomer);
+    let pending = accept_client(&shared.clients).unwrap();
+    assert!(
+        reserve().is_none(),
+        "the existing pending-socket keep-open policy is preserved"
+    );
+    shared.detach_client(pending);
+}
+
+#[test]
+fn total_connection_admission_counts_authenticated_and_detached_live_owners() {
+    let shared = test_support::handle().0;
+    let mut ids = Vec::new();
+    for _ in 0..BROKER_MAX_CONNECTION_OWNERS {
+        let id = accept_client(&shared.clients).expect("within total software budget");
+        shared.mark_client_authenticated(id).unwrap();
+        ids.push(id);
+    }
+    assert!(accept_client(&shared.clients).is_none());
+    assert_eq!(
+        shared.clients.lock_recover().count,
+        BROKER_MAX_CONNECTION_OWNERS
+    );
+    let id = ids.pop().unwrap();
+    let owner = connection_owner(&shared.clients, id).unwrap();
+    let (release, released) = mpsc::channel();
+    let (entered, ready) = mpsc::channel();
+    let mut serving =
+        ServingLifetime::new(Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)));
+    let thread_owner = Arc::clone(&owner);
+    let worker = thread::spawn(move || {
+        let _owner = thread_owner;
+        entered.send(()).unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(5));
+    });
+    serving.jobs.push(ServingJob {
+        thread: worker,
+        socket: None,
+        _connection_owner: Some(owner),
+    });
+    struct ReleaseOnDrop(mpsc::Sender<()>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+    let _release_on_unwind = ReleaseOnDrop(release.clone());
+    ready.recv_timeout(Duration::from_secs(1)).unwrap();
+    shared.detach_client(id);
+    assert!(
+        accept_client(&shared.clients).is_none(),
+        "detached live original worker consumes its slot"
+    );
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !crate::platform::process::thread_signalled(&serving.jobs[0].thread) {
+        assert!(
+            Instant::now() < deadline,
+            "controlled actual worker must finish"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        accept_client(&shared.clients).is_none(),
+        "unreaped original handle still retains its lease"
+    );
+    serving.reap_finished();
+    assert!(serving.jobs.is_empty());
+    let replacement = accept_client(&shared.clients).expect("actual retirement frees capacity");
+    assert!(accept_client(&shared.clients).is_none());
+    shared.detach_client(replacement);
+    for id in ids {
+        shared.detach_client(id);
+    }
+    assert_eq!(shared.clients.lock_recover().count, 0);
+}
+
+#[test]
+fn hello_provider_budget_preserves_previous_identity_and_counts_utf8_bytes() {
+    let shared = test_support::handle().0;
+    let id = accept_client(&shared.clients).unwrap();
+    shared.mark_client_authenticated(id).unwrap();
+    let hello = |provider: String| {
+        dispatch_broker_client_request(
+            &shared,
+            Some(id),
+            Request {
+                jsonrpc: "2.0".into(),
+                id: json!(1),
+                method: "broker.hello".into(),
+                params: json!({"provider":provider}),
+                origin: None,
+            },
+        )
+    };
+    let accepted = "é".repeat(BROKER_PROVIDER_MAX_UTF8_BYTES / 2);
+    assert!(hello(accepted.clone()).get("result").is_some());
+    let refused = hello(format!("{accepted}x"));
+    assert_eq!(refused["error"]["code"], -32602);
+    assert!(refused["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("4096 UTF-8 bytes"));
+    assert_eq!(
+        shared.clients.lock_recover().connections[&id].provider,
+        accepted
+    );
+    assert_eq!(shared.clients.lock_recover().count, 1);
+    assert_eq!(
+        shared.clients.lock_recover().connection_owners.len(),
+        1,
+        "hello preserves the same admission lease"
+    );
+    shared.detach_client(id);
+}
+
+#[test]
+fn an_oversized_owner_private_descriptor_is_not_read_for_a_claim_diagnostic() {
+    let root = crate::device_lease::testing::fresh_root("claim-diagnostic-budget");
+    let path = root.0.join("device-broker.json");
+    let bytes = br#"{"processId":12345,"credential":"must-not-be-disclosed"}"#;
+    qc_owner_only_file::publish_atomically(&path, bytes).unwrap();
+    let healthy = descriptor_claim_refusal(&path);
+    assert!(healthy.contains("device broker process 12345"), "{healthy}");
+    assert!(!healthy.contains("must-not-be-disclosed"));
+    // Sparse growth changes no ACL and requires no large allocation in the
+    // fixture. The original document remains untouched by the refusal.
+    let oversized = (BROKER_DESCRIPTOR_DIAGNOSTIC_MAX_BYTES + 1) as u64;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len(oversized)
+        .unwrap();
+    let refused = descriptor_claim_refusal(&path);
+    assert!(
+        !refused.contains("device broker process 12345"),
+        "{refused}"
+    );
+    assert!(refused.contains("already published there"), "{refused}");
+    assert!(!refused.contains("credential"));
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), oversized);
+    let mut file = std::fs::File::open(&path).unwrap();
+    let mut prefix = vec![0; bytes.len()];
+    std::io::Read::read_exact(&mut file, &mut prefix).unwrap();
+    assert_eq!(prefix, bytes);
 }
 
 /// A selection waits for `request_lock`, possibly behind

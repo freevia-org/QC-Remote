@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { PresetSnapshot } from "@qc-remote/client";
-import { adjacentPresetPosition, canAdoptNativeState, presetBoundaryDetail } from "@qc-remote/core";
+import { adjacentPresetPosition, canAdoptNativeState, presetBoundaryDetail, type QcStompPreviewPolicy } from "@qc-remote/core";
 import { PresetLifetime, SupersededPresetOperation, samePresetAddress, QcCommandCoordinator, type PresetAddress, type PresetOperation, type QcDeviceCommand, type QcCommandResult, type QcCommandToken, type QcDeviceTransport, type QcStateUpdate } from "@qc-remote/core";
 import { interactionObservationOf, QcInteractionAuthority, type QcInteractionTarget } from "./interaction-authority.ts";
 
@@ -15,7 +15,7 @@ export interface QcController {
   beginModeSlot(slot: 0 | 1 | 2): QcCommandToken;
   beginTempo(tempo: number): QcCommandToken;
   beginBypass(blockId: string, bypassed: boolean): QcCommandToken;
-  beginFootswitch(index: number): QcCommandToken;
+  beginFootswitch(index: number, stompPolicy?: QcStompPreviewPolicy): QcCommandToken;
   failCommand(token: QcCommandToken): void;
   settleCommand(token: QcCommandToken): void;
   resetCommands(): void;
@@ -27,13 +27,13 @@ export interface QcController {
   subscribeInteractionObservation(target: QcInteractionTarget, listener: (value: number) => void): () => void;
   reconcileFrame(states: readonly QcStateUpdate[], now?: number): { snapshot: PresetSnapshot; states: QcStateUpdate[] };
   acceptSnapshot(incoming: PresetSnapshot, observedAt?: number): PresetSnapshot;
-  readSnapshot(read: () => Promise<PresetSnapshot>, options?: {sessionRecovery: true}): Promise<PresetSnapshot>;
+  readSnapshot(read: () => Promise<PresetSnapshot>, options?: {sessionRecovery: true; onAccepted?(): void}): Promise<PresetSnapshot>;
   runScene(transport: QcDeviceTransport, scene: number): Promise<QcCommandResult>;
   runPresetMove(transport: QcDeviceTransport, delta: -1 | 1, name?: string): Promise<QcCommandResult>;
   runModeSlot(transport: QcDeviceTransport, slot: 0 | 1 | 2): Promise<QcCommandResult>;
   runTempo(transport: QcDeviceTransport, tempo: number): Promise<QcCommandResult>;
   runBypass(transport: QcDeviceTransport, blockId: string, row: number, column: number, bypassed: boolean): Promise<QcCommandResult>;
-  runFootswitch(transport: QcDeviceTransport, index: number): Promise<QcCommandResult>;
+  runFootswitch(transport: QcDeviceTransport, index: number, stompPolicy?: QcStompPreviewPolicy): Promise<QcCommandResult>;
   runDeviceCommand(transport: QcDeviceTransport, command: QcDeviceCommand): Promise<QcCommandResult>;
 }
 
@@ -116,7 +116,7 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
   const beginModeSlot = useCallback((slot: 0 | 1 | 2) => begin(coordinatorRef.current!.beginModeSlot(snapshotRef.current, slot)), [begin]);
   const beginTempo = useCallback((tempo: number) => begin(coordinatorRef.current!.beginTempo(snapshotRef.current, tempo)), [begin]);
   const beginBypass = useCallback((blockId: string, bypassed: boolean) => begin(coordinatorRef.current!.beginBypass(snapshotRef.current, blockId, bypassed)), [begin]);
-  const beginFootswitch = useCallback((index: number) => begin(coordinatorRef.current!.beginFootswitch(snapshotRef.current, index)), [begin]);
+  const beginFootswitch = useCallback((index: number, stompPolicy?: QcStompPreviewPolicy) => begin(coordinatorRef.current!.beginFootswitch(snapshotRef.current, index, Date.now(), stompPolicy)), [begin]);
 
   const cancelAuthoritativeReconciliation = useCallback(() => {
     reconciliationGenerationRef.current += 1;
@@ -244,7 +244,7 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
     return reduced;
   }, [commitPreview, observeAddress]);
 
-  const readSnapshot = useCallback(async (read: () => Promise<PresetSnapshot>, options?: {sessionRecovery: true}) => {
+  const readSnapshot = useCallback(async (read: () => Promise<PresetSnapshot>, options?: {sessionRecovery: true; onAccepted?(): void}) => {
     const operation = lifetime.begin();
     const observedAt = Date.now();
     const sourceSession = snapshotRef.current.stateVersion?.session;
@@ -256,12 +256,18 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
         && canAdoptNativeState(undefined, incoming.stateVersion)) {
         // Only an explicit fresh recovery read may install another native
         // session. A late read cannot replace a session installed meanwhile.
-        if (snapshotRef.current.stateVersion?.session !== sourceSession) return snapshotRef.current;
+        if (snapshotRef.current.stateVersion?.session !== sourceSession) {
+          options.onAccepted?.();
+          return snapshotRef.current;
+        }
         resetCommands();
         setSnapshot(incoming);
+        options.onAccepted?.();
         return incoming;
       }
-      return acceptSnapshot(incoming, observedAt);
+      const accepted = acceptSnapshot(incoming, observedAt);
+      options?.onAccepted?.();
+      return accepted;
     } catch (error) {
       lifetime.assertCurrent(operation);
       throw error;
@@ -368,8 +374,8 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
     () => beginBypass(blockId, bypassed),
     (expected) => transport.setBypass(row, column, bypassed, expected)
   ), [beginBypass, runCommand]);
-  const runFootswitch = useCallback((transport: QcDeviceTransport, index: number) => runCommand(transport,
-    () => beginFootswitch(index),
+  const runFootswitch = useCallback((transport: QcDeviceTransport, index: number, stompPolicy?: QcStompPreviewPolicy) => runCommand(transport,
+    () => beginFootswitch(index, stompPolicy),
     (expected) => transport.pressFootswitch(index, expected)
   ), [beginFootswitch, runCommand]);
   const runDeviceCommand = useCallback((transport: QcDeviceTransport, command: QcDeviceCommand) => {

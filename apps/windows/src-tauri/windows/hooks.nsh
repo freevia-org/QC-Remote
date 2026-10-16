@@ -214,7 +214,16 @@
   ${EndIf}
   ${If} "$INSTDIR" != "$LOCALAPPDATA\QC Remote"
     !insertmacro QC_STOP_INSTALLED_HOST_AT "$LOCALAPPDATA\QC Remote"
-    !insertmacro QC_DELETE_LEGACY_EXECUTABLES "$LOCALAPPDATA\QC Remote"
+    ; A legacy mixed installation's uninstaller must not survive relocation:
+    ; it could later remove the new installation's shared registry entries.
+    ; Only retire it when this is demonstrably an app installation, not data.
+    ${If} ${FileExists} "$LOCALAPPDATA\QC Remote\qc-remote.exe"
+      !insertmacro QC_DELETE_LEGACY_EXECUTABLES "$LOCALAPPDATA\QC Remote"
+      !insertmacro QC_DELETE_LEGACY_EXECUTABLE "$LOCALAPPDATA\QC Remote" "uninstall.exe"
+      Delete "$LOCALAPPDATA\QC Remote\qc-device-broker.resident-host"
+    ${Else}
+      !insertmacro QC_DELETE_LEGACY_EXECUTABLES "$LOCALAPPDATA\QC Remote"
+    ${EndIf}
   ${EndIf}
 !macroend
 
@@ -281,6 +290,88 @@
   ${EndIf}
 !macroend
 
+; Refuse root/descendant reparse points before following payload paths or
+; rewriting ACLs. Ancestor redirects are allowed (redirected profiles/mounts).
+; This preflight does not defend against a hostile concurrent path replacement.
+!macro QC_VERIFY_INSTALL_TREE ALLOW_MISSING
+  System::Call 'kernel32::GetFileAttributesW(w "$INSTDIR") i.R4 ?e'
+  Pop $R7
+  ${If} $R4 == -1
+    StrCpy $R9 -1
+    ${If} $R7 == 2
+    ${OrIf} $R7 == 3
+      ${If} ${ALLOW_MISSING} == 1
+        StrCpy $R9 0
+      ${EndIf}
+    ${EndIf}
+    ${If} $R9 == 0
+      StrCpy $R9 0
+    ${Else}
+      SetErrorLevel 1
+      Abort "Could not inspect the QC Remote installation folder. Choose an ordinary folder and retry."
+    ${EndIf}
+  ${Else}
+    Push "$INSTDIR"
+    StrCpy $R9 1
+  ${EndIf}
+  ${DoWhile} $R9 > 0
+    Pop $R3
+    IntOp $R9 $R9 - 1
+    System::Call 'kernel32::GetFileAttributesW(w "$R3") i.R4 ?e'
+    Pop $R7
+    IntOp $R5 $R4 & 0x400
+    IntOp $R2 $R4 & 0x10
+    ${If} $R4 == -1
+    ${OrIf} $R5 != 0
+    ${OrIf} $R2 == 0
+      SetErrorLevel 1
+      Abort "QC Remote cannot install through links or reparse points. Choose an ordinary folder and retry."
+    ${EndIf}
+    System::Alloc 592
+    Pop $R0
+    ${If} $R0 == 0
+      SetErrorLevel 1
+      Abort "Could not inspect the QC Remote installation folder. Retry the installation."
+    ${EndIf}
+    System::Call 'kernel32::FindFirstFileW(w "$R3\*", p R0) p.R6 ?e'
+    Pop $R7
+    ${If} $R6 == -1
+      System::Free $R0
+      SetErrorLevel 1
+      Abort "Could not inspect the QC Remote installation files. Retry the installation."
+    ${EndIf}
+    ${Do}
+      System::Call '*$R0(i .R4, &v40, &w260 .r9)'
+      ${If} $9 != "."
+      ${AndIf} $9 != ".."
+        IntOp $R5 $R4 & 0x400
+        ${If} $R5 != 0
+          FindClose $R6
+          System::Free $R0
+          SetErrorLevel 1
+          Abort "QC Remote installation files contain links or reparse points. Move them aside and retry."
+        ${EndIf}
+        IntOp $R5 $R4 & 0x10
+        ${If} $R5 != 0
+          Push "$R3\$9"
+          IntOp $R9 $R9 + 1
+        ${EndIf}
+      ${EndIf}
+      System::Call 'kernel32::FindNextFileW(p R6, p R0) i.R1 ?e'
+      Pop $R2
+      ${If} $R1 == 0
+        ${ExitDo}
+      ${EndIf}
+    ${Loop}
+    FindClose $R6
+    System::Free $R0
+    ${If} $R2 != 18
+      SetErrorLevel 1
+      Abort "Could not inspect all QC Remote installation files. Retry the installation."
+    ${EndIf}
+  ${Loop}
+!macroend
+
 !macro QC_PROTECT_INSTALL_DIRECTORY
   ; Establish that the target exists and is a directory before enumeration.
   ; CreateDirectory succeeds without changing an existing directory.
@@ -290,6 +381,7 @@
     SetErrorLevel 1
     Abort "Could not inspect $INSTDIR. Choose a folder that can be accessed and retry."
   ${EndIf}
+  !insertmacro QC_VERIFY_INSTALL_TREE 0
   !insertmacro QC_ENUMERATE_INSTALL_DIRECTORY "Could not inspect $INSTDIR. Choose a folder that can be accessed and retry."
   ${If} $R8 == 1
   ${AndIfNot} ${FileExists} "$INSTDIR\qc-remote.exe"
@@ -423,7 +515,21 @@
   ${EndIf}
 !macroend
 
+!macro QC_REJECT_DATA_DIRECTORY
+  ; Runtime data is never an installation target, even with an explicit /D.
+  GetFullPathName $R7 "$INSTDIR"
+  StrLen $R8 "$LOCALAPPDATA\QC Remote\"
+  StrCpy $R9 "$R7\" $R8
+  ${If} $R9 == "$LOCALAPPDATA\QC Remote\"
+    SetErrorLevel 1
+    Abort "This folder stores QC Remote user data. Install in $LOCALAPPDATA\Programs\QC Remote instead. Your data has not been changed."
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
+  !insertmacro QC_REJECT_DATA_DIRECTORY
+  ; Never execute/delete through a linked selected root before the ACL guard.
+  !insertmacro QC_VERIFY_INSTALL_TREE 1
   ; Stop first, then judge: the resident host steps aside here only when no
   ; client is attached, and the unlock check catches one that is still busy
   ; or that started in the interval between the two.

@@ -29,10 +29,11 @@ const sceneArgb = (hex: string) => 0xff000000 + Number.parseInt(hex.slice(1), 16
 /** Shared scene copy/swap, label, and color workflow. */
 export function useSceneWorkflow(options: SceneWorkflowOptions) {
   const { gateway, snapshot, connected, pending, setPending, reconcile, recordHistory, notice, fail, onOpen, onClose } = options;
+  const presetLifetime = options.presetLifetime ?? options.lifetime;
   const [, refreshLifetime] = useState(0);
-  useEffect(() => options.presetLifetime?.subscribe(() => refreshLifetime((value) => value + 1)), [options.presetLifetime]);
+  useEffect(() => presetLifetime?.subscribe(() => refreshLifetime((value) => value + 1)), [presetLifetime]);
   const context = JSON.stringify([snapshot.stateVersion?.session, snapshot.setlistKey, snapshot.presetPosition,
-    options.presetLifetime?.version ?? snapshot.presetIdentity]);
+    presetLifetime?.version ?? snapshot.presetIdentity]);
   type SceneOwner = { gateway: GatewayTransport; context: string; physicalKey: unknown; connected: boolean; current(): boolean };
   const ownerRef = useRef<SceneOwner | undefined>(undefined);
   const mounted = useRef(true);
@@ -40,10 +41,10 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
   let owner = ownerRef.current;
   if (!owner || owner.gateway !== gateway || owner.context !== context || owner.physicalKey !== options.commandSessionKey
       || owner.connected !== connected || (!owner.current() && probe())) {
-    const checkpoint = options.presetLifetime?.checkpoint();
+    const checkpoint = presetLifetime?.checkpoint();
     const replacement: SceneOwner = { gateway, context, physicalKey: options.commandSessionKey, connected, current: () => false };
     replacement.current = () => mounted.current && ownerRef.current === replacement && probe()
-      && (!checkpoint || options.presetLifetime!.current(checkpoint));
+      && (!checkpoint || presetLifetime!.current(checkpoint));
     ownerRef.current = replacement;
     owner = replacement;
   }
@@ -71,7 +72,7 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
     setColor(Math.max(0, sceneColorChoices(observed).indexOf(observed?.toLowerCase() ?? "")));
   }, [currentOwner, snapshot.sceneColors, snapshot.scenes]);
 
-  const guarded = useGuardedMutation({ connected, pending, setPending, notice, fail,
+  const guarded = useGuardedMutation({ connected, pending, setPending, notice, fail, lifetime: options.lifetime,
     sessionKey: currentOwner, commandSessionKey: options.commandSessionKey,
     captureSessionCurrent: () => currentOwner.current }, "editing scenes");
   const unavailable = useCallback(() => !currentOwner.current() || !guarded.admit(), [currentOwner, guarded.admit]);
@@ -100,7 +101,7 @@ export function useSceneWorkflow(options: SceneWorkflowOptions) {
     if (source === destination) { notice("Choose a different destination scene."); return false; }
     const verb = swapMode ? "Swap" : "Copy";
     return commit(`${verb}ping scenes`, () => gateway.copyScene(source, destination, swapMode, snapshot.presetName, requirePresetIdentity(snapshot)), deviceUndo ? {
-      label: `${verb.toLocaleLowerCase()} scenes`, execute: (current) => gateway.undo(requirePresetIdentity(current)), redo: (current) => gateway.redo(requirePresetIdentity(current))
+      label: "device edit", execute: (current) => gateway.undo(requirePresetIdentity(current)), redo: (current) => gateway.redo(requirePresetIdentity(current))
     } : undefined);
   }, [commit, deviceUndo, gateway, notice, snapshot.presetIdentity, snapshot.presetName]);
 

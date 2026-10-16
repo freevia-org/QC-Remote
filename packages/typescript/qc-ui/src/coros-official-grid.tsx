@@ -44,7 +44,7 @@ function browserTitleFit(presetLocation: string, presetName: string) {
   return { start, fontSize, baselineRise: (BROWSER_TITLE_SIZE - fontSize) * 0.375 };
 }
 
-export function CorOsOfficialGrid({ snapshot, children, browserChrome = false, naturalTitleWidth = false, forceRouteLines = false, hideConnectionNodes = false, screenClassName, letterTone, cpuColumns }: { snapshot: PresetSnapshot; children?: ReactNode; browserChrome?: boolean; naturalTitleWidth?: boolean; forceRouteLines?: boolean; hideConnectionNodes?: boolean; screenClassName?: string; letterTone?: string; cpuColumns?: readonly CpuColumnLoad[] }) {
+export function CorOsOfficialGrid({ snapshot, children, browserChrome = false, naturalTitleWidth = false, forceRouteLines = false, hideConnectionNodes = false, screenClassName, letterTone, cpuColumns, referenceOnly = false }: { snapshot: PresetSnapshot; children?: ReactNode; browserChrome?: boolean; naturalTitleWidth?: boolean; forceRouteLines?: boolean; hideConnectionNodes?: boolean; screenClassName?: string; letterTone?: string; cpuColumns?: readonly CpuColumnLoad[]; referenceOnly?: boolean }) {
   // The fit below measures on a canvas during render, so it must run again once the face is usable.
   // The browser's title is the main Grid's: a dirty working buffer prints "name*" slanted. The displayed text,
   // asterisk included, is what is fitted (as presetTitleLayout does) and what the font-ready hook waits on.
@@ -175,7 +175,7 @@ export function CorOsOfficialGrid({ snapshot, children, browserChrome = false, n
             const cy = rowY[block.row];
             return (
               <g key={block.id}>
-                <QcDeviceGlyph block={block} x={cx} y={cy} cpuLoad={cpuColumns?.[block.row * 8 + block.column]?.load} cpuCore={cpuColumns?.[block.row * 8 + block.column]?.core} />
+                <QcDeviceGlyph referenceOnly={referenceOnly} block={block} x={cx} y={cy} cpuLoad={cpuColumns?.[block.row * 8 + block.column]?.load} cpuCore={cpuColumns?.[block.row * 8 + block.column]?.core} />
               </g>
             );
           })}

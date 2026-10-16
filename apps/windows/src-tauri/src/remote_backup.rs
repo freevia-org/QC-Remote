@@ -74,9 +74,9 @@ pub(crate) fn save_backup_in(
     document: &Value,
     name: &str,
 ) -> Result<Value, String> {
-    crate::validate_native_backup(document)?;
+    crate::workspace::validate_native_backup(document)?;
     let bytes = serde_json::to_vec(document).map_err(|error| error.to_string())?;
-    if bytes.len() > crate::MAX_NATIVE_BACKUP_BYTES {
+    if bytes.len() > crate::workspace::MAX_NATIVE_BACKUP_BYTES {
         return Err("The native backup exceeds the 32 MiB safety limit".into());
     }
     fs::create_dir_all(directory)

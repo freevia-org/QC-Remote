@@ -1691,7 +1691,7 @@ export const SHARED_QC_ACTIONS = [
     "name": "select_mode_slot",
     "rpc": "device.selectModeSlot",
     "classification": "live-write",
-    "description": "Select device-configured performance Mode Slot A, B, or C through the native HID mode route: one type-14 Mode UPDATE carrying the mode enum the slot holds (0 PRESET, 1 SCENE, 2 STOMP; only enum values 0 to 2 are ever written). Sent once and reconciled by pushed mode state; completion happens at enqueue, not on an acknowledgement. `slot` is the zero-based position (A, B or C) in the unit's configured mode cycle, and the host writes that slot's configured mode as the wire mode enum value (observed on a CorOS 4.1.0 unit, 2026-10-07, whose cycle was Scene, Preset, Stomp); the hybrid values 3 to 8 have not been written.",
+    "description": "Select device-configured performance Mode Slot A, B, or C through the native HID mode route: one type-14 Mode UPDATE carrying the mode enum the slot holds (0 PRESET, 1 SCENE, 2 STOMP; only enum values 0 to 2 are ever written). Sent once and reconciled by pushed mode state; completion happens at enqueue, not on an acknowledgement. `slot` is the zero-based position (A, B or C) in the unit's configured mode cycle, and the host writes that slot's configured mode as the wire mode enum value (observed on a CorOS 4.1.0 unit, 2026-10-07, whose cycle was Scene, Preset, Stomp); the hybrid values 3 to 8 have not been written, so selecting a slot configured with one of those values is refused before enqueue. Hybrid values may still be configured in the mode cycle; configuration and selecting the active mode are different operations.",
     "properties": {
       "slot": "integer",
       "expected_preset_name": "string",
@@ -4850,7 +4850,7 @@ export const SHARED_QC_ACTIONS = [
     "name": "set_mode_cycle",
     "rpc": "device.setModeCycle",
     "classification": "persistent-write",
-    "description": "Replace the ordered footswitch mode cycle after explicit confirmation. Sends ONE type-14 Mode UPDATE frame carrying available_modes (field 4), as the desktop application sends; the values are the mode enum (0 PRESET, 1 SCENE, 2 STOMP) in cycle order. Nothing is read back and no echo is awaited: the result is accepted_unverified (the unit has been observed to answer a Mode update with a Mode push within about 10 to 50 ms, CorOS 4.1.0, 2026-10-07).",
+    "description": "Replace the ordered footswitch mode cycle after explicit confirmation. The host accepts one to three distinct enum values in 0 through 8: 0 PRESET, 1 SCENE, 2 STOMP, and the six hybrid labels in the native editor table. Hybrid labels follow static protocol/editor interpretation, not measured active-mode writes; select_mode_slot refuses hybrid selections. Sends ONE type-14 Mode UPDATE frame carrying available_modes (field 4), as the desktop application sends. Nothing is read back and no echo is awaited: the result is accepted_unverified. An observed Mode push about 10 to 50 ms after a Mode update (CorOS 4.1.0, 2026-10-07) does not verify every hybrid cycle configuration.",
     "properties": {
       "slots": "mode-cycle",
       "confirm_persistent_write": "boolean"

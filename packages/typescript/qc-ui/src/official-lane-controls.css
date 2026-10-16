@@ -14,7 +14,7 @@
  * `.is-lane-output`'s header chrome and panel position are confirmed - see
  * lane-control-panel.tsx's module comment. Its `> main` grid is the device's
  * five equal-width field columns (VOLUME/PAN/MUTE/SOLO/OUT LEVEL); OUT LEVEL
- * has no data and is drawn at silence (LaneOutputLevelMeter).
+ * has unavailable readings with empty tracks (LaneOutputLevelMeter).
  */
 /* Full-bleed, invisible - sits behind the panel (z-index 8) and in front of
    the grid, exactly like surface-shell.css's coros-route-picker-dismiss for
@@ -177,7 +177,7 @@
    LEVEL, each ~156.8px of the panel's 784px content width, divided by
    identical 1px `--qc-screen-surface-raised` rules, which is exactly what
    `.lane-control-panel > main > section`'s `border-right` below already
-   paints for every section. OUT LEVEL is drawn at silence, not from data
+   paints for every section. OUT LEVEL uses unavailable readings and empty tracks
    (see LaneOutputLevelMeter in lane-control-panel.tsx), but it still owns
    its column: leaving it out stretched MUTE and SOLO across the space. */
 .lane-control-panel.is-lane-output > main { grid-template-columns: repeat(5, 1fr); }

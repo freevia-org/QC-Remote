@@ -1,6 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { QC_GRID_COLUMNS, QC_GRID_ROWS, QC_OUTPUT_ROUTES, type CpuColumnLoad, type GridBlock, type LaneControl, type LibraryEntry, type PresetEntry, type PresetList, type PresetSnapshot } from "@qc-remote/client";
-import { footswitchLeds, QC_PRESET_SLOT_COLORS, routePickerGroup, routePickerLabel, sceneLetter as sceneLabel, type QcSurfaceAction } from "@qc-remote/core";
+import { modeSlotIsActive, footswitchLeds, QC_PRESET_SLOT_COLORS, routePickerGroup, routePickerLabel, sceneLetter as sceneLabel, type QcSurfaceAction } from "@qc-remote/core";
 import type { FormFactorManifest, HardwareControl, SkinManifest } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_SCREEN_ICON_VECTORS, QC_TYPOGRAPHY } from "@qc-remote/theme";
 import { officialBlockVisual } from "./block-visuals";
@@ -79,6 +79,8 @@ export interface QcHostSurfaceProps {
    * chooses how much of the unit to show and what box to offer it. */
   presentation?: "hardware" | "display";
   onAction: (action: HardwareAction) => void;
+  /** Source and physical session only: normal preset/value/view updates preserve chassis contacts. */
+  hardwareGestureContextKey?: string;
   onMasterVolumeInteractionStart?: () => void;
   onMasterVolumeInteractionEnd?: () => void;
 }
@@ -120,7 +122,7 @@ export interface QcDisplaySurfaceProps {
    * draws (title, port labels, blocks); this adds the readout panel and each
    * block's load fill. Ignored while a screenView or screenContent replaces
    * the Grid. */
-  cpuMonitor?: { cpuLoad: number; cpuColumns: readonly CpuColumnLoad[]; returnFocusTarget?: "grid-menu"; onClose: () => void };
+  cpuMonitor?: { cpuLoad?: number; cpuColumns: readonly CpuColumnLoad[]; returnFocusTarget?: "grid-menu"; onClose: () => void };
   deviceInformation?: CorOsDeviceInformation;
   onCloseScreen?: () => void;
   onOpenGigView?: () => void;
@@ -141,7 +143,7 @@ export interface QcDisplaySurfaceProps {
 
 export type QuadCortexSurfaceProps = QcHostSurfaceProps & QcDisplaySurfaceProps;
 
-export function QcHardwareSwitch({ role, label, ariaLabel, active, assigned = false, accent, compact = false, pulseBpm, pulseEpochMs, readout, holdDelayMs = QC_HOLD_DELAY_MS, doubleTapDelayMs = 300, onTap, onDoubleTap, onHold, onContactChange, onAction }: {
+function HardwareSwitchControl({ role, label, ariaLabel, active, assigned = false, accent, compact = false, pulseBpm, pulseEpochMs, readout, holdDelayMs = QC_HOLD_DELAY_MS, doubleTapDelayMs = 300, onTap, onDoubleTap, onHold, onContactChange, onAction }: {
   role: string; label: ReactNode; ariaLabel?: string; active?: boolean; assigned?: boolean; accent?: string; compact?: boolean; pulseBpm?: number; pulseEpochMs?: number; readout?: string;
   holdDelayMs?: number; doubleTapDelayMs?: number;
   onTap?: () => void; onDoubleTap?: () => void; onHold?: () => void; onContactChange?: (pressed: boolean) => void;
@@ -150,21 +152,30 @@ export function QcHardwareSwitch({ role, label, ariaLabel, active, assigned = fa
   const hideValueTimer = useRef<number | undefined>(undefined);
   const pendingTapTimer = useRef<number | undefined>(undefined);
   // A pointer press and a keyboard press are separate gestures, each with its own hold.
+  const mounted = useRef(true);
+  const mountEpoch = useRef(0);
+  const captureContact = () => {
+    const epoch = mountEpoch.current;
+    return () => mounted.current && mountEpoch.current === epoch;
+  };
   const rotated = useRef(false);
   const keyboardPressed = useRef(false);
-  const pointerHold = useHoldGesture({ delayMs: holdDelayMs, onHold });
-  const keyboardHold = useHoldGesture({ delayMs: holdDelayMs, onHold });
+  const pointerHold = useHoldGesture<() => boolean>({ delayMs: holdDelayMs, onHold: onHold ? current => { if (current()) onHold(); } : undefined });
+  const keyboardHold = useHoldGesture<() => boolean>({ delayMs: holdDelayMs, onHold: onHold ? current => { if (current()) onHold(); } : undefined });
   const [encoderValue, setEncoderValue] = useState(50);
   const [showValue, setShowValue] = useState(false);
   const [pressed, setPressed] = useState(false);
   const rotate = (delta: number) => {
+    if (!mounted.current) return;
     setEncoderValue((current) => Math.max(0, Math.min(100, current + delta)));
     setShowValue(true);
     if (hideValueTimer.current !== undefined) window.clearTimeout(hideValueTimer.current);
-    hideValueTimer.current = window.setTimeout(() => setShowValue(false), 900);
+    const current = captureContact();
+    hideValueTimer.current = window.setTimeout(() => { if (current()) setShowValue(false); }, 900);
     onAction({ kind: "rotate", role, delta });
   };
   const emitTap = () => {
+    if (!mounted.current) return;
     if (onTap) onTap();
     else {
       onAction({ kind: "switch", role, phase: "press" });
@@ -172,6 +183,7 @@ export function QcHardwareSwitch({ role, label, ariaLabel, active, assigned = fa
     }
   };
   const completeTap = () => {
+    if (!mounted.current) return;
     if (!onDoubleTap) { emitTap(); return; }
     if (pendingTapTimer.current !== undefined) {
       window.clearTimeout(pendingTapTimer.current);
@@ -179,14 +191,24 @@ export function QcHardwareSwitch({ role, label, ariaLabel, active, assigned = fa
       onDoubleTap();
       return;
     }
+    const current = captureContact();
     pendingTapTimer.current = window.setTimeout(() => {
+      if (!current()) return;
       pendingTapTimer.current = undefined;
       emitTap();
     }, doubleTapDelayMs);
   };
-  useEffect(() => () => {
-    if (hideValueTimer.current !== undefined) window.clearTimeout(hideValueTimer.current);
-    if (pendingTapTimer.current !== undefined) window.clearTimeout(pendingTapTimer.current);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      mountEpoch.current++;
+      keyboardPressed.current = false;
+      if (hideValueTimer.current !== undefined) window.clearTimeout(hideValueTimer.current);
+      if (pendingTapTimer.current !== undefined) window.clearTimeout(pendingTapTimer.current);
+      hideValueTimer.current = undefined;
+      pendingTapTimer.current = undefined;
+    };
   }, []);
   const encoder = useRotaryGesture({
     pixelsPerStep: hardwareRotaryPixelsPerStep,
@@ -195,7 +217,7 @@ export function QcHardwareSwitch({ role, label, ariaLabel, active, assigned = fa
       rotated.current = false;
       setPressed(true);
       onContactChange?.(true);
-      pointerHold.start(undefined, event);
+      pointerHold.start(captureContact(), event);
     },
     onRotate: (steps, source) => {
       if (source === "drag") {
@@ -215,6 +237,7 @@ export function QcHardwareSwitch({ role, label, ariaLabel, active, assigned = fa
     }
   });
   const keyboardDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (!mounted.current) return;
     encoder.onKeyDown(event);
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
@@ -222,9 +245,11 @@ export function QcHardwareSwitch({ role, label, ariaLabel, active, assigned = fa
     setPressed(true);
     onContactChange?.(true);
     keyboardPressed.current = true;
-    keyboardHold.start();
+    keyboardHold.start(captureContact());
   };
   const keyboardUp = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (!mounted.current) return;
+    encoder.onKeyUp(event);
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
     const pressedByKey = keyboardPressed.current;
@@ -257,11 +282,11 @@ export function QcHardwareSwitch({ role, label, ariaLabel, active, assigned = fa
   return <button
     className={`hardware-switch${active ? " is-active" : ""}${pressed ? " is-pressed" : ""}${assigned ? " is-assigned" : ""}${compact ? " is-compact" : ""}${pulseBpm ? " is-tempo-pulse" : ""}`}
     style={{ "--switch-accent": accent ?? "var(--accent)", "--tempo-period": tempoPeriodMs ? `${tempoPeriodMs}ms` : undefined } as CSSProperties}
-    aria-label={`${accessibleLabel} encoder footswitch; encoder ${encoderValue} percent`} aria-pressed={Boolean(active || pressed)}
-    title={`${accessibleLabel}: tap to press${onDoubleTap ? "; double-tap for its alternate action" : ""}${onHold ? "; hold for its hold action" : ""}; drag vertically, use the mouse wheel, or press arrow keys to rotate`}
+    aria-label={`${accessibleLabel} encoder footswitch; encoder ${encoderValue} percent`} aria-pressed={pressed ? true : active}
+    title={`${accessibleLabel}: tap to press${onDoubleTap ? "; double-tap for its alternate action" : ""}${onHold ? "; hold for its hold action" : ""}; drag vertically, use the mouse wheel, or press arrow keys to rotate${assigned && active === undefined ? "; lamp state unavailable" : ""}`}
     onPointerDown={encoder.onPointerDown}
     onPointerMove={encoder.onPointerMove}
-    onPointerUp={encoder.onPointerUp} onPointerCancel={encoder.onPointerCancel} onKeyDown={keyboardDown} onKeyUp={keyboardUp} onBlur={() => { if (keyboardPressed.current) { keyboardHold.cancel(); keyboardPressed.current = false; setPressed(false); onContactChange?.(false); } }} onWheel={encoder.onWheel}
+    onPointerUp={encoder.onPointerUp} onPointerCancel={encoder.onPointerCancel} onKeyDown={keyboardDown} onKeyUp={keyboardUp} onBlur={() => { encoder.onBlur(); if (mounted.current && keyboardPressed.current) { keyboardHold.cancel(); keyboardPressed.current = false; setPressed(false); onContactChange?.(false); } }} onWheel={encoder.onWheel}
   >
     <span ref={led} className="switch-led" aria-hidden="true" />
     <span className="switch-ring" aria-hidden="true"><span className="switch-cap" /><span className={`rotation-readout${showValue || readout !== undefined ? " is-visible" : ""}`}>{readout ?? encoderValue}</span></span>
@@ -269,7 +294,17 @@ export function QcHardwareSwitch({ role, label, ariaLabel, active, assigned = fa
   </button>;
 }
 
-export function QcMasterVolumeKnob({ value, readout, onAction, onInteractionStart, onInteractionEnd }: { value: number; readout?: string; onAction: (action: HardwareAction) => void; onInteractionStart?: () => void; onInteractionEnd?: () => void }) {
+/** Encoder contacts belong to their current semantic mapping, not changing telemetry values. */
+export function qcHardwareSwitchGestureKey(physical: string | undefined, snapshot: PresetSnapshot, editor?: CorOsParameterEditorProps): string {
+  return JSON.stringify([physical, snapshot.presetIdentity, snapshot.setlistKey, snapshot.presetPosition, snapshot.activeScene,
+    snapshot.mode, snapshot.footswitchModes, editor ? [editor.editorContextKey, editor.details.row, editor.details.column, editor.details.modelId, editor.page, editor.footswitchAssignmentPending] : null]);
+}
+
+export function QcHardwareSwitch({ gestureContextKey, ...props }: ComponentProps<typeof HardwareSwitchControl> & { gestureContextKey?: string }) {
+  return <HardwareSwitchControl key={`${gestureContextKey ?? ""}:${props.role}`} {...props} />;
+}
+
+function MasterVolumeKnobControl({ value, readout, onAction, onInteractionStart, onInteractionEnd }: { value: number; readout?: string; onAction: (action: HardwareAction) => void; onInteractionStart?: () => void; onInteractionEnd?: () => void }) {
   const knob = useRotaryGesture({
     pixelsPerStep: hardwareRotaryPixelsPerStep,
     preventPointerDefault: true,
@@ -279,13 +314,17 @@ export function QcMasterVolumeKnob({ value, readout, onAction, onInteractionStar
   });
   // Fitted to 16 photographs of the physical knob; see master-volume-angle.ts.
   const angle = masterVolumeAngleDegrees(value);
-  return <button className="volume-knob" role="slider" aria-orientation="vertical" style={{ "--volume-angle": `${angle}deg` } as CSSProperties} aria-label="Master volume knob" aria-valuenow={value} aria-valuemin={0} aria-valuemax={100} aria-valuetext={`${value} percent`} onPointerDown={knob.onPointerDown} onPointerMove={knob.onPointerMove} onPointerUp={knob.onPointerUp} onPointerCancel={knob.onPointerCancel} onKeyDown={knob.onKeyDown} onWheel={knob.onWheel}><span className="volume-pointer" />{readout !== undefined && <span className="rotation-readout is-visible">{readout}</span>}</button>;
+  return <button className="volume-knob" role="slider" aria-orientation="vertical" style={{ "--volume-angle": `${angle}deg` } as CSSProperties} aria-label="Master volume knob" aria-valuenow={value} aria-valuemin={0} aria-valuemax={100} aria-valuetext={`${value} percent`} onPointerDown={knob.onPointerDown} onPointerMove={knob.onPointerMove} onPointerUp={knob.onPointerUp} onPointerCancel={knob.onPointerCancel} onKeyDown={knob.onKeyDown} onKeyUp={knob.onKeyUp} onBlur={knob.onBlur} onWheel={knob.onWheel}><span className="volume-pointer" />{readout !== undefined && <span className="rotation-readout is-visible">{readout}</span>}</button>;
 }
 
-function MasterVolume({ value, onAction, onInteractionStart, onInteractionEnd }: { value: number; onAction: (action: HardwareAction) => void; onInteractionStart?: () => void; onInteractionEnd?: () => void }) {
+export function QcMasterVolumeKnob({ gestureContextKey, ...props }: ComponentProps<typeof MasterVolumeKnobControl> & { gestureContextKey?: string }) {
+  return <MasterVolumeKnobControl key={gestureContextKey ?? ""} {...props} />;
+}
+
+function MasterVolume({ value, onAction, onInteractionStart, onInteractionEnd, gestureContextKey }: { value: number; onAction: (action: HardwareAction) => void; onInteractionStart?: () => void; onInteractionEnd?: () => void; gestureContextKey?: string }) {
   return <div className="master-volume">
     <button className="power-button" aria-label="Power and lock menu" onClick={() => onAction({ kind: "switch", role: "power", phase: "release" })}><QcHardwareIcon kind="power-led" className="power-icon" /></button>
-    <QcMasterVolumeKnob value={value} onAction={onAction} onInteractionStart={onInteractionStart} onInteractionEnd={onInteractionEnd} />
+    <QcMasterVolumeKnob gestureContextKey={gestureContextKey} value={value} onAction={onAction} onInteractionStart={onInteractionStart} onInteractionEnd={onInteractionEnd} />
     <strong>VOLUME</strong>
   </div>;
 }
@@ -297,6 +336,7 @@ const GRID_DRAWING = { width: 800, height: 480 } as const;
 interface GridBlockGesture {
   pointerId: number;
   block: GridBlock;
+  current(): boolean;
   startClientX: number;
   startClientY: number;
   startRow: number;
@@ -442,14 +482,33 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   const lastPointerReleaseAt = useRef(Number.NEGATIVE_INFINITY);
   const tapMachine = useRef(createGridTapMachine());
   const tapTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const tapOwner = useRef<{ epoch: number; topology: number } | undefined>(undefined);
   const [dragPreview, setDragPreview] = useState<GridDragPreview | null>(null);
-  useEffect(() => () => {
-    clearTimeout(blockGesture.current?.longPressTimer);
-    clearTimeout(railGesture.current?.longPressTimer);
-    clearTimeout(splitPlacementGesture.current?.longPressTimer);
-    clearTimeout(modeHoldTimer.current);
-    clearTimeout(tapTimer.current);
-    tapMachine.current.cancel();
+  const gestureMounted = useRef(true);
+  const gestureEpoch = useRef(0);
+  const latestGestureSnapshot = useRef(snapshot);
+  latestGestureSnapshot.current = snapshot;
+  const gestureTopology = JSON.stringify([snapshot.presetIdentity, snapshot.activeScene,
+    snapshot.blocks.map((block) => [block.id, block.modelId, block.row, block.column])]);
+  const latestGestureTopology = useRef({ key: gestureTopology, generation: 0 });
+  if (latestGestureTopology.current.key !== gestureTopology) {
+    latestGestureTopology.current = { key: gestureTopology, generation: latestGestureTopology.current.generation + 1 };
+  }
+  useEffect(() => {
+    gestureMounted.current = true;
+    return () => {
+      gestureMounted.current = false;
+      gestureEpoch.current++;
+      clearTimeout(blockGesture.current?.longPressTimer);
+      clearTimeout(railGesture.current?.longPressTimer);
+      clearTimeout(splitPlacementGesture.current?.longPressTimer);
+      blockGesture.current = null;
+      railGesture.current = null;
+      splitPlacementGesture.current = null;
+      clearTimeout(modeHoldTimer.current);
+      clearTimeout(tapTimer.current);
+      tapMachine.current.cancel();
+    };
   }, []);
   useEffect(() => {
     let active = true;
@@ -485,12 +544,25 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   // so Enter and Space keep selecting from the keyboard; the gesture only marks
   // the pointer consumed when it did something else with it.
   const beginBlockGesture = (event: PointerEvent<HTMLButtonElement>, block: GridBlock) => {
-    if (event.button !== 0 || blockGesture.current) return;
+    if (!gestureMounted.current || event.button !== 0 || blockGesture.current) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    const gesture: GridBlockGesture = { pointerId: event.pointerId, block, startClientX: event.clientX, startClientY: event.clientY, startRow: block.row, startColumn: block.column, phase: "pressed", longPressFired: false };
+    const admittedEpoch = gestureEpoch.current;
+    const admittedTopology = latestGestureTopology.current.generation;
+    const current = () => {
+      const latest = latestGestureSnapshot.current;
+      const target = latest.blocks.find((candidate) => candidate.id === block.id);
+      // A same-preset replacement can reuse the block id and address without
+      // resetting the device session. Keep this gesture on its original model;
+      // ordinary parameter, name and bypass observations do not retire it.
+      return gestureMounted.current && gestureEpoch.current === admittedEpoch
+        && latestGestureTopology.current.generation === admittedTopology
+        && latest.presetIdentity === snapshot.presetIdentity && latest.activeScene === snapshot.activeScene
+        && target?.modelId === block.modelId && target?.row === block.row && target?.column === block.column;
+    };
+    const gesture: GridBlockGesture = { pointerId: event.pointerId, block, current, startClientX: event.clientX, startClientY: event.clientY, startRow: block.row, startColumn: block.column, phase: "pressed", longPressFired: false };
     gesture.longPressTimer = setTimeout(() => {
-      if (blockGesture.current !== gesture || gesture.phase !== "pressed") return;
+      if (!gesture.current() || blockGesture.current !== gesture || gesture.phase !== "pressed") return;
       // CorOS lifts the block into move mode on a hold (corpus: long_amp walk
       // frame): it follows the pointer, empty cells show drop slots and a trash
       // zone appears. It does not toggle bypass - a double tap does that.
@@ -502,7 +574,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   };
   const trackBlockGesture = (event: PointerEvent<HTMLButtonElement>) => {
     const gesture = blockGesture.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    if (!gesture || !gesture.current() || gesture.pointerId !== event.pointerId) return;
     const dx = event.clientX - gesture.startClientX;
     const dy = event.clientY - gesture.startClientY;
     event.preventDefault();
@@ -524,13 +596,13 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   };
   const endBlockGesture = (event: PointerEvent<HTMLButtonElement>, cancelled = false) => {
     const gesture = blockGesture.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    if (!gestureMounted.current || !gesture || gesture.pointerId !== event.pointerId) return;
     clearTimeout(gesture.longPressTimer);
     blockGesture.current = null;
     setDragPreview(null);
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     lastPointerReleaseAt.current = performance.now();
-    if (cancelled) return;
+    if (cancelled || !gesture.current()) return;
     const mapped = gridPoint(event);
     const outcome = resolveGridGestureRelease({
       blockId: gesture.block.id,
@@ -547,12 +619,26 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   // A plain tap waits out the double-tap window before it selects; a second
   // tap on the same block inside it toggles bypass instead and never selects.
   const registerTap = (blockId: string) => {
+    if (!gestureMounted.current) return;
+    const admittedEpoch = gestureEpoch.current;
+    const admittedTopology = latestGestureTopology.current.generation;
     const machine = tapMachine.current;
     clearTimeout(tapTimer.current);
+    // A second tap may arrive after a same-preset model replacement. It is
+    // not the second half of a gesture aimed at the previous block model.
+    if (tapOwner.current?.epoch !== admittedEpoch || tapOwner.current?.topology !== admittedTopology) machine.cancel();
+    const owner = { epoch: admittedEpoch, topology: admittedTopology };
+    tapOwner.current = owner;
     for (const action of machine.tap(blockId, performance.now())) onAction(action);
     const until = machine.pendingUntil();
-    if (until === undefined) return;
+    if (until === undefined) { tapOwner.current = undefined; return; }
     tapTimer.current = setTimeout(() => {
+      if (tapOwner.current !== owner) return;
+      tapOwner.current = undefined;
+      if (!gestureMounted.current || gestureEpoch.current !== admittedEpoch || latestGestureTopology.current.generation !== admittedTopology) {
+        machine.cancel();
+        return;
+      }
       for (const action of machine.expire()) onAction(action);
     }, Math.max(0, until - performance.now()));
   };
@@ -703,7 +789,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   // it already does not for a block.
   const laneControlOfSide = (side: "input" | "output"): LaneControl => side === "input" ? "inputGate" : "laneOutput";
   const beginRailGesture = (event: PointerEvent<HTMLButtonElement>, row: number, side: "input" | "output") => {
-    if (event.button !== 0 || railGesture.current) return;
+    if (!gestureMounted.current || event.button !== 0 || railGesture.current) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     const gesture: RailPortGesture = { pointerId: event.pointerId, row, side, startClientX: event.clientX, startClientY: event.clientY, longPressFired: false };
     // No parameter editor to open when the port is unassigned (the manual
@@ -713,7 +799,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
     // change.
     if (laneControlAvailable(row, laneControlOfSide(side))) {
       gesture.longPressTimer = setTimeout(() => {
-        if (railGesture.current !== gesture) return;
+        if (!gestureMounted.current || railGesture.current !== gesture) return;
         gesture.longPressFired = true;
         onAction({ kind: "select-lane-control", row, control: laneControlOfSide(side) });
       }, GRID_LONG_PRESS_MS);
@@ -730,7 +816,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   };
   const endRailGesture = (event: PointerEvent<HTMLButtonElement>, cancelled = false) => {
     const gesture = railGesture.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    if (!gestureMounted.current || !gesture || gesture.pointerId !== event.pointerId) return;
     clearTimeout(gesture.longPressTimer);
     railGesture.current = null;
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -745,11 +831,11 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   // falls through to the cell's own onClick (add-block-cell), exactly what
   // it already did before this row could also be held.
   const beginSplitPlacementGesture = (event: PointerEvent<HTMLButtonElement>, row: number, column: number) => {
-    if (event.button !== 0 || splitPlacementGesture.current) return;
+    if (!gestureMounted.current || event.button !== 0 || splitPlacementGesture.current) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     const gesture: SplitPlacementGesture = { pointerId: event.pointerId, row, column, startClientX: event.clientX, startClientY: event.clientY, longPressFired: false };
     gesture.longPressTimer = setTimeout(() => {
-      if (splitPlacementGesture.current !== gesture) return;
+      if (!gestureMounted.current || splitPlacementGesture.current !== gesture) return;
       gesture.longPressFired = true;
       onAction({ kind: "place-split", row });
     }, GRID_LONG_PRESS_MS);
@@ -765,7 +851,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   };
   const endSplitPlacementGesture = (event: PointerEvent<HTMLButtonElement>, cancelled = false) => {
     const gesture = splitPlacementGesture.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    if (!gestureMounted.current || !gesture || gesture.pointerId !== event.pointerId) return;
     clearTimeout(gesture.longPressTimer);
     splitPlacementGesture.current = null;
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -803,6 +889,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
           onPointerMove={trackBlockGesture}
           onPointerUp={(event) => endBlockGesture(event)}
           onPointerCancel={(event) => endBlockGesture(event, true)}
+          onLostPointerCapture={(event) => endBlockGesture(event, true)}
           draggable={false}
           onDragStart={(event) => event.preventDefault()}
           onContextMenu={(event) => { if (blockGesture.current) event.preventDefault(); }}
@@ -867,6 +954,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
           onPointerMove={splitPlacementEligible ? trackSplitPlacementGesture : undefined}
           onPointerUp={splitPlacementEligible ? (event) => endSplitPlacementGesture(event) : undefined}
           onPointerCancel={splitPlacementEligible ? (event) => endSplitPlacementGesture(event, true) : undefined}
+          onLostPointerCapture={splitPlacementEligible ? (event) => endSplitPlacementGesture(event, true) : undefined}
           onClick={() => {
             if (splitPlacementEligible && gridClickIsPointerEcho(performance.now(), lastPointerReleaseAt.current)) return;
             onAction({ kind: "add-block-cell", row, column });
@@ -948,11 +1036,13 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
         aria-label={`Open mode menu; current mode ${snapshot.mode}`}
         {...modeMenu.triggerProps}
         onPointerDown={(event) => {
-          if (event.button !== 0) return;
+          if (!gestureMounted.current || event.button !== 0) return;
+          const admittedEpoch = gestureEpoch.current;
           modeHoldFired.current = false;
           event.currentTarget.setPointerCapture?.(event.pointerId);
           clearTimeout(modeHoldTimer.current);
           modeHoldTimer.current = setTimeout(() => {
+            if (!gestureMounted.current || gestureEpoch.current !== admittedEpoch) return;
             modeHoldTimer.current = undefined;
             modeHoldFired.current = true;
             setSceneMenuOpen(false);
@@ -966,6 +1056,10 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
           if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId);
         }}
         onPointerCancel={() => {
+          clearTimeout(modeHoldTimer.current);
+          modeHoldTimer.current = undefined;
+        }}
+        onLostPointerCapture={() => {
           clearTimeout(modeHoldTimer.current);
           modeHoldTimer.current = undefined;
         }}
@@ -996,6 +1090,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
           onPointerMove={trackRailGesture}
           onPointerUp={(event) => endRailGesture(event)}
           onPointerCancel={(event) => endRailGesture(event, true)}
+          onLostPointerCapture={(event) => endRailGesture(event, true)}
           onClick={() => { if (!gridClickIsPointerEcho(performance.now(), lastPointerReleaseAt.current)) onOpenRouting(row, "input"); }}
         />
         {rowActionStops(row)}
@@ -1008,12 +1103,13 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
           onPointerMove={trackRailGesture}
           onPointerUp={(event) => endRailGesture(event)}
           onPointerCancel={(event) => endRailGesture(event, true)}
+          onLostPointerCapture={(event) => endRailGesture(event, true)}
           onClick={() => { if (!gridClickIsPointerEcho(performance.now(), lastPointerReleaseAt.current)) onOpenRouting(row, "output"); }}
         />
       </div>)}
     </div>
     {sceneMenuOpen && <><button type="button" className="scene-menu-backdrop" aria-label="Close scene menu" tabIndex={-1} onClick={() => sceneMenu.close(true)} /><div className="scene-dropdown vector-scene-dropdown" {...sceneMenu.menuProps} aria-label="Scenes">{snapshot.scenes.map((scene, index) => <button key={index} className={snapshot.activeScene === index ? "is-active" : ""} {...sceneMenu.itemProps(() => onAction({ kind: "select-scene", scene: index }))}><span>{sceneLabel(index)}</span>{sceneDisplayLabel(scene, index)}</button>)}</div></>}
-    {modeMenuOpen && <><button type="button" className="scene-menu-backdrop" aria-label="Close mode menu" tabIndex={-1} onClick={() => modeMenu.close(true)} /><div className="scene-dropdown vector-mode-dropdown" {...modeMenu.menuProps} aria-label="Modes">{(snapshot.modeSlots ?? (["PRESET", "SCENE", "STOMP"] as const).map((mode, slot) => ({ slot: slot as 0 | 1 | 2, label: mode, mode }))).map((entry) => <button key={`${entry.slot}-${entry.label}`} className={snapshot.mode === entry.mode ? "is-active" : ""} {...modeMenu.itemProps(() => onAction({ kind: "select-mode-slot", slot: entry.slot }))}>{entry.label}</button>)}</div></>}
+    {modeMenuOpen && <><button type="button" className="scene-menu-backdrop" aria-label="Close mode menu" tabIndex={-1} onClick={() => modeMenu.close(true)} /><div className="scene-dropdown vector-mode-dropdown" {...modeMenu.menuProps} aria-label="Modes">{(snapshot.modeSlots ?? []).map((entry) => <button key={`${entry.slot}-${entry.label}`} className={modeSlotIsActive(snapshot, entry.slot) ? "is-active" : ""} {...modeMenu.itemProps(() => onAction({ kind: "select-mode-slot", slot: entry.slot }))}>{entry.label}</button>)}{!snapshot.modeSlots?.length && <p role="status">Mode slots unavailable.</p>}</div></>}
     {screenMenuOpen && <><button type="button" className="coros-screen-dimmer" aria-label="Close Grid contextual menu" tabIndex={-1} onClick={() => gridMenu.close(true)} /><div className="coros-screen-menu qc-scroll-rail" id={gridMenu.menuId} onKeyDown={gridMenu.menuProps.onKeyDown} role="menu" aria-label="Grid contextual menu" ref={restoreGridMenuScroll} onScroll={rememberGridMenuScroll}>
       <div className="context-menu-heading">FILE</div>
       {GRID_CONTEXT_MENU.slice(0, 8).map((item) => { const reason = item.action === "save-as" ? undefined : disabledContextActions?.[item.action]; return <button key={item.label} className={"danger" in item && item.danger ? "context-danger" : ""} title={reason} {...gridMenu.itemProps(() => runGridMenuAction(item.action, gridMenu.triggerRef.current?.dataset.qcOpenTarget === "grid-menu" ? "grid-menu" : undefined), { unavailable: Boolean(reason), opensSurface: true, focusTarget: GRID_MENU_FOCUS_TARGETS.has(item.action) ? item.action : undefined })}><span className="context-menu-icon"><QcUiIcon kind={item.icon === "midi" ? "menu-midi" : item.icon} /></span>{item.label}</button>; })}
@@ -1076,7 +1172,9 @@ function controlByRole(controls: HardwareControl[], role: string) { return contr
 // Edit Details focus their own name input instead.
 const GRID_MENU_FOCUS_TARGETS = new Set<string>(["settings", "tempo", "modes-configuration", "preset-midi-out", "cpu-monitor"]);
 
-export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, popup, onPopupChange, screenView = "grid", screenContent, cpuMonitor, deviceInformation, presentation = "hardware", onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, screenGestureContextKey, sceneEditor, sceneCommand, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
+export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin, onAction, onOpenPreset, onUndo, canUndo, undoLabel, onSave, onOpenRouting, onRefresh, presetDirectory, gigPresetList, routingPicker, addDevicePicker, expressionAssignment, laneControlEditor, savePreset, parameterEditor, onContextAction, disabledContextActions, popup, onPopupChange, screenView = "grid", screenContent, cpuMonitor, deviceInformation, presentation = "hardware", onCloseScreen, onOpenGigView, onOpenIoView, onEditScene, onRecallGigPreset, onCopyGigScene, onSwapGigScene, onDeviceScreenGesture, screenGestureContextKey, hardwareGestureContextKey, sceneEditor, sceneCommand, onMasterVolumeInteractionStart, onMasterVolumeInteractionEnd }: QuadCortexSurfaceProps) {
+  const physicalGestureKey = hardwareGestureContextKey ?? String(snapshot.stateVersion?.session ?? "");
+  const switchGestureKey = qcHardwareSwitchGestureKey(physicalGestureKey, snapshot, parameterEditor);
   const scenes = formFactor.controls.filter((control) => control.group === "scene");
   const bankUp = controlByRole(formFactor.controls, "bank:up")!;
   const bankDown = controlByRole(formFactor.controls, "bank:down")!;
@@ -1088,7 +1186,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
   // draws to how the footswitches happen to be lit.
   const presetSlotAccent = QC_PRESET_SLOT_COLORS[presetSlotIndex];
   const parameterLeds = qcParameterEditorLeds(parameterEditor);
-  const parameterLed = (slot: number, fallback: { active: boolean; assigned: boolean; color: string }) => parameterLeds?.[slot] ?? fallback;
+  const parameterLed = (slot: number, fallback: { active?: boolean; assigned: boolean; color: string }) => parameterLeds?.[slot] ?? fallback;
   const navigationLedColor = QC_COLORS.hardware.whiteLed;
   const bankDownLed = parameterLed(4, { active: false, assigned: false, color: navigationLedColor });
   const displaySnapshot = fixtureSnapshot(screenView, snapshot);
@@ -1187,7 +1285,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
     y: Math.max(0, Math.min(479, Math.round((clientY - bounds.top) * 480 / bounds.height)))
   });
   const beginDeviceScreenGesture = (event: PointerEvent<HTMLDivElement>) => {
-    if (!gestureCurrent() || !forwardsDeviceScreenGestures || !onDeviceScreenGesture) return;
+    if (event.button !== 0 || !gestureCurrent() || !forwardsDeviceScreenGestures || !onDeviceScreenGesture) return;
     const target = event.target as Element;
     // Live controls already dispatch semantic writes. Only explicitly local
     // navigation needs a matching screen tap; a mirrored raw canvas is different.
@@ -1268,7 +1366,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
   return <section className={`qc-chassis ${skin.className}${presentation === "display" ? " is-display-only" : ""}`} aria-label={formFactor.displayName}>
     {skin.svgAsset && <div className="chassis-vector-viewport" aria-hidden="true"><img className="chassis-vector-source" src={`${skin.svgAsset.url}#qc-foreground`} alt="" style={chassisVectorCropStyle} /></div>}
     <div className="chassis-edge" aria-hidden="true" />
-    <MasterVolume value={snapshot.masterVolume} onAction={onAction} onInteractionStart={onMasterVolumeInteractionStart} onInteractionEnd={onMasterVolumeInteractionEnd} />
+    <MasterVolume gestureContextKey={physicalGestureKey} value={snapshot.masterVolume} onAction={onAction} onInteractionStart={onMasterVolumeInteractionStart} onInteractionEnd={onMasterVolumeInteractionEnd} />
     <div className="device-plate"><QcHardwareIcon kind="brand-pulse" className="pulse-mark" /><span>{QC_BRAND.deviceWordmark}</span><small>{QC_BRAND.surfaceCaption}</small></div>
     <div className={`qc-screen-bezel${gridEdgeGesturesEnabled ? " is-grid-edge-gesture-surface" : ""}`} onPointerDownCapture={beginScreenSwipe} onPointerMoveCapture={trackScreenSwipe} onPointerUpCapture={finishScreenSwipe} onPointerCancel={() => { screenSwipe.current = null; }}>{sceneEditor
       ? <div className="qc-screen-fixture-root is-scene-editor"><SceneQuickEditPopover {...sceneEditor} inDeviceDisplay /></div>
@@ -1286,7 +1384,7 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
       }}>{screenContent}</div>
       : fixtureOnly
       ? <div className="qc-screen-fixture-root is-canonical-canvas" onPointerDown={beginDeviceScreenGesture} onPointerMove={trackDeviceScreenGesture} onPointerUp={finishDeviceScreenGesture} onPointerCancel={cancelDeviceScreenGesture}><Suspense fallback={null}><CorOsScreenFixture view={screenView} snapshot={displaySnapshot} gigPresetList={gigPresetList} deviceInformation={deviceInformation} onClose={onCloseScreen} onEditScene={onEditScene} onSelectScene={(scene) => onAction({ kind: "select-scene", scene })} onSelectModeSlot={(slot) => onAction({ kind: "select-mode-slot", slot })} onRecallGigPreset={onRecallGigPreset} onPressGigFootswitch={(index) => { const role = `footswitch:${String.fromCharCode(65 + index)}`; onAction({ kind: "switch", role, phase: "press" }); onAction({ kind: "switch", role, phase: "release" }); }} onEditGigBlock={(blockId) => onAction({ kind: "select-block", blockId })} onCopyGigScene={onCopyGigScene} onSwapGigScene={onSwapGigScene} /></Suspense></div>
-      : <div className="qc-screen-fixture-root is-live-grid"><CorOsGrid
+      : <div className="qc-screen-fixture-root is-live-grid"><CorOsGrid key={`${gestureContext}:${snapshot.activeScene}`}
         snapshot={displaySnapshot}
         presetSlotAccent={presetSlotAccent}
         selectedBlockId={selectedBlockId}
@@ -1306,11 +1404,11 @@ export function QuadCortexSurface({ formFactor, snapshot, selectedBlockId, skin,
     </>}{expressionAssignment && <CorOsExpressionAssignment assignment={expressionAssignment} />}</div>}
       {sceneCommand && <div className="qc-screen-fixture-root is-canonical-canvas is-overlay-layer">{sceneCommand}</div>}
     </div>
-    <div className="screen-nav-control"><QcUiIcon kind="up" className="nav-arrow nav-arrow-up" /><QcHardwareSwitch role={bankUp.role} label="BANK UP" compact active={Boolean(parameterEditor)} assigned={Boolean(parameterEditor)} accent={navigationLedColor} onAction={onAction} /><QcUiIcon kind="down" className="nav-arrow nav-arrow-down" /></div>
+    <div className="screen-nav-control"><QcUiIcon kind="up" className="nav-arrow nav-arrow-up" /><QcHardwareSwitch gestureContextKey={switchGestureKey} role={bankUp.role} label="BANK UP" compact active={Boolean(parameterEditor)} assigned={Boolean(parameterEditor)} accent={navigationLedColor} onAction={onAction} /><QcUiIcon kind="down" className="nav-arrow nav-arrow-down" /></div>
     <div className="footswitch-deck">
-      <div className="footswitch-row">{scenes.slice(0, 4).map((control, index) => { const led = parameterLed(index, leds[index]); return <QcHardwareSwitch key={control.id} role={control.role} label={control.label} active={led.active} assigned={led.assigned} accent={led.color} onAction={onAction} />; })}<QcHardwareSwitch role={bankDown.role} label="BANK DOWN" active={bankDownLed.active} assigned={bankDownLed.assigned} accent={bankDownLed.color} onAction={onAction} /></div>
+      <div className="footswitch-row">{scenes.slice(0, 4).map((control, index) => { const led = parameterLed(index, leds[index]); return <QcHardwareSwitch key={control.id} gestureContextKey={switchGestureKey} role={control.role} label={control.label} active={led.active} assigned={led.assigned} accent={led.color} onAction={onAction} />; })}<QcHardwareSwitch gestureContextKey={switchGestureKey} role={bankDown.role} label="BANK DOWN" active={bankDownLed.active} assigned={bankDownLed.assigned} accent={bankDownLed.color} onAction={onAction} /></div>
       <div className="mode-bracket" aria-hidden="true"><span><QcUiIcon kind="add" /></span><strong>MODE</strong><span><QcUiIcon kind="subtract" /></span></div>
-      <div className="footswitch-row">{scenes.slice(4).map((control, index) => { const led = parameterLed(index + 5, leds[index + 4]); return <QcHardwareSwitch key={control.id} role={control.role} label={control.label} active={led.active} assigned={led.assigned} accent={led.color} onAction={onAction} />; })}<QcHardwareSwitch role={tempo.role} label="TEMPO" active={parameterLeds ? parameterLeds[9].active : snapshot.tempoLedEnabled} assigned={parameterLeds ? parameterLeds[9].assigned : snapshot.tempoLedEnabled} pulseBpm={!parameterLeds && snapshot.tempoLedEnabled ? snapshot.tempo : undefined} pulseEpochMs={!parameterLeds ? snapshot.tempoPulseEpochMs : undefined} accent={parameterLeds ? parameterLeds[9].color : QC_COLORS.device.tempoLed} onAction={onAction} /></div>
+      <div className="footswitch-row">{scenes.slice(4).map((control, index) => { const led = parameterLed(index + 5, leds[index + 4]); return <QcHardwareSwitch key={control.id} gestureContextKey={switchGestureKey} role={control.role} label={control.label} active={led.active} assigned={led.assigned} accent={led.color} onAction={onAction} />; })}<QcHardwareSwitch gestureContextKey={switchGestureKey} role={tempo.role} label="TEMPO" active={parameterLeds ? parameterLeds[9].active : snapshot.tempoLedEnabled} assigned={parameterLeds ? parameterLeds[9].assigned : snapshot.tempoLedEnabled} pulseBpm={!parameterLeds && snapshot.tempoLedEnabled ? snapshot.tempo : undefined} pulseEpochMs={!parameterLeds ? snapshot.tempoPulseEpochMs : undefined} accent={parameterLeds ? parameterLeds[9].color : QC_COLORS.device.tempoLed} onAction={onAction} /></div>
       <span className="tuner-hint">TEMPO<br />HOLD: TUNER</span>
     </div>
   </section>;

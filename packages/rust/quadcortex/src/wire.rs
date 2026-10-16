@@ -15,9 +15,17 @@ pub enum WireError {
     /// A fixed-width or length-delimited field extends past the end of the payload.
     #[error("truncated protobuf field")]
     TruncatedField,
-    /// A field key is zero or exceeds the protobuf 29-bit field-number range.
-    #[error("invalid protobuf field tag")]
-    InvalidTag,
+    /// A tag has field number zero or exceeds protobuf's 29-bit field-number domain.
+    #[error("invalid protobuf field number {0}")]
+    InvalidFieldNumber(u64),
+    /// The requested scalar field was encoded with a non-varint wire type.
+    #[error("protobuf field {field} requires varint wire type, received {wire}")]
+    InvalidScalarWire {
+        /// The requested protobuf scalar field number.
+        field: u32,
+        /// The incompatible wire type carried by that field's tag.
+        wire: u8,
+    },
 }
 
 /// Message types whose `request_id` is protobuf field 1 rather than field 2.
@@ -43,25 +51,34 @@ pub fn request_id(message_type: u16, payload: &[u8]) -> Option<u64> {
     varint_field(payload, field).ok().flatten()
 }
 
-/// Returns the value of the first varint-encoded (wire type 0) field numbered `wanted`, scanning the top level of `payload`.
+/// Returns the last varint-encoded (wire type 0) field numbered `wanted`, scanning the top level of `payload`.
 ///
-/// Returns `Ok(None)` if there is no such field. Fields of other wire types are skipped; an error is returned if
-/// the scan meets malformed data before finding the field.
+/// Singular protobuf scalars and these request-id oneofs use last-value-wins semantics.
+/// Returns `Ok(None)` if there is no such field. Other fields are skipped; the wanted scalar must use wire type 0. An error is returned if
+/// any part of the scan is malformed, including a tail after the wanted field.
 pub fn varint_field(payload: &[u8], wanted: u32) -> Result<Option<u64>, WireError> {
     let mut offset = 0;
+    let mut result = None;
     while offset < payload.len() {
         let tag = read_varint(payload, &mut offset)?;
         let field = tag >> 3;
-        if field == 0 || field > (1 << 29) - 1 {
-            return Err(WireError::InvalidTag);
+        if field == 0 || field > 0x1fff_ffff {
+            return Err(WireError::InvalidFieldNumber(field));
         }
         let wire = (tag & 7) as u8;
-        if field == u64::from(wanted) && wire == 0 {
-            return Ok(Some(read_varint(payload, &mut offset)?));
+        if field == u64::from(wanted) {
+            if wire != 0 {
+                return Err(WireError::InvalidScalarWire {
+                    field: wanted,
+                    wire,
+                });
+            }
+            result = Some(read_varint(payload, &mut offset)?);
+        } else {
+            skip(payload, &mut offset, wire)?;
         }
-        skip(payload, &mut offset, wire)?;
     }
-    Ok(None)
+    Ok(result)
 }
 
 fn read_varint(payload: &[u8], offset: &mut usize) -> Result<u64, WireError> {
@@ -71,9 +88,10 @@ fn read_varint(payload: &[u8], offset: &mut usize) -> Result<u64, WireError> {
             return Err(WireError::TruncatedVarint);
         };
         *offset += 1;
-        // Only bit 63 remains in the tenth octet. Reject overflow before
-        // shifting, otherwise a malformed value can alias a valid request id.
-        if shift == 63 && byte > 1 {
+        // The tenth byte owns only bit 63. Rust's left shift otherwise
+        // silently discards its excess bits, aliasing a malformed ID to a
+        // valid one before the concrete protobuf decoder gets to inspect it.
+        if shift == 63 && byte & 0x7e != 0 {
             return Err(WireError::TruncatedVarint);
         }
         value |= u64::from(byte & 0x7f) << shift;
@@ -107,6 +125,7 @@ fn skip(payload: &[u8], offset: &mut usize, wire: u8) -> Result<(), WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prost::Message;
 
     const SCHEMA: &str = include_str!("../proto/ProductionAutomation.proto");
 
@@ -134,29 +153,123 @@ mod tests {
     }
 
     #[test]
-    fn rejects_overflowing_varints_without_truncating_their_high_bits() {
-        for last in [2, 0x7f, 0x80, 0xff] {
-            let mut payload = vec![0x10, 0xaa];
-            payload.extend_from_slice(&[0x80; 8]);
-            payload.push(last);
-            assert_eq!(varint_field(&payload, 2), Err(WireError::TruncatedVarint));
-            assert_eq!(request_id(13, &payload), None);
+    fn correlation_uses_the_same_duplicate_id_as_the_concrete_protobuf_decoder() {
+        use crate::device::correlation::ResponseExpectation;
+        use crate::proto::cortex_protobuf_v2 as pa;
+
+        let connection = [0x08, 42, 0x10, 1, 0x08, 43];
+        let decoded = pa::ConnectionMessage::decode(connection.as_slice()).unwrap();
+        assert_eq!(
+            decoded.request_id,
+            Some(pa::connection_message::RequestId::RequestId(43))
+        );
+        let scene = [0x08, 1, 0x10, 42, 0x10, 43];
+        let decoded = pa::SceneMessage::decode(scene.as_slice()).unwrap();
+        assert_eq!(
+            decoded.request_id,
+            Some(pa::scene_message::RequestId::RequestId(43))
+        );
+        for (kind, payload) in [(49, connection.as_slice()), (13, scene.as_slice())] {
+            assert_eq!(request_id(kind, payload), Some(43));
+            assert!(!ResponseExpectation::new(kind, Some(42), 0, 100).matches(kind, payload));
+            assert!(ResponseExpectation::new(kind, Some(43), 0, 100).matches(kind, payload));
         }
-        let mut maximum = vec![0x10];
-        maximum.extend_from_slice(&[0xff; 9]);
-        maximum.push(1);
-        assert_eq!(varint_field(&maximum, 2), Ok(Some(u64::MAX)));
     }
 
     #[test]
-    fn rejects_invalid_field_keys_before_narrowing() {
-        // Field 2^32 + 2 previously narrowed to field 2.
-        let oversized = [0x90, 0x80, 0x80, 0x80, 0x80, 0x01, 42];
-        assert_eq!(varint_field(&oversized, 2), Err(WireError::InvalidTag));
+    fn a_malformed_tail_cannot_turn_a_partial_scan_into_correlation_evidence() {
+        use crate::proto::cortex_protobuf_v2 as pa;
+        for tail in [vec![0x80], vec![0], vec![0x1a, 3, 1]] {
+            let mut payload = vec![0x08, 1, 0x10, 42];
+            payload.extend(tail);
+            assert!(pa::SceneMessage::decode(payload.as_slice()).is_err());
+            assert!(varint_field(&payload, 2).is_err());
+            assert_eq!(request_id(13, &payload), None);
+        }
         assert_eq!(
-            varint_field(&[0, 0, 0x10, 42], 2),
-            Err(WireError::InvalidTag)
+            request_id(13, &[0x10, 42, 0x9a, 0x06, 2, 0xaa, 0xbb]),
+            Some(42),
+            "well-formed unknown tails remain forward compatible"
         );
+    }
+
+    #[test]
+    fn a_request_id_with_wrong_wire_type_is_not_skipped_as_an_unknown_field() {
+        use crate::proto::cortex_protobuf_v2 as pa;
+        for wrong_field in [
+            vec![0x11, 0, 0, 0, 0, 0, 0, 0, 0],
+            vec![0x12, 1, 0],
+            vec![0x15, 0, 0, 0, 0],
+        ] {
+            let mut payload = vec![0x08, 1, 0x10, 42];
+            let wire = wrong_field[0] & 7;
+            payload.extend(wrong_field);
+            assert!(pa::SceneMessage::decode(payload.as_slice()).is_err());
+            assert_eq!(
+                varint_field(&payload, 2),
+                Err(WireError::InvalidScalarWire { field: 2, wire })
+            );
+            assert_eq!(request_id(13, &payload), None);
+        }
+    }
+
+    #[test]
+    fn correlation_refuses_varints_that_overflow_u64_instead_of_aliasing_ids() {
+        let mut maximum = vec![0x10];
+        maximum.extend([0xff; 9]);
+        maximum.push(0x01);
+        assert_eq!(varint_field(&maximum, 2), Ok(Some(u64::MAX)));
+        assert_eq!(request_id(13, &maximum), Some(u64::MAX));
+        for last in [0x02, 0x7f, 0x81, 0xff] {
+            let mut overflow = maximum.clone();
+            *overflow.last_mut().unwrap() = last;
+            assert_eq!(varint_field(&overflow, 2), Err(WireError::TruncatedVarint));
+            assert_eq!(
+                request_id(13, &overflow),
+                None,
+                "overflow cannot correlate a request"
+            );
+        }
+        let mut overlong = vec![0x10];
+        overlong.extend([0x80; 10]);
+        overlong.push(0x00);
+        assert_eq!(varint_field(&overlong, 2), Err(WireError::TruncatedVarint));
+    }
+
+    #[test]
+    fn malformed_tags_cannot_alias_valid_request_id_fields() {
+        let encode = |mut value: u64| {
+            let mut bytes = Vec::new();
+            loop {
+                let mut byte = (value & 0x7f) as u8;
+                value >>= 7;
+                if value != 0 {
+                    byte |= 0x80;
+                }
+                bytes.push(byte);
+                if value == 0 {
+                    return bytes;
+                }
+            }
+        };
+        for field in [0, 0x2000_0000, (1_u64 << 32) + 2] {
+            let mut payload = encode(field << 3);
+            payload.push(42);
+            payload.extend([0x10, 7]);
+            assert_eq!(
+                varint_field(&payload, 2),
+                Err(WireError::InvalidFieldNumber(field))
+            );
+            assert_eq!(request_id(13, &payload), None);
+        }
+        // Unknown legal fields still skip safely, including the maximum tag;
+        // refusing malformed data must not reject forward-compatible messages.
+        let mut payload = encode((0x1fff_ffff_u64 << 3) | 2);
+        payload.extend([2, 0xaa, 0xbb, 0x10, 42]);
+        assert_eq!(varint_field(&payload, 2), Ok(Some(42)));
+        let mut truncated = encode((3_u64 << 3) | 2);
+        truncated.extend(encode(u64::MAX));
+        assert_eq!(varint_field(&truncated, 2), Err(WireError::TruncatedField));
     }
 
     #[test]

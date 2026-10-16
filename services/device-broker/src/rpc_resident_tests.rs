@@ -9,18 +9,107 @@
 use super::*;
 use std::sync::atomic::AtomicUsize;
 
-fn resident_shared(minute: Duration) -> (Arc<BrokerShared>, mpsc::Receiver<()>) {
+struct ResidentThread<T: Send + 'static>(Option<thread::JoinHandle<T>>);
+fn spawn_fixture<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> ResidentThread<T> {
+    ResidentThread(Some(thread::spawn(work)))
+}
+impl<T: Send + 'static> ResidentThread<T> {
+    fn is_finished(&self) -> bool {
+        crate::platform::process::thread_signalled(self.0.as_ref().unwrap())
+    }
+    fn join(mut self) -> thread::Result<T> {
+        let deadline = Instant::now() + IDLE_REOPEN_WAIT + Duration::from_secs(2);
+        while !self.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "resident fixture caller did not retire"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        self.0.take().unwrap().join()
+    }
+}
+impl<T: Send + 'static> Drop for ResidentThread<T> {
+    fn drop(&mut self) {
+        let Some(worker) = self.0.take() else { return };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !crate::platform::process::thread_signalled(&worker) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        if crate::platform::process::thread_signalled(&worker) {
+            let _ = worker.join();
+        } else {
+            static RETAINED: Mutex<Vec<Box<dyn std::any::Any + Send>>> = Mutex::new(Vec::new());
+            RETAINED.lock_recover().push(Box::new(worker));
+            eprintln!("resident fixture caller did not acknowledge exit; original handle retained");
+        }
+    }
+}
+
+struct ResidentFixture {
+    shared: Arc<BrokerShared>,
+    root: Arc<crate::device_lease::testing::FixtureRoot>,
+}
+impl std::ops::Deref for ResidentFixture {
+    type Target = Arc<BrokerShared>;
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+impl Drop for ResidentFixture {
+    fn drop(&mut self) {
+        self.shared.clients.lock_recover().shutting_down = true;
+        self.shared.observer_changed.notify_all();
+        // Remove only this fixture's registrations. Admitted hooks own their
+        // cloned callback until completion; no other fixture is swept.
+        TEST_POINTS
+            .lock_recover()
+            .retain(|(id, _, _)| id != &self.shared.instance_id);
+        TEST_GRACE
+            .lock_recover()
+            .retain(|(id, _)| id != &self.shared.instance_id);
+        TEST_MINUTE
+            .lock_recover()
+            .retain(|(id, _)| id != &self.shared.instance_id);
+        // The existing unused-device grace actor owns constituent Arcs, not
+        // BrokerShared. Wait for resource retirement as well as its observers;
+        // these counts are not a claim that an OS thread has been joined.
+        let resources_retired = || {
+            Arc::strong_count(&self.shared) == 1
+                && Arc::strong_count(&self.shared.clients) == 1
+                && Arc::strong_count(&self.shared.request_lock) == 1
+        };
+        let deadline = Instant::now() + IDLE_SHUTDOWN_GRACE + Duration::from_secs(2);
+        while !resources_retired() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        if !resources_retired() {
+            static RETAINED: Mutex<
+                Vec<(
+                    Arc<BrokerShared>,
+                    Arc<crate::device_lease::testing::FixtureRoot>,
+                )>,
+            > = Mutex::new(Vec::new());
+            RETAINED
+                .lock_recover()
+                .push((Arc::clone(&self.shared), Arc::clone(&self.root)));
+            eprintln!("resident fixture resources did not retire; exact broker and root retained");
+        }
+    }
+}
+
+fn resident_shared(minute: Duration) -> (ResidentFixture, mpsc::Receiver<()>) {
     let (tx, rx) = mpsc::channel();
+    let root = crate::device_lease::testing::fresh_root("resident-rpc");
     let shared = Arc::new(BrokerShared {
         controller: Arc::new(DeviceController::start_disconnected().expect("controller")),
         devices: Mutex::new(Vec::new()),
         performance_midi: Arc::new(PerformanceMidiWorkers::default()),
         request_lock: Arc::new(Mutex::new(())),
         clients: Arc::new(Mutex::new(ClientAccounting::default())),
-        descriptor_path: std::env::temp_dir().join(format!(
-            "qc-broker-resident-unused-{}.json",
-            generate_token(8)
-        )),
+        descriptor_path: root.0.join("device-broker.json"),
         instance_id: generate_token(16),
         descriptor_claim: Arc::new(Mutex::new(None)),
         on_idle_shutdown: Arc::new(move || {
@@ -28,12 +117,78 @@ fn resident_shared(minute: Duration) -> (Arc<BrokerShared>, mpsc::Receiver<()>) 
         }),
         observer_changed: Condvar::new(),
         observer_minute: minute,
+        background: background::Manager::default(),
+        observer_actions: background::Manager::default(),
     });
     TEST_GRACE
         .lock_recover()
         .push((shared.instance_id.clone(), GRACE));
     shared.set_resident(true);
-    (shared, rx)
+    (ResidentFixture { shared, root }, rx)
+}
+
+#[test]
+fn an_explicit_fixture_clock_override_rebases_the_already_queued_startup_grace() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let handle = BrokerHandle(Arc::clone(&shared));
+    // Remove resident_shared's fast fixture clock, matching actual serving:
+    // its first grace is admitted at the production five-second duration.
+    TEST_GRACE
+        .lock_recover()
+        .retain(|(id, _)| id != &shared.instance_id);
+    assert_eq!(shared.idle_grace(), IDLE_SHUTDOWN_GRACE);
+    shared.arm_idle_shutdown();
+    assert!(shared.background.pending_key([1, 0, 0]));
+    test_support::set_grace(&handle, Duration::from_millis(150));
+    assert!(
+        wait_for(
+            || shared.clients.lock_recover().idle_released,
+            Duration::from_secs(2)
+        ),
+        "explicit fixture override must not retain the old five-second deadline"
+    );
+    assert_eq!(shared.clients.lock_recover().reopens_in_flight, 0);
+    assert!(shared.clients.lock_recover().resident);
+}
+
+#[test]
+fn resident_fixture_wakes_a_never_watcher_and_removes_only_its_registrations_on_unwind() {
+    let (peer, _peer_shutdown) = resident_shared(Duration::from_secs(60));
+    on_point(&peer, "fixture-peer", || {});
+    let peer_id = peer.instance_id.clone();
+    let mut path = None;
+    let mut weak = None;
+    let mut retired_id = None;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (fixture, _shutdown) = resident_shared(Duration::from_secs(60));
+        path = Some(fixture.root.0.clone());
+        weak = Some(Arc::downgrade(&fixture.shared));
+        retired_id = Some(fixture.instance_id.clone());
+        on_point(&fixture, "fixture-owned", || {});
+        fixture.set_tray_hold(Some(IdlePolicy::Never));
+        assert!(fixture.clients.lock_recover().observer_timer_running);
+        panic!("injected resident fixture assertion failure");
+    }));
+    assert!(outcome.is_err());
+    assert!(weak.unwrap().upgrade().is_none(), "Never watcher retired");
+    assert!(!path.unwrap().exists());
+    let id = retired_id.unwrap();
+    assert!(!TEST_POINTS
+        .lock_recover()
+        .iter()
+        .any(|(entry, _, _)| entry == &id));
+    assert!(!TEST_GRACE
+        .lock_recover()
+        .iter()
+        .any(|(entry, _)| entry == &id));
+    assert!(TEST_POINTS
+        .lock_recover()
+        .iter()
+        .any(|(entry, _, _)| entry == &peer_id));
+    assert!(TEST_GRACE
+        .lock_recover()
+        .iter()
+        .any(|(entry, _)| entry == &peer_id));
 }
 
 /// The shutdown grace these fixtures run with, in place of the shipped five
@@ -102,6 +257,87 @@ fn attach_participant(shared: &Arc<BrokerShared>) -> u64 {
         .expect("not shutting down");
     shared.update_observer_backstop();
     id
+}
+
+#[test]
+fn an_admitted_disconnect_refuses_new_target_holders_until_the_worker_retires_its_reservation() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let caller = attach_participant(&shared);
+    let observer = attach_participant(&shared);
+    shared
+        .clients
+        .lock_recover()
+        .connections
+        .get_mut(&observer)
+        .unwrap()
+        .role = ConnectionRole::Observer {
+        idle_policy_minutes: Some(15),
+    };
+    let (release, reserved) = pause_at(&shared, "disconnect:reserved");
+    let pending_shared = Arc::clone(&shared);
+    let disconnect = spawn_fixture(move || {
+        dispatch_broker_client_request(
+            &pending_shared,
+            Some(caller),
+            request(1, generated_gateway::rpc::DISCONNECT),
+        )
+    });
+    reserved.recv_timeout(Duration::from_secs(2)).unwrap();
+    let newcomer = accept_client(&shared.clients).unwrap();
+    let refused = shared.mark_client_authenticated(newcomer).unwrap_err();
+    assert!(refused.contains("closing"), "{refused}");
+    assert!(!shared.clients.lock_recover().connections[&newcomer].authenticated);
+    let control = accept_client(&shared.clients).unwrap();
+    shared
+        .mark_client_authenticated_as(control, AuthenticatedAs::Control, None)
+        .unwrap();
+    assert!(shared.clients.lock_recover().is_control(control));
+    let mut promote = request(2, "broker.hello");
+    promote.params = json!({"role":"participant"});
+    let refused = dispatch_broker_client_request(&shared, Some(observer), promote);
+    assert!(refused.get("error").is_some(), "{refused}");
+    assert!(shared.clients.lock_recover().is_observer(observer));
+    release.send(()).unwrap();
+    let completed = disconnect.join().unwrap();
+    assert!(completed.get("error").is_none(), "{completed}");
+    // A reply is sent before the command's separate admission guard drops.
+    assert!(wait_for(
+        || !shared
+            .clients
+            .lock_recover()
+            .device_is_closing(&shared.controller),
+        Duration::from_secs(1),
+    ));
+    shared.mark_client_authenticated(newcomer).unwrap();
+    assert!(shared.clients.lock_recover().connections[&newcomer].authenticated);
+}
+
+#[test]
+fn participant_selection_cannot_join_a_reserved_device_or_replace_its_current_target() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let participant = attach_participant(&shared);
+    // Register both logical owners without HID discovery or transport opening.
+    assert!(shared.controller.claim_device("fixture-A"));
+    let b = Arc::new(DeviceController::start_for_device(Some("fixture-B".into()), false).unwrap());
+    shared.devices.lock_recover().push(Arc::clone(&b));
+    let a = shared.controller_for(Some(participant));
+    let reservation = {
+        let _exclusive = shared.request_lock.lock_recover();
+        shared
+            .reserve_disconnect_for(None, &b)
+            .expect("unused B can close")
+    };
+    let refused = shared
+        .select_available_device(participant, "fixture-B")
+        .unwrap_err();
+    assert!(refused.contains("closing"), "{refused}");
+    assert!(Arc::ptr_eq(&shared.controller_for(Some(participant)), &a));
+    assert_eq!(shared.clients.lock_recover().participants(), 1);
+    drop(reservation);
+    shared
+        .select_available_device(participant, "fixture-B")
+        .unwrap();
+    assert!(Arc::ptr_eq(&shared.controller_for(Some(participant)), &b));
 }
 
 fn wait_for(condition: impl Fn() -> bool, within: Duration) -> bool {
@@ -205,21 +441,31 @@ fn requests_during_an_idle_reopen_wait_for_it_and_are_served_after_it() {
     let participant = attach_participant(&shared);
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let reopens = Arc::new(AtomicUsize::new(0));
+    let (entered, entered_rx) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let released = Mutex::new(released);
+    let (asking, asking_rx) = mpsc::channel();
     let _hook = {
         let (events, reopens) = (Arc::clone(&events), Arc::clone(&reopens));
         Hook::install(&shared.controller, move || {
             reopens.fetch_add(1, Ordering::SeqCst);
             events.lock_recover().push("reopen started".into());
-            thread::sleep(Duration::from_millis(400)); // a slow handshake
+            let _ = entered.send(());
+            released
+                .lock_recover()
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|error| format!("fixture reopen gate: {error}"))?;
             events.lock_recover().push("reopen ready".into());
             Ok(())
         })
     };
     let started = Instant::now();
-    let responses: Vec<_> = (1..=2)
+    let handles: Vec<_> = (1..=2)
         .map(|id| {
             let (shared, events) = (Arc::clone(&shared), Arc::clone(&events));
-            let handle = thread::spawn(move || {
+            let asking = asking.clone();
+            let handle = spawn_fixture(move || {
+                let _ = asking.send(id);
                 let response = dispatch_broker_client_request(
                     &shared,
                     Some(participant),
@@ -228,10 +474,24 @@ fn requests_during_an_idle_reopen_wait_for_it_and_are_served_after_it() {
                 events.lock_recover().push(format!("request {id} answered"));
                 response
             });
-            // The second arrives while the first's reopen is still running.
-            thread::sleep(Duration::from_millis(100));
+            if id == 1 {
+                entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            }
             handle
         })
+        .collect();
+    assert_eq!(asking_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
+    assert_eq!(asking_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
+    thread::sleep(Duration::from_millis(400));
+    assert!(
+        handles.iter().all(|handle| !handle.is_finished()),
+        "both requests remain admitted during the reopen"
+    );
+    release.send(()).unwrap();
+    // Collect both admissions before joining: a lazy spawn.map(join) would
+    // silently serialize them and never exercise the reopen-sharing race.
+    let responses: Vec<_> = handles
+        .into_iter()
         .map(|handle| handle.join().unwrap())
         .collect();
     assert!(
@@ -577,7 +837,7 @@ fn a_running_reopen_holds_off_every_shutdown_commit_until_it_finishes() {
     let participant = attach_participant(&shared);
     let waiting = {
         let shared = Arc::clone(&shared);
-        thread::spawn(move || {
+        spawn_fixture(move || {
             dispatch_broker_client_request(
                 &shared,
                 Some(participant),
@@ -754,7 +1014,7 @@ fn a_shutdown_committed_before_the_reconnect_cancels_it() {
     let held = shared.request_lock.lock_recover();
     let waiting = {
         let shared = Arc::clone(&shared);
-        thread::spawn(move || {
+        spawn_fixture(move || {
             dispatch_broker_client_request(
                 &shared,
                 Some(participant),
@@ -802,8 +1062,12 @@ fn a_panicking_reopen_fails_its_waiters_and_releases_every_shutdown_path() {
         failed["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("stopped unexpectedly"),
+            .contains("idle reopen original worker failed or never started"),
         "{failed}"
+    );
+    assert!(
+        failed["result"].is_null(),
+        "panic must not publish success: {failed}"
     );
     assert_eq!(shared.clients.lock_recover().reopens_in_flight, 0);
     assert!(matches!(
@@ -828,7 +1092,7 @@ fn the_idle_release_and_the_icons_disconnect_never_wait_for_devices_holding_clie
         let devices = shared.devices.lock_recover();
         let worker = {
             let shared = Arc::clone(&shared);
-            thread::spawn(move || {
+            spawn_fixture(move || {
                 if path == "idle release" {
                     shared.release_idle_device();
                 } else {
@@ -876,14 +1140,14 @@ fn a_request_between_the_release_record_and_the_close_reopens_after_the_close() 
     let (resume, reached) = pause_at(&shared, "release_idle_device:recorded");
     let releasing = {
         let shared = Arc::clone(&shared);
-        thread::spawn(move || shared.release_idle_device())
+        spawn_fixture(move || shared.release_idle_device())
     };
     reached.recv_timeout(Duration::from_secs(2)).unwrap();
     // Recorded, not yet closed: a participant arrives and asks for the device.
     let participant = attach_participant(&shared);
     let asking = {
         let shared = Arc::clone(&shared);
-        thread::spawn(move || {
+        spawn_fixture(move || {
             dispatch_broker_client_request(
                 &shared,
                 Some(participant),
@@ -1096,7 +1360,7 @@ fn an_observers_disconnect_during_a_queued_reopen_leaves_it_to_reconnect() {
     let held = shared.request_lock.lock_recover();
     let waiting = {
         let shared = Arc::clone(&shared);
-        thread::spawn(move || {
+        spawn_fixture(move || {
             dispatch_broker_client_request(&shared, Some(participant), request(1, method))
         })
     };
@@ -1197,7 +1461,7 @@ fn a_disconnect_rechecks_the_device_it_acts_on_after_a_selection_change() {
     let (release, reached) = pause_at(&shared, "disconnect:after_precheck");
     let waiting = {
         let shared = Arc::clone(&shared);
-        thread::spawn(move || {
+        spawn_fixture(move || {
             dispatch_broker_client_request(
                 &shared,
                 Some(observer),
@@ -1260,7 +1524,7 @@ fn a_caller_participating_on_another_device_does_not_discount_the_target_holder(
     let (release, reached) = pause_at(&shared, "disconnect:after_precheck");
     let waiting = {
         let shared = Arc::clone(&shared);
-        thread::spawn(move || {
+        spawn_fixture(move || {
             dispatch_broker_client_request(
                 &shared,
                 Some(caller),
@@ -1345,6 +1609,8 @@ fn device_readiness_answers_from_the_cached_session_without_device_demand() {
         on_idle_shutdown: Arc::new(|| {}),
         observer_changed: Condvar::new(),
         observer_minute: Duration::from_secs(60),
+        background: background::Manager::default(),
+        observer_actions: background::Manager::default(),
     });
     let (reconnects, _reconnect, _wait) = counting_reopen(&controller);
     let handle = BrokerHandle(Arc::clone(&shared));
@@ -1406,6 +1672,8 @@ fn readiness_shared(controller: &Arc<DeviceController>) -> Arc<BrokerShared> {
         on_idle_shutdown: Arc::new(|| {}),
         observer_changed: Condvar::new(),
         observer_minute: Duration::from_secs(60),
+        background: background::Manager::default(),
+        observer_actions: background::Manager::default(),
     })
 }
 
@@ -1501,7 +1769,7 @@ fn readiness_waits_only_for_the_status_lock() {
     controller.set_connection_for_test(true, "ready");
     let held = controller.hold_status_lock_for_test();
     let (answered_tx, answered) = mpsc::channel();
-    let reader = thread::spawn(move || {
+    let reader = spawn_fixture(move || {
         let _ = answered_tx.send(probe.read());
     });
     assert!(
@@ -1621,7 +1889,7 @@ fn a_release_between_the_status_and_the_resource_read_never_reopens_the_device()
         );
 
         let (resume, paused) = pause_at(&shared, "resource_read:before_admission");
-        let read = thread::spawn({
+        let read = spawn_fixture({
             let shared = Arc::clone(&shared);
             move || dispatch_broker_request(&shared, resource_read(2, method))
         });

@@ -10,12 +10,69 @@ export interface PresetOperation {
   target?: PresetAddress;
 }
 
+/** An admitted write owns its slot until its real asynchronous work settles. */
+export interface DeviceMutationLease {
+  current(): boolean;
+  /** Returns true only when this release retired the current slot. */
+  release(): boolean;
+}
+
+/**
+ * Synchronous application admission, independent of React's pending render.
+ * This does not cancel native work. A physical reset retires only session
+ * ownership; an already-started old write still settles its own promise.
+ */
+export class DeviceMutationAdmission {
+  private owner?: { scope: "session" | "host" };
+  private readonly listeners = new Set<() => void>();
+  get busy(): boolean { return this.owner !== undefined; }
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  };
+  snapshot = (): boolean => this.busy;
+  tryAcquire(scope: "session" | "host" = "session"): DeviceMutationLease | undefined {
+    if (this.owner) return undefined;
+    const owner = { scope };
+    this.owner = owner;
+    this.notify();
+    // A synchronous listener may reset/replace this physical ownership.
+    if (this.owner !== owner) return undefined;
+    return {
+      current: () => this.owner === owner,
+      release: () => {
+        if (this.owner !== owner) return false;
+        this.owner = undefined;
+        this.notify();
+        return true;
+      }
+    };
+  }
+  /** Local file saves survive a physical reconnect; old device slots do not. */
+  resetSession(): void {
+    if (this.owner?.scope !== "session") return;
+    this.owner = undefined;
+    this.notify();
+  }
+  private notify(): void {
+    // Subscription changes belong to the next publication, never this iteration.
+    for (const listener of [...this.listeners]) {
+      try { listener(); }
+      catch (error) {
+        // Reporting cannot strand an already committed slot or skip peers.
+        try { console.error("Device mutation admission listener failed:", error); } catch { /* Diagnostic only. */ }
+      }
+    }
+  }
+}
+
 /**
  * Owns application work across authoritative preset transitions and reconnects.
  * Preview state does not advance this lifetime. A recall may adopt its one
  * expected target observation; unrelated transitions always revoke its work.
  */
 export class PresetLifetime {
+  readonly mutations = new DeviceMutationAdmission();
   private session = 0;
   private revision = 0;
   private address: PresetAddress;
@@ -86,8 +143,12 @@ export class PresetLifetime {
   }
 
   reset(): void {
+    // Commit the complete physical/preset generation before either channel
+    // publishes. A mutation listener may synchronously capture the new origin.
     this.session++;
-    this.invalidate();
+    this.revision++;
+    this.mutations.resetSession();
+    this.notify();
   }
 
   private notify(): void {

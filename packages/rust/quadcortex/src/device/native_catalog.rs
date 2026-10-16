@@ -10,9 +10,10 @@ use std::collections::BTreeMap;
 /// exceed it makes [`NativePresetCatalog::apply`] fail.
 pub const MAX_PRESET_FOLDERS: usize = 128;
 
-/// Aggregate retained preset folder and slot string bytes. A frame bound alone
-/// cannot bound metadata accumulated through independent slot updates.
-pub const MAX_PRESET_CATALOG_BYTES: usize = 32 * 1024 * 1024;
+/// Software ceiling for owned string bytes retained by the native preset fold.
+/// This matches the Capture/IR provider budget; it is not a firmware name or
+/// inventory limit. Map keys and repeated owned fields are counted separately.
+pub const MAX_PRESET_CATALOG_BYTES: usize = super::native_library::MAX_LIBRARY_BYTES;
 
 /// Keys affected by one [`NativePresetCatalog::apply`] call.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -72,16 +73,108 @@ impl NativePresetCatalog {
     /// freshness or persistence; the session owner must retain those separately.
     pub fn apply(&mut self, message: &pa::FileMessage) -> Result<NativeCatalogChange, String> {
         self.health()?;
-        let result = self
-            .apply_inner(message)
-            .and_then(|change| check_retained_bytes(self.retained_bytes()).map(|()| change));
+        // A single bounded frame may update either or both folder models. Stage
+        // the complete bounded next fold so overflow cannot publish one side or
+        // remove a rename source before refusing the destination. The old fold
+        // remains available for diagnostics, but health stays failed until reset.
+        let mut next = Self {
+            folders: self.folders.clone(),
+            error: None,
+        };
+        let result = next.apply_inner(message).and_then(|change| {
+            next.check_byte_capacity()?;
+            Ok(change)
+        });
+        if result.is_ok() {
+            self.folders = next.folders;
+        }
         if let Err(error) = &result {
-            // An invalid catalog cannot be used for planning. Release it rather
-            // than retaining an over-budget tree behind the sticky error.
-            self.folders.clear();
+            // Only the staged fold can exceed the ceiling. Keep the unchanged,
+            // already-bounded old fold for diagnostics, never for planning:
+            // health remains failed until an explicit clear/reset.
             self.invalidate(error.clone());
         }
         result
+    }
+
+    fn check_rename_byte_capacity(
+        &self,
+        source_key: &str,
+        target: &PresetFolderListing,
+    ) -> Result<(), String> {
+        let Some(source) = self.folders.get(source_key) else {
+            return Ok(());
+        };
+        // Rename synthesizes one path per retained keyed slot. A bounded input
+        // key can therefore multiply far beyond the wire budget: count those
+        // borrowed lengths before any format!/replacement allocation occurs.
+        let mut bytes = target
+            .key
+            .len()
+            .saturating_mul(2)
+            .saturating_add(target.name.len());
+        for file in &source.files {
+            bytes = bytes
+                .saturating_add(file.name.len())
+                .saturating_add(file.author.as_ref().map_or(0, String::len))
+                .saturating_add(file.date.as_ref().map_or(0, String::len));
+            if file.product_key.is_some() {
+                bytes = bytes
+                    .saturating_add(target.key.len())
+                    .saturating_add(file.name.len())
+                    .saturating_add(4);
+            }
+        }
+        for (key, folder) in &self.folders {
+            if key == source_key || key == &target.key {
+                continue;
+            }
+            bytes = bytes
+                .saturating_add(key.len())
+                .saturating_add(folder.key.len())
+                .saturating_add(folder.name.len());
+            for file in &folder.files {
+                bytes = bytes
+                    .saturating_add(file.name.len())
+                    .saturating_add(file.product_key.as_ref().map_or(0, String::len))
+                    .saturating_add(file.author.as_ref().map_or(0, String::len))
+                    .saturating_add(file.date.as_ref().map_or(0, String::len));
+            }
+        }
+        if bytes > MAX_PRESET_CATALOG_BYTES {
+            return Err(format!(
+                "Native preset catalog exceeded its software retained-byte capacity of {MAX_PRESET_CATALOG_BYTES} bytes"
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_byte_capacity(&self) -> Result<(), String> {
+        let mut bytes = 0usize;
+        for (key, folder) in &self.folders {
+            bytes = bytes.saturating_add(key.len());
+            bytes = bytes.saturating_add(folder.key.len());
+            bytes = bytes.saturating_add(folder.name.len());
+            for file in &folder.files {
+                for text in [
+                    Some(&file.name),
+                    file.product_key.as_ref(),
+                    file.author.as_ref(),
+                    file.date.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    bytes = bytes.saturating_add(text.len());
+                }
+            }
+            if bytes > MAX_PRESET_CATALOG_BYTES {
+                return Err(format!(
+                    "Native preset catalog exceeded its software retained-byte capacity of {MAX_PRESET_CATALOG_BYTES} bytes"
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn apply_inner(&mut self, message: &pa::FileMessage) -> Result<NativeCatalogChange, String> {
@@ -120,49 +213,10 @@ impl NativePresetCatalog {
                 let Some(target) = eligible(destination, file_type) else {
                     return Ok(change);
                 };
-                let Some(current) = self.folders.get(&source_key) else {
+                self.check_rename_byte_capacity(&source_key, &target)?;
+                let Some(mut current) = self.folders.remove(&source_key) else {
                     return Ok(change);
                 };
-                // A new folder prefix is copied into every occupied product key.
-                // Budget that multiplication before allocating any renamed key.
-                let unchanged_bytes = self
-                    .folders
-                    .iter()
-                    .filter(|(key, _)| *key != &source_key && *key != &target.key)
-                    .map(|(_, folder)| folder_bytes(folder))
-                    .sum::<usize>();
-                let renamed_bytes = target
-                    .key
-                    .len()
-                    .saturating_mul(2)
-                    .saturating_add(target.name.len())
-                    .saturating_add(
-                        current
-                            .files
-                            .iter()
-                            .map(|file| {
-                                let metadata = file
-                                    .name
-                                    .len()
-                                    .saturating_add(file.author.as_ref().map_or(0, String::len))
-                                    .saturating_add(file.date.as_ref().map_or(0, String::len));
-                                metadata.saturating_add(if file.product_key.is_some() {
-                                    target
-                                        .key
-                                        .len()
-                                        .saturating_add(file.name.len())
-                                        .saturating_add(4)
-                                } else {
-                                    0
-                                })
-                            })
-                            .sum::<usize>(),
-                    );
-                check_retained_bytes(unchanged_bytes.saturating_add(renamed_bytes))?;
-                let mut current = self
-                    .folders
-                    .remove(&source_key)
-                    .expect("checked source folder");
                 current.key = target.key.clone();
                 current.name = target.name;
                 for file in &mut current.files {
@@ -247,10 +301,6 @@ impl NativePresetCatalog {
         Ok(())
     }
 
-    fn retained_bytes(&self) -> usize {
-        self.folders.values().map(folder_bytes).sum()
-    }
-
     fn upsert_products(&mut self, wire: &pa::FolderInfo, mut incoming: PresetFolderListing) {
         let supplied = std::mem::take(&mut incoming.files);
         let current = self.folders.entry(incoming.key.clone()).or_insert(incoming);
@@ -291,30 +341,6 @@ impl NativePresetCatalog {
                 Err(insert_at) => current.files.insert(insert_at, file),
             }
         }
-    }
-}
-
-fn folder_bytes(folder: &PresetFolderListing) -> usize {
-    // The BTreeMap owns a second copy of the canonical folder key.
-    folder.key.len() * 2
-        + folder.name.len()
-        + folder
-            .files
-            .iter()
-            .map(|file| {
-                file.name.len()
-                    + file.product_key.as_ref().map_or(0, String::len)
-                    + file.author.as_ref().map_or(0, String::len)
-                    + file.date.as_ref().map_or(0, String::len)
-            })
-            .sum::<usize>()
-}
-
-fn check_retained_bytes(bytes: usize) -> Result<(), String> {
-    if bytes > MAX_PRESET_CATALOG_BYTES {
-        Err(format!("Native preset catalog exceeded its retained metadata capacity of {MAX_PRESET_CATALOG_BYTES} bytes"))
-    } else {
-        Ok(())
     }
 }
 
@@ -374,8 +400,13 @@ mod tests {
         catalog.apply(&listing(63, &large)).unwrap();
         catalog.apply(&listing(64, &large)).unwrap();
         let error = catalog.apply(&listing(65, &large)).unwrap_err();
-        assert!(error.contains("retained metadata capacity"), "{error}");
-        assert!(catalog.folders.is_empty());
+        assert!(error.contains("retained-byte capacity"), "{error}");
+        let retained = catalog.folder(SOURCE).unwrap();
+        assert_eq!(retained.files.len(), 65);
+        assert!(retained.files.iter().all(|slot| slot.position != 65));
+        assert_eq!(retained.files[0].author.as_deref(), Some("small"));
+        assert!(retained.files[1].author.is_none());
+        catalog.check_byte_capacity().unwrap();
         assert!(catalog.health().is_err());
         assert!(catalog.apply(&listing(0, "normal")).is_err());
         catalog.clear();
@@ -406,8 +437,16 @@ mod tests {
         )));
         assert!(rename.encoded_len() < crate::profile::MAX_FRAME_BYTES);
         let error = catalog.apply(&rename).unwrap_err();
-        assert!(error.contains("retained metadata capacity"), "{error}");
-        assert!(catalog.folders.is_empty());
+        assert!(error.contains("retained-byte capacity"), "{error}");
+        assert_eq!(catalog.folder(SOURCE).unwrap().files.len(), 256);
+        assert!(catalog.folder(&long_key).is_none());
+        assert!(catalog.folder(SOURCE).unwrap().files.iter().all(|slot| slot
+            .product_key
+            .as_deref()
+            == Some("key")
+            && slot.name == "Name"));
+        catalog.check_byte_capacity().unwrap();
+        assert!(catalog.health().is_err());
         catalog.clear();
         catalog
             .apply(&event(
@@ -677,5 +716,131 @@ mod tests {
         runtime.reset();
         runtime.ingest(4, &message.encode_to_vec()).unwrap();
         assert!(runtime.native_preset_catalog().health().is_ok());
+    }
+
+    #[test]
+    fn chunked_native_preset_deltas_have_a_transactional_retained_byte_ceiling() {
+        // Every individual valid File publication fits the existing wire budget.
+        // A sequence, rather than one oversized frame, grows the retained fold.
+        // This is the existing Capture/IR SOFTWARE budget, not a firmware limit.
+        let ceiling = crate::device::native_library::MAX_LIBRARY_BYTES;
+        let mut runtime = DeviceStateRuntime::new();
+        let large_name = "x".repeat(1024 * 1024);
+        let mut accepted = 0usize;
+        let mut refused = None;
+        for index in 0..64 {
+            let message = event(
+                pa::message_action::Enum::Update,
+                SOURCE,
+                vec![product(index, Some(&format!("slot-{index}")), &large_name)],
+            );
+            let payload = message.encode_to_vec();
+            assert!(payload.len() < crate::profile::MAX_INFLATED_BYTES);
+            match runtime.ingest(4, &payload) {
+                Ok(_) => accepted += 1,
+                Err(error) => {
+                    refused = Some((index, error));
+                    break;
+                }
+            }
+        }
+        let (refused_index, error) =
+            refused.expect("chunked valid deltas must not exceed the shared retained-byte ceiling");
+        assert!(
+            accepted > 1,
+            "ordinary successive listings remain supported"
+        );
+        assert!(error.contains("retained-byte capacity"), "{error}");
+        let retained = runtime.native_preset_catalog().folder(SOURCE).unwrap();
+        assert_eq!(
+            retained.files.len(),
+            accepted,
+            "the refused delta must not partially commit"
+        );
+        assert!(retained
+            .files
+            .iter()
+            .all(|slot| slot.position != refused_index as u32));
+        assert!(retained.files.iter().all(|slot| slot.name == large_name));
+        let retained_bytes = retained.key.len() * 2
+            + retained.name.len()
+            + retained
+                .files
+                .iter()
+                .map(|slot| {
+                    slot.name.len()
+                        + slot.product_key.as_ref().map_or(0, String::len)
+                        + slot.author.as_ref().map_or(0, String::len)
+                        + slot.date.as_ref().map_or(0, String::len)
+                })
+                .sum::<usize>();
+        assert!(retained_bytes <= ceiling);
+        assert!(runtime.native_preset_catalog().health().is_err());
+        let healthy = event(
+            pa::message_action::Enum::Update,
+            SOURCE,
+            vec![product(0, Some("small"), "Small")],
+        );
+        assert!(
+            runtime.ingest(4, &healthy.encode_to_vec()).is_err(),
+            "partial later data cannot repair the refused fold"
+        );
+        runtime.reset();
+        runtime.ingest(4, &healthy.encode_to_vec()).unwrap();
+        let recovered = runtime.native_preset_catalog().folder(SOURCE).unwrap();
+        assert_eq!(recovered.files.len(), 1);
+        assert_eq!(recovered.files[0].name, "Small");
+    }
+
+    #[test]
+    fn native_preset_rename_refuses_multiplied_paths_before_retained_state_changes() {
+        let mut runtime = DeviceStateRuntime::new();
+        let seed = event(
+            pa::message_action::Enum::Create,
+            SOURCE,
+            (0..256)
+                .map(|index| product(index, Some(&format!("key-{index}")), "Short"))
+                .collect(),
+        );
+        runtime.ingest(4, &seed.encode_to_vec()).unwrap();
+        // One ~128KiB key fits a valid File frame, but synthesizing it for every
+        // keyed slot would exceed the existing32MiB provider SOFTWARE budget.
+        let target = format!("/media/p4/Presets/{}", "r".repeat(128 * 1024));
+        let mut rename = event(pa::message_action::Enum::Update, SOURCE, vec![]);
+        rename.to_folder = Some(pa::file_message::ToFolder::ToFolder(folder(
+            &target,
+            vec![],
+        )));
+        let payload = rename.encode_to_vec();
+        assert!(payload.len() < crate::profile::MAX_INFLATED_BYTES);
+        let result = runtime.ingest(4, &payload);
+        assert!(
+            result.is_err(),
+            "derived rename paths must fit the retained-byte budget"
+        );
+        let error = result.unwrap_err();
+        assert!(error.contains("retained-byte capacity"), "{error}");
+        assert!(runtime.native_preset_catalog().folder(&target).is_none());
+        let retained = runtime.native_preset_catalog().folder(SOURCE).unwrap();
+        assert_eq!(retained.files.len(), 256);
+        assert!(retained
+            .files
+            .iter()
+            .enumerate()
+            .all(|(index, slot)| slot.product_key.as_deref()
+                == Some(format!("key-{index}").as_str())
+                && slot.name == "Short"));
+        assert!(runtime.native_preset_catalog().health().is_err());
+        runtime.reset();
+        runtime.ingest(4, &seed.encode_to_vec()).unwrap();
+        rename.to_folder = Some(pa::file_message::ToFolder::ToFolder(folder(TARGET, vec![])));
+        runtime.ingest(4, &rename.encode_to_vec()).unwrap();
+        assert!(runtime.native_preset_catalog().folder(SOURCE).is_none());
+        let healthy = runtime.native_preset_catalog().folder(TARGET).unwrap();
+        assert_eq!(healthy.files.len(), 256);
+        assert!(healthy
+            .files
+            .iter()
+            .all(|slot| slot.product_key.as_deref() == Some("/media/p4/Presets/Target/Short.pb")));
     }
 }

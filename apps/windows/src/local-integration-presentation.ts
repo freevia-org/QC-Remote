@@ -302,7 +302,8 @@ const connectedPresentation = (app: string, connectedSuffix = ""): LocalProvider
  * has, whatever it is doing at this instant. Neither value is evidence that
  * anything is wrong; only `connectionActive` says a bridge is talking now.
  */
-type ObservedLiveness = { connectionActive?: boolean; bridgeAttached?: boolean; connectionPending?: boolean };
+type ObservedLiveness = { connectionActive?: boolean; bridgeAttached?: boolean; connectionPending?: boolean }
+  & Pick<ManagedJsonMcpIntegrationStatus, "skillState" | "skillStatusError">;
 
 /**
  * A paired row whose liveness is not yet established.
@@ -351,13 +352,19 @@ const pairedPresentation = (
   reconnects = `${app} opens the connection when you start a chat`
 ): LocalProviderPresentation => {
   if (liveness.connectionActive) return connectedPresentation(app, connectedSuffix);
+  // A healthy inactive MCP route stays inactive, but an independent failed
+  // skill read is still known evidence and must not disappear with liveness.
+  const unverifiedSkill = unreadableSkillDetail(liveness);
   // Ahead of both unconnected rows, because each of them makes a claim this
   // one is the absence of: that the bridge has been seen, or that it never
   // has. Inside the window neither is known.
-  if (livenessPending(liveness)) return checkingLivenessPresentation(app, true);
+  if (livenessPending(liveness)) {
+    const checking = checkingLivenessPresentation(app, true);
+    return { ...checking, detail: checking.detail + unverifiedSkill };
+  }
   if (liveness.bridgeAttached) return {
     phase: "idle", status: "Paired · idle", tone: "neutral",
-    detail: `Paired and working — ${reconnects}. Open starts ${app} now.`,
+    detail: `Paired and working — ${reconnects}. Open starts ${app} now.${unverifiedSkill}`,
     canUnpair: true, primary: localPrimaryAction("open")
   };
   // `bridgeAttached` is durable, so this row now says what its words say: this
@@ -366,7 +373,7 @@ const pairedPresentation = (
   // forward looking rather than an accusation with a repair attached.
   return {
     phase: "idle", status: "Paired · not yet connected", tone: "neutral",
-    detail: `Paired, not connected yet — ${reconnects}. Open starts ${app} now.`,
+    detail: `Paired, not connected yet — ${reconnects}. Open starts ${app} now.${unverifiedSkill}`,
     canUnpair: true, primary: localPrimaryAction("open")
   };
 };
@@ -713,7 +720,7 @@ export const chatgptIntegrationPresentation = (
     return pairedPresentation(
       hostName,
       status,
-      ` QC Device Knowledge ${status.installedSkillVersion ?? status.availableSkillVersion} is installed.`,
+      installedSkillDetail(status),
       reconnects
     );
   }
@@ -744,6 +751,15 @@ export const chatgptIntegrationPresentation = (
     canUnpair: false, primary: localPrimaryAction("pair")
   };
 };
+
+/** A healthy MCP route is independent of an unreadable skill directory. */
+const unreadableSkillDetail = (status: Pick<ManagedJsonMcpIntegrationStatus, "skillState" | "skillStatusError">): string =>
+  status.skillState === "status-error" || status.skillStatusError
+    ? " QC Device Knowledge status could not be read; its installation is unverified. Refresh checks it again."
+    : "";
+
+const installedSkillDetail = (status: Pick<ManagedJsonMcpIntegrationStatus, "skillState" | "skillStatusError" | "installedSkillVersion" | "availableSkillVersion">): string =>
+  unreadableSkillDetail(status) || ` QC Device Knowledge ${status.installedSkillVersion ?? status.availableSkillVersion} is installed.`;
 
 export const antigravityIntegrationPresentation = (
   status?: AntigravityLocalIntegrationStatus,
@@ -779,7 +795,7 @@ export const antigravityIntegrationPresentation = (
     return pairedPresentation(
       "Google Antigravity",
       status,
-      ` QC Device Knowledge ${status.installedSkillVersion ?? status.availableSkillVersion} is installed.`,
+      installedSkillDetail(status),
       "Google Antigravity opens the connection when it starts"
     );
   }
@@ -939,7 +955,7 @@ export const managedMcpIntegrationPresentation = (
   const skill = status.skillState;
   if (status.state === "current") {
     return pairedPresentation(name, status, skill
-      ? ` QC Device Knowledge ${status.installedSkillVersion ?? status.availableSkillVersion} is installed.`
+      ? installedSkillDetail(status)
       : "", settingsHint
       ? `${name} opens the connection once QC Remote is enabled in ${settingsHint}`
       : `${name} picks the connection up on its own schedule`);

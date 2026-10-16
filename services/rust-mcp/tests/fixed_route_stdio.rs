@@ -1,4 +1,6 @@
+mod common;
 use async_trait::async_trait;
+use common::OwnedTask;
 use qc_remote_mcp::{BackendError, PrincipalRoute, QcBackend, QcMcp};
 use rmcp::ServiceExt;
 use serde_json::{Map, Value, json};
@@ -25,11 +27,12 @@ impl QcBackend for RecordingBackend {
 
 #[tokio::test]
 async fn fixed_route_authorizes_a_non_http_stdio_transport() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
     let backend = Arc::new(RecordingBackend::default());
     let route = PrincipalRoute::new("local-user", "local-device");
     let server = QcMcp::for_route(backend.clone(), route.clone());
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-    let server_task = tokio::spawn(async move {
+    let server_task = OwnedTask(tokio::spawn(async move {
         server
             .serve(server_io)
             .await
@@ -37,7 +40,7 @@ async fn fixed_route_authorizes_a_non_http_stdio_transport() {
             .waiting()
             .await
             .expect("stdio completion");
-    });
+    }));
     let (read, mut write) = tokio::io::split(client_io);
     let mut lines = BufReader::new(read).lines();
 
@@ -87,10 +90,8 @@ async fn fixed_route_authorizes_a_non_http_stdio_transport() {
 
     drop(lines);
     drop(write);
-    tokio::time::timeout(std::time::Duration::from_secs(2), server_task)
-        .await
-        .expect("stdio server stopped")
-        .expect("stdio task joined");
+    server_task.join().await;
+    }).await.expect("whole MCP fixture observation timed out")
 }
 
 #[derive(Default)]
@@ -119,13 +120,14 @@ impl QcBackend for OriginBackend {
 /// `list_models` tool shares with `qc://models`.
 #[tokio::test]
 async fn every_resource_backed_read_is_marked_and_a_tool_call_is_not() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
     let backend = Arc::new(OriginBackend::default());
     let server = QcMcp::for_route(
         backend.clone(),
         PrincipalRoute::new("local-user", "local-device"),
     );
     let (server_io, client_io) = tokio::io::duplex(256 * 1024);
-    let server_task = tokio::spawn(async move {
+    let server_task = OwnedTask(tokio::spawn(async move {
         server
             .serve(server_io)
             .await
@@ -133,7 +135,7 @@ async fn every_resource_backed_read_is_marked_and_a_tool_call_is_not() {
             .waiting()
             .await
             .expect("stdio completion");
-    });
+    }));
     let (read, mut write) = tokio::io::split(client_io);
     let mut lines = BufReader::new(read).lines();
     let mut send = String::from(
@@ -172,8 +174,6 @@ async fn every_resource_backed_read_is_marked_and_a_tool_call_is_not() {
 
     drop(lines);
     drop(write);
-    tokio::time::timeout(std::time::Duration::from_secs(2), server_task)
-        .await
-        .expect("stdio server stopped")
-        .expect("stdio task joined");
+    server_task.join().await;
+    }).await.expect("whole MCP fixture observation timed out")
 }

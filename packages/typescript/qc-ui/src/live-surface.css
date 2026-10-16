@@ -24,7 +24,10 @@
   display: grid;
   grid-template-rows: 21.2% 1fr;
   overflow: hidden;
-  container-type: inline-size;
+  /* Menu descendants need this editor's real remaining height, not the
+     outer screen height. Insets still determine the editor's size. */
+  container-type: size;
+  --parameter-menu-available-height: 78.8cqh;
   background: var(--qc-screen);
   color: var(--qc-route-text);
   font-family: var(--qc-font-device);
@@ -37,7 +40,7 @@
 }
 
 .coros-parameter-editor.has-tabs { grid-template-rows: 21.2% 15% 1fr; }
-.coros-parameter-editor.is-full-screen { inset: 0; grid-template-rows: 12.5% 1fr; box-shadow: none; }
+.coros-parameter-editor.is-full-screen { inset: 0; grid-template-rows: 12.5% 1fr; box-shadow: none; --parameter-menu-available-height: 87.5cqh; }
 .coros-parameter-editor.is-full-screen.has-tabs { grid-template-rows: 12.5% 9% 1fr; }
 
 .parameter-editor-header {
@@ -123,7 +126,9 @@
   left: 1%;
   top: calc(100% - .3cqw);
   width: 44cqw;
-  max-height: 46cqw;
+  /* Keep the scroll viewport inside the editor's clipping boundary. The
+     dropdown begins .3cqw above the header's bottom. */
+  max-height: min(46cqw, calc(var(--parameter-menu-available-height, 46cqw) + .3cqw));
   display: grid;
   overflow-y: auto;
   border-radius: .5cqw;

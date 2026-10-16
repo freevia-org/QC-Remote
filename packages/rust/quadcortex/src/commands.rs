@@ -660,8 +660,8 @@ pub enum DeviceOperation {
     ReadGlobalTempo,
     /// Set the device-global tempo in beats per minute (`40..=240`).
     ///
-    /// The device only applies this while it is in global tempo mode; see
-    /// [`set_global_tempo`].
+    /// In GLOBAL mode this changes the global tempo; in PRESET mode the observed
+    /// behavior changes the loaded preset tempo and marks it dirty. See [`set_global_tempo`].
     SetGlobalTempo(u32),
     /// Set tempo/metronome parameters, given as `(parameter index, normalized
     /// value)` pairs, one message per pair.
@@ -1333,7 +1333,7 @@ impl DeviceOperation {
                     });
                 }
             }
-            Self::DeleteSetlist { name } => {
+            Self::CreateSetlist { name } | Self::DeleteSetlist { name } => {
                 setlist_name(name)?;
             }
             _ => {}
@@ -1399,6 +1399,7 @@ impl DeviceOperation {
             }
             Self::SetInputPort {
                 input_port_id,
+                level,
                 impedance,
                 input_type,
                 ground_lift,
@@ -1411,6 +1412,11 @@ impl DeviceOperation {
                     });
                 }
                 for (field, value, valid) in [
+                    (
+                        "normalized input level",
+                        *level,
+                        level.is_none_or(|value| value.is_finite() && (0.0..=1.0).contains(&value)),
+                    ),
                     (
                         "input impedance",
                         *impedance,
@@ -1445,12 +1451,47 @@ impl DeviceOperation {
                     value: output_port_id.to_string(),
                 });
             }
+            Self::SetOutputPort {
+                level, ground_lift, ..
+            } => {
+                for (field, value, valid) in [
+                    (
+                        "output level dB",
+                        *level,
+                        level.is_none_or(|value| {
+                            value.is_finite()
+                                && (OUTPUT_LEVEL_MIN_DB..=OUTPUT_LEVEL_MAX_DB)
+                                    .contains(&f64::from(value))
+                        }),
+                    ),
+                    (
+                        "output ground lift",
+                        *ground_lift,
+                        ground_lift.is_none_or(is_input_ground_lift_value),
+                    ),
+                ] {
+                    if !valid {
+                        return Err(CommandEncodeError::UnsupportedValue {
+                            field,
+                            value: value
+                                .expect("invalid optional value is present")
+                                .to_string(),
+                        });
+                    }
+                }
+            }
             Self::SetUsbPort {
+                level,
                 headphones_source,
                 dry_wet,
                 ..
             } => {
                 for (field, value, valid) in [
+                    (
+                        "normalized USB level",
+                        *level,
+                        level.is_none_or(|value| value.is_finite() && (0.0..=1.0).contains(&value)),
+                    ),
                     (
                         "USB headphones source",
                         *headphones_source,
@@ -1468,6 +1509,16 @@ impl DeviceOperation {
                             value: value
                                 .expect("invalid optional value is present")
                                 .to_string(),
+                        });
+                    }
+                }
+            }
+            Self::SetGlobalEqParameters(parameters) => {
+                for (index, value) in parameters {
+                    if !value.is_finite() {
+                        return Err(CommandEncodeError::UnsupportedValue {
+                            field: "Global EQ parameter value",
+                            value: format!("index {index}, value {value}"),
                         });
                     }
                 }
@@ -1526,7 +1577,10 @@ impl DeviceOperation {
                 model,
                 bypass,
                 ..
-            } => validate_capture_retarget(*column, *active_scene, key, model, bypass.as_ref())?,
+            } => {
+                bounded("active scene", *active_scene, domain::SCENE_COUNT)?;
+                validate_capture_retarget(*column, *active_scene, key, model, bypass.as_ref())?;
+            }
             Self::LoadIr { slot, .. } if *slot > 1 => {
                 return Err(CommandEncodeError::UnsupportedValue {
                     field: "IR slot",
@@ -1606,6 +1660,7 @@ impl DeviceOperation {
             Self::CreateModelPreset {
                 model_hash, name, ..
             } => {
+                signed("model preset source hash", *model_hash)?;
                 if *model_hash == 0
                     || name.trim().is_empty()
                     || name.trim() != name
@@ -1746,6 +1801,9 @@ impl DeviceOperation {
                         value: scene.to_string(),
                     });
                 }
+            }
+            Self::SetStompMomentary { footswitch, .. } => {
+                bounded("footswitch", *footswitch, domain::SCENE_COUNT)?;
             }
             Self::SetStompLabel {
                 footswitch, label, ..
@@ -5296,8 +5354,10 @@ fn validate_capture_retarget(
         parameter.scene_mode,
         Some(param::SceneMode::SceneMode(true))
     );
-    let selected = if scene_mode {
-        (active_scene as usize).min(parameter.param_values.len().saturating_sub(1))
+    // Keep shared singleton compatibility without certifying a different
+    // stored scene when a multi-value record lacks the active index.
+    let selected = if scene_mode && parameter.param_values.len() != 1 {
+        active_scene as usize
     } else {
         0
     };
@@ -5362,6 +5422,175 @@ fn grid_update(preset: BinaryPreset) -> OutboundMessage {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn checked_io_levels_reject_nonfinite_and_out_of_domain_values_without_frames() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.01, 1.01] {
+            for operation in [
+                DeviceOperation::SetInputPort {
+                    input_port_id: 1,
+                    level: Some(value),
+                    impedance: None,
+                    input_type: None,
+                    ground_lift: None,
+                },
+                DeviceOperation::SetUsbPort {
+                    level: Some(value),
+                    headphones_source: None,
+                    dry_wet: None,
+                },
+            ] {
+                assert!(matches!(
+                    operation.try_encode(),
+                    Err(CommandEncodeError::UnsupportedValue { .. })
+                ));
+            }
+        }
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -40.01, 12.01] {
+            assert!(DeviceOperation::SetOutputPort {
+                output_port_id: 1,
+                level: Some(value),
+                ground_lift: None,
+                mute: None
+            }
+            .try_encode()
+            .is_err());
+        }
+        for value in [f32::NAN, f32::INFINITY, -0.01, 0.5, 1.01] {
+            assert!(DeviceOperation::SetOutputPort {
+                output_port_id: 1,
+                level: None,
+                ground_lift: Some(value),
+                mute: None
+            }
+            .try_encode()
+            .is_err());
+        }
+        for value in [0.0, 1.0] {
+            for operation in [
+                DeviceOperation::SetInputPort {
+                    input_port_id: 1,
+                    level: Some(value),
+                    impedance: None,
+                    input_type: None,
+                    ground_lift: None,
+                },
+                DeviceOperation::SetUsbPort {
+                    level: Some(value),
+                    headphones_source: None,
+                    dry_wet: None,
+                },
+                DeviceOperation::SetOutputPort {
+                    output_port_id: 1,
+                    level: Some(if value == 0.0 { -40.0 } else { 12.0 }),
+                    ground_lift: Some(value),
+                    mute: None,
+                },
+            ] {
+                let unchecked = operation.clone().encode_unchecked().unwrap();
+                assert_eq!(operation.try_encode().unwrap(), unchecked);
+            }
+        }
+    }
+
+    #[test]
+    fn checked_setlist_creation_and_stomp_momentary_refuse_invalid_targets() {
+        for name in [
+            "",
+            "..",
+            "../Factory",
+            "Child/Grandchild",
+            "Child\\Grandchild",
+            "My Presets",
+            "my presets",
+            " leading",
+            "trailing ",
+            "line\nbreak",
+        ] {
+            assert!(DeviceOperation::CreateSetlist { name: name.into() }
+                .try_encode()
+                .is_err());
+        }
+        assert!(DeviceOperation::CreateSetlist {
+            name: "x".repeat(65)
+        }
+        .try_encode()
+        .is_err());
+        for name in ["Tour", "Тур3"] {
+            let operation = DeviceOperation::CreateSetlist { name: name.into() };
+            assert_eq!(
+                operation.try_encode().unwrap(),
+                vec![create_setlist(name.into())]
+            );
+        }
+        for footswitch in [8, u32::MAX] {
+            assert!(DeviceOperation::SetStompMomentary {
+                footswitch,
+                momentary: true
+            }
+            .try_encode()
+            .is_err());
+        }
+        for footswitch in 0..8 {
+            assert_eq!(
+                DeviceOperation::SetStompMomentary {
+                    footswitch,
+                    momentary: true
+                }
+                .try_encode()
+                .unwrap(),
+                vec![set_stomp_momentary(footswitch, true)]
+            );
+        }
+    }
+
+    #[test]
+    fn checked_capture_retarget_refuses_an_out_of_range_scene_before_fallback_selection() {
+        let model = Model {
+            hash: Some(model::Hash::Hash(14_000)),
+            column: Some(model::Column::Column(0)),
+            params: vec![Param {
+                index: Some(param::Index::Index(5)),
+                scene_mode: Some(param::SceneMode::SceneMode(true)),
+                param_values: vec![ParamValue {
+                    value: Some(param_value::Value::StringValue("key".into())),
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        for active_scene in [8, u32::MAX] {
+            assert!(matches!(
+                DeviceOperation::RetargetCapture {
+                    row: 0,
+                    column: 0,
+                    active_scene,
+                    key: "key".into(),
+                    source_revision: 1,
+                    model: model.clone(),
+                    bypass: None
+                }
+                .try_encode(),
+                Err(CommandEncodeError::UnsupportedValue {
+                    field: "active scene",
+                    ..
+                })
+            ));
+        }
+        for active_scene in 0..8 {
+            assert!(DeviceOperation::RetargetCapture {
+                row: 0,
+                column: 0,
+                active_scene,
+                key: "key".into(),
+                source_revision: 1,
+                model: model.clone(),
+                bypass: None
+            }
+            .try_encode()
+            .is_ok());
+        }
+    }
 
     /// (raw, dB the unit's Tempo screen showed) read on hardware, 0.1 dB resolution.
     const MEASURED_TEMPO_VOLUME: [(f32, f32); 16] = [
@@ -5545,7 +5774,8 @@ mod tests {
         assert!(decoded.request_id.is_none());
     }
 
-    /// The QC dates everything it saves from whatever the host last told it.
+    /// Pins the encoded Unix-millisecond field; this does not prove which device
+    /// timestamps use the value. See [`sync_system_time`] for the observed limits.
     #[test]
     fn system_time_sync_carries_unix_milliseconds() {
         let now_ms = 1_788_711_237_617;
@@ -8923,6 +9153,73 @@ mod tests {
         assert_eq!(global_tempo[0].payload, [0x08, 0x03]);
         assert_eq!(read_looper_status().message_type, 28);
         assert_eq!(read_looper_status().payload, [0x08, 0x03]);
+    }
+
+    #[test]
+    fn typed_global_eq_rejects_non_finite_values_before_encoding() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let result =
+                DeviceOperation::SetGlobalEqParameters(vec![(0, 0.5), (25, value)]).try_encode();
+            assert!(matches!(
+                result,
+                Err(CommandEncodeError::UnsupportedValue {
+                    field: "Global EQ parameter value",
+                    ..
+                })
+            ));
+        }
+        // Finite-only validation does not invent firmware index or value bounds.
+        let controls = [(0, 0.75), (25, -2.0), (26, 2.0)];
+        let frames = DeviceOperation::SetGlobalEqParameters(controls.to_vec())
+            .try_encode()
+            .unwrap();
+        assert_eq!(frames.len(), controls.len());
+        for (frame, (index, value)) in frames.iter().zip(controls) {
+            assert_eq!(frame.message_type, crate::profile::MESSAGE_TYPE_GLOBAL_EQ);
+            let decoded = pa::GlobalEqMessage::decode(frame.payload.as_slice()).unwrap();
+            assert_eq!(decoded.action, pa::message_action::Enum::Update as i32);
+            assert_eq!(decoded.parameters.len(), 1);
+            assert_eq!(decoded.parameters[0].parameter_index, index);
+            assert_eq!(decoded.parameters[0].value, value);
+        }
+    }
+
+    #[test]
+    fn typed_model_preset_hash_must_fit_its_signed_source_field() {
+        for model_hash in [i32::MAX as u32 + 1, u32::MAX] {
+            assert!(matches!(
+                DeviceOperation::CreateModelPreset {
+                    row: 0,
+                    column: 0,
+                    model_hash,
+                    name: "Tone".into(),
+                }
+                .try_encode(),
+                Err(CommandEncodeError::SignedFieldOverflow {
+                    field: "model preset source hash"
+                })
+            ));
+        }
+        for model_hash in [7, i32::MAX as u32] {
+            let frames = DeviceOperation::CreateModelPreset {
+                row: 0,
+                column: 0,
+                model_hash,
+                name: "Tone".into(),
+            }
+            .try_encode()
+            .unwrap();
+            assert_eq!(frames.len(), 1);
+            let decoded = pa::ModelPresetMessage::decode(frames[0].payload.as_slice()).unwrap();
+            assert_eq!(
+                decoded.create_from_hash,
+                Some(pa::model_preset_message::CreateFromHash::CreateFromHash(
+                    model_hash as i32
+                ))
+            );
+            let pa::model_preset::Id::Id(id) = decoded.presets[0].id.as_ref().unwrap();
+            assert_eq!(id.hash, Some(pa::model_preset_id::Hash::Hash(model_hash)));
+        }
     }
 
     #[test]

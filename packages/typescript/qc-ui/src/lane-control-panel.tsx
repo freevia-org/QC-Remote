@@ -147,26 +147,21 @@ function LaneControlToggle({ label, parameter, tone }: { label: string; paramete
   </section>;
 }
 
-/** The unit's silence reading for a lane-output meter: the floor of its
- * -40..0 dB scale, shown for both channels with both tracks empty. */
-export const LANE_OUTPUT_LEVEL_FLOOR_DB = -40;
-
 /** OUT LEVEL: the unit's two-channel output meter, the fifth Lane Output field.
  *
  * Model 23000's catalogue entry and every recorded lane-control readback
  * carry VOLUME/PAN/MUTE/SOLO only - no OUT LEVEL parameter, and the preset
  * record's one undocumented extra value is a single number, not a left/right
- * pair - so there is no value to read. This draws the section's structure as
- * the unit does at silence (-40.0 dB on both channels, both tracks empty),
- * read-only and never dimmed or animated, and marks itself
+ * pair - so there is no value to read. Keep both channel values unavailable,
+ * with empty decorative tracks, rather than inventing a silence measurement.
+ * The section is read-only and marks itself
  * `data-qc-live-meter="unavailable"` so nothing mistakes it for a reading.
- * Replace the constants with the live level once a protocol path carries it
+ * Replace the placeholders with the live level once a protocol path carries it
  * (needs a USB capture of the meter's updates while audio plays). */
 function LaneOutputLevelMeter() {
-  const reading = LANE_OUTPUT_LEVEL_FLOOR_DB.toFixed(1);
   return <section className="lane-control-outlevel" data-qc-live-meter="unavailable" aria-label="Out level, no live reading available">
     <span>OUT LEVEL</span>
-    <div className="lane-control-level-readings"><b>{reading} <small>dB</small></b><b>{reading}</b></div>
+    <div className="lane-control-level-readings"><b>—</b><b>—</b></div>
     <QcLevelMeter className="lane-control-level-track" />
     <QcLevelMeter className="lane-control-level-track" />
   </section>;

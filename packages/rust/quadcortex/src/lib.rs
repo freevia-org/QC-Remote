@@ -37,6 +37,8 @@ pub mod commands; // domain-module: typed outbound command builders
 /// Gzip inflation of compressed payloads, bounded by the profile size limit.
 pub mod compression;
 pub mod device; // domain-module: platform-neutral device state, workflow, and policy
+#[cfg(feature = "cloud-forward")]
+mod device_zencryption;
 /// Fixed device-domain constants: grid size, scene count, tempo range, routes
 /// and colour tables.
 ///

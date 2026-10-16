@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GatewayTransport, MidiOutMessage, PresetSnapshot } from "@qc-remote/client";
+import { DeviceMutationAdmission, type PresetLifetime } from "@qc-remote/core";
 import { requirePresetIdentity } from "@qc-remote/client";
 import { connectBeforeNotice, DEVICE_COMMAND_BUSY_NOTICE } from "./use-guarded-mutation.ts";
 import { hasActiveMidiOut, MIDI_OUT_SLOT_COUNT, midiOutRows, midiOutSlots } from "./preset-midi-out-rows.ts";
@@ -23,6 +24,7 @@ export const presetMidiOutSourceLabel = (source: PresetMidiOutSource) => source 
 
 export interface PresetMidiOutWorkflowOptions {
   gateway: GatewayTransport;
+  lifetime?: PresetLifetime;
   snapshot: PresetSnapshot;
   /** The demo device cannot store MIDI Out; every write is refused. */
   demo?: boolean;
@@ -43,14 +45,25 @@ export interface PresetMidiOutWorkflowOptions {
  */
 export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) {
   const { snapshot, demo = false, onSaved } = options;
+  const [, renderLifetime] = useState(0);
+  useEffect(() => options.lifetime?.subscribe(() => renderLifetime(value => value + 1)), [options.lifetime]);
+  const captureEditorCurrent = () => {
+    const physical = options.lifetime?.checkpoint();
+    const host = options.captureSessionCurrent?.() ?? (() => true);
+    return () => host() && (!physical || Boolean(options.lifetime?.current(physical)));
+  };
   // Modal authorization follows the physical host and preset lifetime, not
   // unrelated telemetry objects. A monotonic version also rejects session ABA.
   const editorContextKey = JSON.stringify([demo, snapshot.stateVersion?.session, snapshot.setlistKey, snapshot.presetPosition, snapshot.presetIdentity]);
-  const editorOwner = useRef({ key: editorContextKey, gateway: options.gateway, current: options.captureSessionCurrent?.() ?? (() => true), version: 0 });
+  const editorOwner = useRef({ key: editorContextKey, gateway: options.gateway, current: captureEditorCurrent(), version: 0 });
   if (editorOwner.current.key !== editorContextKey || editorOwner.current.gateway !== options.gateway || !editorOwner.current.current()) {
-    editorOwner.current = { key: editorContextKey, gateway: options.gateway, current: options.captureSessionCurrent?.() ?? (() => true), version: editorOwner.current.version + 1 };
+    editorOwner.current = { key: editorContextKey, gateway: options.gateway, current: captureEditorCurrent(), version: editorOwner.current.version + 1 };
   }
   const contextVersion = editorOwner.current.version;
+  const fallbackAdmission = useRef({ version: contextVersion, admission: new DeviceMutationAdmission() });
+  if (fallbackAdmission.current.version !== contextVersion) {
+    fallbackAdmission.current = { version: contextVersion, admission: new DeviceMutationAdmission() };
+  }
   const [pending, setPending] = useState(false);
   const [outcome, setOutcome] = useState<{ current(): boolean; error: string; status: "saved" | "cleared" | null }>();
   const error = outcome?.current() ? outcome.error : "";
@@ -73,6 +86,7 @@ export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) 
   const operationCurrent = () => {
     const origin = latestOptions.current;
     const hostCurrent = origin.captureSessionCurrent?.() ?? (() => true);
+    const physical = origin.lifetime?.checkpoint();
     const identities = new Set([origin.snapshot.presetIdentity]);
     const session = origin.snapshot.stateVersion?.session;
     const setlist = origin.snapshot.setlistKey;
@@ -80,7 +94,7 @@ export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) 
     let retired = false;
     const current = () => {
       const latest = latestOptions.current;
-      return !retired && mounted.current && hostCurrent() && latest.gateway === origin.gateway && Boolean(latest.demo) === Boolean(origin.demo)
+      return !retired && mounted.current && hostCurrent() && (!physical || Boolean(origin.lifetime?.current(physical))) && latest.gateway === origin.gateway && Boolean(latest.demo) === Boolean(origin.demo)
         && identities.has(latest.snapshot.presetIdentity) && latest.snapshot.stateVersion?.session === session
         && latest.snapshot.setlistKey === setlist && latest.snapshot.presetPosition === position;
     };
@@ -92,10 +106,16 @@ export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) 
   });
   const run = useCallback(async (status: "saved" | "cleared", write: (owner: OperationOwner) => Promise<void>) => {
     const owner = operationCurrent();
+    if (!owner.current()) return;
     if (latestOptions.current.demo) {
       setOutcome({ current: owner.current, error: connectBeforeNotice("changing MIDI Out"), status: null }); return;
     }
     if (inFlight.current?.current()) {
+      setOutcome({ current: owner.current, error: DEVICE_COMMAND_BUSY_NOTICE, status: null }); return;
+    }
+    const admission = latestOptions.current.lifetime?.mutations ?? fallbackAdmission.current.admission;
+    const mutation = admission.tryAcquire();
+    if (!mutation) {
       setOutcome({ current: owner.current, error: DEVICE_COMMAND_BUSY_NOTICE, status: null }); return;
     }
     inFlight.current?.retire();
@@ -108,6 +128,9 @@ export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) 
     } catch (reason) {
       if (owner.current()) setOutcome({ current: owner.current, error: reason instanceof Error ? reason.message : String(reason), status: null });
     } finally {
+      // Physical admission ends only when the actual native write settles,
+      // not when its editor is logically retired or unmounted.
+      mutation.release();
       if (inFlight.current === owner) { inFlight.current = undefined; if (mounted.current) setPending(false); }
     }
   }, []);

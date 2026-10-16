@@ -498,14 +498,15 @@ pub struct GridBlock {
     pub bypass_address: Option<String>,
 }
 
-/// Lamp and assignment summary for one of the eight STOMP footswitches, derived by this library from the blocks assigned to it; the device reports none of `active`, `assigned` or `color`. Published in `preset` updates.
+/// Lamp and assignment summary for one of the eight STOMP footswitches, derived by this library from the blocks assigned to it; the device reports none of `active`, `assigned` or `color`. Published in `preset`, `scene`, `bypassBatch`, and `blockRemoved` updates.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FootswitchState {
     /// Footswitch slot, 0 through 7 for footswitches A through H.
     pub index: u32,
-    /// Derived by this library, not reported by the unit: true when the first block assigned to the footswitch, by assignment order, is not bypassed in the active scene. It is not a reading of the lamp, and that the lamp follows that block is believed, not verified.
-    pub active: bool,
+    /// Derived, not a lamp reading: inverse of the first assigned block by assignment order when its current-scene bypass is known; absent when that evidence is unknown. Unassigned switches are inactive. The physical lamp interpretation is believed, not verified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
     /// Derived by this library: true when at least one block is assigned to this footswitch.
     pub assigned: bool,
     /// Derived by this library; the unit reports no lamp color. Lamp color as a lowercase hex string such as `#rrggbb`: the idle color when nothing is assigned, white when several blocks share the switch, otherwise the block category color.
@@ -559,7 +560,7 @@ pub struct GridRoute {
     /// Numeric id of the row's output route exactly as the device wrote it. Absent when the device wrote none (the `output` label is then empty). `outputWire` names the wire enum value that carries this id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_id: Option<u32>,
-    /// Display label of the input route, for example `In 1`, `Return 1/2`, `USB 5` or `Prev. Row`; id 0 reads `Not In Use`. An id the label table does not name reads as its wire enum name, or `Unknown input` followed by the id when the wire schema does not declare it either. Empty when the row carries no input id.
+    /// Display label of the input route, for example `In 1`, `Return 1/2`, `USB 5` or `Prev. Row`; id 0 reads `Internal`. An id the label table does not name reads as its wire enum name, or `Unknown input` followed by the id when the wire schema does not declare it either. Empty when the row carries no input id.
     pub input: String,
     /// Display label of the output route, for example `Out 1/2`, `Send 1`, `USB 3/4` or `Multi Out`; id 0 reads `Internal`. An id the label table does not name reads as its wire enum name, or `Unknown output` followed by the id when the wire schema does not declare it either. Empty when the row carries no output id.
     pub output: String,
@@ -572,8 +573,9 @@ pub struct GridRoute {
     /// Model hash of the row's splitter node. Absent when the row has no splitter.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub splitter_model_id: Option<u32>,
-    /// Whether the row's split/mix path is muted in the active scene.
-    pub split_muted: bool,
+    /// Whether the row's split/mix path is muted in the active scene. Absent when that exact scene has no reported mute record; another scene's value is never substituted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub split_muted: Option<bool>,
     /// Name of the wire schema's enum value for `inputId`, for example `INPUT_1` or `SIDECHAIN_BUFFER`. That enum is declared on the gain-calibration port message; using its numbering for a Grid row's input is this library's reading. Absent when `inputId` is absent or undeclared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_wire: Option<String>,
@@ -813,7 +815,7 @@ pub struct QcStateUpdate {
     /// Kind `preset`: the scene colors in scene order, each a lowercase hex string such as `#rrggbb`. The device stores 32-bit ARGB values; this drops the alpha byte. `sceneColorsArgb` holds the values as stored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scene_colors: Option<Vec<String>>,
-    /// Kind `preset`: lamp and assignment summary for the eight STOMP footswitches, A through H.
+    /// Kinds `preset`, `scene`, `bypassBatch`, and `blockRemoved`: derived lamp and assignment summary for the eight STOMP footswitches, A through H.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub footswitch_states: Option<Vec<FootswitchState>>,
     /// Kinds `preset` and `midiOut`: MIDI Out messages per trigger source (footswitches A through H and the two expression inputs). Sources with no messages are omitted.
@@ -822,7 +824,7 @@ pub struct QcStateUpdate {
     /// Kinds `preset` and `midiOut`: MIDI messages the preset sends when it loads, one entry per slot in the unit's order, with empty slots between active ones listed as type 0 and empty slots after the last active one not listed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preset_load_midi_out: Option<Vec<MidiOutMessage>>,
-    /// Kind `preset`: every placed block on the Grid with its state for the active scene.
+    /// Kind preset: Grid blocks. Kinds scene/bypassBatch: address/model-witnessed bypass-only projection, including unknown; never topology, metadata or preset identity. Scene clears unlisted blocks; bypassBatch leaves them unchanged. When present, blocks supersedes bypassUpdates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocks: Option<Vec<GridBlock>>,
     /// Kind `preset`: the routing of each Grid row.
@@ -831,6 +833,8 @@ pub struct QcStateUpdate {
     /// Kind `ioPorts`: ports whose connection state was reported; entries are merged into the snapshot by port kind and id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub io_ports: Option<Vec<IoPortState>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_settings_error: Option<String>,
     /// Kind `mode`: the active footswitch mode, `PRESET`, `SCENE`, `STOMP` or `HYBRID`, or `UNKNOWN` for a wire value outside 0 through 8. The wire schema declares no mode enum; the names follow the numbering the vendor's desktop application uses. `rawMode` carries the number.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
@@ -870,10 +874,10 @@ pub struct QcStateUpdate {
     /// Kind `cpuLoad`: per-column DSP load, flattened across Grid rows in order, so a client can index it by row times 8 plus column.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_columns: Option<Vec<CpuColumnLoad>>,
-    /// Kind `history`: whether the device's undo frame list has any entries. Derived by this library, and not established as the device's own notion of availability: the undo list seen from a unit held twenty entries, mostly zero. Read `undoFrames`.
+    /// Reserved availability flag. Native history updates leave it absent because the meaning of the device's frame entries is not established; a non-empty list does not prove an undo is available. Read the unmodified `undoFrames`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undo_available: Option<bool>,
-    /// Kind `history`: whether the device's redo frame list has any entries; derived like `undoAvailable`. Read `redoFrames`.
+    /// Reserved availability flag. Native history updates leave it absent because the meaning of the device's frame entries is not established; do not infer redo availability from list length. Read the unmodified `redoFrames`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redo_available: Option<bool>,
     /// Kind `refresh`: true when the change, such as a scene copy, cannot be applied incrementally and the current preset should be read again.

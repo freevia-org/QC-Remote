@@ -85,8 +85,8 @@ export function IPhoneMidiController() {
     </header>
 
     <aside className="ios-midi-limitation" role="note">
-      <strong>iPhone function is limited to MIDI.</strong>
-      <span>Preset and scene selection, footswitches, expression pedals, mode changes, tap tempo, tuner, Gig View, and Looper X controls are available. Full editing, live state, backups, and updates require QC Remote on a supported iPad.</span>
+      <strong>Direct USB on iPhone is MIDI-only.</strong>
+      <span>Preset and scene selection, footswitches, expression pedals, mode changes, tap tempo, tuner, Gig View, and Looper X controls are available here. Choose Paired host above for full control, live state, and backups. QC account, cloud, and update traffic can be forwarded when the paired online host supports and enables internet forwarding.</span>
     </aside>
 
     <section className="ios-midi-card" aria-label="USB connection">

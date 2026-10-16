@@ -71,13 +71,19 @@ export function reconcilePendingBypass(
   if (state.kind === "bypass" && state.row !== undefined && state.column !== undefined && state.bypassed !== undefined) {
     return accept(state.row, state.column, state.bypassed) ? state : null;
   }
-  if (state.kind === "preset" && state.blocks?.length && pending.size) {
+  if ((state.kind === "preset" || state.kind === "scene" || state.kind === "bypassBatch") && state.blocks?.length && pending.size) {
     return {
       ...state,
       blocks: state.blocks.map((block) => {
         const key = bypassAddress(block.row, block.column);
         const intent = pending.get(key);
         if (!intent) return block;
+        // An explicit projection can withdraw truth. Do not keep an optimistic
+        // boolean, or its rollback journal, over authoritative unknown evidence.
+        if (state.kind !== "preset" && block.bypassed === undefined) {
+          pending.delete(key);
+          return block;
+        }
         if (now - intent.issuedAt >= graceMs || (intent.bypassed === block.bypassed && observationStartedAt >= intent.issuedAt)) {
           pending.delete(key);
           return block;
@@ -87,6 +93,9 @@ export function reconcilePendingBypass(
     };
   }
   if (state.kind !== "bypassBatch" || !state.bypassUpdates?.length) return state;
+  // An explicit projection, including an empty one, supersedes the legacy
+  // bool-only list and must not acknowledge unmatched addresses through it.
+  if (state.blocks !== undefined) return state;
   const bypassUpdates = state.bypassUpdates.filter(({ row, column, bypassed }) => accept(row, column, bypassed));
   return bypassUpdates.length ? { ...state, bypassUpdates } : null;
 }
@@ -213,6 +222,18 @@ export function selectModeSlotInSnapshot(snapshot: PresetSnapshot, slot: 0 | 1 |
   return snapshot;
 }
 
+/** An active hybrid slot needs the observed ordered pair, not just HYBRID kind. */
+export function modeSlotIsActive(snapshot: PresetSnapshot, slot: 0 | 1 | 2): boolean {
+  // Reuse the existing slot projection: no second raw-mode/label decoder.
+  const selected = selectModeSlotInSnapshot(snapshot, slot);
+  if (selected === snapshot || selected.mode !== snapshot.mode) return false;
+  if (snapshot.mode !== "HYBRID") return true;
+  const expected = selected.footswitchModes;
+  const observed = snapshot.footswitchModes;
+  return expected !== undefined && observed !== undefined && expected.length === observed.length
+    && expected.every((mode, index) => mode === observed[index]);
+}
+
 /** Native revisions compare reductions within one session, never across sessions. */
 export function canAdoptNativeState(current: PresetSnapshot["stateVersion"], incoming: PresetSnapshot["stateVersion"]): boolean {
   if (!incoming) return !current;
@@ -228,7 +249,22 @@ export function applyQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdat
 }
 
 function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): PresetSnapshot {
-  if (state.kind === "scene" && state.activeScene !== undefined) return selectSceneInSnapshot(snapshot, state.activeScene);
+  if (state.kind === "scene" && state.activeScene !== undefined) {
+    const next = { ...selectSceneInSnapshot(snapshot, state.activeScene),
+      footswitchStates: state.footswitchStates ?? snapshot.footswitchStates,
+      routes: snapshot.routes.map((route) => {
+        const observed = state.routes?.find((item) => item.row === route.row && item.inputId === route.inputId
+          && item.outputId === route.outputId && item.splitColumn === route.splitColumn
+          && item.mixColumn === route.mixColumn && item.splitterModelId === route.splitterModelId);
+        return { ...route, splitMuted: observed?.splitMuted };
+      }) };
+    if (!state.blocks) return next;
+    return { ...next, blocks: next.blocks.map((block) => {
+      const observed = state.blocks!.find((item) => item.row === block.row && item.column === block.column
+        && item.modelId !== undefined && item.modelId === block.modelId);
+      return { ...block, bypassed: observed?.bypassed };
+    }) };
+  }
   if (state.kind === "dirty" && state.dirty !== undefined) return observed({ ...snapshot, dirty: state.dirty }, "dirty");
   if (state.kind === "master" && state.masterVolume !== undefined) {
     // The contract says a master update is normalized, 0 to 1; a value above 1 is read as a
@@ -269,6 +305,13 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
       blocks: snapshot.blocks.map((block) => block.row === state.row && block.column === state.column ? { ...block, bypassed: state.bypassed } : block)
     };
   }
+  if (state.kind === "bypassBatch" && state.blocks) {
+    return { ...snapshot, footswitchStates: state.footswitchStates ?? snapshot.footswitchStates, blocks: snapshot.blocks.map((block) => {
+      const observed = state.blocks!.find((item) => item.row === block.row && item.column === block.column
+        && item.modelId !== undefined && item.modelId === block.modelId);
+      return observed ? { ...block, bypassed: observed.bypassed } : block;
+    }) };
+  }
   if (state.kind === "bypassBatch" && state.bypassUpdates?.length) {
     const updates = new Map(state.bypassUpdates.map((update) => [bypassAddress(update.row, update.column), update.bypassed]));
     return {
@@ -281,6 +324,10 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
     tempo: state.tempo ?? snapshot.tempo,
     tempoLedEnabled: state.tempoLedEnabled ?? snapshot.tempoLedEnabled
   }, ...(state.tempo !== undefined ? ["tempo" as const] : []), ...(state.tempoLedEnabled !== undefined ? ["tempoLedEnabled" as const] : []));
+  if (state.kind === "ioPorts" && state.ioSettingsError) {
+    return { ...snapshot, ioPorts: undefined, ioSettingsError: state.ioSettingsError };
+  }
+  if (state.kind === "ioPorts" && snapshot.ioSettingsError) return snapshot;
   if (state.kind === "ioPorts" && state.ioPorts?.length) {
     const ports = [...(snapshot.ioPorts ?? [])];
     for (const update of state.ioPorts) {
@@ -292,7 +339,10 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
   }
   if (state.kind === "midiOut") return {
     ...snapshot,
-    midiOut: state.midiOut ?? snapshot.midiOut,
+    midiOut: state.midiOut ? [
+      ...(snapshot.midiOut ?? []).filter((source) => !state.midiOut!.some((update) => update.source === source.source)),
+      ...state.midiOut.filter((source) => source.messages.length > 0)
+    ].sort((a, b) => a.source - b.source) : snapshot.midiOut,
     presetLoadMidiOut: state.presetLoadMidiOut ?? snapshot.presetLoadMidiOut
   };
   if (state.kind === "position" && state.position !== undefined) {
@@ -313,11 +363,13 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
     return {
       ...snapshot,
       blocks: snapshot.blocks.filter((block) => block.row !== state.row || block.column !== state.column),
+      footswitchStates: state.footswitchStates ?? snapshot.footswitchStates,
       gridLayoutComplete: state.gridLayoutComplete ?? snapshot.gridLayoutComplete
     };
   }
   if (state.kind === "gridTopology") return {
     ...snapshot,
+    ...(state.refreshRequired ? { presetIdentity: undefined } : {}),
     gridLayoutComplete: state.gridLayoutComplete ?? false
   };
   // The projection is the host's whole fold, so it is kept beside the preset, not merged into it.
@@ -342,6 +394,7 @@ function reduceQcStateUpdate(snapshot: PresetSnapshot, state: QcStateUpdate): Pr
     sceneColors: state.sceneColors?.length ? state.sceneColors : snapshot.sceneColors,
     sceneColorsArgb: state.sceneColorsArgb?.length ? state.sceneColorsArgb : snapshot.sceneColorsArgb,
     blocks: state.blocks ?? snapshot.blocks,
+    footswitchStates: state.footswitchStates ?? snapshot.footswitchStates,
     gridLayoutComplete: state.gridLayoutComplete ?? snapshot.gridLayoutComplete,
     routes: state.routes ?? snapshot.routes
   }, ...(state.dirty !== undefined ? ["dirty" as const] : []), ...(state.tempo !== undefined ? ["tempo" as const] : []), ...(state.tempoLedEnabled !== undefined ? ["tempoLedEnabled" as const] : []));

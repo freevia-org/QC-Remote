@@ -1,5 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { GatewayTransport } from "@qc-remote/client";
+import type { PresetLifetime, PresetOperation } from "@qc-remote/core";
+import { captureGatewaySession } from "./gateway-session";
 import { isUnitFrame } from "./qc-unit-screens.ts";
 import "./unit-mirror.css";
 
@@ -10,29 +13,57 @@ import "./unit-mirror.css";
  * anything by itself; a tap the user makes on this picture is forwarded to the
  * same pixel on the unit (the display forwards it), and nothing else is sent.
  */
-export function QcUnitScreenMirror({ gateway, intervalMs = 700, captureSessionCurrent }: { gateway: Pick<GatewayTransport, "captureScreen">; intervalMs?: number; captureSessionCurrent?(): () => boolean }) {
-  const [image, setImage] = useState<string>();
+export function QcUnitScreenMirror({ gateway, lifetime, intervalMs = 700, onReturnToGrid, captureSessionCurrent }: { gateway: Pick<GatewayTransport, "captureScreen">; lifetime?: PresetLifetime; intervalMs?: number; onReturnToGrid?(): void; captureSessionCurrent?(): () => boolean }) {
+  const [image, setImage] = useState<{ gateway: typeof gateway; origin?: PresetOperation; current(): boolean; value?: string; status: "loading" | "ready" | "error" }>();
+  const mounted = useRef(true);
+  const returnOrigin = lifetime?.checkpoint();
+  const returnHostCurrent = captureSessionCurrent?.() ?? (() => true);
+  const returnSession = captureGatewaySession(gateway as GatewayTransport, () => mounted.current && returnHostCurrent() && (!returnOrigin || lifetime!.currentSession(returnOrigin)));
   useEffect(() => {
-    let cancelled = false;
-    const ownerCurrent = captureSessionCurrent?.() ?? (() => true);
+    mounted.current = true;
+    let disposed = false;
+    let generation = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const refresh = async () => {
-      if (cancelled || !ownerCurrent()) return;
-      try {
-        const frame = await gateway.captureScreen();
-        if (!cancelled && ownerCurrent() && isUnitFrame(frame.pngBase64)) setImage(`data:image/png;base64,${frame.pngBase64}`);
-      } catch { /* the next refresh tries again */ }
-      if (!cancelled && ownerCurrent()) timer = setTimeout(() => void refresh(), intervalMs);
+    let origin = lifetime?.checkpoint();
+    const restart = () => {
+      clearTimeout(timer);
+      timer = undefined;
+      const token = ++generation;
+      origin = lifetime?.checkpoint();
+      const capturedOrigin = origin;
+      const hostCurrent = captureSessionCurrent?.() ?? (() => true);
+      const session = captureGatewaySession(gateway as GatewayTransport, () => !disposed && token === generation
+        && hostCurrent() && (!capturedOrigin || lifetime!.currentSession(capturedOrigin)));
+      setImage({ gateway, origin: capturedOrigin, current: session.current, status: "loading" });
+      const refresh = async () => {
+        try {
+          const frame = await session.gateway.captureScreen();
+          if (session.current() && isUnitFrame(frame.pngBase64)) setImage({ gateway, origin: capturedOrigin, current: session.current, value: `data:image/png;base64,${frame.pngBase64}`, status: "ready" });
+        } catch {
+          if (session.current()) setImage({ gateway, origin: capturedOrigin, current: session.current, status: "error" });
+        }
+        if (session.current()) timer = setTimeout(() => void refresh(), intervalMs);
+      };
+      void refresh();
     };
-    void refresh();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, [gateway, intervalMs]);
-  return <QcUnitPicture src={image} />;
+    const unsubscribe = lifetime?.subscribe(() => {
+      if (origin && !lifetime.currentSession(origin)) restart();
+    });
+    restart();
+    return () => { mounted.current = false; disposed = true; generation++; clearTimeout(timer); unsubscribe?.(); };
+  }, [gateway, lifetime, intervalMs, captureSessionCurrent]);
+  const currentImage = image?.gateway === gateway && image.current() ? image : undefined;
+  return <QcUnitPicture src={currentImage?.value}>
+    {!currentImage?.value && <div className="unit-mirror-status" role="status">
+      <p>{currentImage?.status === "error" ? "The device screen could not be read." : "Reading the device screen…"}</p>
+      {onReturnToGrid && <button type="button" onPointerDown={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()} onPointerCancel={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (returnSession.current()) onReturnToGrid(); }}>Return to Grid</button>}
+    </div>}
+  </QcUnitPicture>;
 }
 
-/** The picture itself: the one element every captured-picture fallback draws, so one test can measure it. */
-export function QcUnitPicture({ src }: { src?: string }) {
+/** One element for every captured-picture fallback, including the loading/error state. */
+export function QcUnitPicture({ src, children }: { src?: string; children?: ReactNode }) {
   return <section className="qc-screen coros-unit-mirror" aria-label="Quad Cortex screen, mirrored from the unit">
-    {src ? <img src={src} alt="The screen the Quad Cortex is showing" draggable={false} /> : null}
+    {src ? <img src={src} alt="The screen the Quad Cortex is showing" draggable={false} /> : children}
   </section>;
 }

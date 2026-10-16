@@ -25,12 +25,16 @@ const TILE_MARGIN = 3 / 64;
 const LINE_OVERLAP = 2;
 
 /** The single block-tile renderer used by live and reference surfaces. */
-export function QcDeviceGlyph({ block, x, y, size = 64, selected = false, cpuLoad, cpuCore }: { block: GridBlock; x: number; y: number; size?: number; selected?: boolean; cpuLoad?: number; cpuCore?: number }) {
+export function QcDeviceGlyph({ block, x, y, size = 64, selected = false, cpuLoad, cpuCore, referenceOnly = false }: { block: GridBlock; x: number; y: number; size?: number; selected?: boolean; cpuLoad?: number; cpuCore?: number; referenceOnly?: boolean }) {
   // The unit draws a bypassed tile with ring and mark both stepped down its own
   // ladders (rgb565-dim.ts), never faded, and lays the bypass line across it at
   // full brightness: Rage Booster's ring and mark read 49,20,0 and 49,48,49
   // under a 198,195,198 line.
+  // Only explicit offline references may retain captured enabled paint without an observation.
+  if (referenceOnly && block.bypassed === undefined) block = { ...block, bypassed: false };
+  const unavailable = typeof block.bypassed !== "boolean";
   const bypassed = block.bypassed === true;
+  const unavailableTitle = unavailable ? <title>Bypass unavailable</title> : null;
   const rungScale = bypassed ? QC_BYPASSED_TILE_RUNG_SCALE : undefined;
   // Same rounded-rect proportions as the tile, so the margin reads as one
   // shape grown by three pixels rather than a square behind a rounded tile.
@@ -54,6 +58,7 @@ export function QcDeviceGlyph({ block, x, y, size = 64, selected = false, cpuLoa
     aria-hidden="true"
   />;
   const visual = officialBlockVisual(block);
+  const observedColor = unavailable ? QC_COLORS.reference.utilityMark : bypassed ? qcDimToRungs(visual.color) : visual.color;
   const strokeWidth = selected ? 6 : 2;
   const inset = strokeWidth / 2;
   const normalizedCpuLoad = cpuLoad === undefined ? undefined : Math.max(0, Math.min(1, cpuLoad));
@@ -64,14 +69,16 @@ export function QcDeviceGlyph({ block, x, y, size = 64, selected = false, cpuLoa
     width={size - strokeWidth}
     height={(size - strokeWidth) * normalizedCpuLoad}
     rx={Math.min(size * .21875 - inset, (size - strokeWidth) * normalizedCpuLoad / 2)}
-    fill={bypassed ? qcDimToRungs(visual.color) : visual.color}
+    fill={observedColor}
     fillOpacity=".42"
     pointerEvents="none"
     aria-hidden="true"
   />;
   if (block.glyph === "capture-wave") {
-    return <g className={`official-block-tile official-block-tile-capture${bypassed ? " is-bypassed" : ""}`}>
+    return <g className={`official-block-tile official-block-tile-capture${bypassed ? " is-bypassed" : ""}${unavailable ? " is-unavailable" : ""}`}>
+      {unavailableTitle}
       {tileSurround}
+      {unavailable && <rect x={x - size / 2 + inset} y={y - size / 2 + inset} width={size - strokeWidth} height={size - strokeWidth} rx={size * .21875 - inset} fill="none" stroke={observedColor} strokeWidth={strokeWidth} strokeDasharray="3 3" />}
       <QcScreenVectorGlyph icon="block.capture-wave" x={x - size / 2} y={y - size / 2} width={size} height={size} rungScale={rungScale} />
       {cpuFill}
       {bypassLine}
@@ -91,7 +98,7 @@ export function QcDeviceGlyph({ block, x, y, size = 64, selected = false, cpuLoa
     pointerEvents="none"
     aria-hidden="true"
   /> : null;
-  const pluginLabel = badge ? <QcPluginBadgeGlyph abbreviation={badge} color={bypassed ? qcDimToRungs(visual.color) : visual.color} x={x} y={y} tileSize={size} /> : null;
+  const pluginLabel = badge ? <QcPluginBadgeGlyph abbreviation={badge} color={observedColor} x={x} y={y} tileSize={size} /> : null;
   const iconSize = size * .625;
   // The unit paints a chain tile 64px across including its border: on the
   // Flanger editor and on grid-base the first tile spans x 69..132 and
@@ -113,9 +120,10 @@ export function QcDeviceGlyph({ block, x, y, size = 64, selected = false, cpuLoa
   // inset whole, so the path itself lands on the pixel grid instead of on
   // x.2. The unit never shows a selected tile, so its width is ours to
   // choose; it is even for the same reason.
-  return <g className={`official-block-tile official-block-tile-${visual.key}${bypassed ? " is-bypassed" : ""}`}>
+  return <g className={`official-block-tile official-block-tile-${visual.key}${bypassed ? " is-bypassed" : ""}${unavailable ? " is-unavailable" : ""}`}>
+    {unavailableTitle}
     {tileSurround}
-    <rect x={x - size / 2 + inset} y={y - size / 2 + inset} width={size - strokeWidth} height={size - strokeWidth} rx={size * .21875 - inset} fill={QC_COLORS.reference.screen} stroke={bypassed ? qcDimToRungs(visual.color) : visual.color} strokeWidth={strokeWidth} />
+    <rect x={x - size / 2 + inset} y={y - size / 2 + inset} width={size - strokeWidth} height={size - strokeWidth} rx={size * .21875 - inset} fill={QC_COLORS.reference.screen} stroke={observedColor} strokeWidth={strokeWidth} strokeDasharray={unavailable ? "3 3" : undefined} />
     {cpuFill}
     {fill}
     <QcDeviceCategoryGlyph label={OFFICIAL_BLOCK_CATEGORY_BY_KEY[visual.key].label} x={x - iconSize / 2} y={y - iconSize / 2} width={iconSize} height={iconSize} rungScale={rungScale} />

@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated 10 October 2026
+Last updated 15 October 2026
 
 QC Remote is an independent controller for the Neural DSP Quad Cortex. This
 policy explains what data the software handles, what stays on your device,
@@ -35,11 +35,10 @@ Privacy questions and requests: **privacy@freevia.org**. Security reports:
 
 It does not cover the AI apps you connect, Google, Cloudflare, GitHub or Neural
 DSP. Each has its own policy. QC Remote is not affiliated with Neural DSP. The
-app itself makes no requests to Neural DSP of its own. The one thing that
-reaches Neural DSP is the Quad Cortex's own update requests, which a background
-component of the Windows app carries for the unit over the computer's internet
-connection, as described under "Quad Cortex firmware updates through this
-computer".
+app forwards internet requests made by the Quad Cortex, including account
+sign-in, authenticated cloud requests and CorOS updates. A background component
+of the Windows app carries these requests over your computer's connection, as
+described under "Quad Cortex internet requests through this computer".
 
 ## In short
 
@@ -50,11 +49,12 @@ computer".
 - The relay passes commands and device responses through in memory and does not
   store their contents.
 - The apps and the relay contain no advertising, analytics or crash reporting.
-- When a Quad Cortex is connected to the Windows app by USB, the unit's own
-  CorOS update requests, which include its serial number and its own
-  credentials, are carried to Neural DSP's servers over your computer's internet
-  connection by a background component of the app. The app only forwards them.
-  You can switch this off in Settings, under "Internet for the Quad Cortex".
+- When a Quad Cortex is connected to the Windows app by USB, its own account,
+  cloud and CorOS update requests can use your computer's internet connection.
+  Requests may contain your Neural DSP account email, password, tokens, the
+  unit's serial number and other data the unit supplies. They go directly to
+  the addresses requested by the unit. Freevia's relay does not receive them.
+  You can switch this off under "Internet for the Quad Cortex".
 - You can unpair a device, unlink an AI app, or ask by email for everything the
   relay holds for your Google account to be deleted.
 
@@ -65,16 +65,11 @@ Connecting a Quad Cortex over USB, controlling it, editing presets, local
 your computer or phone. Device state, commands, local preferences and
 diagnostics exports stay on your computer or phone in app-private storage. The
 Windows app's window loads only its own files and makes no outside network
-connections of its own. The one exception is traffic that is not the app's own:
-when a Quad Cortex connected by USB asks for a CorOS update, the Windows app's
-background component opens the connection on the unit's behalf (to
-`neuraldsp.com` addresses, plus any extra domain you add yourself), carries that
-request and returns the reply (see "Quad Cortex firmware updates
-through this computer"). It does so only because the unit asked, forwards the
-unit's headers as they are (its HTTP library adds only a `Host` header and,
-when the unit sent none, a generic `Accept` header) and keeps no
-copy of the request or the reply; the short record it does keep is described
-there.
+connections of its own. The exception is internet traffic requested by the Quad Cortex. The Windows
+app's background component opens those connections on the unit's behalf and
+returns the responses over USB. The destinations are supplied by the unit;
+there is no domain allowlist. See "Quad Cortex internet requests through this
+computer" below.
 
 QC Remote keeps these items on the device it runs on:
 
@@ -86,25 +81,17 @@ QC Remote keeps these items on the device it runs on:
   `127.0.0.1` and requires a locally generated access token. The details are
   kept in a file in your local application data folder that is restricted to
   your Windows user (other programs running as you can still read it).
-- **Status and troubleshooting files.** A runtime health record and a log of the
-  background component's error output (reset when it grows beyond 4 MiB; while
-  the update relay is used it carries the same per-request lines as the flight
-  recorder below) in `%LOCALAPPDATA%\QC Remote` on Windows. A "flight recorder" of the most recent
-  USB activity: it holds time stamps, process numbers, event names, message
-  type numbers and report counts, with no message contents and no preset,
-  setlist or device names. On Windows, while the update relay carries a Quad
-  Cortex update request (see "Quad Cortex firmware updates through this
-  computer"), it also holds a line for each request: the kind of request, the
-  server's host name, the path of the address as a shape (query values removed;
-  short path segments appear as they are), the result and the byte counts, and
-  for a request that was refused, the host name that was refused. It does not
-  log header values; a short credential-like path segment, if the unit put one
-  in an address, would appear as the path shape logs it, as it is. It keeps at
-  most 256 entries (plus up to four
-  frozen incident windows on Windows) and lives in `%LOCALAPPDATA%\QC Remote`
-  on Windows and in the app's private files folder on Android. It stays on your
-  computer or phone; like the connection file above, other programs running as
-  you can read it.
+- **Status and troubleshooting files.** A runtime health record, the
+  background component's error output, and a short USB flight recorder stay in
+  app-private storage on your computer or phone. The flight recorder contains
+  timestamps, process numbers, event names, message type numbers and report
+  counts, rather than message contents. It keeps at most 256 entries and up to
+  four frozen incident windows on Windows. Cloud/account forwarding envelopes
+  and firmware-forwarding requests are excluded from the general message cache
+  and event stream. The production forwarder does not keep request or response
+  bodies, header values, URLs, or a request history. Its displayed status has
+  aggregate counts and transfer state. Other programs running as your Windows
+  user can read the local troubleshooting files.
 - **Demo device.** The Windows app's built-in demo device keeps its setlists and
   presets in `%LOCALAPPDATA%\QC Remote\virtual-device`.
 - **Files you ask for.** Workspaces you save, device backups, and diagnostics
@@ -326,62 +313,46 @@ We also do not collect:
 - **GitHub** receives what you submit if you file an issue or feature request.
   Issues are public. The Windows app can pre-fill the form with the app version
   and a redacted diagnostics summary, but nothing is posted until you submit it.
-- **Neural DSP** receives the Quad Cortex's own CorOS update requests when the
-  unit is connected to the Windows app by USB and asks for an update. See the
-  next section.
+- **Neural DSP and destinations requested by the Quad Cortex** receive the
+  unit's internet requests when forwarding is enabled. Neural DSP handles
+  account sign-in and cloud services; firmware and changelog downloads may use
+  its content delivery providers. See the next section.
 
 The apps open other websites, such as an AI app's download page, only when you
 choose to.
 
-### Quad Cortex firmware updates through this computer
+### Quad Cortex internet requests through this computer
 
-A Quad Cortex connected to the Windows app by USB does not use its own Wi-Fi to
-look for or download a CorOS update. It asks its host to do the network step for
-it. The Windows app's background component does so: it carries the unit's
-request to Neural DSP's servers over the computer's internet connection and
-returns the server's reply to the unit over USB.
+When connected by USB, the Quad Cortex can ask the Windows background component
+to make HTTP requests on its behalf. With "Internet for the Quad Cortex" on,
+the component forwards supported account/cloud and firmware requests and sends
+the server responses back to the unit.
 
-- **The Quad Cortex makes the request.** It supplies the address, the headers
-  (including its serial number and its own credentials) and decides when to ask.
-  QC Remote only carries the request and the reply: the app makes no request of
-  its own, and the background component opens the connection on the unit's
-  behalf. It forwards the unit's headers as they are; its HTTP library adds only
-  a `Host` header and, when the unit sent none, a generic `Accept: */*` header. It does not store the request or the reply, and does
-  not open or inspect the update.
-- **What Neural DSP receives** is what the unit sends: the request itself,
-  including the unit's serial number and its own credentials. As over Wi-Fi,
-  Neural DSP also sees the IP address of the connection the request comes from,
-  which here is your computer's. Freevia does not receive any of it.
-- **Only what the unit asks for, only to the addresses allowed: Neural DSP's
-  and any you add.** The background component sends requests only to addresses
-  on `neuraldsp.com` (any path, and its subdomains) and to any extra domain you
-  add yourself in the broker settings file, and refuses every other address,
-  including addresses on your own network; it records the name of a refused
-  address (the host name only) so you can see what the unit asked for. The
-  request goes to the address the unit names, with its serial number and
-  credentials: if the unit names an extra domain you added, that domain, not
-  Neural DSP, receives them. A redirect to a different host carries only the
-  byte range, never the credentials. Add an extra domain only if you trust it.
-  It does not carry presets,
-  setlists, captures, impulse responses, backups, logs or crash reports, or the
-  unit's Cortex Cloud account or library traffic, and it never sends a request
-  body: it forwards read requests only.
-- **A short record stays on your computer.** The background component keeps the
-  time, the kind of request, the server's host name, the path of the address as
-  a shape, the result and the byte counts, in its own error output and in the
-  flight recorder described above, both on your computer. In the path shape
-  query values are removed and long or token-like path segments are replaced by
-  a placeholder; short path segments appear as they are (so a short
-  credential-like segment would be logged as it is). It does not log header
-  values. What the broker's
-  status shows to the AI apps attached to it is limited to whether the switch is
-  on, counts, whether a request is running and how the last one ended; it never
-  shows a host name or an address.
-- **You can switch it off.** It is on by default. In the Windows app, open Edit,
-  then Settings, and clear "Internet for the Quad Cortex"; the change applies
-  within a couple of seconds and ends a transfer that is running. With it off,
-  the unit's update requests are not carried and get no answer. The Android app
-  does not carry them.
+- **Data and recipients.** The unit supplies each destination, method, headers
+  and body. These may include account email and password during sign-in,
+  authentication tokens, signed URLs, device identifiers and cloud content.
+  The receiving server also sees your computer's public IP address. These
+  exchanges go directly from your computer to the requested server, through
+  neither Freevia's relay nor an AI provider.
+- **Forwarding behavior.** The component retains the supplied request headers
+  and bodies. For Neural DSP HTTPS endpoints it adds the client type/version
+  metadata required for compatibility when the unit did not supply it. HTTP
+  framing and the USB protocol envelopes are handled by the transport. It does
+  not follow redirects, add a cookie jar, retry requests, decompress HTTP bodies,
+  or inspect firmware contents. HTTPS uses platform certificate verification;
+  a device-supplied HTTP URL is forwarded as HTTP.
+- **Destinations come from the unit.** There is no domain, address or port
+  allowlist. Device requests may address Neural DSP, its download providers or
+  another destination, including a local-network address. Headers and bodies
+  go to the destination the unit requested.
+- **No traffic history.** The production forwarder processes traffic in memory
+  without saving credentials, URLs, headers or message bodies to traffic logs.
+  Account/cloud envelopes and firmware-forwarding requests do not enter the
+  general message cache or event stream. Aggregate status counts remain local.
+- **Your control.** Forwarding is on by default. Clear "Internet for the Quad
+  Cortex" in Windows Settings to stop it, including a transfer in progress.
+  This Windows forwarding feature is separate from the optional Freevia remote
+  relay. The Android app does not perform these broker HTTP exchanges.
 
 ### Third-party AI apps you connect
 

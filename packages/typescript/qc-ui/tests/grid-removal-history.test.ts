@@ -45,8 +45,8 @@ for (const outcome of ["verified", "accepted_unverified", "refused"] as const) {
       assert.deepEqual(calls, ["remove"]);
       assert.equal(notices.at(-1), "remove refused");
     } else {
-      assert.equal(history.undoEntry, undefined);
-      assert.equal(undo.undoLabel, undefined, "only generic native history may be offered");
+      assert.equal(history.undoEntry?.label, "device edit");
+      assert.equal(undo.undoLabel, "device edit", "the generic entry delegates to full native history, not a reconstructed inverse");
       await act(async () => { await undo.undo(); });
       assert.deepEqual(calls, ["remove", "native.undo"]);
       if (outcome === "accepted_unverified") assert.ok(notices.includes("Removal sent, not confirmed."));
@@ -88,8 +88,8 @@ for (const refused of [false, true]) {
       assert.equal(history.undoEntry?.label, "old action");
       assert.deepEqual(calls, ["replace"]);
     } else {
-      assert.equal(history.undoEntry, undefined);
-      assert.equal(undo.undoLabel, undefined);
+      assert.equal(history.undoEntry?.label, "device edit");
+      assert.equal(undo.undoLabel, "device edit");
       await act(async () => { await undo.undo(); });
       assert.deepEqual(calls, ["replace", "native.undo"]);
       assert.ok(notices.includes("Replacement sent, not confirmed."));

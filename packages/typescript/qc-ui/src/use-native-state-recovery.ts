@@ -141,7 +141,7 @@ export function useNativeStateRecovery(options: NativeStateRecoveryOptions): voi
                 const incoming = await current.readGridRepair();
                 if (disposed) throw new SupersededPresetOperation();
                 return incoming;
-              }, {sessionRecovery: true});
+              }, {sessionRecovery: true, onAccepted: () => { lifetime = current.controller.lifetime.checkpoint(); }});
             }
           );
           repairAttemptEpisode = {
@@ -153,6 +153,7 @@ export function useNativeStateRecovery(options: NativeStateRecoveryOptions): voi
         };
         if (observedGridInvalidationSequence !== undefined) {
           snapshot = await repairGrid(observedGridInvalidationSequence);
+          if (disposed || !current.controller.lifetime.current(lifetime)) return;
           if (!snapshot) return;
         } else {
           if (current.gridRepair.current.inFlight) return;
@@ -168,20 +169,22 @@ export function useNativeStateRecovery(options: NativeStateRecoveryOptions): voi
             const incoming = await current.readSnapshot();
             if (disposed) throw new SupersededPresetOperation();
             return incoming;
-          }, {sessionRecovery: true});
+          }, {sessionRecovery: true, onAccepted: () => { lifetime = current.controller.lifetime.checkpoint(); }});
+          if (disposed || !current.controller.lifetime.current(lifetime)) return;
           if (current.gridRepair.current.inFlight) return;
           if (snapshot.gridLayoutComplete === false) {
             current.controller.updateSnapshot((value) => value.gridLayoutComplete === false
               ? value
               : {...value, gridLayoutComplete: false});
             const repaired = await repairGrid(undefined);
+            if (disposed || !current.controller.lifetime.current(lifetime)) return;
             if (!repaired) return;
             snapshot = repaired;
           }
         }
         if (snapshot.gridLayoutComplete === false) throw new Error("The Grid layout is incomplete after native current-preset repair.");
         if (current.gridRepair.current.inFlight) return;
-        if (disposed) return;
+        if (disposed || !current.controller.lifetime.current(lifetime)) return;
         if (recoveryRevision.current !== requestedRecovery) return;
         // A new frame can arrive while the checked snapshot is in flight. Do
         // not publish recovery completion for a snapshot that belongs to its

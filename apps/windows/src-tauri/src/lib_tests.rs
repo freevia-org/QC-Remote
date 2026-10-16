@@ -1,6 +1,592 @@
 #![cfg(test)]
 
+#[cfg(windows)]
+#[test]
+fn relaunch_acknowledgment_keeps_its_original_resource_and_admission_through_native_exit() {
+    use qc_native_platform::thread_owner::{self, Budget};
+    static BUDGET: Budget = Budget::new(1);
+    struct Resource(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Resource {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    struct Tls {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl Drop for Tls {
+        fn drop(&mut self) {
+            let _ = self.entered.send(());
+            let _ = self.release.recv_timeout(Duration::from_secs(30));
+        }
+    }
+    thread_local! {
+        static RETIRE: std::cell::RefCell<Option<Tls>> = const { std::cell::RefCell::new(None) };
+    }
+    struct Release(mpsc::Sender<()>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while BUDGET.count() != 0 && Instant::now() < deadline {
+                thread_owner::reap();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (entered, waiting) = mpsc::channel();
+    let (release, gate) = mpsc::channel();
+    // Armed before the actual shared original is admitted.
+    let release_on_unwind = Release(release);
+    let actual_calls = calls.clone();
+    start_relaunch_acknowledgment(&BUDGET, Resource(dropped.clone()), move || {
+        RETIRE.with(|tls| {
+            *tls.borrow_mut() = Some(Tls {
+                entered,
+                release: gate,
+            })
+        });
+        actual_calls.fetch_add(1, std::sync::atomic::Ordering::Release);
+    })
+    .unwrap();
+    waiting
+        .recv_timeout(Duration::from_secs(2))
+        .expect("actual original reached native TLS exit");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
+    thread_owner::reap();
+    assert_eq!(
+        BUDGET.count(),
+        1,
+        "body completion must not release native admission"
+    );
+    assert!(!dropped.load(std::sync::atomic::Ordering::Acquire));
+    let forbidden = calls.clone();
+    assert!(
+        start_relaunch_acknowledgment(&BUDGET, (), move || {
+            forbidden.fetch_add(100, std::sync::atomic::Ordering::Release);
+        })
+        .is_err(),
+        "full original budget must refuse before callback dispatch"
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
+    drop(release_on_unwind);
+    assert_eq!(BUDGET.count(), 0, "same original must actually join");
+    assert!(dropped.load(std::sync::atomic::Ordering::Acquire));
+    start_relaunch_acknowledgment(&BUDGET, (), || {}).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while BUDGET.count() != 0 && Instant::now() < deadline {
+        thread_owner::reap();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(BUDGET.count(), 0, "healthy later admission must retire");
+}
+
+#[test]
+fn resident_binary_marker_streams_actual_bytes_and_keeps_cross_chunk_matches() {
+    use std::io::{Seek, SeekFrom};
+    struct Meter<R> {
+        reader: R,
+        bytes: usize,
+        largest_request: usize,
+    }
+    impl<R: Read> Read for Meter<R> {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            self.largest_request = self.largest_request.max(output.len());
+            let read = self.reader.read(output)?;
+            self.bytes += read;
+            Ok(read)
+        }
+    }
+    let root = unique_fixture_directory("resident-marker-held-read");
+    let _root = RemoveDirOnDrop::new(root.clone());
+    let path = root.join("fixture.bin");
+    let marker = resident_host_build_marker();
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(1024 * 1024).unwrap();
+        file.seek(SeekFrom::Start(8190)).unwrap();
+        file.write_all(marker.as_bytes()).unwrap();
+    }
+    let mut held = Meter {
+        reader: fs::File::open(&path).unwrap(),
+        bytes: 0,
+        largest_request: 0,
+    };
+    assert!(reader_contains_resident_marker(&mut held, marker.as_bytes()).unwrap());
+    assert!(
+        held.bytes <= 16384,
+        "read the whole binary before finding its early marker: {}",
+        held.bytes
+    );
+    assert!(
+        held.largest_request <= 8192,
+        "unbounded underlying binary read"
+    );
+    drop(held);
+    assert!(
+        embeds_resident_host_marker(&path),
+        "actual file caller must use the same scanner"
+    );
+
+    // Every marker split across short reads remains visible, including EOF
+    // immediately after the marker rather than a padded final block.
+    struct Split {
+        chunks: std::collections::VecDeque<Vec<u8>>,
+    }
+    impl Read for Split {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            let Some(mut next) = self.chunks.pop_front() else {
+                return Ok(0);
+            };
+            let take = next.len().min(output.len());
+            output[..take].copy_from_slice(&next[..take]);
+            next.drain(..take);
+            if !next.is_empty() {
+                self.chunks.push_front(next);
+            }
+            Ok(take)
+        }
+    }
+    for split in 1..marker.len() {
+        let mut reader = Split {
+            chunks: [
+                marker.as_bytes()[..split].to_vec(),
+                marker.as_bytes()[split..].to_vec(),
+            ]
+            .into(),
+        };
+        assert!(
+            reader_contains_resident_marker(&mut reader, marker.as_bytes()).unwrap(),
+            "split {split}"
+        );
+    }
+    assert!(!reader_contains_resident_marker(
+        &mut &b"not a resident broker"[..],
+        marker.as_bytes()
+    )
+    .unwrap());
+    assert!(!embeds_resident_host_marker(&root.join("missing.bin")));
+}
+
+#[test]
+fn forced_release_marker_uses_the_existing_local_document_envelope_without_inventing_a_release() {
+    let root = unique_fixture_directory("forced-release-marker-envelope");
+    let _root = RemoveDirOnDrop::new(root.clone());
+    let path = root.join("release.json");
+    let marker = generated_broker_surface::BrokerReleaseMarker {
+        instance_id: "fixture-generation".into(),
+        forced: true,
+    };
+    let mut bytes = serde_json::to_vec(&marker).unwrap();
+    bytes.resize(128 * 1024, b' ');
+    fs::write(&path, &bytes).unwrap();
+    assert!(read_forced_release_marker(&path, "fixture-generation"));
+    assert!(!read_forced_release_marker(&path, "other-generation"));
+    bytes.push(b' ');
+    fs::write(&path, &bytes).unwrap();
+    assert!(
+        !read_forced_release_marker(&path, "fixture-generation"),
+        "otherwise-valid overbudget marker must not be read as trusted release evidence"
+    );
+    assert_eq!(
+        fs::metadata(&path).unwrap().len(),
+        bytes.len() as u64,
+        "inspection changed a marker"
+    );
+    fs::write(
+        &path,
+        br#"{"instanceId":"fixture-generation","forced":false}"#,
+    )
+    .unwrap();
+    assert!(!read_forced_release_marker(&path, "fixture-generation"));
+    fs::write(&path, b"{broken").unwrap();
+    assert!(!read_forced_release_marker(&path, "fixture-generation"));
+    assert!(!read_forced_release_marker(
+        &root.join("missing.json"),
+        "fixture-generation"
+    ));
+}
+
+#[test]
+fn diagnostics_export_preserves_prior_bytes_after_partial_write_and_unwind() {
+    let root = unique_fixture_directory("diagnostics-atomic-fault");
+    let _root = RemoveDirOnDrop::new(root.clone());
+    let path = root.join("diagnostics.json");
+    let old = b"previous complete export";
+    for panic_after_write in [false, true] {
+        fs::write(&path, old).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            write_diagnostics_bytes_with(&path, b"replacement complete export", |file, bytes| {
+                file.write_all(&bytes[..7])?;
+                if panic_after_write {
+                    panic!("injected diagnostics writer unwind");
+                }
+                Err(std::io::Error::other("injected diagnostics partial write"))
+            })
+        }));
+        if panic_after_write {
+            assert!(result.is_err(), "the injected unwind must escape");
+        } else {
+            assert!(
+                result.unwrap().is_err(),
+                "a partial write must not report success"
+            );
+        }
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            old,
+            "prior export lost after writer fault"
+        );
+        let entries = fs::read_dir(&root)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1, "owned temporary stage survived failure");
+        assert_eq!(entries[0].path(), path);
+    }
+    write_diagnostics_bytes_with(&path, b"healthy new export", |file, bytes| {
+        file.write_all(bytes)
+    })
+    .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"healthy new export");
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+}
+
 use super::*;
+
+#[cfg(windows)]
+#[test]
+fn a_completed_gateway_reader_retains_native_admission_until_tls_exit_before_reconnect() {
+    use qc_native_platform::thread_owner::{self, Budget};
+    static BUDGET: Budget = Budget::new(1);
+    struct Tls {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl Drop for Tls {
+        fn drop(&mut self) {
+            let _ = self.entered.send(());
+            let _ = self.release.recv_timeout(Duration::from_secs(30));
+        }
+    }
+    thread_local! {
+        static EXIT: std::cell::RefCell<Option<Tls>> = const { std::cell::RefCell::new(None) };
+    }
+    struct Reader(Option<Tls>);
+    impl Read for Reader {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(tls) = self.0.take() {
+                EXIT.with(|exit| *exit.borrow_mut() = Some(tls));
+            }
+            Ok(0)
+        }
+    }
+    struct Release(Option<mpsc::Sender<()>>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            if let Some(release) = self.0.take() {
+                let _ = release.send(());
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while BUDGET.count() != 0 && Instant::now() < deadline {
+                thread_owner::reap();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if BUDGET.count() != 0 {
+                eprintln!("Exact gateway reader original remains retained");
+            }
+        }
+    }
+    let (entered, observed) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let release = Release(Some(release));
+    let reader = spawn_gateway_reader_with_budget(
+        Reader(Some(Tls {
+            entered,
+            release: released,
+        })),
+        None,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        None,
+        &BUDGET,
+    )
+    .unwrap();
+    // This is the production reader's existing final-frame/body signal, not
+    // an OS-thread-exit acknowledgment. Its TLS is independently held below.
+    reader
+        .completed
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+    drop(reader);
+    thread_owner::reap();
+    assert_eq!(
+        BUDGET.count(),
+        1,
+        "body completion must not release the original native thread"
+    );
+    assert!(
+        spawn_gateway_reader_with_budget(
+            std::io::Cursor::new(Vec::<u8>::new()),
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            None,
+            &BUDGET,
+        )
+        .is_err(),
+        "reconnect cannot allocate a new reader past retained-original headroom"
+    );
+    drop(release);
+    assert_eq!(
+        BUDGET.count(),
+        0,
+        "actual native retirement released the permit"
+    );
+    let reader = spawn_gateway_reader_with_budget(
+        std::io::Cursor::new(Vec::<u8>::new()),
+        None,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        None,
+        &BUDGET,
+    )
+    .unwrap();
+    reader
+        .completed
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while BUDGET.count() != 0 {
+        thread_owner::reap();
+        assert!(
+            Instant::now() < deadline,
+            "replacement reader original did not retire"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn gateway_output_deadline_refusal_and_attempted_failure_are_distinct() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let stream = TcpStream::connect_timeout(
+        &listener.local_addr().unwrap(),
+        std::time::Duration::from_secs(2),
+    )
+    .unwrap();
+    let (_peer, _) = listener.accept().unwrap();
+    let reads = LockFreeReads::new(
+        stream,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    let held = reads.writer.lock().unwrap();
+    let failure = match reads.write_before(
+        b"{}",
+        std::time::Instant::now() + std::time::Duration::from_millis(20),
+    ) {
+        Err(failure) => failure,
+        Ok(()) => panic!("a held writer admitted a second frame"),
+    };
+    assert!(!failure.attempted);
+    assert!(matches!(
+        failure.request_failure(rpc::SELECT_SCENE),
+        GatewayRequestFailure::Transport(_)
+    ));
+    held.shutdown(Shutdown::Write).unwrap();
+    drop(held);
+    let failure = match reads.write(b"{}") {
+        Err(failure) => failure,
+        Ok(()) => panic!("the shut-down writer accepted a frame"),
+    };
+    assert!(failure.attempted);
+    assert!(matches!(
+        failure.request_failure(rpc::SELECT_SCENE),
+        GatewayRequestFailure::UnansweredMutation(_)
+    ));
+}
+
+#[test]
+fn gateway_output_deadline_unread_socket_is_bounded() {
+    struct Release {
+        start: Option<mpsc::Sender<()>>,
+        release: Option<mpsc::Sender<()>>,
+    }
+    impl Drop for Release {
+        fn drop(&mut self) {
+            if let Some(sender) = self.start.take() {
+                let _ = sender.send(());
+            }
+            if let Some(sender) = self.release.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    socket2::SockRef::from(&listener)
+        .set_recv_buffer_size(4096)
+        .unwrap();
+    let writer = TcpStream::connect_timeout(
+        &listener.local_addr().unwrap(),
+        std::time::Duration::from_secs(2),
+    )
+    .unwrap();
+    let (peer, _) = listener.accept().unwrap();
+    let writer_socket = socket2::SockRef::from(&writer);
+    #[cfg(windows)]
+    {
+        writer_socket.set_send_buffer_size(0).unwrap();
+        assert_eq!(writer_socket.send_buffer_size().unwrap(), 0);
+    }
+    #[cfg(not(windows))]
+    writer_socket.set_send_buffer_size(4096).unwrap();
+    assert!(socket2::SockRef::from(&peer).recv_buffer_size().unwrap() <= 2 * 1024 * 1024);
+    let elapsed = std::thread::scope(|scope| {
+        let (start, started) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        scope.spawn(move || {
+            // This exact peer closes even if the old unbounded writer stalls.
+            // Start its observation only after the bounded socket pair is ready.
+            let _ = started.recv_timeout(std::time::Duration::from_secs(4));
+            let _ = released.recv_timeout(std::time::Duration::from_secs(7));
+            let _ = peer.shutdown(Shutdown::Both);
+        });
+        let mut release = Release {
+            start: Some(start),
+            release: Some(release),
+        };
+        let reads = LockFreeReads::new(
+            writer,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        release.start.take().unwrap().send(()).unwrap();
+        let started = std::time::Instant::now();
+        let result = reads.write(&vec![0_u8; 8 * 1024 * 1024]);
+        let elapsed = started.elapsed();
+        drop(release);
+        assert!(
+            result.is_err(),
+            "a non-reading peer must not accept the complete bounded frame"
+        );
+        elapsed
+    });
+    assert!(
+        elapsed < std::time::Duration::from_secs(6),
+        "frame output exceeded its five-second deadline: {elapsed:?}"
+    );
+}
+
+#[test]
+fn gateway_output_deadline_status_includes_writer_admission() {
+    struct Release(Option<mpsc::Sender<()>>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let stream = TcpStream::connect_timeout(
+        &listener.local_addr().unwrap(),
+        std::time::Duration::from_secs(2),
+    )
+    .unwrap();
+    let (_peer, _) = listener.accept().unwrap();
+    let reads = LockFreeReads::new(
+        stream,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    let elapsed = std::thread::scope(|scope| {
+        let (entered, observed) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let reads_ref = &reads;
+        scope.spawn(move || {
+            let _held = reads_ref.writer.lock().unwrap();
+            entered.send(()).unwrap();
+            let _ = released.recv_timeout(std::time::Duration::from_secs(7));
+        });
+        let release = Release(Some(release));
+        observed
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            reads.request("system.status", json!({})),
+            Err(GatewayRequestFailure::Transport(_))
+        ));
+        let elapsed = started.elapsed();
+        assert!(reads.pending().is_empty());
+        drop(release);
+        elapsed
+    });
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "status waited beyond its writer-inclusive budget: {elapsed:?}"
+    );
+}
+
+#[test]
+fn cancelling_the_native_backup_dialog_never_starts_an_export() {
+    let mut calls = Vec::new();
+    let result = create_device_backup_with(
+        "Archive",
+        |method, _| {
+            calls.push(method.to_owned());
+            Ok(json!({"session":"original"}))
+        },
+        |_| None,
+    )
+    .unwrap();
+    assert_eq!(result, json!({"cancelled":true}));
+    assert_eq!(calls, ["broker.backupTarget"]);
+}
+
+#[test]
+fn native_backup_passes_the_pre_dialog_fence_and_preserves_file_on_refusal() {
+    let directory = unique_fixture_directory("backup-dialog-refusal");
+    let _directory_guard = RemoveDirOnDrop::new(directory.clone());
+    let path = directory.join("backup.json");
+    fs::write(&path, b"existing backup").unwrap();
+    let original = json!({"session":{"connection":1,"epoch":{"sessionId":"original", "revision":0}}, "operands":null});
+    let mut calls = 0;
+    let error = create_device_backup_with(
+        "Archive",
+        |method, params| {
+            calls += 1;
+            if calls == 1 {
+                assert_eq!(method, "broker.backupTarget");
+                Ok(original.clone())
+            } else {
+                assert_eq!(method, "broker.createDeviceBackupBound");
+                assert_eq!(params["context"], original);
+                Err("QC session changed".into())
+            }
+        },
+        |_| Some(path.clone()),
+    )
+    .unwrap_err();
+    assert_eq!(error, "QC session changed");
+    assert_eq!(calls, 2);
+    assert_eq!(fs::read(&path).unwrap(), b"existing backup");
+    fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn an_old_broker_refuses_native_backup_before_showing_a_dialog() {
+    let error = create_device_backup_with(
+        "Archive",
+        |_, _| Err("Unknown method".into()),
+        |_| panic!("must not show dialog"),
+    )
+    .unwrap_err();
+    assert!(error.contains("restart QC Remote and its broker after updating"));
+}
 
 #[test]
 fn macos_main_window_close_keeps_it_only_when_background_mode_is_enabled() {
@@ -122,7 +708,8 @@ fn relay_pairing_browser_url_must_stay_on_the_secure_relay_origin() {
 
 #[test]
 fn workspace_validation_requires_version_and_snapshot() {
-    assert!(validate_workspace(&json!({ "version": 1, "snapshot": {} })).is_ok());
+    assert!(validate_workspace(&workspace::workspace_fixture()).is_ok());
+    assert!(validate_workspace(&json!({ "version": 1, "snapshot": {} })).is_err());
     assert!(validate_workspace(&json!({ "version": 2, "snapshot": {} })).is_err());
     assert!(validate_workspace(&json!({ "version": 1 })).is_err());
 }
@@ -186,15 +773,10 @@ fn a_backup_name_is_held_to_the_shared_rule_before_the_transfer_runs() {
 
 #[test]
 fn workspace_round_trips_on_disk() {
-    let path = std::env::temp_dir().join(format!(
-        "qc-workspace-test-{}-{}.qcw",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock")
-            .as_nanos()
-    ));
-    let document = json!({ "version": 1, "snapshot": { "presetName": "Test" } });
+    let directory = unique_fixture_directory("workspace-roundtrip");
+    let _directory_guard = RemoveDirOnDrop::new(directory.clone());
+    let path = directory.join("workspace.qcw");
+    let document = workspace::workspace_fixture();
     let result = write_workspace(&path, &document).expect("workspace write");
     assert_eq!(result["cancelled"], false);
     let loaded: Value =
@@ -259,7 +841,8 @@ fn a_contract_violation_is_reported_without_dropping_the_session() {
             assert_eq!(code, GATEWAY_CONTRACT_ERROR_CODE);
             assert!(!retryable, "replaying a contract violation cannot help");
         }
-        GatewayRequestFailure::Transport(message) => {
+        GatewayRequestFailure::Transport(message)
+        | GatewayRequestFailure::UnansweredMutation(message) => {
             panic!("a contract violation must not be a transport fault: {message}")
         }
     }
@@ -280,6 +863,421 @@ fn a_contract_violation_is_reported_without_dropping_the_session() {
 /// How long the fake broker's backup holds its queue. Long enough that a
 /// status read waiting for the gateway could not pass for a prompt one.
 const FAKE_BACKUP_DURATION: Duration = Duration::from_secs(3);
+static FAKE_BROKERS_IN_USE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+struct FakeBrokerPermit;
+impl Drop for FakeBrokerPermit {
+    fn drop(&mut self) {
+        FAKE_BROKERS_IN_USE.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+static RETAINED_FAKE_BROKER_THREADS: Mutex<
+    Vec<(
+        std::thread::JoinHandle<()>,
+        std::sync::Arc<FakeBrokerPermit>,
+    )>,
+> = Mutex::new(Vec::new());
+struct FakeBrokerThreads {
+    socket: TcpStream,
+    wake: Vec<mpsc::Sender<()>>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+    permit: std::sync::Arc<FakeBrokerPermit>,
+}
+impl FakeBrokerThreads {
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
+    fn new(socket: &TcpStream) -> Self {
+        let mut finished = Vec::new();
+        let mut retained = RETAINED_FAKE_BROKER_THREADS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut index = 0;
+        while index < retained.len() {
+            if qc_native_platform::process::thread_signalled(&retained[index].0) {
+                finished.push(retained.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        drop(retained);
+        for (worker, permit) in finished {
+            let _ = worker.join();
+            drop(permit);
+        }
+        assert!(
+            FAKE_BROKERS_IN_USE
+                .fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |count| (count < 32).then_some(count + 1)
+                )
+                .is_ok(),
+            "fake broker owner capacity reached; no new fixture admitted"
+        );
+        let permit = std::sync::Arc::new(FakeBrokerPermit);
+        Self {
+            socket: socket.try_clone().unwrap(),
+            wake: Vec::new(),
+            workers: Vec::new(),
+            permit,
+        }
+    }
+}
+#[test]
+fn fake_broker_owner_unwind_shutdown_retires_its_actual_blocked_socket_worker() {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut peer, _) = listener.accept().unwrap();
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = finished.clone();
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let mut owner = FakeBrokerThreads::new(&peer);
+        owner.workers.push(std::thread::spawn(move || {
+            let mut byte = [0u8; 1];
+            let _ = peer.read(&mut byte);
+            observed.store(true, std::sync::atomic::Ordering::Release);
+        }));
+        panic!("injected fake broker caller failure");
+    }));
+    assert!(failed.is_err());
+    assert!(
+        finished.load(std::sync::atomic::Ordering::Acquire),
+        "the exact owned socket worker did not acknowledge retirement"
+    );
+    drop(client);
+}
+impl Drop for FakeBrokerThreads {
+    fn drop(&mut self) {
+        let _ = self.socket.shutdown(Shutdown::Both);
+        for wake in &self.wake {
+            let _ = wake.send(());
+        }
+        let deadline = Instant::now() + Duration::from_secs(6);
+        for worker in self.workers.drain(..) {
+            while !qc_native_platform::process::thread_signalled(&worker)
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            if qc_native_platform::process::thread_signalled(&worker) {
+                let _ = worker.join();
+            } else {
+                eprintln!("fake broker retirement unknown; exact original worker retained");
+                RETAINED_FAKE_BROKER_THREADS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((worker, self.permit.clone()));
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FixtureThreadStop {
+    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    socket: std::sync::Arc<Mutex<Option<TcpStream>>>,
+}
+impl FixtureThreadStop {
+    fn new() -> Self {
+        Self {
+            stopping: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            socket: std::sync::Arc::new(Mutex::new(None)),
+        }
+    }
+    fn stopped(&self) -> bool {
+        self.stopping.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn install_socket(&self, socket: &TcpStream) -> std::io::Result<bool> {
+        let owned = socket.try_clone()?;
+        let mut slot = self
+            .socket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = Some(owned);
+        if self.stopped() {
+            let _ = slot.as_ref().unwrap().shutdown(Shutdown::Both);
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    }
+    fn stop(&self) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(socket) = self
+            .socket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
+    }
+    fn pause(&self, within: Duration) -> bool {
+        let until = Instant::now() + within;
+        loop {
+            if self.stopped() {
+                return false;
+            }
+            let remaining = until.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return true;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(10)));
+        }
+    }
+}
+
+/// Test caller/listener originals use the existing shared retained family.
+/// Socket shutdown is a wake request; only native join releases the attached
+/// root and admission. An unknown original remains in thread_owner, not detached.
+struct OwnedFixtureThread<T> {
+    original: Option<qc_native_platform::thread_owner::Owned>,
+    stop: FixtureThreadStop,
+    result: mpsc::Receiver<T>,
+    retirement_deadline: Option<Instant>,
+}
+static FIXTURE_CALLER_BUDGET: qc_native_platform::thread_owner::Budget =
+    qc_native_platform::thread_owner::Budget::new(32);
+impl<T: Send + 'static> OwnedFixtureThread<T> {
+    fn spawn(
+        name: &str,
+        socket: Option<&TcpStream>,
+        resource: impl Send + 'static,
+        action: impl FnOnce(FixtureThreadStop) -> T + Send + 'static,
+    ) -> Result<Self, String> {
+        let stop = FixtureThreadStop::new();
+        if let Some(socket) = socket {
+            stop.install_socket(socket)
+                .map_err(|error| error.to_string())?;
+        }
+        let (sender, result) = mpsc::channel();
+        let worker_stop = stop.clone();
+        let original = qc_native_platform::thread_owner::Owned::spawn(
+            name,
+            &FIXTURE_CALLER_BUDGET,
+            (resource, stop.clone()),
+            move || {
+                let _ = sender.send(action(worker_stop));
+            },
+        )?;
+        Ok(Self {
+            original: Some(original),
+            stop,
+            result,
+            retirement_deadline: None,
+        })
+    }
+    fn is_finished(&self) -> bool {
+        self.original
+            .as_ref()
+            .is_none_or(qc_native_platform::thread_owner::Owned::native_finished)
+    }
+    fn join(mut self) -> Result<T, String> {
+        let remaining = self.remaining_retirement();
+        if !self.original.as_mut().unwrap().wait_within(remaining) {
+            return Err("Fixture native original retirement remains unacknowledged".into());
+        }
+        self.original.take();
+        self.result
+            .try_recv()
+            .map_err(|_| "Fixture original ended without its result".into())
+    }
+}
+impl<T> OwnedFixtureThread<T> {
+    fn remaining_retirement(&mut self) -> Duration {
+        self.retirement_deadline
+            .get_or_insert_with(|| Instant::now() + Duration::from_secs(6))
+            .saturating_duration_since(Instant::now())
+    }
+}
+impl<T> Drop for OwnedFixtureThread<T> {
+    fn drop(&mut self) {
+        if self.original.is_none() {
+            return;
+        }
+        self.stop.stop();
+        let remaining = self.remaining_retirement();
+        let _ = self.original.as_mut().unwrap().wait_within(remaining);
+        // Owned's Drop retains an unfinished exact original/resource/permit.
+    }
+}
+
+fn fixture_request_until_stopped(
+    gateway: &Mutex<Gateway>,
+    slot: &LockFreeReadSlot,
+    stop: &FixtureThreadStop,
+    method: &'static str,
+    params: Value,
+) -> Result<Value, GatewayRequestFailure> {
+    request_gateway(
+        gateway,
+        slot,
+        method,
+        params,
+        WhenGatewayBusy::Wait,
+        |gateway, params| {
+            // A queued fixture caller must not elect a real replacement after
+            // its preceding fake request was woken by owned socket shutdown.
+            if stop.stopped() {
+                return Err(GatewayRequestFailure::Transport(
+                    "Fixture caller is stopping".into(),
+                ));
+            }
+            gateway.request_detailed(method, params)
+        },
+    )
+}
+
+fn fixture_read_frame_until_stopped(
+    stream: &mut TcpStream,
+    stop: &FixtureThreadStop,
+) -> Result<Value, String> {
+    struct StoppingRead<'a> {
+        stream: &'a mut TcpStream,
+        stop: &'a FixtureThreadStop,
+        deadline: Instant,
+    }
+    impl Read for StoppingRead<'_> {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            loop {
+                if self.stop.stopped() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionAborted,
+                        "Recovered fixture listener is stopping",
+                    ));
+                }
+                let remaining = self.deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Recovered fixture frame deadline elapsed",
+                    ));
+                }
+                self.stream
+                    .set_read_timeout(Some(remaining.min(Duration::from_millis(50))))?;
+                match self.stream.read(bytes) {
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::TimedOut
+                                | std::io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        continue;
+                    }
+                    result => return result,
+                }
+            }
+        }
+    }
+    let previous = stream.read_timeout().map_err(|error| error.to_string())?;
+    // Keep one parser invocation and one two-second budget across header/body
+    // fragments. Retrying read_frame itself would lose consumed prefix bytes.
+    // Windows cloned-socket shutdown alone need not wake an outstanding read.
+    let result = read_frame(&mut StoppingRead {
+        stream: &mut *stream,
+        stop,
+        deadline: Instant::now() + Duration::from_secs(2),
+    });
+    let restored = stream
+        .set_read_timeout(previous)
+        .map_err(|error| error.to_string());
+    match (result, restored) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+fn spawn_recovered_fake_broker(
+    port: u16,
+    instance_id: &'static str,
+    resource: impl Send + 'static,
+    events: Option<mpsc::Sender<&'static str>>,
+) -> Result<OwnedFixtureThread<()>, String> {
+    OwnedFixtureThread::spawn("recovered-broker-listener", None, resource, move |stop| {
+        // Long enough that the first attach attempt's connect has
+        // already failed, short enough to land well inside the
+        // confirming re-check's own connect timeout.
+        if !stop.pause(Duration::from_millis(150)) {
+            return;
+        }
+        let listener =
+            std::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).unwrap();
+        // On Windows a connect to a closed loopback port keeps retrying
+        // its SYN for about two seconds, so the client's first attempt
+        // can be completed by this listener at the instant it gives up
+        // at its own connect timeout. That connection is accepted here
+        // but already closed by the client. Keep accepting until one
+        // connection actually delivers the handshake, within a bound.
+        listener.set_nonblocking(true).unwrap();
+        if let Some(events) = &events {
+            let _ = events.send("listening");
+        }
+        let accept_deadline = Instant::now() + Duration::from_secs(10);
+        let (mut stream, request) = loop {
+            if stop.stopped() {
+                return;
+            }
+            assert!(
+                Instant::now() < accept_deadline,
+                "no connection delivered the authenticate frame in time"
+            );
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => panic!("the recovered listener failed to accept: {error}"),
+            };
+            // An accepted socket inherits the listener's non-blocking mode.
+            stream.set_nonblocking(false).unwrap();
+            if !stop.install_socket(&stream).unwrap() {
+                return;
+            }
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            // A connection the client already abandoned ends (EOF or
+            // reset) before a full frame arrives; skip it.
+            if let Some(events) = &events {
+                let _ = events.send("reading");
+            }
+            if let Ok(request) = fixture_read_frame_until_stopped(&mut stream, &stop) {
+                break (stream, request);
+            }
+        };
+        assert_eq!(
+            request.get("method").and_then(Value::as_str),
+            Some(DEVICE_BROKER_AUTHENTICATE_METHOD)
+        );
+        let response = serde_json::to_vec(&json!({
+            "id": 0,
+            "result": {"instanceId": instance_id}
+        }))
+        .unwrap();
+        write_frame(&mut stream, &response).unwrap();
+        // A successful attach immediately follows with a real
+        // system.status round trip (GatewayProcess::verify_gateway_api_version),
+        // which must be answered too or the client reads this as a
+        // transport failure right after attaching.
+        let status_request = fixture_read_frame_until_stopped(&mut stream, &stop).unwrap();
+        let status_response = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": status_request.get("id").cloned().unwrap_or(json!(1)),
+            "result": {"gatewayApiVersion": generated_gateway::API_VERSION}
+        }))
+        .unwrap();
+        write_frame(&mut stream, &status_response).unwrap();
+        // Held so the attached client's connection stays open for the
+        // rest of the test instead of being read as a transport failure.
+        let _ = stop.pause(Duration::from_secs(2));
+    })
+}
 
 /// One broker connection served the way the device broker serves it:
 /// `system.status` answered as it arrives, every other request in order
@@ -291,10 +1289,12 @@ struct ConcurrentFakeBroker {
     suspended: std::sync::Arc<std::sync::atomic::AtomicBool>,
     executed: std::sync::Arc<Mutex<Vec<String>>>,
     backup_started: mpsc::Receiver<()>,
+    _owner: FakeBrokerThreads,
 }
 
 fn serve_concurrent_fake_broker(peer: TcpStream) -> ConcurrentFakeBroker {
     use std::sync::atomic::Ordering;
+    let mut owner = FakeBrokerThreads::new(&peer);
     let suspended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let executed = std::sync::Arc::new(Mutex::new(Vec::new()));
     let (started_tx, backup_started) = mpsc::channel();
@@ -308,7 +1308,7 @@ fn serve_concurrent_fake_broker(peer: TcpStream) -> ConcurrentFakeBroker {
     let (queue_tx, queue) = mpsc::channel::<Value>();
     {
         let (output, suspended, executed) = (output.clone(), suspended.clone(), executed.clone());
-        std::thread::spawn(move || {
+        owner.workers.push(std::thread::spawn(move || {
             for request in queue {
                 let method = request["method"].as_str().unwrap_or_default().to_owned();
                 executed.lock().unwrap().push(method.clone());
@@ -334,12 +1334,12 @@ fn serve_concurrent_fake_broker(peer: TcpStream) -> ConcurrentFakeBroker {
                     reply(&output, json!({"jsonrpc":"2.0","id":id,"result":{}}));
                 }
             }
-        });
+        }));
     }
     {
         let suspended = suspended.clone();
         let mut input = peer;
-        std::thread::spawn(move || {
+        owner.workers.push(std::thread::spawn(move || {
             while let Ok(request) = read_frame(&mut input) {
                 let method = request["method"].as_str().unwrap_or_default();
                 if quadcortex::device::answers_beside_running_request(method) {
@@ -366,12 +1366,13 @@ fn serve_concurrent_fake_broker(peer: TcpStream) -> ConcurrentFakeBroker {
                     return;
                 }
             }
-        });
+        }));
     }
     ConcurrentFakeBroker {
         suspended,
         executed,
         backup_started,
+        _owner: owner,
     }
 }
 
@@ -452,14 +1453,21 @@ fn status_answers_during_a_long_request_while_writes_stay_serialized() {
     let (gateway, slot, broker) = gateway_with_concurrent_fake_broker();
     let backup = {
         let (gateway, slot) = (gateway.clone(), slot.clone());
-        std::thread::spawn(move || {
-            request_through(
-                &gateway,
-                &slot,
-                rpc::CREATE_DEVICE_BACKUP,
-                json!({"name":"acceptance"}),
-            )
-        })
+        OwnedFixtureThread::spawn(
+            "fake-backup-caller",
+            Some(&broker._owner.socket),
+            (),
+            move |stop| {
+                fixture_request_until_stopped(
+                    &gateway,
+                    &slot,
+                    &stop,
+                    rpc::CREATE_DEVICE_BACKUP,
+                    json!({"name":"acceptance"}),
+                )
+            },
+        )
+        .unwrap()
     };
     broker
         .backup_started
@@ -487,14 +1495,21 @@ fn status_answers_during_a_long_request_while_writes_stay_serialized() {
     // even been sent while the backup runs.
     let write = {
         let (gateway, slot) = (gateway.clone(), slot.clone());
-        std::thread::spawn(move || {
-            request_through(
-                &gateway,
-                &slot,
-                rpc::SELECT_SCENE,
-                json!({"scene":1,"expectedPresetIdentity":"x"}),
-            )
-        })
+        OwnedFixtureThread::spawn(
+            "fake-write-caller",
+            Some(&broker._owner.socket),
+            (),
+            move |stop| {
+                fixture_request_until_stopped(
+                    &gateway,
+                    &slot,
+                    &stop,
+                    rpc::SELECT_SCENE,
+                    json!({"scene":1,"expectedPresetIdentity":"x"}),
+                )
+            },
+        )
+        .unwrap()
     };
     std::thread::sleep(Duration::from_millis(300));
     assert!(!write.is_finished(), "a write overtook the running backup");
@@ -512,6 +1527,9 @@ fn status_answers_during_a_long_request_while_writes_stay_serialized() {
         Err(GatewayRequestFailure::Transport(message)) => {
             panic!("the write's refusal arrived as a transport failure: {message}")
         }
+        Err(GatewayRequestFailure::UnansweredMutation(message)) => {
+            panic!("the write's typed refusal was lost: {message}")
+        }
         Ok(result) => panic!("a write during the suspension was accepted: {result}"),
     }
     assert_eq!(
@@ -528,6 +1546,162 @@ fn status_answers_during_a_long_request_while_writes_stay_serialized() {
     let status = request_through(&gateway, &slot, rpc::RUNTIME_STATUS, json!({}))
         .unwrap_or_else(|_| panic!("system.status failed on a free gateway"));
     assert_eq!(status["usbDiagnostics"]["deviceSuspended"], false);
+}
+
+#[test]
+fn owned_fake_request_callers_unwind_wakes_both_originals_before_the_broker_owner_drops() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Receipt(std::sync::Arc<AtomicUsize>);
+    impl Drop for Receipt {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+    let (gateway, slot, broker) = gateway_with_concurrent_fake_broker();
+    let retired = std::sync::Arc::new(AtomicUsize::new(0));
+    let mut unwind_at = None;
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (backup_gateway, backup_slot) = (gateway.clone(), slot.clone());
+        let backup = OwnedFixtureThread::spawn(
+            "unwind-backup-caller",
+            Some(&broker._owner.socket),
+            Receipt(retired.clone()),
+            move |stop| {
+                fixture_request_until_stopped(
+                    &backup_gateway,
+                    &backup_slot,
+                    &stop,
+                    rpc::CREATE_DEVICE_BACKUP,
+                    json!({"name":"acceptance"}),
+                )
+            },
+        )
+        .unwrap();
+        broker
+            .backup_started
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        let (write_gateway, write_slot) = (gateway.clone(), slot.clone());
+        let (enter, entered) = mpsc::channel();
+        let write = OwnedFixtureThread::spawn(
+            "unwind-queued-writer",
+            Some(&broker._owner.socket),
+            Receipt(retired.clone()),
+            move |stop| {
+                let _ = enter.send(());
+                fixture_request_until_stopped(
+                    &write_gateway,
+                    &write_slot,
+                    &stop,
+                    rpc::SELECT_SCENE,
+                    json!({"scene":1,"expectedPresetIdentity":"x"}),
+                )
+            },
+        )
+        .unwrap();
+        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(!backup.is_finished());
+        assert!(!write.is_finished());
+        assert_eq!(
+            *broker.executed.lock().unwrap(),
+            vec![rpc::CREATE_DEVICE_BACKUP.to_owned()]
+        );
+        unwind_at = Some(Instant::now());
+        panic!("controlled caller assertion unwind");
+    }));
+    assert!(failed.is_err());
+    assert_eq!(
+        retired.load(Ordering::Acquire),
+        2,
+        "both exact caller originals must join before their attached receipts retire"
+    );
+    assert!(
+        unwind_at.unwrap().elapsed() < Duration::from_secs(2),
+        "caller shutdown must wake I/O instead of waiting for the three-second fake backup"
+    );
+    // This owner was deliberately OUTSIDE the unwind, so its Drop cannot be
+    // the mechanism that woke the caller originals or released their receipts.
+    drop(broker);
+}
+
+#[test]
+fn recovered_listener_stop_reader_preserves_a_frame_across_short_timeout_slices() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut stream, _) = listener.accept().unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let socket = stream.try_clone().unwrap();
+    let original = OwnedFixtureThread::spawn(
+        "fragmented-recovered-frame",
+        Some(&socket),
+        (),
+        move |stop| {
+            let value = fixture_read_frame_until_stopped(&mut stream, &stop);
+            assert_eq!(stream.read_timeout().unwrap(), Some(Duration::from_secs(2)));
+            value
+        },
+    )
+    .unwrap();
+    let expected = json!({"jsonrpc":"2.0","id":7,"method":"fixture"});
+    let mut wire = Vec::new();
+    write_frame(&mut wire, &serde_json::to_vec(&expected).unwrap()).unwrap();
+    peer.write_all(&wire[..2]).unwrap();
+    std::thread::sleep(Duration::from_millis(120));
+    peer.write_all(&wire[2..7]).unwrap();
+    std::thread::sleep(Duration::from_millis(120));
+    peer.write_all(&wire[7..]).unwrap();
+    assert_eq!(original.join().unwrap().unwrap(), expected);
+}
+
+#[test]
+fn owned_recovered_listener_unwind_wakes_accept_and_socket_read_before_root_retirement() {
+    for phase in ["listening", "reading"] {
+        let directory = unique_fixture_directory("recovered-listener-unwind");
+        let root = std::sync::Arc::new(RemoveDirOnDrop::new(&directory));
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let (event, events) = mpsc::channel();
+        let mut held_client = None;
+        let mut unwind_at = None;
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _original =
+                spawn_recovered_fake_broker(port, "owned-unwind", root.clone(), Some(event))
+                    .unwrap();
+            drop(root); // Only the exact native original now owns the directory.
+            assert_eq!(
+                events.recv_timeout(Duration::from_secs(2)).unwrap(),
+                "listening"
+            );
+            if phase == "reading" {
+                held_client =
+                    Some(TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port))).unwrap());
+                assert_eq!(
+                    events.recv_timeout(Duration::from_secs(2)).unwrap(),
+                    "reading"
+                );
+            }
+            assert!(directory.exists());
+            unwind_at = Some(Instant::now());
+            panic!("controlled recovered-listener assertion unwind");
+        }));
+        assert!(failed.is_err());
+        assert!(
+            !directory.exists(),
+            "{phase}: the exact original retained its fixture root"
+        );
+        assert!(
+            unwind_at.unwrap().elapsed() < Duration::from_millis(1500),
+            "{phase}: teardown relied on the listener's ordinary read/accept timeout rather than its wake"
+        );
+        // The peer remains open until AFTER the original/root assertions, so
+        // peer EOF cannot masquerade as our owned socket cancellation.
+        drop(held_client);
+    }
 }
 
 /// A reply in the lock-free id range that nobody waits for any more - the
@@ -656,6 +1830,61 @@ fn gateway_with_fake_broker_result(result: Value) -> (Gateway, TcpStream) {
 }
 
 #[test]
+fn dispatched_mutation_without_reply_is_ambiguous_for_gui_and_mcp_not_retryable_transport() {
+    for method in [
+        "device.selectScene",
+        "device.savePresetAs",
+        "device.copyScene",
+        "broker.createDeviceBackupBound",
+        "device.currentSnapshot",
+    ] {
+        let (mut gateway, mut peer) = gateway_with_fake_broker_result(json!({}));
+        peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let process = gateway.process.as_mut().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(GatewayReaderMessage::Failed(
+                "injected EOF after admission".into(),
+            ))
+            .unwrap();
+        process.responses = receiver;
+        let failed = process.request_unchecked(method, json!({}));
+        assert!(failed.is_err());
+        let request = read_frame(&mut peer).unwrap();
+        assert_eq!(
+            request["method"], method,
+            "the mutation really reached the IPC peer before EOF"
+        );
+        let expected_mutation = generated_gateway::is_mutation_method(method)
+            || method == "broker.createDeviceBackupBound";
+        let failure = failed.err().unwrap();
+        let ui = GatewayUiError::from(failure);
+        assert_eq!(ui.retryable, !expected_mutation);
+        assert_eq!(
+            ui.code,
+            if expected_mutation {
+                "WRITE_OUTCOME_AMBIGUOUS"
+            } else {
+                "DEVICE_TRANSPORT"
+            }
+        );
+        let mapped = device_error_from_gateway_failure(
+            GatewayRequestFailure::Transport("lost reply".into()).after_dispatch(method),
+        );
+        assert_eq!(mapped.retryable, !expected_mutation);
+        if expected_mutation {
+            assert_eq!(mapped.user_action_required, Some(true));
+            assert_eq!(mapped.details.unwrap()["requestSent"], true);
+        }
+    }
+    let startup = GatewayUiError::from(GatewayRequestFailure::Transport("not admitted".into()));
+    assert!(
+        startup.retryable,
+        "startup failure is still distinguished from unknown mutation outcome"
+    );
+}
+
+#[test]
 fn broker_control_results_are_typed_and_malformed_replies_keep_the_healthy_connection() {
     let devices = json!({"devices":[
             {"id":"device-1","name":"Quad Cortex One","connected":true,"phase":"ready"},
@@ -705,8 +1934,11 @@ fn broker_control_results_are_typed_and_malformed_replies_keep_the_healthy_conne
             .request(method, params)
             .expect_err("malformed broker result must be rejected");
         assert!(error.contains("malformed broker-control result"), "{error}");
-        assert_eq!(gateway.process.as_ref().unwrap().broker_pid, 4242,
-                "a malformed result is a remote contract failure, not a reason to restart the healthy broker");
+        assert_eq!(
+            gateway.process.as_ref().unwrap().broker_pid,
+            4242,
+            "a malformed result is a remote contract failure, not a reason to restart the healthy broker"
+        );
         assert!(gateway.retiring_process.is_none());
     }
 }
@@ -1256,15 +2488,20 @@ fn a_detached_gateway_records_not_ready_for_a_later_busy_read() {
     let (busy_tx, busy_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let observed = std::thread::scope(|scope| {
+        let mut release = ReadinessRelease(Some(release_tx));
         let gateway = &gateway;
         scope.spawn(move || {
             let _held = gateway.lock().expect("gateway lock");
             busy_tx.send(()).expect("held");
-            let _ = release_rx.recv();
+            release_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("readiness release");
         });
-        busy_rx.recv().expect("the lock is held");
+        busy_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the lock is held");
         let observed = gateway_attachment_with(gateway, &published);
-        release_tx.send(()).expect("release");
+        release.0.take().unwrap().send(()).expect("release");
         observed
     });
     assert_eq!(observed, GatewayAttachment::Busy(false));
@@ -1290,6 +2527,14 @@ fn a_detached_gateway_records_not_ready_for_a_later_busy_read() {
 /// `gateway_readiness_with` removes the shared cell instead, so there is
 /// nothing left to take turns over. If a future test needs the fallback,
 /// give it its own `AtomicBool` - do not reintroduce a guard here.
+struct ReadinessRelease(Option<mpsc::Sender<()>>);
+impl Drop for ReadinessRelease {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(());
+        }
+    }
+}
 fn readiness_while_another_thread_holds_the_lock(
     gateway: &Mutex<Gateway>,
     published: &std::sync::atomic::AtomicBool,
@@ -1297,40 +2542,40 @@ fn readiness_while_another_thread_holds_the_lock(
     let (busy_tx, busy_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     std::thread::scope(|scope| {
+        let mut release = ReadinessRelease(Some(release_tx));
         scope.spawn(move || {
             let _held = gateway.lock().expect("gateway lock");
             busy_tx.send(()).expect("signal that the lock is held");
-            release_rx.recv().expect("wait for the readiness probe");
+            release_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("wait for the readiness probe");
         });
-        busy_rx.recv().expect("the lock is held");
+        busy_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the lock is held");
         assert!(
             gateway.try_lock().is_err(),
             "the scenario under test requires a genuinely contended lock"
         );
         let observed = gateway_readiness_with(gateway, published);
-        release_tx.send(()).expect("release the lock");
+        release
+            .0
+            .take()
+            .unwrap()
+            .send(())
+            .expect("release the lock");
         observed
     })
 }
 
-/// A scratch AppData root of this test's own, and the guard that removes it
-/// when the test ends or unwinds.
-fn temp_app_data_dir(name: &str) -> (RemoveDirOnDrop, PathBuf) {
-    let path = std::env::temp_dir().join(format!(
-        "qc-appdata-test-{name}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock")
-            .as_nanos()
-    ));
-    fs::create_dir_all(&path).expect("temp AppData root");
-    (RemoveDirOnDrop::new(path.clone()), path)
+fn temp_app_data_dir(name: &str) -> PathBuf {
+    unique_fixture_directory(&format!("appdata-{name}"))
 }
 
 #[test]
 fn a_single_broker_installation_is_not_reported_as_a_duplicate() {
-    let (_cleanup, root) = temp_app_data_dir("single");
+    let root = temp_app_data_dir("single");
+    let _root_guard = RemoveDirOnDrop::new(root.clone());
     fs::create_dir_all(root.join("QC Remote")).unwrap();
     fs::write(root.join("QC Remote").join("qc-device-broker.exe"), b"exe").unwrap();
 
@@ -1365,7 +2610,8 @@ fn a_leftover_qc_control_broker_alongside_the_current_one_is_detected_and_report
     // `qc-device-broker.exe` under the legacy directory has two
     // independently launchable brokers - the same hazard as a stale
     // broker process - and nothing surfaced that fact.
-    let (_cleanup, root) = temp_app_data_dir("duplicate");
+    let root = temp_app_data_dir("duplicate");
+    let _root_guard = RemoveDirOnDrop::new(root.clone());
     fs::create_dir_all(root.join("QC Remote")).unwrap();
     fs::create_dir_all(root.join("QC Control")).unwrap();
     fs::write(
@@ -1489,10 +2735,139 @@ fn real_broker_test_lock_excludes_another_handle_and_releases_on_unwind() {
     });
 }
 
+#[cfg(windows)]
+fn with_native_test_state_override<T>(root: Option<PathBuf>, body: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Option<PathBuf>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_STATE_ROOT_OVERRIDE.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+    let previous = TEST_STATE_ROOT_OVERRIDE.with(|slot| slot.replace(Some(root)));
+    let _restore = Restore(previous);
+    body()
+}
+
+#[cfg(windows)]
+#[test]
+fn native_test_health_requires_owned_run_root_before_gateway_admission_and_preserves_other_bytes() {
+    with_isolation_fixture("health-run-owner", |root| {
+        assert!(validate_native_test_state_root(None)
+            .unwrap_err()
+            .contains("test-windows-native.mjs"));
+        assert!(validate_native_test_state_root(Some(Path::new("relative"))).is_err());
+        let sentinel = root.join("not-a-root");
+        fs::write(&sentinel, b"caller-owned sentinel").unwrap();
+        assert!(validate_native_test_state_root(Some(&sentinel)).is_err());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"caller-owned sentinel");
+        let mut gateway = Gateway::default();
+        let starts = gateway.count_starts_refusing();
+        with_native_test_state_override(None, || {
+            let failure = gateway
+                .request_detailed("system.status", json!({}))
+                .unwrap_err();
+            assert!(matches!(failure, GatewayRequestFailure::Transport(message)
+                if message.contains("test-windows-native.mjs")));
+            assert!(
+                starts.lock().unwrap().is_empty(),
+                "missing run ownership must refuse BEFORE the actual gateway starter"
+            );
+            assert!(require_native_test_state_root().is_err());
+        });
+        assert_eq!(
+            fs::read_dir(root).unwrap().count(),
+            1,
+            "refusal must not create a health directory, claim or descriptor"
+        );
+        with_native_test_state_override(Some(root.to_path_buf()), || {
+            let path = runtime_health_path();
+            assert_eq!(
+                path,
+                root.join(format!("process-{}", std::process::id()))
+                    .join("runtime-health.json")
+            );
+            write_runtime_health(&Gateway::default(), "owned-health-fixture", "ok", None);
+            let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(document["lastMethod"], "owned-health-fixture");
+            assert_eq!(document["lastStatus"], "ok");
+            assert_eq!(broker_stderr_path().parent(), path.parent());
+        });
+        assert_eq!(fs::read(&sentinel).unwrap(), b"caller-owned sentinel");
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn native_test_health_and_stderr_use_the_actual_original_producer_environment_root() {
+    // This exact last-writer/end-marker oracle intentionally follows the
+    // canonical Windows all-target launcher contract: --test-threads=1.
+    // Noncanonical parallel test bodies share this process-PID diagnostic
+    // scope and are NOT certified here. Keep both exact byte assertions.
+    use std::io::Write as _;
+    assert!(
+        TEST_STATE_ROOT_OVERRIDE.with(|slot| slot.borrow().is_none()),
+        "the real environment integration oracle must not use the TLS override",
+    );
+    let supplied = std::env::var_os("QC_REMOTE_TEST_STATE_ROOT")
+        .map(PathBuf::from)
+        .expect(
+            "run through the canonical original-owned native producer with nativeTestState:true",
+        );
+    let root = require_native_test_state_root().expect("actual producer run root");
+    assert_eq!(root, supplied);
+    let expected_parent = root.join(format!("process-{}", std::process::id()));
+    let health = runtime_health_path();
+    let stderr = broker_stderr_path();
+    assert_eq!(health.parent(), Some(expected_parent.as_path()));
+    assert_eq!(stderr.parent(), Some(expected_parent.as_path()));
+    write_runtime_health(&Gateway::default(), "actual-run-owner-health", "ok", None);
+    let health_bytes = qc_owner_only_file::read_with_byte_budget(
+        &mut fs::File::open(&health).unwrap(),
+        BROKER_STDERR_MAX_BYTES as usize,
+    )
+    .unwrap();
+    let document: Value = serde_json::from_slice(&health_bytes).unwrap();
+    assert_eq!(document["lastMethod"], "actual-run-owner-health");
+    assert_eq!(document["lastStatus"], "ok");
+    // Exercise the actual sink opening, then append a controlled diagnostic
+    // without starting a broker/helper or truncating earlier test evidence.
+    drop(broker_stderr_sink());
+    let mut diagnostic = fs::OpenOptions::new().append(true).open(&stderr).unwrap();
+    let marker = format!("actual-run-owner-stderr-pid={}\n", std::process::id());
+    diagnostic.write_all(marker.as_bytes()).unwrap();
+    diagnostic.sync_all().unwrap();
+    drop(diagnostic);
+    let diagnostic_bytes = qc_owner_only_file::read_with_byte_budget(
+        &mut fs::File::open(&stderr).unwrap(),
+        BROKER_STDERR_MAX_BYTES as usize + marker.len(),
+    )
+    .unwrap();
+    assert!(diagnostic_bytes.ends_with(marker.as_bytes()));
+    assert!(
+        root.is_dir(),
+        "Rust must not retire the original producer root"
+    );
+    // Controlled test-only paths allow the outer original-owned runner to
+    // prove this SAME root disappears only after its tree acknowledgement.
+    println!(
+        "QC_NATIVE_TEST_STATE_RECEIPT={}",
+        json!({
+            "root": root, "health": health, "stderr": stderr, "pid": std::process::id(),
+        })
+    );
+}
 /// Allocates a new directory without deleting anything from an earlier run.
 pub(crate) fn unique_fixture_directory(name: &str) -> PathBuf {
+    #[cfg(unix)]
     let parent =
         fs::canonicalize(std::env::temp_dir()).expect("canonicalize system temporary directory");
+    // canonicalize adds a verbatim Windows prefix that Node/PowerShell CLI
+    // parsers do not consistently accept. The allocator below still checks
+    // every Windows parent for symlinks/reparse points before exclusive create.
+    #[cfg(not(unix))]
+    let parent = std::env::temp_dir();
     unique_fixture_directory_in(&parent, name)
 }
 
@@ -1777,7 +3152,7 @@ fn wait_for_broker_child_exit(child: &mut std::process::Child, timeout: Duration
 #[test]
 fn a_second_gateway_process_attaches_to_the_first_instead_of_spawning_a_new_broker() {
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("second-attaches");
+    let (_cleanup, descriptor_path) = armed_broker_descriptor_path("second-attaches");
     let first = GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path)
         .expect("the first process becomes the broker");
     let first_pid = first
@@ -1864,60 +3239,72 @@ fn dropping_an_attached_only_client_does_not_kill_the_hosting_process() {
 #[test]
 fn an_attached_client_drop_closes_its_connection_without_killing_the_broker() {
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("attach-drop-closes");
-    let mut broker = native_broker_command()
-        .expect("a broker executable is available to the test")
-        .arg("--broker-serve")
-        .arg("--descriptor-path")
-        .arg(&descriptor_path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("the broker starts");
-    let broker_pid = broker.id();
-    assert!(
-        wait_until(Duration::from_secs(5), || {
-            device_broker_descriptor::read_descriptor(
-                &descriptor_path,
-                device_broker_descriptor::unix_time_ms(),
-            )
-            .is_some()
-        }),
-        "the independently started broker publishes itself"
-    );
+    let (outcome, report) = run_with_cleanup(|cleanup| {
+        let directory = armed_scratch_directory(cleanup, "attach-drop-closes");
+        let descriptor_path = device_broker_descriptor::device_broker_descriptor_path(&directory);
+        let slot: ChildSlot = Default::default();
+        arm_owned_child(
+            cleanup,
+            "attached-drop-broker",
+            &slot,
+            Some(descriptor_path.clone()),
+            Duration::ZERO,
+        );
+        let broker = native_broker_command()
+            .expect("a broker executable is available to the test")
+            .arg("--broker-serve")
+            .arg("--descriptor-path")
+            .arg(&descriptor_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("the broker starts");
+        let broker_pid = broker.id();
+        fill_slot(&slot, OwnedChild::new(broker));
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                device_broker_descriptor::read_descriptor(
+                    &descriptor_path,
+                    device_broker_descriptor::unix_time_ms(),
+                )
+                .is_some()
+            }),
+            "the independently started broker publishes itself"
+        );
 
-    let mut attached = GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path)
-        .expect("attaches to the running broker");
-    assert!(attached.hosted_broker_pid().is_none());
-    assert!(attached.request(rpc::RUNTIME_STATUS, json!({})).is_ok());
-    drop(attached);
+        let mut attached =
+            GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path)
+                .expect("attaches to the running broker");
+        assert!(attached.hosted_broker_pid().is_none());
+        assert!(attached.request(rpc::RUNTIME_STATUS, json!({})).is_ok());
+        drop(attached);
 
-    std::thread::sleep(Duration::from_millis(500));
-    let alive_after_drop = process_is_alive(broker_pid);
-    // The broker's grace period is 5 s after its last client leaves.
-    let exited_on_its_own = wait_until(Duration::from_secs(12), || {
-        matches!(broker.try_wait(), Ok(Some(_)))
+        std::thread::sleep(Duration::from_millis(500));
+        let alive_after_drop = process_is_alive(broker_pid);
+        // The broker's grace period is 5 s after its last client leaves.
+        let exited_on_its_own = wait_until(Duration::from_secs(12), || {
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_mut()
+                .expect("armed original child")
+                .observe()
+                == ExitObservation::Exited
+        });
+        assert!(
+            alive_after_drop,
+            "dropping an attached-only client must not kill the broker"
+        );
+        assert!(
+            exited_on_its_own,
+            "the broker must see the dropped client leave and reach its zero-client exit"
+        );
+        assert!(
+            !descriptor_path.exists(),
+            "the broker released its descriptor on the way out"
+        );
     });
-    if !exited_on_its_own {
-        let _ = broker.kill();
-        let _ = broker.wait();
-    }
-    // Armed only once the broker is reaped: before that, a failure leaves
-    // the directory to the broker that may still be using it.
-    let _directory_guard = RemoveDirOnDrop::new(descriptor_path.parent().unwrap());
-    assert!(
-        alive_after_drop,
-        "dropping an attached-only client must not kill the broker"
-    );
-    assert!(
-        exited_on_its_own,
-        "the broker must see the dropped client leave and reach its zero-client exit"
-    );
-    assert!(
-        !descriptor_path.exists(),
-        "the broker released its descriptor on the way out"
-    );
+    finish_or_rethrow(outcome, report);
 }
 
 #[test]
@@ -1953,6 +3340,54 @@ fn a_descriptor_left_by_a_dead_broker_is_replaced_by_a_new_host() {
         "with no live broker, this process hosts one"
     );
     assert!(process.request(rpc::RUNTIME_STATUS, json!({})).is_ok());
+}
+
+#[test]
+fn attached_broker_fixture_panic_before_readiness_reaps_child_before_removing_root() {
+    let _serialize = serialize_real_broker_test();
+    let mut root = None;
+    let mut pid = None;
+    let slot: ChildSlot = Default::default();
+    let (outcome, report) = run_with_cleanup(|cleanup| {
+        let directory = armed_scratch_directory(cleanup, "attached-drop-startup-panic");
+        root = Some(directory.clone());
+        let descriptor = device_broker_descriptor::device_broker_descriptor_path(&directory);
+        arm_owned_child(
+            cleanup,
+            "attached-drop-startup-broker",
+            &slot,
+            Some(descriptor.clone()),
+            Duration::ZERO,
+        );
+        let child = native_broker_command()
+            .expect("fixture broker available")
+            .arg("--broker-serve")
+            .arg("--descriptor-path")
+            .arg(&descriptor)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("owned fixture broker starts");
+        pid = Some(child.id());
+        fill_slot(&slot, OwnedChild::new(child));
+        panic!("injected before broker readiness");
+    });
+    let primary = outcome.expect_err("startup panic remains observable");
+    assert_eq!(panic_text(&*primary), "injected before broker readiness");
+    assert!(!report.blocked, "owned termination acknowledged: {report}");
+    assert!(
+        !process_is_alive(pid.expect("child acquired")),
+        "fixture child stopped"
+    );
+    assert!(
+        slot.lock().unwrap().is_none(),
+        "original child moved to cleanup owner"
+    );
+    assert!(
+        !root.expect("directory acquired").exists(),
+        "root removed after child stop"
+    );
 }
 
 /// The CLI's `residentNotVisible` predicate, at the gateway: a session marker
@@ -2342,7 +3777,8 @@ fn the_gone_recheck_waits_at_least_the_confirmation_delay() {
 #[test]
 fn a_broker_refusing_one_connection_transiently_is_not_replaced() {
     let _serialize = serialize_real_broker_test();
-    let (_directory_guard, descriptor_path) = guarded_descriptor_path("transient-refusal");
+    let (directory_guard, descriptor_path) = guarded_descriptor_path("transient-refusal");
+    let directory_guard = std::sync::Arc::new(directory_guard);
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -2367,71 +3803,8 @@ fn a_broker_refusing_one_connection_transiently_is_not_replaced() {
     );
     drop(slot);
 
-    let recovered = std::thread::spawn(move || {
-        // Long enough that the first attach attempt's connect has
-        // already failed, short enough to land well inside the
-        // confirming re-check's own connect timeout.
-        std::thread::sleep(Duration::from_millis(150));
-        let listener =
-            std::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).unwrap();
-        // On Windows a connect to a closed loopback port keeps retrying
-        // its SYN for about two seconds, so the client's first attempt
-        // can be completed by this listener at the instant it gives up
-        // at its own connect timeout. That connection is accepted here
-        // but already closed by the client. Keep accepting until one
-        // connection actually delivers the handshake, within a bound.
-        listener.set_nonblocking(true).unwrap();
-        let accept_deadline = Instant::now() + Duration::from_secs(10);
-        let (mut stream, request) = loop {
-            assert!(
-                Instant::now() < accept_deadline,
-                "no connection delivered the authenticate frame in time"
-            );
-            let mut stream = match listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
-                Err(error) => panic!("the recovered listener failed to accept: {error}"),
-            };
-            // An accepted socket inherits the listener's non-blocking mode.
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            // A connection the client already abandoned ends (EOF or
-            // reset) before a full frame arrives; skip it.
-            if let Ok(request) = read_frame(&mut stream) {
-                break (stream, request);
-            }
-        };
-        assert_eq!(
-            request.get("method").and_then(Value::as_str),
-            Some(DEVICE_BROKER_AUTHENTICATE_METHOD)
-        );
-        let response = serde_json::to_vec(&json!({
-            "id": 0,
-            "result": {"instanceId": instance_id}
-        }))
-        .unwrap();
-        write_frame(&mut stream, &response).unwrap();
-        // A successful attach immediately follows with a real
-        // system.status round trip (GatewayProcess::verify_gateway_api_version),
-        // which must be answered too or the client reads this as a
-        // transport failure right after attaching.
-        let status_request = read_frame(&mut stream).unwrap();
-        let status_response = serde_json::to_vec(&json!({
-            "jsonrpc": "2.0",
-            "id": status_request.get("id").cloned().unwrap_or(json!(1)),
-            "result": {"gatewayApiVersion": generated_gateway::API_VERSION}
-        }))
-        .unwrap();
-        write_frame(&mut stream, &status_response).unwrap();
-        // Held so the attached client's connection stays open for the
-        // rest of the test instead of being read as a transport failure.
-        std::thread::sleep(Duration::from_secs(2));
-    });
+    let recovered =
+        spawn_recovered_fake_broker(port, instance_id, directory_guard.clone(), None).unwrap();
 
     let process = GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path)
         .expect("the confirming re-check reaches the recovered broker");
@@ -2494,7 +3867,7 @@ fn break_own_connection(process: &GatewayProcess) {
 #[test]
 fn a_hosting_process_dropped_after_a_transport_failure_leaves_the_shared_broker_running() {
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("host-transport-failure");
+    let (_cleanup, descriptor_path) = armed_broker_descriptor_path("host-transport-failure");
     let mut host = GatewayProcess::start_with_descriptor_path(None, false, &descriptor_path)
         .expect("the first process hosts the broker");
     let broker_pid = host
@@ -2585,27 +3958,144 @@ fn publish_silent_broker(
 }
 
 #[test]
-fn an_idle_reopen_failure_reads_as_not_connected_wherever_text_is_matched() {
-    // services/device-broker/src/rpc.rs idle_reopen_error: the stable
-    // signal is data.category/retryable; the text says it too.
-    for message in [
-        "The Quad Cortex is not connected: device unplugged",
-        "The Quad Cortex is not connected: its session, closed for idleness, did not reopen within 35 seconds; retry",
-    ] {
-        let error = relay_device_error(message.into());
-        assert_eq!(error.code, "NOT_CONNECTED", "{message}");
-        assert!(error.retryable, "{message}");
+fn typed_idle_reopen_refusal_updates_actual_gateway_readiness_without_replacing_or_replaying() {
+    use std::sync::Arc;
+    static BUDGET: qc_native_platform::thread_owner::Budget =
+        qc_native_platform::thread_owner::Budget::new(1);
+    let runtime = resource_origin_runtime();
+    struct RetireOriginal;
+    impl Drop for RetireOriginal {
+        fn drop(&mut self) {
+            let until = Instant::now() + Duration::from_secs(3);
+            while BUDGET.count() != 0 && Instant::now() < until {
+                qc_native_platform::thread_owner::reap();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            if BUDGET.count() != 0 {
+                eprintln!("typed-idle fixture exact original remains safely retained");
+            }
+        }
+    }
+    for category in [Some("notConnected"), Some("busy"), None] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        peer.set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut owner = FakeBrokerThreads::new(&peer);
+        let methods = Arc::new(Mutex::new(Vec::new()));
+        let observed = methods.clone();
+        owner.workers.push(std::thread::spawn(move || {
+            for index in 0..2 {
+                let request = read_frame(&mut peer).unwrap();
+                observed.lock().unwrap().push(request["method"].as_str().unwrap().to_owned());
+                let reply = if index == 0 {
+                    let mut data = json!({"retryable":true});
+                    if let Some(category) = category { data["category"] = json!(category); }
+                    json!({"jsonrpc":"2.0","id":request["id"],"error":{
+                        "code":-32002,"message":"The Quad Cortex is not connected: idle reopen did not finish","data":data
+                    }})
+                } else {
+                    json!({"jsonrpc":"2.0","id":request["id"],"result":{"gatewayApiVersion":generated_gateway::API_VERSION}})
+                };
+                write_frame(&mut peer, &serde_json::to_vec(&reply).unwrap()).unwrap();
+            }
+        }));
+        let intentional_release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let GatewayReader {
+            responses,
+            completed,
+        } = spawn_gateway_reader(
+            stream.try_clone().unwrap(),
+            None,
+            intentional_release.clone(),
+        )
+        .unwrap();
+        let gateway = Arc::new(Mutex::new(Gateway {
+            connected: true,
+            process: Some(GatewayProcess {
+                transport: GatewayTransport::SharedBroker {
+                    stream,
+                    hosted_child: None,
+                    instance_id: "typed-idle-fixture".into(),
+                    release_marker_path: PathBuf::new(),
+                },
+                responses,
+                reader_completed: completed,
+                next_id: 1,
+                broker_pid: 4242,
+                intentional_release,
+                participant_announced: true,
+                lock_free_reads: None,
+            }),
+            ..Gateway::default()
+        }));
+        // Drops before gateway/peer ownership on assertion unwind; the shared
+        // original registry retains any actor whose native exit remains unknown.
+        let retirement = RetireOriginal;
+        let reads = gateway.lock().unwrap().lock_free_read_slot();
+        let action_gateway = gateway.clone();
+        let error = runtime
+            .block_on(await_relay_gateway(
+                rpc::CURRENT_PRESET.into(),
+                &BUDGET,
+                Duration::from_secs(4),
+                move |context| {
+                    relay_gateway_request(
+                        &action_gateway,
+                        &reads,
+                        rpc::CURRENT_PRESET,
+                        json!({}),
+                        ConnectionUse::MayConnect,
+                        None,
+                        Some(&context),
+                    )
+                },
+            ))
+            .expect_err("actual remote refusal through the adapter's shared invocation helper");
+        assert_eq!(error.code, "-32002");
+        assert!(error.retryable);
+        assert_eq!(
+            gateway_readiness(&gateway),
+            category != Some("notConnected"),
+            "only the stable typed fact invalidates readiness, not code or message alone"
+        );
+        {
+            let mut gateway = gateway.lock().unwrap();
+            assert_eq!(gateway.process.as_ref().unwrap().broker_pid, 4242);
+            assert!(
+                gateway.retiring_process.is_none(),
+                "remote offline is not transport death"
+            );
+            assert_eq!(
+                gateway
+                    .request_detailed("system.status", json!({}))
+                    .unwrap_or_else(|_| panic!("the original broker must still answer status"))
+                    ["gatewayApiVersion"],
+                generated_gateway::API_VERSION
+            );
+        }
+        assert_eq!(
+            *methods.lock().unwrap(),
+            vec![rpc::CURRENT_PRESET.to_owned(), "system.status".into()],
+            "one original device request, no replay and the same transport remains usable"
+        );
+        drop(gateway);
+        drop(owner);
+        drop(retirement);
+        assert_eq!(
+            BUDGET.count(),
+            0,
+            "exact original joined before next scenario"
+        );
     }
 }
 
 #[test]
 fn a_missing_sidecar_fails_closed_and_a_same_name_fallback_is_never_chosen_unverified() {
-    let root =
-        std::env::temp_dir().join(format!("qc-locate-broker-{:032x}", rand::random::<u128>()));
-    // On a failing run the checked removal at the end never runs, so this
-    // removes the directory; on a passing run that removal goes first and
-    // this finds the directory already gone.
-    let _cleanup = RemoveDirOnDrop::new(root.clone());
+    let root = unique_fixture_directory("locate-broker");
+    let _root_guard = RemoveDirOnDrop::new(root.clone());
     let installed = root.join("install");
     let fallback_dir = root.join("checkout");
     fs::create_dir_all(&installed).unwrap();
@@ -2661,13 +4151,8 @@ fn the_brokers_own_process_never_elects_deletes_or_spawns_a_broker() {
     // broker has not published yet or is exiting, the host's gateway only
     // waits for that descriptor: a second broker would be a second USB
     // owner and a second process.
-    let directory =
-        std::env::temp_dir().join(format!("qc-attach-only-{:032x}", rand::random::<u128>()));
-    // On a failing run the checked removal at the end never runs, so this
-    // removes the directory; on a passing run that removal goes first and
-    // this finds the directory already gone.
-    let _cleanup = RemoveDirOnDrop::new(directory.clone());
-    fs::create_dir_all(&directory).unwrap();
+    let directory = unique_fixture_directory("attach-only");
+    let _directory_guard = RemoveDirOnDrop::new(directory.clone());
     let descriptor_path = directory.join("device-broker.json");
     let started = Instant::now();
     let error = match attach_or_host_device_broker_within(
@@ -2874,31 +4359,182 @@ fn own_process_created_at() -> u64 {
 
 #[cfg(windows)]
 fn exited_process_id() -> u32 {
-    let mut child = Command::new("cmd")
-        .args(["/C", "exit 0"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let pid = child.id();
-    child.wait().unwrap();
-    // `child` is dropped here, closing the last handle to it.
-    pid
+    exited_process_id_with(Command::new("cmd").args(["/C", "exit 0"]))
 }
 
 #[cfg(unix)]
 fn exited_process_id() -> u32 {
-    let mut child = Command::new("/bin/sh")
-        .args(["-c", "exit 0"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn a short-lived child for the dead-process fixture");
-    let pid = child.id();
-    child.wait().unwrap();
-    pid
+    exited_process_id_with(Command::new("/bin/sh").args(["-c", "exit 0"]))
+}
+
+fn exited_process_id_with(command: &mut Command) -> u32 {
+    let (outcome, report) = run_with_cleanup(|cleanup| {
+        let slot: ChildSlot = Default::default();
+        arm_owned_child(cleanup, "dead-process-fixture", &slot, None, Duration::ZERO);
+        let child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a short-lived child for the dead-process fixture");
+        let pid = child.id();
+        fill_slot(&slot, OwnedChild::new(child));
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                slot.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_mut()
+                    .expect("armed short-lived child")
+                    .observe()
+                    == ExitObservation::Exited
+            }),
+            "dead-process fixture exits within its budget"
+        );
+        pid
+    });
+    // Cleanup closes the acknowledged original Child before returning its pid.
+    finish_or_rethrow(outcome, report)
+}
+
+/// The supported non-Windows syntax fixture cannot use the Windows-only
+/// production status-tool runner. This is deliberately a fixed parser-only
+/// command, not a general provider launcher: no inherited Node preload hooks,
+/// no stdin and no output-drain threads. The original Child is armed before
+/// launch; a failed acknowledgement keeps its output root owned and intact.
+#[cfg(not(windows))]
+pub(crate) fn run_node_syntax_fixture(path: &Path) -> std::io::Result<std::process::Output> {
+    let (outcome, report) = run_with_cleanup(|cleanup| {
+        let root = armed_scratch_directory(cleanup, "node-syntax-output");
+        let stdout = root.join("stdout");
+        let stderr = root.join("stderr");
+        let output_file = |path: &Path| {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+        };
+        let slot: ChildSlot = Default::default();
+        arm_owned_child(cleanup, "node-syntax-parser", &slot, None, Duration::ZERO);
+        let child = Command::new("node")
+            .arg("--check")
+            .arg(path)
+            .env_remove("NODE_OPTIONS")
+            .env_remove("NODE_REPL_EXTERNAL_MODULE")
+            .stdin(Stdio::null())
+            .stdout(output_file(&stdout)?)
+            .stderr(output_file(&stderr)?)
+            .spawn()?;
+        fill_slot(&slot, OwnedChild::new(child));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            let status = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_mut()
+                .expect("armed original parser child")
+                .child
+                .try_wait()?;
+            if let Some(status) = status {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Node syntax fixture exceeded its deadline",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let read_output = |path: &Path| -> std::io::Result<Vec<u8>> {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            fs::File::open(path)?
+                .take(1_048_577)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 1_048_576 {
+                return Err(std::io::Error::other(
+                    "Node syntax fixture output limit exceeded",
+                ));
+            }
+            Ok(bytes)
+        };
+        Ok(std::process::Output {
+            status,
+            stdout: read_output(&stdout)?,
+            stderr: read_output(&stderr)?,
+        })
+    });
+    finish_or_rethrow(outcome, report)
+}
+
+pub(crate) fn run_owned_test_binary_fixture(
+    command: &mut Command,
+) -> std::io::Result<std::process::Output> {
+    run_owned_test_binary_fixture_with_resource(command, ())
+}
+
+pub(crate) fn run_owned_test_binary_fixture_with_resource(
+    command: &mut Command,
+    resource: impl Send + 'static,
+) -> std::io::Result<std::process::Output> {
+    let (outcome, report) = run_with_cleanup(|cleanup| {
+        let root = armed_scratch_directory(cleanup, "test-binary-output");
+        let stdout = root.join("stdout");
+        let stderr = root.join("stderr");
+        let output_file = |path: &Path| {
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+        };
+        let slot: ChildSlot = Default::default();
+        arm_owned_child(cleanup, "test-binary", &slot, None, Duration::ZERO);
+        let child = command
+            .stdin(Stdio::null())
+            .stdout(output_file(&stdout)?)
+            .stderr(output_file(&stderr)?)
+            .spawn()?;
+        fill_slot(&slot, OwnedChild::new(child).with_resource(resource));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            let status = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_mut()
+                .expect("armed original fixture child")
+                .child
+                .try_wait()?;
+            if let Some(status) = status {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Test binary fixture exceeded its deadline",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let read_output = |path: &Path| -> std::io::Result<Vec<u8>> {
+            use std::io::Read;
+            let mut bytes = Vec::new();
+            fs::File::open(path)?
+                .take(1_048_577)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 1_048_576 {
+                return Err(std::io::Error::other(
+                    "Test binary fixture output limit exceeded",
+                ));
+            }
+            Ok(bytes)
+        };
+        Ok(std::process::Output {
+            status,
+            stdout: read_output(&stdout)?,
+            stderr: read_output(&stderr)?,
+        })
+    });
+    finish_or_rethrow(outcome, report)
 }
 
 // `os_process_is_alive`/`os_process_created_at` themselves are tested in
@@ -3178,14 +4814,9 @@ fn failed_generation_marker_recovers_a_missed_notice_but_ignores_other_exits() {
         (3, Some("malformed"), false),
         (4, None, false),
     ] {
-        let path = std::env::temp_dir().join(format!(
-            "qc-release-marker-{}-{index}-{}.json",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let directory = unique_fixture_directory("release-marker");
+        let _directory_guard = RemoveDirOnDrop::new(directory.clone());
+        let path = directory.join(format!("marker-{index}.json"));
         if let Some(contents) = contents {
             fs::write(&path, contents).unwrap();
         }
@@ -3224,9 +4855,18 @@ fn failed_generation_marker_recovers_a_missed_notice_but_ignores_other_exits() {
                 gateway.respect_intentional_release(rpc::RECONNECT),
                 Ok(true)
             ));
-            assert!(matches!(gateway.respect_intentional_release(rpc::RUNTIME_STATUS),Ok(false)), "explicit reconnect supersedes the matching marker without deleting another generation's evidence");
+            assert!(
+                matches!(
+                    gateway.respect_intentional_release(rpc::RUNTIME_STATUS),
+                    Ok(false)
+                ),
+                "explicit reconnect supersedes the matching marker without deleting another generation's evidence"
+            );
         } else {
-            assert!(matches!(outcome,Ok(false)), "stale, malformed, non-forced and absent markers must preserve normal crash recovery");
+            assert!(
+                matches!(outcome, Ok(false)),
+                "stale, malformed, non-forced and absent markers must preserve normal crash recovery"
+            );
             assert!(!gateway.intentional_release);
         }
         if contents.is_some() {
@@ -3238,14 +4878,9 @@ fn failed_generation_marker_recovers_a_missed_notice_but_ignores_other_exits() {
 #[test]
 fn later_forced_generations_preserve_a_delayed_participants_release_record() {
     use generated_broker_surface::BrokerReleaseMarker;
-    let descriptor = std::env::temp_dir().join(format!(
-        "qc-release-generations-{}-{}.json",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let directory = unique_fixture_directory("release-generations");
+    let _directory_guard = RemoveDirOnDrop::new(directory.clone());
+    let descriptor = directory.join("device-broker.json");
     let old_path = BrokerReleaseMarker::path_for(&descriptor, "older-generation");
     let new_path = BrokerReleaseMarker::path_for(&descriptor, "newer-generation");
     assert_ne!(old_path, new_path);
@@ -3291,7 +4926,13 @@ fn later_forced_generations_preserve_a_delayed_participants_release_record() {
                 "unreleased new generations keep ordinary crash recovery"
             );
         } else {
-            assert!(matches!(result,Err(GatewayRequestFailure::Remote { code:-32002,.. })),"both released generations remain blocked even when their socket notices were missed");
+            assert!(
+                matches!(
+                    result,
+                    Err(GatewayRequestFailure::Remote { code: -32002, .. })
+                ),
+                "both released generations remain blocked even when their socket notices were missed"
+            );
         }
     }
     assert!(old_path.exists() && new_path.exists());
@@ -3615,7 +5256,8 @@ fn shared_broker_integration_harness() {
                 let outcome = match response {
                     Ok(value) if query.is_some() => value.to_string(),
                     Ok(_) => "ok".to_string(),
-                    Err(GatewayRequestFailure::Transport(message)) => {
+                    Err(GatewayRequestFailure::Transport(message))
+                    | Err(GatewayRequestFailure::UnansweredMutation(message)) => {
                         format!("err:transport:{message}")
                     }
                     Err(GatewayRequestFailure::Remote { code, message, .. }) => {
@@ -3645,6 +5287,7 @@ const RESOURCE_ORIGIN_SAFETY: Duration = Duration::from_secs(60);
 struct ScriptedBroker {
     received: mpsc::Receiver<String>,
     fail: mpsc::Sender<()>,
+    _owner: FakeBrokerThreads,
 }
 
 /// A gateway attached to a [`ScriptedBroker`] exactly as
@@ -3660,7 +5303,9 @@ fn gateway_with_scripted_broker(
     let (peer, _) = listener.accept().unwrap();
     let (received_tx, received) = mpsc::channel();
     let (fail, fail_rx) = mpsc::channel::<()>();
-    std::thread::spawn(move || {
+    let mut owner = FakeBrokerThreads::new(&peer);
+    owner.wake.push(fail.clone());
+    owner.workers.push(std::thread::spawn(move || {
         let mut input = peer.try_clone().unwrap();
         let mut output = peer;
         while let Ok(request) = read_frame(&mut input) {
@@ -3688,7 +5333,7 @@ fn gateway_with_scripted_broker(
                 return;
             }
         }
-    });
+    }));
     let intentional_release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reads = std::sync::Arc::new(LockFreeReads::new(
         stream.try_clone().unwrap(),
@@ -3724,7 +5369,14 @@ fn gateway_with_scripted_broker(
         ..Gateway::default()
     };
     gateway.publish_lock_free_reads();
-    (gateway, ScriptedBroker { received, fail })
+    (
+        gateway,
+        ScriptedBroker {
+            received,
+            fail,
+            _owner: owner,
+        },
+    )
 }
 
 /// The production path a host's MCP and `/rpc` surfaces answer from:
@@ -3836,16 +5488,15 @@ fn a_resource_read_racing_a_failing_tool_call_never_brings_a_broker_up() {
     assert!(received_so_far(&broker).is_empty(), "nothing else was sent");
 }
 
-/// Control: the same race with a tool call in the read's
-/// place still recovers, as every request did before: it starts a broker
-/// where the gateway meets the shared one. The broker opens no USB session
-/// (`auto_connect_first_broker` is off and nothing was started before), and
-/// ends through its own grace period once the adapter lets go.
+/// Control: a broker-only request without resource origin still recovers
+/// through the same LocalBackend and gateway path. Status does not trigger
+/// idle USB reopening; startup auto-connect is disabled. The broker ends
+/// through its own grace period once the adapter lets go.
 #[test]
 fn a_tool_call_racing_a_failing_tool_call_still_recovers_the_broker() {
     use qc_remote_mcp::QcBackend as _;
     let _serialize = serialize_real_broker_test();
-    let descriptor_path = test_descriptor_path("tool-call-race");
+    let (_cleanup, descriptor_path) = armed_broker_descriptor_path("tool-call-race");
     let (gateway, broker) =
         gateway_with_scripted_broker(&descriptor_path, true, Some(rpc::SELECT_SCENE));
     let adapter = local_stdio::HeadlessDeviceAdapter::over_gateway(gateway);
@@ -3871,7 +5522,11 @@ fn a_tool_call_racing_a_failing_tool_call_still_recovers_the_broker() {
         let backend = backend.clone();
         async move {
             backend
-                .request(&local_mcp_route(), rpc::LIST_MODELS, serde_json::Map::new())
+                .request(
+                    &local_mcp_route(),
+                    rpc::RUNTIME_STATUS,
+                    serde_json::Map::new(),
+                )
                 .await
         }
     });
@@ -3880,8 +5535,14 @@ fn a_tool_call_racing_a_failing_tool_call_still_recovers_the_broker() {
         .send(())
         .expect("fail the first tool call's connection");
     assert!(runtime.block_on(first).expect("first task").is_err());
-    // Its outcome depends on the device; only the recovery matters here.
-    let _ = runtime.block_on(second).expect("second task");
+    let recovered = runtime
+        .block_on(second)
+        .expect("second task")
+        .expect("broker-only status recovers");
+    assert_eq!(
+        recovered["gatewayApiVersion"],
+        generated_gateway::API_VERSION
+    );
 
     assert!(
         adapter.gateway_attached(),
@@ -4004,6 +5665,7 @@ struct AdmittingBroker {
     close: mpsc::Sender<()>,
     demands: mpsc::Receiver<(String, Option<String>)>,
     reopened: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    _owner: FakeBrokerThreads,
 }
 
 fn gateway_with_admitting_broker(
@@ -4019,7 +5681,9 @@ fn gateway_with_admitting_broker(
     let (demands_tx, demands) = mpsc::channel();
     let reopened = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = reopened.clone();
-    std::thread::spawn(move || {
+    let mut owner = FakeBrokerThreads::new(&peer);
+    owner.wake.push(close.clone());
+    owner.workers.push(std::thread::spawn(move || {
         let mut input = peer.try_clone().unwrap();
         let mut output = peer;
         let mut session_open = true;
@@ -4066,7 +5730,7 @@ fn gateway_with_admitting_broker(
                 }
             }
         }
-    });
+    }));
     let intentional_release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reads = std::sync::Arc::new(LockFreeReads::new(
         stream.try_clone().unwrap(),
@@ -4109,6 +5773,7 @@ fn gateway_with_admitting_broker(
             close,
             demands,
             reopened,
+            _owner: owner,
         },
     )
 }
@@ -4315,6 +5980,19 @@ fn remove_dir_with_retries(directory: &Path) -> Result<(), String> {
     ))
 }
 
+/// A final reap is not permission to remove bytes unless its exact originals
+/// actually acknowledged exit. Unknown owners remain in TestOwner; keep their
+/// possible output directory too, and preserve the existing failing oracle.
+fn remove_dir_after_acknowledged_reap(directory: &Path, acknowledged: bool) -> Result<(), String> {
+    if !acknowledged {
+        return Err(format!(
+            "retirement not acknowledged; final fixture directory retained: {}",
+            directory.display()
+        ));
+    }
+    remove_dir_with_retries(directory)
+}
+
 /// Bytes in every file under `path`, for a cleanup report.
 fn bytes_under(path: &Path) -> u64 {
     match fs::symlink_metadata(path) {
@@ -4495,6 +6173,9 @@ type ObserveWith = Box<dyn FnMut() -> std::io::Result<Option<std::process::ExitS
 pub(crate) struct OwnedChild {
     child: std::process::Child,
     recorded_pid: u32,
+    // An unknown original keeps every attached scratch/resource capability
+    // inside the existing bounded TestOwner until acknowledged retirement.
+    _resource: Option<Box<dyn Send>>,
     /// Test-only injection: replaces `try_wait`, to prove that a
     /// wait error is never taken for an exit.
     observe_with: Option<ObserveWith>,
@@ -4534,7 +6215,13 @@ impl OwnedChild {
             child,
             recorded_pid,
             observe_with: None,
+            _resource: None,
         }
+    }
+
+    pub(crate) fn with_resource(mut self, resource: impl Send + 'static) -> Self {
+        self._resource = Some(Box::new(resource));
+        self
     }
 
     /// `try_wait` on the held handle, or the injected replacement.
@@ -4549,51 +6236,6 @@ impl OwnedChild {
             Err(error) => {
                 ExitObservation::Unknown(format!("waiting on its handle failed: {error}"))
             }
-        }
-    }
-
-    /// Waits up to `bound` for it to exit on its own, then terminates it
-    /// through the handle and waits up to `acknowledgement` for the exit to
-    /// be observed on that same handle (`stop_held`).
-    pub(crate) fn stop(
-        &mut self,
-        what: &str,
-        bound: Duration,
-        acknowledgement: Duration,
-        report: &mut CleanupReport,
-        kill: impl FnOnce(&mut std::process::Child) -> std::io::Result<()>,
-    ) {
-        struct WithKill<'a, K> {
-            owned: &'a mut OwnedChild,
-            kill: Option<K>,
-        }
-        impl<K: FnOnce(&mut std::process::Child) -> std::io::Result<()>> ProcessControl
-            for WithKill<'_, K>
-        {
-            fn recorded_pid(&self) -> u32 {
-                self.owned.recorded_pid
-            }
-            fn observe(&mut self) -> ExitObservation {
-                self.owned.observe()
-            }
-            fn terminate(&mut self) -> std::io::Result<()> {
-                match self.kill.take() {
-                    Some(kill) => kill(&mut self.owned.child),
-                    None => Ok(()),
-                }
-            }
-        }
-        if stop_held(
-            &mut WithKill {
-                owned: self,
-                kill: Some(kill),
-            },
-            what,
-            bound,
-            acknowledgement,
-            report,
-        ) {
-            let _ = self.child.wait();
         }
     }
 }
@@ -4736,7 +6378,7 @@ const TERMINATION_ACK_BOUND: Duration = Duration::from_secs(5);
 
 /// A shared slot an owned child is put into the moment it is acquired, armed
 /// before the acquisition can happen.
-type ChildSlot = std::sync::Arc<Mutex<Option<OwnedChild>>>;
+pub(crate) type ChildSlot = std::sync::Arc<Mutex<Option<OwnedChild>>>;
 
 /// A process the test process owns.
 type TestOwned = Box<dyn ProcessControl + Send>;
@@ -5116,7 +6758,7 @@ where
 
 /// Puts a freshly acquired child into an armed slot without any fallible
 /// step in between (a poisoned slot lock is recovered, never a panic).
-fn fill_slot(slot: &ChildSlot, child: OwnedChild) {
+pub(crate) fn fill_slot(slot: &ChildSlot, child: OwnedChild) {
     *slot
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(child);
@@ -5156,7 +6798,7 @@ impl<K: FnOnce(&mut std::process::Child) -> std::io::Result<()> + Send> ProcessC
 /// Arms the teardown of whatever child lands in `slot`, reserving its domain
 /// first: call it before the child is acquired. Returns the
 /// domain, under which an unacknowledged child stays owned.
-fn arm_owned_child(
+pub(crate) fn arm_owned_child(
     cleanup: &mut CleanupStack,
     what: &'static str,
     slot: &ChildSlot,
@@ -5172,6 +6814,12 @@ fn arm_owned_child(
         TERMINATION_ACK_BOUND,
         |child| child.kill(),
     )
+}
+
+/// Whether the existing global fixture-owner domain has fully retired,
+/// including its original Child and any in-flight cleanup observation.
+pub(crate) fn fixture_child_retired(domain: &str) -> bool {
+    !TEST_OWNER.is_reserved(domain)
 }
 
 /// `arm_owned_child` with the acknowledgement bound and the terminator
@@ -5341,6 +6989,55 @@ fn arm_spawned_broker(
     (guard, sink)
 }
 
+// Reuse the canonical process fixture owner for MCP acquisition cleanup.
+#[cfg(not(windows))]
+pub(crate) fn arm_mcp_fixture_children(
+    cleanup: &mut CleanupStack,
+) -> std::sync::Arc<Mutex<Vec<OwnedChild>>> {
+    let domain = fixture_domain("MCP fixture brokers");
+    let permit = admit(&domain, 4);
+    let children = std::sync::Arc::new(Mutex::new(Vec::<OwnedChild>::new()));
+    let originals = children.clone();
+    cleanup.arm("MCP fixture broker originals", move |report| {
+        let originals = std::mem::take(
+            &mut *originals
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for original in originals {
+            // Existing TestOwner retains even an overflow before reporting it;
+            // never drop an acquired original because a diagnostic cap failed.
+            if let Err(error) = permit.own(Box::new(original)) {
+                report.unacknowledged(error);
+            }
+        }
+        TEST_OWNER.stop_domain(
+            permit.domain(),
+            Duration::from_secs(7),
+            TERMINATION_ACK_BOUND,
+            false,
+            report,
+        );
+    });
+    children
+}
+
+#[cfg(windows)]
+pub(crate) fn arm_mcp_fixture_broker(cleanup: &mut CleanupStack, descriptor_path: &Path) {
+    arm_start_slot(cleanup, descriptor_path, Duration::from_secs(7));
+    let (guard, _) = arm_spawned_broker(
+        cleanup,
+        descriptor_path,
+        Duration::from_secs(7),
+        TERMINATION_ACK_BOUND,
+        SpawnInjection::default(),
+        HeldProcess::terminate,
+    );
+    // Capturing the acquisition guard in the actual dependent stack keeps
+    // it installed through an unknown MCP original's late native retirement.
+    cleanup.arm("MCP broker acquisition guard", move |_| drop(guard));
+}
+
 /// Arms the fixture's take-over of whatever the production start slot of
 /// `descriptor_path` still holds at cleanup, reserving its own domain first.
 #[cfg(windows)]
@@ -5408,6 +7105,110 @@ fn owned_in_sink(sink: &BrokerSpawnSink) -> Vec<HeldProcess> {
         .collect()
 }
 
+#[test]
+#[ignore = "owned fixed child, invoked only by an_unknown_fixture_child_retains_attached_root_until_actual_retirement"]
+fn attached_root_child_fixture() {
+    let root = PathBuf::from(
+        std::env::var_os("QC_ATTACHED_ROOT_FIXTURE").expect("owned ignored helper root"),
+    );
+    let mut ready = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(root.join("ready"))
+        .unwrap();
+    ready
+        .write_all(std::process::id().to_string().as_bytes())
+        .unwrap();
+    drop(ready);
+    std::thread::sleep(Duration::from_secs(30));
+}
+
+#[test]
+fn an_unknown_fixture_child_retains_attached_root_until_actual_retirement() {
+    let owner = private_owner(1);
+    let domain = fixture_domain("attached-root-child");
+    let permit = owner.reserve(&domain, 1).unwrap();
+    let _final_reap = RunOnDrop::new(|| {
+        let failures = owner.reap(&domain, Duration::from_secs(5));
+        if !failures.is_empty() {
+            eprintln!("Attached-root child retained: {failures:?}");
+        }
+    });
+    let directory = unique_fixture_directory("attached-root-child");
+    let root = std::sync::Arc::new(RemoveDirOnDrop::new(directory.clone()));
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "tests::attached_root_child_fixture",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("QC_ATTACHED_ROOT_FIXTURE", &directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = OwnedChild::new(command.spawn().unwrap()).with_resource(root.clone());
+    let pid = child.recorded_pid;
+    child.observe_with = Some(Box::new(|| {
+        Err(std::io::Error::other("injected unknown original"))
+    }));
+    permit
+        .own(Box::new(KillWith {
+            owned: child,
+            kill: Some(|_: &mut std::process::Child| Ok(())),
+        }))
+        .unwrap();
+    drop(root);
+    assert!(
+        wait_until(Duration::from_secs(2), || fs::read_to_string(
+            directory.join("ready")
+        )
+        .ok()
+        .as_deref()
+            == Some(pid.to_string().as_str())),
+        "the exact ignored child reached its controlled body"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.join("ready")).unwrap(),
+        pid.to_string()
+    );
+    let mut report = CleanupReport::default();
+    owner.stop_domain(
+        permit.domain(),
+        Duration::ZERO,
+        Duration::from_millis(10),
+        false,
+        &mut report,
+    );
+    assert!(
+        !report.is_clean(),
+        "unknown original cannot be certified retired"
+    );
+    let refused = remove_dir_after_acknowledged_reap(&directory, !report.blocked)
+        .expect_err("final cleanup must refuse while the exact original is still unknown");
+    assert!(refused.contains("retirement not acknowledged"), "{refused}");
+    assert!(
+        directory.exists(),
+        "the original must retain its attached root capability"
+    );
+    assert_eq!(owner.pids(permit.domain()).len(), 1);
+    let failures = owner.reap(permit.domain(), Duration::from_secs(5));
+    assert!(failures.is_empty(), "{failures:?}");
+    assert!(owner.pids(permit.domain()).is_empty());
+    assert!(
+        !directory.exists(),
+        "only acknowledged actual retirement releases the root"
+    );
+    let healthy = unique_fixture_directory("acknowledged-final-reap");
+    let _healthy_guard = RemoveDirOnDrop::new(healthy.clone());
+    fs::write(healthy.join("owned"), b"acknowledged temporary bytes").unwrap();
+    assert_eq!(remove_dir_after_acknowledged_reap(&healthy, true), Ok(()));
+    assert!(!healthy.exists());
+}
+
 /// A stand-in process: a sleeper this test spawns and holds the handle of.
 /// Never a broker.
 fn spawn_sleeper() -> std::process::Child {
@@ -5433,12 +7234,11 @@ fn spawn_sleeper() -> std::process::Child {
 
 /// A scratch directory under the temp dir, armed for removal as it is made.
 fn armed_scratch_directory(cleanup: &mut CleanupStack, name: &str) -> PathBuf {
-    let directory = std::env::temp_dir().join(format!("qc-{name}-{}", std::process::id()));
+    let directory = unique_fixture_directory(name);
     let armed = directory.clone();
     cleanup.arm("directory", move |report| {
         report.remove_dir_unless_blocked(&armed)
     });
-    fs::create_dir_all(&directory).unwrap();
     directory
 }
 
@@ -5761,8 +7561,8 @@ impl<F: FnMut()> Drop for RunOnDrop<F> {
 #[test]
 fn a_panicking_fixture_runs_its_teardown_before_its_directory_is_removed() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    let directory =
-        std::env::temp_dir().join(format!("qc-run-on-drop-order-{}", std::process::id()));
+    let directory = unique_fixture_directory("qc-run-on-drop-order");
+    let _setup_owner = RemoveDirOnDrop::new(directory.clone());
     let stops = std::sync::Arc::new(AtomicUsize::new(0));
     let directory_present_at_stop = std::sync::Arc::new(AtomicBool::new(false));
     let unwound = std::panic::catch_unwind({
@@ -5856,8 +7656,8 @@ pub(crate) fn armed_broker_teardown(descriptor_path: &Path) -> CleanupStack {
 /// tolerates a directory that is already gone.
 #[test]
 fn a_scratch_directory_is_removed_when_its_test_panics() {
-    let directory =
-        std::env::temp_dir().join(format!("qc-remove-dir-on-drop-{}", std::process::id()));
+    let directory = unique_fixture_directory("qc-remove-dir-on-drop");
+    let _setup_owner = RemoveDirOnDrop::new(directory.clone());
     let inside = directory.clone();
     let unwound = std::panic::catch_unwind(move || {
         fs::create_dir_all(inside.join("nested")).unwrap();
@@ -6122,7 +7922,7 @@ fn a_real_broker_whose_termination_is_not_acknowledged_keeps_its_bytes_and_is_st
     let bystander_reaped = TEST_OWNER
         .reap(bystanders.domain(), Duration::from_secs(5))
         .is_empty();
-    let removed = remove_dir_with_retries(&directory);
+    let removed = remove_dir_after_acknowledged_reap(&directory, reaped);
 
     assert!(kept, "the directory and its bytes were preserved");
     assert!(message.starts_with("injected failure"), "{message}");
@@ -6188,7 +7988,7 @@ fn a_wait_error_is_an_unknown_status_and_never_authorises_removal() {
     let owned_after_cleanup = TEST_OWNER.pids(&label);
     let reaped = TEST_OWNER.reap(&label, Duration::from_secs(5)).is_empty()
         && !TEST_OWNER.is_reserved(&label);
-    let removed = remove_dir_with_retries(&directory);
+    let removed = remove_dir_after_acknowledged_reap(&directory, reaped);
 
     assert!(blocked, "an unknown status blocks removal");
     assert!(kept, "the bytes were preserved");
@@ -6567,7 +8367,7 @@ fn an_unacknowledged_in_place_reap_keeps_ownership_and_never_hangs() {
         },
     );
     let kept = directory.exists();
-    let removed = remove_dir_with_retries(&directory);
+    let removed = remove_dir_after_acknowledged_reap(&directory, !live);
 
     assert!(
         started.elapsed() < Duration::from_secs(60),
@@ -6606,7 +8406,20 @@ fn stubborn_terminate(held: &mut HeldProcess) -> std::io::Result<()> {
     if held.recorded_pid() == STUBBORN_PID.load(std::sync::atomic::Ordering::SeqCst) {
         Ok(())
     } else {
-        held.terminate()
+        held.terminate()?;
+        // Only the injected first entry should miss the fixture's 100ms
+        // observation bound. Windows termination is asynchronous; await the
+        // later exact handle here rather than assuming OS retirement in 100ms.
+        if wait_until(TERMINATION_ACK_BOUND, || {
+            held.observe() == ExitObservation::Exited
+        }) {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "later fixture child did not acknowledge termination",
+            ))
+        }
     }
 }
 
@@ -6704,7 +8517,7 @@ fn both_duplicates_failing_reports_unowned_spawn_and_blocks_cleanup() {
         },
     );
     let kept = directory.exists();
-    let removed = remove_dir_with_retries(&directory);
+    let removed = remove_dir_after_acknowledged_reap(&directory, !live);
 
     assert!(
         started.elapsed() < Duration::from_secs(60),
@@ -6802,6 +8615,7 @@ struct RetainedRun {
     report: CleanupReport,
     primary: String,
     descriptor_path: PathBuf,
+    keepalive: Option<BrokerAttachHoldGuard>,
 }
 
 /// Runs a real broker start whose attach is forced Unpublished, with no
@@ -6809,10 +8623,17 @@ struct RetainedRun {
 /// start slot can own the child. The body panics after `invoke`, the
 /// adapter (its `Gateway`) is dropped, and the cleanup stack runs and is
 /// destroyed; the fixture does NOT take the slot. The slot is read in the
-/// body and again after all of that.
+/// body and again after all of that. The kill-failure case holds an independent
+/// client connection until final same-Child reap, preventing normal idle exit
+/// from substituting for the running-child retention being tested.
 #[cfg(windows)]
 fn unpublished_retained_across_unwind(name: &str, injection: SpawnInjection) -> RetainedRun {
     let descriptor_path = test_descriptor_path(name);
+    // A real attached client prevents normal five-second idle exit from
+    // racing the five-second failed-kill poll. Keep it beyond cleanup unwind;
+    // only the original Child in the production slot can own/reap the broker.
+    let keepalive = (injection.fail_kill && !injection.fail_wait)
+        .then(|| BrokerAttachHoldGuard::install(&descriptor_path));
     let invoke_error: Mutex<Option<String>> = Mutex::new(None);
     let slot_in_body: Mutex<Option<(Option<u32>, Option<String>)>> = Mutex::new(None);
     let (outcome, report) = run_with_cleanup(|cleanup| {
@@ -6858,6 +8679,7 @@ fn unpublished_retained_across_unwind(name: &str, injection: SpawnInjection) -> 
             .map(|payload| panic_text(&*payload))
             .unwrap_or_default(),
         descriptor_path,
+        keepalive,
     }
 }
 
@@ -6990,11 +8812,19 @@ fn an_unpublished_kill_failure_is_retained_by_the_production_slot_across_unwind(
             ..SpawnInjection::default()
         },
     );
+    let held_client = run
+        .keepalive
+        .as_ref()
+        .is_some_and(BrokerAttachHoldGuard::attached);
     let reaped = reap_start_slot(&run.descriptor_path, &slot_owner);
     let directory = run.descriptor_path.parent().unwrap().to_path_buf();
     let kept = directory.exists();
-    let removed = remove_dir_with_retries(&directory);
+    let removed = remove_dir_after_acknowledged_reap(&directory, reaped);
 
+    assert!(
+        held_client,
+        "the real attached client must keep this broker live through the failed-kill poll and unwind"
+    );
     let error = run.invoke_error.expect("the start failed");
     assert!(
         error.contains("injected: the broker did not publish"),
@@ -7042,7 +8872,7 @@ fn an_unpublished_wait_failure_is_retained_by_the_production_slot_across_unwind(
     );
     let reaped = reap_start_slot(&run.descriptor_path, &slot_owner);
     let directory = run.descriptor_path.parent().unwrap().to_path_buf();
-    let removed = remove_dir_with_retries(&directory);
+    let removed = remove_dir_after_acknowledged_reap(&directory, reaped);
 
     let error = run.invoke_error.expect("the start failed");
     assert!(
@@ -7163,8 +8993,11 @@ fn a_full_start_slot_table_refuses_to_spawn_and_evicts_nothing() {
     let refused_reaped = TEST_OWNER
         .reap(refused_occupants.domain(), Duration::from_secs(5))
         .is_empty();
-    // The directories go when `directories` drops, here or on a failed
-    // assertion, each only once its slot is confirmed released.
+    let cleanup_acknowledged =
+        ended && first_released && reaped.iter().all(|reaped| *reaped) && refused_reaped;
+    for path in paths.iter().chain([&new_path]) {
+        let _ = remove_dir_after_acknowledged_reap(path.parent().unwrap(), cleanup_acknowledged);
+    }
 
     assert!(occupied.iter().all(|occupied| *occupied), "{occupied:?}");
     assert!(refused.contains("start slots are held"), "{refused}");
@@ -7203,7 +9036,7 @@ fn double_duplicate_failure_with_a_published_failure_blocks_cleanup() {
         },
     );
     let kept = directory.exists();
-    let removed = remove_dir_with_retries(&directory);
+    let removed = remove_dir_after_acknowledged_reap(&directory, !live);
     assert!(
         report
             .problems
@@ -7231,7 +9064,7 @@ fn a_panic_right_after_spawn_and_in_cleanup_leaves_the_child_in_its_slot() {
     let _serialize = serialize_real_broker_test();
     let slot_owner = admit(&fixture_domain("slot-panic-after-spawn-owner"), 1);
     let descriptor_path = test_descriptor_path("slot-panic-after-spawn");
-    let mut directories = StartSlotDirectories::new(&slot_owner, [descriptor_path.clone()]);
+    let _directories = StartSlotDirectories::new(&slot_owner, [descriptor_path.clone()]);
     let slot_in_body: Mutex<Option<(Option<u32>, Option<String>)>> = Mutex::new(None);
     let (outcome, report) = run_with_cleanup(|cleanup| {
         cleanup.arm("panics during cleanup", |_| {
@@ -7255,7 +9088,8 @@ fn a_panic_right_after_spawn_and_in_cleanup_leaves_the_child_in_its_slot() {
         panic!("injected failure");
     });
     let slot_after = start_slot_state(&descriptor_path);
-    let reaped = directories.reap(&descriptor_path);
+    let reaped = reap_start_slot(&descriptor_path, &slot_owner);
+    let removed = remove_dir_after_acknowledged_reap(descriptor_path.parent().unwrap(), reaped);
 
     assert!(outcome.is_err());
     assert!(
@@ -7276,6 +9110,7 @@ fn a_panic_right_after_spawn_and_in_cleanup_leaves_the_child_in_its_slot() {
         "the same child after both panics"
     );
     assert!(reaped, "ended through the same Child");
+    assert_eq!(removed, Ok(()));
 }
 
 /// A successful production Unpublished cleanup,
@@ -7288,7 +9123,7 @@ fn a_successful_unpublished_cleanup_needs_no_duplicate() {
     let _serialize = serialize_real_broker_test();
     let slot_owner = admit(&fixture_domain("slot-unpublished-success-owner"), 1);
     let descriptor_path = test_descriptor_path("slot-unpublished-success");
-    let mut directories = StartSlotDirectories::new(&slot_owner, [descriptor_path.clone()]);
+    let _directories = StartSlotDirectories::new(&slot_owner, [descriptor_path.clone()]);
     let (_spawns, sink) = BrokerSpawnSinkGuard::install(
         &descriptor_path,
         SpawnInjection {
@@ -7309,7 +9144,14 @@ fn a_successful_unpublished_cleanup_needs_no_duplicate() {
     adapter.stop();
     let slot = start_slot_state(&descriptor_path);
     let recorded = sink.lock().unwrap().len();
-    let left = directories.reap(&descriptor_path);
+    let left = reap_start_slot(&descriptor_path, &slot_owner);
+    // In the expected healthy arm the slot was ALREADY released by the
+    // production same-Child acknowledgement; an unexpected remaining slot
+    // (even one our final reap ends) must not be guessed absent.
+    let removed = remove_dir_after_acknowledged_reap(
+        descriptor_path.parent().unwrap(),
+        slot.is_none() && !left,
+    );
 
     assert!(
         error.contains("injected: the broker did not publish"),
@@ -7319,6 +9161,7 @@ fn a_successful_unpublished_cleanup_needs_no_duplicate() {
     assert_eq!(slot, None, "the slot was released after the observed exit");
     assert_eq!(recorded, 0, "no auxiliary duplicate existed");
     assert!(!left, "nothing was left in the slot");
+    assert_eq!(removed, Ok(()));
 }
 
 /// Runs `body` with a cleanup stack holding a sink entry, a stand-in that
@@ -7665,27 +9508,74 @@ fn an_overflowing_permit_still_owns_every_process() {
 #[test]
 fn two_racing_reservations_for_the_last_unit_admit_exactly_one() {
     let owner = private_owner(1);
-    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let racers: Vec<_> = ["left", "right"]
-        .into_iter()
-        .map(|domain| {
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                barrier.wait();
-                owner.reserve(domain, 1).map(|permit| {
-                    let domain = permit.domain().to_owned();
-                    std::mem::forget(permit);
-                    domain
+    let outcomes = std::thread::scope(|scope| {
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct OpenGate(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for OpenGate {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        let _release_on_unwind = OpenGate(release.clone());
+        let arrived = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let racers: Vec<_> = ["left", "right"]
+            .into_iter()
+            .map(|domain| {
+                let release = release.clone();
+                let arrived = arrived.clone();
+                scope.spawn(move || {
+                    arrived.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !release.load(std::sync::atomic::Ordering::Acquire) {
+                        assert!(
+                            Instant::now() < deadline,
+                            "reservation fixture gate not released"
+                        );
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    owner.reserve(domain, 1).map(|permit| {
+                        let domain = permit.domain().to_owned();
+                        std::mem::forget(permit);
+                        domain
+                    })
                 })
             })
-        })
-        .collect();
-    let outcomes: Vec<_> = racers
-        .into_iter()
-        .map(|racer| racer.join().expect("racer thread"))
-        .collect();
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while arrived.load(std::sync::atomic::Ordering::Acquire) != 2 {
+            assert!(
+                Instant::now() < deadline,
+                "reservation workers did not arrive"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        release.store(true, std::sync::atomic::Ordering::Release);
+        racers
+            .into_iter()
+            .map(|racer| racer.join().expect("racer thread"))
+            .collect::<Vec<_>>()
+    });
     let admitted: Vec<_> = outcomes.iter().filter(|outcome| outcome.is_ok()).collect();
     assert_eq!(admitted.len(), 1, "{outcomes:?}");
+}
+
+#[test]
+fn readiness_scope_unwind_releases_and_joins_its_held_worker() {
+    let finished = std::sync::atomic::AtomicBool::new(false);
+    let result = std::panic::catch_unwind(|| {
+        std::thread::scope(|scope| {
+            let (sender, receiver) = mpsc::channel();
+            let _release_on_unwind = ReadinessRelease(Some(sender));
+            let finished = &finished;
+            scope.spawn(move || {
+                receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+                finished.store(true, std::sync::atomic::Ordering::Release);
+            });
+            panic!("injected readiness observation failure");
+        });
+    });
+    assert!(result.is_err());
+    assert!(finished.load(std::sync::atomic::Ordering::Acquire));
 }
 
 /// Owns three fakes in one domain, the middle one panicking once at
@@ -7884,14 +9774,24 @@ fn a_relay_marked_read_on_a_healthy_session_is_served() {
         close,
         demands,
         reopened,
+        _owner: mut owner,
         ..
     } = broker;
-    // Nothing closes the session: the broker's pause ends at once.
+    // Preserve the actual original/socket owner, but release every sender
+    // that otherwise keeps the healthy-status pause alive for sixty seconds.
+    // Sending () would close the session, so this control deliberately uses
+    // channel disconnection to resume while preserving session_open=true.
+    owner.wake.clear();
     drop(close);
     let adapter = local_stdio::HeadlessDeviceAdapter::over_gateway(gateway);
     let runtime = resource_origin_runtime();
 
-    let served = runtime.block_on(adapter.invoke_resource_read(rpc::LIST_MODELS, json!({})));
+    let served = runtime.block_on(async {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            adapter.invoke_resource_read(rpc::LIST_MODELS, json!({})),
+        ).await.expect("the healthy fixture must release its status gate, not wait for the sixty-second emergency timeout")
+    });
     assert!(
         served.is_ok(),
         "{:?}",
@@ -8073,6 +9973,109 @@ fn relay_helper_fixture(descriptor_path: Option<PathBuf>) -> RelayHelperFixture 
     (Mutex::new(gateway), reads, starts)
 }
 
+#[test]
+fn canceled_relay_gateway_waiters_keep_bounded_originals_and_never_start_later() {
+    use qc_native_platform::thread_owner::{reap, Budget};
+    static BUDGET: Budget = Budget::new(2);
+    let (gateway, reads, starts) = relay_helper_fixture(None);
+    let gateway = std::sync::Arc::new(gateway);
+    let mut held = Some(gateway.lock().unwrap());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut callers = tokio::task::JoinSet::new();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runtime.block_on(async {
+            for _ in 0..2 {
+                let (gateway, reads) = (gateway.clone(), reads.clone());
+                let (entered, observed) = tokio::sync::oneshot::channel();
+                callers.spawn(async move {
+                    await_relay_gateway(
+                        rpc::SET_PARAMETER.into(),
+                        &BUDGET,
+                        Duration::from_secs(10),
+                        move |admission| {
+                            let _ = entered.send(());
+                            relay_gateway_request(
+                                &gateway,
+                                &reads,
+                                rpc::SET_PARAMETER,
+                                json!({}),
+                                ConnectionUse::MayConnect,
+                                None,
+                                Some(&admission),
+                            )
+                        },
+                    )
+                    .await
+                });
+                tokio::time::timeout(Duration::from_secs(2), observed)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            assert_eq!(
+                BUDGET.count(),
+                2,
+                "both exact originals are waiting behind the actual gateway lock"
+            );
+            callers.abort_all();
+            while callers.join_next().await.is_some() {}
+            reap();
+            assert_eq!(
+                BUDGET.count(),
+                2,
+                "caller cancellation cannot release unacknowledged originals"
+            );
+            let refused = await_relay_gateway(
+                rpc::SET_PARAMETER.into(),
+                &BUDGET,
+                Duration::from_secs(1),
+                |_| panic!("capacity refusal must happen before starting an action"),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(refused.code, "DEVICE_TRANSPORT");
+            assert!(
+                starts.lock().unwrap().is_empty(),
+                "no broker start while the lock is held"
+            );
+        });
+    }));
+    // Always unblock native originals before observing or propagating an
+    // assertion failure. JoinSet owns every async caller before observation.
+    drop(held.take());
+    callers.abort_all();
+    runtime.block_on(async {
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            while callers.join_next().await.is_some() {}
+        })
+        .await;
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while BUDGET.count() != 0 && Instant::now() < deadline {
+        reap();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let retired = BUDGET.count() == 0;
+    runtime.shutdown_timeout(Duration::from_secs(2));
+    if let Err(panic) = outcome {
+        if !retired {
+            eprintln!("Gateway fixture original retained; native retirement unacknowledged");
+        }
+        std::panic::resume_unwind(panic);
+    }
+    assert!(
+        retired,
+        "exact gateway originals did not acknowledge retirement"
+    );
+    assert!(
+        starts.lock().unwrap().is_empty(),
+        "canceled queued mutations must never start a broker after the held gateway unlocks"
+    );
+}
+
 /// `relay_gateway_request`, the call
 /// `WindowsRelayAdapter::invoke_as` makes (with `stopped: None`) and
 /// `HeadlessDeviceAdapter::invoke_gateway` makes (with its stop flag), never
@@ -8092,6 +10095,7 @@ fn the_relay_helper_never_starts_a_broker_for_an_existing_only_read() {
                 json!({}),
                 ConnectionUse::ExistingOnly,
                 stopped,
+                None,
             );
             assert!(
                 matches!(
@@ -8124,6 +10128,7 @@ fn the_relay_helper_starts_a_broker_once_for_an_ordinary_call() {
             rpc::LIST_MODELS,
             json!({}),
             ConnectionUse::MayConnect,
+            None,
             None,
         );
         assert!(

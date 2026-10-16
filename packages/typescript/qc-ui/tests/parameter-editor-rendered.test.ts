@@ -287,7 +287,16 @@ test("Modes Configuration refuses unrelated drop payloads and admits only a curr
   act(() => { renderer = create(React.createElement(ModesConfigurationScreen, { workflow, onClose() {} })); });
   t.after(() => act(() => renderer.unmount()));
   const target = () => renderer.root.findAll((node) => node.type === "button" && node.props.draggable !== undefined)[1];
-  const drop = (payload: string) => target().props.onDrop({ preventDefault() {}, dataTransfer: { getData(type: string) { assert.equal(type, "text/qc-mode-index"); return payload; } } });
+  const dragData = new Map<string, string>();
+  act(() => renderer.root.findAll((node) => node.type === "button" && node.props.draggable !== undefined)[0].props.onDragStart({
+    preventDefault() {}, dataTransfer: { setData(type: string, value: string) { dragData.set(type, value); }, effectAllowed: "" }
+  }));
+  const drop = (payload: string, context = dragData.get("text/qc-mode-context")) => target().props.onDrop({ preventDefault() {}, dataTransfer: { getData(type: string) {
+    if (type === "text/qc-mode-context") return context ?? "";
+    assert.equal(type, "text/qc-mode-index"); return payload;
+  } } });
+  act(() => { drop("0", ""); drop("0", "another editor session"); });
+  assert.deepEqual(commits, [], "a valid index without this drag's editor context is refused");
   act(() => { for (const payload of ["", "text", "-1", "1.2", "3", "100000000000000000000"]) drop(payload); });
   assert.deepEqual(commits, [], "unrelated/file/text drops cannot silently select mode zero");
   act(() => drop("0"));
@@ -366,7 +375,7 @@ test("unit mirror retires the old owner picture and delayed capture across physi
   const captureSessionCurrent = () => { const owner = physical; return () => owner === physical; };
   const options = (key: string, captureScreen: () => Promise<ReturnType<typeof frame>>) => ({
     screenGestureContextKey: key, captureSessionCurrent, mirror: { captureScreen },
-    destination: { view: "unit-mirror" }, workflows: { deviceSettings: { open: false }, tempo: { open: false } }
+    destination: { view: "unit-mirror", captureCurrent: captureSessionCurrent }, workflows: { deviceSettings: { open: false }, tempo: { open: false } }
   });
   const show = (key: string, captureScreen: () => Promise<ReturnType<typeof frame>>) => components.qcDeviceScreenContent(options(key, captureScreen));
   let renderer!: ReturnType<typeof create>;

@@ -67,6 +67,7 @@ fn now_unix_ms() -> u64 {
 pub struct RequestClock {
     at: AtomicU64,
     in_flight: AtomicBool,
+    reaping: std::sync::Mutex<bool>,
 }
 
 impl RequestClock {
@@ -74,17 +75,30 @@ impl RequestClock {
         Self {
             at: AtomicU64::new(now_unix_ms()),
             in_flight: AtomicBool::new(false),
+            reaping: std::sync::Mutex::new(false),
         }
     }
 
     /// Call when a request is read off the transport, before it is handled.
-    pub fn start_request(&self) {
+    pub fn start_request(&self) -> bool {
+        let reaping = self
+            .reaping
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *reaping {
+            return false;
+        }
         self.at.store(now_unix_ms(), Ordering::Release);
         self.in_flight.store(true, Ordering::Release);
+        true
     }
 
     /// Call once that request's handler has returned, successfully or not.
     pub fn finish_request(&self) {
+        let _reaping = self
+            .reaping
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         self.at.store(now_unix_ms(), Ordering::Release);
         self.in_flight.store(false, Ordering::Release);
     }
@@ -95,6 +109,21 @@ impl RequestClock {
 
     fn is_idle(&self) -> bool {
         !self.in_flight.load(Ordering::Acquire) && self.idle_for() >= ORPHAN_IDLE_GRACE
+    }
+
+    // Idle observation alone is not authority to exit: a new request may have
+    // started since that observation. Admission and this irrevocable commit
+    // share one short lock; no device/IO operation runs while it is held.
+    fn try_commit_reaping(&self) -> bool {
+        let mut reaping = self
+            .reaping
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *reaping || !self.is_idle() {
+            return false;
+        }
+        *reaping = true;
+        true
     }
 }
 
@@ -107,6 +136,7 @@ impl RequestClock {
 /// `before_exit` runs once, on the watchdog thread, right before
 /// `process::exit`: `process::exit` runs no destructors, so this is where the
 /// device gets released (the caller stops its USB worker, bounded).
+#[cfg(not(windows))]
 pub fn watch(
     parent_pid: Option<u32>,
     clock: std::sync::Arc<RequestClock>,
@@ -131,7 +161,7 @@ pub fn watch(
                 {
                     continue;
                 }
-                if !clock.is_idle() {
+                if !clock.try_commit_reaping() {
                     continue;
                 }
                 eprintln!(
@@ -146,6 +176,40 @@ pub fn watch(
             }
         })
         .expect("orphan guard thread spawns");
+}
+
+/// Windows caller owns the original watchdog thread and shares its run stop
+/// token. This body never starts a detached thread. Unknown parent identity
+/// remains conservative; stopping a healthy run does not exit the process.
+#[cfg(windows)]
+pub(crate) fn watch_until(
+    parent_pid: Option<u32>,
+    clock: std::sync::Arc<RequestClock>,
+    before_exit: impl FnOnce(),
+    stop: &AtomicBool,
+) {
+    let Some(parent_pid) = parent_pid else {
+        return;
+    };
+    let parent_created_at = os_process_created_at(parent_pid);
+    let mut next_check = std::time::Instant::now() + ORPHAN_CHECK_INTERVAL;
+    while !stop.load(Ordering::Acquire) {
+        let now = std::time::Instant::now();
+        if now < next_check {
+            std::thread::sleep((next_check - now).min(Duration::from_millis(10)));
+            continue;
+        }
+        next_check = now + ORPHAN_CHECK_INTERVAL;
+        if os_process_is_alive(parent_pid) && !parent_pid_was_reused(parent_pid, parent_created_at)
+        {
+            continue;
+        }
+        if stop.load(Ordering::Acquire) || !clock.try_commit_reaping() {
+            continue;
+        }
+        before_exit();
+        std::process::exit(0);
+    }
 }
 
 /// The current process's parent id, or `None` if it cannot be determined.
@@ -227,6 +291,39 @@ mod tests {
             "a real process's creation time is never the fabricated sentinel"
         );
         assert!(parent_pid_was_reused(pid, fabricated_recorded_at));
+    }
+
+    #[test]
+    fn reaping_commit_and_request_admission_share_an_irrevocable_boundary() {
+        let make_idle = |clock: &RequestClock| {
+            clock.at.store(
+                now_unix_ms().saturating_sub(ORPHAN_IDLE_GRACE.as_millis() as u64 + 1000),
+                Ordering::Release,
+            );
+        };
+        let clock = RequestClock::started_now();
+        make_idle(&clock);
+        assert!(clock.is_idle()); // Simulated prior watchdog observation.
+        assert!(clock.start_request());
+        make_idle(&clock); // Even a legitimately long request cannot be reaped.
+        let mut exit_effects = 0;
+        if clock.try_commit_reaping() {
+            exit_effects += 1;
+        }
+        assert_eq!(exit_effects, 0);
+        clock.finish_request();
+        assert!(!clock.try_commit_reaping(), "completion starts a new grace");
+        make_idle(&clock);
+        assert!(clock.try_commit_reaping());
+        let mut dispatch_effects = 0;
+        if clock.start_request() {
+            dispatch_effects += 1;
+        }
+        assert_eq!(dispatch_effects, 0);
+        // Neither a late finish nor another reap observation can reopen admission.
+        clock.finish_request();
+        assert!(!clock.start_request());
+        assert!(!clock.try_commit_reaping());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, type PresetSnapshot, type RuntimeStatus, type WorkspaceDocument } from "@qc-remote/client";
-import { demoBlockDetails, demoSnapshot, sceneLetter, SupersededPresetOperation, saveWorkspaceDocument, type ControlAccessMode, type PublicRelayConnector } from "@qc-remote/core";
+import { modeSlotIsActive, demoBlockDetails, demoSnapshot, sceneLetter, SupersededPresetOperation, saveWorkspaceDocument, type ControlAccessMode, type PublicRelayConnector } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND } from "@qc-remote/theme";
 import { CONTROL_ACCESS_OPTIONS, CONNECTING_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, IDLE_PLACEHOLDER_SNAPSHOT, usePresetMidiOutWorkflow, qcLaneControlPanelBindings, qcLiveIndicator, qcParameterEditorBindings, readControlAccessMode, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, useQcFollowSetting, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, writeControlAccessMode, capturePresetText, captureSetlistForDemo, importCapturedSetlistIntoDemo, isGridDevice, isIncompleteGridRefreshFailure, parsePresetText, pastePresetIntoDemo, presetReplayConfirmation, presetReplaySummary, refreshGridSnapshot, replayPresetOnDevice, virtualDeviceStoreOf, type CapturedSetlist } from "@qc-remote/ui";
@@ -10,9 +10,12 @@ import { appWindows, brokerDevice, DEVICE_INFO_EVENTS, diagnosticsFiles, externa
 import { createWindowsQcTransport } from "./qc-transport";
 import { useWindowsDeviceFrames } from "./use-windows-device-frames";
 import { useWindowsPrompts } from "./use-windows-prompts";
+import { createBrowserPairingSession, startSequentialPairingPoll } from "./browser-pairing-session";
+import { saveOpenedWorkspaceCopy } from "./workspace-copy";
+import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
 import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
-import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_CONNECT_STALL_MS, qcFollowReadyInventory, qcInventoryDeviceReady, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcShouldDisconnectForDemo, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
+import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_CONNECT_STALL_MS, qcFollowReadyInventory, qcInventoryDeviceReady, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
 import { DEFAULT_BROKER_TRAY_STATUS, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
 import appPackage from "../package.json";
@@ -63,21 +66,47 @@ export function App() {
     recoveryInstruction: "the session is reset",
     onNotice: setNotice
   });
-  const [commandPending, setCommandPending] = useState(false);
-  const { prompts: appPrompts, overlay: textPromptOverlay } = useWindowsPrompts();
+  const [connectionPending, setConnectionPending] = useState(false);
+  const mutationBusy = useSyncExternalStore(qcController.lifetime.mutations.subscribe, qcController.lifetime.mutations.snapshot);
+  const commandPending = connectionPending || mutationBusy;
+  // Exclusive workflow ownership is derived from tokens, never captured booleans.
+  const setWorkflowPending = useCallback((_pending: boolean | ((current: boolean) => boolean)) => {}, []);
+  const appOperationMounted = useRef(true);
+  const appOperationEpoch = useRef(0);
+  useEffect(() => {
+    appOperationMounted.current = true;
+    return () => { appOperationMounted.current = false; appOperationEpoch.current++; };
+  }, []);
+  const { prompts: appPrompts, overlay: textPromptOverlay, active: appPromptActive } = useWindowsPrompts();
   const [controlAccessMode, setControlAccessMode] = useState<ControlAccessMode>(storedAccessMode);
   const { follow: followQcScreen, setFollow: setFollowQcScreen } = useQcFollowSetting(localStorage);
   const [relayBrowserPairing, setRelayBrowserPairing] = useState<{ pairUrl: string; expiresAt: number; qrCode: string }>();
   const [relayPairingStarting, setRelayPairingStarting] = useState(false);
   const [relayPairingError, setRelayPairingError] = useState<string>();
+  const [relayWithdrawalPending, setRelayWithdrawalPending] = useState(false);
   const [relayConnectors, setRelayConnectors] = useState<PublicRelayConnector[]>([]);
   const [relayConnectorsError, setRelayConnectorsError] = useState<string>();
   const [relayUnlinkingGrantId, setRelayUnlinkingGrantId] = useState<string>();
+  const relayConnectorRead = useRef(0);
+  const relayConnectorMounted = useRef(true);
+  const relayConnectorMountEpoch = useRef(0);
+  const relayConnectorMutation = useRef<{ grantId?: string } | undefined>(undefined);
+  useEffect(() => {
+    relayConnectorMounted.current = true;
+    setRelayUnlinkingGrantId(relayConnectorMutation.current?.grantId);
+    return () => {
+      relayConnectorMounted.current = false;
+      relayConnectorMountEpoch.current += 1;
+      relayConnectorRead.current += 1;
+    };
+  }, []);
   // Whether REMOTE is on screen. A pairing code is created when it opens
   // and withdrawn when it closes, so one never outlives the panel that
   // displays it, and a pairing that completes while it is open is followed
   // by a fresh code rather than by an empty space.
   const relayPanelOpen = useRef(false);
+  const relayPairingRestartRequested = useRef(false);
+  const relayPairingSession = useMemo(() => createBrowserPairingSession({ begin: () => publicRelay.browserPairing!.begin(), cancel: () => publicRelay.browserPairing!.cancel!() }), []);
   const [claudeExtensionStatus, setClaudeExtensionStatus] = useState<ClaudeDesktopExtensionStatus>();
   const [claudeInstallPending, setClaudeInstallPending] = useState(false);
   const [chatgptIntegrationStatus, setChatgptIntegrationStatus] = useState<ChatGptLocalIntegrationStatus>();
@@ -101,19 +130,40 @@ export function App() {
   const [localAccessStatus, setLocalAccessStatus] = useState<LocalAccessStatus>();
   const [claudeApprovalLapsed, setClaudeApprovalLapsed] = useState(false);
   const localStatusRefreshInFlight = useRef(false);
+  const localStatusMounted = useRef(true);
+  const localStatusEpoch = useRef(0);
+  const localStatusReads = useRef(new Map<string, number>());
+  useEffect(() => {
+    localStatusMounted.current = true;
+    return () => {
+      localStatusMounted.current = false;
+      localStatusEpoch.current++;
+      localStatusRefreshInFlight.current = false;
+    };
+  }, []);
+  const captureLocalStatusRead = useCallback((provider: string) => {
+    const epoch = localStatusEpoch.current;
+    const read = (localStatusReads.current.get(provider) ?? 0) + 1;
+    localStatusReads.current.set(provider, read);
+    return () => localStatusMounted.current && epoch === localStatusEpoch.current && read === localStatusReads.current.get(provider);
+  }, []);
   const editor = useBlockEditorSession();
   const { details: blockDetails } = editor;
   const [parameterMenuInitiallyOpen, setParameterMenuInitiallyOpen] = useState(false);
   const [workspacePath, setWorkspacePath] = useState<string>();
   const [workspaceName, setWorkspaceName] = useState<string>();
   const [loadedWorkspace, setLoadedWorkspace] = useState<WorkspaceDocument>();
+  const workspaceDocumentIdentity = useRef<{ document: WorkspaceDocument | undefined; id: string } | undefined>(undefined);
+  if (!workspaceDocumentIdentity.current || workspaceDocumentIdentity.current.document !== loadedWorkspace) {
+    workspaceDocumentIdentity.current = { document: loadedWorkspace, id: globalThis.crypto.randomUUID() };
+  }
   const [surfaceView, setSurfaceView] = useState<"fit" | "actual">("fit");
   const gridRefreshRequest = useRef(0);
   const gridRepair = useRef(createGridRepairCoordinator());
   const screenDestination = useQcScreenDestination();
   const deviceScreenView = screenDestination.view;
   const setDeviceScreenView = screenDestination.setView;
-  const cpuTelemetry = useQcCpuTelemetry();
+  const cpuTelemetry = useQcCpuTelemetry(qcController.lifetime);
   const consumeLiveState = useQcLiveState({
     reconcileFrame,
     editor,
@@ -245,6 +295,12 @@ export function App() {
   // backups, the broker heartbeat) keep calling tauriTransport directly.
   const demoDeviceSession = useMemo(() => createDemoDeviceSession(tauriTransport), []);
   const activeGateway = demoDeviceSession.gateway;
+  const captureDeviceOperation = () => {
+    const attempt = connectionAttempts.capture();
+    const origin = qcController.lifetime.checkpoint();
+    const epoch = appOperationEpoch.current;
+    return captureGatewaySession(activeGateway, () => appOperationMounted.current && epoch === appOperationEpoch.current && attempt.current() && qcController.lifetime.currentSession(origin));
+  };
   const [demoPending, setDemoPending] = useState(false);
   // A demo opened because USB was absent is a fallback and yields as soon as
   // the broker finds the QC. A demo selected by the user is intentional and
@@ -258,6 +314,8 @@ export function App() {
   // (connectionAttempts), and the superseded open must still clear the flag it
   // set, or the Demo device tab stays "Opening…" and disabled for good.
   const demoOpenToken = useRef(0);
+  const demoReconnectTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => { if (demoReconnectTimer.current !== undefined) window.clearTimeout(demoReconnectTimer.current); }, []);
   // Set by startDemoDevice when it leaves an already-ready Quad Cortex's
   // session open rather than closing it, so a person can switch back without
   // a full reconnect (resumeDeviceSession). deviceReady cannot carry this by
@@ -272,6 +330,9 @@ export function App() {
   // first render's copy, exactly the staleness connectOnDetection's ref
   // avoids for connect() below. Read through a ref for the same reason.
   const returnToDemoDeviceRef = useRef<(reason: string) => void>(() => undefined);
+  const startDeferredDemoRef = useRef<(reason: string) => void>(() => undefined);
+  const deferredDemoRecovery = useRef<{ reason: string; current(): boolean } | undefined>(undefined);
+  useEffect(() => () => { deferredDemoRecovery.current = undefined; }, []);
   const beginLiveRecovery = useCallback((cause: string) => {
     const current = connectionRef.current;
     if (current.source !== "device" || current.demo || current.phase !== "ready") return;
@@ -326,7 +387,7 @@ export function App() {
     demo: corpusFixtureEnabled || connection.demo,
     source: connection.source,
     pending: commandPending,
-    setPending: setCommandPending,
+    setPending: setWorkflowPending,
     prompts: appPrompts,
     panels: {
       // The generic advanced-routing dialog is retired on Windows (see the
@@ -362,6 +423,7 @@ export function App() {
   } = workflows;
   const { undoEntry, redoEntry, record: recordUndo, clear: clearUndo } = deviceHistory;
   const deviceWorkflowSession = {
+    lifetime: qcController.lifetime,
     commandSessionKey: deviceCommandSessionKey,
     sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
@@ -373,13 +435,14 @@ export function App() {
   };
   const deviceUndo = useQcDeviceUndo({ ...deviceWorkflowSession,
     history: deviceHistory, snapshot, gateway: activeGateway, presetLifetime: qcController.lifetime,
-    connected: sessionReady, pending: commandPending, setPending: setCommandPending,
+    connected: sessionReady, pending: commandPending, setPending: setWorkflowPending,
     notice: setNotice, fail: actionFailed, reconcile: reconcileWorkflowSnapshot
   });
   const { undoAvailable: deviceUndoAvailable, redoAvailable: deviceRedoAvailable, undo: undoLastAction, redo: redoLastAction } = deviceUndo;
   const demoSession = connection.demo || connection.source === "virtual";
   const expressionWorkflow = useExpressionAssignment({
     commandSessionKey: deviceWorkflowSession.commandSessionKey,
+    lifetime: qcController.lifetime,
     gateway: activeGateway,
     sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
@@ -391,13 +454,15 @@ export function App() {
     snapshot,
     connected: sessionReady,
     pending: commandPending,
-    setPending: setCommandPending,
+    setPending: setWorkflowPending,
     reconcile: reconcileWorkflowSnapshot,
     recordHistory: recordUndo,
     notice: setNotice,
     fail: actionFailed
   });
   const deviceSettingsWorkflow = useDeviceSettingsWorkflow({
+    lifetime: qcController.lifetime,
+    ioSettingsError: snapshot.ioSettingsError,
     commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
     sessionKey: `${connection.source}:${snapshot.stateVersion?.session ?? ""}:${deviceReady}:${nativeStateStream.current ?? ""}`,
@@ -409,21 +474,22 @@ export function App() {
     },
     connected: sessionReady,
     pending: commandPending,
-    setPending: setCommandPending,
+    setPending: setWorkflowPending,
     notice: setNotice,
     fail: actionFailed
   });
   const tempoWorkflow = useTempoWorkflow({ ...deviceWorkflowSession,
     gateway: activeGateway,
+    lifetime: qcController.lifetime,
     connected: sessionReady,
     pending: commandPending,
-    setPending: setCommandPending,
+    setPending: setWorkflowPending,
     notice: setNotice,
     fail: actionFailed
   });
-  const tunerWorkflow = useTunerWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed });
-  const looperWorkflow = useLooperXWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed });
-  const midiOutWorkflow = usePresetMidiOutWorkflow({ gateway: activeGateway, snapshot, demo: connection.demo || connection.source === "virtual", onSaved: reconcileWorkflowSnapshot,
+  const tunerWorkflow = useTunerWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setWorkflowPending, notice: setNotice, fail: actionFailed });
+  const looperWorkflow = useLooperXWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setWorkflowPending, notice: setNotice, fail: actionFailed });
+  const midiOutWorkflow = usePresetMidiOutWorkflow({ lifetime: qcController.lifetime, gateway: activeGateway, snapshot, demo: connection.demo || connection.source === "virtual", onSaved: reconcileWorkflowSnapshot,
     captureSessionCurrent: () => {
       const attempt = connectionAttempts.capture();
       const source = demoDeviceSession.source;
@@ -431,8 +497,8 @@ export function App() {
       return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
     }
   });
-  const modesWorkflow = useModesConfigurationWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed });
-  const ioEqWorkflow = useIoEqWorkflows({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setCommandPending, notice: setNotice, fail: actionFailed, snapshot });
+  const modesWorkflow = useModesConfigurationWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setWorkflowPending, notice: setNotice, fail: actionFailed });
+  const ioEqWorkflow = useIoEqWorkflows({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: commandPending, setPending: setWorkflowPending, notice: setNotice, fail: actionFailed, snapshot });
   useQcScreenFollow({ ...deviceWorkflowSession,
     gateway: activeGateway, follow: followQcScreen, available: !connection.demo && !corpusFixtureEnabled, ready: deviceReady, destination: screenDestination, notice: setNotice,
     workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow, modes: modesWorkflow, routing: routingWorkflow, scene: sceneWorkflow }
@@ -441,7 +507,7 @@ export function App() {
     controller: qcController,
     gateway: activeGateway,
     connected: sessionReady,
-    demo: corpusFixtureEnabled || virtualReady,
+    demo: corpusFixtureEnabled,
     reconcile: reconcileWorkflowSnapshot,
     recordHistory: recordUndo,
     notice: setNotice,
@@ -482,8 +548,11 @@ export function App() {
     // the dedicated full-screen transport; it is not a second generic device
     // editor or a global Performance-menu screen.
     if (!connection.demo && connection.source !== "virtual" && /\blooper\b/i.test(`${block.category ?? ""} ${block.name}`)) {
-      await looperWorkflow.run("open");
-      setDeviceScreenView("looper-editor");
+      const current = looperWorkflow.captureContinuation();
+      const destinationCurrent = screenDestination.captureCurrent();
+      if (!current() || !destinationCurrent()) return;
+      const accepted = await looperWorkflow.run("open");
+      if (accepted && current() && destinationCurrent()) setDeviceScreenView("looper-editor");
       return;
     }
     return gridWorkflow.openBlock(block);
@@ -499,7 +568,8 @@ export function App() {
   const draftParameterValue = parameterWorkflow.draft;
   const applyParameterBatch = parameterWorkflow.commitBatch;
   const parameterEditorBindings = qcParameterEditorBindings({
-    editorContextKey: `${deviceCommandSessionKey}:${qcController.lifetime.version}`,
+    editorContextKey: JSON.stringify([connection.source, qcController.lifetime.checkpoint().session, qcController.lifetime.version, snapshot.presetIdentity, selectedBlockId, editor.details?.modelId, snapshot.activeScene]),
+    referenceOnly: corpusFixtureEnabled,
     titlePresetMark: corpusFixtureEnabled && editor.details?.name === "Simple Gate",
     snapshot,
     selectedBlockId,
@@ -712,7 +782,7 @@ export function App() {
         { id: "next-preset", label: "Next Preset", disabled: !ready || snapshot.dirty },
         divider(),
         { id: "set-tempo", label: "Tempo…", disabled: !ready },
-        ...(snapshot.modeSlots ?? []).map((entry): MenuItem => ({ id: `select-mode-${entry.slot}`, label: entry.label, checked: snapshot.mode === entry.mode, disabled: !ready })),
+        ...(snapshot.modeSlots ?? []).map((entry): MenuItem => ({ id: `select-mode-${entry.slot}`, label: entry.label, checked: modeSlotIsActive(snapshot, entry.slot), disabled: !ready })),
         divider(),
         { id: "open-io-settings", label: "I/O Settings", disabled: !ready },
         { id: "open-tuner", label: "Tuner", disabled: !ready },
@@ -728,7 +798,7 @@ export function App() {
         { id: "about", label: `About ${QC_BRAND.appName}…` }
       ] }
     ];
-  }, [blockClipboard, commandPending, deviceReady, deviceRedoAvailable, deviceUndoAvailable, fullScreen, presetClipboard, redoEntry, selectedBlockId, sessionReady, setlistClipboard, snapshot.blocks, snapshot.dirty, snapshot.mode, snapshot.modeSlots, snapshot.presetIdentity, snapshot.presetName, snapshot.presetPosition, snapshot.setlistKey, surfaceView, undoEntry]);
+  }, [blockClipboard, commandPending, deviceReady, deviceRedoAvailable, deviceUndoAvailable, fullScreen, presetClipboard, redoEntry, selectedBlockId, sessionReady, setlistClipboard, snapshot.blocks, snapshot.dirty, snapshot.footswitchModes, snapshot.mode, snapshot.modeSlots, snapshot.presetIdentity, snapshot.presetName, snapshot.presetPosition, snapshot.setlistKey, surfaceView, undoEntry]);
 
   useEffect(() => {
     const sync = () => setFullScreen(Boolean(document.fullscreenElement));
@@ -812,26 +882,41 @@ export function App() {
     relayPairingStartInFlight.current = true;
     setRelayPairingStarting(true);
     setRelayPairingError(undefined);
+    const current = relayPairingSession.checkpoint();
     try {
-      const offer = await publicRelay.browserPairing!.begin();
+      const operation = await relayPairingSession.begin();
+      if (!operation.current() || !relayPanelOpen.current) return;
+      const { offer } = operation;
       if (!offer.pairUrl) throw new Error("The desktop relay did not return a pairing URL.");
       const qrCode = await QRCode.toDataURL(offer.pairUrl, { width: 224, margin: 1, errorCorrectionLevel: "M" });
+      if (!operation.current() || !relayPanelOpen.current) return;
       setRelayBrowserPairing({ pairUrl: offer.pairUrl, expiresAt: offer.expiresAt, qrCode });
     } catch (error) {
+      if (!current() || !relayPanelOpen.current) return;
       setRelayPairingError(error instanceof Error ? error.message : "QC Remote could not create a pairing code.");
       actionFailed(error);
     } finally {
       relayPairingStartInFlight.current = false;
       setRelayPairingStarting(false);
+      if (relayPairingRestartRequested.current && relayPanelOpen.current) {
+        relayPairingRestartRequested.current = false;
+        void beginBrowserRelayPairing();
+      }
     }
-  }, [actionFailed]);
+  }, [actionFailed, relayPairingSession]);
 
   const refreshRelayConnectors = useCallback(async () => {
-    if (!publicRelay.connectors) return;
+    if (!publicRelay.connectors || !relayConnectorMounted.current || relayConnectorMutation.current) return;
+    const read = ++relayConnectorRead.current;
+    const epoch = relayConnectorMountEpoch.current;
+    const current = () => relayConnectorMounted.current && epoch === relayConnectorMountEpoch.current && read === relayConnectorRead.current;
     try {
-      setRelayConnectors(await publicRelay.connectors());
+      const connectors = await publicRelay.connectors();
+      if (!current()) return;
+      setRelayConnectors(connectors);
       setRelayConnectorsError(undefined);
     } catch (error) {
+      if (!current()) return;
       setRelayConnectors([]);
       setRelayConnectorsError(error instanceof Error ? error.message : String(error));
     }
@@ -854,11 +939,10 @@ export function App() {
 
   useEffect(() => {
     if (!relayBrowserPairing) return;
-    let active = true;
-    const check = async () => {
+    return startSequentialPairingPoll(async (current) => {
       try {
         const result = await publicRelay.browserPairing!.poll();
-        if (!active) return;
+        if (!current()) return;
         if (result.state === "paired") {
           setRelayBrowserPairing(undefined);
           setNotice("Remote access is connected.");
@@ -870,14 +954,11 @@ export function App() {
           if (relayPanelOpen.current) void beginBrowserRelayPairing();
         }
       } catch (error) {
-        if (!active) return;
+        if (!current()) return;
         setRelayBrowserPairing(undefined);
         actionFailed(error);
       }
-    };
-    void check();
-    const timer = window.setInterval(() => void check(), 2_000);
-    return () => { active = false; window.clearInterval(timer); };
+    });
   }, [actionFailed, beginBrowserRelayPairing, refreshRelayConnectors, relayBrowserPairing]);
 
   const shareRelayPairing = useCallback(async () => {
@@ -905,18 +986,33 @@ export function App() {
 
 
   const unpairPublicRelay = async () => {
+    if (!relayConnectorMounted.current || relayConnectorMutation.current) return;
+    const token = {};
+    relayConnectorMutation.current = token;
+    relayConnectorRead.current += 1;
+    const epoch = relayConnectorMountEpoch.current;
+    const current = () => relayConnectorMounted.current && epoch === relayConnectorMountEpoch.current && relayConnectorMutation.current === token;
     try {
+      relayPairingRestartRequested.current = false;
+      await relayPairingSession.cancel();
+      if (!current()) return;
       const status = await unpairRelay();
+      if (!current()) return;
       setRelayBrowserPairing(undefined);
       setRelayPairingError(undefined);
       setRelayConnectors([]);
       setNotice(status?.detail ?? "Remote access was disconnected and unpaired.");
-      void refreshRelayConnectors();
       // Unpairing this computer leaves the panel with nothing paired, which is
       // the state a live code belongs in most.
       if (relayPanelOpen.current) void beginBrowserRelayPairing();
     } catch (error) {
-      actionFailed(error);
+      if (current()) actionFailed(error);
+    } finally {
+      if (relayConnectorMutation.current === token) {
+        relayConnectorMutation.current = undefined;
+        relayConnectorRead.current += 1;
+        if (relayConnectorMounted.current) void refreshRelayConnectors();
+      }
     }
   };
 
@@ -928,6 +1024,16 @@ export function App() {
     }
   };
 
+  const retryRelayWithdrawal = async () => {
+    if (relayWithdrawalPending || !publicRelay.retryWithdrawal) return;
+    setRelayWithdrawalPending(true);
+    try {
+      const status = await publicRelay.retryWithdrawal();
+      setNotice(status.pendingRevocation ? status.detail ?? "Cloud withdrawal is still pending. Try again when online." : "Cloud authorization withdrawal completed.");
+    } catch (error) { actionFailed(error); }
+    finally { setRelayWithdrawalPending(false); }
+  };
+
   const unpairRelayAccount = async () => {
     if (!await appPrompts.confirm("Unpair this Quad Cortex from Remote MCP Cloud Relay? Linked AI apps will no longer be able to reach it.")) return;
     await unpairPublicRelay();
@@ -935,18 +1041,33 @@ export function App() {
 
   const unlinkRelayConnector = async (grantId: string) => {
     const connector = relayConnectors.find((row) => row.grantId === grantId);
-    if (!connector || !publicRelay.unlinkConnector || relayUnlinkingGrantId) return;
-    if (!await appPrompts.confirm(`Unlink ${connector.name}? Its Remote MCP authorization will be revoked immediately.`)) return;
+    if (!connector || !publicRelay.unlinkConnector || relayUnlinkingGrantId || !relayConnectorMounted.current || relayConnectorMutation.current) return;
+    const token = { grantId };
+    relayConnectorMutation.current = token;
+    relayConnectorRead.current += 1;
+    const epoch = relayConnectorMountEpoch.current;
+    const current = () => relayConnectorMounted.current && epoch === relayConnectorMountEpoch.current && relayConnectorMutation.current === token;
     setRelayUnlinkingGrantId(grantId);
     try {
-      setRelayConnectors(await publicRelay.unlinkConnector(grantId));
+      if (!await appPrompts.confirm(`Unlink ${connector.name}? Its Remote MCP authorization will be revoked immediately.`) || !current()) return;
+      const connectors = await publicRelay.unlinkConnector(grantId);
+      if (!current()) return;
+      setRelayConnectors(connectors);
       setRelayConnectorsError(undefined);
       setNotice(`${connector.name} unlinked from Remote MCP.`);
     } catch (error) {
+      if (!current()) return;
       actionFailed(error);
-      await refreshRelayConnectors();
+      setRelayConnectorsError(error instanceof Error ? error.message : String(error));
     } finally {
-      setRelayUnlinkingGrantId(undefined);
+      if (relayConnectorMutation.current === token) {
+        relayConnectorMutation.current = undefined;
+        relayConnectorRead.current += 1;
+        if (relayConnectorMounted.current) {
+          setRelayUnlinkingGrantId(undefined);
+          if (epoch !== relayConnectorMountEpoch.current) void refreshRelayConnectors();
+        }
+      }
     }
   };
 
@@ -1004,12 +1125,20 @@ export function App() {
     relayPanelOpen.current = open;
     if (open) {
       void refreshRelayConnectors();
+      if (relayPairingStartInFlight.current) relayPairingRestartRequested.current = true;
       if (!relayBrowserPairing && !relayPairingStarting) void beginBrowserRelayPairing();
       return;
     }
-    void publicRelay.browserPairing!.cancel!().catch(() => undefined);
+    relayPairingRestartRequested.current = false;
+    void relayPairingSession.cancel().catch(() => undefined);
     setRelayBrowserPairing(undefined);
-  }, [beginBrowserRelayPairing, refreshRelayConnectors, relayBrowserPairing, relayPairingStarting]);
+  }, [beginBrowserRelayPairing, refreshRelayConnectors, relayBrowserPairing, relayPairingSession, relayPairingStarting]);
+
+  useEffect(() => () => {
+    relayPanelOpen.current = false;
+    relayPairingRestartRequested.current = false;
+    void relayPairingSession.cancel().catch(() => undefined);
+  }, [relayPairingSession]);
 
   const chooseScene = performanceWorkflow.selectScene;
   const toggleSelectedBypass = useCallback(() => {
@@ -1069,6 +1198,7 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (appPromptActive) return;
       if (event.defaultPrevented) return;
       const target = event.target as HTMLElement | null;
       const textEntry = target?.matches("input, textarea, [contenteditable=true]");
@@ -1090,9 +1220,8 @@ export function App() {
         }
         if (event.key === "Escape") {
           event.preventDefault();
-          editor.close();
           parameterWorkflow.cancel();
-          setNotice("Returned to the Grid.");
+          void gridWorkflow.closeOnDevice();
         }
         return;
       }
@@ -1110,7 +1239,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [addDevicePickerOpen, appMenuOpen, applyFootswitchAssignment, blockDetails, chooseScene, deviceScreenView, deviceSettingsWorkflow, footswitchAssignmentPending, moveBlockSelection, navigateBank, openBlockEditor, presetDirectoryOpen, presetWorkflow.saveProps.open, pressFootswitch, removeSelectedBlock, sceneWorkflow, selectedBlockId, deviceViews.open, snapshot.blocks, tapTempo, tempoWorkflow, toggleSelectedBypass]);
+  }, [appPromptActive, addDevicePickerOpen, appMenuOpen, applyFootswitchAssignment, blockDetails, chooseScene, deviceScreenView, deviceSettingsWorkflow, footswitchAssignmentPending, moveBlockSelection, navigateBank, openBlockEditor, parameterWorkflow.cancel, gridWorkflow.closeOnDevice, presetDirectoryOpen, presetWorkflow.saveProps.open, pressFootswitch, removeSelectedBlock, sceneWorkflow, selectedBlockId, deviceViews.open, snapshot.blocks, tapTempo, tempoWorkflow, toggleSelectedBypass]);
 
   /**
    * Leave the demo device, if it is active, for the real one. Only the route
@@ -1142,9 +1271,29 @@ export function App() {
     setConnection(returning);
     setNotice(returning.detail);
     setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-returning", result: "info", detail: reason }]);
+    // Failed native work still owns its admission until its promise settles.
+    // Do not replace the target or bypass the ordinary Demo opening guard.
+    if (commandPending || demoPending || awaitingDetection.current || qcController.lifetime.mutations.busy) {
+      const attempt = connectionAttempts.capture();
+      const epoch = appOperationEpoch.current;
+      deferredDemoRecovery.current = { reason, current: () => appOperationMounted.current && epoch === appOperationEpoch.current && attempt.current() };
+      return;
+    }
+    deferredDemoRecovery.current = undefined;
     void startDemoDevice(reason);
   };
   returnToDemoDeviceRef.current = returnToDemoDevice;
+  // The admission external-store subscription rerenders after settlement,
+  // giving this continuation a fresh pending state rather than the failed
+  // command's captured busy render. A newer connection owns its own recovery.
+  useEffect(() => {
+    const recovery = deferredDemoRecovery.current;
+    if (!recovery) return;
+    if (!recovery.current()) { deferredDemoRecovery.current = undefined; return; }
+    if (commandPending || demoPending || awaitingDetection.current || qcController.lifetime.mutations.busy) return;
+    deferredDemoRecovery.current = undefined;
+    startDeferredDemoRef.current(recovery.reason);
+  }, [commandPending, demoPending, connection.phase]);
 
   // `userAction` is set only for the user's own Connect, USB, device or menu click:
   // it supersedes a recorded Quit first. Mount and device detection leave it unset
@@ -1161,13 +1310,14 @@ export function App() {
     // screen as if it were still active while the hardware is being reached,
     // so the Grid shows a neutral placeholder until one of the two replaces it.
     const fromDemo = suspendDemoDevice();
+    if (!fromDemo) demoDeviceSession.useDevice();
     if (fromDemo) setSnapshot(CONNECTING_PLACEHOLDER_SNAPSHOT);
     // A full handshake here always ends with source "device" one way or the
     // other (ready, or a fallback back to the demo); either way a device
     // held in the background is no longer a distinct state from this attempt on.
     setDeviceHeldInBackground(false);
     resetCommands();
-    setCommandPending(false);
+    setConnectionPending(false);
     nativeStateSequence.current = 0;
     nativeStateStream.current = undefined;
     gridRepair.current = createGridRepairCoordinator();
@@ -1185,11 +1335,8 @@ export function App() {
     setConnection(discovering);
     setNotice(discovering.detail);
     try {
-      if (userAction) {
-        await brokerDevice.acknowledgeUserConnect();
-        // Superseded meanwhile (a Disconnect, say): send no device.reconnect.
-        if (!attempt.current()) return;
-      }
+      if (userAction) await brokerDevice.acknowledgeUserConnect();
+      if (!attempt.current()) return;
       if (physicalId && physicalId !== selectedPhysicalRef.current) {
         const previousId = selectedPhysicalRef.current;
         selectedPhysicalRef.current = physicalId;
@@ -1199,6 +1346,7 @@ export function App() {
         setSnapshot(CONNECTING_PLACEHOLDER_SNAPSHOT);
         try { await physicalDevices.select(physicalId); }
         catch (error) {
+          if (!attempt.current()) return;
           selectedPhysicalRef.current = previousId;
           setSelectedPhysicalId(previousId);
           throw error;
@@ -1279,48 +1427,53 @@ export function App() {
   };
 
   const disconnectDevice = async () => {
-    if (commandPending) {
-      setNotice("Wait for the current device command to finish before disconnecting.");
-      return;
-    }
-    userDisconnected.current = true;
-    const attempt = connectionAttempts.begin();
-    resetCommands();
-    awaitingDetection.current = false;
-    stopSyncProgressAnimation();
-    showSyncProgress(null);
-    setCommandPending(true);
-    const disconnecting = { phase: "disconnected" as const, detail: "Closing the Quad Cortex session…", demo: true, source: "device" as const };
-    // Revoke Ready before closing USB. This also prevents the liveness monitor
-    // from misclassifying an intentional close as an unexpected device loss.
-    connectionRef.current = disconnecting;
-    setConnection(disconnecting);
-    setNotice(disconnecting.detail);
-    setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnect-started", result: "pending", detail: "Closing the live device and gateway session." }]);
+    if (!appOperationMounted.current || connectionPending) { return; }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("host");
+    if (!operationLease) { return; }
+    const operationEpoch = appOperationEpoch.current;
+    const operationCurrent = () => appOperationMounted.current && operationEpoch === appOperationEpoch.current && operationLease.current();
     try {
-      const next = await brokerDevice.disconnect();
-      if (!attempt.current()) return;
-      nativeStateSequence.current = 0;
-      nativeStateStream.current = undefined;
-      gridRepair.current = createGridRepairCoordinator();
-      nativeStateAvailable.current = false;
-      liveSyncFailures.current = 0;
+      if (commandPending) {
+        setNotice("Wait for the current device command to finish before disconnecting.");
+        return;
+      }
+      userDisconnected.current = true;
+      demoDeviceSession.useDevice();
+      const attempt = connectionAttempts.begin();
       resetCommands();
-      connectionRef.current = next;
-      setConnection(next);
-      setNotice(next.detail);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnected", result: "success", detail: next.detail }]);
-    } catch (error) {
-      if (!attempt.current()) return;
-      const detail = error instanceof Error ? error.message : String(error);
-      const failed = { phase: "needs-attention" as const, detail, demo: true, source: "device" as const };
-      connectionRef.current = failed;
-      setConnection(failed);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnect-failed", result: "failure", detail }]);
-      setNotice(detail);
-    } finally {
-      if (attempt.current()) setCommandPending(false);
-    }
+      awaitingDetection.current = false;
+      stopSyncProgressAnimation();
+      showSyncProgress(null);
+      const disconnecting = { phase: "disconnected" as const, detail: "Closing the Quad Cortex session…", demo: true, source: "device" as const };
+      // Revoke Ready before closing USB. This also prevents the liveness monitor
+      // from misclassifying an intentional close as an unexpected device loss.
+      connectionRef.current = disconnecting;
+      setConnection(disconnecting);
+      setNotice(disconnecting.detail);
+      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnect-started", result: "pending", detail: "Closing the live device and gateway session." }]);
+      try {
+        const next = await brokerDevice.disconnect();
+        if (!attempt.current() || !operationCurrent()) return;
+        nativeStateSequence.current = 0;
+        nativeStateStream.current = undefined;
+        gridRepair.current = createGridRepairCoordinator();
+        nativeStateAvailable.current = false;
+        liveSyncFailures.current = 0;
+        resetCommands();
+        connectionRef.current = next;
+        setConnection(next);
+        setNotice(next.detail);
+        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnected", result: "success", detail: next.detail }]);
+      } catch (error) {
+        if (!attempt.current() || !operationCurrent()) return;
+        const detail = error instanceof Error ? error.message : String(error);
+        const failed = { phase: "needs-attention" as const, detail, demo: true, source: "device" as const };
+        connectionRef.current = failed;
+        setConnection(failed);
+        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnect-failed", result: "failure", detail }]);
+        setNotice(detail);
+      }
+    } finally { operationLease.release(); }
   };
 
   // The macOS status item stays available while the main window is hidden.
@@ -1401,11 +1554,15 @@ export function App() {
       if (closeDeviceSession) await tauriTransport.disconnect().catch(() => undefined);
       if (!attempt.current()) return;
       const opened = await demoDeviceSession.start(virtualDeviceStorage, attempt.current);
-      if (!opened) return;
+      if (!opened || !attempt.current()) return;
       const { transport: demo, connection: state, snapshot: current } = opened;
       clearUndo();
       presetWorkflow.resetCache();
       nativeStateAvailable.current = false;
+      // A hardware mirror cannot render the Demo gateway, which has no
+      // framebuffer. Retire physical navigation before publishing Demo data.
+      setDeviceScreenView(null);
+      screenDestination.setPopup(null);
       // The demo state first, then its content: the demo's preset is never on
       // screen under a device-sourced state, even between two updates.
       connectionRef.current = state;
@@ -1441,7 +1598,7 @@ export function App() {
       setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-failed", result: "failure", detail }]);
     } finally {
       if (demoOpenToken.current === demoOpen) setDemoPending(false);
-      if (reconnectAfterCurrentAttempt.current
+      if (attempt.current() && reconnectAfterCurrentAttempt.current
           && demoDeviceSession.source === "virtual"
           && demoCanYieldToDevice.current) {
         reconnectAfterCurrentAttempt.current = false;
@@ -1455,6 +1612,7 @@ export function App() {
   };
 
   /** "Stop the demo device": go fully idle - no demo, no hardware - keeping the demo's saved state. */
+  startDeferredDemoRef.current = (reason) => { void startDemoDevice(reason); };
   const stopDemoDevice = () => {
     if (commandPending) {
       setNotice("Wait for the current command to finish before stopping the demo device.");
@@ -1490,57 +1648,56 @@ export function App() {
    * re-reads the current snapshot once before swapping the routing target.
    */
   const resumeDeviceSession = async () => {
-    if (!deviceHeldInBackground || commandPending || demoPending || demoDeviceSession.source !== "virtual") return;
-    const attempt = connectionAttempts.begin();
-    setCommandPending(true);
-    setNotice("Reading the Quad Cortex that stayed connected in the background…");
+    if (!appOperationMounted.current || connectionPending) { return; }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("host");
+    if (!operationLease) { return; }
+    const operationEpoch = appOperationEpoch.current;
+    const operationCurrent = () => appOperationMounted.current && operationEpoch === appOperationEpoch.current && operationLease.current();
     try {
-      const verifiedRuntime = await tauriTransport.runtimeStatus();
-      if (!attempt.current()) return;
-      if (!runtimeHasSynchronizedQc(verifiedRuntime)) {
-        throw new Error(verifiedRuntime.usbDiagnostics?.detail || "The Quad Cortex preset is not synchronized");
+      if (!deviceHeldInBackground || commandPending || demoPending || demoDeviceSession.source !== "virtual") return;
+      const attempt = connectionAttempts.begin();
+      setNotice("Reading the Quad Cortex that stayed connected in the background…");
+      try {
+        const verifiedRuntime = await tauriTransport.runtimeStatus();
+        if (!attempt.current() || !operationCurrent()) return;
+        if (!runtimeHasSynchronizedQc(verifiedRuntime)) {
+          throw new Error(verifiedRuntime.usbDiagnostics?.detail || "The Quad Cortex preset is not synchronized");
+        }
+        const current = await tauriTransport.currentSnapshot();
+        if (!attempt.current() || !operationCurrent()) return;
+        demoDeviceSession.useDevice();
+        setRuntime(verifiedRuntime);
+        clearUndo();
+        presetWorkflow.resetCache();
+        nativeStateAvailable.current = false;
+        setSnapshot(current);
+        setSelectedBlockId("");
+        const ready = { phase: "ready" as const, detail: "Quad Cortex connected.", demo: false, source: "device" as const, lastSync: new Date().toISOString() };
+        connectionRef.current = ready;
+        setConnection(ready);
+        setDeviceHeldInBackground(false);
+        setNotice(`Switched back to the Quad Cortex. ${current.presetLocation} · ${current.presetName} resumed from the background.`);
+        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-resumed", result: "success", detail: "Switched back to the Quad Cortex that stayed connected in the background; no reconnect was needed." }]);
+      } catch (error) {
+        if (!attempt.current() || !operationCurrent()) return;
+        const detail = error instanceof Error ? error.message : String(error);
+        // The background session did not actually survive: fall back exactly
+        // like a failed reconnect from the demo would, rather than leaving a
+        // USB tab on screen that cannot succeed.
+        setDeviceHeldInBackground(false);
+        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-resume-failed", result: "failure", detail }]);
+        returnToDemoDevice(detail);
       }
-      const current = await tauriTransport.currentSnapshot();
-      if (!attempt.current()) return;
-      demoDeviceSession.useDevice();
-      setRuntime(verifiedRuntime);
-      clearUndo();
-      presetWorkflow.resetCache();
-      nativeStateAvailable.current = false;
-      setSnapshot(current);
-      setSelectedBlockId("");
-      const ready = { phase: "ready" as const, detail: "Quad Cortex connected.", demo: false, source: "device" as const, lastSync: new Date().toISOString() };
-      connectionRef.current = ready;
-      setConnection(ready);
-      setDeviceHeldInBackground(false);
-      setNotice(`Switched back to the Quad Cortex. ${current.presetLocation} · ${current.presetName} resumed from the background.`);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-resumed", result: "success", detail: "Switched back to the Quad Cortex that stayed connected in the background; no reconnect was needed." }]);
-    } catch (error) {
-      if (!attempt.current()) return;
-      const detail = error instanceof Error ? error.message : String(error);
-      // The background session did not actually survive: fall back exactly
-      // like a failed reconnect from the demo would, rather than leaving a
-      // USB tab on screen that cannot succeed.
-      setDeviceHeldInBackground(false);
-      // The session the user chose to return to was lost: recorded like a
-      // live-health loss, so a broker that still reports the device ready is
-      // followed once more instead of leaving this window on the demo beside
-      // it. The user's own choice gives the budget back, as their Connect does.
-      recordLiveSessionLoss(true);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-resume-failed", result: "failure", detail }]);
-      returnToDemoDevice(detail);
-    } finally {
-      if (attempt.current()) setCommandPending(false);
-    }
+    } finally { operationLease.release(); }
   };
 
   /** The demo device's store, while the demo device is the active transport. */
   const activeDemoStore = () => demoDeviceSession.source === "virtual" ? virtualDeviceStoreOf(demoDeviceSession.virtual) : undefined;
-  const readClipboardText = async (): Promise<string | undefined> => {
+  const readClipboardText = async (current: () => boolean): Promise<string | undefined> => {
     try {
       return await navigator.clipboard.readText();
     } catch (error) {
-      setNotice(`QC Remote could not read the clipboard: ${error instanceof Error ? error.message : String(error)}`);
+      if (current()) setNotice(`QC Remote could not read the clipboard: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
     }
   };
@@ -1552,20 +1709,27 @@ export function App() {
    * the demo's exact preset with every scene.
    */
   const copyPresetAsText = async () => {
-    if (!sessionReady || commandPending) return;
-    const current = snapshotRef.current;
-    const store = activeDemoStore();
-    setCommandPending(true);
-    setNotice(`Copying ${current.presetName || "the preset"} as text…`);
+    if (!appOperationMounted.current || connectionPending) { return; }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("session");
+    if (!operationLease) { return; }
     try {
-      const copied = await capturePresetText({ gateway: activeGateway, snapshot: current, source: store ? "virtual" : "device", demoPreset: store?.currentPreset(), onProgress: setNotice });
-      await navigator.clipboard.writeText(copied.text);
-      setNotice(copied.summary);
-    } catch (error) {
-      setNotice(`The preset was not copied: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setCommandPending(false);
-    }
+      if (!sessionReady || commandPending) return;
+      const operation = captureDeviceOperation();
+      const current = snapshotRef.current;
+      const store = activeDemoStore();
+      if (!operation.current()) return;
+      setNotice(`Copying ${current.presetName || "the preset"} as text…`);
+      try {
+        const copied = await capturePresetText({ gateway: operation.gateway, snapshot: current, source: store ? "virtual" : "device", demoPreset: store?.currentPreset(), onProgress: (message) => { if (operation.current()) setNotice(message); } });
+        operation.assertCurrent();
+        await navigator.clipboard.writeText(copied.text);
+        operation.assertCurrent();
+        setNotice(copied.summary);
+      } catch (error) {
+        if (!operation.current()) return;
+        setNotice(`The preset was not copied: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } finally { operationLease.release(); }
   };
 
   /**
@@ -1575,47 +1739,60 @@ export function App() {
    * reported. Either way the result is unsaved until the preset is saved.
    */
   const pastePresetFromText = async () => {
-    if (!sessionReady || commandPending) return;
-    const text = await readClipboardText();
-    if (text === undefined) return;
-    const parsed = parsePresetText(text);
-    if (!parsed.ok) { setNotice(parsed.message); return; }
-    const pasted = parsed.document;
-    const pastedName = pasted.snapshot.presetName || "the unnamed preset";
-    const target = snapshotRef.current;
-    const occupied = target.blocks.filter(isGridDevice).length;
-    const store = activeDemoStore();
-    if (store) {
-      if ((occupied || target.dirty) && !await appPrompts.confirm(`Replace “${target.presetName || "the unnamed preset"}” on the demo device with the pasted “${pastedName}”? Its ${occupied} device${occupied === 1 ? "" : "s"}${target.dirty ? " and unsaved changes" : ""} will be replaced. This is temporary until the preset is saved.`)) return;
-      setCommandPending(true);
-      try {
-        const result = await pastePresetIntoDemo(store, pasted);
-        clearUndo();
-        reconcileWorkflowSnapshot(await activeGateway.currentSnapshot());
-        setNotice(result.summary);
-      } catch (error) {
-        setNotice(`The preset was not pasted: ${error instanceof Error ? error.message : String(error)}`);
-      } finally {
-        setCommandPending(false);
-      }
-      return;
-    }
-    if (!deviceReady) return;
-    // A paste is a full overwrite once confirmed. A copy from the demo device
-    // always asks first, saying that its untouched values are approximations.
-    const confirmation = presetReplayConfirmation(pasted, target);
-    if (confirmation !== undefined && !await appPrompts.confirm(confirmation)) return;
-    setCommandPending(true);
+    if (!appOperationMounted.current || connectionPending) { return; }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("session");
+    if (!operationLease) { return; }
     try {
-      const report = await replayPresetOnDevice({ gateway: activeGateway, document: pasted, target, isConnectionLost: isQcConnectionFailure, onProgress: setNotice });
-      clearUndo();
-      try { reconcileWorkflowSnapshot(await activeGateway.currentSnapshot()); } catch { if (report.snapshot) reconcileWorkflowSnapshot(report.snapshot); }
-      setNotice(presetReplaySummary(report, pasted));
-    } catch (error) {
-      actionFailed(error);
-    } finally {
-      setCommandPending(false);
-    }
+      if (!sessionReady || commandPending) return;
+      const operation = captureDeviceOperation();
+      const text = await readClipboardText(operation.current);
+      if (text === undefined || !operation.current()) return;
+      const parsed = parsePresetText(text);
+      if (!parsed.ok) { setNotice(parsed.message); return; }
+      const pasted = parsed.document;
+      const pastedName = pasted.snapshot.presetName || "the unnamed preset";
+      const target = snapshotRef.current;
+      const occupied = target.blocks.filter(isGridDevice).length;
+      const store = activeDemoStore();
+      if (store) {
+        if ((occupied || target.dirty) && !await appPrompts.confirm(`Replace “${target.presetName || "the unnamed preset"}” on the demo device with the pasted “${pastedName}”? Its ${occupied} device${occupied === 1 ? "" : "s"}${target.dirty ? " and unsaved changes" : ""} will be replaced. This is temporary until the preset is saved.`)) return;
+        if (!operation.current()) return;
+        try {
+          if (snapshotRef.current.presetIdentity !== target.presetIdentity) return;
+          const result = await pastePresetIntoDemo(store, pasted);
+          operation.assertCurrent();
+          clearUndo();
+          const current = await operation.gateway.currentSnapshot();
+          operation.assertCurrent();
+          reconcileWorkflowSnapshot(current);
+          setNotice(result.summary);
+        } catch (error) {
+        if (!operation.current()) return;
+          setNotice(`The preset was not pasted: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return;
+      }
+      if (!deviceReady) return;
+      // A paste is a full overwrite once confirmed. A copy from the demo device
+      // always asks first, saying that its untouched values are approximations.
+      const confirmation = presetReplayConfirmation(pasted, target);
+      if (confirmation !== undefined && !await appPrompts.confirm(confirmation)) return;
+      if (!operation.current()) return;
+      try {
+        const report = await replayPresetOnDevice({ gateway: operation.gateway, document: pasted, target, isConnectionLost: isQcConnectionFailure, onProgress: (message) => { if (operation.current()) setNotice(message); } });
+        operation.assertCurrent();
+        clearUndo();
+        try {
+          const current = await operation.gateway.currentSnapshot();
+          operation.assertCurrent();
+          reconcileWorkflowSnapshot(current);
+        } catch { operation.assertCurrent(); if (report.snapshot) reconcileWorkflowSnapshot(report.snapshot); }
+        setNotice(presetReplaySummary(report, pasted));
+      } catch (error) {
+        if (!operation.current()) return;
+        actionFailed(error);
+      }
+    } finally { operationLease.release(); }
   };
 
   /**
@@ -1624,67 +1801,85 @@ export function App() {
    * the firmware's atomic duplicate remains the fast path on the same QC.
    */
   const copySetlist = async () => {
-    if (!sessionReady || commandPending) return;
+    if (!appOperationMounted.current || connectionPending) { return; }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("session");
+    if (!operationLease) { return; }
     try {
-      const identity = await activeGateway.identity();
-      const source = connection.source === "virtual" ? "virtual" : "device";
-      let captured: CapturedSetlist | undefined;
-      if (source === "device") {
-        if (!await appPrompts.confirm(`Copy all occupied presets in setlist “${snapshot.setlistName}”? QC Remote will briefly recall each preset and each of its eight scenes, read it, then restore ${snapshot.presetLocation} · ${snapshot.presetName}. Nothing on the Quad Cortex will be saved or overwritten.`)) return;
-        setCommandPending(true);
-        captured = await captureSetlistForDemo({
-          gateway: activeGateway,
+      if (!sessionReady || commandPending) return;
+      const operation = captureDeviceOperation();
+      try {
+        const identity = await operation.gateway.identity();
+        operation.assertCurrent();
+        const source = connection.source === "virtual" ? "virtual" : "device";
+        let captured: CapturedSetlist | undefined;
+        if (source === "device") {
+          if (!await appPrompts.confirm(`Copy all occupied presets in setlist “${snapshot.setlistName}”? QC Remote will briefly recall each preset and each of its eight scenes, read it, then restore ${snapshot.presetLocation} · ${snapshot.presetName}. Nothing on the Quad Cortex will be saved or overwritten.`)) return;
+          if (!operation.current()) return;
+          captured = await captureSetlistForDemo({
+            gateway: operation.gateway,
+            setlistKey: snapshot.setlistKey,
+            setlistName: snapshot.setlistName,
+            onProgress: (message) => { if (operation.current()) setNotice(message); }
+          });
+          operation.assertCurrent();
+          const current = await operation.gateway.currentSnapshot();
+          operation.assertCurrent();
+          reconcileWorkflowSnapshot(current);
+        }
+        setSetlistClipboard({
+          serial: identity.serial,
+          source,
           setlistKey: snapshot.setlistKey,
           setlistName: snapshot.setlistName,
-          onProgress: setNotice
+          captured
         });
-        reconcileWorkflowSnapshot(await activeGateway.currentSnapshot());
+        setNotice(`Copied setlist “${snapshot.setlistName}”${captured ? `: ${captured.presets.length} occupied presets and every scene were read` : ""}. Paste Setlist can duplicate it here${captured ? " or import it into the Demo device" : ""}.`);
+      } catch (error) {
+        if (!operation.current()) return;
+        actionFailed(error);
       }
-      setSetlistClipboard({
-        serial: identity.serial,
-        source,
-        setlistKey: snapshot.setlistKey,
-        setlistName: snapshot.setlistName,
-        captured
-      });
-      setNotice(`Copied setlist “${snapshot.setlistName}”${captured ? `: ${captured.presets.length} occupied presets and every scene were read` : ""}. Paste Setlist can duplicate it here${captured ? " or import it into the Demo device" : ""}.`);
-    } catch (error) {
-      actionFailed(error);
-    } finally {
-      setCommandPending(false);
-    }
+    } finally { operationLease.release(); }
   };
 
   /** Edit > Paste Setlist uses native duplication on one device and reconstruction across device boundaries. */
   const pasteSetlist = async () => {
-    if (!sessionReady || commandPending || !setlistClipboard) return;
+    if (!appOperationMounted.current || connectionPending) { return; }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("session");
+    if (!operationLease) { return; }
     try {
-      const identity = await activeGateway.identity();
-      const source = connection.source === "virtual" ? "virtual" : "device";
-      if (source === "virtual" && setlistClipboard.source === "device" && setlistClipboard.captured) {
-        const store = activeDemoStore();
-        if (!store) throw new Error("The Demo device store is not available.");
-        if (!await appPrompts.confirm(`Import ${setlistClipboard.captured.presets.length} occupied presets from “${setlistClipboard.setlistName}” into the Demo device? They keep their original slot positions. Unsupported Capture or IR content will be reported and left out.`)) return;
-        setCommandPending(true);
-        const imported = await importCapturedSetlistIntoDemo(store, setlistClipboard.captured);
+      if (!sessionReady || commandPending || !setlistClipboard) return;
+      const operation = captureDeviceOperation();
+      try {
+        const identity = await operation.gateway.identity();
+        operation.assertCurrent();
+        const source = connection.source === "virtual" ? "virtual" : "device";
+        if (source === "virtual" && setlistClipboard.source === "device" && setlistClipboard.captured) {
+          const store = activeDemoStore();
+          if (!store) throw new Error("The Demo device store is not available.");
+          if (!await appPrompts.confirm(`Import ${setlistClipboard.captured.presets.length} occupied presets from “${setlistClipboard.setlistName}” into the Demo device? They keep their original slot positions. Unsupported Capture or IR content will be reported and left out.`)) return;
+          if (!operation.current()) return;
+          const imported = await importCapturedSetlistIntoDemo(store, setlistClipboard.captured);
+          operation.assertCurrent();
+          presetWorkflow.resetCache();
+          setNotice(`Imported “${imported.name}” into the Demo device with ${imported.presets} presets.${imported.skipped.length ? ` ${imported.skipped.length} unsupported block${imported.skipped.length === 1 ? " was" : "s were"} left out.` : " Every captured block was supported."}`);
+          return;
+        }
+        if (!operation.current()) return;
+        if (identity.serial !== setlistClipboard.serial || source !== setlistClipboard.source) {
+          setNotice("That setlist came from another target. Physical-to-Demo transfer is supported; writing a reconstructed setlist onto a different physical Quad Cortex is not enabled yet.");
+          return;
+        }
+        if (!await appPrompts.confirm(`Duplicate setlist “${setlistClipboard.setlistName}” on this ${source === "virtual" ? "demo device" : "Quad Cortex"}? This creates a persistent copy.`)) return;
+        if (!operation.current()) return;
+        const result = await operation.gateway.duplicateSetlist(setlistClipboard.setlistKey, setlistClipboard.setlistName);
+        operation.assertCurrent();
         presetWorkflow.resetCache();
-        setNotice(`Imported “${imported.name}” into the Demo device with ${imported.presets} presets.${imported.skipped.length ? ` ${imported.skipped.length} unsupported block${imported.skipped.length === 1 ? " was" : "s were"} left out.` : " Every captured block was supported."}`);
-        return;
+        setNotice(result.detail);
+      } catch (error) {
+        if (!operation.current()) return;
+        actionFailed(error);
       }
-      if (identity.serial !== setlistClipboard.serial || source !== setlistClipboard.source) {
-        setNotice("That setlist came from another target. Physical-to-Demo transfer is supported; writing a reconstructed setlist onto a different physical Quad Cortex is not enabled yet.");
-        return;
-      }
-      if (!await appPrompts.confirm(`Duplicate setlist “${setlistClipboard.setlistName}” on this ${source === "virtual" ? "demo device" : "Quad Cortex"}? This creates a persistent copy.`)) return;
-      setCommandPending(true);
-      const result = await activeGateway.duplicateSetlist(setlistClipboard.setlistKey, setlistClipboard.setlistName);
-      presetWorkflow.resetCache();
-      setNotice(result.detail);
-    } catch (error) {
-      actionFailed(error);
-    } finally {
-      setCommandPending(false);
-    }
+    } finally { operationLease.release(); }
   };
 
   const buildDiagnosticsReport = (): DiagnosticsReport => ({
@@ -1701,7 +1896,9 @@ export function App() {
       dirty: snapshot.dirty,
       blockCount: snapshot.blocks.length
     },
-    events: connectionEvents
+    // Details are for the on-screen log only: they can contain preset names,
+    // filesystem paths and native error text. Copy/issue must be as private as export.
+    events: connectionEvents.slice(-100).map(({ at, event }) => ({ at, event }))
   });
 
   // The clipboard path for the Feedback window: the same report the export
@@ -1745,8 +1942,13 @@ export function App() {
     // rather than a second, bespoke launch sequence. If the demo itself
     // cannot be opened, connect() still runs against real hardware exactly as
     // before.
-    void startDemoDevice(undefined, true).finally(() => connect());
-    return () => { autoConnectStarted.current = false; };
+    let current = true;
+    const opening = startDemoDevice(undefined, true);
+    // startDemoDevice synchronously begins its connection attempt. Capture
+    // that ownership, not the pre-opening attempt it deliberately replaces.
+    const attempt = connectionAttempts.capture();
+    void opening.finally(() => { if (current && attempt.current()) void connect(); });
+    return () => { current = false; autoConnectStarted.current = false; };
   }, []);
 
   // The broker's own phase is the evidence a device is there. It is pushed,
@@ -1758,8 +1960,7 @@ export function App() {
   useEffect(() => onDevicePhase(({ phase, detail, deviceId }) => {
     // Legacy/shared-pool phase notifications can omit deviceId. They still
     // describe the selected controller; only reject an explicit different id.
-    if (selectedPhysicalRef.current && deviceId && deviceId !== selectedPhysicalRef.current) return;
-    if (!brokerPhaseDetectsDevice(phase)) return;
+    if (!qcShouldFollowDevicePhase({ phase, deviceId }, selectedPhysicalRef.current, userDisconnected.current)) return;
     if (awaitingDetection.current) {
       reconnectAfterCurrentAttempt.current = true;
       beginSyncProgress();
@@ -1920,92 +2121,134 @@ export function App() {
   }, [beginLiveRecovery, commandPending, connection.demo, connection.phase, connection.source, presetFoldersLoading, presetListLoading, snapshot.gridLayoutComplete]);
 
   const refreshSnapshot = async () => {
-    if (!deviceReady || commandPending) return;
-    const origin = qcController.lifetime.checkpoint();
-    setCommandPending(true);
-    setNotice("Refreshing complete device state…");
-    setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "refresh-started", result: "pending", detail: "Reading the complete active preset state from the device." }]);
+    if (!appOperationMounted.current || connectionPending) { return; }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("session");
+    if (!operationLease) { return; }
+    const operationEpoch = appOperationEpoch.current;
+    const operationCurrent = () => appOperationMounted.current && operationEpoch === appOperationEpoch.current && operationLease.current();
     try {
-      const current = await qcController.readSnapshot(() => tauriTransport.currentSnapshot());
-      setConnection((state) => ({ ...state, lastSync: new Date().toISOString() }));
-      setNotice("Live preset state refreshed.");
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "refresh-complete", result: "success", detail: `${current.presetLocation} · ${current.presetName} refreshed successfully.` }]);
-    } catch (error) {
-      if (error instanceof SupersededPresetOperation) return;
-      const detail = error instanceof Error ? error.message : String(error);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "refresh-failed", result: "failure", detail }]);
-      actionFailed(error);
-    } finally {
-      if (qcController.lifetime.current(origin)) setCommandPending(false);
-    }
+      if (!deviceReady || commandPending) return;
+      setNotice("Refreshing complete device state…");
+      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "refresh-started", result: "pending", detail: "Reading the complete active preset state from the device." }]);
+      try {
+        const current = await qcController.readSnapshot(() => tauriTransport.currentSnapshot());
+        if (!operationCurrent()) return;
+        setConnection((state) => ({ ...state, lastSync: new Date().toISOString() }));
+        setNotice("Live preset state refreshed.");
+        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "refresh-complete", result: "success", detail: `${current.presetLocation} · ${current.presetName} refreshed successfully.` }]);
+      } catch (error) {
+        if (!operationCurrent() || error instanceof SupersededPresetOperation) return;
+        const detail = error instanceof Error ? error.message : String(error);
+        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "refresh-failed", result: "failure", detail }]);
+        actionFailed(error);
+      }
+    } finally { operationLease.release(); }
   };
 
   const saveWorkspace = async (saveAs = false): Promise<{ ok: boolean; message: string }> => {
-    if (commandPending) return { ok: false, message: "Another operation is still running. Try again when it finishes." };
-    setCommandPending(true);
+    if (!appOperationMounted.current || connectionPending) { return { ok: false, message: "Another operation is still running. Try again when it finishes." }; }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("host");
+    if (!operationLease) { return { ok: false, message: "Another operation is still running. Try again when it finishes." }; }
+    const operationEpoch = appOperationEpoch.current;
+    const operationCurrent = () => appOperationMounted.current && operationEpoch === appOperationEpoch.current && operationLease.current();
     try {
-      // The document is built and written inside saveWorkspaceDocument; its snapshot never carries the
-      // device's model preset list.
-      const { document, result } = await saveWorkspaceDocument(workspaceFiles, {
-        snapshot,
-        selectedBlock: blockDetails,
-        selectedBlockId,
-        formFactorId,
-        path: workspacePath,
-        saveAs,
-        suggestedName: `${snapshot.presetLocation} ${snapshot.presetName}`
-      });
-      if (!result.cancelled && result.path) {
-        setWorkspacePath(result.path);
-        setWorkspaceName(result.name);
-        setLoadedWorkspace(document);
-        const saved = `Workspace saved: ${result.name}`;
-        setNotice(saved);
-        return { ok: true, message: saved };
+      if (commandPending) return { ok: false, message: "Another operation is still running. Try again when it finishes." };
+      try {
+        // The document is built and written inside saveWorkspaceDocument; its snapshot never carries the
+        // device's model preset list.
+        const { document, result } = await saveWorkspaceDocument(workspaceFiles, {
+          snapshot,
+          selectedBlock: blockDetails,
+          selectedBlockId,
+          formFactorId,
+          path: workspacePath,
+          saveAs,
+          suggestedName: `${snapshot.presetLocation} ${snapshot.presetName}`
+        });
+        if (!result.cancelled && result.path) {
+          if (!operationCurrent()) return { ok: true, message: `Workspace saved: ${result.name}` };
+          setWorkspacePath(result.path);
+          setWorkspaceName(result.name);
+          setLoadedWorkspace(document);
+          const saved = `Workspace saved: ${result.name}`;
+          setNotice(saved);
+          return { ok: true, message: saved };
+        }
+        return { ok: true, message: "Save cancelled. No copy was written." };
+      } catch (error) {
+        if (operationCurrent()) actionFailed(error);
+        return { ok: false, message: error instanceof Error ? error.message : String(error) };
       }
-      return { ok: true, message: "Save cancelled. No copy was written." };
-    } catch (error) {
-      actionFailed(error);
-      return { ok: false, message: error instanceof Error ? error.message : String(error) };
-    } finally {
-      setCommandPending(false);
-    }
+    } finally { operationLease.release(); }
   };
 
   const createDeviceBackup = async () => {
-    if (!deviceReady || commandPending) return;
-    const today = new Date().toISOString().slice(0, 10);
-    const name = (await appPrompts.prompt("Backup name", `QC Device Backup ${today}`))?.trim();
-    if (!name) return;
-    setCommandPending(true);
-    setNotice("Choose where to save the native backup. The device transfer can take about 40 seconds.");
+    if (!appOperationMounted.current || connectionPending) { return; }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("session");
+    if (!operationLease) { return; }
     try {
-      const result = await tauriTransport.createDeviceBackup(name);
-      setNotice(result.cancelled ? "Device backup cancelled." : `Native Quad Cortex backup saved as ${result.name}.`);
-    } catch (error) {
-      actionFailed(error);
-    } finally {
-      setCommandPending(false);
+      if (!deviceReady || commandPending) return;
+      const operation = captureDeviceOperation();
+      const today = new Date().toISOString().slice(0, 10);
+      const name = (await appPrompts.prompt("Backup name", `QC Device Backup ${today}`))?.trim();
+      if (!name || !operation.current()) return;
+      setNotice("Choose where to save the native backup. The device transfer can take about 40 seconds.");
+      try {
+        const result = await tauriTransport.createDeviceBackup(name);
+        operation.assertCurrent();
+        setNotice(result.cancelled ? "Device backup cancelled." : `Native Quad Cortex backup saved as ${result.name}.`);
+      } catch (error) {
+        if (operation.current()) actionFailed(error);
+      }
+    } finally { operationLease.release(); }
+  };
+
+  const saveWorkspaceCopy = async (documentId: unknown): Promise<string> => {
+    if (typeof documentId !== "string" || !documentId || documentId !== workspaceDocumentIdentity.current?.id || !loadedWorkspace) {
+      throw new Error("The workspace displayed by this window is no longer current. Wait for its updated details, then save the copy again.");
     }
+    if (!appOperationMounted.current || connectionPending) { throw new Error("Another operation is still running. Try again when it finishes."); }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("host");
+    if (!operationLease) { throw new Error("Another operation is still running. Try again when it finishes."); }
+    const operationEpoch = appOperationEpoch.current;
+    const operationCurrent = () => appOperationMounted.current && operationEpoch === appOperationEpoch.current && operationLease.current();
+    try {
+      if (commandPending) throw new Error("Another operation is still running. Try again when it finishes.");
+      {
+        const result = await saveOpenedWorkspaceCopy(workspaceFiles, loadedWorkspace);
+        if (result.cancelled) return "Save cancelled. No copy was written.";
+        if (operationCurrent() && result.path) {
+          setWorkspacePath(result.path);
+          setWorkspaceName(result.name);
+        }
+        const message = `Workspace copy saved: ${result.name ?? result.path ?? "copy"}`;
+        if (operationCurrent()) setNotice(message);
+        return message;
+      }
+    } finally { operationLease.release(); }
   };
 
   const openWorkspace = async () => {
-    if (commandPending) return;
-    setCommandPending(true);
+    if (!appOperationMounted.current || connectionPending) { return; }
+    const operationLease = qcController.lifetime.mutations.tryAcquire("host");
+    if (!operationLease) { return; }
+    const operationEpoch = appOperationEpoch.current;
+    const operationCurrent = () => appOperationMounted.current && operationEpoch === appOperationEpoch.current && operationLease.current();
     try {
-      const result = await workspaceFiles.open();
-      if (!result.cancelled && result.document && result.path) {
-        setWorkspacePath(result.path);
-        setWorkspaceName(result.name);
-        setLoadedWorkspace(result.document);
-        void appWindows.open("workspace").catch(actionFailed);
-        setNotice(`Workspace opened: ${result.name}`);
+      if (commandPending) return;
+      try {
+        const result = await workspaceFiles.open();
+        if (operationCurrent() && !result.cancelled && result.document && result.path) {
+          setWorkspacePath(result.path);
+          setWorkspaceName(result.name);
+          setLoadedWorkspace(result.document);
+          void appWindows.open("workspace").catch(actionFailed);
+          setNotice(`Workspace opened: ${result.name}`);
+        }
+      } catch (error) {
+        if (operationCurrent()) actionFailed(error);
       }
-    } catch (error) {
-      actionFailed(error);
-    } finally {
-      setCommandPending(false);
-    }
+    } finally { operationLease.release(); }
   };
 
   // The one place an AI access level change is applied and remembered: the
@@ -2040,6 +2283,7 @@ export function App() {
     information: deviceViews.deviceInformation
   }), [deviceViews.deviceInformation, snapshot.deviceName, deviceConnectionLabel, snapshot.setlistName, snapshot.presetLocation, snapshot.presetName, snapshot.mode, snapshot.activeScene, snapshot.tempo, snapshot.blocks.length, snapshot.dirty]);
   const workspaceState = useMemo<WorkspaceState>(() => loadedWorkspace ? {
+    documentId: workspaceDocumentIdentity.current!.id,
     name: workspaceName ?? "QC Workspace",
     savedAt: loadedWorkspace.savedAt,
     setlistName: loadedWorkspace.source.setlistName,
@@ -2102,8 +2346,8 @@ export function App() {
   // attached once and always see the latest render. A Settings change is
   // applied by the same setters the in-app controls call, after checking it
   // names a real device model or access level: an event payload is not typed.
-  const appWindowHandlers = useRef({ deviceInfoState, workspaceState, settingsState, changeControlAccessMode, changeFollowQcScreen, saveWorkspace });
-  appWindowHandlers.current = { deviceInfoState, workspaceState, settingsState, changeControlAccessMode, changeFollowQcScreen, saveWorkspace };
+  const appWindowHandlers = useRef({ deviceInfoState, workspaceState, settingsState, changeControlAccessMode, changeFollowQcScreen, saveWorkspaceCopy });
+  appWindowHandlers.current = { deviceInfoState, workspaceState, settingsState, changeControlAccessMode, changeFollowQcScreen, saveWorkspaceCopy };
   useEffect(() => serveAppWindowRequests({
     deviceInfoState: () => appWindowHandlers.current.deviceInfoState,
     workspaceState: () => appWindowHandlers.current.workspaceState,
@@ -2150,10 +2394,8 @@ export function App() {
           ? "Release set to Immediately, about five seconds after the last attached app or AI client disconnects."
           : `Release set to ${status.idleDisconnectMinutes} minutes after the last attached app or AI client disconnects.`;
     },
-    saveWorkspaceCopy: async () => {
-      const outcome = await appWindowHandlers.current.saveWorkspace(true);
-      if (!outcome.ok) throw new Error(outcome.message);
-      return outcome.message;
+    saveWorkspaceCopy: async (documentId: unknown) => {
+      return appWindowHandlers.current.saveWorkspaceCopy(documentId);
     }
   }), []);
 
@@ -2223,59 +2465,86 @@ export function App() {
    */
   const refreshClaudeExtensionStatus = useCallback(async (finishPending = false) => {
     if (!window.__TAURI_INTERNALS__) return { ok: true } as const;
+    const current = captureLocalStatusRead("claude");
+    if (!current()) return { ok: false } as const;
     try {
       const nextStatus = await localClientPackages.claudeDesktopStatus();
+      if (!current()) return { ok: false } as const;
       setClaudeExtensionStatus(nextStatus);
+      setClaudeStatusRefreshFailed(false);
       if (nextStatus.state === "current" || nextStatus.state === "newer-installed") setClaudeApprovalLapsed(false);
       if (finishPending || nextStatus.state === "current" || nextStatus.state === "newer-installed") {
         setClaudeInstallPending(false);
       }
       return { ok: true, status: nextStatus } as const;
     } catch {
+      if (current()) setClaudeStatusRefreshFailed(true);
       return { ok: false } as const;
     }
   }, []);
 
   const refreshChatgptIntegrationStatus = useCallback(async () => {
     if (!window.__TAURI_INTERNALS__) return true;
+    const current = captureLocalStatusRead("chatgpt");
+    if (!current()) return false;
     try {
       const nextStatus = await localClientPackages.chatgptStatus();
+      if (!current()) return false;
       setChatgptIntegrationStatus(nextStatus);
+      setChatgptStatusRefreshFailed(false);
       setChatgptRestartRequired(nextStatus.restartRequired);
       if (!nextStatus.chatgptRunning) setChatgptRemovalRestartRequired(false);
       return true;
     } catch {
+      if (current()) setChatgptStatusRefreshFailed(true);
       return false;
     }
   }, []);
 
   const refreshAntigravityIntegrationStatus = useCallback(async () => {
     if (!window.__TAURI_INTERNALS__) return true;
+    const current = captureLocalStatusRead("antigravity");
+    if (!current()) return false;
     try {
       const nextStatus = await localClientPackages.antigravityStatus();
+      if (!current()) return false;
       setAntigravityIntegrationStatus(nextStatus);
+      setAntigravityStatusRefreshFailed(false);
       return true;
     } catch {
+      if (current()) setAntigravityStatusRefreshFailed(true);
       return false;
     }
   }, []);
 
   const refreshLmStudioIntegrationStatus = useCallback(async () => {
     if (!window.__TAURI_INTERNALS__) return true;
+    const current = captureLocalStatusRead("lm-studio");
+    if (!current()) return false;
     try {
-      setLmStudioIntegrationStatus(await localClientPackages.lmStudioStatus());
+      const nextStatus = await localClientPackages.lmStudioStatus();
+      if (!current()) return false;
+      setLmStudioIntegrationStatus(nextStatus);
+      setLmStudioStatusRefreshFailed(false);
       return true;
     } catch {
+      if (current()) setLmStudioStatusRefreshFailed(true);
       return false;
     }
   }, []);
 
   const refreshJanIntegrationStatus = useCallback(async () => {
     if (!window.__TAURI_INTERNALS__) return true;
+    const current = captureLocalStatusRead("jan");
+    if (!current()) return false;
     try {
-      setJanIntegrationStatus(await localClientPackages.janStatus());
+      const nextStatus = await localClientPackages.janStatus();
+      if (!current()) return false;
+      setJanIntegrationStatus(nextStatus);
+      setJanStatusRefreshFailed(false);
       return true;
     } catch {
+      if (current()) setJanStatusRefreshFailed(true);
       return false;
     }
   }, []);
@@ -2287,33 +2556,45 @@ export function App() {
    */
   const refreshLocalAccessStatus = useCallback(async () => {
     if (!window.__TAURI_INTERNALS__) return true;
+    const current = captureLocalStatusRead("access");
+    if (!current()) return false;
     try {
-      setLocalAccessStatus(await localAccess.status());
+      const nextStatus = await localAccess.status();
+      if (!current()) return false;
+      setLocalAccessStatus(nextStatus);
       return true;
     } catch {
       // An unreadable status is not itself a fault to shout about: the panel
       // simply says nothing rather than inventing a state.
-      setLocalAccessStatus(undefined);
+      if (current()) setLocalAccessStatus(undefined);
       return false;
     }
   }, []);
 
   const refreshOtherMcpStatus = useCallback(async () => {
     if (!window.__TAURI_INTERNALS__) return true;
+    const current = captureLocalStatusRead("other");
+    if (!current()) return false;
     try {
-      setOtherMcpStatus(await localClientPackages.otherMcpStdioSetup());
+      const nextStatus = await localClientPackages.otherMcpStdioSetup();
+      if (!current()) return false;
+      setOtherMcpStatus(nextStatus);
+      setOtherMcpStatusRefreshFailed(false);
       return true;
     } catch {
+      if (current()) setOtherMcpStatusRefreshFailed(true);
       return false;
     }
   }, []);
 
   const refreshLocalIntegrations = useCallback(async (finishClaudePending = false) => {
     if (localStatusRefreshInFlight.current) return;
+    const current = captureLocalStatusRead("all");
+    if (!current()) return;
     localStatusRefreshInFlight.current = true;
     setLocalStatusChecking(true);
     try {
-      const [claudeRead, chatgptOk, antigravityOk, lmStudioOk, janOk, otherOk] = await Promise.all([
+      await Promise.all([
         refreshClaudeExtensionStatus(finishClaudePending),
         refreshChatgptIntegrationStatus(),
         refreshAntigravityIntegrationStatus(),
@@ -2322,23 +2603,28 @@ export function App() {
         refreshOtherMcpStatus(),
         refreshLocalAccessStatus()
       ]);
-      setClaudeStatusRefreshFailed(!claudeRead.ok);
-      setChatgptStatusRefreshFailed(!chatgptOk);
-      setAntigravityStatusRefreshFailed(!antigravityOk);
-      setLmStudioStatusRefreshFailed(!lmStudioOk);
-      setJanStatusRefreshFailed(!janOk);
-      setOtherMcpStatusRefreshFailed(!otherOk);
     } finally {
-      setLocalStatusChecking(false);
-      localStatusRefreshInFlight.current = false;
+      if (current()) {
+        setLocalStatusChecking(false);
+        localStatusRefreshInFlight.current = false;
+      }
     }
   }, [refreshAntigravityIntegrationStatus, refreshChatgptIntegrationStatus, refreshClaudeExtensionStatus, refreshJanIntegrationStatus, refreshLmStudioIntegrationStatus, refreshLocalAccessStatus, refreshOtherMcpStatus]);
 
   useEffect(() => {
     void refreshLocalIntegrations();
-    const refreshOnFocus = () => window.setTimeout(() => void refreshLocalIntegrations(true), 350);
+    let current = true;
+    let focusTimer: number | undefined;
+    const refreshOnFocus = () => {
+      if (focusTimer !== undefined) window.clearTimeout(focusTimer);
+      focusTimer = window.setTimeout(() => { focusTimer = undefined; if (current) void refreshLocalIntegrations(true); }, 350);
+    };
     window.addEventListener("focus", refreshOnFocus);
-    return () => window.removeEventListener("focus", refreshOnFocus);
+    return () => {
+      current = false;
+      window.removeEventListener("focus", refreshOnFocus);
+      if (focusTimer !== undefined) window.clearTimeout(focusTimer);
+    };
   }, [refreshLocalIntegrations]);
 
   useEffect(() => {
@@ -2768,8 +3054,14 @@ export function App() {
 
   useEffect(() => {
     const onApplicationShortcut = (event: globalThis.KeyboardEvent) => {
+      if (appPromptActive || event.defaultPrevented) return;
       const target = event.target as HTMLElement | null;
       const textEntry = target?.matches("input, textarea, [contenteditable=true]");
+      // Modal choices own their keyboard context, even before opening focus
+      // has moved on the next animation frame. Never edit the hidden Grid.
+      const modalCommandBlocked = sceneWorkflow.command || sceneWorkflow.labelColorOpen
+        || target?.closest('[aria-modal="true"]');
+      if (modalCommandBlocked && event.ctrlKey && ["s", "z", "y", "c", "v"].includes(event.key.toLowerCase())) return;
       if (event.ctrlKey && event.key.toLowerCase() === "s") {
         event.preventDefault();
         if (event.shiftKey) void openDeviceSave();
@@ -2817,7 +3109,7 @@ export function App() {
     };
     window.addEventListener("keydown", onApplicationShortcut);
     return () => window.removeEventListener("keydown", onApplicationShortcut);
-  }, [blockClipboard, deviceViews.close, commandPending, connection.demo, deviceScreenView, deviceSettingsWorkflow, openDeviceSave, redoEntry, saveWorkspace, sceneWorkflow, selectedBlockId, snapshot, tempoWorkflow, undoEntry]);
+  }, [appPromptActive, blockClipboard, deviceViews.close, commandPending, connection.demo, deviceScreenView, deviceSettingsWorkflow, openDeviceSave, redoEntry, saveWorkspace, sceneWorkflow, selectedBlockId, snapshot, tempoWorkflow, undoEntry]);
 
   const menuSelect = (item: MenuCommand) => {
     switch (item) {
@@ -2884,10 +3176,10 @@ export function App() {
 
   const display = createQcDeviceDisplay({
     captureSessionCurrent: deviceWorkflowSession.captureSessionCurrent,
-    screenGestureContextKey: deviceCommandSessionKey,
+    screenGestureContextKey: JSON.stringify([connection.source, qcController.lifetime.checkpoint().session, qcController.lifetime.version, snapshot.presetIdentity]),
     snapshot, selectedBlockId, pending: commandPending, destination: screenDestination, views: deviceViews, cpu: cpuTelemetry, undo: deviceUndo,
     workflows: { deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, looper: looperWorkflow, modes: modesWorkflow, midiOut: midiOutWorkflow, ioEq: ioEqWorkflow, grid: gridWorkflow, scene: sceneWorkflow, preset: presetWorkflow, routing: routingWorkflow },
-    mirror: activeGateway,
+    mirror: activeGateway, mirrorLifetime: qcController.lifetime,
     selectScene: chooseScene, queueTempo, setParameterMenuInitiallyOpen, notice: setNotice,
     expressionAssignment, laneControlEditor, parameterEditor: parameterEditorBindings,
     openPreset: () => void openPresetBrowser(), refresh: () => void refreshSnapshot(), openRouting: openRoutePicker,
@@ -2922,7 +3214,7 @@ export function App() {
       presetLabel={presetLabel}
       events={connectionEvents}
       relayStatus={relayStatus}
-      relayPending={relayPending}
+      relayPending={relayPending || relayWithdrawalPending}
       relayPairingStarting={relayPairingStarting}
       relayPairingError={relayPairingError}
       relayPairingQrCode={relayBrowserPairing?.qrCode}
@@ -2939,6 +3231,7 @@ export function App() {
       onRelayPairingRefresh={() => void beginBrowserRelayPairing()}
       onRelayPairingShare={() => void shareRelayPairing()}
       onRelayUnpair={() => void unpairRelayAccount()}
+      onRetryRelayWithdrawal={() => void retryRelayWithdrawal()}
       onRelayDeleteAccount={() => void openRemoteAccountDeletionPage()}
       onRelayUnlinkConnector={(grantId) => void unlinkRelayConnector(grantId)}
       claudeExtensionStatus={claudeExtensionStatus}
@@ -2987,7 +3280,7 @@ export function App() {
 
     <div className="app-content">
       <main className={`workspace view-${surfaceView}`}>
-        <QcDeviceDisplay display={display} formFactor={formFactor} skin={skin} onAction={handleHardwareAction} onMasterVolumeInteractionStart={continuousControls.beginMasterVolumeInteraction} onMasterVolumeInteractionEnd={continuousControls.endMasterVolumeInteraction} />
+        <QcDeviceDisplay display={display} hardwareGestureContextKey={JSON.stringify([connection.source, qcController.lifetime.checkpoint().session])} formFactor={formFactor} skin={skin} onAction={handleHardwareAction} onMasterVolumeInteractionStart={continuousControls.beginMasterVolumeInteraction} onMasterVolumeInteractionEnd={continuousControls.endMasterVolumeInteraction} />
       </main>
     </div>
 
