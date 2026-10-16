@@ -210,6 +210,18 @@ have their own CI jobs (`rust-windows-app`, `android` and `cloud-relay` in
 `ci.yml`) with steps that depend on the platform; follow those jobs, and
 `npm run cloud:check` for the relay.
 
+## Android build process ownership
+
+Managed builds run Gradle through `node scripts/run-owned-gradle.mjs <absolute-wrapper-path> <arguments...>`.
+This disables persistent Gradle daemons and runs Kotlin compilation in the Gradle JVM.
+The supervisor retires only that build's process tree on completion, failure,
+timeout or interruption, including launcher termination on Windows. It never
+uses global `gradle --stop` or stops the emulator or another session's processes.
+Raw wrapper calls inherit the project daemon settings but do not have the
+supervisor's hard-termination protection; use the managed entrypoint.
+Windows batch arguments containing quotes, percent signs, exclamation marks or
+newlines are refused rather than passed through command-shell expansion.
+
 ## Security
 
 Do not report vulnerabilities through public issues or pull requests. Follow

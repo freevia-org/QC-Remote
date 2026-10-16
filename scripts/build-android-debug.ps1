@@ -49,6 +49,9 @@ if (-not $javaHome) {
 }
 
 Write-Output "Using JAVA_HOME: $javaHome"
+$previousJavaHome = $env:JAVA_HOME
+$previousPath = $env:Path
+try {
 $env:JAVA_HOME = $javaHome
 $env:Path = "$(Join-Path $javaHome 'bin');$env:Path"
 
@@ -65,7 +68,7 @@ try {
     npm run android:sync
     if ($LASTEXITCODE -ne 0) { throw "Capacitor sync failed with exit code $LASTEXITCODE." }
 
-    & ".\android\gradlew.bat" -p ".\android" assembleDebug
+    & node (Join-Path $PSScriptRoot "run-owned-gradle.mjs") (Join-Path $androidAppRoot "android\gradlew.bat") -p ".\android" assembleDebug
     if ($LASTEXITCODE -ne 0) { throw "Gradle assembleDebug failed with exit code $LASTEXITCODE." }
 }
 finally {
@@ -92,3 +95,8 @@ finally {
 }
 
 Write-Output "Debug APK built and verified: $builtApkPath"
+}
+finally {
+    $env:JAVA_HOME = $previousJavaHome
+    $env:Path = $previousPath
+}
