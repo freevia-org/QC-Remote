@@ -72,11 +72,19 @@ function fraction(current?: number, total?: number): string {
  * captions, ported verbatim from CorOsReferenceSettings' own per-view table
  * (coros-screen-fixtures.tsx). Real backing per row is a single boolean, so
  * `activeWhenTrue` says which of the two options (index 0) means `true`. */
-function TwoOptionDetail(props: { title: string; body: readonly string[]; label?: string; options: readonly [string, string]; value: boolean | undefined; activeWhenTrue: 0 | 1; pending: boolean; onChange(next: boolean): void }) {
+/** A paragraph the unit sets a down triangle inside (Gig View Footswitch Access): [before, after] around the mark. */
+type DetailParagraph = string | readonly [string, string];
+function detailParagraph(text: DetailParagraph, index: number) {
+  return <p key={index} className={`settings-body is-${index}`}>
+    {typeof text === "string" ? text : <>{text[0]}<QcUiIcon kind="down" />{text[1]}</>}
+  </p>;
+}
+
+function TwoOptionDetail(props: { title: string; body: readonly DetailParagraph[]; label?: string; options: readonly [string, string]; value: boolean | undefined; activeWhenTrue: 0 | 1; pending: boolean; onChange(next: boolean): void }) {
   const { title, body, label, options, value, activeWhenTrue, pending, onChange } = props;
   if (typeof value !== "boolean") return <>
     <h1>{title}</h1>
-    {body.map((text, index) => <p key={index} className={`settings-body is-${index}`}>{text}</p>)}
+    {body.map(detailParagraph)}
     {label && <span className="settings-field-label">{label}</span>}
     <UnknownBooleanChoice className="settings-toggle" label={title} pending={pending} labels={[options[activeWhenTrue], options[activeWhenTrue === 0 ? 1 : 0]]} onChange={onChange} />
   </>;
@@ -85,7 +93,7 @@ function TwoOptionDetail(props: { title: string; body: readonly string[]; label?
   const toggle = () => { if (!pending) onChange(!boolValue); };
   return <>
     <h1>{title}</h1>
-    {body.map((text, index) => <p key={index} className={`settings-body is-${index}`}>{text}</p>)}
+    {body.map(detailParagraph)}
     {label && <span className="settings-field-label">{label}</span>}
     <button type="button" className={`settings-toggle${pending ? " is-pending" : ""}`} disabled={pending} aria-pressed={active === 0} onClick={toggle}>
       <QcPillToggle index={active} />
@@ -127,7 +135,9 @@ function DeviceDetail({ row, workflow }: { row: DeviceSettingsDeviceRow; workflo
         {GLOBAL_BYPASS_BODY_LINES[0]}
         <br />
         {GLOBAL_BYPASS_BODY_LINES[1]}<br />
-        {GLOBAL_BYPASS_BODY_LINES[2]}
+        {GLOBAL_BYPASS_BODY_LINES[2]}{" "}
+        <span className="inline-settings-power"><QcUiIcon kind="power-toggle" /></span>{" "}
+        {GLOBAL_BYPASS_BODY_LINES[3]}
       </p>
       <small>
         {GLOBAL_BYPASS_FOOTNOTE_LINES[0]}
@@ -195,7 +205,7 @@ function DeviceDetail({ row, workflow }: { row: DeviceSettingsDeviceRow; workflo
     onChange={(next) => void workflow.setSwapTempoTunerAccess(next)} />;
   if (row === "gig-access") return <TwoOptionDetail
     title="Gig View Footswitch Access"
-    body={DEVICE_COPY.gigView.split("\n\n")}
+    body={DEVICE_COPY.gigView}
     options={["On", "Off (Factory Default)"]} value={settings?.gigViewStompAccess} activeWhenTrue={0} pending={pending}
     onChange={(next) => void workflow.setGigViewStompAccess(next)} />;
   if (row === "latency") return <TwoOptionDetail
@@ -352,6 +362,17 @@ const REFERENCE_PANES: { system: Partial<Record<DeviceSettingsSystemRow, Referen
   support: { about: "settings-support", report: "settings-support-report", diagnostics: "settings-diagnostics", licenses: "settings-support-licenses" }
 };
 
+/**
+ * The pane class the reference fixtures give each Device row (coros-reference-
+ * settings-pane.tsx), which official-settings.css and settings-system-panes.css
+ * key the pane's title and copy positions on. Global Bypass and MIDI carry their
+ * own layouts, so they have none.
+ */
+const DEVICE_PANE_CLASS: Partial<Record<DeviceSettingsDeviceRow, string>> = {
+  "scene-bypass": "settings-device-scene-bypass", "stomp-bypass": "settings-device-stomp-bypass", hold: "settings-device-hold-timing",
+  swap: "settings-device-swap-tempo-tuner", "gig-access": "settings-device-gig-view", latency: "settings-device-latency"
+};
+
 /** The list the unit opens from the section selector; the selected section is green with a tick. */
 function SectionMenu({ current, onSelect }: { current: DeviceSettingsSection; onSelect(section: DeviceSettingsSection): void }) {
   return <div className="settings-section-menu" role="listbox" aria-label="Settings section">
@@ -437,7 +458,7 @@ export function CorOsDeviceSettings({ workflow, onClose }: DeviceSettingsScreenP
   // A device screen, not a window-level dialog: the host passes it as the
   // surface's screenContent so it fills the bezel's own 800x480 canvas.
   return <>
-    <section className={`qc-screen coros-settings-official settings-${section}${section === "support" && supportRow === "info" ? " settings-info" : ""}${referenceView ? ` coros-settings-reference ${referenceView}` : ""}${menuOpen ? " is-menu-open" : ""}`} aria-label={`${sectionTitle} Settings`} data-qc-open-target="settings" tabIndex={-1} onKeyDown={(event) => {
+    <section className={`qc-screen coros-settings-official settings-${section}${section === "support" && supportRow === "info" ? " settings-info" : ""}${referenceView ? ` coros-settings-reference ${referenceView}` : ""}${section === "device" && DEVICE_PANE_CLASS[deviceRow] ? ` ${DEVICE_PANE_CLASS[deviceRow]}` : ""}${menuOpen ? " is-menu-open" : ""}`} aria-label={`${sectionTitle} Settings`} data-qc-open-target="settings" tabIndex={-1} onKeyDown={(event) => {
       if (event.key === "Escape" && !event.defaultPrevented && menuOpen) {
         event.preventDefault();
         event.stopPropagation();
@@ -465,7 +486,7 @@ export function CorOsDeviceSettings({ workflow, onClose }: DeviceSettingsScreenP
       <section className={
         referenceView ? "reference-settings-detail"
           : section === "account" ? "settings-account-detail"
-          : section === "device" && deviceRow !== "midi" ? "settings-device-detail"
+          : section === "device" && deviceRow === "bypass" ? "settings-device-detail"
           : section === "system" && (systemRow === "brightness") ? "settings-system-detail"
           : "reference-settings-detail"
       } {...(referenceView ? { inert: true, "aria-disabled": true } : {})}>
