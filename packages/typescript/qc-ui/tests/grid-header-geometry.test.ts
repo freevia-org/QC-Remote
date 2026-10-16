@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { GRID_TITLE_RIGHT_EDGE, MODE_GLYPH_CENTRE, MODE_LABEL, modeGlyphInkRise, PRESET_BANK_BASELINE, PRESET_BANK_SIZE, PRESET_BANK_X, PRESET_TITLE_GUTTER, presetTitleLayout, presetTitlePresentation, SCENE_BADGE } from "../src/coros-ui.ts";
+import { GRID_TITLE_RIGHT_EDGE, MODE_GLYPH_CENTRE, MODE_LABEL, modeGlyphInkRise, PRESET_BANK_BASELINE, PRESET_BANK_SIZE, PRESET_BANK_X, PRESET_TITLE_GUTTER, PRESET_TITLE_SIZES, presetTitleLayout, presetTitlePresentation, SCENE_BADGE } from "../src/coros-ui.ts";
 import { findBrowser, makeWorkDirectory, uiSource, windowsStyles, withBrowser } from "./support/display-page.ts";
 
 /*
@@ -11,35 +11,47 @@ import { findBrowser, makeWorkDirectory, uiSource, windowsStyles, withBrowser } 
  * (a three-character bank, STOMP mode). A render of the unit's own strings at these sizes and origins differs from
  * its pixels by under three levels on average; the app's old header differed by about forty:
  *   bank and slot   one run, 70px IBM Plex Bold, x 12, baseline 77, untracked (the unit's 7 at ink 16, F at 60)
- *   name            starts 15px after that run; an integer size - 50, 50 and 45 on three names - the largest whose
- *                   advance ends by x 558.5; baseline 69 at 50, 68 at 45, 66 at 40
+ *   name            starts 15px after that run; a size from the ladder 70, 63, 50, 45, 40 - the largest rung not above
+ *                   the integer that fits the edge near x 590; baseline 69 at 50, 68 at 45, 66 at 40
  *   scene badge     24 yellow columns and rows from (656,12), a 23px letter on x 668 with its baseline at 33
  *   mode label      22px, x 692, baseline 80 (caps 16 rows tall)
  *   SCENE glyph     ink rows 60..83, so one row lower than the box-centred STOMP glyph
  */
 
 // Advances in px of IBM Plex Bold at 70px, measured in Chrome. The layout scales them linearly with the size.
-const ADVANCE_70 = { bankOneDigit: 82.95, bankThreeChar: 134.68, nameA: 599.2, nameB: 684.04, nameC: 618.73 };
+const ADVANCE_70 = { bankOneDigit: 82.95, bankThreeChar: 134.68 };
 
-test("the Grid title is an integer size that ends by the unit's right edge, and starts 15px after the bank", () => {
+test("the Grid title takes the largest rung of the unit's size ladder that fits, and starts 15px after the bank", () => {
   assert.equal(PRESET_BANK_SIZE, 70);
   assert.equal(PRESET_TITLE_GUTTER, 15);
-  // The unit frames: [bank advance, name advance at 70px, size on the unit, baseline on the unit, name origin on the unit]
+  assert.deepEqual([...PRESET_TITLE_SIZES].slice(0, 5), [70, 63, 50, 45, 40]);
+  // Every unit frame measured so far: [bank advance, name advance at 70px, size on the unit, baseline on the unit (0 where it was not measured)]. The
+  // sizes come from ink widths on 800x480 frames; the names are not recorded, only their advances.
   const FRAMES = [
-    [ADVANCE_70.bankOneDigit, ADVANCE_70.nameA + 11.8 * 70 / 50, 50, 69, 110],
-    [ADVANCE_70.bankOneDigit + 1.5, ADVANCE_70.nameB, 45, 68, 111],
-    [ADVANCE_70.bankOneDigit + 5.7, ADVANCE_70.nameC, 50, 69, 116]
+    [90.79, 306.32, 70, 0],
+    [ADVANCE_70.bankOneDigit, 443.73, 70, 0],
+    [90.79, 516.67, 63, 0],
+    [84.49, 519.05, 63, 0],
+    [ADVANCE_70.bankOneDigit, 599.2, 50, 69],
+    [ADVANCE_70.bankOneDigit + 5.7, 618.73, 50, 69],
+    [84.49, 684.04, 45, 68],
+    [ADVANCE_70.bankThreeChar, 712.32, 40, 66]
   ] as const;
-  for (const [bank, name, size, baseline, origin] of FRAMES) {
+  for (const [bank, name, size, baseline] of FRAMES) {
     const layout = presetTitleLayout(bank, name);
     assert.equal(layout.fontSize, size, `size for a ${name.toFixed(1)}px name after a ${bank.toFixed(1)}px bank`);
-    assert.equal(layout.baseline, baseline, `baseline at size ${size}`);
-    assert.ok(Math.abs(layout.start - origin) <= 1.6, `name origin ${layout.start} against the unit's ${origin}`);
+    if (baseline) assert.equal(layout.baseline, baseline, `baseline at size ${size}`);
     assert.equal(layout.squeeze, false);
-    // Largest integer that fits: this size ends by the edge, the next one passes it.
     assert.ok(layout.start + name * size / 70 <= GRID_TITLE_RIGHT_EDGE + 1e-6, `${size}px fits`);
-    assert.ok(layout.start + name * (size + 1) / 70 > GRID_TITLE_RIGHT_EDGE, `${size + 1}px does not`);
   }
+  // The unit's name origin on three frames: 110 after "7F", 111 after "7E", 162 after "32H".
+  assert.ok(Math.abs(presetTitleLayout(ADVANCE_70.bankOneDigit, 599.2).start - 110) <= 1.6);
+  assert.ok(Math.abs(presetTitleLayout(84.49, 684.04).start - 111) <= 1.6);
+  assert.ok(Math.abs(presetTitleLayout(ADVANCE_70.bankThreeChar, 712.32).start - 162) <= 1.6);
+  // A 599px name fits a size in the fifties and is still drawn at 50: the rungs between 50 and 63 do not exist.
+  const fifties = presetTitleLayout(ADVANCE_70.bankOneDigit, 599.2);
+  assert.ok(fifties.start + 599.2 * 56 / 70 <= GRID_TITLE_RIGHT_EDGE, "56px would fit the edge");
+  assert.equal(fifties.fontSize, 50);
 });
 
 test("a short name keeps the bank's own size and its baseline, and a very long one squeezes at the minimum size", () => {
@@ -53,12 +65,12 @@ test("a short name keeps the bank's own size and its baseline, and a very long o
   assert.equal(long.squeeze, true);
 });
 
-test("a name that ends in a space is fitted with it, because the unit measures the string it was sent", () => {
-  assert.equal(presetTitlePresentation("Alpha ", false).fitText, "Alpha ");
-  assert.equal(presetTitlePresentation("Alpha ", false).text, "Alpha");
-  assert.equal(presetTitlePresentation("Alpha  ", true).fitText, "Alpha*", "a dirty title is fitted as drawn");
-  assert.equal(presetTitlePresentation("  ", false).fitText, "Unsaved");
-  assert.equal(presetTitlePresentation("Alpha*", false).fitText, "Alpha*");
+test("the displayed title is the name as sent, with the dirty marker, and is not padded for the fit", () => {
+  assert.equal(presetTitlePresentation("Alpha", false).text, "Alpha");
+  assert.equal(presetTitlePresentation("Alpha ", false).text, "Alpha", "a name's own trailing space draws nothing");
+  assert.equal(presetTitlePresentation("Alpha  ", true).text, "Alpha*");
+  assert.equal(presetTitlePresentation("  ", false).text, "Unsaved");
+  assert.equal(presetTitlePresentation("Alpha*", false).text, "Alpha*");
 });
 
 test("the header constants are the unit's", () => {
@@ -139,7 +151,8 @@ window.renderGrid = (partial) => root.render(createElement(QuadCortexSurface, { 
         { name: "Alpha", location: "7F", mode: "SCENE" },
         { name: "Medium Length Name", location: "7E", mode: "STOMP" },
         { name: "Another Longer Preset Name", location: "32H", mode: "PRESET" },
-        { name: "Trailing space ", location: "8B", mode: "SCENE" }
+        { name: "Abcde fgh Abcdefg", location: "7F", mode: "SCENE" },
+        { name: "Abcde fgh Abcdefg Ab", location: "32H", mode: "STOMP" }
       ];
       for (const { name, location, mode } of CASES) {
         const where = `${location} ${mode} "${name}"`;
@@ -149,12 +162,13 @@ window.renderGrid = (partial) => root.render(createElement(QuadCortexSurface, { 
         assert.deepEqual([header.location.x, header.location.y, header.location.size], [12, 77, 70], `${where}: bank run`);
         assert.equal(header.location.text, location);
         assert.ok(header.location.tracking === "normal" || header.location.tracking === "0px", `${where}: bank tracking ${header.location.tracking}`);
-        // Name: integer size, fitted to the edge with the browser's own advance, on the baseline the size implies.
-        assert.ok(Number.isInteger(header.title.size) && header.title.size >= 22 && header.title.size <= 70, `${where}: integer size, got ${header.title.size}`);
+        // Name: a ladder size, fitted to the edge with the browser's own advance, on the baseline the size implies.
+        assert.ok(header.title.size === 22 || (PRESET_TITLE_SIZES as readonly number[]).includes(header.title.size), `${where}: a ladder size, got ${header.title.size}`);
         const edge = GRID_TITLE_RIGHT_EDGE + 0.01;
         if (header.title.size > 22) {
           assert.ok(header.title.x + header.title.advance <= edge, `${where}: ${header.title.size}px ends at ${header.title.x + header.title.advance}, past ${GRID_TITLE_RIGHT_EDGE}`);
-          assert.ok(header.title.x + header.title.advance * (header.title.size + 1) / header.title.size > GRID_TITLE_RIGHT_EDGE - 0.01 || header.title.size === 70 || name.endsWith(" "), `${where}: the next size up would still fit`);
+          const larger = PRESET_TITLE_SIZES.filter((size) => size > header.title.size).pop();
+          assert.ok(larger === undefined || header.title.x + header.title.advance * larger / header.title.size > GRID_TITLE_RIGHT_EDGE - 0.01, `${where}: the next rung up (${larger}) would still fit`);
         }
         assert.equal(header.title.y, Math.ceil(77 - (70 - header.title.size) * 0.375 - 0.5), `${where}: baseline follows the size`);
         assert.equal(header.title.textLength, null, `${where}: no squeeze while an integer size fits`);
@@ -172,11 +186,11 @@ window.renderGrid = (partial) => root.render(createElement(QuadCortexSurface, { 
       const stomp = await render({ presetName: "Alpha", presetLocation: "7F", mode: "STOMP" });
       assert.equal(scene.glyph.transform, "translate(655 60)");
       assert.equal(stomp.glyph.transform, "translate(655 59)");
-      // A name's trailing space counts toward the fit and nothing else: the drawn title is trimmed.
-      const trimmed = await render({ presetName: "Trailing space", presetLocation: "8B", mode: "SCENE" });
-      const spaced = await render({ presetName: "Trailing space ", presetLocation: "8B", mode: "SCENE" });
-      assert.equal(spaced.title.text, "Trailing space");
-      assert.ok(spaced.title.size <= trimmed.title.size, "a trailing space never makes the title larger");
+      // A name's own trailing space is neither drawn nor counted: the title is the same with and without it.
+      const trimmed = await render({ presetName: "Abcde fgh", presetLocation: "8B", mode: "SCENE" });
+      const spaced = await render({ presetName: "Abcde fgh ", presetLocation: "8B", mode: "SCENE" });
+      assert.equal(spaced.title.text, "Abcde fgh");
+      assert.equal(spaced.title.size, trimmed.title.size);
     });
   } finally {
     work.cleanup();

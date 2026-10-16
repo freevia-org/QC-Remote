@@ -34,6 +34,8 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
   const [saveName, setSaveName] = useState("");
   const [clipboard, setClipboard] = useState<PresetClipboard>();
   const [batchClipboard, setBatchClipboard] = useState<PresetClipboard[]>();
+  /** Read from the unit's Directory indicator; unset until read, and then the signed-out drawing stands. */
+  const [cloudSignedIn, setCloudSignedIn] = useState<boolean>();
   const [library, setLibrary] = useState<DirectoryLibraryState>(EMPTY_DIRECTORY_LIBRARY);
   const loadSequence = useRef(0);
   const foldersLoaded = useRef(false);
@@ -919,7 +921,8 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
     library,
     onLoadLibrary: loadLibrary,
     setlistDates,
-    onLoadSetlistDates: loadSetlistDates
+    onLoadSetlistDates: loadSetlistDates,
+    cloudSignedIn
   };
 
   return {
@@ -932,6 +935,7 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
     clipboard,
     openDirectory,
     closeDirectory: () => setDirectoryOpen(false),
+    followCloudSignedIn: setCloudSignedIn,
     loadDirectory,
     recall,
     recallLocation,
@@ -958,6 +962,7 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       catalogWarmed.current = false;
       setPresetList(undefined);
       setLibrary(EMPTY_DIRECTORY_LIBRARY);
+      setCloudSignedIn(undefined);
       requestedSetlistDates.current = new Set();
       setSetlistDates(new Map());
     },

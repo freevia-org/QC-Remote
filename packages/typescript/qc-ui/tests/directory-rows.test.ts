@@ -3,6 +3,7 @@ import test from "node:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { QC_SCREEN_ICON_VECTORS } from "@qc-remote/theme";
 import { bundleModule, findBrowser, makeWorkDirectory, uiSource, withBrowser } from "./support/display-page.ts";
 
 /*
@@ -23,6 +24,8 @@ interface Measured {
   tools: Array<{ name: string; button: Rect; icon: Rect | null }>;
   divider: Rect | null;
   dividerColor: string;
+  cloud: { button: Rect; svg: Rect; ink: Rect; path: string; color: string } | null;
+  account: { button: Rect } | null;
 }
 
 const MEASURE = `
@@ -50,17 +53,24 @@ const MEASURE = `
   const folderKebabs = [...document.querySelectorAll(".directory-folders .directory-folder-more svg")].map((svg) => ({ rect: box(svg), color: getComputedStyle(svg).color, rowTop: svg.closest("button").getBoundingClientRect().top }));
   const tools = [...document.querySelectorAll(".coros-directory-header .directory-tools > button")].map((button) => ({ name: button.getAttribute("aria-label"), button: box(button), icon: button.querySelector("svg") ? box(button.querySelector("svg")) : null }));
   const divider = document.querySelector(".directory-tools .directory-tool-divider");
-  return { rows, folderKebabs, tools, divider: divider ? box(divider) : null, dividerColor: divider ? getComputedStyle(divider).backgroundColor : "" };
+  const cloudButton = document.querySelector("button.directory-cloud");
+  const cloudSvg = cloudButton && cloudButton.querySelector("svg");
+  const cloudPath = cloudSvg && cloudSvg.querySelector("path");
+  const cloud = cloudButton && cloudSvg && cloudPath ? { button: box(cloudButton), svg: box(cloudSvg), ink: (() => { const b = cloudPath.getBBox(); const s = cloudSvg.getBoundingClientRect(); return [s.left + b.x, s.top + b.y, b.width, b.height]; })(), path: cloudPath.getAttribute("d"), color: getComputedStyle(cloudPath).fill } : null;
+  const accountSpan = document.querySelector(".directory-cloud.directory-account");
+  const account = accountSpan ? { button: box(accountSpan) } : null;
+  return { cloud, account, rows, folderKebabs, tools, divider: divider ? box(divider) : null, dividerColor: divider ? getComputedStyle(divider).backgroundColor : "" };
 })()
 `;
 
 let measured: Measured;
+let linked: Measured;
 
 test("lay the live Directory out at 800x480", { skip, timeout: 120_000 }, async () => {
   assert.ok(browser, "CI must provide a Chrome or Chromium (set QC_BROWSER_EXECUTABLE)");
   const work = makeWorkDirectory();
   try {
-    const { module: bundle, css } = await bundleModule<{ render(): Promise<string> }>(work.path, "directory-entry", `
+    const { module: bundle, css } = await bundleModule<{ render(cloudSignedIn: boolean | undefined): Promise<string> }>(work.path, "directory-entry", `
 import { createElement } from "react";
 import { prerenderToNodeStream } from "react-dom/static";
 import { QuadCortexSurface } from ${JSON.stringify(join(uiSource, "quad-cortex-surface.tsx"))};
@@ -72,23 +82,28 @@ const skin = skins.find((entry) => entry.id === formFactor.defaultSkinId) ?? ski
 const names = ["Preset A", "Preset B", "Preset C Long Name Re", "Unsaved", "Preset E_1", "Preset F", "Preset G", "Unsaved"];
 const presets = names.map((name, index) => ({ position: 48 + index, location: "7" + String.fromCharCode(65 + index), name, instrument: 0, occupied: name !== "Unsaved" }));
 const folders = [{ key: "f", name: "Factory Presets", isFactory: true }, ...["My Presets", "Folder B", "Folder C", "Folder D"].map((name, index) => ({ key: "k" + index, name, isFactory: false }))];
-const directory = { open: true, loading: false, disabled: false, interactionSessionKey: "a",
+const directory0 = { open: true, loading: false, disabled: false, interactionSessionKey: "a",
   list: { setlistKey: "k0", setlistName: "My Presets", presets, folders },
   onClose() {}, onRefresh() {}, onRecall() {}, onSelectSetlist() {}, onNewSetlist() {}, onPresetAction() {}, onPresetBatchAction() {}, onArrangePreset() {} };
-export async function render() {
-  const { prelude } = await prerenderToNodeStream(createElement(QuadCortexSurface, { formFactor, skin, snapshot: { ...IDLE_PLACEHOLDER_SNAPSHOT, presetPosition: 53, setlistKey: "k0" }, selectedBlockId: "", presentation: "display", presetDirectory: directory, onAction() {} }));
+export async function render(cloudSignedIn) {
+  const { prelude } = await prerenderToNodeStream(createElement(QuadCortexSurface, { formFactor, skin, snapshot: { ...IDLE_PLACEHOLDER_SNAPSHOT, presetPosition: 53, setlistKey: "k0" }, selectedBlockId: "", presentation: "display", presetDirectory: { ...directory0, cloudSignedIn }, onAction() {} }));
   const chunks = [];
   for await (const chunk of prelude) chunks.push(chunk);
   return Buffer.concat(chunks).toString("utf8");
 }
 `);
-    const markup = await bundle.render();
+    const markup = await bundle.render(undefined);
+    const linkedMarkup = await bundle.render(true);
     const pages = join(work.path, "pages");
     mkdirSync(pages, { recursive: true });
     writeFileSync(join(pages, "display.css"), css);
     // The display box is the unit's 800x480 pixels, one for one.
     writeFileSync(join(pages, "directory.html"), `<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="display.css"><style>html,body{margin:0;background:#000;overflow:hidden}.qc-screen-bezel{position:fixed!important;left:0;top:0;width:800px!important;height:480px!important;aspect-ratio:auto!important;max-width:none!important}</style></head><body>${markup}</body></html>`);
-    measured = await withBrowser(browser, work.path, [], async (page) => await page([800, 480], pathToFileURL(join(pages, "directory.html")).href, MEASURE) as Measured);
+    writeFileSync(join(pages, "directory-linked.html"), `<!doctype html><html lang="en"><head><meta charset="utf-8"><link rel="stylesheet" href="display.css"><style>html,body{margin:0;background:#000;overflow:hidden}.qc-screen-bezel{position:fixed!important;left:0;top:0;width:800px!important;height:480px!important;aspect-ratio:auto!important;max-width:none!important}</style></head><body>${linkedMarkup}</body></html>`);
+    [measured, linked] = await withBrowser(browser, work.path, [], async (page) => [
+      await page([800, 480], pathToFileURL(join(pages, "directory.html")).href, MEASURE) as Measured,
+      await page([800, 480], pathToFileURL(join(pages, "directory-linked.html")).href, MEASURE) as Measured
+    ]);
   } finally {
     work.cleanup();
   }
@@ -152,4 +167,25 @@ test("the header tools are the unit's 24px marks in 66px buttons, with the divid
   near(measured.divider![2], 2, 0.01, "divider width");
   near(measured.divider![3], 22, 0.01, "divider height");
   assert.equal(measured.dividerColor, "rgb(41, 44, 41)");
+});
+
+test("a linked unit's cloud button holds cloud_upload, the 24px cloud with its arrow knocked out", { skip }, () => {
+  assert.ok(linked.cloud, "a linked unit draws the upload button");
+  assert.equal(linked.account, null, "and not the signed-out account mark");
+  // The unit's button is 98 wide by 42 high, its white 24px glyph centred in it.
+  near(linked.cloud!.button[2], 98, 1.5, "button width");
+  near(linked.cloud!.svg[2], 24, 0.01, "glyph box width");
+  near(linked.cloud!.svg[3], 24, 0.01, "glyph box height");
+  near(linked.cloud!.svg[0] + 12 - (linked.cloud!.button[0] + linked.cloud!.button[2] / 2), 0, 0.6, "glyph box centred across the button");
+  near(linked.cloud!.svg[1] + 12 - (linked.cloud!.button[1] + linked.cloud!.button[3] / 2), 0, 0.6, "glyph box centred down the button");
+  // The registry's cloud_upload trace spans x 0..24; its outline closes on the arrow's two cut-outs, so it is not the plain cloud.
+  near(linked.cloud!.ink[2], 24, 0.01, "ink width");
+  near(linked.cloud!.ink[3], 19, 0.01, "ink height");
+  assert.equal(linked.cloud!.path, QC_SCREEN_ICON_VECTORS["directory.cloud-upload-header"].layers[0].path, "the art is the registry's directory.cloud-upload-header");
+  assert.equal(linked.cloud!.color, "rgb(255, 255, 255)");
+});
+
+test("an unlinked unit keeps the signed-out account mark and no upload button", { skip }, () => {
+  assert.equal(measured.cloud, null);
+  assert.ok(measured.account);
 });

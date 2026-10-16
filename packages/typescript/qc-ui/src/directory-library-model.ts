@@ -59,9 +59,11 @@ export interface PresetDirectoryState {
   onLoadSetlistDates?: (folderKeys: readonly string[]) => void;
   /**
    * Whether the unit is signed in to a Neural DSP cloud account. The host is
-   * not told, so it is left unset, and an unset state draws what the unit draws
-   * for a signed-out account: the person-with-a-red-cross glyph, not the
-   * upload cloud (walk of firmware 4.1.0, 2026-10-03).
+   * not told, so it is read from the unit's own Directory indicator in its
+   * graphics tree (directory-cloud-link.ts) while the unit shows the Directory.
+   * Until it has been read it is left unset, and an unset state draws what the
+   * unit draws for a signed-out account: the person-with-a-red-cross glyph, not
+   * the upload cloud (walk of firmware 4.1.0, 2026-10-03).
    */
   cloudSignedIn?: boolean;
 }

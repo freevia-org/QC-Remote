@@ -1,0 +1,15 @@
+zenUI::RootGraphicsItem
+  zenUI::GraphicsItem
+    zenUI::Grid
+      zenUI::Chain
+  zenUI::DirectoryDialog
+    zenUI::GraphicsItem
+      zenUI::PushButtonIndicator
+        image: 'icons/24/search.png'
+      zenUI::PushButtonIndicator
+        zenUI::GraphicsItem
+          image: 'icons/24/cloud_upload.png'
+    zenUI::Table
+      zenUI::TableCell
+        zenUI::GraphicsItem
+          text : 'Cloud Presets'

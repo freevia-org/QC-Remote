@@ -660,7 +660,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   // The official header reserves a clear gutter before Undo. Derive the title
   // width from its actual start so multi-digit banks cannot push it underneath
   // the icon while retaining the QC's natural inline bank/slot/name flow.
-  const presetTitleWidthAtFullSize = measureHeaderText(titlePresentation.fitText, titlePresentation.italic);
+  const presetTitleWidthAtFullSize = measureHeaderText(titlePresentation.text, titlePresentation.italic);
   const {
     start: presetTitleStart,
     maxWidth: presetTitleMaxWidth,

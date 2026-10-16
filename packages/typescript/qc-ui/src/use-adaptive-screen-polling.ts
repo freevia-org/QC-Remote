@@ -3,6 +3,7 @@ import type { GatewayTransport } from "@qc-remote/client";
 import type { PresetLifetime } from "@qc-remote/core";
 import { captureGatewaySession } from "./gateway-session.ts";
 import { ioSelectionFromTree, ioSelectionKey, type IoUnitSelection } from "./io-unit-selection.ts";
+import { directoryCloudSignedInFromTree } from "./directory-cloud-link.ts";
 import { settingsSelectionFromTree, settingsSelectionKey, type QcSettingsUnitSelection } from "./settings-unit-selection.ts";
 
 export const QC_SCREEN_FOLLOW_STORAGE_KEY = "qc-remote.follow-qc-screen-v1";
@@ -42,6 +43,8 @@ export type QcScreenObservation = {
   ioSelection?: IoUnitSelection;
   /** On the Settings dialog: the section and row of the pane the unit shows, when it is one the app knows. */
   settingsSelection?: QcSettingsUnitSelection;
+  /** On the Directory: whether the unit's top-bar indicator says the cloud account is linked, when the tree says (directory-cloud-link.ts). */
+  directoryCloudSignedIn?: boolean;
 };
 
 export type QcScreenPollingPhase = "off" | "paused" | "polling" | "ready" | "error";
@@ -222,16 +225,18 @@ export function useAdaptiveQcScreenPolling({
         const kind = classifyQcGraphicsTree(tree);
         const ioSelection = kind === "io" ? ioSelectionFromTree(tree) : undefined;
         const settingsSelection = kind === "settings" ? settingsSelectionFromTree(tree) : undefined;
+        const directoryCloudSignedIn = kind === "directory" ? directoryCloudSignedInFromTree(tree) : undefined;
         // The structure alone cannot tell Output 1/2 from Output 3/4 (only an indicator image differs).
         const signature = qcGraphicsTreeStructuralSignature(tree) + (ioSelection ? `
 io:${ioSelectionKey(ioSelection)}` : "") + (settingsSelection ? `
-settings:${settingsSelectionKey(settingsSelection)}` : "");
+settings:${settingsSelectionKey(settingsSelection)}` : "") + (directoryCloudSignedIn === undefined ? "" : `
+cloud:${directoryCloudSignedIn}`);
         const changed = signature !== previousSignature;
         stablePolls = changed ? 0 : stablePolls + 1;
         consecutiveErrors = 0;
         previousSignature = signature;
         if (changed) {
-          const next: QcScreenObservation = { kind, signature, observedAt: Date.now(), ...(ioSelection ? { ioSelection } : {}), ...(settingsSelection ? { settingsSelection } : {}) };
+          const next: QcScreenObservation = { kind, signature, observedAt: Date.now(), ...(ioSelection ? { ioSelection } : {}), ...(settingsSelection ? { settingsSelection } : {}), ...(directoryCloudSignedIn === undefined ? {} : { directoryCloudSignedIn }) };
           setObservation(next);
           onObservationRef.current(next);
         }
