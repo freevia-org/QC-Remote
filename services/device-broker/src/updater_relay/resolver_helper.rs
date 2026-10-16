@@ -757,14 +757,19 @@ mod tests {
         for exit in [0, 2] {
             let mut command = tokio::process::Command::new(&shell);
             command.args(["-NoProfile", "-NonInteractive", "-Command", &format!("$null=[Console]::In.ReadToEnd(); [Console]::Out.Write('{{\"version\":1,\"addresses\":[\"8.8.8.8\",\"::1\"]}}'); exit {exit}")]);
-            let result = runtime.block_on(run(command, "example.org", Duration::from_secs(5)));
+            // This is an exit-status/answer contract, not a latency test. A
+            // cold PowerShell start under parallel CI load may exceed 5s.
+            // Keep a finite fixture budget without changing production policy.
+            let result = runtime.block_on(run(command, "example.org", Duration::from_secs(30)));
             if exit == 0 {
                 assert_eq!(
                     result.unwrap(),
                     vec!["8.8.8.8:0".parse().unwrap(), "[::1]:0".parse().unwrap()]
                 );
             } else {
-                assert!(result.is_err());
+                let error = result.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::Other);
+                assert_eq!(error.to_string(), "name did not resolve");
             }
         }
     }
