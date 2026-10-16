@@ -1,5 +1,27 @@
 # Contributing to QC Remote
 
+## UI test process ownership
+
+Use `npm test --workspace @qc-remote/ui` for UI unit tests. Run the on-demand
+visual suite only when needed with `npm run test:visual --workspace @qc-remote/ui`.
+For individual files, use `node scripts/run-owned-tests.mjs <test-path>`, rather
+than starting browser tests directly with `node --test`.
+
+The runner owns the entire test/browser process tree and an exclusive temporary
+state directory. Windows uses the native Job-object supervisor; POSIX uses an
+independent process-group supervisor. Both retire descendants before removing
+state, including after test failure, cancellation, worker death, launcher death,
+or the 20-minute operational deadline. Test-file concurrency defaults to four
+to avoid launching every bundler/browser at once. Cleanup failures fail the run rather
+than reporting success. Never clean up by executable name or remove an inherited
+test-state root: another run may own it.
+
+Browser helpers additionally bound debugging requests and load-event waits,
+reject outstanding work when the socket disconnects, and ask Chrome to close
+its renderers before deleting the profile. The ownership supervisor is the
+backstop when test-level `finally` blocks cannot run. Browser lifecycle tests
+use blank documents only; they do not capture or render the application.
+
 ## Inbound contribution policy: Developer Certificate of Origin 1.1
 
 QC Remote uses the **Developer Certificate of Origin, version 1.1** (DCO 1.1)

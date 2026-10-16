@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createCdpSession } from "./cdp-session.mjs";
 
 export const uiSource = fileURLToPath(new URL("../../src/", import.meta.url));
 const themeCss = fileURLToPath(new URL("../../../qc-theme/src/theme.css", import.meta.url));
@@ -60,8 +61,7 @@ export async function bundleTestModule<T>(
   registerCleanup: (cleanup: () => void) => void,
   bundle: (directory: string, name: string, source: string) => Promise<{ module: T; css: string }> = bundleModule<T>
 ): Promise<{ module: T; css: string }> {
-  const directory = mkdtempSync(join(tmpdir(), prefix));
-  const cleanup = () => rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  const { path: directory, cleanup } = makeWorkDirectory(prefix);
   try {
     // Catch owns initialization failure. A root test.after registered before
     // this await can run while module evaluation is suspended and delete the
@@ -170,55 +170,52 @@ export interface DisplayMeasurement {
 export interface OpenedPage { evaluate(script: string): Promise<unknown>; move(x: number, y: number): Promise<void>; screenshot(): Promise<Buffer>; cdp(method: string, params?: object): Promise<any>; events: Array<{ method: string; params: any }> }
 export type OpenPage = (viewport: readonly [number, number], url: string, deviceScaleFactor?: number) => Promise<OpenedPage>;
 
-type CdpMessage = { id?: number; method?: string; sessionId?: string; result?: any; error?: { message: string } };
-
 /** A tiny Chrome DevTools Protocol client: enough to open pages at a viewport size and evaluate a script in them.
  * QC_BROWSER_HEADFUL=1 runs a visible, GPU-composited browser instead of headless software rendering, for chasing compositor-only differences. */
 export async function withBrowser<T>(browser: string, workDirectory: string, browserArguments: string[], run: (page: (viewport: readonly [number, number], url: string, script: string, deviceScaleFactor?: number) => Promise<unknown>, open: OpenPage) => Promise<T>): Promise<T> {
+  if (!process.env.QC_REMOTE_TEST_STATE_ROOT) throw new Error("Run browser tests through scripts/run-owned-tests.mjs (npm run test:visual), so interruption owns the entire browser tree.");
   const profile = join(workDirectory, `profile-${Math.random().toString(36).slice(2)}`);
   mkdirSync(profile, { recursive: true });
   const child = spawn(browser, [...(process.env.QC_BROWSER_HEADFUL === "1" ? [] : ["--headless=new", "--disable-gpu"]), "--no-sandbox", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${profile}`, ...browserArguments, "about:blank"], { stdio: "ignore" });
+  let spawnError: Error | undefined;
+  child.once("error", error => { spawnError = error; });
+  let socket: WebSocket | undefined;
+  let connection: ReturnType<typeof createCdpSession> | undefined;
+  let operationError: unknown;
   try {
     const portFile = join(profile, "DevToolsActivePort");
     for (let attempt = 0; !existsSync(portFile); attempt += 1) {
+      if (spawnError) throw spawnError;
+      if (child.exitCode !== null || child.signalCode !== null) throw new Error("Browser exited before publishing its debugging port");
       if (attempt > 300) throw new Error("the browser did not open a debugging port");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     const [port] = readFileSync(portFile, "utf8").split("\n");
-    const version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json() as { webSocketDebuggerUrl: string };
-    const socket = new WebSocket(version.webSocketDebuggerUrl);
-    await new Promise<void>((resolve, reject) => { socket.onopen = () => resolve(); socket.onerror = () => reject(new Error("debugging socket failed")); });
-    let nextId = 0;
-    const events: Array<{ method: string; params: any }> = [];
-    const pending = new Map<number, { method: string; resolve(result: unknown): void; reject(error: Error): void }>();
-    const waiters: Array<{ method: string; sessionId?: string; resolve: () => void }> = [];
-    socket.onmessage = (event) => {
-      const message = JSON.parse(String(event.data)) as CdpMessage;
-      if (message.id !== undefined) {
-        const request = Number.isInteger(message.id) ? pending.get(message.id) : undefined;
-        if (!request) return;
-        pending.delete(message.id);
-        if (message.error) request.reject(new Error(`${request.method}: ${message.error.message}`));
-        else request.resolve(message.result);
-      } else {
-        events.push({ method: message.method ?? "", params: (message as { params?: unknown }).params });
-        const index = waiters.findIndex((waiter) => waiter.method === message.method && waiter.sessionId === message.sessionId);
-        if (index >= 0) waiters.splice(index, 1)[0].resolve();
-      }
-    };
-    const send = (method: string, params: object = {}, sessionId?: string) => new Promise<any>((resolve, reject) => {
-      nextId += 1;
-      pending.set(nextId, { method, resolve, reject });
-      socket.send(JSON.stringify({ id: nextId, method, params, sessionId }));
+    const version = await (await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(10_000) })).json() as { webSocketDebuggerUrl: string };
+    socket = new WebSocket(version.webSocketDebuggerUrl);
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        socket!.removeEventListener("open", opened);
+        socket!.removeEventListener("error", failed);
+        socket!.removeEventListener("close", failed);
+        error ? reject(error) : resolve();
+      };
+      const opened = () => finish();
+      const failed = () => finish(new Error("debugging socket failed before opening"));
+      const timer = setTimeout(() => finish(new Error("debugging socket open timed out")), 10_000);
+      socket!.addEventListener("open", opened);
+      socket!.addEventListener("error", failed);
+      socket!.addEventListener("close", failed);
     });
+    connection = createCdpSession(socket);
+    const send = connection.send;
     const { targetId } = await send("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
     await send("Page.enable", {}, sessionId);
     const page = async (viewport: readonly [number, number], url: string, script: string, deviceScaleFactor = 1) => {
       await send("Emulation.setDeviceMetricsOverride", { width: viewport[0], height: viewport[1], deviceScaleFactor, mobile: false }, sessionId);
-      const loaded = new Promise<void>((resolve) => waiters.push({ method: "Page.loadEventFired", sessionId, resolve }));
-      await send("Page.navigate", { url }, sessionId);
-      await loaded;
+      await Promise.all([connection!.wait("Page.loadEventFired", sessionId), send("Page.navigate", { url }, sessionId)]);
       const evaluated = await send("Runtime.evaluate", { expression: script, awaitPromise: true, returnByValue: true }, sessionId);
       if (evaluated.exceptionDetails) throw new Error(`page script failed: ${JSON.stringify(evaluated.exceptionDetails).slice(0, 300)}`);
       return evaluated.result.value;
@@ -226,9 +223,7 @@ export async function withBrowser<T>(browser: string, workDirectory: string, bro
     const open: OpenPage = async (viewport, url, deviceScaleFactor = 1) => {
       await send("Emulation.setDeviceMetricsOverride", { width: viewport[0], height: viewport[1], deviceScaleFactor, mobile: false }, sessionId);
       await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 }, sessionId);
-      const loaded = new Promise<void>((resolve) => waiters.push({ method: "Page.loadEventFired", sessionId, resolve }));
-      await send("Page.navigate", { url }, sessionId);
-      await loaded;
+      await Promise.all([connection!.wait("Page.loadEventFired", sessionId), send("Page.navigate", { url }, sessionId)]);
       return {
         async evaluate(script) {
           const evaluated = await send("Runtime.evaluate", { expression: script, awaitPromise: true, returnByValue: true }, sessionId);
@@ -237,15 +232,39 @@ export async function withBrowser<T>(browser: string, workDirectory: string, bro
         },
         async move(x, y) { await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, sessionId); },
         cdp: (method, params = {}) => send(method, params, sessionId),
-        events,
+        events: connection!.events,
         async screenshot() { return Buffer.from((await send("Page.captureScreenshot", { format: "png" }, sessionId)).data, "base64"); }
       };
     };
-    try { return await run(page, open); } finally { socket.close(); }
+    return await run(page, open);
+  } catch (error) {
+    operationError = error;
+    throw error;
   } finally {
-    const exited = new Promise<void>((resolve) => { child.once("exit", () => resolve()); setTimeout(resolve, 5000); });
-    child.kill();
-    await exited;
+    // Chrome's protocol close retires its renderers, unlike child.kill() on
+    // Windows. The enclosing owned test run is the hard-stop/worker-death
+    // backstop, and retires all remaining descendants before deleting bytes.
+    try { if (connection) await connection.send("Browser.close"); } catch { /* Chrome can close the socket before acknowledging Browser.close. */ }
+    const cleanupErrors: unknown[] = [];
+    try { connection ? connection.dispose() : socket?.close(); }
+    catch (error) { cleanupErrors.push(error); }
+    try {
+      if (child.pid && child.exitCode === null && child.signalCode === null) {
+        const waitForExit = (timeoutMilliseconds: number) => new Promise<boolean>((resolve) => {
+          if (child.exitCode !== null || child.signalCode !== null) { resolve(true); return; }
+          const exited = () => { clearTimeout(timer); resolve(true); };
+          const timer = setTimeout(() => { child.removeListener("exit", exited); resolve(false); }, timeoutMilliseconds);
+          child.once("exit", exited);
+        });
+        // Give Browser.close time to retire renderers before forcing the root.
+        if (!await waitForExit(5_000)) {
+          child.kill();
+          if (!await waitForExit(10_000)) throw new Error("Browser exit not acknowledged; enclosing test owner must retire its tree");
+        }
+      }
+      rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (error) { cleanupErrors.push(error); }
+    if (cleanupErrors.length) throw new AggregateError(operationError === undefined ? cleanupErrors : [operationError, ...cleanupErrors], "Browser cleanup failed", { cause: operationError });
   }
 }
 
@@ -274,7 +293,9 @@ export async function measureLayouts(browser: string, workDirectory: string, css
   });
 }
 
-export function makeWorkDirectory(): { path: string; cleanup(): void } {
-  const path = mkdtempSync(join(tmpdir(), "qc-display-"));
-  return { path, cleanup: () => { try { rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch { /* a temp directory the browser still holds is the OS temp cleaner's */ } } };
+export function makeWorkDirectory(prefix = "qc-display-"): { path: string; cleanup(): void } {
+  if (!/^[A-Za-z0-9-]+$/.test(prefix)) throw new Error("Fixture prefix must not contain a path");
+  // Only the exclusive child is ours to remove; never the inherited root.
+  const path = mkdtempSync(join(process.env.QC_REMOTE_TEST_STATE_ROOT ?? tmpdir(), prefix));
+  return { path, cleanup: () => rmSync(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
