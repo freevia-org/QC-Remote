@@ -8406,7 +8406,20 @@ fn stubborn_terminate(held: &mut HeldProcess) -> std::io::Result<()> {
     if held.recorded_pid() == STUBBORN_PID.load(std::sync::atomic::Ordering::SeqCst) {
         Ok(())
     } else {
-        held.terminate()
+        held.terminate()?;
+        // Only the injected first entry should miss the fixture's 100ms
+        // observation bound. Windows termination is asynchronous; await the
+        // later exact handle here rather than assuming OS retirement in 100ms.
+        if wait_until(TERMINATION_ACK_BOUND, || {
+            held.observe() == ExitObservation::Exited
+        }) {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "later fixture child did not acknowledge termination",
+            ))
+        }
     }
 }
 
