@@ -47,6 +47,7 @@ function harness(initial: Scenario = {}) {
   /** What the unit's I/O selection was set to, in order (kept out of `log`, which other tests compare whole). */
   const selections: unknown[] = [];
   const settingsPanes: unknown[] = [];
+  const cloudStates: boolean[] = [];
   /** Runs after each touch the unit answers: the poller seeing the screen the unit passes through. */
   const watchers: Array<(unit: Unit) => void> = [];
   const world = { captureRead: undefined as (() => Promise<{pngBase64:string}>) | undefined, sceneLetter: "A", unreadableTitle: false, treeRead: undefined as (() => Promise<{ tree: string }>) | undefined, unit: initial.unit ?? "Grid" as Unit, unitIgnores: initial.unitIgnores ?? false, scroll: (initial.menuScroll ?? "bottom") as "bottom" | "mid" | "top", swipedAt: -1e9, rail: "input" as "input" | "output", scene: "copy" as "copy" | "swap", stuck: initial.scrollStuck ?? false, panel: initial.panel ?? false };
@@ -104,7 +105,7 @@ function harness(initial: Scenario = {}) {
   const named = (name: string, ...methods: string[]) => Object.fromEntries(methods.map((method) => [method, () => { log.push(`${name}.${method}`); }]));
   const workflowsFor = () => ({
     grid: { ...named("grid", "close"), details: current.editorOpen ? {} : undefined },
-    preset: { ...named("preset", "closeDirectory", "openDirectory"), directoryOpen: state.directoryOpen },
+    preset: { ...named("preset", "closeDirectory", "openDirectory"), directoryOpen: state.directoryOpen, followCloudSignedIn: (signedIn: boolean) => { cloudStates.push(signedIn); } },
     deviceSettings: { ...named("settings", "close", "openSettings"), open: state.settingsOpen, noteCorOsVersionFromScreen: (version: string) => { log.push(`settings.cor-os:${version}`); }, followUnitSelection: (selection: unknown) => { settingsPanes.push(selection); } },
     tempo: { ...named("tempo", "close", "openTempo"), open: state.tempoOpen },
     tuner: named("tuner", "close", "openTuner"),
@@ -142,7 +143,7 @@ function harness(initial: Scenario = {}) {
   const rerender = async (next: Scenario) => { current = { ...current, ...next }; Object.assign(state, { view: next.view !== undefined ? next.view : state.view, popup: next.popup !== undefined ? next.popup : state.popup, settingsOpen: next.settingsOpen ?? state.settingsOpen, directoryOpen: next.directoryOpen ?? state.directoryOpen, routePicker: "routePicker" in next ? next.routePicker : state.routePicker, blockMenuOpen: next.blockMenuOpen ?? state.blockMenuOpen, directorySearchOpen: next.directorySearchOpen ?? state.directorySearchOpen, sceneCommand: "sceneCommand" in next ? (next.sceneCommand ?? null) : state.sceneCommand, tempoOpen: next.tempoOpen ?? state.tempoOpen }); await act(async () => { renderer.update(createElement(Probe)); await new Promise((resolve) => setTimeout(resolve, 100)); });
     // The route starts when the render commits, and now takes a few settle waits of its own.
     await new Promise((resolve) => setTimeout(resolve, 400)); };
-  return { log, selections, settingsPanes, world, state, latch, watchers, rerender, get follower() { return seen.current!; }, renderer };
+  return { log, selections, settingsPanes, cloudStates, world, state, latch, watchers, rerender, get follower() { return seen.current!; }, renderer };
 }
 
 const overlaysClosed = ["grid.close", "scene.closeCommand", "preset.closeDirectory", "settings.close", "tempo.close", "tuner.close"];
@@ -1039,6 +1040,18 @@ test("a tree read after the session ended hands nothing to the next session", as
   host.log.length = 0;
   act(() => stale(DEVICE_INFORMATION_TREE));
   assert.deepEqual(host.log, []);
+  host.renderer.unmount();
+});
+
+test("the unit's cloud indicator is kept on every Directory observation that carries it, and nothing else carries it", () => {
+  const host = harness({});
+  act(() => host.follower.observe({ ...observation("directory"), directoryCloudSignedIn: true }));
+  assert.deepEqual(host.cloudStates, [true]);
+  act(() => host.follower.observe({ ...observation("directory"), signature: "redrawn", directoryCloudSignedIn: true }));
+  assert.deepEqual(host.cloudStates, [true, true], "kept even when the Directory itself was already followed");
+  act(() => host.follower.observe(observation("directory")));
+  act(() => host.follower.observe({ ...observation("settings"), directoryCloudSignedIn: true }));
+  assert.deepEqual(host.cloudStates, [true, true], "an observation with no reading, or on another screen, changes nothing");
   host.renderer.unmount();
 });
 

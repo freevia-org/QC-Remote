@@ -34,7 +34,9 @@ export function useQcFollowSetting(storage: Pick<Storage, "getItem" | "setItem">
 export interface QcScreenFollowWorkflows {
   /** `details` is the block editor the app has open, if any. */
   grid: { close(): void; details?: unknown };
-  preset: { closeDirectory(): void; openDirectory(): unknown; directoryOpen?: boolean };
+  preset: { closeDirectory(): void; openDirectory(): unknown; directoryOpen?: boolean;
+    /** Keeps whether the unit's Directory shows the cloud account as linked (directory-cloud-link.ts). Never sends anything to the unit. */
+    followCloudSignedIn?(signedIn: boolean): void };
   /** `noteCorOsVersionFromScreen` keeps the CorOS version the unit's Device Information screen shows (see cor-os-version.ts). */
   deviceSettings: { open: boolean; close(): void; openSettings(): unknown; noteCorOsVersionFromScreen?(version: string): void;
     /** Selects the section and row the unit's Settings dialog shows (see settings-unit-selection.ts). Never sends anything to the unit. */
@@ -172,6 +174,8 @@ export function useQcScreenFollow(options: QcScreenFollowOptions): { phase: QcSc
     // The unit's I/O selection is the unit's to name on every open and while open (the app's own taps are mirrored to the
     // unit and come back as the same selection), so it is applied before the once-per-kind latch below; leaving I/O clears it.
     latest.current.workflows.ioEq.followUnitSelection?.(kind === "io" ? observation.ioSelection : undefined);
+    // The unit's own cloud indicator is the account state; it is kept on every observation that carries it, before the latch.
+    if (kind === "directory" && observation.directoryCloudSignedIn !== undefined) latest.current.workflows.preset.followCloudSignedIn?.(observation.directoryCloudSignedIn);
     // The unit's Settings section and row are the unit's to name when it changes pane (and on every open, since it opens on
     // the last section visited). They are applied once per change, not on every observation, so a section the user chose in
     // the app stays until the unit moves to another pane; the app's own choice is never sent to the unit.

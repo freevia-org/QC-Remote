@@ -45,6 +45,8 @@ export interface PresetWorkflowController {
    */
   openDirectory(reload?: boolean): Promise<void>;
   closeDirectory(): void;
+  /** Keeps the cloud-linked state the unit's own Directory indicator shows (see directory-cloud-link.ts). */
+  followCloudSignedIn(signedIn: boolean): void;
   loadDirectory(refresh?: boolean, setlistKey?: string, quiet?: boolean): Promise<PresetList | undefined>;
   recall(entry: PresetEntry): Promise<void>;
   recallLocation(location: string): Promise<string>;
