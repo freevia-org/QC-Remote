@@ -1,3 +1,4 @@
+import { formatFixed } from "./format-number.ts";
 import type { BlockParameter } from "@qc-remote/client";
 import { QC_COLORS } from "@qc-remote/theme";
 
@@ -454,7 +455,6 @@ export function parameterDisplay(parameter: BlockParameter, normalized: number):
   // Explicit device metadata remains authoritative for integer and finer values.
   const ordinaryHertz = parameter.units.trim().toLowerCase() === "hz" && parameter.maximum > 20;
   const precision = parameter.displayPrecision ?? (ordinaryHertz ? 0 : 1);
-  const rendered = real.toFixed(precision);
-  const value = Number(rendered) === 0 ? (0).toFixed(precision) : rendered;
+  const value = formatFixed(real, precision);
   return `${value}${parameter.units ? ` ${parameter.units}` : ""}`;
 }

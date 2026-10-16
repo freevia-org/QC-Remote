@@ -1,3 +1,4 @@
+import { formatFixed } from "./format-number.ts";
 import { useId, useState } from "react";
 import type { TunerSettings } from "@qc-remote/client";
 import { QcPillToggle } from "./qc-pill-toggle";
@@ -30,7 +31,7 @@ export function CorOsTunerScreen({ workflow, onClose }: { workflow: TunerWorkflo
     </header>
     <div className="tuner-scale">
       <span>-50</span>
-      {meter !== undefined && <strong className="tuner-reading">{meter.toFixed(1)}</strong>}
+      {meter !== undefined && <strong className="tuner-reading">{formatFixed(meter)}</strong>}
       <i />
       {meter !== undefined && <b style={{ transform: `translateX(${meter * 3}px)` }} />}
       <span>+50</span>
@@ -41,7 +42,7 @@ export function CorOsTunerScreen({ workflow, onClose }: { workflow: TunerWorkflo
         <div className="tuner-frequency">
           <QcRotaryDial value={(offset + 30) / 60} origin={0.5} />
           <input id={referenceId} type="range" min={-30} max={30} step={0.1} value={offset} disabled={disabled} aria-label="Tuner reference offset" onChange={(event) => void workflow.setReferenceOffset(Number(event.target.value))} />
-          <strong>{reference.toFixed(1)}</strong>
+          <strong>{formatFixed(reference)}</strong>
         </div>
       </section>
       <section>

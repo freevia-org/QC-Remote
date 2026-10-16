@@ -1,3 +1,4 @@
+import { formatFixed } from "./format-number.ts";
 import {
   QC_GRID_COLUMNS,
   QC_GRID_ROWS,
@@ -1098,7 +1099,7 @@ function formatDisplay(parameter: VirtualCatalogueParameter, normalized: number)
   if (parameter.scaleKnown === false) return trimNumber(normalized, 3);
   const real = normalizedToReal(parameter, normalized);
   if (parameter.showAsInteger) return String(Math.round(real));
-  return typeof parameter.displayPrecision === "number" ? real.toFixed(parameter.displayPrecision) : trimNumber(real, 3);
+  return typeof parameter.displayPrecision === "number" ? formatFixed(real, parameter.displayPrecision) : trimNumber(real, 3);
 }
 
 function projectParameters(model: VirtualCatalogueModel | undefined, state: VirtualParameterState, scene: number, laneControl: boolean): BlockParameter[] {
