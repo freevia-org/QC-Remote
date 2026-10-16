@@ -15,7 +15,7 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use qc_relay_client::{AccessMode, DeviceAdapter};
 use qc_remote_mcp::{BackendError, PrincipalRoute, QcBackend, QcMcp};
-use rand::Rng as _;
+use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
