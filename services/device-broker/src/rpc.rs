@@ -10315,6 +10315,14 @@ mod tcp_tests {
             "unknown original still excludes a successor"
         );
         release.store(true, Ordering::Release);
+        let deadline = Instant::now() + crate::worker::WORKER_EXIT_BUDGET;
+        while !shared.controller.fixture_worker_acknowledged() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            shared.controller.fixture_worker_acknowledged(),
+            "original worker did not acknowledge retirement before the bounded deadline"
+        );
         let report = shared.finish_shutdown();
         assert!(report.all_verified(), "{}", report.summary());
         assert!(shared.descriptor_claim.lock_recover().is_none());

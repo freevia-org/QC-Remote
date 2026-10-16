@@ -2870,6 +2870,12 @@ impl DeviceController {
             }
         })
     }
+
+    /// Reap and inspect the exact worker original in retirement tests.
+    #[cfg(test)]
+    pub(crate) fn fixture_worker_acknowledged(&self) -> bool {
+        self.shutdown_handle().fixture_original_acknowledged()
+    }
 }
 
 impl Drop for DeviceController {
