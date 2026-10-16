@@ -47,11 +47,15 @@ test('Linux release draft version, package manifests and attestation stay aligne
   const cargoVersion = cargoManifest.match(/^version = "([^"]+)"$/m)?.[1];
   const lockedCargoVersion = cargoLock.match(/\[\[package\]\]\nname = "qc-remote"\nversion = "([^"]+)"/)?.[1];
 
-  assert.equal(appVersion, '0.1.187');
-  assert.equal(tauriVersion, '0.1.187');
-  assert.equal(packageLock.packages['apps/windows'].version, '0.1.187');
-  assert.equal(cargoVersion, '0.1.187');
-  assert.equal(lockedCargoVersion, '0.1.187');
+  // Every desktop version source must agree. The Linux workflow's pinned
+  // release version is the last Linux release (0.1.187); the source may move
+  // ahead of it with Windows releases, and the draft job itself refuses to run
+  // until the source and LINUX_RELEASE_VERSION are brought together.
+  assert.match(appVersion, /^\d+\.\d+\.\d+$/);
+  assert.equal(tauriVersion, appVersion);
+  assert.equal(packageLock.packages['apps/windows'].version, appVersion);
+  assert.equal(cargoVersion, appVersion);
+  assert.equal(lockedCargoVersion, appVersion);
   assert.match(workflow, /LINUX_RELEASE_VERSION: "0\.1\.187"/);
   assert.match(workflow, /qc-remote_\$\{\{\s*env\.LINUX_RELEASE_VERSION\s*\}\}_amd64\.deb/);
   assert.match(workflow, /release_tag="v\$\{LINUX_RELEASE_VERSION\}"/);

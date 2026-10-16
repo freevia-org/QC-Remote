@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated 15 October 2026
+Last updated 17 October 2026
 
 QC Remote is an independent controller for the Neural DSP Quad Cortex. This
 policy explains what data the software handles, what stays on your device,
@@ -37,8 +37,9 @@ It does not cover the AI apps you connect, Google, Cloudflare, GitHub or Neural
 DSP. Each has its own policy. QC Remote is not affiliated with Neural DSP. The
 app forwards internet requests made by the Quad Cortex, including account
 sign-in, authenticated cloud requests and CorOS updates. A background component
-of the Windows app carries these requests over your computer's connection, as
-described under "Quad Cortex internet requests through this computer".
+of the Windows app, and the Android app itself, carry these requests over your
+computer's or phone's connection, as described under "Quad Cortex internet
+requests through this computer or phone".
 
 ## In short
 
@@ -49,12 +50,15 @@ described under "Quad Cortex internet requests through this computer".
 - The relay passes commands and device responses through in memory and does not
   store their contents.
 - The apps and the relay contain no advertising, analytics or crash reporting.
-- When a Quad Cortex is connected to the Windows app by USB, its own account,
-  cloud and CorOS update requests can use your computer's internet connection.
+- When a Quad Cortex is connected to the Windows or Android app by USB, its own
+  account, cloud and CorOS update requests can use your computer's or phone's
+  internet connection. This is on by default.
   Requests may contain your Neural DSP account email, password, tokens, the
   unit's serial number and other data the unit supplies. They go directly to
-  the addresses requested by the unit. Freevia's relay does not receive them.
-  You can switch this off under "Internet for the Quad Cortex".
+  the addresses requested by the unit. Freevia's relay does not receive them,
+  and the apps keep no copy of them. You can switch this off under "Internet for
+  the Quad Cortex" (Windows) or "Allow the Quad Cortex to use this device's
+  Internet connection" (Android).
 - You can unpair a device, unlink an AI app, or ask by email for everything the
   relay holds for your Google account to be deleted.
 
@@ -66,10 +70,10 @@ your computer or phone. Device state, commands, local preferences and
 diagnostics exports stay on your computer or phone in app-private storage. The
 Windows app's window loads only its own files and makes no outside network
 connections of its own. The exception is internet traffic requested by the Quad Cortex. The Windows
-app's background component opens those connections on the unit's behalf and
-returns the responses over USB. The destinations are supplied by the unit;
-there is no domain allowlist. See "Quad Cortex internet requests through this
-computer" below.
+app's background component, and the Android app, open those connections on the
+unit's behalf and return the responses over USB. The destinations are supplied
+by the unit; there is no domain allowlist. See "Quad Cortex internet requests
+through this computer or phone" below.
 
 QC Remote keeps these items on the device it runs on:
 
@@ -326,12 +330,16 @@ We also do not collect:
 The apps open other websites, such as an AI app's download page, only when you
 choose to.
 
-### Quad Cortex internet requests through this computer
+### Quad Cortex internet requests through this computer or phone
 
 When connected by USB, the Quad Cortex can ask the Windows background component
-to make HTTP requests on its behalf. With "Internet for the Quad Cortex" on,
-the component forwards supported account/cloud and firmware requests and sends
-the server responses back to the unit.
+or the Android app to make HTTP requests on its behalf. With "Internet for the
+Quad Cortex" (Windows) or "Allow the Quad Cortex to use this device's Internet
+connection" (Android) on, QC Remote forwards the unit's account sign-in and
+cloud requests and its CorOS update requests (checking for an update, change
+notes and the update download) and sends the server responses back to the unit.
+The unit's cloud backup and log uploads are not forwarded. Server responses,
+such as firmware, are passed to the unit without being inspected.
 
 - **Data and recipients.** The unit supplies each destination, method, headers
   and body. These may include account email and password during sign-in,
@@ -339,9 +347,10 @@ the server responses back to the unit.
   The receiving server also sees your computer's public IP address. These
   exchanges go directly from your computer to the requested server, through
   neither Freevia's relay nor an AI provider.
-- **Forwarding behavior.** The component retains the supplied request headers
-  and bodies. For Neural DSP HTTPS endpoints it adds the client type/version
-  metadata required for compatibility when the unit did not supply it. HTTP
+- **Forwarding behavior.** The component passes the supplied request headers
+  and bodies on unchanged and does not keep them. For Neural DSP HTTPS endpoints
+  it adds the client type/version metadata required for compatibility when the
+  unit did not supply it. HTTP
   framing and the USB protocol envelopes are handled by the transport. It does
   not follow redirects, add a cookie jar, retry requests, decompress HTTP bodies,
   or inspect firmware contents. HTTPS uses platform certificate verification;
@@ -354,13 +363,14 @@ the server responses back to the unit.
   without saving credentials, URLs, headers or message bodies to traffic logs.
   Account/cloud envelopes and firmware-forwarding requests do not enter the
   general message cache or event stream. Aggregate status counts remain local.
-- **Your control.** Forwarding is on by default. Clear "Internet for the Quad
-  Cortex" in Windows Settings to stop it, including a transfer in progress.
-  With it off, QC Remote still answers the unit's account requests with an
-  error so the unit is not left waiting. It sends nothing to the network and
-  keeps nothing.
-  This Windows forwarding feature is separate from the optional Freevia remote
-  relay. The Android app does not perform these broker HTTP exchanges.
+- **Your control.** Forwarding is on by default, including after you update from
+  an earlier version. Clear "Internet for the Quad Cortex" in Windows Settings,
+  or "Allow the Quad Cortex to use this device's Internet connection" in the
+  Android app's Device connection panel, to stop it, including a transfer in
+  progress. With it off on Windows, QC Remote still answers the unit's account
+  requests with an error so the unit is not left waiting. It sends nothing to
+  the network and keeps nothing.
+  This forwarding feature is separate from the optional Freevia remote relay.
 
 ### Third-party AI apps you connect
 
@@ -443,7 +453,8 @@ approval.
 
 - All connections to the relay use HTTPS or secure WebSockets; the apps accept
   only an HTTPS relay address, and the Android app does not allow cleartext
-  traffic.
+  traffic on its own relay connection. Requests forwarded for the Quad Cortex go
+  where the unit asks, as described above.
 - Device credentials are stored by the relay only as SHA-256 hashes and compared
   in constant time. Credentials are accepted for 90 days after pairing. Access
   tokens expire after one hour.

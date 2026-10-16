@@ -7,6 +7,109 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.188 / Android 0.3.38 — prepared 17 October 2026
+
+Changes since Windows 0.1.182 / Android 0.3.36. Windows 0.1.183 to 0.1.187 were
+never released for Windows (0.1.184 to 0.1.187 are Linux releases that share the
+version line), and Android 0.3.37 was an invited test build only, so this entry
+covers everything since the last public Windows and Android release.
+
+### Both apps
+
+- **The app mirrors the Quad Cortex's screen and follows it.** QC Remote now
+  draws the unit's display from one shared picture, on Windows and on Android,
+  and by default it moves to whichever screen the unit is showing ("Follow the
+  Quad Cortex screen"). Opening or closing several of the unit's screens from
+  the app (the Preset Directory, the scene popup, Tempo, the CPU Monitor, the
+  input and output pickers, Preset MIDI Out, Copy/Swap Scene, Directory search
+  and the block options menu) now does the same on the unit. A screen the app
+  does not draw itself shows the unit's own picture. The display has the unit's
+  800 by 480 shape and fills its space without bars.
+- **Many screens were redrawn to match the unit**: the Grid (header, title size,
+  and a signal line that runs unbroken across a bypassed block), the Preset
+  Directory (rows, menus and header tools, user folders in the unit's own
+  order, and the unit's cloud-linked indicator and button), the Settings panes
+  (view-only, following the section and row the unit shows), I/O Settings
+  (readouts, meters, limiter and port labels), Tempo, Modes Configuration,
+  Copy/Swap Scene (with the unit's dimmed backdrop), Preset MIDI Out, and the
+  scene tiles in Gig View.
+- **CPU Monitor.** The per-block CPU load is laid over the live Grid instead of
+  replacing it. It is now available on Android as well as Windows.
+- **Device Information shows real values**, including the unit's own CorOS
+  version. The version is read from the update request the unit sends its host
+  and, while the unit shows its own Settings > Support > Device Information
+  screen, from that screen. Nothing else on that screen (serial number, MAC
+  address and so on) is read or kept. Until the unit has shown either, the row
+  still shows the documented reference version marked "(reference)".
+- **The unit's cloud-account requests are always answered.** The Quad Cortex
+  asks its host to make requests for its Neural DSP account. When one went
+  unanswered, the unit signed itself out of its account about half a minute
+  later. QC Remote now answers every such request in time,
+  either with the server's reply or, if the request cannot be made, with an
+  error. See "Internet for the Quad Cortex" below for what this means for
+  privacy.
+- Reliability: reconnect and USB recovery fixes (including recovery after
+  Android's demo fallback), tighter handling of delayed gestures and screen
+  changes, a refusal to take over a device whose current owner cannot be
+  verified, stricter permissions and pairing handling for the desktop remote
+  connection, and bounded memory for preset metadata.
+
+### Windows
+
+- **New Settings switch, "Internet for the Quad Cortex" (Edit > Settings…),
+  on by default.** While the unit is connected over USB it has no network of its
+  own, so its CorOS update and cloud-account requests used to go unanswered.
+  With the switch on, QC Remote makes those requests over this computer's
+  internet connection and passes the answers back over USB:
+  - What is passed on: the unit's firmware-update requests (checking for an
+    update, the change notes, and the update download) and its Neural DSP
+    account requests. These requests can contain the unit's serial number and
+    its own credentials, such as the Neural DSP account sign-in and tokens; the
+    unit decides what to send. The server sees this computer's IP address. They
+    do not go through Freevia's remote relay or any AI app.
+  - Where it goes: to the address the unit names, which is normally a Neural
+    DSP server or its download provider. QC Remote does not restrict the
+    destination, follows no redirects, keeps no cookies, retries nothing and
+    uses no system proxy. For HTTPS requests to Neural DSP it adds the client
+    name and version headers when the unit left them out. The unit's cloud
+    backup and log uploads are not carried; QC Remote drops them.
+  - What is kept: nothing about the traffic. URLs, headers, request bodies and
+    answers are handled in memory only. The local troubleshooting record notes
+    only a request number, the method, the time limit, the answer status and
+    the time left for each account request, and the account sign-in changes the
+    unit reports, never a URL, header, body or token. The Settings row shows
+    counts and the state of the transfer.
+  - Turning it off stops all of this, including a transfer in progress. The
+    unit's account requests are then answered locally with an error, so the unit
+    does not sign itself out, and nothing is sent to the network. Update
+    requests get no answer. The switch is an app setting (`updaterRelayEnabled`
+    in `device-broker-tray.json`); it is not a Quad Cortex action and no AI tool
+    can change it. It applies to every shipped broker, including one started for
+    a local MCP client, and a settings file that cannot be read for a moment
+    keeps the last known setting.
+  - The settings `updaterRelayExtraDomains` and `updaterRelayMaxDownloadBytes`
+    from earlier test builds are ignored.
+  - Known limitations: the update path was built from captured requests and has
+    not yet been run against a complete real update, so the first full update
+    may need iteration. A computer that must use an HTTP proxy cannot use it.
+    The USB link is slow, so a full CorOS image can take many minutes; the
+    unit's own Wi-Fi remains the faster route.
+- The Windows window now follows a background component that was already
+  connected before the window opened, and shows what it shows.
+
+### Android
+
+- **The same "Internet for the Quad Cortex" behaviour is now in the Android
+  app, on by default.** In the Device connection panel, "Allow the Quad Cortex to
+  use this device's Internet connection" passes the unit's account and firmware
+  update requests over the phone's connection, exactly as described for
+  Windows above (the destination is chosen by the unit; no traffic is stored;
+  the switch stops it and cancels transfers in progress).
+- The Android system bars stay dark, the display keeps its own height, and the
+  display scales correctly on older Android WebView versions.
+- The Grid, Directory, Settings, I/O, Tempo, Modes and Copy/Swap screens and the
+  CPU Monitor are the same shared drawings as on Windows.
+
 ## QC Remote 0.1.187 — Linux — 14 October 2026
 
 - Remote and local MCP enforce the shared access policy at request admission;
@@ -35,103 +138,6 @@ and are not published to a registry.
   restart; automatic recovery is not claimed. MIDI scene B and restoration to
   scene A were observed. Bare-metal Linux has not been tested. Windows and Android
   releases are unchanged.
-
-## Unreleased
-
-### Both apps
-
-- **Device Information can show the unit's own CorOS version.** The unit's
-  version reply has no CorOS field, so the CorOS row used to show the documented
-  reference version marked "(reference)". The unit does state its software
-  version in the update request it sends its host (the
-  `X-Cloud-Api-Hardware-Source-Version` header of the type-61 message, read
-  whether or not the internet switch is on; no other header is read). The session
-  now keeps that value when it is a dotted version number and the identity read
-  reports it as `corOsVersion`, for Windows and Android alike. The unit sends the
-  request only when it checks for updates, so until it has, or after the session
-  restarts, the row still shows the reference version marked as such. The header
-  was identified from the capture's header names and value length; confirm the
-  first live value against the unit's Settings > Updates screen.
-- **The CorOS version is also read from the unit's own Device Information
-  screen.** While the unit shows Settings > Support > Device Information, the
-  screen-follow poll (the one that already reads the unit's graphics tree on
-  Windows and Android alike; it runs while "Follow the Quad Cortex screen" is on)
-  takes the text node right after its `CorOS:` label, keeps it only when it is a
-  dotted version number of two to four parts, and Device Information shows it
-  from then on, after that screen closes too, until the session ends. Nothing else
-  on that screen (serial number, MAC address, kernel, hashes) is read, kept or
-  logged, and the app sends the unit nothing to get it: it appears when someone
-  opens that screen on the unit. If the update request and the screen ever
-  disagree, the value obtained later wins.
-
-### Windows
-
-- **A Quad Cortex connected to QC Remote can now use this computer's internet
-  connection for CorOS updates.** With only QC Remote attached (Cortex Control
-  closed), the unit has no network path of its own while USB is connected, so its
-  DOWNLOAD UPDATE button used to go unanswered, and the capture shows it asking
-  again about once a minute (what it finally does was not observed). The unit sends its
-  update request to its host in a plain message (type 61, `UpdaterForward`: the
-  URL, the headers and the timeout it chose). The device broker now carries that
-  request over the computer's internet connection and returns the reply in
-  chunks, with its keepalive running on its own clock for the length of the
-  transfer.
-- **New Settings switch, "Internet for the Quad Cortex" (Edit > Settings…).** It
-  is on by default, including for settings saved by an earlier version, and shows
-  what the relay is doing (passing a request through now, the last result, a
-  request declined for another domain, or how often the unit asked while the
-  switch was off). Turning it off ends a transfer in progress; the broker then
-  behaves as before (the frame is counted and dropped) and
-  `usbDiagnostics.updaterRelay` counts that the unit asked. The switch is an
-  app setting stored as `updaterRelayEnabled` in `device-broker-tray.json`; it
-  is not a Quad Cortex action and no AI tool can change it. It applies to every
-  shipped broker, including one started over stdio for a local MCP client (a
-  developer build that is given no settings directory has no switch and runs on
-  the defaults), and a settings file that cannot be read for a moment keeps the
-  last known setting instead of switching the relay back on; with no earlier
-  value, such as at start, the relay is on. If the broker's value and the
-  stored switch differ, the row's line says so.
-- The relay carries the unit's update channel only. It does not carry the unit's
-  account, cloud-library, backup or log forwards (message types 29, 30, 31) or
-  its cloud login (type 18), which the broker still neither decodes nor answers,
-  and it adds no cryptography. The unit supplies the request, its headers and its
-  own credentials, so its serial number and those credentials reach Neural DSP as
-  they would over Wi-Fi. The broker opens the connection on the unit's behalf but
-  makes no request of its own: it forwards the unit's headers as they are, and
-  its HTTP library adds only what HTTP itself needs (`Host`) and a generic
-  `Accept: */*` header when the unit sent no `Accept`; it stores none and never writes a header value or a query value to a
-  log or to the status.
-- Network hygiene: only HTTPS requests to `neuraldsp.com` and its subdomains
-  (matched on a whole label, so `evilneuraldsp.com` is not one), at any path, and
-  to any domain named in `updaterRelayExtraDomains` (empty by default). A request
-  for any other domain is not carried: the unit gets an error reply, and the host
-  name only (no path, no query) is written to the broker's error output and the
-  device flight recorder (a local file; its audit lines carry the host name and
-  the path as a shape, with query values removed and long or token-like segments
-  replaced, short segments as they are). `usbDiagnostics.updaterRelay`, which AI apps can
-  read, carries counts (`refusedDomainRequests`) and the outcome word of the last
-  request, and no host, path, domain list or time. No address literals, user
-  names or ports other than 443; names that resolve to a private, loopback, link-local or carrier-grade-NAT
-  address are refused at connection time; at most three redirects, each target
-  checked again against the same rules, and a redirect to another host carries
-  only the byte-range header; one request at a time; a response size cap
-  (`updaterRelayMaxDownloadBytes`, 512 MiB by default); GET only with no request
-  body; no system proxy and no retries. See `services/device-broker/src/updater_relay`.
-- Known limitations: the update relay was built from one captured request (the
-  unit's firmware check). Until it has been run against a real update, the
-  request method for the download types, the meaning the unit gives the reply's
-  `error_code`, and which host serves the image are unverified assumptions. If the
-  image is served from a domain outside `neuraldsp.com` (for example a CDN), the
-  request is declined and its host is written to the broker's log until that
-  domain is added to `updaterRelayExtraDomains`. The first run against a real
-  update will probably need iteration. A computer that must use an HTTP proxy
-  cannot use the relay. Host-to-device throughput is bounded by the USB link, so a
-  large image takes many minutes; Wi-Fi on the unit remains the faster route.
-
-### Android
-
-- No change. The Android app's USB host does not answer the unit's update
-  requests; whether it should is a separate decision.
 
 ## QC Remote 0.1.186 — Linux — 12 October 2026
 
