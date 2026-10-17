@@ -148,7 +148,15 @@ impl UnusedDevice {
         })
     }
 }
+#[cfg(target_os = "linux")]
+const RESIDENT_IDLE_RELEASE_RETRIES: usize = 2;
+#[cfg(not(target_os = "linux"))]
+const RESIDENT_IDLE_RELEASE_RETRIES: usize = 0;
+
 fn idle_work(shared: &Arc<BrokerShared>) -> Work {
+    idle_work_with_retries(shared, RESIDENT_IDLE_RELEASE_RETRIES)
+}
+fn idle_work_with_retries(shared: &Arc<BrokerShared>, release_retries: usize) -> Work {
     let owner = Arc::downgrade(shared);
     Work::new(move |ticket| {
         let Some(shared) = owner.upgrade() else {
@@ -188,14 +196,16 @@ fn idle_work(shared: &Arc<BrokerShared>) -> Work {
                 if let Err(error) = shared.background.reschedule(
                     &ticket,
                     Instant::now() + shared.idle_grace(),
-                    idle_work(&shared),
+                    idle_work_with_retries(&shared, release_retries),
                 ) {
                     shared
                         .controller
                         .record_flight_event(format!("idle grace rearm refused: {error}"));
                 }
             }
-            Decision::Resident => release_idle(&shared, Some(&ticket)),
+            Decision::Resident => {
+                release_idle_with_retries(&shared, Some(&ticket), release_retries)
+            }
             Decision::Shutdown => {
                 shared.finish_shutdown();
             }
@@ -210,33 +220,74 @@ pub(super) fn idle(shared: &Arc<BrokerShared>) -> Result<(), String> {
     )
 }
 pub(super) fn release_idle(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>) {
+    release_idle_with_retries(shared, ticket, 0);
+}
+
+fn release_idle_with_retries(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>, _retries: usize) {
     let exclusive = shared.request_lock.lock_recover();
     let all = shared.all_controllers();
     let admit = || {
-        let mut clients = shared.clients.lock_recover();
-        let release = !clients.shutting_down
+        let clients = shared.clients.lock_recover();
+        !clients.shutting_down
             && clients.resident
             && !clients.idle_released
             && clients.reopens_in_flight == 0
             && clients.participants() == 0
-            && clients.pending_authentications() == 0;
-        if release {
-            clients.observer_idle_since = None;
-            clients.tray_idle_since = None;
-            clients.record_idle_release(all);
-        }
-        release
+            && clients.pending_authentications() == 0
     };
     let release = match ticket {
         Some(ticket) => ticket.with_current(admit).unwrap_or(false),
         None => admit(),
     };
     if release {
-        shared.test_point("release_idle_device:recorded");
         shared
             .controller
             .record_flight_event("resident broker closing the idle logical device session");
-        let _ = shared.disconnect_devices();
+        match shared.disconnect_devices() {
+            Ok(()) => {
+                // Once native close succeeds, publish that fact even if demand
+                // arrived while the close held request_lock or the timer ticket
+                // was superseded. Waiting requests need the release entry to
+                // know their selected session is closed and must be reopened.
+                // Shutdown is the sole operation that supersedes this record.
+                let mut clients = shared.clients.lock_recover();
+                let recorded = if clients.shutting_down {
+                    false
+                } else {
+                    clients.observer_idle_since = None;
+                    clients.tray_idle_since = None;
+                    clients.record_idle_release(all);
+                    true
+                };
+                drop(clients);
+                if recorded {
+                    shared.test_point("release_idle_device:recorded");
+                }
+            }
+            Err(error) => {
+                shared.controller.record_flight_event(format!(
+                    "resident idle release is waiting for native device retirement: {error}"
+                ));
+                #[cfg(target_os = "linux")]
+                if _retries > 0 {
+                    if let Some(ticket) = ticket {
+                        match ticket.retry_after(
+                            Instant::now() + IDLE_SHUTDOWN_GRACE,
+                            idle_work_with_retries(shared, _retries - 1),
+                        ) {
+                            Ok(true) => {
+                                #[cfg(test)]
+                                shared.test_point("release_idle_device:retry-admitted");
+                            }
+                            Ok(false) => {} // A newer generation owns the policy.
+                            Err(error) => shared.controller.record_flight_event(format!(
+                                "resident idle release retry was not admitted: {error}"
+                            )),
+                        }
+                    }
+                }
+            }
+        }
         drop(exclusive);
         return;
     }
@@ -817,6 +868,85 @@ mod tests {
         assert!(clients.idle_released);
         assert!(clients.idle_entry(&shared.controller).is_some());
         drop(clients);
+        fixture.finish();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn resident_idle_release_retries_midi_retirement_without_publishing_early() {
+        let _serial = FIXTURES.lock_recover();
+        struct Endpoint(Gate);
+        impl PerformanceMidiEndpoint for Endpoint {
+            fn send(&mut self, _: &str, _: u8, _: u8) -> Result<PerformanceMidiReceipt, String> {
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "resident-idle-fixture".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+            fn retire(&mut self) {
+                self.0.wait();
+            }
+        }
+
+        let midi_gate = Gate::new();
+        let release_midi = ReleaseGate(midi_gate.clone());
+        let mut handle = test_support::handle();
+        Arc::get_mut(&mut handle.0).unwrap().performance_midi =
+            Arc::new(PerformanceMidiWorkers::with_factory(move || {
+                Box::new(Endpoint(midi_gate.clone()))
+            }));
+        let fixture = Fixture(handle);
+        let shared = fixture.shared();
+        shared.clients.lock_recover().resident = true;
+        assert!(shared.controller.claim_device("resident-idle-fixture"));
+        let device_id = shared.controller.device_id().unwrap();
+        shared
+            .performance_midi
+            .send(&device_id, 1, 2, || {})
+            .unwrap();
+
+        let (retry_admitted, retry_waiting) = mpsc::channel();
+        let retry_hook = Point::new(
+            shared,
+            "release_idle_device:retry-admitted",
+            Arc::new(move || {
+                let _ = retry_admitted.send(());
+                Ok(())
+            }),
+        );
+        let owner = Arc::downgrade(shared);
+        shared
+            .background
+            .latest(
+                IDLE,
+                Instant::now(),
+                Work::new(move |ticket| {
+                    if let Some(shared) = owner.upgrade() {
+                        release_idle_with_retries(&shared, Some(&ticket), 2);
+                    }
+                }),
+            )
+            .unwrap();
+
+        retry_waiting
+            .recv_timeout(PERFORMANCE_MIDI_RETIRE_BUDGET + Duration::from_secs(2))
+            .expect("resident idle close should admit a bounded retry after MIDI timeout");
+        assert!(
+            !shared.clients.lock_recover().idle_released,
+            "the release record must remain unset until native MIDI close is acknowledged"
+        );
+        drop(release_midi);
+
+        let deadline = Instant::now() + IDLE_SHUTDOWN_GRACE + Duration::from_secs(5);
+        while !shared.clients.lock_recover().idle_released && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            shared.clients.lock_recover().idle_released,
+            "the bounded retry should publish the release after retirement completes"
+        );
+        drop(retry_hook);
         fixture.finish();
     }
 }
