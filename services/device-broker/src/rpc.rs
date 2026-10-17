@@ -3419,6 +3419,7 @@ fn refresh_descriptor_while_claimed_until<T>(
 /// (e.g. a host doing its own reconnect) arrives in the meantime. Host policy
 /// (not a Cortex Control frame); BELIEVED, no measurement in the repository.
 const IDLE_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+const RESIDENT_IDLE_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// How long a request waits for the device session a resident broker closed
 /// for idleness to come back: the established ready-wait budget, the same one
@@ -3517,6 +3518,9 @@ static TEST_GRACE: Mutex<Vec<(String, Duration)>> = Mutex::new(Vec::new());
 /// A shorter idle-policy minute, per `BrokerShared`.
 #[cfg(test)]
 static TEST_MINUTE: Mutex<Vec<(String, Duration)>> = Mutex::new(Vec::new());
+/// A shorter native-teardown retry delay, per `BrokerShared`.
+#[cfg(test)]
+static TEST_IDLE_RETRY_DELAY: Mutex<Vec<(String, Duration)>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
 fn test_hook(registry: &Mutex<Vec<(usize, TestHook)>>, key: usize) -> Option<TestHook> {
@@ -5195,6 +5199,9 @@ struct ClientAccounting {
     // the strong leases. Detached but unfinished jobs still consume slots.
     connection_owners: Vec<std::sync::Weak<()>>,
     observer_idle_since: Option<Instant>,
+    /// Prevents an expired observer/tray deadline from retrying native
+    /// teardown before its low-rate idle retry is due.
+    idle_release_retry_not_before: Option<Instant>,
     observer_timer_running: bool,
     // Exact observer owner; retiring an old original cannot clear a queued
     // replacement's flag. This marker is bounded by manager/job ownership.
@@ -5349,6 +5356,11 @@ impl ClientAccounting {
         let mut updated: Vec<_> = previous
             .iter()
             .filter(|entry| {
+                // Keep a prior marker even when cached status says connected:
+                // an accepted close may still be queued and finish later.
+                // The next lazy reopen uses an unforced reconnect, which
+                // leaves a healthy self-reconnected worker alone, then clears
+                // the marker only after readiness is verified.
                 !closed
                     .iter()
                     .any(|controller| Arc::ptr_eq(&entry.controller, controller))
@@ -5836,6 +5848,18 @@ impl BrokerShared {
         IDLE_SHUTDOWN_GRACE
     }
 
+    fn idle_release_retry_delay(&self) -> Duration {
+        #[cfg(test)]
+        if let Some((_, delay)) = TEST_IDLE_RETRY_DELAY
+            .lock_recover()
+            .iter()
+            .find(|(key, _)| *key == self.instance_id)
+        {
+            return *delay;
+        }
+        RESIDENT_IDLE_RETRY_DELAY
+    }
+
     /// One minute of an idle policy. Tests shorten it per fixture after the
     /// broker is serving (in-module tests also inject `observer_minute`).
     fn policy_minute(&self) -> Duration {
@@ -6066,6 +6090,7 @@ impl BrokerShared {
                 if matches!(row.role, ConnectionRole::Participant) && !row.control {
                     clients.observer_idle_since = None;
                     clients.tray_idle_since = None;
+                    clients.idle_release_retry_not_before = None;
                 }
             }
             clients.observers() != 0 || clients.tray_hold.is_some()
@@ -6179,7 +6204,11 @@ impl BrokerShared {
                 .map(|since| since + self.policy_minute() * minutes),
             Some(IdlePolicy::Immediately) | None => None,
         };
-        observers.into_iter().chain(tray).max()
+        observers
+            .into_iter()
+            .chain(tray)
+            .chain(clients.idle_release_retry_not_before)
+            .max()
     }
 
     fn watch_observer_backstop(self: Arc<Self>, ticket: background::Ticket, marker: Arc<()>) {
@@ -6369,6 +6398,7 @@ impl BrokerShared {
                 // runs, and manages the session itself.
                 if method != generated_gateway::rpc::DISCONNECT {
                     clients.idle_released = false;
+                    clients.idle_release_retry_not_before = None;
                     self.observer_changed.notify_all();
                     clients.forget_idle_release(controller);
                 }
@@ -7393,6 +7423,9 @@ pub(crate) mod test_support {
 
     /// Stop any timer the fixture armed from acting on it later.
     pub(crate) fn finish(handle: &BrokerHandle) {
+        TEST_IDLE_RETRY_DELAY
+            .lock_recover()
+            .retain(|(key, _)| key != &handle.0.instance_id);
         handle.0.clients.lock_recover().shutting_down = true;
         handle.0.background.stop();
         handle.0.observer_actions.stop();
@@ -7505,6 +7538,13 @@ pub(crate) mod test_support {
         TEST_MINUTE
             .lock_recover()
             .push((handle.0.instance_id.clone(), minute));
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn set_idle_release_retry_delay(handle: &BrokerHandle, delay: Duration) {
+        TEST_IDLE_RETRY_DELAY
+            .lock_recover()
+            .push((handle.0.instance_id.clone(), delay));
     }
 
     /// The idle origins a status read must never move.

@@ -155,7 +155,6 @@ const RESIDENT_IDLE_RELEASE_RETRIES: usize = 0;
 // Failed native teardown stays open and is retried at a low rate until it
 // succeeds or newer client activity supersedes the idle policy. Linux gets
 // two short attempts per cycle; other hosts start directly at this delay.
-const RESIDENT_IDLE_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 fn idle_work(shared: &Arc<BrokerShared>) -> Work {
     idle_work_with_retries(shared, RESIDENT_IDLE_RELEASE_RETRIES)
@@ -228,21 +227,48 @@ pub(super) fn release_idle(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>) 
 }
 
 fn release_idle_with_retries(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>, _retries: usize) {
+    release_idle_with_retries_inner(shared, ticket, _retries)
+}
+
+fn idle_release_retry_work(shared: &Arc<BrokerShared>) -> Work {
+    let owner = Arc::downgrade(shared);
+    Work::new(move |ticket| {
+        if let Some(shared) = owner.upgrade() {
+            release_idle_with_retries_inner(&shared, Some(&ticket), 0);
+        }
+    })
+}
+
+fn release_idle_with_retries_inner(
+    shared: &Arc<BrokerShared>,
+    ticket: Option<&Ticket>,
+    _retries: usize,
+) {
     let exclusive = shared.request_lock.lock_recover();
     let admit = || {
         let clients = shared.clients.lock_recover();
+        let policy_hold_active = clients.observers() != 0 || clients.tray_holds_past_grace();
+        let retry_policy_allows = if policy_hold_active {
+            shared
+                .reap_deadline(&clients)
+                .is_some_and(|deadline| deadline <= Instant::now())
+        } else {
+            true
+        };
         !clients.shutting_down
             && clients.resident
             && !clients.idle_released
             && clients.reopens_in_flight == 0
             && clients.participants() == 0
             && clients.pending_authentications() == 0
+            && retry_policy_allows
     };
     let release = match ticket {
         Some(ticket) => ticket.with_current(admit).unwrap_or(false),
         None => admit(),
     };
     if release {
+        shared.test_point("release_idle_device:attempt");
         shared
             .controller
             .record_flight_event("resident broker closing the idle logical device session");
@@ -261,6 +287,9 @@ fn release_idle_with_retries(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>
                     clients.tray_idle_since = None;
                     clients.record_idle_release(report.queued);
                     clients.idle_released = queued_count == report.attempted;
+                    if clients.idle_released {
+                        clients.idle_release_retry_not_before = None;
+                    }
                 }
             }
             if report.failures.is_empty() || queued_count == report.attempted {
@@ -308,9 +337,11 @@ fn release_idle_with_retries(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>
                     }
                 }
             }
+            let retry_deadline = Instant::now() + shared.idle_release_retry_delay();
+            shared.clients.lock_recover().idle_release_retry_not_before = Some(retry_deadline);
             drop(exclusive);
+            rearm_idle_release_after_failure(shared, ticket, retry_deadline);
             shared.update_observer_backstop();
-            rearm_idle_release_after_failure(shared, ticket);
             return;
         }
         drop(exclusive);
@@ -323,12 +354,15 @@ fn release_idle_with_retries(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>
 /// Keep an idle resident from remaining connected forever after native
 /// teardown fails. This also covers Immediate tray policy with no observers,
 /// where the observer backstop intentionally owns no timer.
-fn rearm_idle_release_after_failure(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>) {
-    let deadline = Instant::now() + RESIDENT_IDLE_RETRY_DELAY;
-    let work = idle_work(shared);
-    let result = match ticket {
-        // Preserve the generation that admitted this idle work. `latest` would
-        // replace a newer, earlier idle arm that raced native teardown.
+fn rearm_idle_release_after_failure(
+    shared: &Arc<BrokerShared>,
+    ticket: Option<&Ticket>,
+    deadline: Instant,
+) {
+    let work = idle_release_retry_work(shared);
+    let result = match ticket.filter(|ticket| ticket.owns_key(IDLE)) {
+        // Preserve the generation that admitted this idle work. A backstop
+        // ticket owns OBSERVER, so it must schedule the retry under IDLE.
         Some(ticket) => ticket.retry_after(deadline, work),
         None => shared
             .background
@@ -948,7 +982,11 @@ mod tests {
                     if let Some(shared) = owner.upgrade() {
                         // This is the exhausted/zero-short-retry path used by
                         // Windows, and by Linux after its bounded retries.
-                        rearm_idle_release_after_failure(&shared, Some(&ticket));
+                        rearm_idle_release_after_failure(
+                            &shared,
+                            Some(&ticket),
+                            Instant::now() + shared.idle_release_retry_delay(),
+                        );
                     }
                 }),
             )
@@ -958,6 +996,99 @@ mod tests {
             .expect("failed teardown must re-arm even without observer demand");
         assert!(shared.background.pending_key(IDLE));
         assert!(!shared.clients.lock_recover().observer_timer_running);
+        fixture.finish();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn expired_observer_backstop_failure_waits_for_its_idle_key_retry() {
+        let _serial = FIXTURES.lock_recover();
+        struct Endpoint(Gate);
+        impl PerformanceMidiEndpoint for Endpoint {
+            fn send(&mut self, _: &str, _: u8, _: u8) -> Result<PerformanceMidiReceipt, String> {
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "observer-retry-fixture".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+            fn retire(&mut self) {
+                self.0.wait();
+            }
+        }
+
+        let midi_gate = Gate::new();
+        let release_midi = ReleaseGate(midi_gate.clone());
+        let mut handle = test_support::handle();
+        Arc::get_mut(&mut handle.0).unwrap().performance_midi =
+            Arc::new(PerformanceMidiWorkers::with_factory(move || {
+                Box::new(Endpoint(midi_gate.clone()))
+            }));
+        let fixture = Fixture(handle);
+        let shared = fixture.shared();
+        shared.clients.lock_recover().resident = true;
+        test_support::set_policy_minute(&fixture.0, Duration::from_millis(10));
+        test_support::set_idle_release_retry_delay(&fixture.0, Duration::from_millis(300));
+        assert!(shared.controller.claim_device("observer-retry-fixture"));
+        let device_id = shared.controller.device_id().unwrap();
+        shared
+            .performance_midi
+            .send(&device_id, 1, 2, || {})
+            .unwrap();
+        let observer = test_support::attach(&fixture.0, false);
+        {
+            let mut clients = shared.clients.lock_recover();
+            clients.connections.get_mut(&observer).unwrap().role = ConnectionRole::Observer {
+                idle_policy_minutes: Some(1),
+            };
+            clients.observer_idle_since = Some(Instant::now() - Duration::from_secs(1));
+        }
+
+        let (attempted, attempts) = mpsc::channel();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_count = Arc::clone(&count);
+        let _attempt_point = Point::new(
+            shared,
+            "release_idle_device:attempt",
+            Arc::new(move || {
+                observed_count.fetch_add(1, Ordering::AcqRel);
+                let _ = attempted.send(Instant::now());
+                Ok(())
+            }),
+        );
+        let (rearmed, rearm_observed) = mpsc::channel();
+        let _rearm_point = Point::new(
+            shared,
+            "release_idle_device:rearmed",
+            Arc::new(move || {
+                let _ = rearmed.send(());
+                Ok(())
+            }),
+        );
+        shared.update_observer_backstop();
+
+        let started = attempts.recv_timeout(Duration::from_secs(2)).unwrap();
+        rearm_observed
+            .recv_timeout(PERFORMANCE_MIDI_RETIRE_BUDGET + Duration::from_secs(2))
+            .expect("failed native teardown must arm its delayed idle-key retry");
+        assert!(shared.background.pending_key(IDLE));
+        assert_eq!(count.load(Ordering::Acquire), 1);
+        assert!(
+            attempts.recv_timeout(Duration::from_millis(100)).is_err(),
+            "an expired observer deadline must not immediately repeat failed teardown"
+        );
+        drop(release_midi);
+
+        let retried = attempts.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            retried.duration_since(started) >= Duration::from_millis(250),
+            "the second release must wait for the retry interval: {retried:?} after {started:?}"
+        );
+        assert_eq!(count.load(Ordering::Acquire), 2);
+        assert!(
+            attempts.recv_timeout(Duration::from_millis(100)).is_err(),
+            "one retry must not schedule an immediate third attempt"
+        );
         fixture.finish();
     }
 
