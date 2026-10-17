@@ -497,6 +497,132 @@ fn all_config_document_writers_preserve_live_bytes_on_staging_collision() {
 }
 
 #[test]
+fn jan_pair_refresh_and_unpair_preserve_user_configuration_and_private_files() {
+    let directory = refresh_fixture("linux-jan-config-lifecycle");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let target = jan_target(&directory);
+    fs::write(
+        &target.config_path,
+        br#"{"userPreferences":{"keep":true},"mcpServers":{"their-own-server":{"command":"their-own-server"}}}"#,
+    )
+    .expect("seed Jan configuration");
+
+    write_json_mcp_route(
+        &target.config_path,
+        &target.executable_path,
+        JAN_CLIENT_ID,
+        "Jan",
+        true,
+    )
+    .expect("pair Jan");
+    let paired: Value =
+        serde_json::from_slice(&fs::read(&target.config_path).expect("paired configuration"))
+            .expect("paired JSON");
+    assert_eq!(paired["userPreferences"], json!({"keep": true}));
+    assert_eq!(
+        paired["mcpServers"]["their-own-server"]["command"],
+        json!("their-own-server")
+    );
+    assert!(qc_owner_only_file::is_owner_only(&target.config_path).unwrap());
+    assert!(config_backups(&target.config_path)
+        .iter()
+        .all(|(_, backup)| qc_owner_only_file::is_owner_only(backup).unwrap()));
+
+    // Mark only the managed identity stale; the route refresh must use the
+    // same private writer while retaining every unrelated user setting.
+    let stale_id = "jan:0.1.100";
+    let mut stale = paired;
+    stale["mcpServers"][CLAUDE_EXTENSION_NAME]["args"][2] = json!(stale_id);
+    stale["mcpServers"][CLAUDE_EXTENSION_NAME]["env"]["QC_REMOTE_LOCAL_MCP_CLIENT"] =
+        json!(stale_id);
+    fs::write(
+        &target.config_path,
+        serde_json::to_vec_pretty(&stale).expect("stale Jan configuration"),
+    )
+    .expect("write stale fixture");
+    let refreshed = refresh_managed_route(&target);
+    assert_eq!(
+        refreshed.decision,
+        RouteRefreshDecision::Stale {
+            paired: "0.1.100".to_string()
+        }
+    );
+    let refreshed_document: Value =
+        serde_json::from_slice(&fs::read(&target.config_path).expect("refreshed configuration"))
+            .expect("refreshed JSON");
+    assert_eq!(refreshed_document["userPreferences"], json!({"keep": true}));
+    assert_eq!(
+        refreshed_document["mcpServers"]["their-own-server"]["command"],
+        json!("their-own-server")
+    );
+    assert_eq!(
+        refreshed_document["mcpServers"][CLAUDE_EXTENSION_NAME]["args"][2],
+        json!(JAN_CLIENT_ID)
+    );
+    assert!(qc_owner_only_file::is_owner_only(&target.config_path).unwrap());
+
+    assert!(remove_json_mcp_route(&target.config_path, "Jan").expect("unpair Jan"));
+    let unpaired: Value =
+        serde_json::from_slice(&fs::read(&target.config_path).expect("unpaired configuration"))
+            .expect("unpaired JSON");
+    assert_eq!(unpaired["userPreferences"], json!({"keep": true}));
+    assert_eq!(
+        unpaired["mcpServers"]["their-own-server"]["command"],
+        json!("their-own-server")
+    );
+    assert!(unpaired["mcpServers"][CLAUDE_EXTENSION_NAME].is_null());
+    assert!(qc_owner_only_file::is_owner_only(&target.config_path).unwrap());
+    assert!(config_backups(&target.config_path)
+        .iter()
+        .all(|(_, backup)| qc_owner_only_file::is_owner_only(backup).unwrap()));
+}
+
+#[cfg(unix)]
+#[test]
+fn json_config_writer_preserves_a_preexisting_symlink_at_its_stage_path() {
+    let directory = refresh_fixture("config-stage-symlink");
+    let _fixture_guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let config = directory.join("mcp.json");
+    let original = br#"{"userPreferences":{"keep":true},"mcpServers":{}}"#;
+    fs::write(&config, original).expect("seed live configuration");
+    let target = directory.join("symlink-target");
+    let target_bytes = b"do not follow or overwrite this target";
+    fs::write(&target, target_bytes).expect("seed symlink target");
+    let _pinned = PinnedStageSequence::new();
+    let stage = staged_config_path(&directory, &config, "qc-remote");
+    std::os::unix::fs::symlink(&target, &stage).expect("create occupied staged symlink");
+
+    let result = write_json_mcp_route(
+        &config,
+        Path::new("/fixture/qc-remote"),
+        JAN_CLIENT_ID,
+        "Jan",
+        true,
+    );
+    assert!(result.is_err(), "an existing stage path is never adopted");
+    assert!(
+        fs::symlink_metadata(&stage)
+            .expect("stage remains present")
+            .file_type()
+            .is_symlink(),
+        "failed cleanup must not remove a symlink it did not create"
+    );
+    assert_eq!(
+        fs::read(&stage).expect("symlink still resolves"),
+        target_bytes
+    );
+    assert_eq!(
+        fs::read(&target).expect("target remains untouched"),
+        target_bytes
+    );
+    assert_eq!(
+        fs::read(&config).expect("live config remains untouched"),
+        original
+    );
+    assert!(config_backups(&config).is_empty());
+}
+
+#[test]
 fn antigravity_total_budget_is_not_restarted_by_another_port_or_body() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

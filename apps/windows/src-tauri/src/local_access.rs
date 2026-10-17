@@ -4700,6 +4700,135 @@ mod tests {
     }
 
     #[test]
+    fn simultaneous_publishers_with_overlapping_descriptor_sets_elect_one_owner() {
+        let directory = scratch_directory("overlapping-publisher-sets");
+        let _directory = OwnedTestDirectory(directory.clone());
+        let first_path = directory.join("a-host.json");
+        let second_path = directory.join("b-host.json");
+        let shared_path = directory.join("shared-mirror.json");
+        let (first, second) = std::thread::scope(|scope| {
+            let gate = Arc::new(AtomicBool::new(false));
+            let arrived = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let _release_on_unwind = FixtureStartRelease(Arc::clone(&gate));
+            let spawn = |paths: Vec<PathBuf>| {
+                let gate = Arc::clone(&gate);
+                let arrived = Arc::clone(&arrived);
+                scope.spawn(move || {
+                    arrived.fetch_add(1, Ordering::AcqRel);
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while !gate.load(Ordering::Acquire) {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "overlapping publisher fixture gate not released"
+                        );
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    start_listener(
+                        paths,
+                        Arc::new(FakeAdapter {
+                            ready: AtomicBool::new(false),
+                        }),
+                        full_access(),
+                    )
+                })
+            };
+            let first = spawn(vec![first_path.clone(), shared_path.clone()]);
+            let second = spawn(vec![second_path.clone(), shared_path.clone()]);
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while arrived.load(Ordering::Acquire) != 2 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "overlapping publisher workers did not arrive"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            gate.store(true, Ordering::Release);
+            (
+                first.join().unwrap().map(OwnedTestListener),
+                second.join().unwrap().map(OwnedTestListener),
+            )
+        });
+
+        assert_ne!(
+            first.is_ok(),
+            second.is_ok(),
+            "the shared mirror lease must elect exactly one publisher"
+        );
+        let first_won = first.is_ok();
+        let winner = first.ok().or_else(|| second.ok()).unwrap();
+        let descriptors = [&first_path, &second_path, &shared_path]
+            .into_iter()
+            .filter(|path| path.exists())
+            .map(|path| {
+                crate::local_stdio::descriptor_from_paths(std::slice::from_ref(path)).unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            descriptors.len(),
+            2,
+            "only the winner's private path and the shared mirror are published"
+        );
+        assert!(
+            descriptors
+                .iter()
+                .all(|descriptor| descriptor.instance_id == winner.0.instance_id()),
+            "all published views must name the elected owner"
+        );
+
+        assert!(winner.0.stop());
+        let successor_paths = if first_won {
+            vec![second_path, shared_path]
+        } else {
+            vec![first_path, shared_path]
+        };
+        let successor = OwnedTestListener(
+            start_listener(
+                successor_paths,
+                Arc::new(FakeAdapter {
+                    ready: AtomicBool::new(false),
+                }),
+                full_access(),
+            )
+            .unwrap(),
+        );
+        assert!(successor.0.stop());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_partial_publisher_lease_acquisition_releases_earlier_paths() {
+        let directory = scratch_directory("partial-publisher-lease");
+        let _directory = OwnedTestDirectory(directory.clone());
+        let first_path = directory.join("a-host.json");
+        let blocked_path = directory.join("z-shared-mirror.json");
+        // start_listener sorts paths, so this held lease is acquired second;
+        // failure there must drop the lease already acquired for first_path.
+        let blocker = acquire_document_lease(&blocked_path, "publisher", Duration::ZERO).unwrap();
+
+        let error = match start_listener(
+            vec![blocked_path.clone(), first_path.clone()],
+            Arc::new(FakeAdapter {
+                ready: AtomicBool::new(false),
+            }),
+            full_access(),
+        ) {
+            Ok(listener) => {
+                listener.stop();
+                panic!("a publisher must not pass the held shared-mirror lease");
+            }
+            Err(error) => error,
+        };
+        assert!(error.served_by_another_instance);
+        assert!(error.message.contains("Another process owns"));
+
+        let first_lease = acquire_document_lease(&first_path, "publisher", Duration::ZERO)
+            .expect("the earlier lease is released when a later acquisition fails");
+        drop(first_lease);
+        drop(blocker);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn actual_listener_fixture_unwind_retires_publisher_before_its_owned_root() {
         let directory = scratch_directory("listener-unwind");
         let port = AtomicU64::new(0);

@@ -4142,6 +4142,32 @@ fn dispatch_broker_client_request(
             "Connection is no longer attached; queued action was cancelled",
         );
     }
+    // A request can pass the idle-release precheck just before a resident
+    // close publishes its completed release record, then wait here on the
+    // request lock that the close owns. Re-check after acquiring that lock so
+    // this request joins/restarts the newly visible reopen instead of reaching
+    // the closed controller. Drop the lock before redispatching because the
+    // reopen itself must acquire it.
+    let idle_release_published_while_waiting = {
+        let clients = shared.clients.lock_recover();
+        let participant = connection_id.is_some_and(|id| {
+            clients
+                .connections
+                .get(&id)
+                .is_some_and(|row| row.is_participant())
+        });
+        let session_command = matches!(
+            request.method.as_str(),
+            generated_gateway::rpc::DISCONNECT
+                | generated_gateway::rpc::RECONNECT
+                | generated_gateway::rpc::RESET_SESSION
+        );
+        participant && !session_command && clients.idle_entry(&controller).is_some()
+    };
+    if idle_release_published_while_waiting {
+        drop(_exclusive);
+        return dispatch_broker_client_request(shared, connection_id, request);
+    }
     // The second, immediately-before-effect re-check: a second client could
     // have attached while this request queued behind `request_lock` (e.g.
     // behind another client's in-flight backup).
@@ -6566,7 +6592,7 @@ impl BrokerHandle {
     pub(crate) fn release_devices_staying(&self) -> Result<String, String> {
         let _exclusive = self.0.request_lock.lock_recover();
         let all = self.0.all_controllers();
-        let mut clients = self.0.clients.lock_recover();
+        let clients = self.0.clients.lock_recover();
         if clients.shutting_down {
             return Err("Broker shutdown is already committed".into());
         }
@@ -6578,10 +6604,13 @@ impl BrokerHandle {
         if clients.reopens_in_flight != 0 {
             return Err("The Quad Cortex is reopening; choose Disconnect again in a moment".into());
         }
-        // Recorded and closed under one `request_lock`, like the idle release.
-        clients.record_idle_release(all);
         drop(clients);
         self.0.disconnect_devices()?;
+        // Publish the release only after every native MIDI endpoint and HID
+        // session has actually retired. A timeout above leaves the broker
+        // serving with its original admission state intact, so the caller can
+        // safely retry.
+        self.0.clients.lock_recover().record_idle_release(all);
         Ok("Disconnected. Connect starts the device session again.".to_owned())
     }
 
@@ -10913,6 +10942,247 @@ mod tcp_tests {
             .expect("the waiting request runs once the lock is free");
         assert_eq!(response["id"], json!(7));
         client.join().expect("client thread");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_disconnect_waits_for_raw_midi_close_ack_before_hid_disconnect() {
+        struct CloseGate(Arc<(Mutex<bool>, Condvar)>);
+        impl Drop for CloseGate {
+            fn drop(&mut self) {
+                let (released, changed) = &*self.0;
+                *released.lock_recover() = true;
+                changed.notify_all();
+            }
+        }
+        struct Endpoint {
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            retiring: Arc<AtomicBool>,
+        }
+        impl PerformanceMidiEndpoint for Endpoint {
+            fn send(&mut self, _: &str, _: u8, _: u8) -> Result<PerformanceMidiReceipt, String> {
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "fixture".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+            fn retire(&mut self) {
+                self.retiring.store(true, Ordering::Release);
+                let (released, changed) = &*self.gate;
+                let mut released = released.lock_recover();
+                while !*released {
+                    released = changed
+                        .wait(released)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            }
+        }
+
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let _release_gate = CloseGate(Arc::clone(&gate));
+        let retiring = Arc::new(AtomicBool::new(false));
+        let factory_gate = Arc::clone(&gate);
+        let factory_retiring = Arc::clone(&retiring);
+        let midi = PerformanceMidiWorkers::with_factory(move || {
+            Box::new(Endpoint {
+                gate: Arc::clone(&factory_gate),
+                retiring: Arc::clone(&factory_retiring),
+            })
+        });
+        let controller = DeviceController::start_disconnected().expect("controller");
+        assert!(controller.claim_device("direct-disconnect-fixture"));
+        midi.send("direct-disconnect-fixture", 1, 2, || {})
+            .expect("fixture MIDI send");
+        let initial = controller.status();
+        let (done_tx, done_rx) = mpsc::channel();
+        let disconnecting = thread::spawn(move || {
+            done_tx
+                .send(handle(&controller, &midi, rpc_request("device.disconnect")))
+                .unwrap();
+            controller
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !retiring.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(retiring.load(Ordering::Acquire), "MIDI close entered");
+
+        let result = done_rx
+            .recv_timeout(PERFORMANCE_MIDI_RETIRE_BUDGET + Duration::from_secs(1))
+            .expect("disconnect returns at the bounded MIDI retirement deadline");
+        drop(_release_gate);
+        let after_timeout = disconnecting.join().expect("disconnect thread");
+        assert!(
+            result["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("still draining"),
+            "an unacknowledged close refuses HID disconnect: {result}"
+        );
+        assert_eq!(
+            after_timeout.status().detail,
+            initial.detail,
+            "the HID worker must not receive disconnect before MIDI close acknowledgement"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resident_release_does_not_record_idle_release_before_midi_close_ack() {
+        struct CloseGate(Arc<(Mutex<bool>, Condvar)>);
+        impl Drop for CloseGate {
+            fn drop(&mut self) {
+                let (released, changed) = &*self.0;
+                *released.lock_recover() = true;
+                changed.notify_all();
+            }
+        }
+        struct Endpoint {
+            gate: Arc<(Mutex<bool>, Condvar)>,
+            retiring: Arc<AtomicBool>,
+        }
+        impl PerformanceMidiEndpoint for Endpoint {
+            fn send(&mut self, _: &str, _: u8, _: u8) -> Result<PerformanceMidiReceipt, String> {
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "fixture".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+            fn retire(&mut self) {
+                self.retiring.store(true, Ordering::Release);
+                let (released, changed) = &*self.gate;
+                let mut released = released.lock_recover();
+                while !*released {
+                    released = changed
+                        .wait(released)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            }
+        }
+
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let release_gate = CloseGate(Arc::clone(&gate));
+        let retiring = Arc::new(AtomicBool::new(false));
+        let factory_gate = Arc::clone(&gate);
+        let factory_retiring = Arc::clone(&retiring);
+        let midi = PerformanceMidiWorkers::with_factory(move || {
+            Box::new(Endpoint {
+                gate: Arc::clone(&factory_gate),
+                retiring: Arc::clone(&factory_retiring),
+            })
+        });
+        let mut shared = broker_shared_for_test();
+        shared.controller.claim_device("resident-release-fixture");
+        shared.performance_midi = Arc::new(midi);
+        shared
+            .performance_midi
+            .send("resident-release-fixture", 1, 2, || {})
+            .expect("fixture MIDI send");
+        let shared = Arc::new(shared);
+        let before = shared.clients.lock_recover().idle_released;
+        let release_shared = Arc::clone(&shared);
+        let (done_tx, done_rx) = mpsc::channel();
+        let release = thread::spawn(move || {
+            let result = BrokerHandle(release_shared)
+                .release_devices_staying()
+                .map(|_| ());
+            done_tx.send(result).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !retiring.load(Ordering::Acquire) && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(retiring.load(Ordering::Acquire), "MIDI close entered");
+        let idle_released_before_ack = shared.clients.lock_recover().idle_released;
+
+        drop(release_gate);
+        let outcome = done_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("release completes after MIDI close acknowledgement");
+        release.join().expect("release thread");
+        outcome.expect("the acknowledged resident release succeeds");
+        assert!(!before, "fixture starts with no idle release marker");
+        assert!(
+            !idle_released_before_ack,
+            "idle release bookkeeping must follow the MIDI close acknowledgement"
+        );
+        assert!(shared.clients.lock_recover().idle_released);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shutdown_retains_descriptor_claim_until_raw_midi_close_ack() {
+        struct CloseGate(Arc<(Mutex<bool>, Condvar)>);
+        impl Drop for CloseGate {
+            fn drop(&mut self) {
+                let (released, changed) = &*self.0;
+                *released.lock_recover() = true;
+                changed.notify_all();
+            }
+        }
+        struct Endpoint(Arc<(Mutex<bool>, Condvar)>);
+        impl PerformanceMidiEndpoint for Endpoint {
+            fn send(&mut self, _: &str, _: u8, _: u8) -> Result<PerformanceMidiReceipt, String> {
+                Ok(PerformanceMidiReceipt {
+                    endpoint: "fixture".into(),
+                    dispatch_latency_ms: 0.0,
+                    throttle_delay_ms: 0.0,
+                })
+            }
+            fn retire(&mut self) {
+                let (released, changed) = &*self.0;
+                let mut released = released.lock_recover();
+                while !*released {
+                    released = changed
+                        .wait(released)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            }
+        }
+
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let release_gate = CloseGate(Arc::clone(&gate));
+        let factory_gate = Arc::clone(&gate);
+        let midi = PerformanceMidiWorkers::with_factory(move || {
+            Box::new(Endpoint(Arc::clone(&factory_gate)))
+        });
+        let (_scratch, path) = broker_scratch_descriptor_path("midi-close-shutdown-claim");
+        let controller = Arc::new(DeviceController::start_disconnected().expect("controller"));
+        controller.claim_device("shutdown-midi-fixture");
+        let claim = qc_owner_only_file::ClaimedFile::try_claim(&path).expect("descriptor claim");
+        let mut shared = broker_shared_for_test();
+        shared.controller = Arc::clone(&controller);
+        shared.descriptor_path = path.to_path_buf();
+        shared.descriptor_claim = Arc::new(Mutex::new(Some(claim)));
+        shared.performance_midi = Arc::new(midi);
+        shared
+            .performance_midi
+            .send("shutdown-midi-fixture", 1, 2, || {})
+            .expect("fixture MIDI send");
+        let marker = BrokerReleaseMarker::path_for(&shared.descriptor_path, &shared.instance_id);
+
+        let report = shared.finish_shutdown();
+        assert!(!report.all_verified(), "unacknowledged close is not clean");
+        assert!(shared.descriptor_claim.lock_recover().is_some());
+        assert!(
+            qc_owner_only_file::ClaimedFile::try_claim(&path).is_err(),
+            "a successor must remain excluded while MIDI still owns the unit"
+        );
+        assert!(
+            !marker.exists(),
+            "an unacknowledged MIDI close must not publish a release marker"
+        );
+
+        drop(release_gate);
+        let report = shared.finish_shutdown();
+        assert!(report.all_verified(), "{}", report.summary());
+        assert!(shared.descriptor_claim.lock_recover().is_none());
+        qc_owner_only_file::ClaimedFile::try_claim(&path)
+            .expect("descriptor becomes available after the MIDI close acknowledgement")
+            .release()
+            .expect("release fixture claim");
     }
 
     /// A worker that never returns must not hold `request_lock` indefinitely;

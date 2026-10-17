@@ -1117,10 +1117,10 @@ fn the_idle_release_and_the_icons_disconnect_never_wait_for_devices_holding_clie
     }
 }
 
-/// A request that arrives after the idle release recorded the devices
-/// but before it closed them waits for the close, then reopens.
+/// A request arriving after resident idle release has closed and recorded the
+/// devices waits for the release operation, then reopens.
 #[test]
-fn a_request_between_the_release_record_and_the_close_reopens_after_the_close() {
+fn a_request_after_resident_idle_release_reopens_after_the_close() {
     let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
     let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
     {
@@ -1143,7 +1143,8 @@ fn a_request_between_the_release_record_and_the_close_reopens_after_the_close() 
         spawn_fixture(move || shared.release_idle_device())
     };
     reached.recv_timeout(Duration::from_secs(2)).unwrap();
-    // Recorded, not yet closed: a participant arrives and asks for the device.
+    // The close is complete and recorded. A participant arrives while the
+    // release still owns request_lock, then asks for the device.
     let participant = attach_participant(&shared);
     let asking = {
         let shared = Arc::clone(&shared);
@@ -1160,14 +1161,85 @@ fn a_request_between_the_release_record_and_the_close_reopens_after_the_close() 
         Duration::from_secs(2)
     ));
     thread::sleep(Duration::from_millis(150));
-    assert!(
-        events.lock_recover().is_empty(),
-        "the reopen waits for the close"
+    assert_eq!(
+        *events.lock_recover(),
+        ["closed"],
+        "native close must precede release publication, and the reopen waits"
     );
     resume.send(()).unwrap();
     releasing.join().unwrap();
     let response = asking.join().unwrap();
     assert!(response.get("error").is_none(), "{response}");
+    assert_eq!(*events.lock_recover(), ["closed", "reconnect"]);
+    shared.clients.lock_recover().shutting_down = true;
+}
+
+/// A request that starts while native close is in flight must still observe
+/// the successful close once it gets request_lock and reopen the session.
+#[test]
+fn a_request_during_resident_idle_close_reopens_after_the_close() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    let (resume, resume_rx) = mpsc::channel();
+    let (reached_tx, reached_rx) = mpsc::channel();
+    let resume_rx = Mutex::new(resume_rx);
+    {
+        let events = Arc::clone(&events);
+        on_point(&shared, "disconnect_devices:done", move || {
+            events.lock_recover().push("closed");
+            let _ = reached_tx.send(());
+            let _ = resume_rx
+                .lock_recover()
+                .recv_timeout(Duration::from_secs(10));
+        });
+    }
+    let _reconnect = {
+        let events = Arc::clone(&events);
+        ReconnectHook::install(&shared.controller, move || {
+            events.lock_recover().push("reconnect");
+            Ok(())
+        })
+    };
+    let _wait = Hook::install(&shared.controller, || Ok(()));
+    let releasing = {
+        let shared = Arc::clone(&shared);
+        spawn_fixture(move || shared.release_idle_device())
+    };
+    reached_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(
+        !shared.clients.lock_recover().idle_released,
+        "release publication waits for close completion"
+    );
+
+    let participant = attach_participant(&shared);
+    let (request_started, request_waiting) = mpsc::channel();
+    let asking = {
+        let shared = Arc::clone(&shared);
+        spawn_fixture(move || {
+            let _ = request_started.send(());
+            dispatch_broker_client_request(
+                &shared,
+                Some(participant),
+                request(1, generated_gateway::rpc::CURRENT_PRESET),
+            )
+        })
+    };
+    request_waiting
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !asking.is_finished(),
+        "the request is queued behind resident close while marker is not yet published"
+    );
+
+    resume.send(()).unwrap();
+    releasing.join().unwrap();
+    let response = asking.join().unwrap();
+    assert_eq!(
+        response["error"]["message"], "No Quad Cortex preset has been synchronized yet",
+        "the request reaches the device handler after a successful reopen"
+    );
     assert_eq!(*events.lock_recover(), ["closed", "reconnect"]);
     shared.clients.lock_recover().shutting_down = true;
 }
