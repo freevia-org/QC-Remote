@@ -1379,18 +1379,32 @@ impl DeviceController {
     pub fn reconnect(&self) -> Result<ReconnectOutcome, String> {
         self.request_reconnect(false)
     }
+    /// Queue an unforced reconnect behind any accepted close already in the
+    /// worker's FIFO. Unlike [`Self::reconnect`], this does not trust cached
+    /// status to return early; the worker checks its live session when it
+    /// reaches the command, making its reply a barrier behind the close.
+    pub(crate) fn reconnect_after_pending_close(&self) -> Result<ReconnectOutcome, String> {
+        self.request_reconnect_inner(false, true)
+    }
     /// The same command with the teardown forced. Always
     /// [`ReconnectOutcome::Restarted`] when it returns at all.
     pub fn reset_session(&self) -> Result<ReconnectOutcome, String> {
         self.request_reconnect(true)
     }
     fn request_reconnect(&self, force: bool) -> Result<ReconnectOutcome, String> {
+        self.request_reconnect_inner(force, false)
+    }
+    fn request_reconnect_inner(
+        &self,
+        force: bool,
+        enqueue_when_cached_ready: bool,
+    ) -> Result<ReconnectOutcome, String> {
         if force {
             // A forced reset must reach a connect that is still running: the
             // worker answers no command until it leaves it, and a wedged
             // startup never does on its own.
             self.connect_interrupt.raise();
-        } else {
+        } else if !enqueue_when_cached_ready {
             // An unforced reconnect leaves a live or forming session alone, so
             // there is nothing to queue behind a connect in progress: answer
             // from the published phase exactly as the worker would.

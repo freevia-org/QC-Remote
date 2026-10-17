@@ -208,7 +208,166 @@ fn resident_idle_release_records_a_queued_hid_close_without_acknowledgment() {
         clients.idle_entry(&controller).is_some(),
         "the controller whose close entered the worker queue must be marked"
     );
+    assert!(
+        clients
+            .idle_entry(&controller)
+            .is_some_and(|entry| entry.close_unacknowledged),
+        "the marker records that the accepted close is still unacknowledged"
+    );
     drop(clients);
+    release_worker.store(true, Ordering::Release);
+    shared.clients.lock_recover().shutting_down = true;
+}
+
+/// A participant must keep the marker while the close is unacknowledged and
+/// route lazy reconnect through the queued-worker barrier. A failed barrier
+/// keeps the marker retryable; only a successful barrier plus readiness wait
+/// retires it.
+#[test]
+fn lazy_reopen_uses_the_queued_barrier_for_an_unacknowledged_close() {
+    let release_worker = Arc::new(AtomicBool::new(false));
+    let controller = Arc::new(DeviceController::with_stuck_worker_for_test(Arc::clone(
+        &release_worker,
+    )));
+    let (shared, _shutdown) =
+        resident_shared_with_controller(Duration::from_secs(60), Arc::clone(&controller));
+    struct ReleaseOnDrop(Arc<AtomicBool>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let _release_on_drop = ReleaseOnDrop(Arc::clone(&release_worker));
+
+    shared.release_idle_device();
+    {
+        let clients = shared.clients.lock_recover();
+        assert!(clients
+            .idle_entry(&controller)
+            .is_some_and(|entry| entry.close_unacknowledged));
+    }
+    // Model stale cached status while the accepted close remains queued.
+    controller.set_connection_for_test(true, "ready");
+    let participant = attach_participant(&shared);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let _queued_reconnect = PendingCloseReconnectHook::install(&controller, move || {
+        if observed.fetch_add(1, Ordering::AcqRel) == 0 {
+            Err("injected queued reconnect barrier failure".into())
+        } else {
+            Ok(())
+        }
+    });
+    let _wait = Hook::install(&controller, || Ok(()));
+
+    let failed = dispatch_broker_client_request(
+        &shared,
+        Some(participant),
+        request(1, generated_gateway::rpc::CURRENT_PRESET),
+    );
+    assert!(failed["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("injected queued reconnect barrier failure"));
+    assert!(shared
+        .clients
+        .lock_recover()
+        .idle_entry(&controller)
+        .is_some_and(|entry| entry.close_unacknowledged));
+
+    let response = dispatch_broker_client_request(
+        &shared,
+        Some(participant),
+        request(2, generated_gateway::rpc::CURRENT_PRESET),
+    );
+    assert_eq!(
+        response["error"]["message"],
+        "No Quad Cortex preset has been synchronized yet"
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    assert!(shared
+        .clients
+        .lock_recover()
+        .idle_entry(&controller)
+        .is_none());
+    release_worker.store(true, Ordering::Release);
+    shared.clients.lock_recover().shutting_down = true;
+}
+
+/// An explicit reconnect may pass its preflight while an idle close is still
+/// publishing its marker, then wait behind that close's request_lock. The
+/// late recheck must select the queued barrier using the newly published flag.
+#[test]
+fn authenticated_reconnect_waiting_for_idle_close_uses_the_late_marker_barrier() {
+    let release_worker = Arc::new(AtomicBool::new(false));
+    let controller = Arc::new(DeviceController::with_stuck_worker_for_test(Arc::clone(
+        &release_worker,
+    )));
+    controller.set_connection_for_test(true, "ready");
+    let (shared, _shutdown) =
+        resident_shared_with_controller(Duration::from_secs(60), Arc::clone(&controller));
+    struct ReleaseOnDrop(Arc<AtomicBool>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let _release_on_drop = ReleaseOnDrop(Arc::clone(&release_worker));
+
+    let (resume, reached) = pause_at(&shared, "disconnect_devices:done");
+    let releasing = {
+        let shared = Arc::clone(&shared);
+        spawn_fixture(move || shared.release_idle_device())
+    };
+    reached.recv_timeout(Duration::from_secs(3)).unwrap();
+    let participant = attach_participant(&shared);
+
+    let (preflight, preflight_reached) = mpsc::channel();
+    on_point(&shared, "request:before-request-lock", move || {
+        let _ = preflight.send(());
+    });
+    let (barrier, barrier_reached) = mpsc::channel();
+    let pending_shared = Arc::clone(&shared);
+    let controller_for_hook = Arc::clone(&controller);
+    let _barrier_hook = PendingCloseReconnectHook::install(&controller, move || {
+        let is_pending = pending_shared
+            .clients
+            .lock_recover()
+            .idle_entry(&controller_for_hook)
+            .is_some_and(|entry| entry.close_unacknowledged);
+        let _ = barrier.send(is_pending);
+        Ok(())
+    });
+    let reconnecting = {
+        let shared = Arc::clone(&shared);
+        spawn_fixture(move || {
+            dispatch_broker_client_request(
+                &shared,
+                Some(participant),
+                request(1, generated_gateway::rpc::RECONNECT),
+            )
+        })
+    };
+    preflight_reached
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        !reconnecting.is_finished(),
+        "the explicit reconnect must wait behind the in-progress idle close"
+    );
+
+    resume.send(()).unwrap();
+    releasing.join().unwrap();
+    assert!(barrier_reached
+        .recv_timeout(Duration::from_secs(2))
+        .expect("late reconnect must select the pending-close barrier"));
+    let response = reconnecting.join().unwrap();
+    assert!(response.get("error").is_none(), "{response}");
+    assert!(shared
+        .clients
+        .lock_recover()
+        .idle_entry(&controller)
+        .is_none());
     release_worker.store(true, Ordering::Release);
     shared.clients.lock_recover().shutting_down = true;
 }
@@ -240,6 +399,8 @@ fn disconnect_report_retains_queued_hid_close_when_acknowledgment_times_out() {
     );
     assert_eq!(report.queued.len(), 1, "the HID command was accepted");
     assert!(Arc::ptr_eq(&report.queued[0], &controller));
+    assert_eq!(report.close_unacknowledged.len(), 1);
+    assert!(Arc::ptr_eq(&report.close_unacknowledged[0], &controller));
     assert_eq!(report.failures.len(), 1, "its ACK missed the deadline");
     assert!(
         report.failures[0].contains("did not acknowledge the disconnect request"),
@@ -423,6 +584,29 @@ impl ReconnectHook {
             .lock_recover()
             .push((key, Arc::new(hook)));
         Self(key)
+    }
+}
+
+/// Replaces only the FIFO-barrier reconnect path used when an accepted close
+/// has not yet been acknowledged.
+struct PendingCloseReconnectHook(usize);
+impl PendingCloseReconnectHook {
+    fn install(
+        controller: &Arc<DeviceController>,
+        hook: impl Fn() -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        let key = Arc::as_ptr(controller) as usize;
+        PENDING_CLOSE_RECONNECT_HOOKS
+            .lock_recover()
+            .push((key, Arc::new(hook)));
+        Self(key)
+    }
+}
+impl Drop for PendingCloseReconnectHook {
+    fn drop(&mut self) {
+        PENDING_CLOSE_RECONNECT_HOOKS
+            .lock_recover()
+            .retain(|(key, _)| *key != self.0);
     }
 }
 impl Drop for ReconnectHook {
@@ -956,6 +1140,41 @@ fn the_icons_connect_ends_the_idle_release() {
         ),
         "with something open, the icon's period releases it again"
     );
+    shared.clients.lock_recover().shutting_down = true;
+}
+
+#[test]
+fn the_icons_connect_keeps_a_pending_idle_close_until_the_fifo_barrier_succeeds() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let handle = BrokerHandle(Arc::clone(&shared));
+    shared.clients.lock_recover().record_idle_release(
+        vec![Arc::clone(&shared.controller)],
+        vec![Arc::clone(&shared.controller)],
+    );
+    shared.clients.lock_recover().idle_released = true;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&attempts);
+    let _barrier = PendingCloseReconnectHook::install(&shared.controller, move || {
+        if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err("worker has not acknowledged the idle close yet".into())
+        } else {
+            Ok(())
+        }
+    });
+
+    assert!(handle.reconnect().is_err());
+    assert!(shared
+        .clients
+        .lock_recover()
+        .idle_entry(&shared.controller)
+        .is_some_and(|entry| entry.close_unacknowledged));
+    assert!(handle.reconnect().is_ok());
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert!(shared
+        .clients
+        .lock_recover()
+        .idle_entry(&shared.controller)
+        .is_none());
     shared.clients.lock_recover().shutting_down = true;
 }
 
@@ -1825,6 +2044,7 @@ fn recording_a_device_again_keeps_its_attempt_and_last_failure() {
     let controller = Arc::new(DeviceController::start_disconnected().unwrap());
     clients.idle_released_devices = vec![IdleReopenEntry {
         controller: Arc::clone(&controller),
+        close_unacknowledged: true,
         reopening: false,
         attempt: 3,
         last_failure: Some((3, "device unplugged".into())),
@@ -1839,7 +2059,10 @@ fn recording_a_device_again_keeps_its_attempt_and_last_failure() {
         .idle_released_devices
         .push(IdleReopenEntry::released(Arc::clone(&worker_reconnected)));
     let other = Arc::new(DeviceController::start_disconnected().unwrap());
-    clients.record_idle_release(vec![Arc::clone(&controller), Arc::clone(&other)]);
+    clients.record_idle_release(
+        vec![Arc::clone(&controller), Arc::clone(&other)],
+        vec![Arc::clone(&controller)],
+    );
     let kept = clients.idle_entry(&controller).unwrap();
     assert_eq!(kept.attempt, 3);
     assert_eq!(kept.last_failure, Some((3, "device unplugged".into())));
@@ -1961,6 +2184,7 @@ fn a_reopening_or_failed_idle_reopen_reads_not_ready() {
     controller.set_connection_for_test(false, "handshaking");
     shared.clients.lock_recover().idle_released_devices = vec![IdleReopenEntry {
         controller: Arc::clone(&controller),
+        close_unacknowledged: false,
         reopening: true,
         attempt: 1,
         last_failure: None,
@@ -1976,6 +2200,7 @@ fn a_reopening_or_failed_idle_reopen_reads_not_ready() {
     controller.set_connection_for_test(false, "disconnected");
     shared.clients.lock_recover().idle_released_devices = vec![IdleReopenEntry {
         controller: Arc::clone(&controller),
+        close_unacknowledged: false,
         reopening: false,
         attempt: 1,
         last_failure: Some((1, "device unplugged".into())),

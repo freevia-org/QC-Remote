@@ -943,6 +943,55 @@ pub(super) fn refresh_controller() -> (DeviceController, mpsc::Receiver<Command>
     )
 }
 
+#[test]
+fn reconnect_after_pending_close_queues_a_fifo_barrier_even_when_cached_ready() {
+    let (controller, commands) = refresh_controller();
+    controller.set_connected_for_test();
+
+    let (disconnect_reply, _disconnect_ack) = mpsc::channel();
+    controller
+        .commands
+        .try_send(Command::Disconnect {
+            reply: disconnect_reply,
+            _admission: None,
+        })
+        .unwrap();
+
+    let (finished, result) = mpsc::channel();
+    thread::scope(|scope| {
+        let task = scope.spawn(|| {
+            let _ = finished.send(controller.reconnect_after_pending_close());
+        });
+
+        match commands.recv_timeout(Duration::from_secs(1)).unwrap() {
+            Command::Disconnect { reply, .. } => {
+                // Keep the accepted close ahead of reconnect while cached
+                // status still says ready.
+                assert!(result.try_recv().is_err());
+                controller.set_connection_for_test(false, "disconnected");
+                reply.send(Ok(())).unwrap();
+            }
+            _ => panic!("disconnect must precede its reconnect barrier"),
+        }
+        match commands.recv_timeout(Duration::from_secs(1)).unwrap() {
+            Command::Reconnect { force, reply } => {
+                assert!(!force, "the barrier reconnect must remain unforced");
+                controller.set_connection_for_test(false, "searching");
+                reply.send(ReconnectOutcome::Restarted).unwrap();
+            }
+            _ => panic!("expected queued reconnect barrier"),
+        }
+        task.join().unwrap();
+    });
+    assert_eq!(
+        result
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap(),
+        ReconnectOutcome::Restarted
+    );
+}
+
 /// Runs `work` on its own thread and fails the test if it does not finish:
 /// the property under test is "does not block", and a regression would
 /// otherwise hang the whole suite instead of failing it.
