@@ -1413,9 +1413,21 @@ impl DeviceController {
         &self,
         admission: Option<Box<dyn Send>>,
     ) -> Result<(), String> {
+        let (_, result) = self.disconnect_with_admission_report(admission);
+        result
+    }
+
+    /// Reports whether the close command entered the native worker queue
+    /// separately from whether the worker acknowledged it. A timeout after
+    /// queue admission can still be followed by a successful close, so callers
+    /// that manage reconnect state must not treat it like a rejected command.
+    pub(crate) fn disconnect_with_admission_report(
+        &self,
+        admission: Option<Box<dyn Send>>,
+    ) -> (bool, Result<(), String>) {
         self.connect_interrupt.raise();
         let (reply, response) = mpsc::channel();
-        send_control(
+        if let Err(error) = send_control(
             &self.commands,
             Command::Disconnect {
                 reply,
@@ -1423,10 +1435,14 @@ impl DeviceController {
             },
             CONTROL_COMMAND_ADMISSION,
             Some(&self.connect_interrupt),
-        )?;
-        response.recv_timeout(Duration::from_secs(1)).map_err(|_| {
-            "Native QC worker did not acknowledge the disconnect request".to_string()
-        })?
+        ) {
+            return (false, Err(error));
+        }
+        let result = response
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|_| "Native QC worker did not acknowledge the disconnect request".to_string())
+            .and_then(|result| result);
+        (true, result)
     }
 
     pub fn latest_message(&self, message_type: u16) -> Option<IncomingMessage> {

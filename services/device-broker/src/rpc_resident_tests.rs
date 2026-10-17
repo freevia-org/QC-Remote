@@ -101,10 +101,20 @@ impl Drop for ResidentFixture {
 }
 
 fn resident_shared(minute: Duration) -> (ResidentFixture, mpsc::Receiver<()>) {
+    resident_shared_with_controller(
+        minute,
+        Arc::new(DeviceController::start_disconnected().expect("controller")),
+    )
+}
+
+fn resident_shared_with_controller(
+    minute: Duration,
+    controller: Arc<DeviceController>,
+) -> (ResidentFixture, mpsc::Receiver<()>) {
     let (tx, rx) = mpsc::channel();
     let root = crate::device_lease::testing::fresh_root("resident-rpc");
     let shared = Arc::new(BrokerShared {
-        controller: Arc::new(DeviceController::start_disconnected().expect("controller")),
+        controller,
         devices: Mutex::new(Vec::new()),
         performance_midi: Arc::new(PerformanceMidiWorkers::default()),
         request_lock: Arc::new(Mutex::new(())),
@@ -125,6 +135,179 @@ fn resident_shared(minute: Duration) -> (ResidentFixture, mpsc::Receiver<()>) {
         .push((shared.instance_id.clone(), GRACE));
     shared.set_resident(true);
     (ResidentFixture { shared, root }, rx)
+}
+
+/// A backup export intentionally does not reopen an idle-released session.
+/// It must reach its own handler once, rather than being redispatched forever
+/// by the post-lock idle-release race check. Run the dispatch in a subprocess
+/// so a regression that recurses to stack exhaustion cannot abort this suite.
+#[test]
+fn backup_target_after_idle_release_does_not_redispatch_recursively() {
+    const CHILD: &str = "QC_TEST_IDLE_BACKUP_REDISPATCH_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+        let participant = attach_participant(&shared);
+        shared.clients.lock_recover().idle_released_devices =
+            vec![IdleReopenEntry::released(Arc::clone(&shared.controller))];
+        for (id, method) in [
+            (1, "broker.backupTarget"),
+            (2, "broker.createDeviceBackupBound"),
+        ] {
+            let response =
+                dispatch_broker_client_request(&shared, Some(participant), request(id, method));
+            assert!(
+                response.is_object(),
+                "{method} handler must answer: {response}"
+            );
+        }
+        shared.clients.lock_recover().shutting_down = true;
+        return;
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .arg("backup_target_after_idle_release_does_not_redispatch_recursively")
+        .env(CHILD, "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("child test process starts");
+    assert!(
+        output.success(),
+        "backupTarget after idle release must return without recursive dispatch; child exited {output}"
+    );
+}
+
+/// If an idle HID disconnect command was accepted but its worker has not
+/// acknowledged it within the deadline, the command may still close the
+/// session later. After MIDI retirement, publish an idle marker so the next
+/// participant request reopens instead of talking to that closing session.
+#[test]
+fn resident_idle_release_records_a_queued_hid_close_without_acknowledgment() {
+    let release_worker = Arc::new(AtomicBool::new(false));
+    struct ReleaseOnDrop(Arc<AtomicBool>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let controller = Arc::new(DeviceController::with_stuck_worker_for_test(Arc::clone(
+        &release_worker,
+    )));
+    let (shared, _shutdown) =
+        resident_shared_with_controller(Duration::from_secs(60), Arc::clone(&controller));
+    let _release_on_drop = ReleaseOnDrop(Arc::clone(&release_worker));
+
+    shared.release_idle_device();
+
+    let clients = shared.clients.lock_recover();
+    assert!(
+        clients.idle_released,
+        "an accepted close stays represented even without a timely ACK"
+    );
+    assert!(
+        clients.idle_entry(&controller).is_some(),
+        "the controller whose close entered the worker queue must be marked"
+    );
+    drop(clients);
+    release_worker.store(true, Ordering::Release);
+    shared.clients.lock_recover().shutting_down = true;
+}
+
+/// The disconnect report distinguishes command admission from worker
+/// acknowledgment: after successful MIDI retirement, a close accepted into
+/// the HID worker queue is listed as queued even when its ACK times out.
+#[test]
+fn disconnect_report_retains_queued_hid_close_when_acknowledgment_times_out() {
+    let release_worker = Arc::new(AtomicBool::new(false));
+    let controller = Arc::new(DeviceController::with_stuck_worker_for_test(Arc::clone(
+        &release_worker,
+    )));
+    let (shared, _shutdown) =
+        resident_shared_with_controller(Duration::from_secs(60), Arc::clone(&controller));
+    struct ReleaseOnDrop(Arc<AtomicBool>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let _release_on_drop = ReleaseOnDrop(Arc::clone(&release_worker));
+
+    let report = shared.disconnect_devices_report();
+
+    assert!(
+        report.midi_retired,
+        "MIDI retired before HID close admission"
+    );
+    assert_eq!(report.queued.len(), 1, "the HID command was accepted");
+    assert!(Arc::ptr_eq(&report.queued[0], &controller));
+    assert_eq!(report.failures.len(), 1, "its ACK missed the deadline");
+    assert!(
+        report.failures[0].contains("did not acknowledge the disconnect request"),
+        "reported independently from admission: {:?}",
+        report.failures
+    );
+}
+
+/// Explicit reconnect/reset can pass the preflight before an idle close
+/// publishes its marker, then wait for the close's request lock. Once it
+/// acquires the lock, the session command owns the new generation and must
+/// withdraw the marker published while it waited.
+#[test]
+fn authenticated_reconnect_during_resident_idle_close_withdraws_the_late_idle_marker() {
+    for observer in [false, true] {
+        let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+        let (resume, reached) = pause_at(&shared, "disconnect_devices:done");
+        let releasing = {
+            let shared = Arc::clone(&shared);
+            spawn_fixture(move || shared.release_idle_device())
+        };
+        reached.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        // The close has finished; model a session that is healthy by the time the
+        // queued reconnect reaches its handler. This avoids depending on real USB.
+        shared.controller.set_connection_for_test(true, "ready");
+        let caller = attach_participant(&shared);
+        if observer {
+            shared
+                .clients
+                .lock_recover()
+                .connections
+                .get_mut(&caller)
+                .unwrap()
+                .role = ConnectionRole::Observer {
+                idle_policy_minutes: Some(15),
+            };
+        }
+        let _reconnect = ReconnectHook::install(&shared.controller, || Ok(()));
+        let reconnecting = {
+            let shared = Arc::clone(&shared);
+            spawn_fixture(move || {
+                dispatch_broker_client_request(
+                    &shared,
+                    Some(caller),
+                    request(1, generated_gateway::rpc::RECONNECT),
+                )
+            })
+        };
+        thread::sleep(Duration::from_millis(100));
+        assert!(
+            !reconnecting.is_finished(),
+            "authenticated reconnect queues behind the close (observer={observer})"
+        );
+
+        resume.send(()).unwrap();
+        releasing.join().unwrap();
+        let response = reconnecting.join().unwrap();
+        assert!(
+            response.get("error").is_none(),
+            "reconnect succeeds (observer={observer}): {response}"
+        );
+        let clients = shared.clients.lock_recover();
+        assert!(!clients.idle_released, "the reconnect owns the session");
+        assert!(clients.idle_entry(&shared.controller).is_none());
+        drop(clients);
+        shared.clients.lock_recover().shutting_down = true;
+    }
 }
 
 #[test]
