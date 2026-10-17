@@ -1829,6 +1829,10 @@ fn recording_a_device_again_keeps_its_attempt_and_last_failure() {
         attempt: 3,
         last_failure: Some((3, "device unplugged".into())),
     }];
+    let older_release = Arc::new(DeviceController::start_disconnected().unwrap());
+    clients
+        .idle_released_devices
+        .push(IdleReopenEntry::released(Arc::clone(&older_release)));
     let other = Arc::new(DeviceController::start_disconnected().unwrap());
     clients.record_idle_release(vec![Arc::clone(&controller), Arc::clone(&other)]);
     let kept = clients.idle_entry(&controller).unwrap();
@@ -1837,6 +1841,10 @@ fn recording_a_device_again_keeps_its_attempt_and_last_failure() {
     assert!(!kept.reopening);
     let fresh = clients.idle_entry(&other).unwrap();
     assert_eq!((fresh.attempt, fresh.last_failure.clone()), (0, None));
+    assert!(
+        clients.idle_entry(&older_release).is_some(),
+        "a partial new release keeps the earlier accepted close marker"
+    );
 }
 
 /// The in-process host's readiness read (`/health`, the relay's Ready frame)

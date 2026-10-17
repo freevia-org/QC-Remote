@@ -113,7 +113,6 @@ impl Ticket {
     /// Rearm an active original's key without starting another dispatcher or
     /// capturing its Manager in queued work. Superseded/stopped work cannot
     /// overwrite a newer generation; the existing owner retains the timer.
-    #[cfg(target_os = "linux")]
     pub(super) fn retry_after(&self, deadline: Instant, work: Work) -> Result<bool, String> {
         let mut pending = Some(work);
         let mut replaced = None;
@@ -822,6 +821,56 @@ mod tests {
         );
         finish(&manager);
         assert!(answer.try_recv().is_err());
+    }
+    #[test]
+    fn retry_after_cannot_replace_a_newer_idle_arm() {
+        let _fixture = FIXTURES.lock_recover();
+        let manager = Manager::default();
+        let key = [1, 3, 0];
+        let gate = Gate::new();
+        let release = Release(gate.clone());
+        let (sent, answer) = mpsc::channel();
+        manager
+            .schedule(
+                key,
+                Instant::now(),
+                Work::new(move |ticket| {
+                    sent.send(ticket).unwrap();
+                    gate.wait();
+                }),
+            )
+            .unwrap();
+        let old = answer.recv_timeout(Duration::from_secs(1)).unwrap();
+        let newer = Instant::now() + Duration::from_secs(60);
+        manager
+            .latest(
+                key,
+                newer,
+                Work::new(|_| panic!("the newer idle arm remains queued")),
+            )
+            .unwrap();
+
+        assert!(!old
+            .retry_after(
+                Instant::now() + Duration::from_secs(5),
+                Work::new(|_| panic!("a stale retry is never admitted")),
+            )
+            .unwrap());
+        assert_eq!(
+            manager
+                .shared
+                .state
+                .lock_recover()
+                .entries
+                .get(&key)
+                .unwrap()
+                .deadline,
+            newer
+        );
+
+        drop(release);
+        finish(&manager);
+        assert_eq!(manager.pending_keys(), 0);
     }
     #[test]
     fn distinct_logical_key_capacity_refuses_without_growing_the_queue() {

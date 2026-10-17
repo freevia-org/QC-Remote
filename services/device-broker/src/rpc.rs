@@ -547,6 +547,9 @@ fn handle(
 
 fn rpc_reconnect(controller: &DeviceController) -> Result<ReconnectOutcome, String> {
     #[cfg(test)]
+    // In unit tests this intentionally intercepts every reconnect for this
+    // fixture controller, including explicit RPCs. Production builds contain
+    // no hook; tests install it only around the race they exercise.
     if let Some(hook) = test_hook(
         &IDLE_RECONNECT_HOOKS,
         controller as *const DeviceController as usize,
@@ -3584,6 +3587,10 @@ fn descriptor_claim_refusal(path: &Path) -> String {
 /// `Gateway::disconnect_shared` in the Windows app). It is not part of the
 /// generated gateway contract, exactly like `broker.authenticate`.
 const BROKER_CLIENT_COUNT_METHOD: &str = "broker.clientCount";
+/// Exports are fenced by their owner admission and must never reopen a
+/// deliberately released device session.
+const IDLE_RELEASE_EXPORT_METHODS: &[&str] =
+    &["broker.backupTarget", "broker.createDeviceBackupBound"];
 /// An explicit person-facing Disconnect action. Unlike `device.disconnect`,
 /// which is safe for one participant to use while other apps share the
 /// broker, this deliberately closes the selected device for every attached
@@ -4081,10 +4088,7 @@ fn dispatch_broker_client_request(
     let controller = shared.controller_for(connection_id);
     // Dialog-bound exports must never reopen a session to make a stale fence
     // appear usable. Their owner admission below is authoritative.
-    if !matches!(
-        request.method.as_str(),
-        "broker.backupTarget" | "broker.createDeviceBackupBound"
-    ) {
+    if !IDLE_RELEASE_EXPORT_METHODS.contains(&request.method.as_str()) {
         if let Err(message) =
             shared.prepare_idle_released_target(connection_id, &controller, &request.method)
         {
@@ -4224,10 +4228,7 @@ fn idle_release_recheck(
             | generated_gateway::rpc::RECONNECT
             | generated_gateway::rpc::RESET_SESSION
     );
-    let export_command = matches!(
-        method,
-        "broker.backupTarget" | "broker.createDeviceBackupBound"
-    );
+    let export_command = IDLE_RELEASE_EXPORT_METHODS.contains(&method);
     let released = clients.idle_entry(controller).is_some();
     if released
         && authenticated
@@ -5337,28 +5338,45 @@ impl ClientAccounting {
     /// admission, so no reopen can reconnect one in between (its reconnect
     /// also needs `request_lock`). A missing HID acknowledgement does not
     /// prove the queued close failed; the worker may finish it later.
+    /// `idleReleased` therefore means the close command was accepted, not
+    /// acknowledged.
     fn record_idle_release(&mut self, closed: Vec<Arc<DeviceController>>) {
         self.idle_released = true;
         let previous = std::mem::take(&mut self.idle_released_devices);
-        self.idle_released_devices = closed
-            .into_iter()
-            .map(|controller| {
-                // A device recorded again keeps its attempt number and its last
-                // failure, so a waiter on an earlier attempt still gets it.
-                match previous
+        // A partial later release must not erase an earlier controller's
+        // accepted close marker. Keep entries not part of this attempt, then
+        // refresh the controllers that were accepted now.
+        let mut updated: Vec<_> = previous
+            .iter()
+            .filter(|entry| {
+                !closed
                     .iter()
-                    .find(|entry| Arc::ptr_eq(&entry.controller, &controller))
-                {
-                    Some(entry) => IdleReopenEntry {
-                        controller,
-                        reopening: false,
-                        attempt: entry.attempt,
-                        last_failure: entry.last_failure.clone(),
-                    },
-                    None => IdleReopenEntry::released(controller),
-                }
+                    .any(|controller| Arc::ptr_eq(&entry.controller, controller))
+            })
+            .map(|entry| IdleReopenEntry {
+                controller: Arc::clone(&entry.controller),
+                reopening: entry.reopening,
+                attempt: entry.attempt,
+                last_failure: entry.last_failure.clone(),
             })
             .collect();
+        updated.extend(closed.into_iter().map(|controller| {
+            // A device recorded again keeps its attempt number and its last
+            // failure, so a waiter on an earlier attempt still gets it.
+            match previous
+                .iter()
+                .find(|entry| Arc::ptr_eq(&entry.controller, &controller))
+            {
+                Some(entry) => IdleReopenEntry {
+                    controller,
+                    reopening: false,
+                    attempt: entry.attempt,
+                    last_failure: entry.last_failure.clone(),
+                },
+                None => IdleReopenEntry::released(controller),
+            }
+        }));
+        self.idle_released_devices = updated;
     }
 
     /// Whether the icon's policy keeps the device past the shipped grace.
