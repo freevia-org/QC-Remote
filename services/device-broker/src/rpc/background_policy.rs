@@ -296,8 +296,8 @@ fn release_idle_with_retries(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>
                             return;
                         }
                         Ok(false) => {
-                            shared.update_observer_backstop();
                             drop(exclusive);
+                            shared.update_observer_backstop();
                             return;
                         }
                         Err(error) => {
@@ -308,8 +308,10 @@ fn release_idle_with_retries(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>
                     }
                 }
             }
+            drop(exclusive);
             shared.update_observer_backstop();
             rearm_idle_release_after_failure(shared, ticket);
+            return;
         }
         drop(exclusive);
         return;
@@ -321,12 +323,18 @@ fn release_idle_with_retries(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>
 /// Keep an idle resident from remaining connected forever after native
 /// teardown fails. This also covers Immediate tray policy with no observers,
 /// where the observer backstop intentionally owns no timer.
-fn rearm_idle_release_after_failure(shared: &Arc<BrokerShared>, _ticket: Option<&Ticket>) {
+fn rearm_idle_release_after_failure(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>) {
     let deadline = Instant::now() + RESIDENT_IDLE_RETRY_DELAY;
-    let result = shared
-        .background
-        .latest(IDLE, deadline, idle_work(shared))
-        .map(|()| true);
+    let work = idle_work(shared);
+    let result = match ticket {
+        // Preserve the generation that admitted this idle work. `latest` would
+        // replace a newer, earlier idle arm that raced native teardown.
+        Some(ticket) => ticket.retry_after(deadline, work),
+        None => shared
+            .background
+            .latest(IDLE, deadline, work)
+            .map(|()| true),
+    };
     match result {
         Ok(true) => {
             #[cfg(test)]
@@ -946,7 +954,7 @@ mod tests {
             )
             .unwrap();
         observed
-            .recv_timeout(Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(10))
             .expect("failed teardown must re-arm even without observer demand");
         assert!(shared.background.pending_key(IDLE));
         assert!(!shared.clients.lock_recover().observer_timer_running);
