@@ -1201,6 +1201,13 @@ impl DeviceController {
         self.state.lock_recover()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_connected_for_test(&self) {
+        let mut status = self.state.lock_recover();
+        status.connected = true;
+        status.phase = "ready".into();
+    }
+
     /// Test-only: hold the retained session state exactly as a long device
     /// operation can while cached status and USB keepalives remain healthy.
     #[cfg(test)]

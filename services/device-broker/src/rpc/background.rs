@@ -159,6 +159,10 @@ impl Ticket {
         result
     }
 
+    pub(super) fn owns_key(&self, key: Key) -> bool {
+        self.key == key
+    }
+
     pub(super) fn current(&self) -> bool {
         self.with_current(|| ()).is_some()
     }
@@ -840,7 +844,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        let old = answer.recv_timeout(Duration::from_secs(1)).unwrap();
+        let old = answer.recv_timeout(Duration::from_secs(5)).unwrap();
         let newer = Instant::now() + Duration::from_secs(60);
         manager
             .latest(

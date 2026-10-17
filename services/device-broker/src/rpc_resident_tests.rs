@@ -1833,6 +1833,11 @@ fn recording_a_device_again_keeps_its_attempt_and_last_failure() {
     clients
         .idle_released_devices
         .push(IdleReopenEntry::released(Arc::clone(&older_release)));
+    let worker_reconnected = Arc::new(DeviceController::start_disconnected().unwrap());
+    worker_reconnected.set_connected_for_test();
+    clients
+        .idle_released_devices
+        .push(IdleReopenEntry::released(Arc::clone(&worker_reconnected)));
     let other = Arc::new(DeviceController::start_disconnected().unwrap());
     clients.record_idle_release(vec![Arc::clone(&controller), Arc::clone(&other)]);
     let kept = clients.idle_entry(&controller).unwrap();
@@ -1844,6 +1849,10 @@ fn recording_a_device_again_keeps_its_attempt_and_last_failure() {
     assert!(
         clients.idle_entry(&older_release).is_some(),
         "a partial new release keeps the earlier accepted close marker"
+    );
+    assert!(
+        clients.idle_entry(&worker_reconnected).is_some(),
+        "cached connected status cannot prove an earlier accepted close finished"
     );
 }
 
