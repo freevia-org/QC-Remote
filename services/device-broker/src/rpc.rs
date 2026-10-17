@@ -545,6 +545,18 @@ fn handle(
     handle_with_disconnect_admission(controller, performance_midi, request, None)
 }
 
+fn rpc_reconnect(controller: &DeviceController) -> Result<ReconnectOutcome, String> {
+    #[cfg(test)]
+    if let Some(hook) = test_hook(
+        &IDLE_RECONNECT_HOOKS,
+        controller as *const DeviceController as usize,
+    ) {
+        hook()?;
+        return Ok(ReconnectOutcome::Restarted);
+    }
+    controller.reconnect()
+}
+
 fn handle_with_disconnect_admission(
     controller: &DeviceController,
     performance_midi: &PerformanceMidiWorkers,
@@ -622,8 +634,7 @@ fn handle_with_disconnect_admission(
                 "usbDiagnostics": controller.status()
             }))
         }
-        Some(generated_gateway::BrokerDispatch::Reconnect) => controller
-            .reconnect()
+        Some(generated_gateway::BrokerDispatch::Reconnect) => rpc_reconnect(controller)
             .map(|outcome| reconnect_state(controller, outcome, "Quad Cortex handshake complete")),
         Some(generated_gateway::BrokerDispatch::ResetSession) => controller
             .reset_session()
@@ -4148,22 +4159,8 @@ fn dispatch_broker_client_request(
     // this request joins/restarts the newly visible reopen instead of reaching
     // the closed controller. Drop the lock before redispatching because the
     // reopen itself must acquire it.
-    let idle_release_published_while_waiting = {
-        let clients = shared.clients.lock_recover();
-        let participant = connection_id.is_some_and(|id| {
-            clients
-                .connections
-                .get(&id)
-                .is_some_and(|row| row.is_participant())
-        });
-        let session_command = matches!(
-            request.method.as_str(),
-            generated_gateway::rpc::DISCONNECT
-                | generated_gateway::rpc::RECONNECT
-                | generated_gateway::rpc::RESET_SESSION
-        );
-        participant && !session_command && clients.idle_entry(&controller).is_some()
-    };
+    let idle_release_published_while_waiting =
+        idle_release_recheck(shared, connection_id, &controller, &request.method);
     if idle_release_published_while_waiting {
         drop(_exclusive);
         return dispatch_broker_client_request(shared, connection_id, request);
@@ -4204,6 +4201,49 @@ fn dispatch_broker_client_request(
         request,
         _disconnect_admission.map(|admission| Box::new(admission) as Box<dyn Send>),
     )
+}
+
+/// Reconcile an idle close published while a participant waited for
+/// `request_lock`. Export commands intentionally remain fenced without
+/// reopening; reconnect/reset own the session and withdraw a late marker.
+fn idle_release_recheck(
+    shared: &BrokerShared,
+    connection_id: Option<u64>,
+    controller: &Arc<DeviceController>,
+    method: &str,
+) -> bool {
+    let mut clients = shared.clients.lock_recover();
+    let (authenticated, participant) = connection_id.map_or((true, true), |id| {
+        clients.connections.get(&id).map_or((false, false), |row| {
+            (row.authenticated, row.is_participant())
+        })
+    });
+    let session_command = matches!(
+        method,
+        generated_gateway::rpc::DISCONNECT
+            | generated_gateway::rpc::RECONNECT
+            | generated_gateway::rpc::RESET_SESSION
+    );
+    let export_command = matches!(
+        method,
+        "broker.backupTarget" | "broker.createDeviceBackupBound"
+    );
+    let released = clients.idle_entry(controller).is_some();
+    if released
+        && authenticated
+        && matches!(
+            method,
+            generated_gateway::rpc::RECONNECT | generated_gateway::rpc::RESET_SESSION
+        )
+    {
+        // The earlier preflight may have cleared the old entry before it
+        // queued behind the close. Clear a marker published by that close
+        // while this explicit session command waited on request_lock.
+        clients.idle_released = false;
+        clients.forget_idle_release(controller);
+        shared.observer_changed.notify_all();
+    }
+    participant && released && !session_command && !export_command
 }
 
 /// The answer to every refused resource read, on TCP and on `--stdio`.
@@ -5292,10 +5332,11 @@ impl ClientAccounting {
             .retain(|entry| !Arc::ptr_eq(&entry.controller, controller));
     }
 
-    /// Record every given controller as closed for idleness. Called with
-    /// `request_lock` held and immediately before those sessions are closed,
-    /// so no reopen can reconnect one in between (its reconnect also needs
-    /// `request_lock`).
+    /// Record controllers whose HID close commands were accepted for idleness.
+    /// Call with `request_lock` held after MIDI retirement and command
+    /// admission, so no reopen can reconnect one in between (its reconnect
+    /// also needs `request_lock`). A missing HID acknowledgement does not
+    /// prove the queued close failed; the worker may finish it later.
     fn record_idle_release(&mut self, closed: Vec<Arc<DeviceController>>) {
         self.idle_released = true;
         let previous = std::mem::take(&mut self.idle_released_devices);
@@ -5429,6 +5470,13 @@ impl Drop for DisconnectAdmission {
             .closing_devices
             .retain(|device| !Arc::ptr_eq(device, &self.device));
     }
+}
+
+struct DisconnectDevicesReport {
+    midi_retired: bool,
+    attempted: usize,
+    queued: Vec<Arc<DeviceController>>,
+    failures: Vec<String>,
 }
 
 impl BrokerShared {
@@ -5676,35 +5724,57 @@ impl BrokerShared {
         })
     }
 
-    fn disconnect_devices(&self) -> Result<(), String> {
+    fn disconnect_devices_report(&self) -> DisconnectDevicesReport {
         // A failed close must not release ANY HID session while raw MIDI still
         // owns the matching device. Request callers already hold admission.
-        for device in self.all_controllers() {
-            self.performance_midi.retire_controller(&device)?;
+        let devices = self.all_controllers();
+        let attempted = devices.len();
+        for device in &devices {
+            if let Err(error) = self.performance_midi.retire_controller(device) {
+                return DisconnectDevicesReport {
+                    midi_retired: false,
+                    attempted,
+                    queued: Vec::new(),
+                    failures: vec![error],
+                };
+            }
         }
         // Snapshot before waiting. Every logical session still closes even
         // when another controller cannot verify its native teardown.
-        let failures: Vec<_> = self
-            .all_controllers()
-            .iter()
-            .filter_map(|device| {
-                device.disconnect().err().map(|message| {
-                    format!(
-                        "{}: {message}",
-                        device
-                            .device_id()
-                            .unwrap_or_else(|| "default device".into())
-                    )
-                })
-            })
-            .collect();
+        let mut queued = Vec::new();
+        let mut failures = Vec::new();
+        for device in devices {
+            let (accepted, result) = device.disconnect_with_admission_report(None);
+            if accepted {
+                queued.push(Arc::clone(&device));
+            }
+            if let Err(message) = result {
+                failures.push(format!(
+                    "{}: {message}",
+                    device
+                        .device_id()
+                        .unwrap_or_else(|| "default device".into())
+                ));
+            }
+        }
         self.test_point("disconnect_devices:done");
-        if failures.is_empty() {
+        if !failures.is_empty() {
+            eprintln!("Device disconnect not verified: {}", failures.join("; "));
+        }
+        DisconnectDevicesReport {
+            midi_retired: true,
+            attempted,
+            queued,
+            failures,
+        }
+    }
+
+    fn disconnect_devices(&self) -> Result<(), String> {
+        let report = self.disconnect_devices_report();
+        if report.failures.is_empty() {
             Ok(())
         } else {
-            let message = failures.join("; ");
-            eprintln!("Device disconnect not verified: {message}");
-            Err(message)
+            Err(report.failures.join("; "))
         }
     }
 
@@ -6220,9 +6290,9 @@ impl BrokerShared {
     /// A resident reap: close every device session, stay published. Decided
     /// again under `request_lock` then `clients` (the lock order), so a
     /// participant that arrived after the timer fired keeps the session. The
-    /// devices are recorded as released and closed without letting go of
-    /// `request_lock`, and a reopen reconnects only under `request_lock`, so a
-    /// request arriving in between waits for the close and then reopens.
+    /// devices are closed while holding `request_lock`, then commands accepted
+    /// by their workers are recorded as released before the lock is dropped.
+    /// A request arriving in between waits, sees the record, and reopens.
     #[cfg(test)]
     fn release_idle_device(self: &Arc<Self>) {
         background_policy::release_idle(self, None);
@@ -6591,7 +6661,6 @@ impl BrokerHandle {
     /// instead. `qc-device-broker.exe --control release` runs exactly this.
     pub(crate) fn release_devices_staying(&self) -> Result<String, String> {
         let _exclusive = self.0.request_lock.lock_recover();
-        let all = self.0.all_controllers();
         let clients = self.0.clients.lock_recover();
         if clients.shutting_down {
             return Err("Broker shutdown is already committed".into());
@@ -6605,12 +6674,16 @@ impl BrokerHandle {
             return Err("The Quad Cortex is reopening; choose Disconnect again in a moment".into());
         }
         drop(clients);
-        self.0.disconnect_devices()?;
-        // Publish the release only after every native MIDI endpoint and HID
-        // session has actually retired. A timeout above leaves the broker
-        // serving with its original admission state intact, so the caller can
-        // safely retry.
-        self.0.clients.lock_recover().record_idle_release(all);
+        let report = self.0.disconnect_devices_report();
+        if report.midi_retired && !report.queued.is_empty() {
+            let queued_count = report.queued.len();
+            let mut clients = self.0.clients.lock_recover();
+            clients.record_idle_release(report.queued);
+            clients.idle_released = queued_count == report.attempted;
+        }
+        if !report.failures.is_empty() {
+            return Err(report.failures.join("; "));
+        }
         Ok("Disconnected. Connect starts the device session again.".to_owned())
     }
 

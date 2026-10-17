@@ -152,6 +152,10 @@ impl UnusedDevice {
 const RESIDENT_IDLE_RELEASE_RETRIES: usize = 2;
 #[cfg(not(target_os = "linux"))]
 const RESIDENT_IDLE_RELEASE_RETRIES: usize = 0;
+// Failed native teardown stays open and is retried at a low rate until it
+// succeeds or newer client activity supersedes the idle policy. Linux gets
+// two short attempts per cycle; other hosts start directly at this delay.
+const RESIDENT_IDLE_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 fn idle_work(shared: &Arc<BrokerShared>) -> Work {
     idle_work_with_retries(shared, RESIDENT_IDLE_RELEASE_RETRIES)
@@ -225,7 +229,6 @@ pub(super) fn release_idle(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>) 
 
 fn release_idle_with_retries(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>, _retries: usize) {
     let exclusive = shared.request_lock.lock_recover();
-    let all = shared.all_controllers();
     let admit = || {
         let clients = shared.clients.lock_recover();
         !clients.shutting_down
@@ -243,56 +246,97 @@ fn release_idle_with_retries(shared: &Arc<BrokerShared>, ticket: Option<&Ticket>
         shared
             .controller
             .record_flight_event("resident broker closing the idle logical device session");
-        match shared.disconnect_devices() {
-            Ok(()) => {
-                // Once native close succeeds, publish that fact even if demand
-                // arrived while the close held request_lock or the timer ticket
-                // was superseded. Waiting requests need the release entry to
-                // know their selected session is closed and must be reopened.
-                // Shutdown is the sole operation that supersedes this record.
+        let report = shared.disconnect_devices_report();
+        let queued_count = report.queued.len();
+        if report.midi_retired && !report.queued.is_empty() {
+            // Publish an idle marker after MIDI retirement and once the HID
+            // close command entered its worker queue. A delayed/missing ACK
+            // cannot establish that an accepted command failed; it may still
+            // close later, so participants must reopen before device work.
+            // Shutdown is the sole operation that supersedes this record.
+            {
                 let mut clients = shared.clients.lock_recover();
-                let recorded = if clients.shutting_down {
-                    false
-                } else {
+                if !clients.shutting_down {
                     clients.observer_idle_since = None;
                     clients.tray_idle_since = None;
-                    clients.record_idle_release(all);
-                    true
-                };
+                    clients.record_idle_release(report.queued);
+                    clients.idle_released = queued_count == report.attempted;
+                }
+            }
+            if report.failures.is_empty() || queued_count == report.attempted {
+                let clients = shared.clients.lock_recover();
+                let recorded = clients.idle_released;
                 drop(clients);
                 if recorded {
                     shared.test_point("release_idle_device:recorded");
                 }
+                drop(exclusive);
+                return;
             }
-            Err(error) => {
-                shared.controller.record_flight_event(format!(
-                    "resident idle release is waiting for native device retirement: {error}"
-                ));
-                #[cfg(target_os = "linux")]
-                if _retries > 0 {
-                    if let Some(ticket) = ticket {
-                        match ticket.retry_after(
-                            Instant::now() + IDLE_SHUTDOWN_GRACE,
-                            idle_work_with_retries(shared, _retries - 1),
-                        ) {
-                            Ok(true) => {
-                                #[cfg(test)]
-                                shared.test_point("release_idle_device:retry-admitted");
-                            }
-                            Ok(false) => {} // A newer generation owns the policy.
-                            Err(error) => shared.controller.record_flight_event(format!(
+        }
+        if !report.failures.is_empty() {
+            let error = report.failures.join("; ");
+            shared.controller.record_flight_event(format!(
+                "resident idle release could not complete native teardown: {error}"
+            ));
+            // Policy: never release HID while MIDI retirement fails. Linux
+            // retries twice quickly; every host re-arms the idle release at a
+            // low rate if teardown still fails, including Immediate/no-observer.
+            #[cfg(target_os = "linux")]
+            if !report.midi_retired && _retries > 0 {
+                if let Some(ticket) = ticket {
+                    match ticket.retry_after(
+                        Instant::now() + IDLE_SHUTDOWN_GRACE,
+                        idle_work_with_retries(shared, _retries - 1),
+                    ) {
+                        Ok(true) => {
+                            #[cfg(test)]
+                            shared.test_point("release_idle_device:retry-admitted");
+                            drop(exclusive);
+                            return;
+                        }
+                        Ok(false) => {
+                            shared.update_observer_backstop();
+                            drop(exclusive);
+                            return;
+                        }
+                        Err(error) => {
+                            shared.controller.record_flight_event(format!(
                                 "resident idle release retry was not admitted: {error}"
-                            )),
+                            ));
                         }
                     }
                 }
             }
+            shared.update_observer_backstop();
+            rearm_idle_release_after_failure(shared, ticket);
         }
         drop(exclusive);
         return;
     }
     drop(exclusive);
     shared.update_observer_backstop();
+}
+
+/// Keep an idle resident from remaining connected forever after native
+/// teardown fails. This also covers Immediate tray policy with no observers,
+/// where the observer backstop intentionally owns no timer.
+fn rearm_idle_release_after_failure(shared: &Arc<BrokerShared>, _ticket: Option<&Ticket>) {
+    let deadline = Instant::now() + RESIDENT_IDLE_RETRY_DELAY;
+    let result = shared
+        .background
+        .latest(IDLE, deadline, idle_work(shared))
+        .map(|()| true);
+    match result {
+        Ok(true) => {
+            #[cfg(test)]
+            shared.test_point("release_idle_device:rearmed");
+        }
+        Ok(false) => {} // A newer generation owns the policy.
+        Err(error) => shared.controller.record_flight_event(format!(
+            "resident idle release rearm was not admitted: {error}"
+        )),
+    }
 }
 pub(super) fn observer(shared: &Arc<BrokerShared>, marker: Arc<()>) -> Result<(), String> {
     let owner = Arc::downgrade(shared);
@@ -868,6 +912,44 @@ mod tests {
         assert!(clients.idle_released);
         assert!(clients.idle_entry(&shared.controller).is_some());
         drop(clients);
+        fixture.finish();
+    }
+
+    #[test]
+    fn failed_idle_release_rearms_without_observers_or_a_tray_timer() {
+        let _serial = FIXTURES.lock_recover();
+        let fixture = Fixture::new();
+        let shared = fixture.shared();
+        shared.clients.lock_recover().resident = true;
+        let (rearmed, observed) = mpsc::channel();
+        let _point = Point::new(
+            shared,
+            "release_idle_device:rearmed",
+            Arc::new(move || {
+                let _ = rearmed.send(());
+                Ok(())
+            }),
+        );
+        let owner = Arc::downgrade(shared);
+        shared
+            .background
+            .latest(
+                IDLE,
+                Instant::now(),
+                Work::new(move |ticket| {
+                    if let Some(shared) = owner.upgrade() {
+                        // This is the exhausted/zero-short-retry path used by
+                        // Windows, and by Linux after its bounded retries.
+                        rearm_idle_release_after_failure(&shared, Some(&ticket));
+                    }
+                }),
+            )
+            .unwrap();
+        observed
+            .recv_timeout(Duration::from_secs(2))
+            .expect("failed teardown must re-arm even without observer demand");
+        assert!(shared.background.pending_key(IDLE));
+        assert!(!shared.clients.lock_recover().observer_timer_running);
         fixture.finish();
     }
 
