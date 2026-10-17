@@ -746,21 +746,39 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn helper_process_accepts_complete_success_answer_but_rejects_same_answer_with_failed_exit() {
-        // A no-network single-process fixture using .NET builtins only; never
+        // A no-network fixture made of System32 console builtins only; never
         // used by production, which re-executes only the packaged broker.
-        let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        // cmd.exe and findstr.exe start in milliseconds. The former cold
+        // Windows PowerShell start (.NET runtime and module load) exceeded
+        // even a 30s budget on loaded CI runners, turning this exit-status
+        // contract into a latency test.
+        let system32 = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+        let shell = system32.join("cmd.exe");
+        // Unquoted inside the cmd line below: a quoted first token would make
+        // cmd strip the first and last quote of the whole line.
+        let reader = system32.join("findstr.exe");
+        assert!(
+            !reader.to_string_lossy().contains([' ', '"', '&']),
+            "fixture reader path must be a single cmd token: {}",
+            reader.display()
+        );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         for exit in [0, 2] {
             let mut command = tokio::process::Command::new(&shell);
-            command.args(["-NoProfile", "-NonInteractive", "-Command", &format!("$null=[Console]::In.ReadToEnd(); [Console]::Out.Write('{{\"version\":1,\"addresses\":[\"8.8.8.8\",\"::1\"]}}'); exit {exit}")]);
-            // This is an exit-status/answer contract, not a latency test. A
-            // cold PowerShell start under parallel CI load may exceed 5s.
-            // Keep a finite fixture budget without changing production policy.
-            let result = runtime.block_on(run(command, "example.org", Duration::from_secs(30)));
+            // findstr drains stdin to EOF (the hostname admission) before the
+            // answer is written; echo's trailing CRLF is JSON whitespace. The
+            // JSON quotes are balanced, so the final `&` still separates.
+            command.args(["/d", "/v:off", "/c"]).raw_arg(format!(
+                r#"{} x >nul & echo {{"version":1,"addresses":["8.8.8.8","::1"]}}& exit /b {exit}"#,
+                reader.display()
+            ));
+            // This is an exit-status/answer contract, not a latency test.
+            // Keep a finite, generous fixture budget without changing
+            // production policy; a healthy run returns in milliseconds.
+            let result = runtime.block_on(run(command, "example.org", Duration::from_secs(60)));
             if exit == 0 {
                 assert_eq!(
                     result.unwrap(),

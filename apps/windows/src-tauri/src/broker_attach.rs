@@ -339,6 +339,17 @@ mod tests {
         );
     }
 
+    // The fixture's own bounds, not product deadlines. Every wait returns as
+    // soon as its condition holds; the bound only caps a genuine hang. On a
+    // loaded CI runner the original thread must be scheduled to observe stop,
+    // exit, and (on Unix) be joined by the lazily started reaper thread, which
+    // overran the former 3s join bound although nothing was wrong.
+    const FIXTURE_RETIREMENT_BOUND: Duration = Duration::from_secs(30);
+    // A connection the client closes at once; bounds a fixture that never
+    // sees EOF, and the oracle waits a little longer than the reader.
+    const FIXTURE_READ_BOUND: Duration = Duration::from_secs(30);
+    const FIXTURE_ORACLE_BOUND: Duration = Duration::from_secs(35);
+
     // Fixture originals use the same bounded retained family as the host.
     // Unknown join keeps the original; no detached accept worker on unwind.
     struct Squatter {
@@ -377,7 +388,7 @@ mod tests {
                     stream
                         .set_read_timeout(Some(Duration::from_millis(50)))
                         .unwrap();
-                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let deadline = Instant::now() + FIXTURE_READ_BOUND;
                     let mut bytes = [0u8; 64];
                     loop {
                         if worker_stop.load(std::sync::atomic::Ordering::Acquire) {
@@ -425,7 +436,7 @@ mod tests {
             let acknowledged = self
                 .original
                 .as_mut()
-                .is_none_or(|original| original.wait_within(Duration::from_secs(3)));
+                .is_none_or(|original| original.wait_within(FIXTURE_RETIREMENT_BOUND));
             // Unknown transfers exact original to the existing retained family.
             self.original.take();
             self.retired
@@ -437,7 +448,7 @@ mod tests {
             // Stop cannot synthesize an empty result and make this test pass.
             let bytes = self
                 .received
-                .recv_timeout(Duration::from_secs(6))
+                .recv_timeout(FIXTURE_ORACLE_BOUND)
                 .expect("fixture did not observe an actual accepted connection");
             assert!(self.stop_and_join(), "fixture original did not retire");
             bytes

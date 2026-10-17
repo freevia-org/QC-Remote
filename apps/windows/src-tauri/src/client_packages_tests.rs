@@ -6,6 +6,13 @@ use super::*;
 use crate::local_access::LocalClientLiveness;
 use std::io::Read;
 
+/// The fixture's own bound for whole-script checks: a cold Windows PowerShell
+/// or node start plus its script. Loaded CI runners exceeded the former 10s,
+/// so the run, not the product, timed out. A healthy run returns in seconds;
+/// this never changes a production status-tool deadline.
+#[cfg(windows)]
+const SCRIPT_FIXTURE_TIMEOUT: Duration = Duration::from_secs(120);
+
 fn create_file_symlink_for_test(source: &Path, target: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -1082,7 +1089,7 @@ fn the_bundled_bridge_passes_a_node_syntax_check() {
             .arg("--check")
             .arg(&file)
             .stderr(std::process::Stdio::piped()),
-        Duration::from_secs(10),
+        SCRIPT_FIXTURE_TIMEOUT,
     )
     .expect("node is required to verify the bundled bridge");
     #[cfg(not(windows))]
@@ -3337,7 +3344,7 @@ fn the_codex_installer_classifies_an_existing_qc_remote_entry() {
         Command::new("powershell.exe")
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
             .arg(&script),
-        Duration::from_secs(10),
+        SCRIPT_FIXTURE_TIMEOUT,
     )
     .expect("PowerShell is required to verify the bundled installer");
     assert!(
@@ -3465,7 +3472,7 @@ Write-Output 'bounded inventory refuses before copy'
             .arg(&script)
             .arg(&directory)
             .stderr(std::process::Stdio::piped()),
-        Duration::from_secs(10),
+        SCRIPT_FIXTURE_TIMEOUT,
     )
     .expect("bounded installer transaction fixture");
     assert!(

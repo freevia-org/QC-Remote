@@ -951,7 +951,11 @@ mod tests {
                 .expect("node is required to verify separate-process descriptor access"),
         );
         after_spawn(reader.child.as_ref().unwrap().id());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // The fixture's own bound, not a product deadline. A cold node start
+        // (runtime load plus on-access scanning) on a loaded CI runner overran
+        // the former 10s while the read itself was fine. The poll returns as
+        // soon as the reader exits; the bound only caps a genuine hang.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         let status = loop {
             if let Some(status) = reader
                 .child
