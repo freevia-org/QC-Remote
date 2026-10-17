@@ -542,10 +542,23 @@ fn handle(
     performance_midi: &PerformanceMidiWorkers,
     request: Request,
 ) -> Value {
-    handle_with_disconnect_admission(controller, performance_midi, request, None)
+    handle_with_disconnect_admission(controller, performance_midi, request, None, false)
 }
 
-fn rpc_reconnect(controller: &DeviceController) -> Result<ReconnectOutcome, String> {
+fn rpc_reconnect(
+    controller: &DeviceController,
+    queue_after_idle_close: bool,
+) -> Result<ReconnectOutcome, String> {
+    #[cfg(test)]
+    if queue_after_idle_close {
+        if let Some(hook) = test_hook(
+            &PENDING_CLOSE_RECONNECT_HOOKS,
+            controller as *const DeviceController as usize,
+        ) {
+            hook()?;
+            return Ok(ReconnectOutcome::Restarted);
+        }
+    }
     #[cfg(test)]
     // In unit tests this intentionally intercepts every reconnect for this
     // fixture controller, including explicit RPCs. Production builds contain
@@ -557,7 +570,11 @@ fn rpc_reconnect(controller: &DeviceController) -> Result<ReconnectOutcome, Stri
         hook()?;
         return Ok(ReconnectOutcome::Restarted);
     }
-    controller.reconnect()
+    if queue_after_idle_close {
+        controller.reconnect_after_pending_close()
+    } else {
+        controller.reconnect()
+    }
 }
 
 fn handle_with_disconnect_admission(
@@ -565,6 +582,7 @@ fn handle_with_disconnect_admission(
     performance_midi: &PerformanceMidiWorkers,
     request: Request,
     disconnect_admission: Option<Box<dyn Send>>,
+    queue_reconnect_after_idle_close: bool,
 ) -> Value {
     let id = request.id.clone();
     if request.jsonrpc != "2.0" || id.as_u64().is_none_or(|id| id == 0) {
@@ -637,8 +655,11 @@ fn handle_with_disconnect_admission(
                 "usbDiagnostics": controller.status()
             }))
         }
-        Some(generated_gateway::BrokerDispatch::Reconnect) => rpc_reconnect(controller)
-            .map(|outcome| reconnect_state(controller, outcome, "Quad Cortex handshake complete")),
+        Some(generated_gateway::BrokerDispatch::Reconnect) => {
+            rpc_reconnect(controller, queue_reconnect_after_idle_close).map(|outcome| {
+                reconnect_state(controller, outcome, "Quad Cortex handshake complete")
+            })
+        }
         Some(generated_gateway::BrokerDispatch::ResetSession) => controller
             .reset_session()
             .map(|outcome| reconnect_state(controller, outcome, "Communication session reset")),
@@ -3447,6 +3468,10 @@ enum IdleReopen {
 /// One device a resident idle release (or the icon's Disconnect) closed.
 struct IdleReopenEntry {
     controller: Arc<DeviceController>,
+    /// The accepted HID close has not been acknowledged. The cached worker
+    /// phase can still look ready until this command is handled, so reconnect
+    /// must enter the same FIFO queue as a barrier behind the close.
+    close_unacknowledged: bool,
     reopening: bool,
     /// The number of the current, or last, reopen attempt.
     attempt: u64,
@@ -3458,8 +3483,16 @@ struct IdleReopenEntry {
 
 impl IdleReopenEntry {
     fn released(controller: Arc<DeviceController>) -> Self {
+        Self::released_with_pending_close(controller, false)
+    }
+
+    fn released_with_pending_close(
+        controller: Arc<DeviceController>,
+        close_unacknowledged: bool,
+    ) -> Self {
         Self {
             controller,
+            close_unacknowledged,
             reopening: false,
             attempt: 0,
             last_failure: None,
@@ -3508,6 +3541,10 @@ static IDLE_REOPEN_HOOKS: Mutex<Vec<(usize, TestHook)>> = Mutex::new(Vec::new())
 /// controller. Without one it succeeds without touching the worker.
 #[cfg(test)]
 static IDLE_RECONNECT_HOOKS: Mutex<Vec<(usize, TestHook)>> = Mutex::new(Vec::new());
+/// Reconnects whose accepted close is still unacknowledged must use the
+/// queued worker barrier. Separate hook makes that decision observable.
+#[cfg(test)]
+static PENDING_CLOSE_RECONNECT_HOOKS: Mutex<Vec<(usize, TestHook)>> = Mutex::new(Vec::new());
 /// Named pause points inside the broker, per `BrokerShared` (keyed by its
 /// random instance id, which no later fixture can reuse).
 #[cfg(test)]
@@ -4064,10 +4101,16 @@ fn dispatch_broker_client_request(
             .connections
             .get_mut(&connection_id.expect("live row checked"))
             .expect("live row checked under the same accounting lock");
+        let became_participant =
+            matches!(row.role, ConnectionRole::Participant) && !existing.is_participant();
         row.selected_device = existing.selected_device.take();
         row.output = existing.output.take();
         row.admission = Arc::clone(&existing.admission);
         *existing = row;
+        if became_participant {
+            clients.idle_release_retry_not_before = None;
+            shared.observer_changed.notify_all();
+        }
         return json!({"jsonrpc":"2.0", "id":request.id, "result":{"accepted":true}});
     }
     if request.method == "broker.shutdown" {
@@ -4144,6 +4187,7 @@ fn dispatch_broker_client_request(
     if request.method == generated_gateway::rpc::DISCONNECT {
         shared.test_point("disconnect:after_precheck");
     }
+    shared.test_point("request:before-request-lock");
     // A poisoned lock only means another client's request panicked; the
     // exclusion it provides is still intact.
     let _exclusive = shared
@@ -4173,6 +4217,23 @@ fn dispatch_broker_client_request(
         drop(_exclusive);
         return dispatch_broker_client_request(shared, connection_id, request);
     }
+    // Read this only after request_lock and the late marker recheck. An idle
+    // release can publish an accepted but unacknowledged close while this
+    // explicit session command waits for the lock.
+    let preserve_idle_close_marker = {
+        let clients = shared.clients.lock_recover();
+        clients
+            .idle_entry(&controller)
+            .is_some_and(|entry| entry.close_unacknowledged)
+            && matches!(
+                request.method.as_str(),
+                generated_gateway::rpc::DISCONNECT
+                    | generated_gateway::rpc::RECONNECT
+                    | generated_gateway::rpc::RESET_SESSION
+            )
+    };
+    let queue_reconnect_after_idle_close =
+        preserve_idle_close_marker && request.method == generated_gateway::rpc::RECONNECT;
     // The second, immediately-before-effect re-check: a second client could
     // have attached while this request queued behind `request_lock` (e.g.
     // behind another client's in-flight backup).
@@ -4194,7 +4255,7 @@ fn dispatch_broker_client_request(
     if _disconnect_admission.is_some() {
         shared.test_point("disconnect:reserved");
     }
-    if request.method == generated_gateway::rpc::DISCONNECT {
+    if request.method == generated_gateway::rpc::DISCONNECT && !preserve_idle_close_marker {
         // The disconnect really runs now, under `request_lock`: the session is
         // the caller's to close, so a pending idle reopen of this device is
         // withdrawn rather than left to reconnect it afterwards.
@@ -4203,12 +4264,21 @@ fn dispatch_broker_client_request(
             .lock_recover()
             .forget_idle_release(&controller);
     }
-    handle_with_disconnect_admission(
+    let response = handle_with_disconnect_admission(
         &controller,
         &shared.performance_midi,
         request,
         _disconnect_admission.map(|admission| Box::new(admission) as Box<dyn Send>),
-    )
+        queue_reconnect_after_idle_close,
+    );
+    if preserve_idle_close_marker && response.get("error").is_none() {
+        let mut clients = shared.clients.lock_recover();
+        clients.idle_released = false;
+        clients.idle_release_retry_not_before = None;
+        clients.forget_idle_release(&controller);
+        shared.observer_changed.notify_all();
+    }
+    response
 }
 
 /// Reconcile an idle close published while a participant waited for
@@ -4234,12 +4304,16 @@ fn idle_release_recheck(
     );
     let export_command = IDLE_RELEASE_EXPORT_METHODS.contains(&method);
     let released = clients.idle_entry(controller).is_some();
+    let close_unacknowledged = clients
+        .idle_entry(controller)
+        .is_some_and(|entry| entry.close_unacknowledged);
     if released
         && authenticated
         && matches!(
             method,
             generated_gateway::rpc::RECONNECT | generated_gateway::rpc::RESET_SESSION
         )
+        && !close_unacknowledged
     {
         // The earlier preflight may have cleared the old entry before it
         // queued behind the close. Clear a marker published by that close
@@ -5347,7 +5421,11 @@ impl ClientAccounting {
     /// prove the queued close failed; the worker may finish it later.
     /// `idleReleased` therefore means the close command was accepted, not
     /// acknowledged.
-    fn record_idle_release(&mut self, closed: Vec<Arc<DeviceController>>) {
+    fn record_idle_release(
+        &mut self,
+        closed: Vec<Arc<DeviceController>>,
+        close_unacknowledged: Vec<Arc<DeviceController>>,
+    ) {
         self.idle_released = true;
         let previous = std::mem::take(&mut self.idle_released_devices);
         // A partial later release must not erase an earlier controller's
@@ -5367,12 +5445,16 @@ impl ClientAccounting {
             })
             .map(|entry| IdleReopenEntry {
                 controller: Arc::clone(&entry.controller),
+                close_unacknowledged: entry.close_unacknowledged,
                 reopening: entry.reopening,
                 attempt: entry.attempt,
                 last_failure: entry.last_failure.clone(),
             })
             .collect();
         updated.extend(closed.into_iter().map(|controller| {
+            let close_unacknowledged = close_unacknowledged
+                .iter()
+                .any(|pending| Arc::ptr_eq(pending, &controller));
             // A device recorded again keeps its attempt number and its last
             // failure, so a waiter on an earlier attempt still gets it.
             match previous
@@ -5381,11 +5463,14 @@ impl ClientAccounting {
             {
                 Some(entry) => IdleReopenEntry {
                     controller,
+                    close_unacknowledged,
                     reopening: false,
                     attempt: entry.attempt,
                     last_failure: entry.last_failure.clone(),
                 },
-                None => IdleReopenEntry::released(controller),
+                None => {
+                    IdleReopenEntry::released_with_pending_close(controller, close_unacknowledged)
+                }
             }
         }));
         self.idle_released_devices = updated;
@@ -5506,6 +5591,7 @@ struct DisconnectDevicesReport {
     midi_retired: bool,
     attempted: usize,
     queued: Vec<Arc<DeviceController>>,
+    close_unacknowledged: Vec<Arc<DeviceController>>,
     failures: Vec<String>,
 }
 
@@ -5765,6 +5851,7 @@ impl BrokerShared {
                     midi_retired: false,
                     attempted,
                     queued: Vec::new(),
+                    close_unacknowledged: Vec::new(),
                     failures: vec![error],
                 };
             }
@@ -5772,11 +5859,15 @@ impl BrokerShared {
         // Snapshot before waiting. Every logical session still closes even
         // when another controller cannot verify its native teardown.
         let mut queued = Vec::new();
+        let mut close_unacknowledged = Vec::new();
         let mut failures = Vec::new();
         for device in devices {
             let (accepted, result) = device.disconnect_with_admission_report(None);
             if accepted {
                 queued.push(Arc::clone(&device));
+                if result.is_err() {
+                    close_unacknowledged.push(Arc::clone(&device));
+                }
             }
             if let Err(message) = result {
                 failures.push(format!(
@@ -5795,6 +5886,7 @@ impl BrokerShared {
             midi_retired: true,
             attempted,
             queued,
+            close_unacknowledged,
             failures,
         }
     }
@@ -6390,7 +6482,16 @@ impl BrokerShared {
                     (row.authenticated, row.is_participant())
                 }),
             };
+            let close_unacknowledged = clients
+                .idle_entry(controller)
+                .is_some_and(|entry| entry.close_unacknowledged);
             if session_command && authenticated {
+                if close_unacknowledged {
+                    // Keep this marker until the session command has crossed
+                    // the worker FIFO barrier and succeeds. An unforced
+                    // reconnect must not trust cached `ready` state here.
+                    return Ok(());
+                }
                 // A disconnect may still be refused (another participant is
                 // attached), so the released entry stays until it really runs:
                 // `dispatch_broker_client_request` forgets it after its last
@@ -6434,7 +6535,7 @@ impl BrokerShared {
                     let attempt = entry.attempt;
                     clients.reopens_in_flight += 1;
                     drop(clients);
-                    self.spawn_idle_reopen(Arc::clone(controller), attempt);
+                    self.spawn_idle_reopen(Arc::clone(controller), attempt, close_unacknowledged);
                     attempt
                 }
             }
@@ -6473,8 +6574,15 @@ impl BrokerShared {
     ///
     /// A guard records a failure and releases the in-flight count however the
     /// thread ends, a panic included.
-    fn spawn_idle_reopen(&self, controller: Arc<DeviceController>, attempt: u64) {
-        if let Err(error) = background_policy::reopen(self, controller, attempt) {
+    fn spawn_idle_reopen(
+        &self,
+        controller: Arc<DeviceController>,
+        attempt: u64,
+        close_unacknowledged: bool,
+    ) {
+        if let Err(error) =
+            background_policy::reopen(self, controller, attempt, close_unacknowledged)
+        {
             // The closure (and the guard inside it) was dropped unrun; the
             // guard already recorded a failure and released the count.
             eprintln!("Could not start reopening the Quad Cortex: {error}");
@@ -6666,7 +6774,7 @@ impl BrokerHandle {
     /// policy may release it later.
     pub fn reconnect(&self) -> Result<String, String> {
         let _exclusive = self.0.request_lock.lock_recover();
-        {
+        let close_unacknowledged = {
             let clients = self.0.clients.lock_recover();
             if clients.shutting_down {
                 return Err("Broker shutdown is already committed".into());
@@ -6676,8 +6784,11 @@ impl BrokerHandle {
                     "The Quad Cortex is already reopening; try Connect again in a moment".into(),
                 );
             }
-        }
-        let outcome = icon_reconnect(&self.0.controller);
+            clients
+                .idle_entry(&self.0.controller)
+                .is_some_and(|entry| entry.close_unacknowledged)
+        };
+        let outcome = icon_reconnect(&self.0.controller, close_unacknowledged);
         if outcome.is_ok() {
             {
                 let mut clients = self.0.clients.lock_recover();
@@ -6726,7 +6837,7 @@ impl BrokerHandle {
         if report.midi_retired && !report.queued.is_empty() {
             let queued_count = report.queued.len();
             let mut clients = self.0.clients.lock_recover();
-            clients.record_idle_release(report.queued);
+            clients.record_idle_release(report.queued, report.close_unacknowledged);
             clients.idle_released = queued_count == report.attempted;
         }
         if !report.failures.is_empty() {
@@ -9963,12 +10074,17 @@ mod tcp_tests {
         // Replacing a row through hello keeps it authenticated in both roles.
         let mut hello = rpc_request("broker.hello");
         hello.params = json!({"role":"participant"});
+        shared.clients.lock_recover().idle_release_retry_not_before =
+            Some(Instant::now() + Duration::from_secs(60));
         assert!(
             dispatch_broker_client_request(&shared, Some(observer), hello)
                 .get("result")
                 .is_some()
         );
-        assert_eq!(shared.clients.lock_recover().participants(), 1);
+        let clients = shared.clients.lock_recover();
+        assert_eq!(clients.participants(), 1);
+        assert!(clients.idle_release_retry_not_before.is_none());
+        drop(clients);
         declare_observer(&shared, observer, json!(15));
         assert!(shared.clients.lock_recover().connections[&observer].authenticated);
         shared.detach_client(observer);
@@ -11817,9 +11933,13 @@ impl Drop for ReopenGuard {
 
 /// Ask the worker to reconnect: returns once it acknowledges.
 #[cfg(not(test))]
-fn idle_reconnect(controller: &DeviceController) -> Result<(), String> {
-    controller
-        .reconnect()
+fn idle_reconnect(controller: &DeviceController, close_unacknowledged: bool) -> Result<(), String> {
+    let reconnect = if close_unacknowledged {
+        controller.reconnect_after_pending_close()
+    } else {
+        controller.reconnect()
+    };
+    reconnect
         .map(|_| ())
         .map_err(|error| format!("could not reopen the Quad Cortex: {error}"))
 }
@@ -11839,7 +11959,15 @@ fn idle_wait(controller: &DeviceController) -> Result<(), String> {
 }
 
 #[cfg(test)]
-fn idle_reconnect(controller: &DeviceController) -> Result<(), String> {
+fn idle_reconnect(controller: &DeviceController, close_unacknowledged: bool) -> Result<(), String> {
+    if close_unacknowledged {
+        if let Some(hook) = test_hook(
+            &PENDING_CLOSE_RECONNECT_HOOKS,
+            controller as *const DeviceController as usize,
+        ) {
+            return hook();
+        }
+    }
     match test_hook(
         &IDLE_RECONNECT_HOOKS,
         controller as *const DeviceController as usize,
@@ -11863,12 +11991,24 @@ fn idle_wait(controller: &DeviceController) -> Result<(), String> {
 /// The icon's Connect: a real reconnect in production. Tests never ask the
 /// worker to search for hardware; they only record that Connect was chosen.
 #[cfg(not(test))]
-fn icon_reconnect(controller: &DeviceController) -> Result<(), String> {
-    controller.reconnect().map(|_| ())
+fn icon_reconnect(controller: &DeviceController, close_unacknowledged: bool) -> Result<(), String> {
+    if close_unacknowledged {
+        controller.reconnect_after_pending_close().map(|_| ())
+    } else {
+        controller.reconnect().map(|_| ())
+    }
 }
 
 #[cfg(test)]
-fn icon_reconnect(_controller: &DeviceController) -> Result<(), String> {
+fn icon_reconnect(controller: &DeviceController, close_unacknowledged: bool) -> Result<(), String> {
+    if close_unacknowledged {
+        if let Some(hook) = test_hook(
+            &PENDING_CLOSE_RECONNECT_HOOKS,
+            controller as *const DeviceController as usize,
+        ) {
+            return hook();
+        }
+    }
     Ok(())
 }
 #[cfg(test)]

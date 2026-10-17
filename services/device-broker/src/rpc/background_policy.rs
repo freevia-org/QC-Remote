@@ -53,7 +53,7 @@ pub(super) fn selected(
             }
             if admitted {
                 // Same generated reconnect/ack behavior; test hooks avoid hardware.
-                if let Err(error) = idle_reconnect(&controller) {
+                if let Err(error) = idle_reconnect(&controller, false) {
                     controller.record_flight_event(format!("selected reconnect refused: {error}"));
                 }
             }
@@ -285,7 +285,7 @@ fn release_idle_with_retries_inner(
                 if !clients.shutting_down {
                     clients.observer_idle_since = None;
                     clients.tray_idle_since = None;
-                    clients.record_idle_release(report.queued);
+                    clients.record_idle_release(report.queued, report.close_unacknowledged);
                     clients.idle_released = queued_count == report.attempted;
                     if clients.idle_released {
                         clients.idle_release_retry_not_before = None;
@@ -409,6 +409,7 @@ pub(super) fn reopen(
     shared: &BrokerShared,
     controller: Arc<DeviceController>,
     attempt: u64,
+    close_unacknowledged: bool,
 ) -> Result<(), String> {
     let mut guard = ReopenGuard {
         clients: Arc::clone(&shared.clients),
@@ -445,7 +446,7 @@ pub(super) fn reopen(
                     }
                     controller
                         .record_flight_event("resident broker reopening an idle-released device");
-                    idle_reconnect(&controller)?;
+                    idle_reconnect(&controller, close_unacknowledged)?;
                 }
                 if !ticket.current() {
                     return Err("idle reopen cancelled during ready wait".into());
@@ -893,13 +894,13 @@ mod tests {
         );
         {
             let mut clients = shared.clients.lock_recover();
-            clients.record_idle_release(vec![Arc::clone(&controller)]);
+            clients.record_idle_release(vec![Arc::clone(&controller)], Vec::new());
             let entry = clients.idle_entry_mut(&controller).unwrap();
             entry.attempt = 1;
             entry.reopening = true;
             clients.reopens_in_flight = 1;
         }
-        reopen(shared, Arc::clone(&controller), 1).unwrap();
+        reopen(shared, Arc::clone(&controller), 1, false).unwrap();
         body_returned.recv_timeout(Duration::from_secs(2)).unwrap();
         {
             let clients = shared.clients.lock_recover();
@@ -1028,7 +1029,7 @@ mod tests {
         let shared = fixture.shared();
         shared.clients.lock_recover().resident = true;
         test_support::set_policy_minute(&fixture.0, Duration::from_millis(10));
-        test_support::set_idle_release_retry_delay(&fixture.0, Duration::from_millis(300));
+        test_support::set_idle_release_retry_delay(&fixture.0, Duration::from_secs(2));
         assert!(shared.controller.claim_device("observer-retry-fixture"));
         let device_id = shared.controller.device_id().unwrap();
         shared
@@ -1061,28 +1062,28 @@ mod tests {
             shared,
             "release_idle_device:rearmed",
             Arc::new(move || {
-                let _ = rearmed.send(());
+                let _ = rearmed.send(Instant::now());
                 Ok(())
             }),
         );
         shared.update_observer_backstop();
 
-        let started = attempts.recv_timeout(Duration::from_secs(2)).unwrap();
-        rearm_observed
+        let _started = attempts.recv_timeout(Duration::from_secs(2)).unwrap();
+        let rearmed_at = rearm_observed
             .recv_timeout(PERFORMANCE_MIDI_RETIRE_BUDGET + Duration::from_secs(2))
             .expect("failed native teardown must arm its delayed idle-key retry");
         assert!(shared.background.pending_key(IDLE));
         assert_eq!(count.load(Ordering::Acquire), 1);
         assert!(
-            attempts.recv_timeout(Duration::from_millis(100)).is_err(),
+            attempts.recv_timeout(Duration::from_millis(500)).is_err(),
             "an expired observer deadline must not immediately repeat failed teardown"
         );
         drop(release_midi);
 
-        let retried = attempts.recv_timeout(Duration::from_secs(2)).unwrap();
+        let retried = attempts.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(
-            retried.duration_since(started) >= Duration::from_millis(250),
-            "the second release must wait for the retry interval: {retried:?} after {started:?}"
+            retried.duration_since(rearmed_at) >= Duration::from_millis(1500),
+            "the second release must wait for the retry interval measured from re-arm: {retried:?} after {rearmed_at:?}"
         );
         assert_eq!(count.load(Ordering::Acquire), 2);
         assert!(
