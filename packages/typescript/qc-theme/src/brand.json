@@ -10,7 +10,7 @@
   "publicRelayEndpoint": "https://qcrc.freevia.org",
   "securityPolicyUrl": "https://freevia.org/qcremote/security/",
   "privacyPolicyUrl": "https://freevia.org/qcremote/privacy",
-  "termsUrl": "",
+  "termsUrl": "https://freevia.org/qcremote/terms/",
   "sourceRepositoryUrl": "https://github.com/freevia-org/QC-Remote",
   "androidPackage": "org.freevia.qcremote",
   "androidSigningSha256": "489fcccee2a097e30505a8d0d38c1b4fa844c69380b72b74ceb1e0f6c3dec28e",
