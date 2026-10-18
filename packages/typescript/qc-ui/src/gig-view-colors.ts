@@ -16,7 +16,7 @@ export function gigPresetTileColor(position: number): string {
  */
 export function gigSceneToolColor(tile: string, lit: boolean): string {
   const hex = /([0-9a-f]{6})\)?$/i.exec(tile)?.[1];
-  if (!hex) return "#a8aaa8";
+  if (!hex) return "var(--qc-palette-a8aaa8)";
   const channel = (offset: number) => Number.parseInt(hex.slice(offset, offset + 2), 16);
   const wash = (value: number) => Math.floor(value * 0.4 + (lit ? 0 : 150));
   const fiveBit = (value: number) => { const reduced = value >> 3; return (reduced << 3) | (reduced >> 2); };

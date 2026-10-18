@@ -56,6 +56,22 @@ test("class names match whole: a name that merely contains another is not that s
   assert.equal(classifyQcGraphicsTree(tree("SettingsDialogHeader")), "unknown");
 });
 
+test("foreground modal keyboard and progress layers win over retained primary screens", () => {
+  for (const primary of ["GigView", "TunerDialog", "MetronomeEditor"]) {
+    for (const [overlay, expected] of [["MessageDialog", "message-dialog"], ["Keyboard", "keyboard"], ["RotatingBusyIndicator", "busy"]] as const) {
+      assert.equal(classifyQcGraphicsTree(tree(primary, overlay)), expected, `${overlay} covers ${primary}`);
+      assert.equal(classifyQcGraphicsTree(tree(overlay, primary)), expected, "tree traversal order does not grant the retained primary precedence");
+    }
+  }
+  assert.equal(classifyQcGraphicsTree(tree("GigView", "MessageDialog", "Keyboard", "RotatingBusyIndicator")), "message-dialog");
+  assert.equal(classifyQcGraphicsTree(tree("DirectoryDialog", "SearchDialog", "Keyboard")), "search", "a search keyboard remains part of Search");
+  assert.equal(classifyQcGraphicsTree(tree("SettingsDialog", "UpdaterSettings", "RotatingBusyIndicator")), "settings", "the Settings spinner is not a foreground progress screen");
+  assert.equal(classifyQcGraphicsTree(tree("Grid", "CpuLoadIndicator")), "cpu-monitor", "nonmodal CPU remains a Grid overlay");
+  assert.equal(classifyQcGraphicsTree(tree("ParameterEditor", "TunerDialog")), "tuner", "primary screen precedence otherwise stays unchanged");
+  assert.equal(classifyQcGraphicsTree(tree("GigView", "MessageDialogHeader", "KeyboardSearch", "RotatingBusyIndicatorLabel")), "gig", "class-name prefixes are not foreground layers");
+  assert.equal(classifyQcGraphicsTree(tree("SomeNewDialog")), "unknown", "unknown classes still require conservative handling by the caller");
+});
+
 test("the table describes every screen the classifier can return, and the mirrored ones are exactly the ones with no app screen", () => {
   const kinds = new Set<string>();
   for (const name of ["GigView", "TunerDialog", "MetronomeEditor", "RotatingBusyIndicator", "MessageDialog", "Keyboard", "SearchDialog", "HybridModeConfigDialog", "MidiMatrixDialog", "CheatSheetDialog", "NeuralCaptureDialog", "SettingsDialog", "DirectoryDialog", "CopySceneDialog", "SceneSelectorPopup", "PortSelector", "MainMenuPopup", "_OptionsPopup", "ModelMenu", "AssignExpressionPedal", "CpuLoadIndicator", "Looper1TrackModelEditor", "ParameterEditor", "Grid"]) kinds.add(classifyQcGraphicsTree(tree(name)));

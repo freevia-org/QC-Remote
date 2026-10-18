@@ -68,20 +68,20 @@ export function writeQcScreenFollowSetting(storage: Pick<Storage, "setItem">, en
  * pane as Gig View.
  */
 const QC_SCREEN_CLASSES: ReadonlyArray<readonly [QcObservedScreenKind, readonly string[]]> = [
-  ["gig", ["GigView"]],
-  ["tuner", ["TunerDialog", "Tuner"]],
-  ["tempo", ["MetronomeEditor"]],
+  // Generic foreground layers can retain any primary screen underneath them.
+  // Search owns its keyboard; do not replace the search route with a raw keyboard mirror.
   ["message-dialog", ["MessageDialog"]],
   ["search", ["SearchResultsDialog", "SearchDialog"]],
   ["keyboard", ["Keyboard"]],
+  ["busy", ["RotatingBusyIndicator"]],
+  ["gig", ["GigView"]],
+  ["tuner", ["TunerDialog", "Tuner"]],
+  ["tempo", ["MetronomeEditor"]],
   ["modes", ["HybridModeConfigDialog"]],
   ["midi-out", ["MidiMatrixDialog"]],
   ["io", ["CheatSheetDialog"]],
   ["neural-capture", ["NeuralCaptureDialog", "NCMetadataDialog", "NCModelEditor"]],
   ["settings", ["SettingsDialog", "DSPDiagnosticsDialog", "ZencoderDiagnosticsDialog", "SOC2ARMDiagnosticsDialog"]],
-  // Behind Settings: the Updates pane carries a busy indicator ("Checking for updates...") and is still Settings, which the
-  // app draws itself and never touches. Anywhere else a busy indicator is a progress screen, shown as the unit's picture.
-  ["busy", ["RotatingBusyIndicator"]],
   ["directory", ["DirectoryDialog"]],
   ["copy-scene", ["CopySceneDialog"]],
   ["scene-selector", ["SceneSelectorPopup"]],
@@ -102,7 +102,15 @@ export function classifyQcGraphicsTree(tree: string): QcObservedScreenKind {
     const name = line.match(/zenUI::([A-Za-z0-9_]+)/)?.[1];
     if (name) present.add(name);
   }
-  for (const [kind, classes] of QC_SCREEN_CLASSES) if (classes.some((name) => present.has(name))) return kind;
+  // The Updates pane's spinner belongs to Settings, not a foreground progress
+  // screen. Preserve that exception without letting other retained primary
+  // screens hide an actual busy overlay. This tree format carries class names,
+  // not visibility flags; no hidden/visible state is inferred here.
+  const settings = QC_SCREEN_CLASSES.find(([kind]) => kind === "settings")![1];
+  for (const [kind, classes] of QC_SCREEN_CLASSES) {
+    if (kind === "busy" && settings.some((name) => present.has(name))) continue;
+    if (classes.some((name) => present.has(name))) return kind;
+  }
   return "unknown";
 }
 
