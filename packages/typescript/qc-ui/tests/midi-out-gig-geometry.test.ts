@@ -164,6 +164,8 @@ test("Gig View header: mode tile 66 wide ending at 634, Close tile 694,8 98x44, 
 });
 
 test("gigSceneToolColor derives each tile's glyph colour from the tile fill on the 5/6/5 ladder", () => {
+  assert.equal(gigSceneToolColor("not-a-tile-colour", false), "var(--qc-palette-a8aaa8)");
+  assert.equal(gigSceneToolColor("not-a-tile-colour", true), "var(--qc-palette-a8aaa8)");
   assert.equal(gigSceneToolColor("#ff2421", true), "#630c08");
   assert.equal(gigSceneToolColor("var(--qc-palette-101c21)", false), "#9ca2a5");
   assert.equal(gigSceneToolColor("var(--qc-palette-292410)", false), "#a5a69c");
