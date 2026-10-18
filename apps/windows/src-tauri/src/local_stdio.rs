@@ -4299,17 +4299,96 @@ mod tests {
 
     static MCP_CLEANUP_ACTORS: qc_native_platform::thread_owner::Budget =
         qc_native_platform::thread_owner::Budget::new(64);
+    static MCP_CLEANUP_REAPER_ACTORS: qc_native_platform::thread_owner::Budget =
+        qc_native_platform::thread_owner::Budget::new(64);
+    const MCP_CLEANUP_REPORT_TIMEOUT: Duration = Duration::from_secs(10);
+    const MCP_CLEANUP_REAP_INTERVAL: Duration = Duration::from_millis(10);
+    struct McpCleanupCompletion {
+        report: Option<crate::tests::CleanupReport>,
+        cleanup_original_retired: bool,
+        retirement_unknown_recorded: bool,
+    }
     type McpCleanupCommand = (
         std::sync::mpsc::Sender<()>,
         qc_native_platform::thread_owner::Owned,
     );
+
+    struct McpCleanupReaper {
+        stop: std::sync::mpsc::Sender<()>,
+        owner: Option<qc_native_platform::thread_owner::Owned>,
+    }
+
+    impl McpCleanupReaper {
+        fn start() -> Self {
+            let (stop, stopped) = std::sync::mpsc::channel();
+            let owner = qc_native_platform::thread_owner::Owned::spawn(
+                "qc-mcp-cleanup-owner-reaper",
+                &MCP_CLEANUP_REAPER_ACTORS,
+                (),
+                move || loop {
+                    qc_native_platform::thread_owner::reap();
+                    match stopped.recv_timeout(MCP_CLEANUP_REAP_INTERVAL) {
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                },
+            )
+            .expect("owned MCP cleanup reaper admitted");
+            Self {
+                stop,
+                owner: Some(owner),
+            }
+        }
+
+        fn stop_within(&mut self, within: Duration) {
+            let _ = self.stop.send(());
+            if let Some(mut owner) = self.owner.take() {
+                // The reaper has no owned resource beyond (), so its bounded
+                // join cannot synchronously run arbitrary fixture cleanup.
+                let _ = owner.wait_within(within);
+            }
+        }
+    }
+
+    impl Drop for McpCleanupReaper {
+        fn drop(&mut self) {
+            self.stop_within(Duration::from_millis(25));
+        }
+    }
+
+    fn wait_for_mcp_cleanup_completion(
+        completion: &std::sync::mpsc::Receiver<McpCleanupCompletion>,
+        timeout: Duration,
+    ) -> Option<McpCleanupCompletion> {
+        // A zero timeout is used from Tokio cleanup callbacks. Do not invoke
+        // the global reaper there: joining unrelated owners can block and
+        // their resource destructors may perform synchronous cleanup.
+        if timeout.is_zero() {
+            return completion.try_recv().ok();
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return completion.try_recv().ok();
+            }
+            match completion.recv_timeout(remaining.min(MCP_CLEANUP_REAP_INTERVAL)) {
+                Ok(completion) => return Some(completion),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+
     pub(super) struct McpDependencies {
         cleanup: std::sync::Mutex<Option<crate::tests::CleanupStack>>,
         pending: Arc<std::sync::Mutex<Option<crate::tests::CleanupStack>>>,
         original: std::sync::Mutex<Option<McpCleanupCommand>>,
+        report_receiver: std::sync::Mutex<std::sync::mpsc::Receiver<crate::tests::CleanupReport>>,
+        completion_sender: std::sync::Mutex<Option<std::sync::mpsc::Sender<McpCleanupCompletion>>>,
     }
     impl McpDependencies {
-        fn complete_on_outer(&mut self) -> Option<crate::tests::CleanupReport> {
+        fn complete_on_outer(&mut self) -> Option<McpCleanupCompletion> {
             // Only Arc::try_unwrap outside Tokio may enter this branch. The
             // pre-armed executor has not received a stack or wake yet.
             if self
@@ -4320,6 +4399,12 @@ mod tests {
             {
                 return None;
             }
+            // This path completes synchronously and returns its report
+            // directly to the cleanup callback.
+            self.completion_sender
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
             let (wake, mut original) = self
                 .original
                 .get_mut()
@@ -4341,7 +4426,11 @@ mod tests {
             }
             // These are the declared existing listener/broker/runtime cleanup
             // policies, not a second competing five-second report deadline.
-            Some(cleanup.run())
+            Some(McpCleanupCompletion {
+                report: Some(cleanup.run()),
+                cleanup_original_retired: joined,
+                retirement_unknown_recorded: !joined,
+            })
         }
     }
     impl Drop for McpDependencies {
@@ -4358,7 +4447,7 @@ mod tests {
                 .pending
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = cleanup;
-            if let Some((wake, mut original)) = self
+            let cleanup_original_retired = if let Some((wake, mut original)) = self
                 .original
                 .get_mut()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -4370,9 +4459,30 @@ mod tests {
                 } else {
                     Duration::from_secs(5)
                 };
-                let _ = original.wait_within(within);
+                let retired = original.wait_within(within);
                 // Unknown retirement remains in the SAME shared original
                 // family with pending/runtime/root ownership, never detached.
+                retired
+            } else {
+                false
+            };
+            let report = self
+                .report_receiver
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .try_recv()
+                .ok();
+            if let Some(sender) = self
+                .completion_sender
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                let _ = sender.send(McpCleanupCompletion {
+                    report,
+                    cleanup_original_retired,
+                    retirement_unknown_recorded: false,
+                });
             }
         }
     }
@@ -4380,10 +4490,27 @@ mod tests {
         cleanup: &mut crate::tests::CleanupStack,
         within: Duration,
     ) -> (Slot<McpTestActor>, Arc<McpDependencies>) {
-        let report = Arc::new(std::sync::Mutex::new(None));
+        arm_mcp_exchange_with_report_timeout(cleanup, within, MCP_CLEANUP_REPORT_TIMEOUT)
+    }
+
+    fn arm_mcp_exchange_with_report_timeout(
+        cleanup: &mut crate::tests::CleanupStack,
+        within: Duration,
+        report_timeout: Duration,
+    ) -> (Slot<McpTestActor>, Arc<McpDependencies>) {
+        arm_mcp_exchange_with_wait_hook(cleanup, within, report_timeout, None)
+    }
+
+    fn arm_mcp_exchange_with_wait_hook(
+        cleanup: &mut crate::tests::CleanupStack,
+        within: Duration,
+        report_timeout: Duration,
+        waiting_hook: Option<Box<dyn FnOnce() + Send>>,
+    ) -> (Slot<McpTestActor>, Arc<McpDependencies>) {
+        let (report_sender, report_receiver) = std::sync::mpsc::channel();
+        let (completion_sender, completion_receiver) = std::sync::mpsc::channel();
         let pending = Arc::new(std::sync::Mutex::new(None::<crate::tests::CleanupStack>));
         let pending_worker = pending.clone();
-        let completed = report.clone();
         let (wake, waiting) = std::sync::mpsc::channel::<()>();
         // Start BEFORE moving the already-armed acquisition stack. If native
         // admission/spawn fails, the caller's original stack remains intact
@@ -4400,21 +4527,15 @@ mod tests {
                     .take();
                 if let Some(cleanup) = cleanup {
                     let report = cleanup.run();
-                    let unclean = !report.is_clean();
-                    *completed
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(report);
-                    if unclean {
+                    if !report.is_clean() {
                         let _ = std::panic::catch_unwind(|| {
-                            if let Some(report) = completed
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .as_ref()
-                            {
-                                eprintln!("MCP dependent fixture retirement: {report}");
-                            }
+                            eprintln!("MCP dependent fixture retirement: {report}");
                         });
                     }
+                    // This is the completion notification for the dependent
+                    // transaction, not proof that this native original has
+                    // finished its final TLS/owner bookkeeping.
+                    let _ = report_sender.send(report);
                 }
             },
         )
@@ -4426,11 +4547,14 @@ mod tests {
             cleanup: std::sync::Mutex::new(Some(std::mem::take(cleanup))),
             pending,
             original: std::sync::Mutex::new(Some((wake, original))),
+            report_receiver: std::sync::Mutex::new(report_receiver),
+            completion_sender: std::sync::Mutex::new(Some(completion_sender)),
         });
         let actors: Slot<McpTestActor> = slot();
         let owned = actors.clone();
         let retained_dependencies = dependencies.clone();
         cleanup.arm("MCP actor and dependent transaction", move |outer| {
+            let can_block = tokio::runtime::Handle::try_current().is_err();
             if let Some(mut actor) = take(&owned) {
                 if let Err(error) = actor.stop_within(within) {
                     outer.unacknowledged(error);
@@ -4439,10 +4563,10 @@ mod tests {
                 // existing shared original family until actual native join.
                 drop(actor);
             }
-            // Ready resource holders must be actually reaped before deciding
-            // whether this callback is the sole dependency authority.
-            qc_native_platform::thread_owner::reap();
-            let direct = if tokio::runtime::Handle::try_current().is_err() {
+            // Global reaping can drop arbitrary fixture resources, so run it
+            // on an owned helper and keep this callback's wait bounded.
+            let mut reaper = can_block.then(McpCleanupReaper::start);
+            let direct = if can_block {
                 match Arc::try_unwrap(retained_dependencies) {
                     Ok(mut dependencies) => dependencies.complete_on_outer(),
                     Err(shared) => { drop(shared); None }
@@ -4451,15 +4575,46 @@ mod tests {
                 drop(retained_dependencies);
                 None
             };
-            let completed = direct.or_else(|| report.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner).take());
-            if let Some(completed) = completed {
-                outer.blocked |= completed.blocked;
-                outer.problems.extend(completed.problems);
-                outer.terminated.extend(completed.terminated);
+            // A still-shared dependency Arc means its native original must
+            // release the transaction before Drop publishes completion.
+            // Never block a Tokio worker; its cleanup remains owned and is
+            // reported unknown if the result is not already available.
+            let wait = if can_block {
+                report_timeout
+            } else {
+                Duration::ZERO
+            };
+            if direct.is_none() {
+                if let Some(waiting_hook) = waiting_hook {
+                    waiting_hook();
+                }
+            }
+            let completed = direct.or_else(|| {
+                wait_for_mcp_cleanup_completion(&completion_receiver, wait)
+            });
+            if let Some(reaper) = reaper.as_mut() {
+                reaper.stop_within(Duration::from_millis(25));
+            }
+            if let Some(mut completed) = completed {
+                if let Some(mut report) = completed.report.take() {
+                    if !completed.cleanup_original_retired
+                        && !completed.retirement_unknown_recorded
+                    {
+                        report.unacknowledged(
+                            "MCP cleanup native original retirement is unknown; exact owner remains retained".into(),
+                        );
+                    }
+                    outer.blocked |= report.blocked;
+                    outer.problems.extend(report.problems);
+                    outer.terminated.extend(report.terminated);
+                } else {
+                    outer.unacknowledged(
+                        "MCP cleanup native original did not publish its cleanup report; exact owner state is unknown".into(),
+                    );
+                }
             } else {
                 outer.unacknowledged(
-                    "Native original still owns the dependent listener/device/broker/runtime/root transaction".into(),
+                    format!("Native original still owns the dependent listener/device/broker/runtime/root transaction; completion was not acknowledged within {wait:?}"),
                 );
             }
         });
@@ -5773,6 +5928,111 @@ mod tests {
                 .expect("host slot retired");
         });
         crate::tests::finish_or_rethrow(outcome, report);
+    }
+
+    #[test]
+    fn dependent_mcp_cleanup_waits_for_a_late_completion_report() {
+        let mut release_thread = None;
+        let cleanup_finished = Arc::new(AtomicBool::new(false));
+        let completed = cleanup_finished.clone();
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            cleanup.arm("late native-owner cleanup marker", move |_| {
+                completed.store(true, Ordering::Release);
+            });
+            let (waiting_sender, waiting_receiver) = std::sync::mpsc::channel();
+            let (release, waiting) = std::sync::mpsc::channel();
+            release_thread = Some(std::thread::spawn(move || {
+                waiting_receiver
+                    .recv()
+                    .expect("cleanup callback reached the shared-owner wait");
+                std::thread::sleep(Duration::from_millis(25));
+                let _ = release.send(());
+            }));
+            let (actors, dependencies) = arm_mcp_exchange_with_wait_hook(
+                cleanup,
+                Duration::ZERO,
+                Duration::from_secs(2),
+                Some(Box::new(move || {
+                    let _ = waiting_sender.send(());
+                })),
+            );
+            drop(actors);
+            let retained = dependencies.clone();
+            let owner = qc_native_platform::thread_owner::Owned::spawn(
+                "qc-mcp-late-cleanup-report-fixture",
+                &MCP_CLEANUP_ACTORS,
+                retained,
+                move || {
+                    let _ = waiting.recv();
+                },
+            )
+            .expect("native holder admitted");
+            drop(owner); // Keep its exact original and resource in the reaper.
+            drop(dependencies);
+        });
+
+        release_thread
+            .take()
+            .expect("the native holder releaser was started")
+            .join()
+            .expect("native holder releaser exited");
+        crate::tests::finish_or_rethrow(outcome, report);
+        assert!(cleanup_finished.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn dependent_mcp_cleanup_timeout_is_unknown_and_retains_its_original() {
+        let mut release = None;
+        let cleanup_finished = Arc::new(AtomicBool::new(false));
+        let completed = cleanup_finished.clone();
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            cleanup.arm("timed-out native-owner cleanup marker", move |_| {
+                completed.store(true, Ordering::Release);
+            });
+            let (actors, dependencies) = arm_mcp_exchange_with_report_timeout(
+                cleanup,
+                Duration::ZERO,
+                Duration::from_millis(25),
+            );
+            drop(actors);
+
+            let (release_sender, waiting) = std::sync::mpsc::channel();
+            let retained = dependencies.clone();
+            let owner = qc_native_platform::thread_owner::Owned::spawn(
+                "qc-mcp-timeout-cleanup-report-fixture",
+                &MCP_CLEANUP_ACTORS,
+                retained,
+                move || {
+                    let _ = waiting.recv();
+                },
+            )
+            .expect("native holder admitted");
+            drop(owner); // The original keeps the transaction alive on timeout.
+            release = Some(release_sender);
+            drop(dependencies);
+        });
+
+        assert!(report.blocked, "an unacknowledged original is unknown");
+        assert!(report
+            .problems
+            .iter()
+            .any(|problem| problem.contains("completion was not acknowledged")));
+        release
+            .take()
+            .expect("the native holder releaser is retained")
+            .send(())
+            .expect("the original holder remains alive after timeout");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !cleanup_finished.load(Ordering::Acquire) {
+            qc_native_platform::thread_owner::reap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the retained cleanup transaction eventually retires"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(outcome.is_ok(), "timeout fixture body should pass");
     }
 
     /// An explicit user start supersedes the Quit (it clears the
