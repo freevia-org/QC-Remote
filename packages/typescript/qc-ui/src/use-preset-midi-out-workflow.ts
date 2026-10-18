@@ -60,6 +60,7 @@ export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) 
     editorOwner.current = { key: editorContextKey, gateway: options.gateway, current: captureEditorCurrent(), version: editorOwner.current.version + 1 };
   }
   const contextVersion = editorOwner.current.version;
+  const actionOwner = editorOwner.current;
   const fallbackAdmission = useRef({ version: contextVersion, admission: new DeviceMutationAdmission() });
   if (fallbackAdmission.current.version !== contextVersion) {
     fallbackAdmission.current = { version: contextVersion, admission: new DeviceMutationAdmission() };
@@ -105,6 +106,10 @@ export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) 
     if (outcome && !outcome.current()) setOutcome(undefined);
   });
   const run = useCallback(async (status: "saved" | "cleared", write: (owner: OperationOwner) => Promise<void>) => {
+    // A retained editor action belongs to the owner that rendered it. Reading
+    // latestOptions alone would let it acquire a replacement session's slot.
+    // Fresh renders receive a new run/save/clearAll for the new owner.
+    if (editorOwner.current !== actionOwner || !actionOwner.current()) return;
     const owner = operationCurrent();
     if (!owner.current()) return;
     if (latestOptions.current.demo) {
@@ -133,7 +138,7 @@ export function usePresetMidiOutWorkflow(options: PresetMidiOutWorkflowOptions) 
       mutation.release();
       if (inFlight.current === owner) { inFlight.current = undefined; if (mounted.current) setPending(false); }
     }
-  }, []);
+  }, [actionOwner]);
 
   const save = useCallback(async (source: PresetMidiOutSource, draft: MidiOutMessage[]) => {
     const current = snapshotRef.current;

@@ -7,6 +7,8 @@ import { demoSnapshot } from "../../qc-core/src/device-reference/demo-snapshot.t
 register("./support/react-singleton-loader.mjs", import.meta.url);
 const React = (await import("react")).default;
 const { usePresetMidiOutWorkflow } = await import("../src/use-preset-midi-out-workflow.ts");
+const { captureGatewaySession, registerGatewayRoute } = await import("../src/gateway-session.ts");
+const { PresetLifetime } = await import("../../qc-core/src/preset-lifetime.ts");
 
 function deferred() {
   let resolve!: (value: unknown) => void, reject!: (error: Error) => void;
@@ -78,4 +80,60 @@ test("MIDI Out Clear all stops before the next source after its session changes"
   assert.equal(writes, 1);
   assert.deepEqual(saved, []);
   assert.equal(value.status, null);
+});
+
+test("retained MIDI actions cannot acquire a replacement owner while fresh actions remain usable", async (t) => {
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  for (const boundary of ["route", "route-ABA", "session", "preset"] as const) {
+    await t.test(boundary, async () => {
+      const old = deferred();
+      const initial = { ...demoSnapshot, presetIdentity: "action-a",
+        midiOut: [{source: 0, messages: [{type: 1, channel: 1, param1: 7, param2: 90, param3: 0}]}] };
+      const lifetime = new PresetLifetime(initial);
+      const saved: unknown[] = [];
+      let writes = 0, value, renderer;
+      const firstTarget = { setMidiOut: () => dispatch() };
+      const nextTarget = { setMidiOut: () => dispatch() };
+      let active = firstTarget, revision = 0;
+      const gateway = { setMidiOut: () => active.setMidiOut() };
+      registerGatewayRoute(gateway, { active: () => active, revision: () => revision });
+      let options = { gateway, lifetime, snapshot: initial,
+        captureSessionCurrent: () => captureGatewaySession(gateway).current,
+        onSaved: (snapshot) => saved.push(snapshot) };
+      const dispatch = () => ++writes === 1 ? old.promise : Promise.resolve({snapshot: options.snapshot, detail: "current saved"});
+      function Harness() { value = usePresetMidiOutWorkflow(options); return null; }
+      await act(async () => { renderer = create(React.createElement(Harness)); });
+      let first;
+      try {
+        const retiredSave = value.save, retiredClear = value.clearAll;
+        await act(async () => { first = retiredSave(0, []); });
+        assert.equal(writes, 1);
+        await act(async () => {
+          if (boundary.startsWith("route")) { active = nextTarget; revision++; }
+          else if (boundary === "session") lifetime.reset();
+          else options = {...options, snapshot: {...initial, presetIdentity: "action-b"}};
+          renderer.update(React.createElement(Harness));
+        });
+        if (boundary === "route-ABA") await act(async () => {
+          active = firstTarget; revision++;
+          renderer.update(React.createElement(Harness));
+        });
+        assert.notEqual(value.save, retiredSave, "the replacement receives its own action callbacks");
+        assert.notEqual(value.clearAll, retiredClear);
+        await act(async () => { old.resolve({snapshot: initial, detail: "obsolete saved"}); await first; });
+        assert.deepEqual(saved, [], "old completion cannot reconcile the replacement preset");
+        assert.equal(value.status, null);
+        assert.equal(value.error, "");
+        await act(async () => { await retiredSave(1, []); await retiredClear(); });
+        assert.equal(writes, 1, "retained actions are refused before native dispatch");
+        await act(async () => { await value.save(1, []); });
+        assert.equal(writes, 2, "a current action still acquires and completes normally");
+        assert.deepEqual(saved, [options.snapshot]);
+        assert.equal(value.status, "saved");
+        assert.equal(value.pending, false);
+      } finally {
+        await act(async () => { old.resolve({}); if (first) await first; renderer.unmount(); });
+      }
+    });
+  }
 });
