@@ -3947,8 +3947,10 @@ pub(crate) fn with_broker_version(status: &mut Value, version: Option<&str>) {
 pub(crate) const CONTROL_PARTICIPANTS_ATTACHED: &str = "PARTICIPANTS_ATTACHED";
 /// Everything a control connection may ask. `broker.shutdown` only with
 /// `force: true`, the icon's forced Release and exit.
-const CONTROL_METHODS: [&str; 4] = [
+const CONTROL_METHODS: [&str; 6] = [
     BROKER_CONTROL_STATUS_METHOD,
+    "broker.trayMenu",
+    "broker.trayAction",
     BROKER_CONTROL_RELEASE_METHOD,
     BROKER_CONTROL_CONNECT_METHOD,
     "broker.shutdown",
@@ -4549,6 +4551,8 @@ fn dispatch_control_request(
     };
     match request.method.as_str() {
         BROKER_CONTROL_STATUS_METHOD => outcome(Ok(shared.control_status())),
+        "broker.trayMenu" => outcome(crate::tray::menu_bridge::read()),
+        "broker.trayAction" => outcome(crate::tray::menu_bridge::dispatch(request.params)),
         BROKER_CONTROL_CONNECT_METHOD => outcome(
             handle
                 .reconnect()

@@ -2,6 +2,7 @@ use super::WriteStallPolicy;
 use crate::usb::UsbError;
 use hidapi::{HidApi, HidDevice, HidError};
 use std::ffi::CStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 
 type HidJob = Box<dyn FnOnce() + Send + 'static>;
@@ -55,7 +56,23 @@ pub(crate) fn device_id(device: &hidapi::DeviceInfo) -> String {
 /// the same mutex during synchronous `IOHIDDeviceSetReport`, which has no
 /// timeout, so reads or writes queued behind a stalled native write may wait
 /// longer than one read interval.
-pub(crate) struct SharedMacosHid(Mutex<HidDevice>);
+pub(crate) struct SharedMacosHid {
+    device: Mutex<HidDevice>,
+    writer_waiting: AtomicBool,
+    write_stall_policy: WriteStallPolicy,
+}
+
+const QC_880A_INTERFACE_5_REPORT_DESCRIPTOR: &[u8] = &[
+    0x05, 0x01, 0x09, 0x00, 0xa1, 0x01, 0x15, 0x00, 0x26, 0xff, 0x00, 0x85, 0x01, 0x75, 0x08, 0x95,
+    0x80, 0x09, 0x00, 0x81, 0x82, 0x85, 0x02, 0x75, 0x08, 0x95, 0x80, 0x09, 0x00, 0x91, 0x82, 0xc0,
+];
+
+fn qc_control_stall_profile(vendor: u16, product: u16, interface: i32, descriptor: &[u8]) -> bool {
+    vendor == 0x152a
+        && product == 0x880a
+        && interface == 5
+        && descriptor == QC_880A_INTERFACE_5_REPORT_DESCRIPTOR
+}
 
 impl SharedMacosHid {
     pub(crate) fn open(
@@ -70,11 +87,38 @@ impl SharedMacosHid {
         if device_id(&opened_info) != selected_identity {
             return Err(UsbError::NotAvailable);
         }
-        Ok(Self(Mutex::new(device)))
+        let mut descriptor = [0u8; 33];
+        let measured_profile = device
+            .get_report_descriptor(&mut descriptor)
+            .ok()
+            .is_some_and(|n| {
+                n <= descriptor.len()
+                    && qc_control_stall_profile(
+                        opened_info.vendor_id(),
+                        opened_info.product_id(),
+                        opened_info.interface_number(),
+                        &descriptor[..n],
+                    )
+            });
+        Ok(Self {
+            device: Mutex::new(device),
+            writer_waiting: AtomicBool::new(false),
+            write_stall_policy: if measured_profile {
+                WriteStallPolicy::MacosQc880aControlStatusStall
+            } else {
+                WriteStallPolicy::MacosSerialized
+            },
+        })
     }
 
     pub(crate) fn read_timeout(&self, report: &mut [u8], timeout_ms: i32) -> Result<usize, String> {
-        self.0
+        // std::sync::Mutex is not fair. A polling reader can otherwise retake
+        // the lock indefinitely while a queued handshake write expires.
+        if self.writer_waiting.load(Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            return Ok(0);
+        }
+        self.device
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .read_timeout(report, timeout_ms)
@@ -82,21 +126,73 @@ impl SharedMacosHid {
     }
 
     pub(crate) fn write(&self, report: &[u8]) -> Result<usize, HidError> {
-        self.0
+        self.writer_waiting.store(true, Ordering::Release);
+        let result = self
+            .device
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .write(report)
+            .write(report);
+        self.writer_waiting.store(false, Ordering::Release);
+        result
     }
 
     pub(crate) fn write_stall_policy(&self) -> WriteStallPolicy {
-        WriteStallPolicy::MacosSerialized
+        self.write_stall_policy
     }
 }
 
 pub(crate) fn write_report_delivered(
     result: &Result<usize, HidError>,
     expected_bytes: usize,
-    _policy: WriteStallPolicy,
+    policy: WriteStallPolicy,
 ) -> bool {
-    matches!(result, Ok(written) if *written == expected_bytes)
+    match result {
+        Ok(written) => *written == expected_bytes,
+        // Measured on macOS with the exact profile above: a complete 129-byte
+        // ResetCommsBuffers write returns kUSBHostReturnPipeStalled, followed
+        // by a reply echoing the fresh session UUID. This is a native status
+        // exception, not semantic command verification. Other errors fail closed.
+        Err(HidError::HidApiError { message }) => {
+            policy == WriteStallPolicy::MacosQc880aControlStatusStall
+                && expected_bytes == quadcortex::framing::REPORT_SIZE
+                && message.starts_with("IOHIDDeviceSetReport failed: (0xE0005000) ")
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_stall_is_limited_to_the_measured_device_and_descriptor() {
+        let d = QC_880A_INTERFACE_5_REPORT_DESCRIPTOR;
+        assert!(qc_control_stall_profile(0x152a, 0x880a, 5, d));
+        assert!(!qc_control_stall_profile(0x152a, 0x892f, 5, d));
+        assert!(!qc_control_stall_profile(0x152b, 0x880a, 5, d));
+        assert!(!qc_control_stall_profile(0x152a, 0x880a, 4, d));
+        assert!(!qc_control_stall_profile(0x152a, 0x880a, 5, &d[..31]));
+    }
+
+    #[test]
+    fn only_the_exact_native_stall_on_a_complete_report_is_expected() {
+        let stall = Err(HidError::HidApiError {
+            message: "IOHIDDeviceSetReport failed: (0xE0005000) unknown error code".into(),
+        });
+        let policy = WriteStallPolicy::MacosQc880aControlStatusStall;
+        assert!(write_report_delivered(&stall, 129, policy));
+        assert!(!write_report_delivered(&stall, 128, policy));
+        assert!(!write_report_delivered(
+            &stall,
+            129,
+            WriteStallPolicy::MacosSerialized
+        ));
+        assert!(!write_report_delivered(&Ok(128), 129, policy));
+        assert!(write_report_delivered(&Ok(129), 129, policy));
+        let other = Err(HidError::HidApiError {
+            message: "IOHIDDeviceSetReport failed: (0xE00002C0) error".into(),
+        });
+        assert!(!write_report_delivered(&other, 129, policy));
+    }
 }

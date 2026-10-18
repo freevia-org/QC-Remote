@@ -242,6 +242,60 @@ pub fn usage(message: &str, version: &str) -> Outcome {
     }
 }
 
+/// The standalone native menu uses the same owner-only descriptor, control
+/// authentication and directory guard as the existing automation client.
+pub fn menu_main(args: &[String], default_directory: Option<fn() -> PathBuf>) -> ! {
+    let env = NativeEnv { default_directory };
+    let result = (|| -> Result<Value, String> {
+        let action = args.first().is_some_and(|arg| arg == "--tray-action");
+        let mut index = 1;
+        let params = if action {
+            let raw = args.get(index).ok_or("Missing menu action")?;
+            if raw.len() > 16384 {
+                return Err("Menu action too large".into());
+            }
+            index += 1;
+            serde_json::from_str(raw).map_err(|_| "Invalid menu action JSON")?
+        } else {
+            json!({})
+        };
+        let directory = if args.get(index).is_some_and(|arg| arg == "--directory") {
+            let path = args.get(index + 1).ok_or("Missing directory")?;
+            index += 2;
+            Some(PathBuf::from(path))
+        } else {
+            None
+        };
+        if index != args.len() {
+            return Err("Unexpected menu arguments".into());
+        }
+        let directory =
+            guard_directory(directory.as_deref(), &env).map_err(|(_, detail)| detail)?;
+        let Found::Live(descriptor) = find(&directory, &env) else {
+            return Err("The broker is not running".into());
+        };
+        let timeouts = env.timeouts();
+        let response = Session::open(&descriptor, &timeouts).and_then(|mut session| {
+            session.call(
+                if action {
+                    "broker.trayAction"
+                } else {
+                    "broker.trayMenu"
+                },
+                params,
+                timeouts.status,
+            )
+        });
+        response.map_err(|failure| failure.step().2)
+    })();
+    let (code, report) = match result {
+        Ok(value) => (0, json!({"ok": true, "result": value})),
+        Err(detail) => (4, json!({"ok": false, "detail": detail})),
+    };
+    let _ = writeln!(io::stdout().lock(), "{report}");
+    std::process::exit(code)
+}
+
 /// Run one parsed command against `env`.
 pub fn run(invocation: &Invocation, version: &str, env: &dyn Env) -> Outcome {
     let command = invocation.command;

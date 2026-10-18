@@ -1,15 +1,17 @@
 //! Platform tray and residency integration. Windows and Linux draw their
-//! native icons in this process; macOS draws its menu bar item in the Tauri
-//! host and uses this module for broker residence and the device hold.
+//! native icons in this process; macOS draws its menu bar item in the standalone
+//! QC Device Broker menu app and uses this module for residence and device hold.
 //!
 //! Native tray backends own only their icon and menu. The state thread builds
 //! a snapshot from cached broker status and forwards menu commands; the
 //! broker's idle timer remains its own backstop thread.
 pub mod host_status;
+pub mod icon;
 pub mod install_stop;
 #[cfg(all(target_os = "linux", feature = "linux-tray"))]
 mod linux;
 pub mod model;
+pub(crate) mod menu_bridge;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod state;
 #[cfg(windows)]
@@ -147,7 +149,7 @@ pub fn start(handle: BrokerHandle, host: Option<Arc<dyn ResidentHost>>) {
     }
     #[cfg(target_os = "macos")]
     {
-        // Tauri owns the visible macOS menu bar surface. Keep the broker's
+        // The standalone menu app owns the visible macOS surface. Keep the broker's
         // action channel alive and track residence here without registering a
         // second native icon in the broker process.
         if let Err(error) = state::start(handle.clone(), host, |_, actions| {
