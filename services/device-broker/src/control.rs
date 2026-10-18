@@ -934,7 +934,15 @@ fn quit(directory: &Path, env: &dyn Env, report: &mut Map<String, Value>) -> Ste
     while Instant::now() < deadline {
         if !env.alive(descriptor.process_id, descriptor.process_created_at) {
             exited = true;
-            break;
+            // Process identity can become unreadable during native retirement.
+            // Allow the same shutdown budget for descriptor/claim release;
+            // a single early liveness observation is not completed cleanup.
+            let path = descriptor_path(directory);
+            let successor = matches!(find(directory, env), Found::Live(next)
+                if next.process_id != descriptor.process_id);
+            if successor || (!path.exists() && claim_state(&path, false) == "absent") {
+                break;
+            }
         }
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -1310,6 +1318,8 @@ impl Env for NativeEnv {
                     CREATE_NO_WINDOW
                 });
             }
+            #[cfg(target_os = "macos")]
+            detach_resident(&mut command);
             #[cfg(not(windows))]
             let _ = breakaway;
             command.spawn()
@@ -1402,3 +1412,16 @@ fn named_mutex_exists(_name: &str) -> bool {
 #[cfg(test)]
 #[path = "control_tests.rs"]
 mod tests;
+
+#[cfg(target_os = "macos")]
+fn detach_resident(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // A resident outlives its CLI/menu launcher and its terminal process group.
+    // SAFETY: setsid and last_os_error do not allocate or take locks after fork.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); }
+            Ok(())
+        });
+    }
+}

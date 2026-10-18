@@ -372,7 +372,7 @@ export const USER_GUIDE: readonly GuideSection[] = [
         items: [
           "Choose Help > Report an Issue… for a bug, or Help > Send Feedback… for an improvement. Either opens the same Feedback window, on Report a bug or Suggest an improvement; you can switch between the two there.",
           "Read the What to include list under the one you picked.",
-          "Press Open GitHub issue…. QC Remote opens the issue form in your browser. For a bug it fills in the version, your Windows version, an outline to describe what happened in, and the redacted diagnostics, which travel to GitHub in the link itself. Nothing is posted until you submit the form.",
+          "Press Open GitHub issue…. QC Remote opens the issue form in your browser. For a bug it fills in the version, your operating-system version, an outline to describe what happened in, and the redacted diagnostics, which travel to GitHub in the link itself. Nothing is posted until you submit the form.",
           "If the diagnostics are too long for the link, the window says so and the diagnostics field is left empty: press Copy diagnostics and paste them there. Export redacted diagnostics… saves the same report as a file."
         ]
       },

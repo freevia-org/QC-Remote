@@ -1696,6 +1696,8 @@ impl GatewayProcess {
                         "Broker returned an invalid backup session context".into(),
                     )
                 })?;
+        } else if method == DEVICE_BROKER_DISCONNECT_METHOD {
+            validate_gateway_result(rpc::DISCONNECT, &result)?;
         } else if method == "broker.createDeviceBackupBound" {
             validate_gateway_result(rpc::CREATE_DEVICE_BACKUP, &result)?;
         } else {
