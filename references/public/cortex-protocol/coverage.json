@@ -3,13 +3,13 @@
   "declared": 72,
   "decodable": 72,
   "encodedByApp": 46,
-  "handledInbound": 44,
+  "handledInbound": 47,
   "transportRejected": 6,
   "sentOnWire": 44,
   "receivedOnWire": 41,
   "receivedButUnhandled": 1,
   "sentButNeverReceived": 5,
-  "drivenByApp": 50,
+  "drivenByApp": 53,
   "rows": [
     {
       "number": 1,
@@ -306,7 +306,7 @@
       "name": "BackupsForward",
       "decodable": true,
       "encodedByApp": false,
-      "handledInbound": false,
+      "handledInbound": true,
       "transportRejected": true,
       "sentOnWire": false,
       "receivedOnWire": false
@@ -316,7 +316,7 @@
       "name": "LogsForward",
       "decodable": true,
       "encodedByApp": false,
-      "handledInbound": false,
+      "handledInbound": true,
       "transportRejected": true,
       "sentOnWire": false,
       "receivedOnWire": false
@@ -416,7 +416,7 @@
       "name": "CloudBackup",
       "decodable": true,
       "encodedByApp": false,
-      "handledInbound": false,
+      "handledInbound": true,
       "transportRejected": true,
       "sentOnWire": false,
       "receivedOnWire": false
