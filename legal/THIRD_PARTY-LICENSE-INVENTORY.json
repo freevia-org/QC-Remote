@@ -8174,6 +8174,7 @@
       "sourceUrl": "https://github.com/tauri-apps/tauri",
       "licenseTextHashes": [
         "4bf96504d6e83ce5c6fc7167f1795d9ceaa68e70ab86bc5d08ab93184262bbbe",
+        "7c667b0cf9860e6a1e3f221a84c0162f35268665acf88dce521ed665ed1e7b93",
         "89ff9689dcf9dd53968785d05a26f7898bb169dbfcada8d032b3e68cf0d55607"
       ]
     },
@@ -10403,6 +10404,15 @@
       ]
     },
     {
+      "sha256": "7c667b0cf9860e6a1e3f221a84c0162f35268665acf88dce521ed665ed1e7b93",
+      "names": [
+        "LICENSE.spdx"
+      ],
+      "components": [
+        "npm:@tauri-apps/api@2.12.4"
+      ]
+    },
+    {
       "sha256": "7dc2f64024477c92b147ae4a93bbcef90031b33ba0de6a84bd570d59e6c0688b",
       "names": [
         "LICENSE-MIT"
@@ -10966,7 +10976,8 @@
     {
       "sha256": "97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a",
       "names": [
-        "https://github.com/stepancheg/rust-protoc-bin-vendored/blob/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt (SHA-256 97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a)"
+        "https://github.com/stepancheg/rust-protoc-bin-vendored/blob/895c0433c3727a552970ce961e398e20e52d6353/LICENSE.txt (SHA-256 97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a)",
+        "https://github.com/stepancheg/rust-protoc-bin-vendored/blob/d7cc7356ead5b0efd14c415103406b2221a3f8fb/LICENSE.txt (SHA-256 97647e63047ef75a82ee2928b335df94f45c87e08777dc033393c73294f3a57a)"
       ],
       "components": [
         "cargo:protoc-bin-vendored-linux-aarch_64@3.2.0",
