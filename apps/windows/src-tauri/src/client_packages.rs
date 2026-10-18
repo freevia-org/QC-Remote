@@ -35,6 +35,10 @@ use std::os::windows::process::CommandExt;
 use std::process::Stdio;
 
 const CLAUDE_EXTENSION_NAME: &str = "qc-remote";
+// MCPB derives the installed extension id from author + name. These are
+// persistent identifiers, NOT release branding: changing either installs a
+// second server instead of updating local.mcpb.freevia-eood.qc-remote.
+const CLAUDE_EXTENSION_AUTHOR: &str = "Freevia EOOD";
 const CLAUDE_EXTENSION_FILE: &str = "QC-Remote-Claude.mcpb";
 const LEGACY_CHATGPT_RUNNER_FILE: &str = "chatgpt-local-mcp.ps1";
 const ANTIGRAVITY_DOWNLOAD_URL: &str = "https://antigravity.google/download";
@@ -303,12 +307,12 @@ const BRIDGE_FILE_NAME: &str = "local-mcp-bridge.cjs";
 fn claude_manifest() -> Result<Vec<u8>, String> {
     serde_json::to_vec_pretty(&json!({
         "manifest_version": "0.3",
-        "name": "qc-remote",
+        "name": CLAUDE_EXTENSION_NAME,
         "display_name": "QC Remote",
         "version": env!("CARGO_PKG_VERSION"),
         "description": "Control a Quad Cortex through the running QC Remote app.",
         "long_description": "A local-only bridge between Claude and QC Remote. QC Remote remains the sole owner of the Quad Cortex USB session and enforces its selected control access level. Claude manages tool approvals; choose Always allow after installation if you want uninterrupted control.",
-        "author": { "name": "Freevia EOOD" },
+        "author": { "name": CLAUDE_EXTENSION_AUTHOR },
         "server": {
             "type": "node",
             "entry_point": "server/index.cjs",

@@ -7,6 +7,7 @@ const { createHmac, randomBytes, randomUUID, timingSafeEqual } = require("node:c
 const { open } = require("node:fs/promises");
 const { closeSync, fsyncSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } = require("node:fs");
 const path = require("node:path");
+const { PassThrough } = require("node:stream");
 
 const STATE_OVERRIDE = "QC_REMOTE_LOCAL_MCP_STATE";
 const TIMEOUT_OVERRIDE = "QC_REMOTE_LOCAL_MCP_TIMEOUT_MS";
@@ -1523,7 +1524,16 @@ async function attemptAnnouncement(client, stopping) {
 async function main(options = {}) {
   if (startedBridge) throw new Error("This bridge module already owns a main invocation");
   startedBridge = true;
-  bridgeEnvelope = options.envelope ?? createBridgeEnvelope(options);
+  // Electron's utility host proxies stdin's public event/read methods, but its
+  // native async iterator still sees the original Socket's internal state.
+  // Wrap exactly once, when starting, not while merely importing this library.
+  const hostedInput = !options.envelope && !options.input && process.parentPort
+    ? process.stdin.pipe(new PassThrough())
+    : undefined;
+  bridgeEnvelope = options.envelope ?? createBridgeEnvelope({
+    ...options,
+    input: options.input ?? hostedInput ?? process.stdin,
+  });
   runtimeStatePath = options.stateFile;
   const inFlight = new Set();
   const own = (pending, release = () => {}) => {
@@ -1565,6 +1575,11 @@ async function main(options = {}) {
     }
   } catch (error) { bridgeEnvelope.fail(error); }
   finally {
+    if (hostedInput) {
+      process.stdin.unpipe(hostedInput);
+      process.stdin.pause();
+      hostedInput.destroy();
+    }
     stoppingBridge = true;
     if (appWatch) { clearInterval(appWatch); appWatch = undefined; }
     if (announcing) { clearInterval(announcing); announcing = undefined; }
@@ -1583,7 +1598,10 @@ async function main(options = {}) {
 }
 
 module.exports = { createBridgeEnvelope, main };
-if (require.main === module) main().catch((error) => {
+// Claude's built-in Node host sets argv[1] to this entry point, then dynamically
+// imports it from its own bootstrap. In that host require.main is NOT this
+// module. Still keep ordinary library imports inert for embedded/test callers.
+if (require.main === module || (process.argv[1] && path.resolve(process.argv[1]) === __filename)) main().catch((error) => {
   bridgeEnvelope.diagnostics.write(`[qc-remote-mcp] ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

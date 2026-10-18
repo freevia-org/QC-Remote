@@ -1027,6 +1027,10 @@ fn claude_manifest_satisfies_the_mcpb_required_fields() {
         assert!(manifest.get(field).is_some(), "MCPB requires {field}");
     }
     assert_eq!(manifest["manifest_version"], "0.3");
+    // Literal compatibility pins: a branding/version update must replace the
+    // existing extension, not install another MCP under a new publisher id.
+    assert_eq!(manifest["name"], "qc-remote");
+    assert_eq!(manifest["author"]["name"], "Freevia EOOD");
     #[cfg(target_os = "macos")]
     assert_eq!(manifest["compatibility"]["platforms"], json!(["darwin"]));
     #[cfg(target_os = "linux")]
