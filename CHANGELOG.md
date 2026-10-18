@@ -110,6 +110,28 @@ covers everything since the last public Windows and Android release.
 - The Grid, Directory, Settings, I/O, Tempo, Modes and Copy/Swap screens and the
   CPU Monitor are the same shared drawings as on Windows.
 
+### Known limitations
+
+- **macOS, broker output deadline (confirmed gap).** The shared broker framing
+  does not enforce an absolute output deadline: on both macOS CI runners a
+  stalled peer held a write for about 7.0 to 7.1 s against the 5 s budget. No
+  macOS artifact is part of this release.
+- **Windows, broker output deadline (not confirmed, not cleared).** The same
+  output-deadline behaviour has neither been confirmed nor cleared on Windows,
+  and no validated hard 5 s output bound is claimed.
+- **Broker output-mutex admission.** Callers can wait on the output lock before
+  the 5 s timer starts. This is a separate, tracked caller issue.
+- **Type-61 update requests.** The unit's update-request relay attempts every
+  request, with no promise that each one is served and no aggregate resource
+  bound. This is unchanged by decision of the project owner.
+- **Android with the internet relay switch off.** Nothing answers the unit's
+  cloud-account (Type 29) requests, unlike Windows.
+- **Screens.** On the I/O screen, OUT LEVEL and LIMITER show idle placeholders,
+  not live meters. Settings text is slightly heavier than the unit's.
+  Settings > Connection data is not exposed by the gateway.
+
+A production fix for the framing deadline is the first follow-up.
+
 ## QC Remote 0.1.187 — Linux — 14 October 2026
 
 - Remote and local MCP enforce the shared access policy at request admission;
