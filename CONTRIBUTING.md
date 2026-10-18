@@ -217,6 +217,8 @@ This disables persistent Gradle daemons and runs Kotlin compilation in the Gradl
 The supervisor retires only that build's process tree on completion, failure,
 timeout or interruption, including launcher termination on Windows. It never
 uses global `gradle --stop` or stops the emulator or another session's processes.
+Gradle can still fork a single-use daemon; the supervisor owns it until the build exits.
+The Android CI job runs `./gradlew` directly and is not supervised by this wrapper.
 Raw wrapper calls inherit the project daemon settings but do not have the
 supervisor's hard-termination protection; use the managed entrypoint.
 Windows batch arguments containing quotes, percent signs, exclamation marks or

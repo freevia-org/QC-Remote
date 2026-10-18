@@ -15,7 +15,8 @@
 
 param(
     [switch]$SkipRustBuild,
-    # Development validation compiles the same native inputs, plus Java tests/lint.
+    # Non-distribution-signed debug validation: assembleDebug plus lintDebug and
+    # testDebugUnitTest. The Android CI job does not run lint.
     [switch]$RunChecks
 )
 
