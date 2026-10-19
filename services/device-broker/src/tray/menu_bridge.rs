@@ -6,6 +6,7 @@ use std::sync::{mpsc::Sender, Arc, OnceLock};
 
 static BRIDGE: OnceLock<(Arc<Shared>, Sender<model::MenuAction>)> = OnceLock::new();
 
+#[cfg(target_os = "macos")]
 pub(super) fn install(shared: Arc<Shared>, actions: Sender<model::MenuAction>) {
     let _ = BRIDGE.set((shared, actions));
 }
