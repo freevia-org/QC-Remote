@@ -3394,8 +3394,15 @@ fn an_attached_client_drop_closes_its_connection_without_killing_the_broker() {
 fn a_descriptor_left_by_a_dead_broker_is_replaced_by_a_new_host() {
     let _serialize = serialize_real_broker_test();
     let (_cleanup, descriptor_path) = armed_broker_descriptor_path("dead-descriptor");
-    // A fresh descriptor naming a port nothing listens on: the shape a
-    // crashed or killed broker leaves behind for up to its staleness window.
+    // Refused TCP alone is not death proof. Use the existing owned short-child
+    // fixture, which observes exit and reaps the original before returning.
+    // PID 1 is live on Linux; with no recorded creation it would be Unknown.
+    let dead_pid = exited_process_id();
+    assert_eq!(
+        qc_native_platform::owner_identity::native(dead_pid, None),
+        qc_native_platform::owner_identity::Assessment::GoneOrDifferent,
+        "the fixture must establish an exited owner, not a guessed-dead PID"
+    );
     let unused_port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -3408,7 +3415,7 @@ fn a_descriptor_left_by_a_dead_broker_is_replaced_by_a_new_host() {
             port: unused_port,
             bearer_token: "gone".into(),
             instance_id: "gone".into(),
-            process_id: 1,
+            process_id: dead_pid,
             process_created_at: None,
             published_at_unix_ms: device_broker_descriptor::unix_time_ms(),
             gateway_api_version: None,
