@@ -2407,25 +2407,57 @@ type SharedBrokerAttachment = (GatewayTransport, u32);
 /// connect. The election winner passes `0`, which accepts a descriptor of any
 /// age: before it may delete a descriptor, even an expired one, it has to have
 /// proved the broker behind it dead.
-fn attach_to_published_device_broker(
+fn attach_to_published_device_broker_with_admission(
     descriptor_path: &Path,
     now_ms: u64,
+    admission: &qc_native_platform::owner_identity::RecoveryAdmission,
+) -> Option<Result<SharedBrokerAttachment, BrokerAttachFailure>> {
+    attach_to_published_device_broker_assessed(descriptor_path, now_ms, &|pid, created| {
+        admission.assess(pid, created)
+    })
+}
+
+fn attach_to_published_device_broker_assessed(
+    descriptor_path: &Path,
+    now_ms: u64,
+    assess: &impl Fn(u32, Option<u64>) -> qc_native_platform::owner_identity::Assessment,
 ) -> Option<Result<SharedBrokerAttachment, BrokerAttachFailure>> {
     let descriptor = device_broker_descriptor::read_descriptor(descriptor_path, now_ms)?;
-    Some(attach_to_device_broker(&descriptor).map(|stream| {
-        (
-            GatewayTransport::SharedBroker {
-                stream,
-                hosted_child: None,
-                instance_id: descriptor.instance_id.clone(),
-                release_marker_path: generated_broker_surface::BrokerReleaseMarker::path_for(
-                    descriptor_path,
-                    &descriptor.instance_id,
-                ),
-            },
-            descriptor.process_id,
-        )
-    }))
+    use qc_native_platform::owner_identity::Assessment;
+    let verdict = assess(descriptor.process_id, descriptor.process_created_at);
+    if verdict == Assessment::GoneOrDifferent {
+        return Some(Err(BrokerAttachFailure::Gone(
+            "The published broker process generation is gone or different".into(),
+        )));
+    }
+    Some(
+        attach_to_device_broker(&descriptor)
+            .map_err(|error| {
+                if verdict == Assessment::Unknown {
+                    BrokerAttachFailure::Unresponsive(format!(
+                        "Broker owner identity is unavailable; its records were preserved: {}",
+                        error.message()
+                    ))
+                } else {
+                    error
+                }
+            })
+            .map(|stream| {
+                (
+                    GatewayTransport::SharedBroker {
+                        stream,
+                        hosted_child: None,
+                        instance_id: descriptor.instance_id.clone(),
+                        release_marker_path:
+                            generated_broker_surface::BrokerReleaseMarker::path_for(
+                                descriptor_path,
+                                &descriptor.instance_id,
+                            ),
+                    },
+                    descriptor.process_id,
+                )
+            }),
+    )
 }
 
 /// Attach to the machine's shared broker, electing and spawning one if none
@@ -2695,45 +2727,54 @@ fn attach_or_host_device_broker_within(
     }
     let election_path = device_broker_election_path(descriptor_path);
     let deadline = Instant::now() + budget;
-    attach_or_elect_until(
-        deadline,
-        may_host,
-        || {
-            // Every attach retry keeps the same-generation refusal: while a
-            // user's Quit stands and nothing here is attachable but the quit
-            // generation on its way out (or nothing at all), this is "no
-            // broker", so the next step is the election, whose spawn
-            // admission refuses with the Quit's advice. A newer live broker is
-            // attached as before.
-            if may_host && user_quit_refusal(descriptor_path).is_some() {
-                return None;
-            }
-            attach_to_published_device_broker(
-                descriptor_path,
-                device_broker_descriptor::unix_time_ms(),
-            )
-        },
-        |last_error| match device_broker_descriptor::try_claim_descriptor_slot(&election_path) {
-            Ok(election) => {
-                let outcome = host_device_broker(descriptor_path, auto_connect);
-                drop(election);
-                device_broker_descriptor::release_descriptor_slot(&election_path);
-                match outcome? {
-                    HostAttempt::Attached(attachment) => Ok(Some(attachment)),
-                    HostAttempt::Occupied(error) => {
-                        *last_error = error;
-                        Ok(None)
+    let admission = prepare_broker_recovery_admission(descriptor_path, may_host);
+    qc_native_platform::owner_identity::after_preparation(deadline, Instant::now(), |_| {
+        attach_or_elect_until(
+            deadline,
+            may_host,
+            || {
+                // Every attach retry keeps the same-generation refusal: while a
+                // user's Quit stands and nothing here is attachable but the quit
+                // generation on its way out (or nothing at all), this is "no
+                // broker", so the next step is the election, whose spawn
+                // admission refuses with the Quit's advice. A newer live broker is
+                // attached as before.
+                if may_host && user_quit_refusal(descriptor_path).is_some() {
+                    return None;
+                }
+                attach_to_published_device_broker_with_admission(
+                    descriptor_path,
+                    device_broker_descriptor::unix_time_ms(),
+                    &admission,
+                )
+            },
+            |last_error| match device_broker_descriptor::try_claim_descriptor_slot(&election_path) {
+                Ok(election) => {
+                    let outcome = host_device_broker_with_admission(
+                        descriptor_path,
+                        auto_connect,
+                        &admission,
+                    );
+                    drop(election);
+                    device_broker_descriptor::release_descriptor_slot(&election_path);
+                    match outcome? {
+                        HostAttempt::Attached(attachment) => Ok(Some(attachment)),
+                        HostAttempt::Occupied(error) => {
+                            *last_error = error;
+                            Ok(None)
+                        }
                     }
                 }
-            }
-            Err(()) => {
-                remove_abandoned_election_lock(&election_path);
-                Ok(None)
-            }
-        },
-        Instant::now,
-        std::thread::sleep,
-    )
+                Err(()) => {
+                    remove_abandoned_election_lock(&election_path);
+                    Ok(None)
+                }
+            },
+            Instant::now,
+            std::thread::sleep,
+        )
+    })
+    .map_err(str::to_owned)?
 }
 
 /// The attach-or-elect decision of `attach_or_host_device_broker_within`,
@@ -2828,7 +2869,53 @@ enum HostAttempt {
 }
 
 /// Run by the election winner only.
+fn prepare_broker_recovery_admission(
+    descriptor_path: &Path,
+    may_host: bool,
+) -> qc_native_platform::owner_identity::RecoveryAdmission {
+    use qc_native_platform::owner_identity::RecoveryAdmission;
+    if !may_host {
+        return RecoveryAdmission::none();
+    }
+    let Some(record) = device_broker_descriptor::read_descriptor(descriptor_path, 0) else {
+        return RecoveryAdmission::none();
+    };
+    let helper = qc_native_platform::owner_identity::current_helper();
+    RecoveryAdmission::prepare(
+        record.process_id,
+        record.process_created_at,
+        helper.as_deref(),
+    )
+}
+
+#[cfg(test)]
 fn host_device_broker(descriptor_path: &Path, auto_connect: bool) -> Result<HostAttempt, String> {
+    host_device_broker_with_admission(
+        descriptor_path,
+        auto_connect,
+        &qc_native_platform::owner_identity::RecoveryAdmission::none(),
+    )
+}
+
+fn host_device_broker_with_admission(
+    descriptor_path: &Path,
+    auto_connect: bool,
+    admission: &qc_native_platform::owner_identity::RecoveryAdmission,
+) -> Result<HostAttempt, String> {
+    host_device_broker_assessed(
+        descriptor_path,
+        &|pid, created| admission.assess(pid, created),
+        || start_device_broker(descriptor_path, auto_connect),
+    )
+}
+
+/// The real hosting decision with injectable observations and spawn boundary.
+/// Tests exercise retirement and start admission without launching a broker.
+fn host_device_broker_assessed(
+    descriptor_path: &Path,
+    assess: &impl Fn(u32, Option<u64>) -> qc_native_platform::owner_identity::Assessment,
+    start: impl FnOnce() -> Result<HostAttempt, String>,
+) -> Result<HostAttempt, String> {
     #[cfg(all(test, windows))]
     require_native_test_state_root()?;
     // A broker may have been published between the failed attach and winning
@@ -2838,11 +2925,11 @@ fn host_device_broker(descriptor_path: &Path, auto_connect: bool) -> Result<Host
     // refresh and this process may have read the previous generation.
     //
     // Staleness is ignored here (`now_ms` 0): the descriptor is about to be
-    // deleted, and only a refused connect or a vanished process justifies
-    // that - not the age of the file.
+    // deleted, and only positive process-generation evidence justifies that,
+    // never a refused connection or the age of the file.
     for pause in [Duration::ZERO, Duration::from_millis(100)] {
         std::thread::sleep(pause);
-        match attach_to_published_device_broker(descriptor_path, 0) {
+        match attach_to_published_device_broker_assessed(descriptor_path, 0, assess) {
             Some(Ok(attachment)) => return Ok(HostAttempt::Attached(attachment)),
             Some(Err(BrokerAttachFailure::Unresponsive(error))) => {
                 return Ok(HostAttempt::Occupied(error));
@@ -2868,8 +2955,35 @@ fn host_device_broker(descriptor_path: &Path, auto_connect: bool) -> Result<Host
     // Whatever is still at the descriptor path names a broker proven dead, or
     // is not a descriptor at all. The new broker's own `create_new` claim
     // needs the path free.
-    device_broker_descriptor::release_descriptor_slot(descriptor_path);
+    let expected = match crate::local_stdio::read_local_document(descriptor_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "Could not revalidate the broker descriptor: {error}"
+            ))
+        }
+    };
+    if let Some(bytes) = &expected {
+        if let Ok(record) =
+            serde_json::from_slice::<device_broker_descriptor::DeviceBrokerDescriptor>(bytes)
+        {
+            if assess(record.process_id, record.process_created_at)
+                != qc_native_platform::owner_identity::Assessment::GoneOrDifferent
+            {
+                return Ok(HostAttempt::Occupied(
+                    "Broker owner changed or is unverifiable; its descriptor was preserved".into(),
+                ));
+            }
+        }
+    }
+    qc_owner_only_file::release_if_unclaimed_matching(descriptor_path, expected.as_deref())
+        .map_err(|error| format!("Broker publication changed or remains owned: {error}"))?;
 
+    start()
+}
+
+fn start_device_broker(descriptor_path: &Path, auto_connect: bool) -> Result<HostAttempt, String> {
     // The owner slot
     // for the broker about to be spawned is reserved first. If this domain
     // still holds a broker whose exit was never acknowledged, or every slot

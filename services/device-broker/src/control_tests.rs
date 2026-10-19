@@ -308,6 +308,7 @@ struct TestEnv {
     interactive: bool,
     spawner: Option<Spawner>,
     spawns: AtomicUsize,
+    owner_override: Option<qc_native_platform::owner_identity::Assessment>,
 }
 
 impl TestEnv {
@@ -319,6 +320,7 @@ impl TestEnv {
             interactive: true,
             spawner: None,
             spawns: AtomicUsize::new(0),
+            owner_override: None,
         }
     }
     fn watching(self, served: &Served) -> Self {
@@ -328,6 +330,19 @@ impl TestEnv {
 }
 
 impl Env for TestEnv {
+    fn owner_assessment(
+        &self,
+        pid: u32,
+        created: Option<u64>,
+    ) -> qc_native_platform::owner_identity::Assessment {
+        self.owner_override.unwrap_or_else(|| {
+            if self.alive(pid, created) {
+                qc_native_platform::owner_identity::Assessment::Same
+            } else {
+                qc_native_platform::owner_identity::Assessment::GoneOrDifferent
+            }
+        })
+    }
     fn own_directory(&self) -> Option<PathBuf> {
         Some(self.directory.clone())
     }
@@ -396,6 +411,32 @@ fn invoke(command: Command, confirm: bool, env: &dyn Env) -> Outcome {
         "9.9.9",
         env,
     )
+}
+
+#[test]
+fn owner_recovery_control_unknown_is_not_reported_dead_or_sent_actions() {
+    let root = Scratch::new("owner-unknown");
+    let mut claim = qc_owner_only_file::ClaimedFile::try_claim(&root.descriptor()).unwrap();
+    let bytes = serde_json::to_vec(&serde_json::json!({"processId":42,"processCreatedAt":7,
+        "port":1,"bearerToken":"synthetic","instanceId":"fixture","publishedAtUnixMs":1}))
+    .unwrap();
+    claim.write(&bytes).unwrap();
+    let mut env = TestEnv::new(&root.0);
+    env.owner_override = Some(qc_native_platform::owner_identity::Assessment::Unknown);
+    let status = invoke(Command::Status, false, &env);
+    assert_eq!(status.report["outcome"], "ownerIdentityUnavailable");
+    assert!(status.report["running"].is_null());
+    assert_eq!(
+        status.report["descriptor"]["reason"],
+        "processIdentityUnavailable"
+    );
+    assert!(status.report["descriptor"]["live"].is_null());
+    let connect = invoke(Command::Connect, false, &env);
+    assert_eq!(connect.exit_code, exit::REFUSED);
+    assert_eq!(connect.report["outcome"], "ownerIdentityUnavailable");
+    assert_eq!(fs::read(root.descriptor()).unwrap(), bytes);
+    assert_eq!(env.spawns.load(Ordering::Acquire), 0);
+    claim.release().unwrap();
 }
 
 /// A resident broker whose icon holds the device indefinitely: nothing reaps

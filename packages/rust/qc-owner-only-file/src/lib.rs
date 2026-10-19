@@ -542,9 +542,116 @@ pub fn release_if_unclaimed(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Retire only the exact document observed by a recovery admission. The caller
+/// must independently prove its owner obsolete and hold the election/transition
+/// guard. Acquiring the sidecar is exclusion, never proof that a PID is dead.
+pub fn release_if_unclaimed_matching(path: &Path, expected: Option<&[u8]>) -> io::Result<()> {
+    use std::io::Read;
+    let lock_path = claim_path(path);
+    let (claim, created) = match claim_options().open(&lock_path) {
+        Ok(claim) => (claim, false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            (claim_options().create_new(true).open(&lock_path)?, true)
+        }
+        Err(error) => return Err(error),
+    };
+    claim.try_lock().map_err(io::Error::other)?;
+    ensure_current_claim(&claim, &lock_path)?;
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(
+                windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+        }
+        let actual = match options.open(path) {
+            Ok(file) => {
+                let metadata = file.metadata()?;
+                if !metadata.is_file() {
+                    return Err(io::Error::other("Recovery document is not regular"));
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    if metadata.file_attributes()
+                        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                        != 0
+                    {
+                        return Err(io::Error::other("Recovery document is a reparse point"));
+                    }
+                }
+                let mut bytes = Vec::new();
+                file.take(128 * 1024 + 1).read_to_end(&mut bytes)?;
+                if bytes.len() > 128 * 1024 {
+                    return Err(io::Error::other("Recovery document exceeds read budget"));
+                }
+                Some(bytes)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        if actual.as_deref() != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Recovery document generation changed",
+            ));
+        }
+        remove_document(path)
+    })();
+    // No document is removed on mismatch. Delete only our exact unlocked claim,
+    // by handle on Windows; a live publisher's claim cannot have been acquired.
+    match result {
+        Ok(()) => remove_claim(claim, &lock_path),
+        Err(error) => {
+            if created {
+                remove_claim(claim, &lock_path)?;
+            }
+            // Existing unmatched claims belong to the changed document, not us.
+            Err(error)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recovery_matching_preserves_held_and_changed_publications() {
+        let path = scratch("recovery-match");
+        let mut holder = ClaimedFile::try_claim(&path).unwrap();
+        holder.write(b"generation-a").unwrap();
+        assert!(release_if_unclaimed_matching(&path, Some(b"generation-a")).is_err());
+        holder.write(b"generation-b").unwrap();
+        drop(holder);
+        assert!(release_if_unclaimed_matching(&path, Some(b"generation-a")).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"generation-b");
+        assert!(
+            claim_path(&path).exists(),
+            "changed publication retains its existing claim"
+        );
+        release_if_unclaimed_matching(&path, Some(b"generation-b")).unwrap();
+        assert!(!path.exists());
+        assert!(!claim_path(&path).exists());
+    }
+    #[test]
+    fn recovery_missing_observation_cannot_delete_a_new_document() {
+        let path = scratch("recovery-new");
+        fs::write(&path, b"new-generation").unwrap();
+        assert!(release_if_unclaimed_matching(&path, None).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"new-generation");
+        assert!(
+            !claim_path(&path).exists(),
+            "failed comparison retires only its own new claim"
+        );
+    }
     #[cfg(any(unix, windows))]
     #[test]
     fn fresh_owner_only_opener_protects_before_write_and_preserves_collisions() {
