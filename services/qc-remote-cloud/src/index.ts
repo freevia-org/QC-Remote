@@ -1,5 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { requestInitializeClient, requestClientMetadata, observedClientName, mcpPresenceFrame, updateMcpPresence, forgetMcpGrant, publicMcpPresence, rememberedMcpPresence, nextPresenceExpiry, MCP_PRESENCE_LEASE_MS, type McpObservation, type StoredMcpPresence, type McpClientPresence } from "./mcp-presence.ts";
+import { requestInitializeClient, requestClientMetadata, observedClientName, mcpPresenceFrame, updateMcpPresence, forgetMcpGrant, publicMcpPresence, rememberedMcpPresence, nextPresenceExpiry, type McpObservation, type StoredMcpPresence, type McpClientPresence } from "./mcp-presence.ts";
 import OAuthProvider, { getOAuthApi, type OAuthProviderOptions } from "@cloudflare/workers-oauth-provider";
 import { createMcpHandler } from "agents/mcp/server";
 import { McpServer } from "@modelcontextprotocol/server";
@@ -582,42 +582,27 @@ function toolResult(value: Json): { content: Array<{ type: "text"; text: string 
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
-type PresenceActivity = { renew(): Promise<void>; remove(): Promise<void> };
-
-async function observeMcpRequest(request: Request, env: Env, props: PrincipalProps): Promise<PresenceActivity | undefined> {
+async function observeMcpRequest(request: Request, env: Env, props: PrincipalProps): Promise<void> {
   const token = bearer(request);
-  if (!token || !["POST", "DELETE"].includes(request.method)) return undefined;
-  const sessionId = request.headers.get("mcp-session-id") ?? "";
-  if (sessionId.length > 128) return undefined;
-  // The private key is a one-way digest scoped to this authenticated credential
-  // and optional real MCP session id. Hosts see only a random lease identifier.
-  const key = await hash(JSON.stringify([token, sessionId]));
-  const initialized = request.method === "POST" ? await requestInitializeClient(request) : { name: null, version: null };
+  if (!token || request.method !== "POST") return;
+  const initialized = await requestInitializeClient(request);
   const caller = requestClientMetadata(request);
   const fallbackName = observedClientName(props.clientName);
   // This handler runs only after the provider accepted `token`, so its grant
   // segment is the authorization a paired host may revoke (connector-grants.ts).
   const grantId = accessTokenGrantId(token, props.subject);
   const session = rpcSession(env, ownerSessionKey(env.QCRC_ENVIRONMENT, props.subject));
-  const activity: PresenceActivity = {
-    renew: () => session.observeMcpClient({ key, clientId: props.clientId, grantId, name: initialized.name, version: initialized.version, fallbackName, ...caller }, props.accountGeneration ?? 0),
-    remove: () => session.observeMcpClient({ key, remove: true }),
-  };
-  if (request.method === "DELETE") await activity.remove();
-  else await activity.renew();
-  return activity;
+  // One key per OAuth grant/client, deliberately independent of individual
+  // request tokens and MCP session IDs. Repeated requests only read the row.
+  const key = await hash(JSON.stringify([props.subject, grantId ?? props.clientId ?? "unknown-client"]));
+  await session.observeMcpClient({ key, clientId: props.clientId, grantId, name: initialized.name, version: initialized.version, fallbackName, ...caller }, props.accountGeneration ?? 0);
 }
 
-function mcpHandler(env: Env, props: PrincipalProps, presence?: PresenceActivity) {
+function mcpHandler(env: Env, props: PrincipalProps) {
   const scopes = new Set(props.scopes ?? []);
   const route = async (command: Json, requiredScope: "qc:read" | "qc:control"): Promise<Json> => {
     if (!props.subject) throw new Error("QC Remote identity is required");
     if (!scopes.has(requiredScope)) throw new Error(`This tool requires the ${requiredScope} OAuth permission.`);
-    // Google identity scopes each connected host to its authenticated owner.
-    // The device wire protocol stays independent of the identity provider.
-    // Keep an observed client active while a real device operation is pending.
-    // These renewals end with the request; durable expiry uses the DO alarm.
-    const heartbeat = presence ? setInterval(() => { void presence.renew().catch(() => {}); }, MCP_PRESENCE_LEASE_MS / 3) : undefined;
     try {
       return await rpcSession(env, ownerSessionKey(env.QCRC_ENVIRONMENT, props.subject)).command(command, props.accountGeneration ?? 0);
     } catch (reason) {
@@ -629,8 +614,6 @@ function mcpHandler(env: Env, props: PrincipalProps, presence?: PresenceActivity
         throw new Error(`${reason.message} This assistant is signed in as ${props.email}.`);
       }
       throw reason;
-    } finally {
-      if (heartbeat !== undefined) clearInterval(heartbeat);
     }
   };
   // A resource callback passes RESOURCE_READ_ORIGIN; a tool never does.
@@ -749,9 +732,9 @@ const OAUTH_OPTIONS: OAuthProviderOptions<Env> = {
       }
       if (admission === "deleting") return error(ACCOUNT_DELETION_PENDING_MESSAGE, 503);
     }
-    const presence = await observeMcpRequest(request, env, props).catch(() => undefined);
-    // Admission records activity once; in-flight device calls renew their own lease.
-    return mcpHandler(env, props, presence)(request, env, ctx);
+    await observeMcpRequest(request, env, props).catch(() => undefined);
+    // Admission records each authenticated client once; requests never renew it.
+    return mcpHandler(env, props)(request, env, ctx);
   } },
   defaultHandler: { async fetch(request, env, ctx) { return await handleGoogleAuthorization(request, env, grantFence(env)) ?? baseHandler.fetch!(request, env, ctx); } },
   authorizeEndpoint: "/authorize",
@@ -864,9 +847,8 @@ export class DeviceSession extends DurableObject<Env> {
     await this.refreshMcpPresence(undefined, grantId);
   }
 
-  /** Recent sanitized MCP activity for the owning account's connector roster.
-   * Live presence remains a short lease; this history only supplies a truthful
-   * last-activity timestamp and never turns an expired lease into Connected. */
+  /** Sanitized MCP client registry for the owning account's connector roster.
+   * Each OAuth client is recorded at first observation, not refreshed per request. */
   async mcpClientActivity(): Promise<McpClientPresence[]> {
     const now = Date.now();
     const rows = await this.ctx.storage.get<StoredMcpPresence[]>(MCP_PRESENCE_KEY) ?? [];
@@ -877,25 +859,33 @@ export class DeviceSession extends DurableObject<Env> {
     await this.expireDeviceSockets();
     const now = Date.now();
     const rows = await this.ctx.storage.transaction(async (transaction) => {
-      // Activity is account data: refused, inside this transaction, while a
-      // deletion is pending or for a grant from before a deletion.
-      if (observation) await assertAccountWritable(transaction, generation);
-      await scheduleProviderWritesRetention(transaction, now);
       const stored = await transaction.get<StoredMcpPresence[]>(MCP_PRESENCE_KEY) ?? [];
       const previous = forgetGrantId ? forgetMcpGrant(stored, forgetGrantId) : stored;
       const next = updateMcpPresence(previous, observation, now, () => crypto.randomUUID());
-      if (next.length > 0) await transaction.put(MCP_PRESENCE_KEY, next);
-      else await transaction.delete(MCP_PRESENCE_KEY);
-      // One alarm serves presence leases, socket credential expiry and device
-      // retention (device-retention.ts): it is set for the earliest of them.
+      const changed = JSON.stringify(stored) !== JSON.stringify(next);
+      // A repeated MCP request is strictly read-only: do not touch account
+      // retention, alarms, or storage after recognizing its client record.
+      if (observation && !changed) return next;
+      // A newly observed client is account data, so reject it during deletion
+      // before any write. Retention work is needed only on a state change.
+      if (observation) await assertAccountWritable(transaction, generation);
+      await scheduleProviderWritesRetention(transaction, now);
+      if (changed && next.length > 0) await transaction.put(MCP_PRESENCE_KEY, next);
+      else if (changed) await transaction.delete(MCP_PRESENCE_KEY);
+      // One alarm serves socket credential expiry and device retention
+      // (device-retention.ts): it is set for the earliest of them.
       const presenceExpiry = nextPresenceExpiry(next, now);
       const socketExpiry = this.nextDeviceExpiry();
       const retentionWork = await transaction.get<number>(DEVICE_SWEEP_KEY);
       const providerWritesWork = await transaction.get<number>(PROVIDER_WRITES_SWEEP_KEY);
       const deletionWork = accountDeletionDeadline(await readAccountDeletion(transaction));
       const expiry = earliestDeadline(presenceExpiry, socketExpiry, retentionWork, providerWritesWork, deletionWork);
-      if (expiry === null) await transaction.deleteAlarm();
-      else await transaction.setAlarm(expiry);
+      // An ordinary MCP request that finds a known client must be read-only.
+      // Other callers use this path to schedule socket/device retention work.
+      if (!observation) {
+        if (expiry === null) await transaction.deleteAlarm();
+        else await transaction.setAlarm(expiry);
+      }
       return next;
     });
     const clients = publicMcpPresence(rows, now);
@@ -1301,12 +1291,15 @@ export class DeviceSession extends DurableObject<Env> {
     if (!method) throw new Error("A device method is required");
     const socket = selectDeviceHost(this.ctx.getWebSockets(), method);
     const day = new Date().toISOString().slice(0, 10);
-    // The counter is account data: written only while the account is not
-    // being deleted and, for an AI-app grant, only under its generation.
+    // A daily activity marker is enough for the owner-facing usage display.
+    // Updating it for every command would turn normal use into storage-write
+    // amplification, so it is created at most once per UTC day.
     await this.ctx.storage.transaction(async (transaction) => {
       await assertAccountWritable(transaction, generation);
       const current = await transaction.get<DailyUsage>("usage:daily");
-      await transaction.put("usage:daily", { day, commands: current?.day === day ? current.commands + 1 : 1, lastCommandAt: Date.now() } satisfies DailyUsage);
+      if (current?.day !== day) {
+        await transaction.put("usage:daily", { day, commands: 1, lastCommandAt: Date.now() } satisfies DailyUsage);
+      }
     });
     // Storage may yield to a host disconnect. Recheck the selected socket;
     // never move the caller's operation to another connected host.
