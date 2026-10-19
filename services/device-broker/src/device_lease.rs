@@ -653,16 +653,8 @@ fn is_own(record: &LeaseRecord) -> bool {
 
 /// Whether the process a record names is still the one that wrote it.
 fn holder_is_live(record: &LeaseRecord) -> bool {
-    if !crate::platform::process::os_process_is_alive(record.process_id) {
-        return false;
-    }
-    match (
-        record.process_created_at,
-        crate::platform::process::os_process_created_at(record.process_id),
-    ) {
-        (Some(recorded), Some(current)) => recorded == current,
-        _ => true,
-    }
+    qc_native_platform::owner_identity::native(record.process_id, record.process_created_at)
+        != qc_native_platform::owner_identity::Assessment::GoneOrDifferent
 }
 
 // Software diagnostic-record budget, not a firmware or device limit. The shared
@@ -881,6 +873,10 @@ pub struct LeaseHolder {
     shared_directory: Option<PathBuf>,
     cleanup_limiter: std::sync::Arc<CleanupLimiter>,
     cleanup_permit: Option<std::sync::Arc<CleanupPermit>>,
+    recovery_prepared: bool,
+    recovery: qc_native_platform::owner_identity::RecoveryAdmission,
+    #[cfg(test)]
+    recovery_facts: Option<fn(u32, Option<u64>) -> qc_native_platform::owner_identity::Assessment>,
     #[cfg(test)]
     transition_test_barrier: Option<PathBuf>,
 }
@@ -899,6 +895,10 @@ impl LeaseHolder {
             shared_directory: None,
             cleanup_limiter: CleanupLimiter::production(),
             cleanup_permit: None,
+            recovery_prepared: false,
+            recovery: qc_native_platform::owner_identity::RecoveryAdmission::none(),
+            #[cfg(test)]
+            recovery_facts: None,
             #[cfg(test)]
             transition_test_barrier: None,
         }
@@ -929,6 +929,75 @@ impl LeaseHolder {
             .or_else(|| self.scan.then(scan_for_stdio_owner).flatten())
     }
 
+    fn recovered_holder_is_live(&self, record: &LeaseRecord) -> bool {
+        let verdict = {
+            #[cfg(test)]
+            if let Some(facts) = self.recovery_facts {
+                self.recovery.revalidate(
+                    record.process_id,
+                    record.process_created_at,
+                    facts(record.process_id, record.process_created_at),
+                )
+            } else {
+                self.recovery
+                    .assess(record.process_id, record.process_created_at)
+            }
+            #[cfg(not(test))]
+            {
+                self.recovery
+                    .assess(record.process_id, record.process_created_at)
+            }
+        };
+        verdict != qc_native_platform::owner_identity::Assessment::GoneOrDifferent
+    }
+
+    fn foreign_holder_at_admission(&self) -> Option<LeaseRecord> {
+        self.mirrors
+            .iter()
+            .chain(self.peers.iter())
+            .find_map(|path| {
+                let record = read_record(path)?;
+                (record.process_id != std::process::id() && self.recovered_holder_is_live(&record))
+                    .then_some(record)
+            })
+            .or_else(|| self.scan.then(scan_for_stdio_owner).flatten())
+    }
+
+    /// Explicit Connect/Reconnect creates a new opportunity. Ordinary retry,
+    /// refresh, status and busy-detail paths never launch additional WMI work.
+    pub fn begin_recovery_admission(&mut self) {
+        self.recovery_prepared = false;
+        self.recovery = qc_native_platform::owner_identity::RecoveryAdmission::none();
+    }
+
+    fn prepare_recovery_admission(&mut self) {
+        // A new worker gets one automatic startup admission. After this first
+        // acquisition attempt only an explicit Connect/Reconnect resets it;
+        // ordinary retries never create a fresh independent-query budget.
+        if self.recovery_prepared {
+            return;
+        }
+        self.recovery_prepared = true;
+        use qc_native_platform::owner_identity::{native, Assessment, RecoveryAdmission};
+        let candidate = std::iter::once(&self.path)
+            .chain(self.mirrors.iter())
+            .chain(self.peers.iter())
+            .filter_map(|path| read_record(path))
+            .find(|record| {
+                record.process_id != std::process::id()
+                    && record.process_created_at.is_some()
+                    && native(record.process_id, record.process_created_at) == Assessment::Unknown
+            });
+        if let Some(record) = candidate {
+            let helper = qc_native_platform::owner_identity::current_helper();
+            self.recovery = RecoveryAdmission::prepare(
+                record.process_id,
+                record.process_created_at,
+                helper.as_deref(),
+            );
+        }
+    }
+
     /// The status line for a failed open, naming any owner we can see.
     pub fn busy_detail(&self) -> String {
         match read_live_other(&self.path, std::process::id()).or_else(|| self.foreign_holder()) {
@@ -956,7 +1025,7 @@ impl LeaseHolder {
                 Some(existing) if is_own(&existing) => {
                     let _ = replace_own(mirror, &own_record(&self.role, self.since_unix_ms));
                 }
-                Some(existing) if holder_is_live(&existing) => {}
+                Some(existing) if self.recovered_holder_is_live(&existing) => {}
                 Some(stale) => {
                     // Attribute stale recovery, just as for the primary. An
                     // older broker may use this mirror as its primary claim.
@@ -1040,6 +1109,9 @@ impl LeaseHolder {
         &mut self,
         mut replace: impl FnMut(&Path, &LeaseRecord) -> std::io::Result<()>,
     ) -> Result<(), LeaseRecord> {
+        // This is before the interprocess transition lock; any independent
+        // query finishes here. Repeated acquire retries reuse the single proof.
+        self.prepare_recovery_admission();
         let reservation = if self.held {
             None
         } else {
@@ -1058,7 +1130,7 @@ impl LeaseHolder {
         if let Some(refused) = self.unknown_recorded_claim() {
             return Err(refused);
         }
-        if let Some(holder) = self.foreign_holder() {
+        if let Some(holder) = self.foreign_holder_at_admission() {
             return Err(holder);
         }
         #[cfg(test)]
@@ -1074,7 +1146,7 @@ impl LeaseHolder {
         if let Some(refused) = self.unknown_recorded_claim() {
             return Err(refused);
         }
-        if let Some(holder) = self.foreign_holder() {
+        if let Some(holder) = self.foreign_holder_at_admission() {
             return Err(holder);
         }
         self.since_unix_ms = next_lease_generation_ms();
@@ -1100,7 +1172,7 @@ impl LeaseHolder {
                     self.mark_held(reservation);
                     return Ok(());
                 }
-                Some(existing) if holder_is_live(&existing) => return Err(existing),
+                Some(existing) if self.recovered_holder_is_live(&existing) => return Err(existing),
                 Some(stale) => {
                     // Dead pid or reused pid. Remove only if it is still the
                     // same stale record, so a successor's fresh one survives.
@@ -1124,7 +1196,7 @@ impl LeaseHolder {
                         self.mark_held(reservation);
                         return Ok(());
                     }
-                    Some(landed) if holder_is_live(&landed) => return Err(landed),
+                    Some(landed) if self.recovered_holder_is_live(&landed) => return Err(landed),
                     _ => {}
                 }
             }
@@ -1231,11 +1303,7 @@ pub fn release(path: &Path) {
 /// The status line for an open that found the device busy or deferred.
 pub fn busy_detail(path: &Path) -> String {
     match read_live_other(path, std::process::id()) {
-        Some(holder) => format!(
-            "The Quad Cortex is in use by {} (process {}); waiting for it to let go - \
-             QC Remote connects by itself as soon as it does",
-            holder.role, holder.process_id
-        ),
+        Some(holder) => waiting_detail(&holder),
         None => "Quad Cortex is not attached or is owned by another application".into(),
     }
 }
@@ -1250,6 +1318,11 @@ pub fn waiting_detail(holder: &LeaseRecord) -> String {
             return "Native lease cleanup capacity is exhausted; waiting for exact active or deferred cleanup to retire before reopening the Quad Cortex.".into();
         }
         return "Device ownership is being updated; retrying before opening the Quad Cortex".into();
+    }
+    if qc_native_platform::owner_identity::native(holder.process_id, holder.process_created_at)
+        == qc_native_platform::owner_identity::Assessment::Unknown
+    {
+        return format!("The recorded device owner (process {}) cannot be verified. Its lease was preserved; select Connect to run a bounded recovery check.", holder.process_id);
     }
     format!(
         "The Quad Cortex is in use by {} (process {}); waiting for it to let go - \
@@ -1471,6 +1544,88 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::*;
     use super::*;
+
+    fn unavailable_recovery_facts(
+        _: u32,
+        _: Option<u64>,
+    ) -> qc_native_platform::owner_identity::Assessment {
+        qc_native_platform::owner_identity::Assessment::Unknown
+    }
+    fn recovery_fixture_record() -> LeaseRecord {
+        let mut record = own_record("synthetic prior broker", 1);
+        record.process_id = 42;
+        record.process_created_at = Some(7);
+        record
+    }
+    fn recovery_fixture_holder(
+        path: &Path,
+        verdict: qc_native_platform::owner_identity::Assessment,
+    ) -> LeaseHolder {
+        use qc_native_platform::owner_identity::{Assessment, RecoveryAdmission};
+        let mut candidate = holder(path);
+        candidate.recovery_prepared = true;
+        candidate.recovery_facts = Some(unavailable_recovery_facts);
+        candidate.recovery =
+            RecoveryAdmission::prepare_with(42, Some(7), Assessment::Unknown, || verdict);
+        candidate
+    }
+    #[test]
+    fn owner_recovery_lease_disjoint_generation_can_replace_unreadable_native_owner() {
+        let path = scratch("owner-recovery-different");
+        write_record(&path, &recovery_fixture_record());
+        let mut candidate = recovery_fixture_holder(
+            &path,
+            qc_native_platform::owner_identity::Assessment::GoneOrDifferent,
+        );
+        candidate.acquire().unwrap();
+        assert!(candidate.is_held());
+        assert!(is_own(&read_record(&path).unwrap()));
+        candidate.release();
+        assert!(!path.exists());
+    }
+    #[test]
+    fn owner_recovery_lease_matching_or_failed_evidence_preserves_unknown_holder() {
+        use qc_native_platform::owner_identity::Assessment;
+        for verdict in [Assessment::Same, Assessment::Unknown] {
+            let path = scratch("owner-recovery-preserve");
+            let record = recovery_fixture_record();
+            write_record(&path, &record);
+            let bytes = std::fs::read(&path).unwrap();
+            let mut candidate = recovery_fixture_holder(&path, verdict);
+            assert_eq!(candidate.acquire().unwrap_err(), record);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert!(!candidate.is_held());
+        }
+    }
+    #[test]
+    fn owner_recovery_lease_changed_generation_cannot_reuse_old_proof() {
+        let path = scratch("owner-recovery-changed");
+        let mut candidate = recovery_fixture_holder(
+            &path,
+            qc_native_platform::owner_identity::Assessment::GoneOrDifferent,
+        );
+        let mut successor = recovery_fixture_record();
+        successor.process_created_at = Some(8);
+        successor.since_unix_ms = 2;
+        write_record(&path, &successor);
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(candidate.acquire().unwrap_err(), successor);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+    #[test]
+    fn owner_recovery_descriptor_proof_is_not_authority_for_another_lease_owner() {
+        use qc_native_platform::owner_identity::{Assessment, RecoveryAdmission};
+        let path = scratch("owner-recovery-separate-lease");
+        let record = recovery_fixture_record();
+        write_record(&path, &record);
+        let mut candidate = recovery_fixture_holder(&path, Assessment::Unknown);
+        candidate.recovery =
+            RecoveryAdmission::prepare_with(43, Some(7), Assessment::Unknown, || {
+                Assessment::GoneOrDifferent
+            });
+        assert_eq!(candidate.acquire().unwrap_err(), record);
+        assert!(!candidate.is_held());
+    }
 
     fn create_test_directory(path: &Path) -> std::io::Result<()> {
         create_directory(path)

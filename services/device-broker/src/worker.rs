@@ -3705,6 +3705,7 @@ fn run_leased(
                         let _ = reply.send(ReconnectOutcome::AlreadyConnected);
                         continue;
                     }
+                    lease.begin_recovery_admission();
                     // Before the connection goes: the reconnect below can be due
                     // at once, so the no-session branch may never get a pass.
                     updater_relay.cancel("the device session was restarted");

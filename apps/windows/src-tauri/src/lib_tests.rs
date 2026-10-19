@@ -1,5 +1,88 @@
 #![cfg(test)]
 
+fn owner_recovery_host_fixture() -> (PathBuf, RemoveDirOnDrop) {
+    let root =
+        std::env::temp_dir().join(format!("qc-owner-recovery-{:032x}", rand::random::<u128>()));
+    fs::create_dir(&root).unwrap();
+    let path = root.join("device-broker.json");
+    let record = device_broker_descriptor::DeviceBrokerDescriptor {
+        port: 1,
+        bearer_token: "synthetic-token".into(),
+        instance_id: "synthetic-owner".into(),
+        process_id: 42,
+        process_created_at: Some(7),
+        published_at_unix_ms: 1,
+        gateway_api_version: None,
+    };
+    write_broker_descriptor_fixture(&mut fs::File::create(&path).unwrap(), &record);
+    (path, RemoveDirOnDrop::new(root))
+}
+
+#[test]
+fn owner_recovery_app_disjoint_admission_retires_then_attempts_start() {
+    use qc_native_platform::owner_identity::{Assessment, RecoveryAdmission};
+    let (path, _cleanup) = owner_recovery_host_fixture();
+    let proof = RecoveryAdmission::prepare_with(42, Some(7), Assessment::Unknown, || {
+        Assessment::GoneOrDifferent
+    });
+    let started = std::cell::Cell::new(false);
+    let result = host_device_broker_assessed(
+        &path,
+        &|pid, created| proof.revalidate(pid, created, Assessment::Unknown),
+        || {
+            assert!(!path.exists());
+            assert!(!qc_owner_only_file::claim_path(&path).exists());
+            started.set(true);
+            Err("synthetic start boundary".into())
+        },
+    );
+    assert!(matches!(result, Err(error) if error == "synthetic start boundary"));
+    assert!(started.get());
+}
+
+#[test]
+fn owner_recovery_app_unknown_admission_preserves_publication_and_never_starts() {
+    use qc_native_platform::owner_identity::{Assessment, RecoveryAdmission};
+    let (path, _cleanup) = owner_recovery_host_fixture();
+    let before = fs::read(&path).unwrap();
+    let proof =
+        RecoveryAdmission::prepare_with(42, Some(7), Assessment::Unknown, || Assessment::Unknown);
+    let result = host_device_broker_assessed(
+        &path,
+        &|pid, created| proof.revalidate(pid, created, Assessment::Unknown),
+        || panic!("an unknown owner must not admit a start"),
+    );
+    assert!(matches!(result, Ok(HostAttempt::Occupied(_))));
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn owner_recovery_app_concurrent_publication_change_preserved_before_start() {
+    use qc_native_platform::owner_identity::{Assessment, RecoveryAdmission};
+    let (path, _cleanup) = owner_recovery_host_fixture();
+    let before = fs::read(&path).unwrap();
+    let mut changed: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    changed["instanceId"] = serde_json::json!("successor");
+    let changed = serde_json::to_vec(&changed).unwrap();
+    let proof = RecoveryAdmission::prepare_with(42, Some(7), Assessment::Unknown, || {
+        Assessment::GoneOrDifferent
+    });
+    let calls = std::cell::Cell::new(0);
+    let result = host_device_broker_assessed(
+        &path,
+        &|pid, created| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 3 {
+                fs::write(&path, &changed).unwrap();
+            }
+            proof.revalidate(pid, created, Assessment::Unknown)
+        },
+        || panic!("changed bytes must never admit a start"),
+    );
+    assert!(matches!(result, Err(error) if error.contains("changed")));
+    assert_eq!(fs::read(&path).unwrap(), changed);
+}
+
 #[cfg(windows)]
 #[test]
 fn relaunch_acknowledgment_keeps_its_original_resource_and_admission_through_native_exit() {

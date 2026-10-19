@@ -330,6 +330,10 @@ fn fail(message: impl std::fmt::Display) -> ! {
 }
 
 pub fn main(binary: Binary) {
+    #[cfg(windows)]
+    if crate::platform::process::creation_probe::dispatch_helper_mode() {
+        return;
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if mode(&args) == Mode::ResolveHostOnly {
         if crate::updater_relay::resolver_helper::serve(

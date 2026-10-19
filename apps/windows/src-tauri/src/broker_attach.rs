@@ -87,8 +87,7 @@ pub fn write_frame<W: Write + ?Sized>(writer: &mut W, payload: &[u8]) -> Result<
 /// one USB device.
 #[derive(Debug)]
 pub enum BrokerAttachFailure {
-    /// The connect was refused, so nothing listens on the published port, or
-    /// the published process no longer exists - its pid is free, or is now
+    /// The published process no longer exists - its pid is free, or is now
     /// held by a process created at a different time than the one recorded
     /// in the descriptor. Only these signals are accepted as proof that the
     /// broker is dead.
@@ -106,7 +105,7 @@ impl BrokerAttachFailure {
         }
     }
 
-    /// A failure other than a refused connect. It proves nothing about the
+    /// A transport failure (including refusal) proves nothing about the
     /// broker, so whether the broker is gone depends only on whether its
     /// process still exists.
     ///
@@ -161,10 +160,8 @@ pub fn published_process_is_alive_with(
     if !is_alive(pid) {
         return false;
     }
-    match (recorded_created_at, created_at(pid)) {
-        (Some(recorded), Some(current)) => recorded == current,
-        _ => true,
-    }
+    qc_native_platform::owner_identity::from_facts(true, recorded_created_at, created_at(pid))
+        != qc_native_platform::owner_identity::Assessment::GoneOrDifferent
 }
 
 // `os_process_created_at`/`os_process_is_alive` live in `qc-windows-process`,
@@ -220,11 +217,9 @@ pub fn attach_to_device_broker(
     let mut stream =
         TcpStream::connect_timeout(&address, DEVICE_BROKER_CONNECT_TIMEOUT).map_err(|error| {
             let message = format!("Could not connect to the shared QC device broker: {error}");
-            if error.kind() == std::io::ErrorKind::ConnectionRefused {
-                BrokerAttachFailure::Gone(message)
-            } else {
-                BrokerAttachFailure::ambiguous(descriptor, message)
-            }
+            // Refusal proves no listener at that instant, not owner death.
+            // Replacement still requires positive process-generation evidence.
+            BrokerAttachFailure::ambiguous(descriptor, message)
         })?;
     let ambiguous = |message: String| BrokerAttachFailure::ambiguous(descriptor, message);
     stream.set_nodelay(true).map_err(|error| {
@@ -300,6 +295,19 @@ pub fn attach_to_device_broker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn owner_recovery_connection_refusal_does_not_prove_unknown_owner_dead() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut published = descriptor();
+        published.port = listener.local_addr().unwrap().port();
+        published.process_id = std::process::id();
+        published.process_created_at = None;
+        drop(listener);
+        assert!(matches!(
+            attach_to_device_broker(&published),
+            Err(BrokerAttachFailure::Unresponsive(_))
+        ));
+    }
 
     fn descriptor() -> device_broker_descriptor::DeviceBrokerDescriptor {
         device_broker_descriptor::DeviceBrokerDescriptor {
