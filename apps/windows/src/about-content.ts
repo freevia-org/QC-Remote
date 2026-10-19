@@ -123,6 +123,12 @@ export type IssueReport = {
  * The App version and Platform fields carry the same facts as structured
  * fields; this is the prose a maintainer reads in the issue body.
  */
+function issueAppVersion(input: Pick<IssueReport, "appVersion" | "osVersion" | "platform">): string {
+  const os = input.platform || input.osVersion || "";
+  const platform = /mac/i.test(os) ? "macOS" : /win/i.test(os) ? "Windows" : /linux/i.test(os) ? "Linux" : "";
+  return [platform, input.appVersion].filter(Boolean).join(" ");
+}
+
 export function bugReportBody(input: Pick<IssueReport, "appVersion" | "osVersion" | "platform">): string {
   return [
     "What happened:",
@@ -136,7 +142,7 @@ export function bugReportBody(input: Pick<IssueReport, "appVersion" | "osVersion
     "",
     "---",
     "Environment",
-    `App version: Windows ${input.appVersion}`,
+    `App version: ${issueAppVersion(input)}`,
     `OS: ${input.osVersion ?? input.platform ?? "not reported"}`
   ].join("\n");
 }
@@ -165,8 +171,8 @@ export function bugReportBody(input: Pick<IssueReport, "appVersion" | "osVersion
 export function buildIssueUrl(input: IssueReport): string {
   const parameters = new URLSearchParams({ template: input.kind === "bug" ? "bug-report.yml" : "feature-request.yml" });
   if (input.kind === "bug") {
-    parameters.set("title", `[Bug] Windows ${input.appVersion}: `);
-    parameters.set("app-version", `Windows ${input.appVersion}`);
+    parameters.set("title", `[Bug] ${issueAppVersion(input)}: `);
+    parameters.set("app-version", issueAppVersion(input));
     const platform = input.osVersion ?? input.platform;
     if (platform) parameters.set("platform", platform);
     parameters.set("behavior", bugReportBody(input));

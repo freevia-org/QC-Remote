@@ -1632,3 +1632,25 @@ fn clearing_the_inherit_flag_really_clears_it() {
     assert_eq!(flags(), 0, "not inheritable after");
     assert!(!clear_inherit(std::ptr::null_mut()));
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn resident_launch_owns_a_process_group_independent_of_the_launcher() {
+    let mut command = std::process::Command::new("/bin/sh");
+    command.args(["-c", "ps -o pgid= -p $$"]);
+    command.stdout(std::process::Stdio::piped());
+    super::detach_resident(&mut command);
+    let child = command.spawn().unwrap();
+    let pid = child.id();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let group: u32 = String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        group, pid,
+        "resident must not inherit its launcher's process group"
+    );
+}

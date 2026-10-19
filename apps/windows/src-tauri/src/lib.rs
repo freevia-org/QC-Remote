@@ -1696,6 +1696,8 @@ impl GatewayProcess {
                         "Broker returned an invalid backup session context".into(),
                     )
                 })?;
+        } else if method == DEVICE_BROKER_DISCONNECT_METHOD {
+            validate_gateway_result(rpc::DISCONNECT, &result)?;
         } else if method == "broker.createDeviceBackupBound" {
             validate_gateway_result(rpc::CREATE_DEVICE_BACKUP, &result)?;
         } else {
@@ -5091,17 +5093,8 @@ fn set_broker_tray_enabled(
     state: State<'_, broker_tray_control::BrokerTrayControl>,
     enabled: bool,
 ) -> Result<broker_tray_control::BrokerTrayStatus, String> {
-    #[cfg(not(target_os = "macos"))]
     let _ = app;
     let status = state.set_enabled(enabled)?;
-    #[cfg(target_os = "macos")]
-    {
-        let tray = app
-            .try_state::<tauri::tray::TrayIcon>()
-            .ok_or_else(|| "The QC Remote menu bar item is not available".to_owned())?;
-        tray.set_visible(enabled)
-            .map_err(|error| format!("Could not update the QC Remote menu bar item: {error}"))?;
-    }
     Ok(status)
 }
 
@@ -5807,8 +5800,6 @@ pub fn run() {
                 tray_control.report_error(error);
             }
             app.manage(tray_control);
-            #[cfg(target_os = "macos")]
-            setup_macos_status_item(app)?;
             // Keep the native Windows title tied to the compiled package rather
             // than a manually-maintained label. This makes the running build
             // immediately identifiable from the taskbar and title bar.
@@ -5992,95 +5983,6 @@ pub fn run() {
                 local_access.shutdown_for_exit();
             }
         });
-}
-
-#[cfg(target_os = "macos")]
-fn setup_macos_status_item(app: &mut tauri::App) -> tauri::Result<()> {
-    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-    use tauri::tray::TrayIconBuilder;
-    use tauri::Manager;
-
-    let connect = MenuItem::with_id(
-        app,
-        "connect-quad-cortex",
-        "Connect to Quad Cortex",
-        true,
-        None::<&str>,
-    )?;
-    let disconnect = MenuItem::with_id(
-        app,
-        "disconnect-quad-cortex",
-        "Disconnect from Quad Cortex",
-        true,
-        None::<&str>,
-    )?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let open = MenuItem::with_id(app, "open-qc-remote", "Open QC Remote", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit-qc-remote", "Quit QC Remote", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&connect, &disconnect, &separator, &open, &quit])?;
-    let tray = TrayIconBuilder::with_id("qc-remote-menu-bar")
-        .icon(tauri::include_image!("icons/32x32.png"))
-        .icon_as_template(false)
-        .tooltip("QC Remote")
-        .menu(&menu)
-        .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "connect-quad-cortex" => {
-                show_macos_main_window(app);
-                emit_macos_menu_event(app, "macos-menu-connect");
-            }
-            "disconnect-quad-cortex" => {
-                show_macos_main_window(app);
-                emit_macos_menu_event(app, "macos-menu-disconnect");
-            }
-            "open-qc-remote" => {
-                show_macos_main_window(app);
-            }
-            "quit-qc-remote" => quit_macos(app.clone()),
-            _ => {}
-        })
-        .build(app)?;
-    let visible = app
-        .state::<broker_tray_control::BrokerTrayControl>()
-        .status()
-        .tray_enabled;
-    if let Err(error) = tray.set_visible(visible) {
-        eprintln!("QC Remote menu bar visibility could not be set: {error}");
-    }
-    app.manage(tray);
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn quit_macos(app: tauri::AppHandle) {
-    use tauri::Manager;
-
-    let worker_app = app.clone();
-    if let Err(error) = std::thread::Builder::new()
-        .name("qc-user-quit-broker".into())
-        .spawn(move || {
-            let result = worker_app
-                .try_state::<broker_tray_control::BrokerTrayControl>()
-                .ok_or_else(|| "QC Remote background broker control is unavailable".to_owned())
-                .and_then(|control| control.quit_broker());
-            match result {
-                Ok(()) => worker_app.exit(0),
-                Err(error) => {
-                    if let Some(control) =
-                        worker_app.try_state::<broker_tray_control::BrokerTrayControl>()
-                    {
-                        control.report_error(error);
-                    }
-                    show_macos_main_window(&worker_app);
-                }
-            }
-        })
-    {
-        if let Some(control) = app.try_state::<broker_tray_control::BrokerTrayControl>() {
-            control.report_error(format!("Could not start the broker quit request: {error}"));
-        }
-        show_macos_main_window(&app);
-    }
 }
 
 #[cfg(target_os = "macos")]

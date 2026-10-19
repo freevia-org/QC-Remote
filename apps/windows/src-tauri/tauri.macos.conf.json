@@ -3,6 +3,9 @@
   "bundle": {
     "icon": ["icons/generated/icon.icns"],
     "targets": ["app", "dmg"],
+    "resources": {
+      "../../../.artifacts/builds/QC Device Broker.app": "QC Device Broker.app"
+    },
     "shortDescription": "Independent controller for compatible guitar hardware",
     "longDescription": "Independent, unofficial macOS controller with guarded live controls, workspaces, typed commands, and explicit device-save confirmation. Works with compatible Quad Cortex devices. Not affiliated with or endorsed by Neural DSP Technologies Oy."
   }

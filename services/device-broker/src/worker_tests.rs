@@ -565,8 +565,10 @@ fn a_contested_start_waits_for_the_owner_and_takes_over_when_it_exits() {
     );
 
     owner.kill();
-    let taken = wait_for_status(&controller, "the takeover", |status| {
-        status.detail != expected
+    // Opening status is published before discovery starts. Observe the actual
+    // takeover as well, rather than racing that intermediate status update.
+    let taken = wait_for_status(&controller, "the takeover discovery", |status| {
+        status.detail != expected && discoveries.load(Ordering::SeqCst) > 0
     });
     assert!(
         !taken.detail.contains("in use by"),
