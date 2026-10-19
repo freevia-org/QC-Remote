@@ -10,8 +10,8 @@ pub mod icon;
 pub mod install_stop;
 #[cfg(all(target_os = "linux", feature = "linux-tray"))]
 mod linux;
-pub mod model;
 pub(crate) mod menu_bridge;
+pub mod model;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod state;
 #[cfg(windows)]

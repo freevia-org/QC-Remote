@@ -1603,6 +1603,13 @@ fn resident_launch_owns_a_process_group_independent_of_the_launcher() {
     let pid = child.id();
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
-    let group: u32 = String::from_utf8(output.stdout).unwrap().trim().parse().unwrap();
-    assert_eq!(group, pid, "resident must not inherit its launcher's process group");
+    let group: u32 = String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        group, pid,
+        "resident must not inherit its launcher's process group"
+    );
 }

@@ -1420,7 +1420,9 @@ fn detach_resident(command: &mut std::process::Command) {
     // SAFETY: setsid and last_os_error do not allocate or take locks after fork.
     unsafe {
         command.pre_exec(|| {
-            if libc::setsid() == -1 { return Err(std::io::Error::last_os_error()); }
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
             Ok(())
         });
     }

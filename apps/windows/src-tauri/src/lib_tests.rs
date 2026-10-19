@@ -10552,9 +10552,23 @@ fn after_a_supersede_attach_only_probes_and_the_reconnect_reach_the_broker() {
 
 #[test]
 fn explicit_broker_disconnect_validates_the_device_disconnect_contract() {
-    let result = json!({"phase":"disconnected", "detail":"Quad Cortex session closed", "demo":false});
+    let result =
+        json!({"phase":"disconnected", "detail":"Quad Cortex session closed", "demo":false});
     let (mut gateway, _peer) = gateway_with_fake_broker_result(result.clone());
-    assert_eq!(gateway.process.as_mut().unwrap().request(DEVICE_BROKER_DISCONNECT_METHOD, json!({})).unwrap_or_else(|error| panic!("{}", GatewayUiError::from(error).message)), result);
+    assert_eq!(
+        gateway
+            .process
+            .as_mut()
+            .unwrap()
+            .request(DEVICE_BROKER_DISCONNECT_METHOD, json!({}))
+            .unwrap_or_else(|error| panic!("{}", GatewayUiError::from(error).message)),
+        result
+    );
     let (mut gateway, _peer) = gateway_with_fake_broker_result(json!(null));
-    assert!(gateway.process.as_mut().unwrap().request(DEVICE_BROKER_DISCONNECT_METHOD, json!({})).is_err());
+    assert!(gateway
+        .process
+        .as_mut()
+        .unwrap()
+        .request(DEVICE_BROKER_DISCONNECT_METHOD, json!({}))
+        .is_err());
 }
