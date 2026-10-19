@@ -7,6 +7,67 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.189 / Android 0.3.39 — 20 October 2026
+
+Changes since Windows 0.1.188 / Android 0.3.38. This release carries two
+changes that were merged after 0.1.188 was cut (#165 and #166); everything else
+in 0.1.188 / 0.3.38 is unchanged.
+
+### Relay (service)
+
+- **The cloud relay no longer writes to storage on every authenticated MCP
+  request (#165).** The relay's list of connected MCP clients is now a bounded
+  registry that records each client once and does not renew a lease on later
+  requests, so a busy client no longer causes a Durable Object storage write per
+  request. A client now stays listed until its authorization is revoked,
+  instead of disappearing after a short lease; the list is a registry of
+  clients, not a claim that a client is connected at this moment. This is a
+  relay-service change deployed separately from the apps; it is listed here
+  because it ships in the same public source release.
+
+### Windows
+
+- **Shared desktop and broker code (#166).** Shared code compiled into the
+  Windows app was changed for the macOS broker and desktop pairing work: host
+  keyboard shortcuts, disconnect replies, native error messages, opening the
+  Claude package document, and broker launches that are detached from their
+  launcher's process group and wait for the previous shutdown owner to retire
+  before the next broker starts. The changes also add a standalone macOS broker
+  (menu-bar LED and menu controls) and a correct macOS HID session handling.
+  **No macOS artifact is part of this release.** The macOS code is built by CI
+  only and has not been validated on a Quad Cortex.
+
+### Android
+
+- Version and build number only (0.3.39, build 44). No Android-specific change
+  since 0.3.38.
+
+### Known limitations
+
+- **macOS, broker output deadline (confirmed gap).** The shared broker framing
+  does not enforce an absolute output deadline: on both macOS CI runners a
+  stalled peer held a write for about 7.0 to 7.1 s against the 5 s budget. No
+  macOS artifact is part of this release.
+- **Windows, broker output deadline (not confirmed, not cleared).** The same
+  output-deadline behaviour has neither been confirmed nor cleared on Windows,
+  and no validated hard 5 s output bound is claimed.
+- **Broker output-mutex admission.** Callers can wait on the output lock before
+  the 5 s timer starts. This is a separate, tracked caller issue.
+- **Type-61 update requests.** The unit's update-request relay attempts every
+  request, with no promise that each one is served and no aggregate resource
+  bound. This is unchanged by decision of the project owner.
+- **Android with the internet relay switch off.** Nothing answers the unit's
+  cloud-account (Type 29) requests, unlike Windows.
+- **Tray icon.** The tray icon belongs to the broker process, not to the app
+  window.
+- **Idle release.** Release of the device after idle has not been observed.
+- **Cloud Backup timeout.** A reported Cloud Backup timeout has not been
+  reproduced.
+- **Screens.** On the I/O screen, OUT LEVEL and LIMITER show idle placeholders,
+  not live meters. Settings text is slightly heavier than the unit's.
+  Settings > Connection data is not exposed by the gateway.
+
+A production fix for the framing deadline is the first follow-up.
 ## QC Remote Windows 0.1.188 / Android 0.3.38 — prepared 17 October 2026
 
 Changes since Windows 0.1.182 / Android 0.3.36. Windows 0.1.183 to 0.1.187 were
