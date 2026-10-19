@@ -572,9 +572,13 @@ fn pump(
             .checked_add(count)
             .is_none_or(|size| size > maximum)
         {
-            return Err(io::Error::other(
-                "status-tool output exceeded its streaming limit",
-            ));
+            // Preserve the established generic-tool diagnostic. The recovery
+            // helper uses a narrower limit and must not claim it hit 8 MiB.
+            return Err(io::Error::other(if maximum == OUTPUT_LIMIT {
+                "status-tool output exceeded 8 MiB".to_owned()
+            } else {
+                format!("status-tool output exceeded {maximum} bytes")
+            }));
         }
         let mut buffer = vec![0; count];
         let read = pipe.read(&mut buffer)?;
@@ -981,7 +985,9 @@ mod tests {
                 assert!(outcome.is_ok());
                 assert_eq!(bytes.len(), 128);
             } else {
-                assert!(outcome.is_err());
+                let error = outcome.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::Other);
+                assert_eq!(error.to_string(), "status-tool output exceeded 128 bytes");
                 assert!(bytes.is_empty(), "overflow must not retain excess bytes");
             }
         }
