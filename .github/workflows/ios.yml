@@ -44,7 +44,9 @@ concurrency:
 jobs:
   build:
     name: Build unsigned iOS app and iPad DriverKit extension
-    runs-on: macos-15
+    # The device target is cross-compiled; use the Intel pool to avoid arm64
+    # runner acquisition failures during hosted-capacity shortages.
+    runs-on: macos-26-intel
     timeout-minutes: 45
     steps:
       - name: Check out source
