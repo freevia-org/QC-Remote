@@ -40,6 +40,13 @@ updates:
         update-types:
           - minor
           - patch
+    # @tauri-apps/cli is held at the exact version in apps/windows/package.json.
+    # apps/windows/src-tauri/windows/installer.nsi is a fork of that CLI
+    # release's NSIS template and must be re-aligned (including the
+    # utils.nsh macros the CLI ships) before the CLI moves; an unreviewed bump
+    # breaks makensis ("RestartManager_StartSession" not found).
+    ignore:
+      - dependency-name: "@tauri-apps/cli"
     commit-message:
       prefix: "deps(npm)"
 

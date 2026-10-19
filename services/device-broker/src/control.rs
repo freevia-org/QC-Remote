@@ -189,6 +189,17 @@ pub trait Env {
     /// `pid` is alive and was created at `created_at`. A missing creation
     /// time is never enough.
     fn alive(&self, pid: u32, created_at: Option<u64>) -> bool;
+    fn owner_assessment(
+        &self,
+        pid: u32,
+        created_at: Option<u64>,
+    ) -> qc_native_platform::owner_identity::Assessment {
+        if self.alive(pid, created_at) {
+            qc_native_platform::owner_identity::Assessment::Same
+        } else {
+            qc_native_platform::owner_identity::Assessment::GoneOrDifferent
+        }
+    }
     /// The resident host's session marker (a named mutex) exists.
     fn session_marker_present(&self) -> bool;
     /// An interactive desktop: `--resident` serves nowhere else.
@@ -406,6 +417,7 @@ enum Found {
     Unusable(&'static str),
     /// Names a process that is gone, or a recycled pid.
     Stale(Descriptor, &'static str),
+    Unknown(Descriptor),
     Live(Descriptor),
 }
 
@@ -438,13 +450,15 @@ fn find(directory: &Path, env: &dyn Env) -> Found {
             }
         }
     };
-    if parsed.process_id == 0 || parsed.process_created_at.is_none() {
+    if parsed.process_id == 0 {
         return Found::Unusable("unverifiable");
     }
-    if env.alive(parsed.process_id, parsed.process_created_at) {
-        Found::Live(parsed)
-    } else {
-        Found::Stale(parsed, "processGoneOrRecycled")
+    use qc_native_platform::owner_identity::Assessment;
+    match env.owner_assessment(parsed.process_id, parsed.process_created_at) {
+        Assessment::Same if parsed.process_created_at.is_some() => Found::Live(parsed),
+        Assessment::GoneOrDifferent => Found::Stale(parsed, "processGoneOrRecycled"),
+        _ if parsed.process_created_at.is_none() => Found::Unusable("unverifiable"),
+        _ => Found::Unknown(parsed),
     }
 }
 
@@ -480,6 +494,11 @@ fn describe(found: &Found) -> Value {
         Found::Absent => json!({"present": false, "live": false, "reason": null}),
         Found::Unusable(reason) => json!({"present": true, "live": false, "reason": reason}),
         Found::Stale(descriptor, reason) => row(descriptor, false, Some(reason)),
+        Found::Unknown(descriptor) => {
+            let mut value = row(descriptor, false, Some("processIdentityUnavailable"));
+            value["live"] = Value::Null;
+            value
+        }
         Found::Live(descriptor) => row(descriptor, true, None),
     }
 }
@@ -792,14 +811,19 @@ mod listener_owner_tests {
 fn local_state(directory: &Path, env: &dyn Env, found: &Found) -> Value {
     let live = matches!(found, Found::Live(_));
     let instance = match found {
-        Found::Live(descriptor) | Found::Stale(descriptor, _) => {
+        Found::Live(descriptor) | Found::Stale(descriptor, _) | Found::Unknown(descriptor) => {
             Some(descriptor.instance_id.as_str())
         }
         _ => None,
     };
     json!({
         "descriptor": describe(found),
-        "claim": claim_state(&descriptor_path(directory), live),
+        "claim": if matches!(found, Found::Unknown(_)) {
+            match claim_state(&descriptor_path(directory), false) {
+                "staleUnlocked" => "ownerUnknownUnlocked",
+                other => other,
+            }
+        } else { claim_state(&descriptor_path(directory), live) },
         "sessionMarker": env.session_marker_present(),
         "trayEnabled": crate::tray_settings::read_in(directory).tray_enabled,
         "releaseMarkers": release_markers(directory, instance),
@@ -815,6 +839,11 @@ fn merge(report: &mut Map<String, Value>, value: Value) {
 fn status(directory: &Path, env: &dyn Env, report: &mut Map<String, Value>) -> Step {
     let found = find(directory, env);
     merge(report, local_state(directory, env, &found));
+    if matches!(found, Found::Unknown(_)) {
+        report.insert("running".into(), Value::Null);
+        report.insert("broker".into(), Value::Null);
+        return (exit::OK, "ownerIdentityUnavailable", "The broker owner identity cannot be verified; its records were preserved. Start performs a bounded recovery check.".into());
+    }
     let Found::Live(descriptor) = &found else {
         report.insert("running".into(), json!(false));
         report.insert("broker".into(), Value::Null);
@@ -885,6 +914,11 @@ fn require_live(
             exit::REFUSED,
             "descriptorRefused",
             format!("the descriptor cannot be trusted ({reason}); nothing was sent"),
+        )),
+        Found::Unknown(_) => Err((
+            exit::REFUSED,
+            "ownerIdentityUnavailable",
+            "The broker owner identity cannot be verified; nothing was sent or removed".into(),
         )),
     }
 }
@@ -1258,9 +1292,18 @@ impl Env for NativeEnv {
     }
 
     fn alive(&self, pid: u32, created_at: Option<u64>) -> bool {
-        created_at.is_some()
-            && crate::platform::process::os_process_is_alive(pid)
-            && crate::platform::process::os_process_created_at(pid) == created_at
+        self.owner_assessment(pid, created_at)
+            != qc_native_platform::owner_identity::Assessment::GoneOrDifferent
+    }
+
+    fn owner_assessment(
+        &self,
+        pid: u32,
+        created_at: Option<u64>,
+    ) -> qc_native_platform::owner_identity::Assessment {
+        // Status and control operations never invoke WMI. The spawned resident
+        // owns the single startup recovery admission before acquiring election.
+        qc_native_platform::owner_identity::native(pid, created_at)
     }
 
     fn session_marker_present(&self) -> bool {

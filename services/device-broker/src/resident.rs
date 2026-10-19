@@ -513,6 +513,7 @@ pub fn election_path(descriptor: &Path) -> PathBuf {
 /// spawns a broker, so a logon start can never put a second broker on the
 /// device or delete a live broker's descriptor. Never touches USB.
 pub fn elect(descriptor: &Path, budget: Duration) -> Result<Election, String> {
+    let started = Instant::now();
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let directory = descriptor
@@ -528,7 +529,54 @@ pub fn elect(descriptor: &Path, budget: Duration) -> Result<Election, String> {
             Err(error) => return Err(format!("Refusing an unsafe broker descriptor: {error}")),
         }
     }
-    elect_with(descriptor, budget, &os_liveness)
+    use qc_native_platform::owner_identity::RecoveryAdmission;
+    // One explicit admission, before acquiring the election. No helper runs
+    // from the repeated liveness closure or while the election is held.
+    let observed = read_process_descriptor(descriptor)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<DescriptorProcessIdentity>(&bytes).ok());
+    let helper = qc_native_platform::owner_identity::current_helper();
+    let admission = observed.map_or_else(RecoveryAdmission::none, |record| {
+        RecoveryAdmission::prepare(
+            record.process_id,
+            record.process_created_at,
+            helper.as_deref(),
+        )
+    });
+    qc_native_platform::owner_identity::after_preparation(
+        started + budget,
+        Instant::now(),
+        |remaining| {
+            elect_assessed_with(descriptor, remaining, &|pid, created| {
+                admission.assess(pid, created)
+            })
+        },
+    )
+    .map_err(str::to_owned)?
+}
+
+fn elect_assessed_with(
+    descriptor: &Path,
+    budget: Duration,
+    assess: &dyn Fn(u32, Option<u64>) -> qc_native_platform::owner_identity::Assessment,
+) -> Result<Election, String> {
+    use qc_native_platform::owner_identity::Assessment;
+    let unknown = std::cell::Cell::new(false);
+    let alive = |pid, created| match assess(pid, created) {
+        Assessment::Same => true,
+        Assessment::GoneOrDifferent => false,
+        Assessment::Unknown => {
+            unknown.set(true);
+            true
+        }
+    };
+    let result = elect_with(descriptor, budget, &alive);
+    if matches!(result, Ok(Election::AlreadyServed)) && unknown.get() {
+        return Err(
+            "Broker owner identity is unavailable; its descriptor and claim were preserved".into(),
+        );
+    }
+    result
 }
 
 fn elect_with(
@@ -568,9 +616,30 @@ fn elect_with(
                 // lock, so a claim another process still holds refuses and
                 // is left exactly as it is. Its holder is a broker
                 // publishing (or about to): this start does not serve.
-                if let Err(error) = qc_owner_only_file::release_if_unclaimed(descriptor) {
+                // Re-read exact bytes AFTER the liveness checks under election.
+                // A successor must not be retired using an earlier observation.
+                let expected = match read_process_descriptor(descriptor) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => {
+                        return Err(format!("Could not revalidate broker descriptor: {error}"))
+                    }
+                };
+                if let Some(bytes) = &expected {
+                    if let Ok(record) = serde_json::from_slice::<DescriptorProcessIdentity>(bytes) {
+                        if record.process_id != 0
+                            && alive(record.process_id, record.process_created_at)
+                        {
+                            return Ok(Election::AlreadyServed);
+                        }
+                    }
+                }
+                if let Err(error) = qc_owner_only_file::release_if_unclaimed_matching(
+                    descriptor,
+                    expected.as_deref(),
+                ) {
                     eprintln!(
-                        "Not serving: the descriptor claim at {} is held by another process \
+                        "Not serving: the descriptor publication at {} changed or remains owned \
                          and was left in place ({error})",
                         descriptor.display()
                     );
@@ -634,15 +703,7 @@ fn elect_with(
     }
 }
 
-fn os_liveness(pid: u32, created_at: Option<u64>) -> bool {
-    let alive = crate::platform::process::os_process_is_alive(pid);
-    alive
-        && identity_may_still_match(
-            created_at,
-            crate::platform::process::os_process_created_at(pid),
-        )
-}
-
+#[cfg(test)]
 fn identity_may_still_match(recorded: Option<u64>, current: Option<u64>) -> bool {
     // Inaccessible identity is unknown, not authority to reap a live owner.
     !matches!((recorded, current), (Some(recorded), Some(current)) if recorded != current)
@@ -708,6 +769,78 @@ fn read_process_descriptor(path: &Path) -> std::io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn owner_recovery_unknown_preserves_descriptor_without_electing() {
+        let root = scratch("owner-unknown");
+        let path = root.join(DESCRIPTOR_FILE);
+        let bytes = descriptor_json(42, 7);
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(elect_assessed_with(&path, Duration::from_secs(1), &|_, _| {
+            qc_native_platform::owner_identity::Assessment::Unknown
+        })
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
+        assert!(!election_path(&path).exists());
+    }
+    #[test]
+    fn owner_recovery_same_generation_never_retires_live_publication() {
+        let root = scratch("owner-same");
+        let path = root.join(DESCRIPTOR_FILE);
+        let bytes = descriptor_json(42, 7);
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(matches!(
+            elect_assessed_with(&path, Duration::from_secs(1), &|_, _| {
+                qc_native_platform::owner_identity::Assessment::Same
+            })
+            .unwrap(),
+            Election::AlreadyServed
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
+    }
+    #[test]
+    fn owner_recovery_disjoint_generation_retires_only_unlocked_publication() {
+        let root = scratch("owner-different");
+        let path = root.join(DESCRIPTOR_FILE);
+        let mut old = qc_owner_only_file::ClaimedFile::try_claim(&path).unwrap();
+        old.write(descriptor_json(42, 7).as_bytes()).unwrap();
+        drop(old);
+        let elected = elect_assessed_with(&path, Duration::from_secs(1), &|_, _| {
+            qc_native_platform::owner_identity::Assessment::GoneOrDifferent
+        })
+        .unwrap();
+        assert!(matches!(elected, Election::Serve(_)));
+        assert!(!path.exists());
+        drop(elected);
+        assert!(!election_path(&path).exists());
+    }
+    #[test]
+    fn owner_recovery_concurrent_successor_is_preserved() {
+        use qc_native_platform::owner_identity::Assessment;
+        let root = scratch("owner-successor");
+        let path = root.join(DESCRIPTOR_FILE);
+        std::fs::write(&path, descriptor_json(42, 7)).unwrap();
+        let calls = std::cell::Cell::new(0);
+        let assess = |_, created| {
+            let n = calls.get() + 1;
+            calls.set(n);
+            if n == 2 {
+                std::fs::write(&path, descriptor_json(43, 8)).unwrap();
+            }
+            if created == Some(8) {
+                Assessment::Same
+            } else {
+                Assessment::GoneOrDifferent
+            }
+        };
+        assert!(matches!(
+            elect_assessed_with(&path, Duration::from_secs(1), &assess).unwrap(),
+            Election::AlreadyServed
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            descriptor_json(43, 8)
+        );
+    }
     use std::sync::atomic::AtomicUsize;
 
     struct Scratch(Arc<Root>);

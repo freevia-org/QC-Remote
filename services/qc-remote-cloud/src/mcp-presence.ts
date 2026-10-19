@@ -1,15 +1,13 @@
-/** Recent authenticated MCP activity, not an invented persistent connection.
- * The deployed SDK handler is stateless. A short lease expires unless actual
- * traffic (or an in-flight tool call) renews it. No OAuth identity leaves the DO.
+/** A bounded registry of authenticated MCP clients.  This records each client
+ * once; it deliberately is not a heartbeat or a claim of a live connection.
+ * No OAuth identity leaves the Durable Object.
  */
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json" with { type: "json" };
-export const MCP_PRESENCE_LEASE_MS = 15_000;
 export const MCP_PRESENCE_CAPACITY = 128;
-/** Keep a bounded activity summary long enough for the owner to recognise a
- * connector that is not active at the instant the panel opens. This is not a
- * session credential or a request log: one sanitized row per observed MCP
- * session, capped by `MCP_PRESENCE_CAPACITY`. */
-// Keep activity metadata only for the 24-hour period disclosed in PRIVACY.md.
+/** This is a client registry, not a request log. Rows are bounded by capacity
+ * and retained until the associated OAuth grant is explicitly revoked. */
+// Kept for the storage-inventory compatibility report. It does not schedule
+// expiry or cause registry writes.
 export const MCP_NAME_RETENTION_MS = 24 * 60 * 60 * 1_000;
 export type McpClientPresence = {
   id: string;
@@ -144,17 +142,6 @@ function safeMetadata(value: unknown, max = 128): string | undefined {
   return text && text.length <= max && !/[\x00-\x1f\x7f]/.test(text) ? text : undefined;
 }
 
-function boundedRetention(row: StoredMcpPresence): StoredMcpPresence {
-  const lastSeenAtUnixMs = Number.isSafeInteger(row.lastSeenAtUnixMs)
-    ? row.lastSeenAtUnixMs
-    : Math.max(0, (Number.isSafeInteger(row.expiresAtUnixMs) ? row.expiresAtUnixMs : 0) - MCP_PRESENCE_LEASE_MS);
-  const retentionLimit = lastSeenAtUnixMs + MCP_NAME_RETENTION_MS;
-  const rememberedUntilUnixMs = Number.isSafeInteger(row.rememberedUntilUnixMs)
-    ? Math.min(row.rememberedUntilUnixMs, retentionLimit)
-    : retentionLimit;
-  return { ...row, lastSeenAtUnixMs, rememberedUntilUnixMs };
-}
-
 /** A normalized, bounded description of the caller. Raw user agents are never stored. */
 export function requestClientMetadata(request: Request): Pick<McpObservation, "device" | "browser" | "ipAddress" | "country" | "city"> {
   const agent = request.headers.get("user-agent") ?? "";
@@ -174,46 +161,46 @@ export function updateMcpPresence(
   previous: readonly StoredMcpPresence[], observation: McpObservation | undefined,
   now: number, newId: () => string,
 ): StoredMcpPresence[] {
-  // Metadata can outlive activity without appearing in the public active list.
-  const live = previous.map(boundedRetention).filter(row => row.rememberedUntilUnixMs > now);
+  const clients = [...previous];
   if (observation) {
     if (!/^[a-f0-9]{64}$/.test(observation.key)) throw new Error("Invalid private MCP activity key");
-    const existing = live.find(row => row.key === observation.key);
-    const remaining = live.filter(row => row.key !== observation.key);
+    const existing = clients.find(row => row.key === observation.key);
+    const remaining = clients.filter(row => row.key !== observation.key);
     if (!observation.remove) {
-      const clientId = safeMetadata(observation.clientId) ?? existing?.clientId;
-      // The key digests the access token, and a token belongs to one grant,
-      // so a row never changes grant: the first grant recorded is kept, and a
-      // later observation can only fill a gap, never replace it.
-      const grantId = existing?.grantId ?? observedGrantId(observation.grantId);
-      const device = safeMetadata(observation.device) ?? existing?.device;
-      const browser = safeMetadata(observation.browser) ?? existing?.browser;
+      // A known client is intentionally immutable: a request must never become
+      // a storage write. This avoids charging a Durable Object heartbeat.
+      if (existing) return clients;
+      const clientId = safeMetadata(observation.clientId);
+      const grantId = observedGrantId(observation.grantId);
+      const device = safeMetadata(observation.device);
+      const browser = safeMetadata(observation.browser);
+      const version = observedClientName(observation.version);
       const observedName = displayMcpClientName(observation.name, { device, browser })
-        ?? existing?.name
         ?? displayMcpClientName(observation.fallbackName, { device, browser })
         ?? "Remote MCP client";
       remaining.push({
         key: observation.key,
-        id: existing?.id ?? newId(),
+        id: newId(),
         name: observedName,
         ...(clientId ? { clientId } : {}),
         ...(grantId ? { grantId } : {}),
-        ...(observedClientName(observation.version) ?? existing?.version ? { version: observedClientName(observation.version) ?? existing?.version } : {}),
+        ...(version ? { version } : {}),
         ...(device ? { device } : {}),
         ...(browser ? { browser } : {}),
-        ...(safeMetadata(observation.ipAddress, 64) ?? existing?.ipAddress ? { ipAddress: safeMetadata(observation.ipAddress, 64) ?? existing?.ipAddress } : {}),
-        ...(safeMetadata(observation.country, 2) ?? existing?.country ? { country: safeMetadata(observation.country, 2) ?? existing?.country } : {}),
-        ...(safeMetadata(observation.city, 64) ?? existing?.city ? { city: safeMetadata(observation.city, 64) ?? existing?.city } : {}),
-        connectedAtUnixMs: existing?.connectedAtUnixMs ?? now,
+        ...(safeMetadata(observation.ipAddress, 64) ? { ipAddress: safeMetadata(observation.ipAddress, 64) } : {}),
+        ...(safeMetadata(observation.country, 2) ? { country: safeMetadata(observation.country, 2) } : {}),
+        ...(safeMetadata(observation.city, 64) ? { city: safeMetadata(observation.city, 64) } : {}),
+        connectedAtUnixMs: now,
         lastSeenAtUnixMs: now,
-        expiresAtUnixMs: now + MCP_PRESENCE_LEASE_MS,
-        rememberedUntilUnixMs: now + MCP_NAME_RETENTION_MS,
+        // These timestamps describe the single observation, not a lease.
+        expiresAtUnixMs: now,
+        rememberedUntilUnixMs: Number.MAX_SAFE_INTEGER,
       });
     }
     return remaining.sort((a, b) => b.expiresAtUnixMs - a.expiresAtUnixMs || a.id.localeCompare(b.id))
       .slice(0, MCP_PRESENCE_CAPACITY);
   }
-  return live;
+  return clients;
 }
 
 /** Drop every row, live or remembered, of a grant that was just revoked, so
@@ -223,11 +210,12 @@ export function forgetMcpGrant(rows: readonly StoredMcpPresence[], grantId: stri
 }
 
 export function publicMcpPresence(rows: readonly StoredMcpPresence[], now: number): McpClientPresence[] {
-  return rows.filter(row => row.expiresAtUnixMs > now)
+  void now;
+  return rows
     .map(({ key: _key, rememberedUntilUnixMs: _remembered, ...row }) => ({
       ...row,
-      connectedAtUnixMs: row.connectedAtUnixMs ?? Math.max(0, row.expiresAtUnixMs - MCP_PRESENCE_LEASE_MS),
-      lastSeenAtUnixMs: row.lastSeenAtUnixMs ?? Math.max(0, row.expiresAtUnixMs - MCP_PRESENCE_LEASE_MS),
+      connectedAtUnixMs: row.connectedAtUnixMs ?? row.expiresAtUnixMs,
+      lastSeenAtUnixMs: row.lastSeenAtUnixMs ?? row.expiresAtUnixMs,
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -236,15 +224,16 @@ export function publicMcpPresence(rows: readonly StoredMcpPresence[], now: numbe
  * connector roster uses this to say "last active" without pretending that an
  * OAuth authorization is a permanently connected session. */
 export function rememberedMcpPresence(rows: readonly StoredMcpPresence[], now: number): McpClientPresence[] {
-  return rows.map(boundedRetention).filter(row => row.rememberedUntilUnixMs > now)
+  void now;
+  return rows
     .map(({ key: _key, rememberedUntilUnixMs: _remembered, ...row }) => ({ ...row }))
     .sort((a, b) => b.lastSeenAtUnixMs - a.lastSeenAtUnixMs || a.id.localeCompare(b.id));
 }
 
 export function nextPresenceExpiry(rows: readonly StoredMcpPresence[], now: number): number | null {
-  const bounded = rows.map(boundedRetention);
-  return bounded.length === 0 ? null : Math.min(...bounded.map(row =>
-    row.expiresAtUnixMs > now ? row.expiresAtUnixMs : row.rememberedUntilUnixMs));
+  void rows;
+  void now;
+  return null;
 }
 
 /** Read a bounded clone without consuming the handler's request. Cancelling a

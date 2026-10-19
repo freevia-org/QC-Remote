@@ -8,6 +8,10 @@
 #[cfg(windows)]
 pub mod owned_tool;
 
+/// Startup-only recovery prototype; never used by ordinary process/status polling.
+#[cfg(windows)]
+pub mod creation_probe;
+
 /// Whether the original native thread has completely exited.
 ///
 /// On Windows Rust's body-completion flag can precede native TLS cleanup.

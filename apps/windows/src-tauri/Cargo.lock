@@ -3549,6 +3549,7 @@ dependencies = [
 name = "qc-windows-process"
 version = "0.1.0"
 dependencies = [
+ "windows",
  "windows-sys 0.61.2",
 ]
 

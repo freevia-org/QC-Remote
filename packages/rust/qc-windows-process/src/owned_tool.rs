@@ -36,6 +36,10 @@ fn tool_limit() -> &'static std::sync::Arc<ToolLimit> {
     static LIMIT: std::sync::OnceLock<std::sync::Arc<ToolLimit>> = std::sync::OnceLock::new();
     LIMIT.get_or_init(|| std::sync::Arc::new(ToolLimit(std::sync::atomic::AtomicUsize::new(0), 16)))
 }
+fn recovery_limit() -> &'static std::sync::Arc<ToolLimit> {
+    static LIMIT: std::sync::OnceLock<std::sync::Arc<ToolLimit>> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| std::sync::Arc::new(ToolLimit(std::sync::atomic::AtomicUsize::new(0), 1)))
+}
 struct Tool {
     ownership: Option<ToolOwnership>,
 }
@@ -45,6 +49,7 @@ struct ToolOwnership {
     members: Vec<Handle>,
     cleanup_attempted: bool,
     cleanup_confirmed: bool,
+    stdout_limit: usize,
     _permit: ToolPermit,
     #[cfg(test)]
     cleanup_failure: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -110,14 +115,23 @@ impl Tool {
     fn spawn(command: &mut Command, deadline: Instant) -> io::Result<Self> {
         Self::spawn_with_limit(command, deadline, tool_limit().clone())
     }
-    #[allow(
-        deprecated,
-        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
-    )]
     fn spawn_with_limit(
         command: &mut Command,
         deadline: Instant,
         limit: std::sync::Arc<ToolLimit>,
+    ) -> io::Result<Self> {
+        Self::spawn_with_admission(command, deadline, limit, None)
+    }
+
+    #[allow(
+        deprecated,
+        reason = "Retain fetch_update for stable toolchains predating Atomic::try_update"
+    )]
+    fn spawn_with_admission(
+        command: &mut Command,
+        deadline: Instant,
+        limit: std::sync::Arc<ToolLimit>,
+        admission: Option<(&[u8], u64)>,
     ) -> io::Result<Self> {
         reap_retired_tools();
         limit
@@ -141,9 +155,36 @@ impl Tool {
         // Callers are short-lived inspections or scoped system ACL setup; user
         // requested provider launches deliberately do not use this wrapper.
         let child = command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED)
+            .stdin(if admission.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout({
+                #[cfg(test)]
+                if admission.is_some() && std::env::var_os("QC_GATE_PARENT_HOOK").is_some() {
+                    // libtest prints BEFORE entering the fixture. A dying
+                    // fixture parent closes its output reader and would make
+                    // libtest panic on a broken stdout pipe before it reaches
+                    // the production admission reader. NUL avoids that unrelated
+                    // harness failure; the tested admission pipe is unchanged.
+                    Stdio::null()
+                } else {
+                    Stdio::piped()
+                }
+                #[cfg(not(test))]
+                {
+                    Stdio::piped()
+                }
+            })
+            .creation_flags(
+                CREATE_NO_WINDOW
+                    | if admission.is_some() {
+                        0
+                    } else {
+                        CREATE_SUSPENDED
+                    },
+            )
             .spawn()?;
         // Child itself retains the exact process handle; no fallible duplicate
         // is needed between successful spawn and ownership.
@@ -154,11 +195,20 @@ impl Tool {
                 members: Vec::new(),
                 cleanup_attempted: false,
                 cleanup_confirmed: false,
+                stdout_limit: if admission.is_some() {
+                    128
+                } else {
+                    OUTPUT_LIMIT
+                },
                 _permit: permit,
                 #[cfg(test)]
                 cleanup_failure: None,
             }),
         };
+        #[cfg(test)]
+        if admission.is_some() {
+            gated_spawn_hook(&tool, "before-job")?;
+        }
         let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if raw.is_null() {
             return Err(io::Error::last_os_error());
@@ -181,7 +231,30 @@ impl Tool {
         if Instant::now() >= deadline {
             return Err(deadline_error());
         }
-        resume_initial_thread(tool.child.id(), tool.child.as_raw_handle(), deadline)?;
+        if let Some((admission, expires)) = admission {
+            #[cfg(test)]
+            gated_spawn_hook(&tool, "after-job")?;
+            // ONLY a purpose-built helper may use this path: before admission it
+            // reads bounded stdin through EOF, without COM or other side effects.
+            // Parent death before assignment produces empty EOF; afterwards the
+            // job owns retirement. Never relax suspension for arbitrary tools.
+            use std::io::Write;
+            let mut input = tool
+                .child
+                .stdin
+                .take()
+                .ok_or_else(|| io::Error::other("missing helper admission pipe"))?;
+            if Instant::now() >= deadline || crate::creation_probe::tick_now() >= expires {
+                return Err(deadline_error());
+            }
+            input.write_all(admission)?;
+            drop(input);
+            if Instant::now() >= deadline {
+                return Err(deadline_error());
+            }
+        } else {
+            resume_initial_thread(tool.child.id(), tool.child.as_raw_handle(), deadline)?;
+        }
         Ok(tool)
     }
     fn stop_descendants(&mut self, deadline: Instant) -> io::Result<()> {
@@ -466,7 +539,11 @@ fn resume_initial_thread(pid: u32, process: HANDLE, deadline: Instant) -> io::Re
     Ok(())
 }
 
-fn pump(pipe: &mut Option<impl Read + AsRawHandle>, bytes: &mut Vec<u8>) -> io::Result<bool> {
+fn pump(
+    pipe: &mut Option<impl Read + AsRawHandle>,
+    bytes: &mut Vec<u8>,
+    maximum: usize,
+) -> io::Result<bool> {
     let Some(pipe) = pipe.as_mut() else {
         return Ok(true);
     };
@@ -490,8 +567,18 @@ fn pump(pipe: &mut Option<impl Read + AsRawHandle>, bytes: &mut Vec<u8>) -> io::
     }
     if available > 0 {
         let count = (available as usize).min(64 * 1024);
-        if bytes.len() + count > OUTPUT_LIMIT {
-            return Err(io::Error::other("status-tool output exceeded 8 MiB"));
+        if bytes
+            .len()
+            .checked_add(count)
+            .is_none_or(|size| size > maximum)
+        {
+            // Preserve the established generic-tool diagnostic. The recovery
+            // helper uses a narrower limit and must not claim it hit 8 MiB.
+            return Err(io::Error::other(if maximum == OUTPUT_LIMIT {
+                "status-tool output exceeded 8 MiB".to_owned()
+            } else {
+                format!("status-tool output exceeded {maximum} bytes")
+            }));
         }
         let mut buffer = vec![0; count];
         let read = pipe.read(&mut buffer)?;
@@ -505,6 +592,40 @@ fn pump(pipe: &mut Option<impl Read + AsRawHandle>, bytes: &mut Vec<u8>) -> io::
 
 pub fn run(command: &mut Command, timeout: Duration) -> io::Result<Output> {
     run_observing(command, timeout, Child::try_wait)
+}
+
+/// Exactly one startup recovery helper, including retained uncertain cleanup.
+/// Crate-private so arbitrary tool callers cannot opt out of suspended spawn.
+pub(crate) fn run_recovery_helper(
+    command: &mut Command,
+    admission: &[u8],
+    timeout: Duration,
+) -> io::Result<Output> {
+    let expires = crate::creation_probe::tick_now()
+        .checked_add(u64::try_from(timeout.as_millis()).map_err(|_| deadline_error())?)
+        .ok_or_else(deadline_error)?;
+    if admission.is_empty() || admission.len() > 64 {
+        return Err(io::Error::other("invalid recovery admission"));
+    }
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| io::Error::other("invalid recovery deadline"))?;
+    command
+        .env(crate::creation_probe::DEADLINE_ENV, expires.to_string())
+        .stderr(Stdio::null());
+    let tool = Tool::spawn_with_admission(
+        command,
+        deadline,
+        recovery_limit().clone(),
+        Some((admission, expires)),
+    )?;
+    let output = observe_admitted(tool, deadline, Child::try_wait)?;
+    // Instant is local to this parent; honor the original shared boot-clock
+    // expiry too, including setup pauses and cleanup before accepting proof.
+    if crate::creation_probe::tick_now() >= expires {
+        return Err(deadline_error());
+    }
+    Ok(output)
 }
 fn deadline_error() -> io::Error {
     io::Error::new(
@@ -542,8 +663,8 @@ fn observe_admitted(
             return Err(deadline_error());
         }
         tool.capture_members(deadline)?;
-        let out_done = pump(&mut stdout, &mut out)?;
-        let err_done = pump(&mut stderr, &mut err)?;
+        let out_done = pump(&mut stdout, &mut out, tool.stdout_limit)?;
+        let err_done = pump(&mut stderr, &mut err, OUTPUT_LIMIT)?;
         if status.is_none() {
             if let Some(exited) = observe(&mut tool.child)? {
                 status = Some(exited);
@@ -578,8 +699,367 @@ fn observe_admitted(
 }
 
 #[cfg(test)]
+fn gated_spawn_hook(tool: &Tool, stage: &str) -> io::Result<()> {
+    if stage == "after-job" {
+        let mut exact = 0;
+        // This is the exact newly created job, NOT NULL/any inherited job.
+        assert_ne!(
+            unsafe {
+                IsProcessInJob(
+                    tool.child.as_raw_handle(),
+                    tool.job.as_ref().unwrap().0,
+                    &mut exact,
+                )
+            },
+            0
+        );
+        assert_ne!(exact, 0, "helper must belong to THIS job before admission");
+    }
+    let Ok(hook) = std::env::var("QC_GATE_PARENT_HOOK") else {
+        return Ok(());
+    };
+    if !hook.starts_with(stage) {
+        return Ok(());
+    }
+    let receipt = std::env::var_os("QC_GATE_CHILD_RECEIPT")
+        .ok_or_else(|| io::Error::other("missing hook receipt"))?;
+    let created = crate::os_process_created_at(tool.child.id())
+        .ok_or_else(|| io::Error::other("missing child identity"))?;
+    std::fs::write(receipt, format!("{} {created}", tool.child.id()))?;
+    if hook.ends_with("exit") {
+        std::process::exit(7);
+    }
+    if hook.ends_with("hold") {
+        std::thread::sleep(Duration::from_secs(3));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    static RECOVERY_TEST_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn gated_recovery_fixture() {
+        let Some(marker) = std::env::var_os("QC_GATED_RECOVERY_FIXTURE") else {
+            return;
+        };
+        let Ok(deadline) = crate::creation_probe::admission_deadline() else {
+            // Match production helper dispatch: expiration is a refused
+            // admission, not a test-harness unwrap panic (exit 101).
+            std::process::exit(2);
+        };
+        let Ok(admission) = crate::creation_probe::read_admission_pipe(deadline) else {
+            std::process::exit(2);
+        };
+        if admission != b"QC_CREATION_V1 7\n" {
+            std::process::exit(2);
+        }
+        if crate::creation_probe::tick_now() >= deadline {
+            std::process::exit(2);
+        }
+        std::fs::write(marker, b"provider admitted").unwrap();
+        if std::env::var_os("QC_GATED_RECOVERY_HANG").is_some() {
+            loop {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        std::process::exit(0);
+    }
+
+    struct GateMarker(std::path::PathBuf);
+    impl Drop for GateMarker {
+        fn drop(&mut self) {
+            match std::fs::remove_file(&self.0) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => panic!("owned gate marker cleanup: {error}"),
+            }
+        }
+    }
+    fn gate_command(hang: bool) -> (Command, GateMarker) {
+        let marker = GateMarker(
+            std::env::temp_dir().join(format!("qc-gate-{:032x}", rand::random::<u128>())),
+        );
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "owned_tool::tests::gated_recovery_fixture",
+                "--nocapture",
+            ])
+            .env("QC_GATED_RECOVERY_FIXTURE", &marker.0)
+            .stderr(Stdio::piped());
+        if hang {
+            command.env("QC_GATED_RECOVERY_HANG", "1");
+        }
+        (command, marker)
+    }
+    #[test]
+    fn gated_recovery_valid_admission_executes_and_retires() {
+        let _gate = RECOVERY_TEST_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (mut command, marker) = gate_command(false);
+        let output =
+            run_recovery_helper(&mut command, b"QC_CREATION_V1 7\n", Duration::from_secs(10))
+                .unwrap();
+        assert!(output.status.success());
+        assert_eq!(std::fs::read(&marker.0).unwrap(), b"provider admitted");
+        assert_eq!(
+            recovery_limit()
+                .0
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+    }
+    #[test]
+    fn gated_recovery_invalid_admission_has_no_provider_action() {
+        let _gate = RECOVERY_TEST_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (mut command, marker) = gate_command(false);
+        let output = run_recovery_helper(
+            &mut command,
+            b"invalid admission\n",
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(!output.status.success());
+        assert!(!marker.0.exists());
+        assert_eq!(
+            recovery_limit()
+                .0
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+    }
+    #[test]
+    fn gated_recovery_timeout_retires_original_before_readmission() {
+        let _gate = RECOVERY_TEST_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (mut command, marker) = gate_command(true);
+        let error =
+            run_recovery_helper(&mut command, b"QC_CREATION_V1 7\n", Duration::from_secs(2))
+                .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(std::fs::read(&marker.0).unwrap(), b"provider admitted");
+        assert_eq!(
+            recovery_limit()
+                .0
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        let (mut next, _marker) = gate_command(false);
+        assert!(
+            run_recovery_helper(&mut next, b"QC_CREATION_V1 7\n", Duration::from_secs(10))
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+
+    #[test]
+    fn gated_recovery_parent_fixture() {
+        let Some(marker) = std::env::var_os("QC_GATE_PROVIDER_MARKER") else {
+            return;
+        };
+        let (mut command, _unused) = gate_command(false);
+        command.env("QC_GATED_RECOVERY_FIXTURE", marker);
+        let outcome =
+            run_recovery_helper(&mut command, b"QC_CREATION_V1 7\n", Duration::from_secs(2));
+        assert!(
+            outcome.is_err(),
+            "paused parent must not send an expired admission"
+        );
+    }
+
+    fn check_parent_gap(hook: &str, expected_child_exit: Option<u32>) {
+        let (_unused, marker) = gate_command(false);
+        let mut parent = Command::new(std::env::current_exe().unwrap());
+        let receipt = GateMarker(
+            std::env::temp_dir().join(format!("qc-gate-receipt-{:032x}", rand::random::<u128>())),
+        );
+        // The parent fixture itself is contained by an outer original owner.
+        // Keep that owner alive WITHOUT observe_admitted's automatic child-exit
+        // cleanup, so it cannot fake the grandchild's independent retirement.
+        parent
+            .args([
+                "--exact",
+                "owned_tool::tests::gated_recovery_parent_fixture",
+                "--nocapture",
+            ])
+            .env_remove("QC_GATED_RECOVERY_FIXTURE")
+            .env("QC_GATE_PROVIDER_MARKER", &marker.0)
+            .env("QC_GATE_CHILD_RECEIPT", &receipt.0)
+            .env("QC_GATE_PARENT_HOOK", hook);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut outer = Tool::spawn(&mut parent, deadline).unwrap();
+        let text = loop {
+            if let Ok(text) = std::fs::read_to_string(&receipt.0) {
+                if text.split_whitespace().count() == 2 {
+                    break text;
+                }
+            }
+            assert!(Instant::now() < deadline, "missing owned child receipt");
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let fields: Vec<_> = text.split_whitespace().collect();
+        let pid = fields[0].parse::<u32>().unwrap();
+        let recorded = fields[1].parse::<u64>().unwrap();
+        let child = unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                pid,
+            )
+        };
+        if !child.is_null() {
+            let original = Handle(child);
+            assert_eq!(crate::os_process_created_at(pid), Some(recorded));
+            assert_eq!(
+                unsafe { WaitForSingleObject(original.0, 5000) },
+                WAIT_OBJECT_0,
+                "preassignment helper must exit itself; outer owner has NOT terminated descendants"
+            );
+            let mut code = 0;
+            assert_ne!(unsafe { GetExitCodeProcess(original.0, &mut code) }, 0);
+            if let Some(expected) = expected_child_exit {
+                assert_eq!(code, expected);
+            }
+        } else {
+            assert!(
+                !crate::os_process_is_alive(pid),
+                "unknown live child is not proof of retirement"
+            );
+        }
+        assert!(
+            !marker.0.exists(),
+            "no provider call before valid unexpired Go"
+        );
+        while outer.child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        outer.cleanup().unwrap();
+    }
+
+    #[test]
+    fn gated_recovery_parent_death_before_assignment_exits_without_provider() {
+        check_parent_gap("before-job-exit", Some(2));
+    }
+    #[test]
+    fn gated_recovery_parent_death_after_assignment_before_go_is_contained() {
+        check_parent_gap("after-job-exit", None);
+    }
+    #[test]
+    fn gated_recovery_held_open_stdin_expires_without_provider() {
+        check_parent_gap("before-job-hold", Some(2));
+    }
+    #[test]
+    fn gated_recovery_parent_paused_past_deadline_cannot_send_go() {
+        check_parent_gap("after-job-hold", Some(2));
+    }
+
+    #[test]
+    fn gated_recovery_stream_cap_accepts_exact_and_rejects_one_byte_overflow() {
+        use std::io::Write;
+        use std::os::windows::io::FromRawHandle;
+        for size in [128, 129] {
+            let mut read = std::ptr::null_mut();
+            let mut write = std::ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    windows_sys::Win32::System::Pipes::CreatePipe(
+                        &mut read,
+                        &mut write,
+                        std::ptr::null(),
+                        0,
+                    )
+                },
+                0
+            );
+            let mut writer = unsafe { std::fs::File::from_raw_handle(write) };
+            let mut reader = Some(unsafe { std::fs::File::from_raw_handle(read) });
+            writer.write_all(&vec![b'x'; size]).unwrap();
+            drop(writer);
+            let mut bytes = Vec::new();
+            let outcome = pump(&mut reader, &mut bytes, 128);
+            if size == 128 {
+                assert!(outcome.is_ok());
+                assert_eq!(bytes.len(), 128);
+            } else {
+                let error = outcome.unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::Other);
+                assert_eq!(error.to_string(), "status-tool output exceeded 128 bytes");
+                assert!(bytes.is_empty(), "overflow must not retain excess bytes");
+            }
+        }
+    }
+    #[test]
+    fn gated_recovery_uncertain_retirement_holds_own_budget_until_original_exits() {
+        use std::os::windows::io::{FromRawHandle, OwnedHandle};
+        let limit = std::sync::Arc::new(ToolLimit(std::sync::atomic::AtomicUsize::new(0), 1));
+        let failure = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mut release = ReleaseCleanupFailure {
+            failure: failure.clone(),
+            original: None,
+            identities: Vec::new(),
+        };
+        let (mut command, marker) = gate_command(true);
+        let expires = crate::creation_probe::tick_now() + 10_000;
+        command.env(crate::creation_probe::DEADLINE_ENV, expires.to_string());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut tool = Tool::spawn_with_admission(
+            &mut command,
+            deadline,
+            limit.clone(),
+            Some((b"QC_CREATION_V1 7\n", expires)),
+        )
+        .unwrap();
+        while !marker.0.exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut duplicate = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    tool.child.as_raw_handle(),
+                    GetCurrentProcess(),
+                    &mut duplicate,
+                    0,
+                    0,
+                    DUPLICATE_SAME_ACCESS,
+                )
+            },
+            0
+        );
+        let original = std::sync::Arc::new(unsafe { OwnedHandle::from_raw_handle(duplicate) });
+        release.original = Some(original.clone());
+        tool.cleanup_failure = Some(failure);
+        assert!(tool.cleanup().is_err());
+        drop(tool);
+        assert_eq!(limit.0.load(std::sync::atomic::Ordering::Acquire), 1);
+        assert!(Tool::spawn_with_limit(
+            &mut Command::new("must-not-start-another-recovery"),
+            deadline,
+            limit.clone()
+        )
+        .is_err());
+        assert_eq!(
+            unsafe { WaitForSingleObject(original.as_raw_handle(), 0) },
+            WAIT_TIMEOUT
+        );
+        drop(release);
+        assert_eq!(
+            unsafe { WaitForSingleObject(original.as_raw_handle(), 0) },
+            WAIT_OBJECT_0
+        );
+        let end = Instant::now() + Duration::from_secs(3);
+        while limit.0.load(std::sync::atomic::Ordering::Acquire) != 0 {
+            reap_retired_tools();
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
     use std::path::{Path, PathBuf};
     const FIXTURE: &str = "owned_tool::tests::owned_status_tool_fixture";
 
