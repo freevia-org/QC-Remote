@@ -2111,6 +2111,27 @@ fn desktop_application_command(executable: &Path) -> Command {
     }
 }
 
+/// Deliver an install bundle as a document. macOS sends existing applications
+/// an open-file event; --args only supplies argv when launching a new process.
+fn desktop_document_command(executable: &Path, document: &Path) -> Command {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = executable
+            .ancestors()
+            .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+            .unwrap_or(executable);
+        let mut command = Command::new("/usr/bin/open");
+        command.arg("-a").arg(bundle).arg(document);
+        command
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut command = desktop_application_command(executable);
+        command.arg(document);
+        command
+    }
+}
+
 fn spawn_desktop_command(command: Command) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -4732,9 +4753,7 @@ fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
     // Claude Desktop owns extension validation, confirmation, and replacement.
     // Passing the MCPB path invokes that supported install/update flow.
     if let Some(claude) = claude {
-        let mut command = desktop_application_command(&claude);
-        command.arg(&package_path);
-        spawn_desktop_command(command)?;
+        spawn_desktop_command(desktop_document_command(&claude, &package_path))?;
     } else {
         #[cfg(windows)]
         {

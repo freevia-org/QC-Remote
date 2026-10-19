@@ -1,3 +1,4 @@
+import { desktopPlatform } from "./host-platform.ts";
 /**
  * The page a Help window renders: the User Guide, Feedback, or About.
  *
@@ -38,7 +39,7 @@ const appVersion = appPackage.version;
  * issue form is left for the reporter to fill rather than prefilled with
  * something untrue.
  */
-const issuePlatform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform || undefined;
+const issuePlatform = desktopPlatform;
 
 /**
  * Read a bundled legal document out of the build's own `dist/legal/` folder.

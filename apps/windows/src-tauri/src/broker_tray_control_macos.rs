@@ -105,6 +105,17 @@ pub(super) fn spawn(
     directory: &Path,
     supersede_user_quit: bool,
 ) -> Result<(), String> {
+    if let Some(helper) = menu_app(executable) {
+        Command::new("/usr/bin/open")
+            .arg("-g")
+            .arg(helper)
+            .arg("--args")
+            .arg("--keep-user-quit")
+            .arg("--directory")
+            .arg(directory)
+            .status()
+            .map_err(|error| format!("Open the standalone broker menu: {error}"))?;
+    }
     let reaper = reaper_children()?;
     let mut command = Command::new(executable);
     command
@@ -446,6 +457,8 @@ fn gui_domain() -> Result<String, String> {
 }
 
 fn launch_agent(executable: &Path, directory: &Path) -> Result<String, String> {
+    let helper = menu_app(executable).map(|app| app.join("Contents/MacOS/QCDeviceBroker"));
+    let executable = helper.as_deref().unwrap_or(executable);
     let executable = executable
         .to_str()
         .ok_or("Broker executable path is not valid Unicode")?;
@@ -469,6 +482,16 @@ fn launch_agent(executable: &Path, directory: &Path) -> Result<String, String> {
     }
     xml.push_str("</array></dict></plist>\n");
     Ok(xml)
+}
+
+fn menu_app(executable: &Path) -> Option<PathBuf> {
+    let app = executable
+        .parent()?
+        .parent()?
+        .join("Resources/QC Device Broker.app");
+    app.join("Contents/MacOS/QCDeviceBroker")
+        .is_file()
+        .then_some(app)
 }
 
 fn xml_escape(value: &str) -> String {

@@ -1,3 +1,4 @@
+import { applicationModifier, shortcutLabel } from "./host-platform.ts";
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, type PresetSnapshot, type RuntimeStatus, type WorkspaceDocument } from "@qc-remote/client";
@@ -743,10 +744,10 @@ export function App() {
     return [
       { name: "Preset", items: [
         { id: "open-workspace", label: "Open Preset…" },
-        { id: "save-workspace", label: "Save Preset", shortcut: "Ctrl+S" },
+        { id: "save-workspace", label: "Save Preset", shortcut: shortcutLabel("Ctrl+S") },
         { id: "save-workspace-as", label: "Save Preset As…" },
         { id: "open-preset-directory", label: "Preset Library…", disabled: !ready },
-        { id: "save-preset-to-device", label: "Save to QC…", shortcut: "Ctrl+Shift+S", disabled: !ready },
+        { id: "save-preset-to-device", label: "Save to QC…", shortcut: shortcutLabel("Ctrl+Shift+S"), disabled: !ready },
         { id: "rename-current-preset", label: "Rename Current Preset…", disabled: !ready },
         divider(),
         { id: "add-block", label: "Add Device…", disabled: !ready },
@@ -759,8 +760,8 @@ export function App() {
         { id: "exit", label: "Exit" }
       ] },
       { name: "Edit", items: [
-        { id: "undo", label: undoEntry ? `Undo ${undoEntry.label}` : "Undo", shortcut: "Ctrl+Z", disabled: (!undoEntry && !deviceUndoAvailable) || !ready },
-        { id: "redo", label: redoEntry ? `Redo ${redoEntry.label}` : "Redo", shortcut: "Ctrl+Y", disabled: (!redoEntry && !deviceRedoAvailable) || !ready },
+        { id: "undo", label: undoEntry ? `Undo ${undoEntry.label}` : "Undo", shortcut: shortcutLabel("Ctrl+Z"), disabled: (!undoEntry && !deviceUndoAvailable) || !ready },
+        { id: "redo", label: redoEntry ? `Redo ${redoEntry.label}` : "Redo", shortcut: shortcutLabel("Ctrl+Y"), disabled: (!redoEntry && !deviceRedoAvailable) || !ready },
         divider(),
         { id: "copy-preset", label: "Copy Preset", disabled: !canCopyPreset },
         { id: "paste-preset", label: "Paste Preset", disabled: !canPastePreset },
@@ -769,8 +770,8 @@ export function App() {
         { id: "copy-setlist", label: "Copy Setlist", disabled: !ready || !snapshot.setlistKey },
         { id: "paste-setlist", label: "Paste Setlist", disabled: !ready || !setlistClipboard },
         divider(),
-        { id: "copy-block-settings", label: "Copy Device", shortcut: "Ctrl+C", disabled: !hasSelectedBlock },
-        { id: "paste-block-settings", label: "Paste Device", shortcut: "Ctrl+V", disabled: !ready || !clipboardCompatible },
+        { id: "copy-block-settings", label: "Copy Device", shortcut: shortcutLabel("Ctrl+C"), disabled: !hasSelectedBlock },
+        { id: "paste-block-settings", label: "Paste Device", shortcut: shortcutLabel("Ctrl+V"), disabled: !ready || !clipboardCompatible },
         divider(),
         { id: "settings", label: "Settings…" }
       ] },
@@ -3114,29 +3115,29 @@ export function App() {
       // has moved on the next animation frame. Never edit the hidden Grid.
       const modalCommandBlocked = sceneWorkflow.command || sceneWorkflow.labelColorOpen
         || target?.closest('[aria-modal="true"]');
-      if (modalCommandBlocked && event.ctrlKey && ["s", "z", "y", "c", "v"].includes(event.key.toLowerCase())) return;
-      if (event.ctrlKey && event.key.toLowerCase() === "s") {
+      if (modalCommandBlocked && applicationModifier(event) && ["s", "z", "y", "c", "v"].includes(event.key.toLowerCase())) return;
+      if (applicationModifier(event) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         if (event.shiftKey) void openDeviceSave();
         else void saveWorkspace();
         return;
       }
-      if (!textEntry && event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "z") {
+      if (!textEntry && applicationModifier(event) && !event.shiftKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
         void undoLastAction();
         return;
       }
-      if (!textEntry && event.ctrlKey && (event.key.toLowerCase() === "y" || (event.shiftKey && event.key.toLowerCase() === "z"))) {
+      if (!textEntry && applicationModifier(event) && (event.key.toLowerCase() === "y" || (event.shiftKey && event.key.toLowerCase() === "z"))) {
         event.preventDefault();
         void redoLastAction();
         return;
       }
-      if (!textEntry && event.ctrlKey && event.key.toLowerCase() === "c") {
+      if (!textEntry && applicationModifier(event) && event.key.toLowerCase() === "c") {
         event.preventDefault();
         void copySelectedBlockSettings();
         return;
       }
-      if (!textEntry && event.ctrlKey && event.key.toLowerCase() === "v") {
+      if (!textEntry && applicationModifier(event) && event.key.toLowerCase() === "v") {
         event.preventDefault();
         void pasteSelectedBlockSettings();
         return;

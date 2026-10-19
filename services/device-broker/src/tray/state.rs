@@ -56,7 +56,9 @@ where
         refreshed: Mutex::new(Instant::now()),
     });
     let (actions, received) = mpsc::channel();
-    let notify = start_ui(Arc::clone(&shared), actions)?;
+    let notify = start_ui(Arc::clone(&shared), actions.clone())?;
+    #[cfg(target_os = "macos")]
+    super::menu_bridge::install(Arc::clone(&shared), actions);
     std::thread::Builder::new()
         .name("qc-broker-tray-state".into())
         .spawn(move || {

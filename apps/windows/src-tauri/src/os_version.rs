@@ -94,9 +94,23 @@ pub fn host_os_version() -> Option<String> {
     describe_windows(&read_windows_version_values()?)
 }
 
-/// This shell ships on Windows only; elsewhere the Feedback window falls back
-/// to what the webview reports.
-#[cfg(not(windows))]
+/// Read the installed macOS version without a shell or environment interpolation.
+#[cfg(target_os = "macos")]
+pub fn host_os_version() -> Option<String> {
+    let output = std::process::Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let version = String::from_utf8(output.stdout).ok()?;
+    let version = version.trim();
+    (!version.is_empty() && version.chars().all(|c| c.is_ascii_digit() || c == '.'))
+        .then(|| format!("macOS {version}"))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn host_os_version() -> Option<String> {
     None
 }

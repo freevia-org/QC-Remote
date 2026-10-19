@@ -17,6 +17,13 @@ OS-specific completion policy:
   5, and that interface's exact 32-byte report descriptor. Every other Linux
   profile still requires a complete-length write; short writes and other errors
   fail closed. Windows status codes are not reused on Linux.
+- macOS serializes HID reads and writes. On VID/PID `152a:880a`, interface 5,
+  with the exact same measured descriptor, a complete 129-byte output report
+  may return `kUSBHostReturnPipeStalled` (`0xE0005000`). A live macOS probe
+  observed that error followed by a type-52 reply echoing the fresh session
+  UUID. Only that native error on that profile is accepted as an expected
+  status stall; short writes and other errors remain failures. Startup still
+  requires the fresh session echo, and mutations retain protocol verification.
 
 Both backends pin hidapi **exactly to 2.6.7**. Their private full-duplex wrappers
 have separate safety audits in `src/backend/`; re-audit both before upgrading.

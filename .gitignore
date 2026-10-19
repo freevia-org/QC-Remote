@@ -12,6 +12,9 @@ apps/windows/src-tauri/icons/android/
 apps/windows/src-tauri/icons/ios/
 apps/windows/src-tauri/icons/icon.icns
 apps/windows/src-tauri/binaries/*.exe
+apps/windows/src-tauri/binaries/qc-device-broker-aarch64-apple-darwin
+apps/windows/src-tauri/binaries/qc-device-broker-x86_64-apple-darwin
+apps/windows/src-tauri/icons/generated/
 
 # Mobile
 .gradle/
