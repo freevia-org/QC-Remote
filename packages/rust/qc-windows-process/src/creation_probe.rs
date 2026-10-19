@@ -393,22 +393,14 @@ fn query_creation(pid: u32, deadline: u64) -> Option<CreationInterval> {
         if tick_now() >= deadline {
             return None;
         }
-        let found_pid = property_text(&row, w!("ProcessId"), 19).or_else(|| {
-            #[cfg(test)]
-            eprintln!("WMI ProcessId unavailable");
-            None
-        })?;
+        let found_pid = property_text(&row, w!("ProcessId"), 19)?;
         if found_pid.parse::<u32>().ok()? != pid {
             return None;
         }
         if tick_now() >= deadline {
             return None;
         }
-        let creation = property_text(&row, w!("CreationDate"), 101).or_else(|| {
-            #[cfg(test)]
-            eprintln!("WMI CreationDate unavailable");
-            None
-        })?;
+        let creation = property_text(&row, w!("CreationDate"), 101)?;
         let mut extra = [None];
         count = 0;
         // Only an explicit end-of-enumeration, not timeout or partial response,
@@ -426,11 +418,7 @@ fn query_creation(pid: u32, deadline: u64) -> Option<CreationInterval> {
         if tick_now() >= deadline {
             return None;
         }
-        parse_creation(&creation).or_else(|| {
-            #[cfg(test)]
-            eprintln!("WMI date rejected length={}", creation.len());
-            None
-        })
+        parse_creation(&creation)
     }
 }
 
