@@ -29,8 +29,15 @@ export function selectDeviceHost<T extends AttachedHost>(sockets: readonly T[], 
   });
   const ready = hosts.filter((socket) =>
     (socket.deserializeAttachment() as { ready?: unknown }).ready === true);
-  if (ready.length > 1) throw new Error("Multiple USB-ready paired hosts are connected; the target is ambiguous");
-  if (ready.length === 1) return ready[0];
+  // A paired host without a QC can now serve a demo. It must never make a
+  // single usable physical QC ambiguous or take its place. Legacy ready hosts
+  // predate demo hosting and therefore still represent physical hardware.
+  const physical = ready.filter((socket) =>
+    (socket.deserializeAttachment() as { brokerTarget?: { source?: unknown } }).brokerTarget?.source !== "demo");
+  const preferred = physical.length ? physical : ready;
+  if (physical.length > 1) throw new Error("Multiple USB-ready paired hosts are connected; the target is ambiguous");
+  if (preferred.length > 1) throw new Error("Multiple demo-ready paired hosts are connected; the target is ambiguous");
+  if (preferred.length === 1) return preferred[0];
   if (OFFLINE_HOST_METHODS.has(method)) {
     if (hosts.length === 1) return hosts[0];
     if (hosts.length > 1) throw new Error("Multiple paired hosts are connected without USB readiness; the target is ambiguous");
