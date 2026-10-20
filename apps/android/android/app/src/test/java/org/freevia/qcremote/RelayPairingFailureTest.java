@@ -238,7 +238,7 @@ public class RelayPairingFailureTest {
         "        Response body(){return this;}String string(){return json;}public void close(){}",
         "    }",
         "    static class JSObject extends JSONObject {}",
-        "    static class QcUsbPlugin {static boolean relayForegroundServiceEligible(){return true;}}")+"\n";
+        "    static class QcUsbPlugin {static boolean relayForegroundServiceEligible(){return true;} static boolean relayDemoAvailable(){return false;}}")+"\n";
     private static final String STORE_STUBS=String.join("\n",
         "",
         "class Context {",
