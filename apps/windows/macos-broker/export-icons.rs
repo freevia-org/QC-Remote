@@ -7,6 +7,7 @@ fn main() -> std::io::Result<()> {
     let output = std::path::PathBuf::from(std::env::args_os().nth(1).expect("output directory"));
     std::fs::create_dir_all(&output)?;
     for (name, tone) in [
+        ("demo", icon::IconTone::Demo),
         ("ready", icon::IconTone::Ready),
         ("attention", icon::IconTone::Attention),
         ("error", icon::IconTone::Error),

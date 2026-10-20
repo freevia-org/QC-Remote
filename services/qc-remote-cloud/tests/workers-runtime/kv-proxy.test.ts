@@ -26,7 +26,10 @@ import { DEVICE_RETENTION_MS, DEVICE_SWEEP_KEY } from "../../src/device-retentio
 import type { DeviceSession } from "../../src/index.ts";
 
 describe("MCP admission with presence in one RPC", () => {
-  it("keeps remote command dispatch and session fencing through a real socket", async () => {
+  it.each([
+    { usbConnected: true },
+    { usbConnected: false, targetReady: true, brokerTarget: { source: "demo", sessionId: "runtime-demo-1", generation: 1 } }
+  ])("keeps remote command dispatch and session fencing through a ready socket (%j)", async (readiness) => {
     const target = env.DEVICE_SESSION.getByName(`request-control-${crypto.randomUUID()}`);
     const deviceId = crypto.randomUUID();
     const credential = `runtime-device-${crypto.randomUUID()}`;
@@ -43,14 +46,16 @@ describe("MCP admission with presence in one RPC", () => {
     const host = upgraded.webSocket!;
     host.accept();
     const invocations: string[] = [];
+    const targetGuards: unknown[] = [];
     host.addEventListener("message", (event) => {
-      const frame = JSON.parse(String(event.data)) as { type: string; id: string; method: string };
+      const frame = JSON.parse(String(event.data)) as { type: string; id: string; method: string; expectedBrokerTarget?: unknown };
       if (frame.type !== "invoke") return;
       invocations.push(frame.method);
+      targetGuards.push(frame.expectedBrokerTarget);
       host.send(JSON.stringify({ type: "result", id: frame.id, ok: true, result: { tempo: 120 } }));
     });
     try {
-      host.send(JSON.stringify({ type: "ready", protocol: "qc-relay.v1", usbConnected: true, gatewayApiVersion: 31 }));
+      host.send(JSON.stringify({ type: "ready", protocol: "qc-relay.v1", ...readiness, gatewayApiVersion: 31 }));
       let ready = false;
       for (let attempt = 0; attempt < 50; attempt++) {
         const status: unknown = await target.status();
@@ -59,6 +64,11 @@ describe("MCP admission with presence in one RPC", () => {
       }
       expect(ready).toBe(true);
       await expect(target.command({ method: "device.setTempo", params: { tempo: 120 } }, 0)).resolves.toEqual({ tempo: 120 });
+      if (readiness.brokerTarget) {
+        await runInDurableObject(target, async (instance: DeviceSession) => {
+          await expect(instance.command({ method: "device.setTempo", params: { tempo: 119 }, expectedBrokerTarget: { ...readiness.brokerTarget, generation: 2 } }, 0)).rejects.toThrow("target changed");
+        });
+      }
       await runInDurableObject(target, async (instance: DeviceSession) => {
         await expect(instance.command({ method: "device.setTempo", params: { tempo: 121 } }, 1)).rejects.toThrow();
       });
@@ -67,6 +77,7 @@ describe("MCP admission with presence in one RPC", () => {
         await expect(instance.command({ method: "device.setTempo", params: { tempo: 122 } }, 0)).rejects.toThrow();
       });
       expect(invocations).toEqual(["device.setTempo"]);
+      expect(targetGuards).toEqual([readiness.brokerTarget]);
     } finally { host.close(1000, "Test complete"); }
   });
 

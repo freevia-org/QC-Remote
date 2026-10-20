@@ -18,6 +18,44 @@ pub(super) struct Request {
     /// broker rejects unknown envelope fields.
     #[serde(default)]
     pub(super) origin: Option<String>,
+    #[serde(default, rename = "physicalOnly")]
+    pub(super) physical_only: bool,
+    #[serde(
+        default,
+        rename = "expectedBrokerTarget",
+        deserialize_with = "deserialize_expected_target"
+    )]
+    pub(super) expected_broker_target: Option<crate::target::TargetIdentity>,
+}
+
+pub(super) fn parse_target_identity(value: Value) -> Result<crate::target::TargetIdentity, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Target {
+        source: crate::target::TargetSource,
+        session_id: String,
+        generation: u64,
+    }
+    let target: Target = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    if target.session_id.trim().is_empty()
+        || target.session_id.chars().count() > 512
+        || !(1..=9_007_199_254_740_991).contains(&target.generation)
+    {
+        return Err("Invalid broker target session id or generation".into());
+    }
+    Ok(crate::target::TargetIdentity {
+        source: target.source,
+        session_id: target.session_id,
+        generation: target.generation,
+    })
+}
+
+fn deserialize_expected_target<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::target::TargetIdentity>, D::Error> {
+    parse_target_identity(Value::deserialize(deserializer)?)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
 
 /// The `origin` value that marks an MCP resource read.
@@ -141,4 +179,41 @@ pub(super) fn write_tcp_frame_before_deadline(
     deadline: Instant,
 ) -> io::Result<()> {
     qc_broker_framing::write_tcp_bytes_before_deadline(output, frame, deadline)
+}
+
+#[cfg(test)]
+mod demo_envelope_tests {
+    use super::*;
+
+    #[test]
+    fn demo_target_envelope_rejects_partial_null_unsafe_or_foreign_fields() {
+        let target = json!({"source":"demo","sessionId":"broker:demo:window","generation":1});
+        let request = |target: Value| json!({"jsonrpc":"2.0","id":1,"method":"device.snapshot","params":{},"expectedBrokerTarget":target});
+        let parsed: Request = serde_json::from_value(request(target.clone())).unwrap();
+        assert_eq!(
+            parsed.expected_broker_target.unwrap().source,
+            crate::target::TargetSource::Demo
+        );
+        let legacy: Request =
+            serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"device.snapshot"}))
+                .unwrap();
+        assert!(legacy.expected_broker_target.is_none());
+        assert!(!legacy.physical_only);
+        for bad in [
+            Value::Null,
+            json!({}),
+            json!({"source":"virtual","sessionId":"id","generation":1}),
+            json!({"source":"demo","sessionId":" ","generation":1}),
+            json!({"source":"demo","sessionId":"x".repeat(513),"generation":1}),
+            json!({"source":"demo","sessionId":"id","generation":0}),
+            json!({"source":"demo","sessionId":"id","generation":1.5}),
+            json!({"source":"demo","sessionId":"id","generation":9007199254740992_u64}),
+            json!({"source":"demo","sessionId":"id","generation":1,"extra":true}),
+        ] {
+            assert!(
+                serde_json::from_value::<Request>(request(bad.clone())).is_err(),
+                "accepted {bad}"
+            );
+        }
+    }
 }

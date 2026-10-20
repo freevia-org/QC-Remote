@@ -1,11 +1,13 @@
 pub mod cli;
 pub mod control;
+mod demo_provider;
 pub mod device_lease;
 mod generated_broker_surface;
 pub mod orphan_guard;
 pub mod platform;
 pub mod resident;
 pub mod rpc;
+pub mod target;
 pub mod tray;
 pub mod tray_settings;
 pub mod updater_relay;

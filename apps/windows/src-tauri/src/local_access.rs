@@ -262,6 +262,16 @@ impl QcBackend for LocalBackend {
         rpc: &'static str,
         params: Map<String, Value>,
     ) -> Result<Value, BackendError> {
+        self.request_targeted(route, rpc, params, None).await
+    }
+
+    async fn request_targeted(
+        &self,
+        route: &PrincipalRoute,
+        rpc: &'static str,
+        params: Map<String, Value>,
+        expected_broker_target: Option<qc_remote_mcp::BrokerTarget>,
+    ) -> Result<Value, BackendError> {
         if route.principal_id.as_ref() != LOCAL_PRINCIPAL
             || route.device_id.as_ref() != LOCAL_DEVICE
         {
@@ -283,7 +293,12 @@ impl QcBackend for LocalBackend {
             ));
         }
         self.adapter
-            .invoke(rpc, Value::Object(params))
+            .invoke_targeted(
+                rpc,
+                Value::Object(params),
+                expected_broker_target,
+                qc_remote_mcp::serving_resource_read(),
+            )
             .await
             .map_err(|error| {
                 let mut mapped = backend_error(
@@ -421,6 +436,7 @@ struct LocalRpcRequest {
     rpc: String,
     #[serde(default)]
     params: Map<String, Value>,
+    expected_broker_target: Option<qc_remote_mcp::BrokerTarget>,
 }
 
 fn local_router(
@@ -641,6 +657,7 @@ async fn local_health(State(state): State<LocalHealth>) -> Response {
         "deviceReady": device_ready,
         "toolContractSha256": state.tool_contract_sha256.as_ref(),
         "processId": state.process_id,
+        "capabilities": ["localRpcBrokerTargetGuard"],
     });
     if !device_ready {
         document["code"] = Value::String("LOCAL_UNAVAILABLE".into());
@@ -762,7 +779,10 @@ async fn local_rpc(
         }
     }
     let route = PrincipalRoute::new(LOCAL_PRINCIPAL, LOCAL_DEVICE);
-    let answered = state.backend.request(&route, rpc, request.params);
+    let answered =
+        state
+            .backend
+            .request_targeted(&route, rpc, request.params, request.expected_broker_target);
     // A relayed resource read is served as this host serves its own: inside
     // the same task-local scope `QcMcp::read_resource` enters, so its gateway
     // never attaches, spawns or recovers a broker for it.

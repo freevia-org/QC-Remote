@@ -139,6 +139,7 @@ fn run(
             device_status = current;
         }
         let mut snapshot = Snapshot {
+            served_source: handle.served_target().map(|target| target.source),
             participants: handle.participants_without_host(),
             host: host.clone(),
             idle: settings.idle,

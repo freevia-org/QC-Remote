@@ -213,8 +213,21 @@ fn listener_refusal(
 pub fn attach_to_device_broker(
     descriptor: &device_broker_descriptor::DeviceBrokerDescriptor,
 ) -> Result<TcpStream, BrokerAttachFailure> {
+    attach_to_device_broker_as(descriptor, None)
+}
+
+pub(crate) fn attach_demo_provider(
+    descriptor: &device_broker_descriptor::DeviceBrokerDescriptor,
+) -> Result<TcpStream, BrokerAttachFailure> {
+    attach_to_device_broker_as(descriptor, Some("demoProvider"))
+}
+
+fn attach_to_device_broker_as(
+    descriptor: &device_broker_descriptor::DeviceBrokerDescriptor,
+    role: Option<&str>,
+) -> Result<TcpStream, BrokerAttachFailure> {
     let address = SocketAddr::from(([127, 0, 0, 1], descriptor.port));
-    let mut stream =
+    let stream =
         TcpStream::connect_timeout(&address, DEVICE_BROKER_CONNECT_TIMEOUT).map_err(|error| {
             let message = format!("Could not connect to the shared QC device broker: {error}");
             // Refusal proves no listener at that instant, not owner death.
@@ -246,12 +259,27 @@ pub fn attach_to_device_broker(
     ) {
         return Err(ambiguous(refusal));
     }
-    let handshake = serde_json::to_vec(&json!({
+    authenticate_broker_stream(stream, descriptor, role)
+}
+
+// Ownership must be established by the caller before passing this stream.
+// Separating the framed handshake lets role tests exercise negotiation without
+// relying on a kernel process/socket inventory snapshot in the test runner.
+fn authenticate_broker_stream(
+    mut stream: TcpStream,
+    descriptor: &device_broker_descriptor::DeviceBrokerDescriptor,
+    role: Option<&str>,
+) -> Result<TcpStream, BrokerAttachFailure> {
+    let ambiguous = |message: String| BrokerAttachFailure::ambiguous(descriptor, message);
+    let mut handshake = json!({
         "method": DEVICE_BROKER_AUTHENTICATE_METHOD,
         "params": {"token": descriptor.bearer_token},
         "id": 0
-    }))
-    .map_err(|error| ambiguous(error.to_string()))?;
+    });
+    if let Some(role) = role {
+        handshake["params"]["role"] = json!(role);
+    }
+    let handshake = serde_json::to_vec(&handshake).map_err(|error| ambiguous(error.to_string()))?;
     let mut bounded = DeadlineStream::new(&mut stream, DEVICE_BROKER_HANDSHAKE_TIMEOUT);
     write_frame(&mut bounded, &handshake).map_err(|error| {
         ambiguous(format!(
@@ -269,6 +297,7 @@ pub fn attach_to_device_broker(
         .and_then(Value::as_str);
     if response.get("id").and_then(Value::as_u64) != Some(0)
         || answered_instance != Some(descriptor.instance_id.as_str())
+        || role.is_some_and(|role| response["result"]["role"].as_str() != Some(role))
     {
         let detail = response
             .get("error")
@@ -295,6 +324,37 @@ pub fn attach_to_device_broker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn demo_provider_requires_the_exact_non_participant_role() {
+        for answered_role in [Some("demoProvider"), Some("control"), None] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut published = descriptor();
+            published.port = listener.local_addr().unwrap().port();
+            let instance_id = published.instance_id.clone();
+            let peer = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_frame(&mut stream).unwrap();
+                assert_eq!(request["params"]["role"], "demoProvider");
+                let mut result = json!({"instanceId":instance_id});
+                if let Some(role) = answered_role {
+                    result["role"] = json!(role);
+                }
+                write_frame(
+                    &mut stream,
+                    &serde_json::to_vec(&json!({"id":0,"result":result})).unwrap(),
+                )
+                .unwrap();
+            });
+            let stream = TcpStream::connect(("127.0.0.1", published.port)).unwrap();
+            let attached = authenticate_broker_stream(stream, &published, Some("demoProvider"));
+            assert_eq!(
+                attached.is_ok(),
+                answered_role == Some("demoProvider"),
+                "role {answered_role:?}: {attached:?}"
+            );
+            peer.join().unwrap();
+        }
+    }
     #[test]
     fn owner_recovery_connection_refusal_does_not_prove_unknown_owner_dead() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

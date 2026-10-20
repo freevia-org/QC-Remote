@@ -45,6 +45,40 @@ def group_has_live_members(pgid: int) -> bool:
         except (OSError, ValueError, IndexError): pass
     return False
 
+def wait_for_group_exit(pgid: int, grace: float = 3.0) -> bool:
+    """Observe one bounded retirement interval; never signal a departed leader's PGID."""
+    deadline = time.monotonic() + grace
+    while group_has_live_members(pgid):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.05, remaining))
+    return True
+
+def group_survivor_diagnostics(pgid: int, limit: int = 16) -> dict[str, Any]:
+    """Bounded process facts only: command lines may contain credentials."""
+    members = []
+    try:
+        entries = list(pathlib.Path("/proc").iterdir())
+    except OSError:
+        return {"scanUnavailable": True, "members": []}
+    for entry in entries:
+        if not entry.name.isdigit(): continue
+        try:
+            raw = (entry / "stat").read_text()
+            tail = raw[raw.rfind(")") + 2:].split()
+            if int(tail[2]) != pgid or tail[0] in {"Z", "X", "x"}: continue
+            member = {"pid": int(entry.name), "startTicks": int(tail[19]),
+                      "ppid": int(tail[1]), "pgrp": int(tail[2])}
+        except (OSError, ValueError, IndexError):
+            continue
+        if len(members) == limit:
+            return {"members": members, "truncated": True}
+        try: member["exe"] = os.readlink(entry / "exe")[:512]
+        except OSError: member["exe"] = None
+        members.append(member)
+    return {"members": members, "truncated": False}
+
 def stop_owned_group(proc: subprocess.Popen[Any], identity: dict[str, Any], grace: float = 2.0) -> bool:
     """Signal only the dedicated process group created by Popen(start_new_session=True)."""
     current = proc_identity(proc.pid)
@@ -571,7 +605,12 @@ def main() -> int:
         else:
             try: proc.wait(timeout=0)
             except subprocess.TimeoutExpired: pass
-            outer_clean = not group_has_live_members(proc.pid)
+            # The namespace launcher can exit before its remaining monitors
+            # finish retiring. Observe that teardown without signalling a
+            # numeric process group whose original leader has already exited.
+            outer_clean = wait_for_group_exit(proc.pid)
+        if not outer_clean:
+            report["sandboxGroupSurvivors"] = group_survivor_diagnostics(proc.pid)
         report["sandboxGroupReaped"] = outer_clean
         if result_path.is_file():
             inner = json.loads(result_path.read_text(encoding="utf-8"))

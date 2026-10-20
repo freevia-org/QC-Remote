@@ -15,6 +15,7 @@ import { commandDeadlineMs, deadlineExceededMessage, innerBudgetMs } from "./dev
 import { LateResultLog } from "./late-results.ts";
 import { selectDeviceHost } from "./device-selection.ts";
 import { decodeDeviceMessage } from "./device-messages.ts";
+import { assertBrokerTarget, deviceReadiness, parseBrokerTarget, sameBrokerTarget, verifiedTargetTransition, type BrokerTarget } from "./device-readiness.ts";
 import { deviceInvocationError, deviceInvocationToolError, deviceResourceRead, deviceToolCall } from "./device-errors.ts";
 import { sanitizePublicResult } from "./public-result.ts";
 import { applyWorkerInputs } from "./model-query.ts";
@@ -60,14 +61,14 @@ type Json = Record<string, unknown>;
  * holds it, so a socket accepted while its record was being revoked cannot run
  * anything. Sockets accepted before this field existed carry none and rely on
  * revocation closing them by device id. */
-type DeviceAttachment = { deviceId: string; deviceName: string; ready: boolean; connectionId?: string; gatewayApiVersion?: number; mcpPresence?: boolean; credentialExpiresAt?: number | null; credentialHash?: string };
+type DeviceAttachment = { deviceId: string; deviceName: string; ready: boolean; usbConnected?: boolean; brokerTarget?: BrokerTarget; connectionId?: string; gatewayApiVersion?: number; mcpPresence?: boolean; credentialExpiresAt?: number | null; credentialHash?: string };
 type PairingOffer = { codeHash: string; expiresAt: number; redeemed: boolean };
 type PairingMetadata = { email: string; device: string; pairedAt: number };
 /** `lastUsedAt` is the last authenticated use, written at most once a day;
  * retention is measured from it (device-retention.ts). */
 /** `replaces` is a re-pair's pending predecessor (device-retention.ts). */
 type DeviceRecord = { credentialHash: string; name: string; pairedAt: number; expiresAt?: number | null; lastUsedAt?: number; identityProvider: "google"; pairing?: PairingMetadata; replaces?: PendingReplacement; replacedDeviceId?: string };
-type PendingCommand = { socket: WebSocket; method: string; resolve: (value: Json) => void; reject: (reason: Error) => void; timeout: ReturnType<typeof setTimeout> };
+type PendingCommand = { socket: WebSocket; method: string; expectedBrokerTarget?: BrokerTarget; resolve: (value: Json) => void; reject: (reason: Error) => void; timeout: ReturnType<typeof setTimeout> };
 type PairingDirectory = { owner: string; expiresAt: number; pairing?: PairingMetadata };
 type DeviceDirectory = { owner: string };
 /** `remaining` is the account's device count after the removal, which only the
@@ -609,8 +610,14 @@ function mcpHandler(env: Env, props: PrincipalProps) {
     }
   };
   // A resource callback passes RESOURCE_READ_ORIGIN; a tool never does.
-  const readStatus = (origin?: InvokeOrigin) =>
-    route({ action: "get_status", method: "system.status", params: {}, ...(origin ? { origin } : {}) }, "qc:read");
+  const readStatus = async (origin?: InvokeOrigin) => {
+    const status = await route({ action: "get_status", method: "system.status", params: {}, ...(origin ? { origin } : {}) }, "qc:read");
+    // This is a cloud admission capability, not evidence about USB or native
+    // host support. Clients must not send target-aware writes to an older
+    // cloud whose tool schema could silently discard the optional guard.
+    const capabilities = Array.isArray(status.capabilities) ? status.capabilities.filter(value => typeof value === "string") : [];
+    return { ...status, capabilities: [...new Set([...capabilities, "mcpBrokerTargetGuard"])] };
+  };
   const readCurrentPreset = (origin?: InvokeOrigin) => {
     const projected = projectAction("get_current_preset", {});
     return route({ action: projected.action.name, method: projected.method, params: projected.params, ...(origin ? { origin } : {}) }, "qc:read");
@@ -675,13 +682,20 @@ function mcpHandler(env: Env, props: PrincipalProps) {
     server.registerTool("execute_qc_action", {
       title: "Execute QC Remote action",
       description: "Execute one named action from list_qc_actions, whose catalog carries each action's safety class and per-action warnings. Read get_qc_guide before the first write of a conversation and get_current_preset before preset-scoped work. Every expected_* argument must come from a fresh read, never from what you asked for. A confirmation field is not an authorization boundary: this worker can only check that the boolean is true, not that a person set it, so describe the exact action to the user and get an answer before setting one.",
-      inputSchema: { action: z.string().min(1).max(128), params: z.record(z.string(), z.unknown()) },
+      inputSchema: {
+        action: z.string().min(1).max(128), params: z.record(z.string(), z.unknown()),
+        expectedBrokerTarget: z.object({
+          source: z.enum(["physical", "demo"]),
+          sessionId: z.string().min(1).max(256).refine(value => value.trim().length > 0),
+          generation: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
+        }).strict().optional().describe("The brokerTarget from the client or UI's accepted status. Prevents an action from moving to another target while it is queued.")
+      },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
-    }, async ({ action, params }) => {
+    }, async ({ action, params, expectedBrokerTarget }) => {
       const projected = projectAction(action, params);
       const requiredScope = projected.action.classification === "read" ? "qc:read" : "qc:control";
       try {
-        const result = await route({ action: projected.action.name, method: projected.method, params: projected.params }, requiredScope);
+        const result = await route({ action: projected.action.name, method: projected.method, params: projected.params, ...(expectedBrokerTarget ? { expectedBrokerTarget } : {}) }, requiredScope);
         // Inputs with no gateway slot (list_models.query) are applied here,
         // exactly as both local MCP servers apply them.
         return toolResult(applyWorkerInputs(projected.action.name, params, result));
@@ -1146,7 +1160,7 @@ export class DeviceSession extends DurableObject<Env> {
     const lateResults = this.lateResults.arrivals();
     return {
       connected: devices.filter((item) => item.ready).length,
-      devices: devices.map(({ deviceId, deviceName, ready }) => ({ deviceId, deviceName, ready })),
+      devices: devices.map(({ deviceId, deviceName, ready, usbConnected, brokerTarget }) => ({ deviceId, deviceName, ready, ...(usbConnected !== undefined ? { usbConnected } : {}), ...(brokerTarget ? { brokerTarget } : {}) })),
       ...(lateResults.length > 0 ? { lateResults } : {})
     };
   }
@@ -1289,6 +1303,10 @@ export class DeviceSession extends DurableObject<Env> {
     const origin: InvokeOrigin | undefined = payload.origin === RESOURCE_READ_ORIGIN ? RESOURCE_READ_ORIGIN : undefined;
     if (!method) throw new Error("A device method is required");
     const socket = selectDeviceHost(this.ctx.getWebSockets(), method);
+    const observedBrokerTarget = (socket.deserializeAttachment() as DeviceAttachment).brokerTarget;
+    const acceptedBrokerTarget = parseBrokerTarget(payload.expectedBrokerTarget);
+    if (acceptedBrokerTarget) assertBrokerTarget(acceptedBrokerTarget, observedBrokerTarget);
+    const expectedBrokerTarget = acceptedBrokerTarget ?? observedBrokerTarget;
     const day = new Date().toISOString().slice(0, 10);
     // A daily activity marker is enough for the owner-facing usage display.
     // Updating it for every command would turn normal use into storage-write
@@ -1309,31 +1327,32 @@ export class DeviceSession extends DurableObject<Env> {
       // This worker is generated from one gateway API version and every paired
       // host runs whatever build is installed on it. Send an older host only
       // what it accepts, and check here any guard it cannot receive.
-      const adapted = adaptForHost(method, params, await this.hostGatewayApiVersion(socket));
+      const adapted = adaptForHost(method, params, await this.hostGatewayApiVersion(socket, expectedBrokerTarget));
       request = adapted.params;
       if (adapted.modelGuard) {
-        const details = await this.dispatch(socket, action, "device.blockDetails", adapted.modelGuard.detailsParams, origin);
+        const details = await this.dispatch(socket, action, "device.blockDetails", adapted.modelGuard.detailsParams, origin, expectedBrokerTarget);
         const failure = legacyModelGuardFailure(adapted.modelGuard, details);
         if (failure) throw new Error(failure);
       }
       if (!this.ctx.getWebSockets().includes(socket)) throw new Error("The selected device host disconnected before dispatch");
     }
-    return this.dispatch(socket, action, method, request, origin);
+    return this.dispatch(socket, action, method, request, origin, expectedBrokerTarget);
   }
 
   /** The gateway API version the host behind `socket` reports, asked once per connection. */
-  private async hostGatewayApiVersion(socket: WebSocket): Promise<number> {
+  private async hostGatewayApiVersion(socket: WebSocket, expectedBrokerTarget?: BrokerTarget): Promise<number> {
     const known = (socket.deserializeAttachment() as DeviceAttachment | null)?.gatewayApiVersion;
     if (typeof known === "number") return known;
-    const version = reportedGatewayApiVersion(await this.dispatch(socket, "get_status", "system.status", {}));
+    const version = reportedGatewayApiVersion(await this.dispatch(socket, "get_status", "system.status", {}, undefined, expectedBrokerTarget));
     const attachment = socket.deserializeAttachment() as DeviceAttachment | null;
     if (attachment) socket.serializeAttachment({ ...attachment, gatewayApiVersion: version });
     return version;
   }
 
   /** Send one request to one host and wait for its answer. */
-  private async dispatch(socket: WebSocket, action: string, method: string, params: Json, origin?: InvokeOrigin): Promise<Json> {
+  private async dispatch(socket: WebSocket, action: string, method: string, params: Json, origin?: InvokeOrigin, expectedBrokerTarget?: BrokerTarget): Promise<Json> {
     if (!await this.deviceSocketValid(socket)) throw new Error("The selected device host credential expired or disconnected before dispatch");
+    assertBrokerTarget(expectedBrokerTarget, (socket.deserializeAttachment() as DeviceAttachment | null)?.brokerTarget);
     // The deadline is the one this method's own local verification needs. A
     // single shared number expired every long workflow early and reported it as
     // a device that had not answered.
@@ -1347,13 +1366,13 @@ export class DeviceSession extends DurableObject<Env> {
         void this.persistLateResults().catch(() => console.warn("Could not persist late device-result evidence"));
         reject(new Error(deadlineExceededMessage(method, gatewayApiVersion)));
       }, deadline);
-      this.pending.set(requestId, { socket, method, resolve, reject, timeout });
+      this.pending.set(requestId, { socket, method, expectedBrokerTarget, resolve, reject, timeout });
     });
     try {
       // Tell the host how long this call has. `innerBudgetMs` is the host's own
       // share of the deadline, without the transport margin the worker keeps for
       // itself, so a host that honours it always answers inside `deadline`.
-      socket.send(JSON.stringify({ type: "invoke", id: requestId, action, method, params, deadlineMs: innerBudgetMs(method), ...(origin ? { origin } : {}) }));
+      socket.send(JSON.stringify({ type: "invoke", id: requestId, action, method, params, deadlineMs: innerBudgetMs(method), ...(origin ? { origin } : {}), ...(expectedBrokerTarget ? { expectedBrokerTarget } : {}) }));
     } catch {
       const pending = this.pending.get(requestId)!;
       clearTimeout(pending.timeout);
@@ -1412,11 +1431,13 @@ export class DeviceSession extends DurableObject<Env> {
       const reported = typeof parsed.gatewayApiVersion === "number" && Number.isInteger(parsed.gatewayApiVersion)
         ? { gatewayApiVersion: parsed.gatewayApiVersion }
         : {};
-      const next = { ...attachment, ...reported, ready: parsed.usbConnected === true, mcpPresence: parsed.mcpPresence === true };
-      if (next.ready !== attachment.ready || next.mcpPresence !== attachment.mcpPresence || next.gatewayApiVersion !== attachment.gatewayApiVersion) {
+      let readiness;
+      try { readiness = deviceReadiness(parsed); } catch { socket.close(1003, "Invalid readiness"); return; }
+      const next = { ...attachment, ...reported, ...readiness, brokerTarget: readiness.brokerTarget, mcpPresence: parsed.mcpPresence === true };
+      if (next.ready !== attachment.ready || next.usbConnected !== attachment.usbConnected || !sameBrokerTarget(next.brokerTarget, attachment.brokerTarget) || next.mcpPresence !== attachment.mcpPresence || next.gatewayApiVersion !== attachment.gatewayApiVersion) {
         socket.serializeAttachment(next);
       }
-      // Ready is also the host's periodic USB heartbeat. Send its initial
+      // Readiness is event-driven; unchanged frames require no attachment write. Send its initial
       // snapshot only on opt-in; activity and alarms publish later changes.
       if (parsed.mcpPresence === true && attachment.mcpPresence !== true) await this.refreshMcpPresence();
       return;
@@ -1440,6 +1461,12 @@ export class DeviceSession extends DurableObject<Env> {
       if (pending.socket !== socket) return;
       clearTimeout(pending.timeout);
       this.pending.delete(parsed.id);
+      if (!sameBrokerTarget(pending.expectedBrokerTarget, attachment.brokerTarget)
+          && !(pending.expectedBrokerTarget && parsed.ok === true
+            && verifiedTargetTransition(pending.method, pending.expectedBrokerTarget, attachment.brokerTarget, parsed.result))) {
+        pending.reject(new Error("The selected broker target changed while the operation was pending; inspect current state before repeating it."));
+        return;
+      }
       if (parsed.ok === true) pending.resolve(sanitizePublicResult(typeof parsed.result === "object" && parsed.result !== null ? parsed.result as Json : { result: parsed.result }));
       else {
         const failure = parsed.error as Json | undefined;

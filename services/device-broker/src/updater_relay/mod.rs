@@ -261,6 +261,33 @@ impl UpdaterRelay {
         status.in_flight = self.is_active();
         status
     }
+    /// Last observed relay diagnostics without settings I/O or lock waits.
+    /// An unread directory setting is unknown, not the default enabled value.
+    pub(crate) fn try_cached_status(&self) -> Option<RelayStatus> {
+        let settings = match self.settings.try_lock() {
+            Ok(settings) => settings,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        let enabled = match &settings.source {
+            SettingsSource::Directory(_) if settings.read_at.is_none() => return None,
+            #[cfg(test)]
+            SettingsSource::Fixed(fixed) if settings.read_at.is_none() => fixed.enabled,
+            _ => settings.settings.enabled,
+        };
+        let mut status = match self.state.try_lock() {
+            Ok(state) => state.stats.clone(),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner().stats.clone(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        status.enabled = enabled;
+        status.in_flight = match self.tasks.try_lock() {
+            Ok(tasks) => !tasks.is_empty(),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => !poisoned.into_inner().is_empty(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(status)
+    }
     pub fn on_forward_frame(&self, payload: &[u8], now: Instant) -> Disposition {
         reap();
         self.activity.lock_recover().last_request_at = Some(now);

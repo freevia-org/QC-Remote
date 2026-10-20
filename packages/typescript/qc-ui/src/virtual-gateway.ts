@@ -894,8 +894,9 @@ export class VirtualDeviceStore {
   save(): Promise<void> { return this.update(() => undefined); }
 
   /** Apply `mutate` to a copy, persist it, then make it current. Writes run one at a time. */
-  update<T>(mutate: (draft: VirtualDeviceState) => T): Promise<T> {
+  update<T>(mutate: (draft: VirtualDeviceState) => T, admission?: () => Promise<void>): Promise<T> {
     const run = async () => {
+      if (admission) await admission();
       const draft = clone(this.stateValue);
       const result = mutate(draft);
       await this.storage.write(`${JSON.stringify(draft, null, 2)}\n`);
@@ -1298,16 +1299,37 @@ const TAP_RESET_MS = 2_000;
 
 /** Which store backs each virtual transport, so the app can reach the demo's own transfer methods. */
 const storesByTransport = new WeakMap<GatewayTransport, VirtualDeviceStore>();
+const runtimesByStore = new WeakMap<VirtualDeviceStore, { tapTimes: number[]; looperStompAssignments: number[] }>();
+
+/** A per-operation view of the SAME runtime/queue, with no global UI guard. */
+export function withVirtualGatewayAdmission(transport: GatewayTransport, admission: () => Promise<void>): GatewayTransport {
+  const store = storesByTransport.get(transport);
+  return store ? createVirtualGatewayTransport(store, admission) : transport;
+}
 
 /** The store behind a transport made by {@link createVirtualGatewayTransport}; undefined for any other transport. */
 export function virtualDeviceStoreOf(transport: GatewayTransport | undefined): VirtualDeviceStore | undefined {
   return transport ? storesByTransport.get(transport) : undefined;
 }
 
-export function createVirtualGatewayTransport(store: VirtualDeviceStore): GatewayTransport {
+export function createVirtualGatewayTransport(store: VirtualDeviceStore, admission?: () => Promise<void>): GatewayTransport {
+  const originalStore = store;
+  let runtime = runtimesByStore.get(originalStore);
+  if (!runtime) {
+    runtime = { tapTimes: [], looperStompAssignments: [3, 4, 5, 6, 0, 1, 7, 2] };
+    runtimesByStore.set(originalStore, runtime);
+  }
+  const sessionRuntime = runtime;
+  if (admission) {
+    store = new Proxy(originalStore, {
+      get(target, property, receiver) {
+        if (property === "update") return <T,>(mutate: (draft: VirtualDeviceState) => T) => target.update(mutate, admission);
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(receiver) : value;
+      }
+    });
+  }
   const index = store.index;
-  let tapTimes: number[] = [];
-  let looperStompAssignments = [3, 4, 5, 6, 0, 1, 7, 2];
 
   const snapshot = (state: VirtualDeviceState) => projectSnapshot(index, state);
   const done = (detail: string, state: VirtualDeviceState, changed = true): DeviceActionResult => ({
@@ -1442,7 +1464,7 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
     async reconnect() { return readyState("Demo device ready. Nothing is sent to any hardware.", false); },
     async resetSession() {
       await store.update((state) => { state.session = store.newSessionId(); });
-      tapTimes = [];
+      sessionRuntime.tapTimes = [];
       return readyState("Demo device session restarted.", true);
     },
     async disconnect() {
@@ -1557,11 +1579,11 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
       });
     },
     setLooperStompAssignments(assignments, expectedAssignments) {
-      if (JSON.stringify(looperStompAssignments) !== JSON.stringify(expectedAssignments)) return Promise.reject(new Error("The Looper X assignments changed. Refresh and retry."));
+      if (JSON.stringify(sessionRuntime.looperStompAssignments) !== JSON.stringify(expectedAssignments)) return Promise.reject(new Error("The Looper X assignments changed. Refresh and retry."));
       const sorted = [...assignments].sort((a, b) => a - b);
       if (sorted.some((value, index) => value !== index) || sorted.length !== 8) return Promise.reject(new Error("Looper X assignments must use every action exactly once."));
-      const changed = JSON.stringify(assignments) !== JSON.stringify(looperStompAssignments);
-      looperStompAssignments = [...assignments];
+      const changed = JSON.stringify(assignments) !== JSON.stringify(sessionRuntime.looperStompAssignments);
+      sessionRuntime.looperStompAssignments = [...assignments];
       return Promise.resolve({ detail: "Looper X footswitch actions updated", accepted: true, verified: true, verification: "authoritative_readback", changed, snapshot: snapshot(store.state) });
     },
     resetBlockParameters(row, column, expectedModelId, expectedPresetName, expectedPresetIdentity) {
@@ -1891,10 +1913,10 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
         assertPreset(state, expectedPresetName, expectedPresetIdentity);
         assertMode(state, expectedMode);
         const now = store.now();
-        const last = tapTimes.at(-1);
-        tapTimes = last !== undefined && now - last <= TAP_RESET_MS ? [...tapTimes, now].slice(-4) : [now];
-        if (tapTimes.length < 2) return done("Tap Tempo received. Tap again to set the tempo.", state, false);
-        const interval = (tapTimes[tapTimes.length - 1] - tapTimes[0]) / (tapTimes.length - 1);
+        const last = sessionRuntime.tapTimes.at(-1);
+        sessionRuntime.tapTimes = last !== undefined && now - last <= TAP_RESET_MS ? [...sessionRuntime.tapTimes, now].slice(-4) : [now];
+        if (sessionRuntime.tapTimes.length < 2) return done("Tap Tempo received. Tap again to set the tempo.", state, false);
+        const interval = (sessionRuntime.tapTimes[sessionRuntime.tapTimes.length - 1] - sessionRuntime.tapTimes[0]) / (sessionRuntime.tapTimes.length - 1);
         const bpm = Math.min(QC_MAXIMUM_TEMPO_BPM, Math.max(QC_MINIMUM_TEMPO_BPM, Math.round(60_000 / interval)));
         const preset = state.current.preset;
         const changed = preset.tempo !== bpm;
@@ -2170,7 +2192,7 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
     setTunerMute: unavailable("changing tuner settings"),
     setTunerReference: unavailable("changing tuner settings"),
     setTunerMeter: unavailable("changing tuner settings"),
-    async generalSettings() { return { looperStompAssignments: [...looperStompAssignments] }; },
+    async generalSettings() { return { looperStompAssignments: [...sessionRuntime.looperStompAssignments] }; },
     ioSettings: unavailable("reading I/O settings"),
     setInputPort: unavailable("changing I/O settings"),
     setOutputPort: unavailable("changing I/O settings"),
@@ -2216,7 +2238,7 @@ export function createVirtualGatewayTransport(store: VirtualDeviceStore): Gatewa
     showGigView: unavailable("opening Gig View"),
     createDeviceBackup: unavailable("creating a device backup")
   };
-  storesByTransport.set(transport, store);
+  storesByTransport.set(transport, originalStore);
   return transport;
 }
 

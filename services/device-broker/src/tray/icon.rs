@@ -1,6 +1,7 @@
 //! Shared Windows/Linux/macOS broker LED artwork, independent of platform UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IconTone {
+    Demo,
     Ready,
     Syncing,
     Attention,
@@ -11,6 +12,7 @@ pub enum IconTone {
 /// The LED palette shared with the app theme (`--qc-app-status-*`).
 pub fn icon_color(tone: IconTone) -> [u8; 4] {
     match tone {
+        IconTone::Demo => [166, 112, 232, 255],
         IconTone::Ready => [64, 196, 118, 255],
         IconTone::Syncing => [91, 164, 231, 255],
         IconTone::Attention => [240, 184, 60, 255],

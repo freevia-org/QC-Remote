@@ -107,7 +107,25 @@ fn host_readiness(
     use qc_device_broker::resident::DeviceReadiness;
     use qc_remote_lib::BrokerDeviceReadiness;
     match readiness {
+        DeviceReadiness::Unknown => BrokerDeviceReadiness::Unknown,
         DeviceReadiness::Ready => BrokerDeviceReadiness::Ready,
+        DeviceReadiness::ReadyTarget {
+            usb_connected,
+            target,
+        } => {
+            match serde_json::to_value(target)
+                .ok()
+                .and_then(|value| serde_json::from_value(value).ok())
+            {
+                Some(target) => BrokerDeviceReadiness::ReadyTarget {
+                    usb_connected,
+                    target,
+                },
+                None => BrokerDeviceReadiness::Unavailable {
+                    reason: "The broker target metadata was invalid".into(),
+                },
+            }
+        }
         DeviceReadiness::NotReady { phase } => BrokerDeviceReadiness::NotReady { phase },
         DeviceReadiness::Unavailable(reason) => BrokerDeviceReadiness::Unavailable { reason },
     }
@@ -135,6 +153,10 @@ mod tests {
     /// crate boundary: only `Ready` may become ready.
     #[test]
     fn every_broker_readiness_maps_to_the_same_host_readiness() {
+        assert_eq!(
+            host_readiness(DeviceReadiness::Unknown),
+            BrokerDeviceReadiness::Unknown
+        );
         assert_eq!(
             host_readiness(DeviceReadiness::Ready),
             BrokerDeviceReadiness::Ready

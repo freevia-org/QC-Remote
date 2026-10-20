@@ -1185,6 +1185,16 @@ impl DeviceController {
         (status.connected, status.phase.clone())
     }
 
+    /// Publication probe only: lock contention is unknown, never a disconnect.
+    pub(crate) fn try_connection_readiness(&self) -> Option<(bool, String)> {
+        let status = match self.state.try_lock() {
+            Ok(status) => status,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some((status.connected, status.phase.clone()))
+    }
+
     /// Test-only: what the worker would record for an opened or closed
     /// session, with no worker or USB behind it.
     #[cfg(test)]
@@ -1235,6 +1245,35 @@ impl DeviceController {
         status.retention = self.raw_events.retention.snapshot();
         status.updater_relay = updater_relay;
         status
+    }
+
+    /// Cache-only RPC diagnostics. Suspension is authoritative in the session
+    /// owner, not the short worker record. If either cache is busy, omit the
+    /// diagnostics rather than reporting a suspended unit as unsuspended.
+    /// Unlike `status`, this performs no settings I/O and never waits for a lock.
+    pub(crate) fn try_cached_status(&self) -> Option<BrokerStatus> {
+        let updater_relay = self.updater_relay.try_cached_status()?;
+        let mut status = match self.state.try_lock() {
+            Ok(status) => status.clone(),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner().clone(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        let owner = match self.session_owner.try_lock() {
+            Ok(owner) => owner,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        if status.synchronized {
+            if let Some(preset) = owner.current_preset() {
+                status.active_preset_location = Some(preset.preset_location.clone());
+                status.active_preset_name = Some(preset.preset_name.clone());
+            }
+        }
+        status.suspension = owner.suspension();
+        status.device_suspended = status.suspension.active.is_some();
+        status.retention = self.raw_events.retention.snapshot();
+        status.updater_relay = updater_relay;
+        Some(status)
     }
 
     /// The tray's display projection. Unlike [`Self::status`], this never
@@ -1372,6 +1411,23 @@ impl DeviceController {
 
     pub fn session_epoch(&self) -> u64 {
         self.state.lock_recover().session_epoch
+    }
+
+    /// Target projection must not acquire the retained device/session tree.
+    /// A busy status writer leaves the previous projection intact; it must
+    /// never turn an unknown physical fact into permission to select demo.
+    pub(crate) fn try_target_readiness(&self) -> Option<(bool, bool, u64)> {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some((state.connected, state.synchronized, state.session_epoch))
+    }
+
+    /// Opaque per-controller UUID, unrelated to any hardware serial or path.
+    pub(crate) fn target_stream_id(&self) -> &str {
+        &self.state_stream_id
     }
 
     /// Request a reconnect that leaves a healthy session alone. The returned

@@ -21,14 +21,14 @@ use tokio_tungstenite::{
 };
 
 pub use qc_relay_protocol::{
-    is_valid_grant_id, pairing_owner_refusal, project_dispatch_error_details, DeviceError,
-    DeviceFrame, McpClientPresence, BACKOFF_JITTER_MS, COMPLETED_REQUEST_CACHE_SIZE,
-    CREDENTIAL_TTL_DAYS, DEVICE_CONNECTORS_PATH, DEVICE_CONNECT_PATH, DEVICE_PAIR_PATH,
-    DEVICE_REPLACEMENT_PATH, DEVICE_REVOKE_PATH, DEVICE_ROSTER_PATH, HOST_APPROVAL_TIMEOUT_MS,
-    MAXIMUM_BACKOFF_EXPONENT, MAXIMUM_BACKOFF_SECONDS, MAXIMUM_FAILURE_COUNT,
-    MAXIMUM_INVOKE_DEADLINE_MS, MAX_REQUEST_FRAME_BYTES, MAX_RESULT_FRAME_BYTES,
-    MINIMUM_CREDENTIAL_LENGTH, PAIRING_CODE_MAXIMUM_LENGTH, PAIRING_CODE_MINIMUM_LENGTH,
-    PROTOCOL_VERSION, READINESS_INTERVAL_MS,
+    is_valid_grant_id, pairing_owner_refusal, project_dispatch_error_details, BrokerTarget,
+    BrokerTargetSource, DeviceError, DeviceFrame, McpClientPresence, BACKOFF_JITTER_MS,
+    COMPLETED_REQUEST_CACHE_SIZE, CREDENTIAL_TTL_DAYS, DEVICE_CONNECTORS_PATH, DEVICE_CONNECT_PATH,
+    DEVICE_PAIR_PATH, DEVICE_REPLACEMENT_PATH, DEVICE_REVOKE_PATH, DEVICE_ROSTER_PATH,
+    HOST_APPROVAL_TIMEOUT_MS, MAXIMUM_BACKOFF_EXPONENT, MAXIMUM_BACKOFF_SECONDS,
+    MAXIMUM_FAILURE_COUNT, MAXIMUM_INVOKE_DEADLINE_MS, MAX_REQUEST_FRAME_BYTES,
+    MAX_RESULT_FRAME_BYTES, MINIMUM_CREDENTIAL_LENGTH, PAIRING_CODE_MAXIMUM_LENGTH,
+    PAIRING_CODE_MINIMUM_LENGTH, PROTOCOL_VERSION, READINESS_INTERVAL_MS,
 };
 
 mod generated_actions;
@@ -91,8 +91,200 @@ fn relay_socket_config() -> WebSocketConfig {
 // Readiness stays locally sampled; unchanged application frames are never sent.
 const SOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
-fn readiness_due(previous: Option<bool>, ready: bool) -> bool {
+fn readiness_due(previous: Option<&TargetReadiness>, ready: &TargetReadiness) -> bool {
     previous != Some(ready)
+}
+
+/// Physical transport state and effective broker availability are separate.
+/// Equality suppresses idle traffic, while a target switch publishes once even
+/// when both targets are ready.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TargetReadiness {
+    pub target_ready: bool,
+    pub usb_connected: bool,
+    pub broker_target: Option<BrokerTarget>,
+}
+
+impl TargetReadiness {
+    fn frame(&self, mcp_presence: bool, gateway_api_version: Option<u64>) -> DeviceFrame {
+        DeviceFrame::Ready {
+            protocol: PROTOCOL_VERSION.into(),
+            usb_connected: self.usb_connected,
+            target_ready: Some(self.target_ready),
+            broker_target: self.broker_target.clone(),
+            mcp_presence,
+            gateway_api_version,
+        }
+    }
+}
+
+#[test]
+fn readiness_changes_follow_target_identity_without_repeated_idle_frames() {
+    let mut demo = TargetReadiness {
+        target_ready: true,
+        usb_connected: false,
+        broker_target: Some(BrokerTarget {
+            source: BrokerTargetSource::Demo,
+            session_id: "broker-1:demo-1".into(),
+            generation: 1,
+        }),
+    };
+    assert!(readiness_due(None, &demo));
+    assert!(!readiness_due(Some(&demo), &demo.clone()));
+    let old = demo.clone();
+    demo.broker_target.as_mut().unwrap().generation = 3;
+    assert!(readiness_due(Some(&old), &demo));
+    let frame = serde_json::to_value(demo.frame(false, Some(31))).unwrap();
+    assert_eq!(frame["targetReady"], true);
+    assert_eq!(frame["usbConnected"], false);
+    assert_eq!(frame["brokerTarget"]["generation"], 3);
+}
+
+#[tokio::test]
+async fn adapters_without_target_pinning_refuse_guarded_calls_before_effects() {
+    struct Adapter(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl DeviceAdapter for Adapter {
+        async fn ready(&self) -> bool {
+            true
+        }
+        async fn invoke(&self, _method: &str, _params: Value) -> Result<Value, DeviceError> {
+            self.0.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(json!({}))
+        }
+    }
+    let adapter = Adapter(std::sync::atomic::AtomicUsize::new(0));
+    let target = BrokerTarget {
+        source: BrokerTargetSource::Demo,
+        session_id: "demo-1".into(),
+        generation: 1,
+    };
+    let error = adapter
+        .invoke_targeted("device.setMasterVolume", json!({}), Some(target), false)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "BROKER_TARGET_UNSUPPORTED");
+    assert_eq!(error.details.unwrap()["requestSent"], false);
+    assert_eq!(adapter.0.load(AtomicOrdering::SeqCst), 0);
+    adapter
+        .invoke_targeted("device.setMasterVolume", json!({}), None, false)
+        .await
+        .unwrap();
+    assert_eq!(adapter.0.load(AtomicOrdering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_result_before_the_next_ready_frame_is_fenced_by_a_fresh_local_target() {
+    struct SwitchingAdapter(std::sync::atomic::AtomicU64);
+    #[async_trait]
+    impl DeviceAdapter for SwitchingAdapter {
+        async fn ready(&self) -> bool {
+            true
+        }
+        async fn target_readiness(&self) -> TargetReadiness {
+            TargetReadiness {
+                target_ready: true,
+                usb_connected: false,
+                broker_target: Some(BrokerTarget {
+                    source: BrokerTargetSource::Demo,
+                    session_id: "demo-1".into(),
+                    generation: self.0.load(AtomicOrdering::SeqCst),
+                }),
+            }
+        }
+        async fn invoke(&self, _method: &str, _params: Value) -> Result<Value, DeviceError> {
+            // The adapter completes before any readiness timer gets another
+            // turn, but the original admitted target has already changed.
+            self.0.store(2, AtomicOrdering::SeqCst);
+            Ok(json!({"changed": true}))
+        }
+        async fn invoke_targeted(
+            &self,
+            method: &str,
+            params: Value,
+            _target: Option<BrokerTarget>,
+            _resource: bool,
+        ) -> Result<Value, DeviceError> {
+            self.invoke(method, params).await
+        }
+    }
+    let adapter = Arc::new(SwitchingAdapter(std::sync::atomic::AtomicU64::new(1)));
+    let expected = adapter.target_readiness().await.broker_target;
+    let invoking = AtomicBool::new(false);
+    let failure = invoke_with_deadline(
+        adapter,
+        "device.setMasterVolume",
+        json!({}),
+        Some(1000),
+        Instant::now(),
+        expected,
+        false,
+        &invoking,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(failure.code, "WRITE_OUTCOME_AMBIGUOUS");
+    assert!(!failure.retryable);
+    assert!(failure.message.contains("target changed"));
+}
+
+#[tokio::test]
+async fn intentional_reset_can_publish_its_verified_new_session_but_global_writes_cannot() {
+    struct LifecycleAdapter(std::sync::atomic::AtomicU64);
+    #[async_trait]
+    impl DeviceAdapter for LifecycleAdapter {
+        async fn ready(&self) -> bool {
+            true
+        }
+        async fn target_readiness(&self) -> TargetReadiness {
+            TargetReadiness {
+                target_ready: true,
+                usb_connected: true,
+                broker_target: Some(BrokerTarget {
+                    source: BrokerTargetSource::Physical,
+                    session_id: "physical".into(),
+                    generation: self.0.load(AtomicOrdering::SeqCst),
+                }),
+            }
+        }
+        async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> {
+            unreachable!()
+        }
+        async fn invoke_targeted(
+            &self,
+            method: &str,
+            _: Value,
+            from: Option<BrokerTarget>,
+            _: bool,
+        ) -> Result<Value, DeviceError> {
+            self.0.store(2, AtomicOrdering::SeqCst);
+            let to = self.target_readiness().await.broker_target;
+            Ok(
+                json!({"brokerTargetTransition":{"method":method,"from":from,"to":to,"verification":"same_native_controller"}}),
+            )
+        }
+    }
+    for method in ["device.resetSession", "device.setMasterVolume"] {
+        let adapter = Arc::new(LifecycleAdapter(std::sync::atomic::AtomicU64::new(1)));
+        let expected = adapter.target_readiness().await.broker_target;
+        let invoking = AtomicBool::new(false);
+        let result = invoke_with_deadline(
+            adapter,
+            method,
+            json!({}),
+            Some(1000),
+            Instant::now(),
+            expected,
+            false,
+            &invoking,
+        )
+        .await;
+        if method == "device.resetSession" {
+            assert!(result.is_ok());
+        } else {
+            assert_eq!(result.unwrap_err().code, "WRITE_OUTCOME_AMBIGUOUS");
+        }
+    }
 }
 
 const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(15);
@@ -331,7 +523,44 @@ struct RosterResponse {
 #[async_trait]
 pub trait DeviceAdapter: Send + Sync + 'static {
     async fn ready(&self) -> bool;
+    /// Hosts with a demo provider override this with effective broker status.
+    /// Existing adapters retain their physical-only behavior.
+    async fn target_readiness(&self) -> TargetReadiness {
+        let ready = self.ready().await;
+        TargetReadiness {
+            target_ready: ready,
+            usb_connected: ready,
+            broker_target: None,
+        }
+    }
+    /// Readiness for Ready-frame publication only. `None` means a healthy
+    /// status sample could not establish availability; retain the previous
+    /// publication without granting authority to any action or completion.
+    /// I/O failure and authoritative loss must still return `Some(unavailable)`.
+    async fn publication_readiness(&self) -> Option<TargetReadiness> {
+        Some(self.target_readiness().await)
+    }
     async fn invoke(&self, method: &str, params: Value) -> Result<Value, DeviceError>;
+    /// A target-aware adapter must pin this identity through its native queue.
+    /// Never silently drop a target guard on an adapter that cannot enforce it.
+    async fn invoke_targeted(
+        &self,
+        method: &str,
+        params: Value,
+        expected_broker_target: Option<BrokerTarget>,
+        resource_read: bool,
+    ) -> Result<Value, DeviceError> {
+        if expected_broker_target.is_some() {
+            let mut error = DeviceError::new("BROKER_TARGET_UNSUPPORTED", "This host cannot enforce the selected broker target; update the host before controlling it.", false);
+            error.details = Some(Box::new(json!({"requestSent": false})));
+            return Err(error);
+        }
+        if resource_read {
+            self.invoke_resource_read(method, params).await
+        } else {
+            self.invoke(method, params).await
+        }
+    }
     /// A policy source that is authoritative for this serving adapter. Hosts
     /// with cross-process settings should override this and read their
     /// request-time policy here; older adapters keep the connection's watch
@@ -923,12 +1152,16 @@ pub async fn poll_host_pairing(
 /// `invoking` flips when the adapter owns the call, so the caller's heartbeat
 /// knows whether asking the adapter for its readiness would queue behind this
 /// request.
+// Keep the captured target and original admission time explicit: neither may
+// be refreshed by dispatch or completion retries.
+#[allow(clippy::too_many_arguments)]
 async fn invoke_with_deadline(
     adapter: Arc<dyn DeviceAdapter>,
     method: &str,
     params: Value,
     deadline_ms: Option<u64>,
     received_at: Instant,
+    expected_broker_target: Option<BrokerTarget>,
     resource_read: bool,
     invoking: &AtomicBool,
 ) -> Result<Value, DeviceError> {
@@ -948,11 +1181,36 @@ async fn invoke_with_deadline(
     };
     invoking.store(true, AtomicOrdering::Release);
     let call = async {
-        if resource_read {
-            adapter.invoke_resource_read(method, params).await
-        } else {
-            adapter.invoke(method, params).await
+        let result = adapter
+            .invoke_targeted(
+                method,
+                params,
+                expected_broker_target.clone(),
+                resource_read,
+            )
+            .await?;
+        // A call can finish before the next readiness publication. Check the
+        // authoritative local target now, before sending a successful result;
+        // the cloud's cached socket metadata alone cannot detect that race.
+        if let Some(expected) = expected_broker_target {
+            let current = adapter.target_readiness().await;
+            let actual = current
+                .target_ready
+                .then_some(current.broker_target.as_ref())
+                .flatten();
+            if (!current.target_ready || actual != Some(&expected))
+                && !qc_relay_protocol::verified_target_transition(
+                    method, &expected, actual, &result,
+                )
+            {
+                return Err(admitted_request_failure(
+                    method,
+                    "BROKER_TARGET_CHANGED",
+                    "The broker target changed while the operation was pending",
+                ));
+            }
         }
+        Ok(result)
     };
     match tokio::time::timeout(remaining, call).await {
         Ok(result) => result,
@@ -1221,18 +1479,19 @@ impl Client {
                 _ = readiness.tick() => {
                     let adapter = Arc::clone(&self.adapter);
                     let ready = tokio::select! {
-                        result = tokio::time::timeout(ADAPTER_READY_TIMEOUT, adapter.ready()) => result.unwrap_or(false),
+                        result = tokio::time::timeout(ADAPTER_READY_TIMEOUT, adapter.publication_readiness()) => result.unwrap_or(Some(TargetReadiness::default())),
                         changed = self.stop.changed() => {
                             if changed.is_err() || *self.stop.borrow() {
                                 let _ = send_close(&mut sink).await;
                                 return Ok(());
                             }
-                            false
+                            Some(TargetReadiness::default())
                         }
                     };
-                    if !readiness_due(last_readiness, ready) { continue; }
+                    let Some(ready) = ready else { continue; };
+                    if !readiness_due(last_readiness.as_ref(), &ready) { continue; }
+                    let frame = ready.frame(self.mcp_presence.is_some(), self.gateway_api_version);
                     last_readiness = Some(ready);
-                    let frame = DeviceFrame::Ready { protocol: PROTOCOL_VERSION.into(), usb_connected: ready, mcp_presence: self.mcp_presence.is_some(), gateway_api_version: self.gateway_api_version };
                     if send_frame(&mut sink, &frame).await.is_err() { return Err(()); }
                 }
                 _ = keepalive.tick() => {
@@ -1258,7 +1517,7 @@ impl Client {
                             }
                             continue;
                         }
-                        let DeviceFrame::Invoke { id, action: _, method, params, deadline_ms, origin } = frame else { return Err(()); };
+                        let DeviceFrame::Invoke { id, action: _, method, params, deadline_ms, origin, expected_broker_target } = frame else { return Err(()); };
                         // Only narrows: the relay's MCP ingress marks a resource read.
                         let resource_read = origin.as_deref() == Some(qc_relay_protocol::RESOURCE_READ_ORIGIN);
                         let response = if id.is_empty() || id.len() > 128 {
@@ -1295,34 +1554,31 @@ impl Client {
                                     params,
                                     deadline_ms,
                                     received_at,
+                                    expected_broker_target,
                                     resource_read,
                                     &invoking,
                                 );
                                 tokio::pin!(work);
                                 // Keep protocol Pings and local readiness sampling
                                 // running during long device calls, but publish only
-                                // readiness changes. While the device works, ready
-                                // is asserted: re-reading the adapter could queue
-                                // behind the invocation being awaited.
+                                // readiness changes. During an invocation retain
+                                // the last observation: querying can queue behind
+                                // it, and inventing USB readiness would mislabel a demo.
                                 loop {
                                     tokio::select! {
                                         outcome = &mut work => break outcome,
                                         _ = readiness.tick() => {
-                                            let usb_connected = if invoking.load(AtomicOrdering::Acquire) {
-                                                true
+                                            let ready = if invoking.load(AtomicOrdering::Acquire) {
+                                                last_readiness.clone()
                                             } else {
-                                                tokio::time::timeout(ADAPTER_READY_TIMEOUT, self.adapter.ready())
+                                                tokio::time::timeout(ADAPTER_READY_TIMEOUT, self.adapter.publication_readiness())
                                                     .await
-                                                    .unwrap_or(false)
+                                                    .unwrap_or(Some(TargetReadiness::default()))
                                             };
-                                            if !readiness_due(last_readiness, usb_connected) { continue; }
-                                            last_readiness = Some(usb_connected);
-                                            let frame = DeviceFrame::Ready {
-                                                protocol: PROTOCOL_VERSION.into(),
-                                                usb_connected,
-                                                mcp_presence: self.mcp_presence.is_some(),
-                                                gateway_api_version: self.gateway_api_version,
-                                            };
+                                            let Some(ready) = ready else { continue; };
+                                            if !readiness_due(last_readiness.as_ref(), &ready) { continue; }
+                                            let frame = ready.frame(self.mcp_presence.is_some(), self.gateway_api_version);
+                                            last_readiness = Some(ready);
                                             if send_frame(&mut sink, &frame).await.is_err() {
                                                 return Err(());
                                             }
@@ -1571,6 +1827,7 @@ mod tests {
                 json!({}),
                 Some(20),
                 Instant::now(),
+                None,
                 false,
                 &invoking,
             )
@@ -2575,6 +2832,140 @@ mod tests {
         )
         .unwrap();
         assert!(current.uses_current_identity_provider());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unknown_publication_keeps_physical_priority_but_never_authorizes_an_effect() {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        struct Adapter {
+            phase: AtomicUsize,
+            effects: AtomicUsize,
+        }
+        impl Adapter {
+            fn sample(&self) -> Option<TargetReadiness> {
+                let phase = self.phase.load(Ordering::SeqCst);
+                if phase == 1 {
+                    return None;
+                }
+                if phase == 3 {
+                    return Some(TargetReadiness::default());
+                }
+                Some(TargetReadiness {
+                    target_ready: true,
+                    usb_connected: phase != 4,
+                    broker_target: Some(BrokerTarget {
+                        source: if phase == 4 {
+                            BrokerTargetSource::Demo
+                        } else {
+                            BrokerTargetSource::Physical
+                        },
+                        session_id: if phase == 4 { "same-demo" } else { "physical" }.into(),
+                        generation: if phase == 4 { 3 } else { 1 },
+                    }),
+                })
+            }
+        }
+        #[async_trait]
+        impl DeviceAdapter for Adapter {
+            async fn ready(&self) -> bool {
+                self.target_readiness().await.target_ready
+            }
+            async fn target_readiness(&self) -> TargetReadiness {
+                self.sample().unwrap_or_default()
+            }
+            async fn publication_readiness(&self) -> Option<TargetReadiness> {
+                self.sample()
+            }
+            async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> {
+                panic!("guarded work must not fall back to an unguarded invoke")
+            }
+            async fn invoke_targeted(
+                &self,
+                _: &str,
+                _: Value,
+                expected: Option<BrokerTarget>,
+                _: bool,
+            ) -> Result<Value, DeviceError> {
+                let fresh = self.target_readiness().await;
+                if !fresh.target_ready || fresh.broker_target != expected {
+                    return Err(DeviceError::new(
+                        "TARGET_SUPERSEDED",
+                        "fresh target unavailable",
+                        false,
+                    ));
+                }
+                self.effects.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({}))
+            }
+        }
+        let adapter = Arc::new(Adapter {
+            phase: AtomicUsize::new(0),
+            effects: AtomicUsize::new(0),
+        });
+        let credentials: Credentials = serde_json::from_value(json!({
+            "endpoint":"https://relay.example.test", "deviceId":"fixture", "deviceCredential":"fixture-only"
+        })).unwrap();
+        let (state, _) = watch::channel(ConnectionState::Connected);
+        let (_access_tx, access) = watch::channel(AccessMode::Full);
+        let (stop_tx, stop) = watch::channel(false);
+        let mut client = Client::new(credentials, adapter.clone(), state, access, stop);
+        let (host_io, relay_io) = tokio::io::duplex(8192);
+        let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
+        let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
+        let mut host = OwnedHost(tokio::spawn(async move { client.connected(socket).await }));
+        let initial = next_frame(&mut relay).await;
+        let Message::Text(initial) = initial else {
+            panic!("expected readiness")
+        };
+        let initial: Value = serde_json::from_str(&initial).unwrap();
+        assert_eq!(initial["brokerTarget"]["source"], "physical");
+        let quiet_window = Duration::from_millis(READINESS_INTERVAL_MS * 2 + 1);
+        adapter.phase.store(1, Ordering::SeqCst);
+        assert!(
+            tokio::time::timeout(quiet_window, relay.next())
+                .await
+                .is_err(),
+            "unknown must not publish a disconnect"
+        );
+        relay.send(Message::Text(json!({"type":"invoke", "id":"uncertain", "action":"set_master_volume", "method":"device.setMasterVolume", "params":{}, "deadlineMs":1000, "expectedBrokerTarget":initial["brokerTarget"]}).to_string().into())).await.unwrap();
+        let result = result_frame(&mut relay, "uncertain").await;
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["error"]["code"], "TARGET_SUPERSEDED");
+        assert_eq!(adapter.effects.load(Ordering::SeqCst), 0);
+        adapter.phase.store(2, Ordering::SeqCst);
+        assert!(
+            tokio::time::timeout(quiet_window, relay.next())
+                .await
+                .is_err(),
+            "same physical must not publish again"
+        );
+        adapter.phase.store(3, Ordering::SeqCst);
+        let Message::Text(lost) = next_frame(&mut relay).await else {
+            panic!("expected loss")
+        };
+        let lost: Value = serde_json::from_str(&lost).unwrap();
+        assert_eq!(lost["targetReady"], false);
+        assert!(tokio::time::timeout(quiet_window, relay.next())
+            .await
+            .is_err());
+        adapter.phase.store(4, Ordering::SeqCst);
+        let Message::Text(demo) = next_frame(&mut relay).await else {
+            panic!("expected demo")
+        };
+        let demo: Value = serde_json::from_str(&demo).unwrap();
+        assert_eq!(demo["brokerTarget"]["source"], "demo");
+        assert_eq!(demo["usbConnected"], false);
+        assert!(tokio::time::timeout(quiet_window, relay.next())
+            .await
+            .is_err());
+        stop_tx.send(true).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), &mut host.0)
+                .await
+                .unwrap()
+                .unwrap(),
+            Ok(())
+        );
     }
 
     #[tokio::test(start_paused = true)]

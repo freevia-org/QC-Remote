@@ -635,6 +635,91 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_icon_preserves_shared_demo_and_device_led_pixels() {
+        use windows_sys::Win32::Graphics::Gdi::{
+            CreateCompatibleDC, DeleteDC, GetDIBits, HBITMAP, HDC,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetIconInfo;
+
+        struct OwnedIcon(HICON);
+        impl Drop for OwnedIcon {
+            fn drop(&mut self) {
+                // SAFETY: this fixture exclusively owns the created icon.
+                unsafe { DestroyIcon(self.0) };
+            }
+        }
+        struct OwnedBitmap(HBITMAP);
+        impl Drop for OwnedBitmap {
+            fn drop(&mut self) {
+                // SAFETY: GetIconInfo transfers these bitmap copies to us.
+                unsafe { DeleteObject(self.0) };
+            }
+        }
+        struct OwnedDc(HDC);
+        impl Drop for OwnedDc {
+            fn drop(&mut self) {
+                // SAFETY: this fixture exclusively owns this memory DC.
+                unsafe { DeleteDC(self.0) };
+            }
+        }
+
+        let mut previous_pixels = None;
+        for (tone, frame) in [
+            (IconTone::Demo, 0),
+            (IconTone::Ready, 0),
+            (IconTone::Syncing, 0),
+            (IconTone::Syncing, 2),
+            (IconTone::Inactive, 0),
+        ] {
+            let expected = model::tone_rgba(tone, frame);
+            let icon = OwnedIcon(create_icon(&expected));
+            assert!(!icon.0.is_null(), "native icon creation: {tone:?}");
+            // SAFETY: zero initializes the output structure; GetIconInfo fills
+            // it from our live icon. Both returned bitmap copies are guarded
+            // before any later assertion can unwind.
+            let mut info: ICONINFO = unsafe { std::mem::zeroed() };
+            let copied = unsafe { GetIconInfo(icon.0, &mut info) };
+            let color = OwnedBitmap(info.hbmColor);
+            let _mask = OwnedBitmap(info.hbmMask);
+            assert_ne!(copied, 0);
+            assert!(!color.0.is_null());
+            // SAFETY: a null source DC creates an independent memory DC.
+            let dc = OwnedDc(unsafe { CreateCompatibleDC(std::ptr::null_mut()) });
+            assert!(!dc.0.is_null());
+            let mut bitmap: BITMAPINFO = unsafe { std::mem::zeroed() };
+            bitmap.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            bitmap.bmiHeader.biWidth = model::ICON_SIZE as i32;
+            bitmap.bmiHeader.biHeight = -(model::ICON_SIZE as i32);
+            bitmap.bmiHeader.biPlanes = 1;
+            bitmap.bmiHeader.biBitCount = 32;
+            bitmap.bmiHeader.biCompression = BI_RGB;
+            let mut pixels = vec![0_u8; expected.len()];
+            // SAFETY: the color bitmap is not selected into a DC, and the
+            // destination holds exactly the requested top-down 32-bit image.
+            let lines = unsafe {
+                GetDIBits(
+                    dc.0,
+                    color.0,
+                    0,
+                    model::ICON_SIZE as u32,
+                    pixels.as_mut_ptr().cast(),
+                    &mut bitmap,
+                    DIB_RGB_COLORS,
+                )
+            };
+            assert_eq!(lines, model::ICON_SIZE as i32);
+            for pixel in pixels.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2); // Native BGRA back to the shared RGBA contract.
+            }
+            assert_eq!(pixels, expected, "native LED pixels: {tone:?}/{frame}");
+            if let Some(previous) = previous_pixels {
+                assert_ne!(pixels, previous, "status transition must change the icon");
+            }
+            previous_pixels = Some(pixels);
+        }
+    }
+
+    #[test]
     fn notification_reports_a_retired_thread_or_gone_window_instead_of_false_liveness() {
         let alive = AtomicBool::new(false);
         assert_eq!(notify_window(-2, &alive), NotifyStatus::Retired);

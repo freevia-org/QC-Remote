@@ -8,6 +8,9 @@ use crate::worker::BrokerStatus;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
+    /// The broker's admitted target, never a window's selected UI tab.
+    /// Left unset until a provider is registered and selected by the broker.
+    pub served_source: Option<crate::target::TargetSource>,
     pub reading: TrayReading,
     pub device_name: Option<String>,
     pub preset_name: Option<String>,
@@ -40,6 +43,7 @@ pub const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
+            served_source: None,
             reading: TrayReading::Disconnected,
             device_name: None,
             preset_name: None,
@@ -213,6 +217,9 @@ pub const TOOLTIP_UNITS: usize = 127;
 pub fn status_text(snapshot: &Snapshot) -> String {
     if snapshot.stale {
         return "QC Remote broker is not responding".into();
+    }
+    if !snapshot.connected() && snapshot.served_source == Some(crate::target::TargetSource::Demo) {
+        return "QC Remote demo device ready (local simulation)".into();
     }
     let device = snapshot
         .device_name
@@ -957,6 +964,9 @@ pub fn icon_tone(snapshot: &Snapshot) -> IconTone {
     if snapshot.stale {
         return IconTone::Error;
     }
+    if !snapshot.connected() && snapshot.served_source == Some(crate::target::TargetSource::Demo) {
+        return IconTone::Demo;
+    }
     // A stale quarantine reason can outlive the USB link; with no device there
     // is nothing to act on, so absent is inactive gray, not attention amber.
     if !snapshot.connected() {
@@ -978,6 +988,20 @@ pub fn icon_tone(snapshot: &Snapshot) -> IconTone {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn demo_palette_requires_the_brokers_demo_target_and_yields_to_physical() {
+        let mut snapshot = Snapshot::default();
+        assert_eq!(icon_tone(&snapshot), IconTone::Inactive);
+        snapshot.served_source = Some(crate::target::TargetSource::Demo);
+        assert_eq!(icon_tone(&snapshot), IconTone::Demo);
+        assert_eq!(icon_color(IconTone::Demo), [166, 112, 232, 255]);
+        assert_eq!(tone_rgba(IconTone::Demo, 0), tone_rgba(IconTone::Demo, 3));
+        snapshot.reading = TrayReading::Ready;
+        assert_eq!(icon_tone(&snapshot), IconTone::Ready);
+        snapshot.stale = true;
+        assert_eq!(icon_tone(&snapshot), IconTone::Error);
+    }
     use crate::tray::host_status::LinkedApps;
 
     fn labels(model: &Presentation) -> Vec<String> {

@@ -243,7 +243,7 @@ final class BrokerMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func loadIcons() {
-        let names = ["ready", "attention", "error", "inactive"] + (0..<4).map { "syncing-\($0)" }
+        let names = ["demo", "ready", "attention", "error", "inactive"] + (0..<4).map { "syncing-\($0)" }
         for name in names {
             guard let url = Bundle.main.resourceURL?.appendingPathComponent("BrokerLED/\(name).rgba"),
                   let data = try? Data(contentsOf: url), data.count == 32 * 32 * 4,

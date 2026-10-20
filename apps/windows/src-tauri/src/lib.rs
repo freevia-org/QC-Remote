@@ -30,6 +30,7 @@ pub mod broker_tray_control;
 pub mod broker_tray_settings;
 mod client_packages;
 mod credential_io;
+mod demo_provider;
 mod device_broker_descriptor;
 mod external_host;
 mod external_links;
@@ -300,6 +301,8 @@ struct GatewayProcess {
     broker_pid: u32,
     intentional_release: std::sync::Arc<std::sync::atomic::AtomicBool>,
     participant_announced: bool,
+    /// Envelope metadata also covers array results, which cannot carry fields.
+    last_broker_target: Option<qc_relay_client::BrokerTarget>,
     /// The second way onto this connection, for the reads the broker answers
     /// beside a running request. `None` for a private stdio child, whose
     /// broker loop answers strictly in order.
@@ -1013,6 +1016,9 @@ fn existing_connection_unavailable() -> GatewayRequestFailure {
 /// in `services/device-broker/src/rpc.rs`), and never answers `system.status`
 /// that way.
 fn device_session_open(status: &Value) -> bool {
+    if let Some(ready) = status.get("targetReady").and_then(Value::as_bool) {
+        return ready;
+    }
     status
         .get("usbDiagnostics")
         .and_then(|diagnostics| diagnostics.get("connected"))
@@ -1026,6 +1032,10 @@ fn device_session_open(status: &Value) -> bool {
 /// `services/device-broker/src/rpc/wire.rs`.
 const BROKER_RESOURCE_READ_ORIGIN: &str = "resourceRead";
 const BROKER_RESOURCE_READ_ORIGIN_CAPABILITY: &str = "resourceReadOrigin";
+// Internal serialization marker; the wire carries a separate boolean so it
+// composes with resourceRead. It is sent only after capability negotiation.
+const PHYSICAL_TARGET_ORIGIN: &str = "physicalTargetOrigin";
+const PHYSICAL_RESOURCE_READ_ORIGIN: &str = "physicalResourceRead";
 /// A device-backed resource read refused because the attached broker does not
 /// list [`BROKER_RESOURCE_READ_ORIGIN_CAPABILITY`]. It has the offline shape
 /// (a retryable transport failure: restarting QC Remote replaces the broker),
@@ -1104,6 +1114,7 @@ pub(crate) fn request_gateway(
 /// test of it covers the gateway half of either. `stopped` is a headless
 /// host's own stop flag: set, the call is refused before it starts and the
 /// connection is retired after it. A window has none and passes `None`.
+#[cfg(test)]
 pub(crate) fn relay_gateway_request(
     gateway: &Mutex<Gateway>,
     lock_free_reads: &LockFreeReadSlot,
@@ -1113,17 +1124,53 @@ pub(crate) fn relay_gateway_request(
     stopped: Option<&std::sync::atomic::AtomicBool>,
     admission: Option<&owned_blocking::Context>,
 ) -> Result<Value, GatewayRequestFailure> {
-    let is_stopped =
-        || stopped.is_some_and(|stopped| stopped.load(std::sync::atomic::Ordering::Acquire));
+    relay_gateway_request_targeted(
+        gateway,
+        lock_free_reads,
+        method,
+        params,
+        connection,
+        RelayGatewayContext { stopped, admission },
+        None,
+    )
+}
+
+pub(crate) struct RelayGatewayContext<'a> {
+    pub(crate) stopped: Option<&'a std::sync::atomic::AtomicBool>,
+    pub(crate) admission: Option<&'a owned_blocking::Context>,
+}
+
+pub(crate) fn relay_gateway_request_targeted(
+    gateway: &Mutex<Gateway>,
+    lock_free_reads: &LockFreeReadSlot,
+    method: &str,
+    params: Value,
+    connection: ConnectionUse,
+    context: RelayGatewayContext<'_>,
+    expected: Option<Value>,
+) -> Result<Value, GatewayRequestFailure> {
+    let is_stopped = || {
+        context
+            .stopped
+            .is_some_and(|stopped| stopped.load(std::sync::atomic::Ordering::Acquire))
+    };
     let stopping = || GatewayRequestFailure::Transport("The MCP host is stopping".into());
     if is_stopped() {
         return Err(stopping());
     }
     // A status read reaches the broker even while a backup holds the
     // gateway; everything else queues for it.
+    // The lock-free envelope has no target guard. A guarded call must pass
+    // through the locked serializer even when it is a status/resource read.
+    let no_unfenced_reads = LockFreeReadSlot::default();
+    let reads = if expected.is_some() {
+        &no_unfenced_reads
+    } else {
+        lock_free_reads
+    };
     request_gateway(
         gateway,
-        lock_free_reads,
+        reads,
         method,
         params,
         WhenGatewayBusy::Wait,
@@ -1133,12 +1180,15 @@ pub(crate) fn relay_gateway_request(
             }
             // Cancellation and dispatch compete under the gateway's own lock.
             // Queued requests must not dispatch after their caller has left.
-            if admission.is_some_and(|admission| !admission.begin_dispatch()) {
+            if context
+                .admission
+                .is_some_and(|admission| !admission.begin_dispatch())
+            {
                 return Err(GatewayRequestFailure::Transport(
                     "The request ended before gateway dispatch".into(),
                 ));
             }
-            let result = gateway.request_detailed_as(method, params, connection);
+            let result = gateway.request_targeted_as(method, params, connection, expected);
             if is_stopped() {
                 gateway.retire_current_process();
             }
@@ -1573,6 +1623,7 @@ impl GatewayProcess {
             broker_pid,
             intentional_release,
             participant_announced: false,
+            last_broker_target: None,
             lock_free_reads,
         };
         process.verify_gateway_api_version(within)?;
@@ -1647,21 +1698,6 @@ impl GatewayProcess {
         }
     }
 
-    fn announce_if_enabled_then_request(
-        &mut self,
-        enabled: bool,
-        provider: &str,
-        host_token: Option<&str>,
-        method: &str,
-        params: Value,
-        origin: Option<&str>,
-    ) -> Result<Value, GatewayRequestFailure> {
-        if enabled {
-            self.announce_participant_with(provider, host_token)?;
-        }
-        self.request_as(method, params, origin)
-    }
-
     fn request(&mut self, method: &str, params: Value) -> Result<Value, GatewayRequestFailure> {
         self.request_as(method, params, None)
     }
@@ -1686,7 +1722,19 @@ impl GatewayProcess {
         origin: Option<&str>,
         within: Duration,
     ) -> Result<Value, GatewayRequestFailure> {
-        let result = self.request_unchecked_as_within(method, params, origin, within)?;
+        self.request_targeted_as_within(method, params, origin, None, within)
+    }
+
+    fn request_targeted_as_within(
+        &mut self,
+        method: &str,
+        params: Value,
+        origin: Option<&str>,
+        expected: Option<&Value>,
+        within: Duration,
+    ) -> Result<Value, GatewayRequestFailure> {
+        let result =
+            self.request_unchecked_targeted_within(method, params, origin, expected, within)?;
         if matches!(method, "broker.devices" | "broker.selectDevice") {
             validate_broker_control_result(method, &result)?;
         } else if method == "broker.backupTarget" {
@@ -1732,13 +1780,37 @@ impl GatewayProcess {
         origin: Option<&str>,
         within: Duration,
     ) -> Result<Value, GatewayRequestFailure> {
+        self.request_unchecked_targeted_within(method, params, origin, None, within)
+    }
+
+    fn request_unchecked_targeted_within(
+        &mut self,
+        method: &str,
+        params: Value,
+        origin: Option<&str>,
+        expected: Option<&Value>,
+        within: Duration,
+    ) -> Result<Value, GatewayRequestFailure> {
         let id = self.next_id;
         self.next_id = self.next_id.checked_add(1).unwrap_or(1);
         let mut envelope = json!({
             "jsonrpc": "2.0", "id": id, "method": method, "params": params
         });
+        if let Some(expected) = expected {
+            envelope["expectedBrokerTarget"] = expected.clone();
+        }
         if let Some(origin) = origin {
-            envelope["origin"] = json!(origin);
+            if matches!(
+                origin,
+                PHYSICAL_TARGET_ORIGIN | PHYSICAL_RESOURCE_READ_ORIGIN
+            ) {
+                envelope["physicalOnly"] = json!(true);
+            }
+            if origin == PHYSICAL_RESOURCE_READ_ORIGIN {
+                envelope["origin"] = json!(BROKER_RESOURCE_READ_ORIGIN);
+            } else if origin != PHYSICAL_TARGET_ORIGIN {
+                envelope["origin"] = json!(origin);
+            }
         }
         let payload = serde_json::to_vec(&envelope)
             .map_err(|error| GatewayRequestFailure::Transport(error.to_string()))?;
@@ -1805,6 +1877,8 @@ impl GatewayProcess {
                 .after_dispatch(method));
             }
         };
+        self.last_broker_target = response_target_metadata(&response)
+            .map_err(|failure| failure.after_dispatch(method))?;
         decode_gateway_response(response, id).map_err(|failure| failure.after_dispatch(method))
     }
 }
@@ -1823,6 +1897,36 @@ fn read_forced_release_marker(path: &Path, instance_id: &str) -> bool {
 /// One broker reply to request `id`: its result, or the broker's error. Shared
 /// by the gateway's own requests and its lock-free reads, so both hold a reply
 /// to the same standard.
+fn response_target_metadata(
+    response: &Value,
+) -> Result<Option<qc_relay_client::BrokerTarget>, GatewayRequestFailure> {
+    let invalid =
+        || GatewayRequestFailure::Transport("The broker returned invalid target metadata".into());
+    let envelope = response.get("brokerTarget");
+    let nested = response
+        .get("result")
+        .and_then(|result| result.get("brokerTarget"));
+    if envelope.is_some() && nested.is_some() && envelope != nested {
+        return Err(invalid());
+    }
+    let Some(value) = envelope.or(nested) else {
+        return Ok(None);
+    };
+    if value.as_object().is_none_or(|object| object.len() != 3) {
+        return Err(invalid());
+    }
+    let target: qc_relay_client::BrokerTarget =
+        serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+    if target.session_id.trim().is_empty()
+        || target.session_id.len() > 256
+        || target.generation == 0
+        || target.generation > 9_007_199_254_740_991
+    {
+        return Err(invalid());
+    }
+    Ok(Some(target))
+}
+
 fn decode_gateway_response(response: Value, id: u64) -> Result<Value, GatewayRequestFailure> {
     let Some(object) = response.as_object() else {
         return Err(GatewayRequestFailure::Transport(
@@ -1831,14 +1935,18 @@ fn decode_gateway_response(response: Value, id: u64) -> Result<Value, GatewayReq
     };
     if response.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
         || response.get("id").and_then(Value::as_u64) != Some(id)
-        || object
-            .keys()
-            .any(|key| !matches!(key.as_str(), "jsonrpc" | "id" | "result" | "error"))
+        || object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "jsonrpc" | "id" | "result" | "error" | "brokerTarget"
+            )
+        })
     {
         return Err(GatewayRequestFailure::Transport(
             "Gateway response did not match the request".into(),
         ));
     }
+    response_target_metadata(&response)?;
     let has_result = object.contains_key("result");
     let has_error = object.contains_key("error");
     if has_result == has_error {
@@ -3662,6 +3770,10 @@ struct DeviceSession {
 
 #[derive(Default)]
 struct Gateway {
+    /// Scoped to a UI invoke under the gateway mutex, never a global default:
+    /// this same Gateway also serves MCP requests for the effective target.
+    physical_only: bool,
+    expected_broker_target: Option<Value>,
     selected_device_id: Option<String>,
     process: Option<GatewayProcess>,
     /// A failed writer may race a delayed notification reader. Keep that
@@ -4159,6 +4271,27 @@ impl Gateway {
         }))
     }
 
+    fn with_physical_target<T>(&mut self, request: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = self.physical_only;
+        self.physical_only = true;
+        let result = request(self);
+        self.physical_only = previous;
+        result
+    }
+
+    fn request_targeted_as(
+        &mut self,
+        method: &str,
+        params: Value,
+        connection: ConnectionUse,
+        expected: Option<Value>,
+    ) -> Result<Value, GatewayRequestFailure> {
+        let previous = std::mem::replace(&mut self.expected_broker_target, expected);
+        let result = self.request_detailed_as(method, params, connection);
+        self.expected_broker_target = previous;
+        result
+    }
+
     fn request_detailed(
         &mut self,
         method: &str,
@@ -4267,6 +4400,44 @@ impl Gateway {
             self.publish_lock_free_reads();
         }
         let mut origin = None;
+        if let Some(expected) = &self.expected_broker_target {
+            let status = self
+                .process
+                .as_mut()
+                .ok_or_else(existing_connection_unavailable)?
+                .request_unchecked(rpc::RUNTIME_STATUS, json!({}))?;
+            let supported = status
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .is_some_and(|values| values.iter().any(|value| value == "expectedBrokerTarget"));
+            if !supported
+                || status.get("brokerTarget") != Some(expected)
+                || status.get("targetReady") != Some(&json!(true))
+            {
+                return Err(GatewayRequestFailure::Remote { code:-32002, message:"The admitted broker target is no longer available, or this broker cannot enforce its identity".into(), retryable:false,
+                    details:Some(json!({"code":"TARGET_SUPERSEDED","requestSent":false})) });
+            }
+        }
+        if self.physical_only && method != rpc::RUNTIME_STATUS {
+            let status = self
+                .process
+                .as_mut()
+                .ok_or_else(existing_connection_unavailable)?
+                .request_unchecked(rpc::RUNTIME_STATUS, json!({}))?;
+            let supported = status
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .is_some_and(|values| values.iter().any(|value| value == PHYSICAL_TARGET_ORIGIN));
+            if supported {
+                origin = Some(PHYSICAL_TARGET_ORIGIN);
+            } else if status.get("brokerTarget").is_some() || status.get("targetReady").is_some() {
+                return Err(GatewayRequestFailure::Transport(
+                    "The broker cannot guarantee a physical-only UI request".into(),
+                ));
+            }
+            // Older brokers have no demo target and receive their original
+            // envelope. A refused write is never retried without its fence.
+        }
         if existing_only && method != rpc::RUNTIME_STATUS {
             // Device demand on a session the broker closed would reopen USB.
             // Asked under the same lock, on the connection this request would
@@ -4286,7 +4457,16 @@ impl Gateway {
             let status = self
                 .request_detailed_as(rpc::RUNTIME_STATUS, json!({}), ConnectionUse::ExistingOnly)
                 .ok();
-            let open = status.as_ref().is_some_and(device_session_open);
+            let open = status.as_ref().is_some_and(|status| {
+                if self.physical_only {
+                    status
+                        .pointer("/usbDiagnostics/connected")
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                } else {
+                    device_session_open(status)
+                }
+            });
             if !open || self.process.is_none() {
                 return Err(existing_connection_unavailable());
             }
@@ -4295,7 +4475,11 @@ impl Gateway {
                     BROKER_TOO_OLD_FOR_RESOURCE_READS.into(),
                 ));
             }
-            origin = Some(BROKER_RESOURCE_READ_ORIGIN);
+            origin = Some(if origin == Some(PHYSICAL_TARGET_ORIGIN) {
+                PHYSICAL_RESOURCE_READ_ORIGIN
+            } else {
+                BROKER_RESOURCE_READ_ORIGIN
+            });
         }
         if method == rpc::DISCONNECT {
             if let Some(state) = self.leave_shared_session_open() {
@@ -4319,22 +4503,24 @@ impl Gateway {
             )
         });
         let provider = self.participant_provider.unwrap_or("QC Remote window");
-        let result = self
-            .process
-            .as_mut()
-            .ok_or_else(|| {
-                GatewayRequestFailure::Transport(
-                    "Gateway process initialization did not produce a process".into(),
-                )
-            })?
-            .announce_if_enabled_then_request(
-                announce,
-                provider,
-                self.participant_host_token.as_deref(),
+        let process = self.process.as_mut().ok_or_else(|| {
+            GatewayRequestFailure::Transport(
+                "Gateway process initialization did not produce a process".into(),
+            )
+        })?;
+        let result = (|| {
+            if announce {
+                process
+                    .announce_participant_with(provider, self.participant_host_token.as_deref())?;
+            }
+            process.request_targeted_as_within(
                 method,
                 params,
                 origin,
-            );
+                self.expected_broker_target.as_ref(),
+                GATEWAY_RESPONSE_TIMEOUT,
+            )
+        })();
         // The broker's own refusal of a narrowed read (`dispatch_resource_read`
         // in `services/device-broker/src/rpc.rs`: -32002, `notConnected`) is
         // the same offline answer this gateway gives when it has nothing to
@@ -4355,7 +4541,19 @@ impl Gateway {
             Ok(value) => {
                 if matches!(method, rpc::DISCONNECT | DEVICE_BROKER_DISCONNECT_METHOD) {
                     self.connected = false;
-                } else if method.starts_with("device.") {
+                } else if method.starts_with("device.")
+                    && value
+                        .pointer("/brokerTarget/source")
+                        .and_then(Value::as_str)
+                        != Some("demo")
+                    && !self
+                        .process
+                        .as_ref()
+                        .and_then(|process| process.last_broker_target.as_ref())
+                        .is_some_and(|target| {
+                            target.source == qc_relay_client::BrokerTargetSource::Demo
+                        })
+                {
                     self.connected = true;
                 }
                 self.observe_device_session(&value);
@@ -4457,12 +4655,62 @@ fn broker_stderr_path() -> PathBuf {
     runtime_health_path().with_file_name("broker-stderr.log")
 }
 
+#[cfg(unix)]
+fn prepare_native_runtime_directory(directory: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        qc_native_platform::paths::prepare_directory(directory).map_err(std::io::Error::other)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        qc_native_platform::paths_macos::prepare_directory(directory).map_err(std::io::Error::other)
+    }
+}
+
+fn prepare_runtime_directory(directory: &Path) -> std::io::Result<()> {
+    #[cfg(all(unix, not(test)))]
+    {
+        prepare_native_runtime_directory(directory)
+    }
+    // Preserve Windows behavior and the existing owned native-test roots.
+    #[cfg(any(not(unix), test))]
+    {
+        fs::create_dir_all(directory)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod runtime_health_directory_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn first_runtime_directory_is_private_and_accepted_by_the_broker() {
+        let root = crate::tests::unique_fixture_directory("runtime-private-directory");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(root.clone());
+        let directory = root.join("new-state");
+        prepare_native_runtime_directory(&directory).unwrap();
+        assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o777, 0o700);
+        prepare_native_runtime_directory(&directory).unwrap();
+        let link = root.join("linked-state");
+        std::os::unix::fs::symlink(&directory, &link).unwrap();
+        assert!(prepare_native_runtime_directory(&link).is_err());
+        assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o777, 0o700);
+    }
+}
+
 /// Append-only stderr sink for the broker, falling back to discarding output
 /// only when the log cannot be opened at all.
 fn broker_stderr_sink() -> Stdio {
     let path = broker_stderr_path();
     if let Some(directory) = path.parent() {
-        let _ = fs::create_dir_all(directory);
+        let prepared = prepare_runtime_directory(directory);
+        #[cfg(all(unix, not(test)))]
+        if prepared.is_err() {
+            return Stdio::null();
+        }
+        #[cfg(any(not(unix), test))]
+        let _ = prepared;
     }
     // A broker restart loop must not grow this without bound.
     if fs::metadata(&path).is_ok_and(|meta| meta.len() > BROKER_STDERR_MAX_BYTES) {
@@ -4563,7 +4811,12 @@ fn validate_native_test_state_root(root: Option<&Path>) -> Result<PathBuf, Strin
     Ok(root.to_path_buf())
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), unix))]
+fn runtime_health_path() -> PathBuf {
+    crate::broker_paths::app_local_data_dir().join("runtime-health.json")
+}
+
+#[cfg(all(not(test), not(unix)))]
 fn runtime_health_path() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -4695,7 +4948,7 @@ fn write_runtime_health(gateway: &Gateway, method: &str, status: &str, detail: O
     let Some(directory) = path.parent() else {
         return;
     };
-    if let Err(error) = fs::create_dir_all(directory) {
+    if let Err(error) = prepare_runtime_directory(directory) {
         note_runtime_health_failure("could not create the health record's directory", &error);
         return;
     }
@@ -4744,6 +4997,76 @@ struct WindowsRelayAdapter {
     app: AppHandle,
 }
 
+fn status_supports_broker_target_guard(status: &Value) -> bool {
+    status
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values.iter().any(|value| value == "expectedBrokerTarget"))
+}
+
+pub(crate) fn target_readiness_from_status(status: &Value) -> qc_relay_client::TargetReadiness {
+    let target_aware = status_supports_broker_target_guard(status);
+    let diagnostic_usb_connected = status
+        .pointer("/usbDiagnostics/connected")
+        .and_then(Value::as_bool);
+    let target_ready = status
+        .get("targetReady")
+        .and_then(Value::as_bool)
+        .unwrap_or(!target_aware && diagnostic_usb_connected.unwrap_or(false));
+    let broker_target = status
+        .get("brokerTarget")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<qc_relay_client::BrokerTarget>(value).ok())
+        .filter(|target| {
+            !target.session_id.trim().is_empty()
+                && target.session_id.len() <= 256
+                && target.generation > 0
+                && target.generation <= 9_007_199_254_740_991
+        });
+    let invalid = status.get("brokerTarget").is_some() && broker_target.is_none();
+    // Optional diagnostic caches may be busy while native target selection
+    // freshly verifies a connected, synchronized physical controller. Retain
+    // that USB fact without inventing one for demo or capability-only status.
+    let usb_connected = diagnostic_usb_connected.unwrap_or_else(|| {
+        target_ready
+            && broker_target.as_ref().is_some_and(|target| {
+                target.source == qc_relay_client::BrokerTargetSource::Physical
+            })
+    });
+    qc_relay_client::TargetReadiness {
+        target_ready: target_ready && !invalid,
+        usb_connected,
+        broker_target: if target_ready && !invalid {
+            broker_target
+        } else {
+            None
+        },
+    }
+}
+
+/// Unknown successful status is not a disconnect publication. Effect and
+/// completion callers still use the fresh fail-closed mapping above.
+pub(crate) fn publication_readiness_from_status(
+    status: &Value,
+) -> Option<qc_relay_client::TargetReadiness> {
+    let target_known = status.get("targetReady").and_then(Value::as_bool).is_some();
+    let target_aware = status_supports_broker_target_guard(status);
+    // A modern broker can know one controller's USB fact while canonical
+    // target selection is still uncertain (including another connected QC).
+    // Only legacy physical-only hosts use raw USB as effective readiness.
+    if !target_known
+        && (target_aware
+            || status
+                .pointer("/usbDiagnostics/connected")
+                .and_then(Value::as_bool)
+                .is_none())
+    {
+        None
+    } else {
+        Some(target_readiness_from_status(status))
+    }
+}
+
 /// The last readiness the gateway actually published, readable without taking
 /// the gateway mutex. One `Gateway` exists per process, as Tauri managed state.
 static PUBLISHED_READINESS: std::sync::atomic::AtomicBool =
@@ -4764,6 +5087,7 @@ fn publish_gateway_readiness(connected: bool) {
 /// A contended lock says nothing about the device, so fall back to what the
 /// gateway last published rather than inventing a disconnection. Poisoning is
 /// different: the state behind it is not trustworthy, so that stays unready.
+#[cfg(test)]
 fn gateway_readiness(gateway: &Mutex<Gateway>) -> bool {
     gateway_readiness_with(gateway, &PUBLISHED_READINESS)
 }
@@ -4788,6 +5112,7 @@ fn gateway_readiness(gateway: &Mutex<Gateway>) -> bool {
 /// instead of scheduling around it, so a test added later cannot reintroduce
 /// the race by calling `.request(...)` - and the logic under test is this
 /// function either way.
+#[cfg(test)]
 fn gateway_readiness_with(
     gateway: &Mutex<Gateway>,
     published: &std::sync::atomic::AtomicBool,
@@ -4862,7 +5187,47 @@ impl DeviceAdapter for WindowsRelayAdapter {
     }
 
     async fn ready(&self) -> bool {
-        gateway_readiness(&self.app.state::<Mutex<Gateway>>())
+        self.target_readiness().await.target_ready
+    }
+
+    async fn target_readiness(&self) -> qc_relay_client::TargetReadiness {
+        self.sample_publication_readiness()
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn publication_readiness(&self) -> Option<qc_relay_client::TargetReadiness> {
+        self.sample_publication_readiness().await
+    }
+
+    async fn invoke_targeted(
+        &self,
+        method: &str,
+        params: Value,
+        expected: Option<qc_relay_client::BrokerTarget>,
+        resource_read: bool,
+    ) -> Result<Value, DeviceError> {
+        let expected = expected
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| DeviceError {
+                code: "INVALID_ARGUMENT".into(),
+                message: error.to_string(),
+                retryable: false,
+                details: None,
+                user_action_required: None,
+            })?;
+        self.invoke_with_target_as(
+            method,
+            params,
+            if resource_read {
+                ConnectionUse::ExistingOnly
+            } else {
+                ConnectionUse::MayConnect
+            },
+            expected,
+        )
+        .await
     }
 
     async fn invoke(&self, method: &str, params: Value) -> Result<Value, DeviceError> {
@@ -4886,12 +5251,48 @@ impl DeviceAdapter for WindowsRelayAdapter {
 }
 
 impl WindowsRelayAdapter {
+    async fn sample_publication_readiness(&self) -> Option<qc_relay_client::TargetReadiness> {
+        let app = self.app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let status = request_gateway(
+                &app.state::<Mutex<Gateway>>(),
+                &app.state::<LockFreeReadSlot>(),
+                rpc::RUNTIME_STATUS,
+                json!({}),
+                WhenGatewayBusy::Refuse,
+                |gateway, params| {
+                    gateway.request_detailed_as(
+                        rpc::RUNTIME_STATUS,
+                        params,
+                        ConnectionUse::ExistingOnly,
+                    )
+                },
+            );
+            status
+                .map(|status| publication_readiness_from_status(&status))
+                .unwrap_or(Some(Default::default()))
+        })
+        .await
+        .unwrap_or(Some(Default::default()))
+    }
+
     /// One relay call, in the connection mode the caller chose.
     async fn invoke_as(
         &self,
         method: &str,
         params: Value,
         connection: ConnectionUse,
+    ) -> Result<Value, DeviceError> {
+        self.invoke_with_target_as(method, params, connection, None)
+            .await
+    }
+
+    async fn invoke_with_target_as(
+        &self,
+        method: &str,
+        params: Value,
+        connection: ConnectionUse,
+        expected: Option<Value>,
     ) -> Result<Value, DeviceError> {
         // A remote or MCP backup is written to this PC; the caller gets its
         // location, never the document (see `remote_backup`).
@@ -4909,14 +5310,17 @@ impl WindowsRelayAdapter {
                         &RELAY_GATEWAY_NATIVE_BUDGET,
                         RELAY_GATEWAY_NATIVE_TIMEOUT,
                         move |admission| {
-                            relay_gateway_request(
+                            relay_gateway_request_targeted(
                                 &app.state::<Mutex<Gateway>>(),
                                 &app.state::<LockFreeReadSlot>(),
                                 &method_for_action,
                                 params,
                                 connection,
-                                None,
-                                Some(&admission),
+                                RelayGatewayContext {
+                                    stopped: None,
+                                    admission: Some(&admission),
+                                },
+                                expected,
                             )
                         },
                     )
@@ -5210,7 +5614,7 @@ async fn gateway_invoke(
             app.state::<Mutex<Gateway>>()
                 .lock()
                 .map_err(|_| "Gateway session lock was poisoned".to_string())?
-                .restart(rpc::RESET_SESSION)
+                .with_physical_target(|gateway| gateway.restart(rpc::RESET_SESSION))
         })
         .await
         .map_err(|error| GatewayUiError {
@@ -5240,7 +5644,9 @@ async fn gateway_invoke(
             } else {
                 WhenGatewayBusy::Wait
             },
-            |gateway, params| gateway.request_detailed(&method, params),
+            |gateway, params| {
+                gateway.with_physical_target(|gateway| gateway.request_detailed(&method, params))
+            },
         )
     })
     .await
@@ -5756,6 +6162,7 @@ pub fn run() {
     let lock_free_reads = gateway.lock_free_read_slot();
     builder
         .manage(Mutex::new(gateway))
+        .manage(demo_provider::DemoProviderBridge::default())
         .manage(lock_free_reads)
         .manage(RelayBridge::default())
         .manage(MacMenuEventBridge::default())
@@ -5880,6 +6287,10 @@ pub fn run() {
             if !main_window_is_gone(window.label(), event) {
                 return;
             }
+            window
+                .app_handle()
+                .state::<demo_provider::DemoProviderBridge>()
+                .stop();
             // The Help and app windows belong to the main window. Left open,
             // they would keep the process, the device session, and the local
             // MCP listener alive behind windows that ask a main window that no
@@ -5911,6 +6322,10 @@ pub fn run() {
             retry_public_relay_withdrawal,
             set_public_relay_access_mode,
             gateway_invoke,
+            demo_provider::start_demo_provider,
+            demo_provider::admit_demo_provider_request,
+            demo_provider::complete_demo_provider_request,
+            demo_provider::stop_demo_provider,
             acknowledge_user_connect,
             disconnect_broker_device,
             broker_devices,
