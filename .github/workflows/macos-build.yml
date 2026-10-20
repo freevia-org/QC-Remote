@@ -60,13 +60,19 @@ jobs:
       RUSTUP_TOOLCHAIN: stable
     strategy:
       fail-fast: false
-      # A pull request builds Apple silicon only (27 min); the Intel runner
-      # (49 min, the same source on another architecture) runs on master and on
+      # Pull requests use macOS 15 ARM64 while macOS 26 hosted capacity is limited.
+      # Every native test and packaging step below still runs on Apple silicon.
+      # Intel builds of the same source run on master and on
       # manual dispatch. Neither check is required by branch protection.
-      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"runner":"macos-26","target":"aarch64-apple-darwin"}]}' || '{"include":[{"runner":"macos-26","target":"aarch64-apple-darwin"},{"runner":"macos-26-intel","target":"x86_64-apple-darwin"}]}') }}
+      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"runner":"macos-15","target":"aarch64-apple-darwin"}]}' || '{"include":[{"runner":"macos-26","target":"aarch64-apple-darwin"},{"runner":"macos-26-intel","target":"x86_64-apple-darwin"}]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
+      - name: Select Xcode 26.3 for macOS 15 pull request builds
+        if: github.event_name == 'pull_request'
+        run: |
+          test -d /Applications/Xcode_26.3.app/Contents/Developer
+          echo "DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -76,15 +82,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
-      # Five cold cargo builds made this the slowest job on a pull request (16 to
-      # 48 min). Pull requests restore the cache master wrote (push runs of this
-      # workflow) and do not save their own.
+      # Separate macOS 15/Xcode 26.3 PR artifacts from the macOS 26 master cache.
+      # PR builds remain read-only and start cold in this cache namespace; only
+      # master builds save caches under the existing policy.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
             apps/windows/src-tauri
-          key: macos-${{ matrix.target }}
+          key: macos-${{ github.event_name == 'pull_request' && '15-xcode26.3-' || '' }}${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Install desktop dependencies
         run: npm ci
