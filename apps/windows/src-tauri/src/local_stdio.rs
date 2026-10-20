@@ -737,6 +737,7 @@ fn unanswered_rpc(rpc: &str, error: BackendError) -> BackendError {
 impl DesktopBackend {
     /// The relayed request exactly as sent: bearer token, the bridge's
     /// session id when it has one, and the `{rpc, params}` body.
+    #[cfg(test)]
     fn rpc_request(
         &self,
         endpoint: &Endpoint,
@@ -812,15 +813,6 @@ impl DesktopBackend {
     }
 
     /// Relay to whichever process publishes at `paths`.
-    async fn relay_at(
-        &self,
-        paths: &[PathBuf],
-        rpc: &'static str,
-        params: Map<String, Value>,
-    ) -> Result<Value, RelayFailure> {
-        self.relay_at_targeted(paths, rpc, params, None).await
-    }
-
     async fn relay_at_targeted(
         &self,
         paths: &[PathBuf],
@@ -833,6 +825,7 @@ impl DesktopBackend {
         self.send_targeted(endpoint, rpc, params, expected).await
     }
 
+    #[cfg(test)]
     async fn send(
         &self,
         endpoint: Endpoint,
@@ -1502,16 +1495,6 @@ impl HeadlessDeviceAdapter {
 
     /// A resource read (`ExistingOnly`) may use the broker connection this
     /// host holds but never bring one up; decided under the gateway lock.
-    async fn invoke_gateway(
-        &self,
-        method: &str,
-        params: Value,
-        connection: crate::ConnectionUse,
-    ) -> Result<Value, DeviceError> {
-        self.invoke_gateway_targeted(method, params, connection, None)
-            .await
-    }
-
     async fn invoke_gateway_targeted(
         &self,
         method: &str,
@@ -1537,8 +1520,10 @@ impl HeadlessDeviceAdapter {
                     &method_for_action,
                     params,
                     connection,
-                    Some(&*stopped),
-                    Some(&admission),
+                    crate::RelayGatewayContext {
+                        stopped: Some(&stopped),
+                        admission: Some(&admission),
+                    },
                     expected,
                 )
             },
@@ -2357,15 +2342,6 @@ impl BridgeBackend {
     fn user_quit_refusal(&self) -> Option<String> {
         let settings = self.settings.as_ref()?;
         crate::user_quit_refusal(&settings.device_broker_descriptor_path())
-    }
-
-    async fn relay_once(
-        &self,
-        route: &PrincipalRoute,
-        rpc: &'static str,
-        params: Map<String, Value>,
-    ) -> Result<Value, RelayFailure> {
-        self.relay_once_targeted(route, rpc, params, None).await
     }
 
     async fn relay_once_targeted(

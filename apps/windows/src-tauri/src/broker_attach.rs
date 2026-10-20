@@ -227,7 +227,7 @@ fn attach_to_device_broker_as(
     role: Option<&str>,
 ) -> Result<TcpStream, BrokerAttachFailure> {
     let address = SocketAddr::from(([127, 0, 0, 1], descriptor.port));
-    let mut stream =
+    let stream =
         TcpStream::connect_timeout(&address, DEVICE_BROKER_CONNECT_TIMEOUT).map_err(|error| {
             let message = format!("Could not connect to the shared QC device broker: {error}");
             // Refusal proves no listener at that instant, not owner death.
@@ -259,6 +259,18 @@ fn attach_to_device_broker_as(
     ) {
         return Err(ambiguous(refusal));
     }
+    authenticate_broker_stream(stream, descriptor, role)
+}
+
+// Ownership must be established by the caller before passing this stream.
+// Separating the framed handshake lets role tests exercise negotiation without
+// relying on a kernel process/socket inventory snapshot in the test runner.
+fn authenticate_broker_stream(
+    mut stream: TcpStream,
+    descriptor: &device_broker_descriptor::DeviceBrokerDescriptor,
+    role: Option<&str>,
+) -> Result<TcpStream, BrokerAttachFailure> {
+    let ambiguous = |message: String| BrokerAttachFailure::ambiguous(descriptor, message);
     let mut handshake = json!({
         "method": DEVICE_BROKER_AUTHENTICATE_METHOD,
         "params": {"token": descriptor.bearer_token},
@@ -318,8 +330,6 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let mut published = descriptor();
             published.port = listener.local_addr().unwrap().port();
-            published.process_id = std::process::id();
-            published.process_created_at = None;
             let instance_id = published.instance_id.clone();
             let peer = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
@@ -335,9 +345,12 @@ mod tests {
                 )
                 .unwrap();
             });
+            let stream = TcpStream::connect(("127.0.0.1", published.port)).unwrap();
+            let attached = authenticate_broker_stream(stream, &published, Some("demoProvider"));
             assert_eq!(
-                attach_demo_provider(&published).is_ok(),
-                answered_role == Some("demoProvider")
+                attached.is_ok(),
+                answered_role == Some("demoProvider"),
+                "role {answered_role:?}: {attached:?}"
             );
             peer.join().unwrap();
         }
