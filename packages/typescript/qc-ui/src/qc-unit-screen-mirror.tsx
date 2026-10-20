@@ -1,3 +1,4 @@
+import { useDeviceObservationPolicy } from "./device-observation-policy.ts";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { GatewayTransport } from "@qc-remote/client";
@@ -14,6 +15,9 @@ import "./unit-mirror.css";
  * same pixel on the unit (the display forwards it), and nothing else is sent.
  */
 export function QcUnitScreenMirror({ gateway, lifetime, intervalMs = 700, onReturnToGrid, captureSessionCurrent }: { gateway: Pick<GatewayTransport, "captureScreen">; lifetime?: PresetLifetime; intervalMs?: number; onReturnToGrid?(): void; captureSessionCurrent?(): () => boolean }) {
+  const passivePolling = useDeviceObservationPolicy().mode === "live";
+  const [refreshRevision, setRefreshRevision] = useState(0);
+  const handledRefresh = useRef(0);
   const [image, setImage] = useState<{ gateway: typeof gateway; origin?: PresetOperation; current(): boolean; value?: string; status: "loading" | "ready" | "error" }>();
   const mounted = useRef(true);
   // Hosts build this probe factory inline, so its identity changes on every host render. It is read through a ref: as an
@@ -26,6 +30,8 @@ export function QcUnitScreenMirror({ gateway, lifetime, intervalMs = 700, onRetu
   const returnSession = captureGatewaySession(gateway as GatewayTransport, () => mounted.current && returnHostCurrent() && (!returnOrigin || lifetime!.currentSession(returnOrigin)));
   useEffect(() => {
     mounted.current = true;
+    if (!passivePolling && refreshRevision === handledRefresh.current) return;
+    if (!passivePolling) handledRefresh.current = refreshRevision;
     let disposed = false;
     let generation = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -47,23 +53,23 @@ export function QcUnitScreenMirror({ gateway, lifetime, intervalMs = 700, onRetu
         } catch {
           if (session.current()) setImage({ gateway, origin: capturedOrigin, current: session.current, status: "error" });
         }
-        if (session.current()) timer = setTimeout(() => void refresh(), intervalMs);
+        if (passivePolling && session.current()) timer = setTimeout(() => void refresh(), intervalMs);
       };
       void refresh();
     };
-    const unsubscribe = lifetime?.subscribe(() => {
+    const unsubscribe = passivePolling ? lifetime?.subscribe(() => {
       if (origin && !lifetime.currentSession(origin)) restart();
-    });
+    }) : undefined;
     restart();
     return () => { mounted.current = false; disposed = true; generation++; clearTimeout(timer); unsubscribe?.(); };
-  }, [gateway, lifetime, intervalMs]);
+  }, [gateway, lifetime, intervalMs, passivePolling, refreshRevision]);
   const currentImage = image?.gateway === gateway && image.current() ? image : undefined;
-  return <QcUnitPicture src={currentImage?.value}>
+  return <><QcUnitPicture src={currentImage?.value}>
     {!currentImage?.value && <div className="unit-mirror-status" role="status">
-      <p>{currentImage?.status === "error" ? "The device screen could not be read." : "Reading the device screen…"}</p>
+      <p>{currentImage?.status === "error" ? "The device screen could not be read." : !passivePolling && refreshRevision === 0 ? "Refresh to read the device screen." : "Reading the device screen…"}</p>
       {onReturnToGrid && <button type="button" onPointerDown={(event) => event.stopPropagation()} onPointerUp={(event) => event.stopPropagation()} onPointerCancel={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); if (returnSession.current()) onReturnToGrid(); }}>Return to Grid</button>}
     </div>}
-  </QcUnitPicture>;
+  </QcUnitPicture>{!passivePolling && <button type="button" onClick={() => setRefreshRevision(value => value + 1)}>Refresh screen</button>}</>;
 }
 
 /** One element for every captured-picture fallback, including the loading/error state. */

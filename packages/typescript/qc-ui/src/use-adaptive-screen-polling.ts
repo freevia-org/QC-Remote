@@ -1,3 +1,4 @@
+import { useDeviceObservationPolicy } from "./device-observation-policy.ts";
 import { useEffect, useRef, useState } from "react";
 import type { GatewayTransport } from "@qc-remote/client";
 import type { PresetLifetime } from "@qc-remote/core";
@@ -167,6 +168,8 @@ export function useAdaptiveQcScreenPolling({
   /** Every tree a poll reads, changed or not: text on a screen can change while its structure does not. */
   onTree?: (tree: string) => void;
 }): { phase: QcScreenPollingPhase; observation?: QcScreenObservation } {
+  const passivePolling = useDeviceObservationPolicy().mode === "live";
+  enabled = enabled && passivePolling;
   const onObservationRef = useRef(onObservation);
   onObservationRef.current = onObservation;
   const onTreeRef = useRef(onTree);

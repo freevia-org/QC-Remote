@@ -1,3 +1,4 @@
+import { useDeviceObservationPolicy } from "./device-observation-policy.ts";
 import { requirePresetIdentity } from "@qc-remote/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GatewayTransport, PresetEntry, PresetList, PresetSnapshot, SavePresetResult } from "@qc-remote/client";
@@ -19,6 +20,7 @@ export const DIRECTORY_REVALIDATE_MS = 2_000;
  * and authoritative snapshot reconciliation lives here.
  */
 export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWorkflowController {
+  const passivePolling = useDeviceObservationPolicy().mode === "live";
   const fallbackAdmission = useRef<DeviceMutationAdmission | undefined>(undefined);
   if (!fallbackAdmission.current) fallbackAdmission.current = new DeviceMutationAdmission();
   const admission = options.lifetime?.mutations ?? fallbackAdmission.current;
@@ -211,7 +213,7 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       catalogWarmed.current = false;
       return;
     }
-    if (catalogWarmed.current || presetList) return;
+    if (!passivePolling || catalogWarmed.current || presetList) return;
     catalogWarmed.current = true;
     const operation = captureSession();
     void (async () => {
@@ -220,7 +222,7 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
       // callback identities must not turn one rejection into an unbounded loop.
       // Opening/refreshing the directory can retry; a new connection resets us.
     })();
-  }, [connected, loadDirectory, loadFolders, presetList]);
+  }, [connected, loadDirectory, loadFolders, presetList, passivePolling]);
 
   // The Directory is a cache of the broker's retained publication, and the
   // library is also written by routes this view never sees: the host's MCP
@@ -251,11 +253,11 @@ export function usePresetWorkflow(options: UsePresetWorkflowOptions): PresetWork
     }
   }, [gateway]);
   useEffect(() => {
-    if (!directoryOpen || !connected) return;
+    if (!passivePolling || !directoryOpen || !connected) return;
     void revalidateDirectory();
     const timer = setInterval(() => void revalidateDirectory(), DIRECTORY_REVALIDATE_MS);
     return () => clearInterval(timer);
-  }, [connected, directoryOpen, revalidateDirectory]);
+  }, [connected, directoryOpen, revalidateDirectory, passivePolling]);
 
   const openDirectory = useCallback(async (reload = false) => {
     if (unavailable("opening its preset browser")) return;
