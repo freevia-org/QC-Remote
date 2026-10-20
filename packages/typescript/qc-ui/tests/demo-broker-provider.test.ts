@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import type { GatewayTransport } from "../../qc-client/src/index.ts";
-import { createDemoBrokerProvider, type DemoBrokerRequest } from "../src/demo-broker-provider.ts";
+import { createDemoBrokerProvider, DemoBrokerProviderError, type DemoBrokerRequest } from "../src/demo-broker-provider.ts";
 import { createMemoryVirtualDeviceStorage, createVirtualGatewayTransport, VirtualDeviceStore } from "../src/virtual-gateway.ts";
 import type { VirtualModelCatalogue } from "../src/virtual-device-defaults.ts";
 import { createDemoDeviceSession } from "../src/demo-device-session.ts";
@@ -55,14 +55,16 @@ test("MCP calls the same demo state and never falls back for an unsupported RPC"
 test("queued writes are refused after physical selection and in-flight results discarded", async () => {
   let current = true;
   let finish!: () => void;
+  let started!: () => void;
+  const readingStarted = new Promise<void>(resolve => { started = resolve; });
   let writes = 0;
   const transport = {
-    currentSnapshot: () => new Promise<void>(resolve => { finish = resolve; }),
+    currentSnapshot: () => new Promise<void>(resolve => { finish = resolve; started(); }),
     setDeviceName: async () => { writes += 1; }
   } as unknown as GatewayTransport;
   const provider = createDemoBrokerProvider(transport, target, () => current);
   const reading = provider.invoke(request(1));
-  await Promise.resolve();
+  await readingStarted;
   const queued = provider.invoke(request(2, "device.setDeviceName", { name: "old demo write" }));
   const readRejected = assert.rejects(reading, { code: "TARGET_SUPERSEDED" });
   const writeRejected = assert.rejects(queued, { code: "TARGET_SUPERSEDED" });
@@ -119,4 +121,45 @@ test("expected-state checks use the captured demo snapshot and refuse unsupporte
   await assert.rejects(provider.invoke({ ...request(2, "device.setDeviceName", { name: "unknown guard" }), expectedState: { unknownConstraint: true } }), { code: "INVALID_PROVIDER_REQUEST" });
   await provider.invoke({ ...request(3, "device.setDeviceName", { name: "matches" }), expectedState: { presetName: "demo preset", position: 3 } });
   assert.equal(writes, 1);
+});
+
+test("native admission is rechecked inside the real store queue without fencing concurrent UI edits", async () => {
+  const catalogue = JSON.parse(readFileSync(new URL("../../../../docs/reference/qc-live-parameter-scales.json", import.meta.url), "utf8")) as VirtualModelCatalogue;
+  const memory = createMemoryVirtualDeviceStorage();
+  let block = false;
+  let release!: () => void;
+  let writing!: () => void;
+  const writingStarted = new Promise<void>(resolve => { writing = resolve; });
+  const store = await VirtualDeviceStore.open({ catalogue, storage: {
+    read: () => memory.read(),
+    write: async value => {
+      if (block) { block = false; writing(); await new Promise<void>(resolve => { release = resolve; }); }
+      await memory.write(value);
+    }
+  } });
+  const virtual = createVirtualGatewayTransport(store);
+  block = true;
+  const localFirst = virtual.setDeviceName("local first");
+  await writingStarted;
+  let queued!: () => void;
+  const effectQueued = new Promise<void>(resolve => { queued = resolve; });
+  const update = store.update.bind(store);
+  store.update = (mutate, admission) => {
+    const result = update(mutate, admission);
+    if (admission) queued();
+    return result;
+  };
+  let nativeCurrent = true;
+  const provider = createDemoBrokerProvider(virtual, target, () => true, async () => {
+    if (!nativeCurrent) throw new DemoBrokerProviderError("TARGET_SUPERSEDED", "Native physical target now wins.");
+  });
+  const mcp = provider.invoke(request(1, "device.setDeviceName", { name: "stale MCP write" }));
+  const refused = assert.rejects(mcp, { code: "TARGET_SUPERSEDED" });
+  await effectQueued;
+  nativeCurrent = false; // Native changes before any JS status event arrives.
+  const localAfter = virtual.setDeviceName("local after hotplug");
+  release();
+  await Promise.all([localFirst, refused, localAfter]);
+  assert.match(JSON.stringify(await virtual.identity()), /local after hotplug/);
+  assert.doesNotMatch(memory.text!, /stale MCP write/);
 });

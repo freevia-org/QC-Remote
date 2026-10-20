@@ -1,4 +1,5 @@
 import { GATEWAY_CLIENT_METHODS, type GatewayTransport } from "@qc-remote/client";
+import { withVirtualGatewayAdmission } from "./virtual-gateway.ts";
 
 /** Internal reverse-provider contract; not a new public MCP method/envelope. */
 export interface DemoBrokerTarget {
@@ -36,7 +37,8 @@ export class DemoBrokerProviderError extends Error {
 export function createDemoBrokerProvider(
   transport: GatewayTransport,
   registration: DemoBrokerTarget,
-  isCurrent: () => boolean
+  isCurrent: () => boolean,
+  beforeEffect?: (target: DemoBrokerTarget, sequence: number) => Promise<void>
 ) {
   if (registration.source !== "demo" || !registration.sessionId.trim()
       || !Number.isSafeInteger(registration.generation) || registration.generation < 1) {
@@ -56,7 +58,7 @@ export function createDemoBrokerProvider(
   return {
     target,
     dispose() { disposed = true; },
-    async invoke(request: DemoBrokerRequest): Promise<unknown> {
+    async invoke(request: DemoBrokerRequest, admitEffect?: () => Promise<void>): Promise<unknown> {
       assertCurrent();
       if (request.target?.source !== target.source || request.target?.sessionId !== target.sessionId
           || request.target?.generation !== target.generation) {
@@ -92,11 +94,14 @@ export function createDemoBrokerProvider(
       const params = structuredClone({ ...method.descriptor.defaults, ...request.params }) as Record<string, unknown>;
       const args = method.descriptor.params.map(name => params[name]);
       sequence = request.sequence;
+      const admittedSequence = request.sequence;
       pending += 1;
       const run = queue.then(async () => {
         assertCurrent();
         try {
-          if (Object.keys(expected).length) {
+          const admit = async () => {
+            assertCurrent();
+            if (Object.keys(expected).length) {
             const snapshot = await transport.currentSnapshot() as unknown as Record<string, unknown>;
             assertCurrent();
             for (const [field, value] of Object.entries(expected)) {
@@ -104,8 +109,18 @@ export function createDemoBrokerProvider(
                 throw new DemoBrokerProviderError("STATE_CONFLICT", "The demo state changed before this operation. Refresh it before editing.");
               }
             }
-          }
-          const result = await implementation.apply(transport, args);
+            }
+            if (admitEffect) await admitEffect();
+            else if (beforeEffect) await beforeEffect(target, admittedSequence);
+            assertCurrent();
+          };
+          await admit();
+          // The view shares the original store, runtime and mutation queue.
+          // Admission is checked again INSIDE that queue before mutation,
+          // including after an earlier UI storage write finished.
+          const view = withVirtualGatewayAdmission(transport, admit);
+          const effect = (view as unknown as Record<string, (...args: unknown[]) => unknown>)[method.client]!;
+          const result = await effect.apply(view, args);
           assertCurrent();
           return result;
         } catch (error) {
