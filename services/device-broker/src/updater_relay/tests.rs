@@ -34,6 +34,26 @@ fn frame(kind: i32, url: &str, id: u64, body: Option<&str>) -> Vec<u8> {
     }
     .encode_to_vec()
 }
+
+#[test]
+fn demo_cached_rpc_relay_diagnostics_do_not_wait_or_invent_settings() {
+    let relay = UpdaterRelay::with_parts(Fake::new(200, vec![]), Arc::new(AtomicBool::new(false)));
+    assert!(relay.try_cached_status().unwrap().enabled);
+    relay.use_fixed_settings(UpdaterRelaySettings {
+        enabled: false,
+        ..UpdaterRelaySettings::default()
+    });
+    assert!(!relay.try_cached_status().unwrap().enabled);
+    {
+        let _held = relay.state.lock().unwrap();
+        assert!(relay.try_cached_status().is_none());
+    }
+    // Selecting a directory invalidates the cache. The try-only projection
+    // must not load it or invent the default until normal maintenance reads it.
+    relay.set_settings_directory(std::path::PathBuf::from("."));
+    assert!(relay.try_cached_status().is_none());
+    assert!(relay.settings.lock().unwrap().read_at.is_none());
+}
 #[derive(Clone, Debug, PartialEq)]
 struct Seen {
     url: String,

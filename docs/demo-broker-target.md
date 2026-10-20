@@ -97,6 +97,13 @@ Stale broker state remains red, and a usable physical reading takes precedence.
 
 ## Validation
 
+`system.status` distinguishes API liveness from device availability. An
+unguarded cache-only status request still reports the broker API and transport
+capabilities when readiness is contended. Unavailable cached USB diagnostics
+and unverified target identity/readiness are omitted, not synthesized. Explicit
+expected-target guards and device effects still fail closed. The status path
+uses try-only cached reads and never waits for the retained device tree.
+
 Native and shared-store fixtures cover selection generations, stale leases,
 provider ownership, queued effect refusal, result metadata (including arrays),
 worker shutdown and old local-host refusal before RPC effects. The UI lifecycle
