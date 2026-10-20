@@ -10688,6 +10688,31 @@ fn effective_demo_readiness_keeps_physical_usb_fact_and_refuses_malformed_identi
     assert!(refused.broker_target.is_none());
 }
 #[test]
+fn verified_physical_readiness_preserves_usb_when_optional_diagnostics_are_missing() {
+    for (source, expected_usb) in [("physical", true), ("demo", false)] {
+        let status = json!({"targetReady":true,"brokerTarget":{"source":source,"sessionId":"broker:target","generation":1}});
+        let ready = target_readiness_from_status(&status);
+        assert!(ready.target_ready);
+        assert_eq!(ready.usb_connected, expected_usb);
+        assert!(ready.broker_target.is_some());
+    }
+    for status in [
+        json!({"capabilities":["nativeGateway"]}),
+        json!({"targetReady":true}),
+        json!({"targetReady":true,"brokerTarget":{"source":"physical","sessionId":"","generation":0}}),
+        json!({"targetReady":false,"brokerTarget":{"source":"physical","sessionId":"broker:target","generation":1}}),
+        json!({"brokerTarget":{"source":"physical","sessionId":"broker:target","generation":1}}),
+    ] {
+        assert!(
+            !target_readiness_from_status(&status).usb_connected,
+            "{status}"
+        );
+    }
+    // An available diagnostic remains the authority for its own USB fact.
+    let status = json!({"targetReady":true,"brokerTarget":{"source":"physical","sessionId":"broker:target","generation":1},"usbDiagnostics":{"connected":false}});
+    assert!(!target_readiness_from_status(&status).usb_connected);
+}
+#[test]
 fn array_result_keeps_its_demo_target_in_the_native_envelope() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
