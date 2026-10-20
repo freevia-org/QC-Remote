@@ -19,6 +19,31 @@ single-owner compatibility deployment; it is never sent to an MCP client or
 embedded in either app, and the routes it unlocks do not exist when
 `QCRC_ENVIRONMENT` is `production` (they answer 404 whatever the token).
 
+## MCP polling and request costs
+
+Unchanged foreground and background views must generate no recurring cloud
+reads. Display last-observed local state, identify stale observations, and refresh
+on explicit demand; command planning and guard reads must still use fresh device
+state. A retry interval is a safety limit, not a polling schedule.
+
+Hosts sample USB readiness locally and publish one initial `ready` frame per
+connection and subsequent readiness changes only. WebSocket protocol pings keep
+the connection alive without calling the Durable Object message handler or
+consuming request quota; repeated JSON readiness heartbeats do consume quota.
+
+Every explicit read and control still passes OAuth, scope checks and the account
+fence. No device result or successful authorization is cached. Admitted MCP
+requests record the immutable client registry inside account admission, reducing
+an ordinary device call from three Durable Object RPCs to two without removing
+an authorization check. There is no new minimum interval for fresh reads.
+
+Access tokens expire after one hour. Refresh grants, client registrations and
+paired-host credentials persist until explicitly revoked. Valid historical
+credentials migrate on authenticated use; expired or revoked credentials do not
+revive. Device-directory KV expiration is removed once during migration instead
+of being renewed periodically. Revocation and account-generation fences remain
+authoritative for every request.
+
 ## Cloudflare KV namespace id
 
 `wrangler.jsonc` binds `QCRC_OAUTH` and `OAUTH_KV` (the fixed name the OAuth

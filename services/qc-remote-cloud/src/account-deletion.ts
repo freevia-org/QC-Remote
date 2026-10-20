@@ -52,7 +52,7 @@
  * and legacy keys (written by a relay version without the journal) are old
  * enough to appear in a list. */
 import { connectorGrantUser, type ConnectorGrantRegistry } from "./connector-grants.ts";
-import { REFRESH_TOKEN_TTL_SECONDS } from "./oauth-lifetimes.ts";
+import { LEGACY_REFRESH_TOKEN_TTL_SECONDS } from "./oauth-lifetimes.ts";
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json" with { type: "json" };
 
 export const ACCOUNT_DELETION_KEY = "account-deletion-v1";
@@ -71,8 +71,9 @@ export const ACCOUNT_DELETION_RETRY_MS = 5 * 60_000;
  * waking its Durable Object every five minutes forever. */
 export const PROVIDER_WRITES_DELETION_RETRY_MAX_MS = 24 * 60 * 60_000;
 const PROVIDER_WRITES_DELETION_RETRY_MAX_COUNT = 9;
-/** The receipt outlives every grant or refresh token issued before it. */
-export const ACCOUNT_DELETION_RECEIPT_MS = (REFRESH_TOKEN_TTL_SECONDS + 24 * 60 * 60) * 1_000;
+/** Receipt retention is bounded; the permanent account-generation fence above
+ * rejects pre-deletion grants even after this receipt is removed. */
+export const ACCOUNT_DELETION_RECEIPT_MS = (LEGACY_REFRESH_TOKEN_TTL_SECONDS + 24 * 60 * 60) * 1_000;
 export const ACCOUNT_DELETION_WEB_PATH = relayProfile.accountDeletionWebPath;
 /** Operator evidence that un-journalled writers have DRAINED (plan 7.10):
  * `lastPossibleLegacyCompletionAt` is the latest moment any Worker version
@@ -87,12 +88,12 @@ export type LegacyDrainAttestation = { lastPossibleLegacyCompletionAt: number; m
  * revoked. Setting it requires that evidence, or a revised, bounded legacy
  * contract reviewed as such; it is not a tuning knob. */
 export const LEGACY_DRAIN_ATTESTATION: LegacyDrainAttestation | null = null;
-/** The longest a grant/token written by provider 0.10.4 WITH OUR OPTIONS can
+/** The longest a grant/token written by provider 0.10.4 with the HISTORICAL 30-day options can
  * live: 600 s as a code grant (oauth-provider.js 3664), then 30 days from the
  * exchange (1966; oauth-lifetimes.ts), never extended by refresh (2085-2094),
  * with a KV expiration clamp of at most 65 s (2766-2768). It does not bound
  * writers of other versions or options; the attestation must. */
-export const PROVIDER_0_10_4_MAX_LIFETIME_MS = (600 + REFRESH_TOKEN_TTL_SECONDS + 65) * 1_000;
+export const PROVIDER_0_10_4_MAX_LIFETIME_MS = (600 + LEGACY_REFRESH_TOKEN_TTL_SECONDS + 65) * 1_000;
 /** RETRY POLICY, not a proof of absence: a legacy sweep counts as clean only
  * this long after the last delete. KV list visibility is documented at about
  * 60 s plus any cacheTtl and is not guaranteed. */
@@ -329,16 +330,16 @@ function mayStay(writes: ProviderWrites, key: string, generation: number): boole
 
 /** Whether a journal entry can be dropped: no open writer, and past the last
  * moment the key could exist or be rewritten (its KV expiry, or for a
- * tombstone of unknown expiry the current provider's maximum lifetime after
- * the delete), plus a day. */
+ * tombstone of unknown expiry: never), plus a day. Persistent grant
+ * tombstones must survive indefinitely to reject delayed writers. */
 function prunable(writes: ProviderWrites, name: string, entry: ProviderWrites["keys"][string], now: number): boolean {
   if (openFor(writes, name).length > 0) return false;
-  const until = entry.expiresAt ?? (entry.deleteIntent && typeof entry.deletedAt === "number" ? entry.deletedAt + PROVIDER_0_10_4_MAX_LIFETIME_MS : undefined);
+  const until = entry.expiresAt;
   return until !== undefined && until + 24 * 60 * 60_000 <= now;
 }
 
 function providerWritePruneAt(entry: ProviderWrites["keys"][string]): number | undefined {
-  const until = entry.expiresAt ?? (entry.deleteIntent && typeof entry.deletedAt === "number" ? entry.deletedAt + PROVIDER_0_10_4_MAX_LIFETIME_MS : undefined);
+  const until = entry.expiresAt;
   return until === undefined ? undefined : until + PROVIDER_WRITES_RETENTION_GRACE_MS;
 }
 
@@ -563,14 +564,26 @@ function putExpiry(options: unknown, now: number): number | undefined {
  * and compensated by an acknowledged delete when it must not stay. Provider
  * 0.10.4 performs every grant/token mutation through `env.OAUTH_KV`. Every
  * other key passes through unchanged. */
-export function fenceProviderKv<T extends { put: KvPut; delete(key: string): Promise<unknown> }>(kv: T, fenceFor: (subject: string) => ProviderWriteFence, now: () => number = () => Date.now()): T {
+export function fenceProviderKv<T extends { put: KvPut; delete(key: string): Promise<unknown>; get?(key: string): Promise<string | null> }>(kv: T, fenceFor: (subject: string) => ProviderWriteFence, now: () => number = () => Date.now()): T {
   const put: KvPut = async (key, value, options) => {
     const owner = providerKeyOwner(key);
     if (!owner) return kv.put(key, value, options);
     let generation: number | undefined;
+    let refreshClientId: string | undefined;
     if (owner.kind === "grant") {
-      try { generation = grantGeneration((JSON.parse(String(value)) as { metadata?: { accountGeneration?: unknown } })?.metadata?.accountGeneration); }
-      catch { generation = 0; }
+      try {
+        const grant = JSON.parse(String(value)) as { metadata?: { accountGeneration?: unknown }; refreshTokenId?: unknown; clientId?: unknown; expiresAt?: number };
+        generation = grantGeneration(grant?.metadata?.accountGeneration);
+        // The pinned provider writes refreshTokenId only after a successful
+        // code/refresh exchange. Upgrade still-valid legacy grants here,
+        // after validation, through the same revocation/generation fence.
+        if (typeof grant.refreshTokenId === "string") {
+          if (typeof grant.clientId === "string") refreshClientId = grant.clientId;
+          delete grant.expiresAt;
+          value = JSON.stringify(grant);
+          options = undefined;
+        }
+      } catch { generation = 0; }
     }
     const fence = fenceFor(owner.subject);
     const admission = await fence.admitProviderWrite(key, generation, putExpiry(options, now()));
@@ -579,7 +592,17 @@ export function fenceProviderKv<T extends { put: KvPut; delete(key: string): Pro
     // stays open as "writing" and nothing here closes it.
     const result = await kv.put(key, value, options);
     // J3. If settle throws, the admission also stays open as "writing".
-    if (await fence.settleProviderWrite(admission.admissionId) === "keep") return result;
+    if (await fence.settleProviderWrite(admission.admissionId) === "keep") {
+      // Existing dynamic registrations also carried a 90-day KV TTL. Only
+      // migrate a client used by a validated, admitted refresh grant. Client
+      // deletion revokes its grants, whose tombstones remain authoritative.
+      if (refreshClientId && kv.get) {
+        const clientKey = `client:${refreshClientId}`;
+        const client = await kv.get(clientKey);
+        if (client !== null) await kv.put(clientKey, client);
+      }
+      return result;
+    }
     // Owed: an acknowledged delete. A failure is not swallowed; the admission
     // stays "compensating" and the deletion retries it.
     await kv.delete(key);

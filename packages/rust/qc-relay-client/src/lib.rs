@@ -62,6 +62,14 @@ fn relay_socket_config() -> WebSocketConfig {
         .max_message_size(Some(MAX_REQUEST_FRAME_BYTES))
         .max_frame_size(Some(MAX_REQUEST_FRAME_BYTES))
 }
+// Protocol Ping frames are answered by Cloudflare without waking the DO.
+// Readiness stays locally sampled; unchanged application frames are never sent.
+const SOCKET_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
+fn readiness_due(previous: Option<bool>, ready: bool) -> bool {
+    previous != Some(ready)
+}
+
 const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const SOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1175,6 +1183,13 @@ impl Client {
         let (mut sink, mut stream) = socket.split();
         let _presence_lifetime = PresenceLifetime(self.mcp_presence.clone());
         let mut readiness = tokio::time::interval(Duration::from_millis(READINESS_INTERVAL_MS));
+        readiness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut keepalive = tokio::time::interval_at(
+            tokio::time::Instant::now() + SOCKET_KEEPALIVE_INTERVAL,
+            SOCKET_KEEPALIVE_INTERVAL,
+        );
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_readiness = None;
         let mut deferred = VecDeque::new();
         loop {
             tokio::select! {
@@ -1190,8 +1205,13 @@ impl Client {
                             false
                         }
                     };
+                    if !readiness_due(last_readiness, ready) { continue; }
+                    last_readiness = Some(ready);
                     let frame = DeviceFrame::Ready { protocol: PROTOCOL_VERSION.into(), usb_connected: ready, mcp_presence: self.mcp_presence.is_some(), gateway_api_version: self.gateway_api_version };
                     if send_frame(&mut sink, &frame).await.is_err() { return Err(()); }
+                }
+                _ = keepalive.tick() => {
+                    if send_message(&mut sink, Message::Ping(Vec::new().into())).await.is_err() { return Err(()); }
                 }
                 changed = self.stop.changed() => {
                     if changed.is_err() || *self.stop.borrow() {
@@ -1254,16 +1274,11 @@ impl Client {
                                     &invoking,
                                 );
                                 tokio::pin!(work);
-                                // Keep the readiness heartbeat running while the
-                                // device works. A library write legitimately
-                                // takes minutes, and this loop used to fall
-                                // silent for all of it, so the relay and every
-                                // intermediary between us saw an idle socket
-                                // during exactly the operations that must not be
-                                // interrupted. While the device works, readiness
-                                // is asserted rather than re-read: asking the
-                                // adapter would queue behind the call being
-                                // waited on.
+                                // Keep protocol Pings and local readiness sampling
+                                // running during long device calls, but publish only
+                                // readiness changes. While the device works, ready
+                                // is asserted: re-reading the adapter could queue
+                                // behind the invocation being awaited.
                                 loop {
                                     tokio::select! {
                                         outcome = &mut work => break outcome,
@@ -1275,6 +1290,8 @@ impl Client {
                                                     .await
                                                     .unwrap_or(false)
                                             };
+                                            if !readiness_due(last_readiness, usb_connected) { continue; }
+                                            last_readiness = Some(usb_connected);
                                             let frame = DeviceFrame::Ready {
                                                 protocol: PROTOCOL_VERSION.into(),
                                                 usb_connected,
@@ -1284,6 +1301,9 @@ impl Client {
                                             if send_frame(&mut sink, &frame).await.is_err() {
                                                 return Err(());
                                             }
+                                        }
+                                        _ = keepalive.tick() => {
+                                            if send_message(&mut sink, Message::Ping(Vec::new().into())).await.is_err() { return Err(()); }
                                         }
                                         incoming = stream.next() => {
                                             match incoming {
@@ -2530,6 +2550,89 @@ mod tests {
         )
         .unwrap();
         assert!(current.uses_current_identity_provider());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_and_busy_sockets_use_protocol_pings_without_repeated_ready_frames() {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        let adapter = Arc::new(AppliedThenStalledAdapter {
+            effects: AtomicUsize::new(0),
+            started: tokio::sync::Notify::new(),
+        });
+        let credentials: Credentials = serde_json::from_value(json!({
+            "endpoint":"https://relay.example.test", "deviceId":"fixture",
+            "deviceCredential":"fixture-only"
+        }))
+        .unwrap();
+        let (state, _) = watch::channel(ConnectionState::Connected);
+        let (_access_tx, access) = watch::channel(AccessMode::Full);
+        let (stop_tx, stop) = watch::channel(false);
+        let mut client = Client::new(credentials, adapter.clone(), state, access, stop);
+        let (host_io, relay_io) = tokio::io::duplex(8192);
+        let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
+        let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
+        let mut host = OwnedHost(tokio::spawn(async move { client.connected(socket).await }));
+        let initial = tokio::time::timeout(Duration::from_secs(2), relay.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Message::Text(text) = initial else {
+            panic!("expected initial readiness")
+        };
+        let initial: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(initial["type"], "ready");
+        assert_eq!(initial["usbConnected"], true);
+
+        // Advance several keepalive periods in the real socket loop. Any
+        // repeated application Ready frame fails instead of being skipped.
+        for _ in 0..3 {
+            let frame = tokio::time::timeout(Duration::from_secs(31), relay.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(frame, Message::Ping(_)),
+                "unexpected idle frame: {frame:?}"
+            );
+            relay.flush().await.unwrap(); // flush the automatic Pong
+        }
+        relay
+            .send(Message::Text(
+                json!({
+                    "type":"invoke", "id":"held", "action":"get_status",
+                    "method":"system.status", "params":{}, "deadlineMs":300_000
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), adapter.started.notified())
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            let frame = tokio::time::timeout(Duration::from_secs(31), relay.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(frame, Message::Ping(_)),
+                "unexpected busy frame: {frame:?}"
+            );
+            relay.flush().await.unwrap();
+        }
+        assert_eq!(adapter.effects.load(Ordering::SeqCst), 1);
+        stop_tx.send(true).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), &mut host.0)
+                .await
+                .unwrap()
+                .unwrap(),
+            Ok(())
+        );
     }
 
     /// Readiness the host can only learn by asking: whatever `ready()`

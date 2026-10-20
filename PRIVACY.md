@@ -192,11 +192,11 @@ For each paired device the relay keeps: the device label, the time it was
 paired, your Google account subject ID and verified email address, the browser
 label from pairing, and its credential **as a SHA-256 hash only**; the
 credential itself exists only on your device. A directory entry maps the device
-to your account. A credential is accepted for 90 days after pairing; after that
-it stops being accepted unless the device is paired again, but that expiry does
-not delete the record. The device record and directory entry are kept for as
-long as the device stays paired, with no automatic deletion, and are removed
-when you unpair the device.
+to your account. Credentials and their records persist until you unpair the
+device or delete your remote account. Valid historical credentials migrate to
+this policy on authenticated use; expired or revoked credentials are not
+restored. Unmigrated historical records are removed after their former
+90-day lifetime plus a 30-day retention grace period.
 
 ### AI apps you connect
 
@@ -207,28 +207,26 @@ Google subject, email address and name, the time, a label of your browser and
 system (such as "Windows Chrome" with the browser version), your IP address,
 and the approximate city and country of the authorization. This lets the AI app
 reach your unit and lets you recognise and remove it. An access token lasts one
-hour; an authorization and its refresh token last 30 days from the time you
-approved it, however often the app is used or refreshed. After that you sign in
-again.
+hour; an authorization and its refresh token persist until you unlink or revoke
+the app, unpair your account's last device, or delete your remote account.
 
 An AI app also registers details about itself with the relay (its name and the
 addresses it redirects to). These describe the app, not you, and are not tied to
-your Google account.
+your Google account. These client registrations persist until removed.
 
 ### AI app activity
 
-While an AI app uses the relay, the relay keeps a list of recent clients so that
-your paired app can show which assistants are connected: the name and version
+When an AI app first uses the relay, the relay registers it so that
+your paired app can show which assistants are authorized: the name and version
 the app declares, a browser and system label, IP address, approximate city and
-country, the first and latest activity times, and which authorization it used.
-The recent-client list expires after 15 seconds without requests; a request
-still in progress renews that period. The relay remembers at most 128 client
-records (normalized client, device and network details, and private
-credential/session digests) for 30 days after their last activity so that later
-requests can retain their identity. This activity cache is separate from OAuth
-grants and does not grant or extend access. The paired host receives an opaque
-session ID and the first and last activity times, never the client's bearer
-token or its private digest.
+country, the registration time, and which authorization it used.
+The relay keeps at most 128 client records (normalized client, device and
+network details, and private credential/session digests), until the associated
+authorization is revoked, the account is deleted, or a record is evicted at
+capacity. It does not renew a presence lease or record each request as activity.
+This registry does not establish that a client is currently connected and does
+not grant or extend access. The paired host receives an opaque ID and recorded
+timestamps, never the client's bearer token or its private digest.
 
 ### Commands and responses
 
@@ -290,8 +288,8 @@ request and the browser approving it are in different countries. It is not
 shared with anyone else and is never sold. It is deleted with the record it
 belongs to: for a pairing request, after at most 10 minutes; for a connected AI
 app, when you unlink that app, when you unpair the last device on your account,
-or 30 days after you authorized the app; for client records, when the record
-expires as described above. You can ask for it to be deleted sooner at
+or when you delete your remote account; for client records, when the record
+is removed as described above. You can ask for it to be deleted sooner at
 privacy@freevia.org.
 
 ## What we do not do
@@ -389,10 +387,9 @@ policy governs that.
 | --- | --- |
 | Pairing request and one-time pairing code | At most about 10 minutes after the pairing starts; the code is removed as soon as your app collects it |
 | Sign-in state for a pairing or authorization | 10 minutes |
-| Paired-device record (Google account subject ID, verified email, hashed credential, device label, browser label) and its directory entry | You unpair the device. There is no automatic deletion: the credential stops being accepted 90 days after pairing, but the record stays until you unpair |
-| AI app authorization, including the device and network details recorded when you approved it | You unlink or revoke it, you unpair your account's last device, or 30 days after you approved it; refreshing does not extend this. Its access token lasts one hour |
-| Recent-client list | 15 seconds without requests from the client; a request still in progress renews it |
-| Client records (at most 128: normalized client, device and network details, and private credential/session digests) | 30 days after the client's last activity |
+| Paired-device record (Google account subject ID, verified email, hashed credential, device label, browser label) and its directory entry | You unpair the device or delete the remote account. Unmigrated historical records retain their former 120-day retention period |
+| AI app authorization, including the device and network details recorded when you approved it | You unlink or revoke it, unpair your account's last device, or delete the remote account. Its access token lasts one hour |
+| Client records (at most 128: normalized client, device and network details, and private credential/session digests) | The associated authorization is revoked, the remote account is deleted, or the record is evicted at capacity; no heartbeat expiry |
 | Daily command count | You ask for your remote-account data to be deleted |
 | Cloudflare Workers Logs (about 1% of invocations) | The period set by Cloudflare's service plan: 3 days on Workers Free, 7 days on Workers Paid |
 
@@ -456,7 +453,7 @@ approval.
   traffic on its own relay connection. Requests forwarded for the Quad Cortex go
   where the unit asks, as described above.
 - Device credentials are stored by the relay only as SHA-256 hashes and compared
-  in constant time. Credentials are accepted for 90 days after pairing. Access
+  in constant time. Credentials persist until explicitly revoked. Access
   tokens expire after one hour.
 - Each Google account's data is kept in its own isolated storage object. A
   pairing link opens a confirmation page that names the device and where the

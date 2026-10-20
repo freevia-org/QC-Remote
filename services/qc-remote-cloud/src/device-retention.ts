@@ -1,50 +1,19 @@
-/** How long the relay keeps a paired-device record, and how it lets go.
- *
- * A device record holds the owner's verified email, the label of the browser
- * that approved the pairing and a credential hash. Records used to live until
- * someone unpaired: an expired credential was refused but never deleted, and
- * every re-pair left the previous record behind. Now:
- *
- * - a record is deleted 90 days after its last use plus a 30-day grace period
- *   (`DEVICE_RETENTION_MS`). Last use is the pairing itself, then any
- *   authenticated use of the credential, written at most once a day;
- * - a record written before `lastUsedAt` existed counts from its `pairedAt`.
- *   That is the conservative choice: its credential already stopped being
- *   accepted 90 days after `pairedAt`, so it cannot be in use past the grace
- *   period, and a record that is in use gains `lastUsedAt` on its next
- *   authenticated request;
- * - the KV directory entry (`qcrc:device:<id>`) carries the same lifetime as a
- *   KV TTL, refreshed at most once a day by an authenticated connect, so even a
- *   record the sweep never reaches cannot outlive its retention in KV;
- * - re-pairing is two-phase. Redemption proves the previous device id
- *   and credential against this account's own record and stores a reference
- *   to it on the new record (`replaces`: the predecessor's id and its stored
- *   credential hash, never the credential). The predecessor stays usable. It
- *   is deleted only when the new credential first connects, which a host does
- *   only after it has durably saved that credential (`adoptReplacement`). A
- *   lost pair response or a failed local save therefore leaves the old
- *   credential working, and the unadopted new record ages out like any other.
- *
- * Credential validity is unchanged: a credential is accepted for
- * `credentialTtlDays` after pairing (relay profile). Retention only decides
- * when the record that once held it is deleted.
- *
- * Durable Object and KV writes cannot share a transaction, so every sequence
- * here is ordered so a partial failure leaves, at worst, a KV pointer with no
- * record behind it. Such a pointer only names the owning account, leads to the
- * same 401 an unknown device gets, and lapses with its TTL; it is never able to
- * delete another record or bring a revoked one back. */
+/** Host pairings persist until revoked. Legacy expiring records are retained
+ * for their former 90-day lifetime plus grace, and migrate on authenticated
+ * use before expiry. Persistent records are never aged out. Provisional KV
+ * pointers retain a bounded TTL until the first authenticated connection;
+ * that connection removes the TTL without resurrecting revoked records. */
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json" with { type: "json" };
 
 const DAY_MS = 24 * 60 * 60_000;
 
-/** 90 days: the credential lifetime, read from the shared relay profile. */
-export const DEVICE_RETENTION_AFTER_LAST_USE_MS = relayProfile.credentialTtlDays * DAY_MS;
+/** Historical host lifetime, used only to clean up unmigrated legacy records. */
+export const DEVICE_RETENTION_AFTER_LAST_USE_MS = 90 * DAY_MS;
 export const DEVICE_RETENTION_GRACE_MS = 30 * DAY_MS;
 export const DEVICE_RETENTION_MS = DEVICE_RETENTION_AFTER_LAST_USE_MS + DEVICE_RETENTION_GRACE_MS;
 /** KV TTL of a device directory entry, in seconds. */
 export const DEVICE_DIRECTORY_TTL_SECONDS = DEVICE_RETENTION_MS / 1000;
-/** `lastUsedAt` and the KV TTL are refreshed at most this often per device. */
+/** `lastUsedAt` is updated at most this often per persistent device. */
 export const LAST_USED_WRITE_INTERVAL_MS = DAY_MS;
 /** A failed KV cleanup is retried on this delay. */
 export const DIRECTORY_CLEANUP_RETRY_MS = 60 * 60_000;
@@ -61,7 +30,7 @@ export type PendingReplacement = { deviceId: string; credentialHash: string };
 /** `replacedDeviceId` is kept after adoption so every later connect can
  * acknowledge that the predecessor's credential is no longer accepted, even
  * when the first acknowledgement was lost. An id only, never a credential. */
-export type RetainedDevice = { credentialHash: string; pairedAt: number; expiresAt?: number; lastUsedAt?: number; replaces?: PendingReplacement; replacedDeviceId?: string; pairingOperationId?: string };
+export type RetainedDevice = { credentialHash: string; pairedAt: number; expiresAt?: number | null; lastUsedAt?: number; replaces?: PendingReplacement; replacedDeviceId?: string; pairingOperationId?: string };
 /** An explicit refusal by the account's own state (the deletion fence). */
 export type AccountWriteDenial = { denied: true; message: string };
 /** Called inside a redemption or adoption transaction before it commits. It
@@ -101,6 +70,7 @@ export function lastUseOf(record: RetainedDevice): number {
 }
 
 export function deletionDeadline(record: RetainedDevice): number {
+  if (record.expiresAt === null) return Infinity;
   return lastUseOf(record) + DEVICE_RETENTION_MS;
 }
 
@@ -118,6 +88,7 @@ export function earliestDeadline(...deadlines: Array<number | null | undefined>)
 /** Record that retention work is due at `deadline`, keeping the earliest, and
  * make sure the alarm fires no later than that. */
 export async function scheduleRetentionWork(transaction: RetentionTransaction, deadline: number): Promise<void> {
+  if (!Number.isFinite(deadline)) return;
   const current = await transaction.get<number>(DEVICE_SWEEP_KEY);
   const next = typeof current === "number" ? Math.min(current, deadline) : deadline;
   if (next !== current) await transaction.put(DEVICE_SWEEP_KEY, next);
@@ -134,8 +105,8 @@ export async function touchDeviceLastUse(storage: RetentionStorage, deviceId: st
     const key = `${DEVICE_RECORD_PREFIX}${deviceId}`;
     const record = await transaction.get<RetainedDevice>(key);
     if (!record || record.credentialHash !== credentialHash) return false;
-    if (typeof record.lastUsedAt === "number" && now - record.lastUsedAt < LAST_USED_WRITE_INTERVAL_MS) return false;
-    await transaction.put(key, { ...record, lastUsedAt: now });
+    if (record.expiresAt === null && typeof record.lastUsedAt === "number" && now - record.lastUsedAt < LAST_USED_WRITE_INTERVAL_MS) return false;
+    await transaction.put(key, { ...record, expiresAt: null, lastUsedAt: now });
     return true;
   });
 }
@@ -237,7 +208,7 @@ export async function drainDirectoryCleanup(storage: RetentionStorage, kv: Pick<
  * device any AI app can reach. */
 export function liveDeviceCount(records: Iterable<RetainedDevice>, credentialTtlMs: number, now: number): number {
   let live = 0;
-  for (const record of records) if ((record.expiresAt ?? record.pairedAt + credentialTtlMs) > now) live += 1;
+  for (const record of records) if (record.expiresAt === null || (record.expiresAt ?? record.pairedAt + credentialTtlMs) > now) live += 1;
   return live;
 }
 
@@ -361,7 +332,7 @@ export async function adoptReplacement(
     const key = `${DEVICE_RECORD_PREFIX}${input.deviceId}`;
     const record = await transaction.get<RetainedDevice>(key);
     if (!record || record.credentialHash !== input.credentialHash) return { admitted: false, reason: "record" };
-    if ((record.expiresAt ?? record.pairedAt + input.credentialTtlMs) <= input.now) return { admitted: false, reason: "record" };
+    if (record.expiresAt !== null && (record.expiresAt ?? record.pairedAt + input.credentialTtlMs) <= input.now) return { admitted: false, reason: "record" };
     // Nothing has been written yet, so returning commits nothing. A guard
     // exception is a failure to read state and propagates (retryable).
     if (input.guard && await input.guard(transaction)) return { admitted: false, reason: "fenced" };
@@ -691,9 +662,9 @@ export async function resolvePairingAttempt(
   });
 }
 
-type DirectoryMetadata = { refreshedAt?: number };
+type DirectoryMetadata = { refreshedAt?: number; persistent?: boolean };
 
-/** Extend a live device's KV TTL, at most once per interval, after the Durable
+/** Remove a live device's legacy KV TTL once after the Durable
  * Object accepted its credential. `stillPaired` is asked after the write, so a
  * revocation that raced it is followed by a delete instead of leaving a
  * resurrected pointer. */
@@ -701,8 +672,8 @@ export async function refreshDeviceDirectory(kv: DirectoryKv, deviceId: string, 
   const key = deviceDirectoryKey(deviceId);
   const { value, metadata } = await kv.getWithMetadata<{ owner?: string }, DirectoryMetadata>(key, "json");
   if (!value || value.owner !== owner) return false;
-  if (typeof metadata?.refreshedAt === "number" && now - metadata.refreshedAt < LAST_USED_WRITE_INTERVAL_MS) return false;
-  await kv.put(key, JSON.stringify({ owner }), { expirationTtl: DEVICE_DIRECTORY_TTL_SECONDS, metadata: { refreshedAt: now } });
+  if (metadata?.persistent) return false;
+  await kv.put(key, JSON.stringify({ owner }), { metadata: { refreshedAt: now, persistent: true } });
   if (!await stillPaired()) {
     await kv.delete(key);
     return false;

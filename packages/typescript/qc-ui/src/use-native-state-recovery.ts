@@ -1,3 +1,4 @@
+import { useDeviceObservationPolicy } from "./device-observation-policy.ts";
 import { useEffect, useRef, type MutableRefObject } from "react";
 import type { NativeStateFrames, PresetSnapshot } from "@qc-remote/client";
 import { SupersededPresetOperation } from "@qc-remote/core";
@@ -48,7 +49,9 @@ export function useNativeStateRecovery(options: NativeStateRecoveryOptions): voi
   const latest = useRef(options);
   const ownRecoveryRevision = useRef(0);
   latest.current = options;
-  const {enabled, sequence, streamId, intervalMs = 2_000} = options;
+  const passivePolling = useDeviceObservationPolicy().mode === "live";
+  const {sequence, streamId, intervalMs = 2_000} = options;
+  const enabled = options.enabled && passivePolling;
   const recoveryRevision = options.recoveryRevision ?? ownRecoveryRevision;
   useEffect(() => {
     if (!enabled) return;

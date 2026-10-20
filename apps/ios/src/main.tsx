@@ -5,10 +5,11 @@ import { Capacitor } from "@capacitor/core";
 import { StatusBar, Style } from "@capacitor/status-bar";
 import { QC_BRAND, QC_COLORS, QC_NATIVE_THEME } from "@qc-remote/theme";
 import { App } from "@qc-remote/android-src/App";
+import { DeviceObservationProvider } from "@qc-remote/ui";
 import { QCIosNativeBridge } from "../native-bridge";
 import { IPhoneMidiController } from "./IPhoneMidiController";
 import { IPadDriverStatus } from "./IPadDriverStatus";
-import { getIosConnectionMode, setIosConnectionMode, type IosConnectionMode } from "./ios-services";
+import { getIosConnectionMode, setIosConnectionMode, remoteObservation, subscribeRemoteObservation, refreshRemoteObservation, type IosConnectionMode } from "./ios-services";
 import "@qc-remote/theme/theme.css";
 import "@qc-remote/android-src/styles.css";
 import "./ios-midi.css";
@@ -19,6 +20,18 @@ document.querySelector('meta[name="theme-color"]')?.setAttribute("content", QC_N
 document.title = QC_BRAND.appName;
 
 if (Capacitor.isNativePlatform()) void StatusBar.setStyle({ style: Style.Dark });
+
+function ObservedApp({ remote }: { remote: boolean }) {
+  const [lastObservedAt, setLastObservedAt] = React.useState(remoteObservation);
+  React.useEffect(() => {
+    let disposed = false;
+    const subscription = subscribeRemoteObservation(value => { if (!disposed) setLastObservedAt(value); });
+    return () => { disposed = true; void subscription.then(value => value.remove()); };
+  }, []);
+  return <DeviceObservationProvider value={remote
+    ? { mode: "on-demand", lastObservedAt, refresh: refreshRemoteObservation }
+    : { mode: "live" }}><App /></DeviceObservationProvider>;
+}
 
 function IosApp() {
   const [platform, setPlatform] = React.useState<(IosCapabilities & { family: "iphone" | "ipad" | "web" }) | null>(Capacitor.isNativePlatform() ? null : {
@@ -68,7 +81,7 @@ function IosApp() {
       {modeError && <p className="ios-mode-error" role="alert">{modeError}</p>}
     </nav>
     <div className={connectionMode === "remote" ? "ios-iphone-content is-remote" : "ios-iphone-content is-midi"}>
-      {connectionMode === "remote" ? <App key={connectionMode} /> : <IPhoneMidiController />}
+      {connectionMode === "remote" ? <ObservedApp key={connectionMode} remote={connectionMode === "remote"} /> : <IPhoneMidiController />}
     </div>
   </div>;
   if (platform.family === "ipad") return <IPadDriverStatus
@@ -82,9 +95,9 @@ function IosApp() {
     modeSwitching={modeSwitching}
     modeError={modeError}
     onConnectionModeChange={(mode) => void changeConnectionMode(mode)}>
-    <App key={connectionMode} />
+    <ObservedApp key={connectionMode} remote={connectionMode === "remote"} />
   </IPadDriverStatus>;
-  return <App />;
+  return <ObservedApp remote />;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><IosApp /></StrictMode>);

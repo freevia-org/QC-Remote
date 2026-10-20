@@ -1,3 +1,4 @@
+import { useDeviceObservationPolicy } from "./device-observation-policy.ts";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { PresetSnapshot } from "@qc-remote/client";
 import { adjacentPresetPosition, canAdoptNativeState, presetBoundaryDetail, type QcStompPreviewPolicy } from "@qc-remote/core";
@@ -46,6 +47,7 @@ function listenerKey(target: QcInteractionTarget): string {
 
 /** Shared realtime React controller used by every QC application shell. */
 export function useQcController(initialSnapshot: PresetSnapshot): QcController {
+  const passivePolling = useDeviceObservationPolicy().mode === "live";
   const [snapshot, commitReactSnapshot] = useState(initialSnapshot);
   const snapshotRef = useRef(initialSnapshot);
   const nativeSnapshotVersion = useRef(initialSnapshot.stateVersion);
@@ -124,11 +126,15 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
     reconciliationTimerRef.current = undefined;
   }, []);
 
+  useEffect(() => cancelAuthoritativeReconciliation(), [passivePolling, cancelAuthoritativeReconciliation]);
+
   const scheduleAuthoritativeReconciliation = useCallback((transport: QcDeviceTransport, forceOnce = false) => {
     cancelAuthoritativeReconciliation();
     const generation = reconciliationGenerationRef.current;
     let forceNext = forceOnce;
+    let readsRemaining = passivePolling ? Infinity : 1;
     const arm = (minimumDelay = 0): void => {
+      if (readsRemaining <= 0) return;
       const delay = coordinatorRef.current!.pendingReconciliationDelay();
       if ((delay === undefined && !forceNext) || generation !== reconciliationGenerationRef.current) return;
       const force = forceNext;
@@ -137,6 +143,7 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
         reconciliationTimerRef.current = undefined;
         if (generation !== reconciliationGenerationRef.current
           || (!force && coordinatorRef.current!.pendingReconciliationDelay() === undefined)) return;
+        readsRemaining--;
         const observationStartedAt = Date.now();
         try {
           const incoming = await transport.currentSnapshot();
@@ -151,7 +158,7 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
       }, Math.max(minimumDelay, delay === undefined ? 0 : delay + 1));
     };
     arm();
-  }, [acceptSnapshot, cancelAuthoritativeReconciliation]);
+  }, [acceptSnapshot, cancelAuthoritativeReconciliation, passivePolling]);
 
   const failCommand = useCallback((token: QcCommandToken) => {
     commitPreview((current) => coordinatorRef.current!.fail(current, token));
@@ -281,28 +288,34 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
     preview: () => QcCommandToken,
     send: (expected: PresetSnapshot) => Promise<QcCommandResult>
   ): Promise<QcCommandResult> => {
+    // Remote UI state is explicitly last-observed. Plan a user command from
+    // a fresh read, and verify its outcome directly rather than starting a poll.
+    if (!passivePolling) await readSnapshot(() => transport.currentSnapshot());
     const expected = snapshotRef.current;
     const token = preview();
     const operation = lifetime.begin(samePresetAddress(expected, snapshotRef.current) ? undefined : snapshotRef.current);
+    let readbackAttempted = false;
     try {
       const result = await send(expected);
       lifetime.assertCurrent(operation);
       if (result.snapshot) acceptSnapshot(result.snapshot);
       // A newer intent that superseded this one now rolls back to this result.
       const lateSuccess = coordinatorRef.current!.acknowledge(token);
-      if (coordinatorRef.current!.hasPendingCommands || lateSuccess) scheduleAuthoritativeReconciliation(transport, lateSuccess);
+      if (!passivePolling) { readbackAttempted = true; await readSnapshot(() => transport.currentSnapshot()); }
+      else if (coordinatorRef.current!.hasPendingCommands || lateSuccess) scheduleAuthoritativeReconciliation(transport, lateSuccess);
       return result;
     } catch (error) {
       lifetime.assertCurrent(operation);
       // The coordinator restores the device's authoritative value, never an
       // older optimistic one; any newer intent still pending is reconciled.
       commitPreview((current) => coordinatorRef.current!.fail(current, token));
-      if (coordinatorRef.current!.hasPendingCommands) scheduleAuthoritativeReconciliation(transport);
+      if (!passivePolling && !readbackAttempted) await readSnapshot(() => transport.currentSnapshot()).catch(() => undefined);
+      else if (passivePolling && coordinatorRef.current!.hasPendingCommands) scheduleAuthoritativeReconciliation(transport);
       throw error;
     } finally {
       lifetime.end(operation);
     }
-  }, [acceptSnapshot, commitPreview, lifetime, scheduleAuthoritativeReconciliation]);
+  }, [acceptSnapshot, commitPreview, lifetime, scheduleAuthoritativeReconciliation, passivePolling, readSnapshot]);
 
   const runScene = useCallback((transport: QcDeviceTransport, scene: number) => runCommand(transport,
     () => beginScene(scene),
@@ -328,11 +341,21 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
           while (chain.entries.length) {
             const entry = chain.entries[0];
             lifetime.follow(chain.operation, entry.target);
+            if (!passivePolling) {
+              const observed = await entry.transport.currentSnapshot();
+              lifetime.assertCurrent(chain.operation);
+              if (!samePresetAddress(observed, entry.expected)) throw new SupersededPresetOperation();
+              entry.expected = observed;
+            }
             const result = await entry.transport.movePreset(entry.delta, entry.expected);
             lifetime.assertCurrent(chain.operation);
+            if (!passivePolling) {
+              result.snapshot = await entry.transport.currentSnapshot();
+              lifetime.assertCurrent(chain.operation);
+            }
             if (result.snapshot) acceptSnapshot(result.snapshot);
             const lateSuccess = coordinatorRef.current!.acknowledge(entry.token);
-            if (coordinatorRef.current!.hasPendingCommands || lateSuccess) scheduleAuthoritativeReconciliation(entry.transport, lateSuccess);
+            if (passivePolling && (coordinatorRef.current!.hasPendingCommands || lateSuccess)) scheduleAuthoritativeReconciliation(entry.transport, lateSuccess);
             chain.entries.shift();
             entry.resolve(result);
             const nextEntry = chain.entries[0];
@@ -361,7 +384,7 @@ export function useQcController(initialSnapshot: PresetSnapshot): QcController {
       })();
     }
     return promise;
-  }, [acceptSnapshot, beginPresetMove, commitPreview, lifetime, scheduleAuthoritativeReconciliation]);
+  }, [acceptSnapshot, beginPresetMove, commitPreview, lifetime, scheduleAuthoritativeReconciliation, passivePolling]);
   const runModeSlot = useCallback((transport: QcDeviceTransport, slot: 0 | 1 | 2) => runCommand(transport,
     () => beginModeSlot(slot),
     (expected) => transport.selectModeSlot(slot, expected)

@@ -6,7 +6,7 @@ import { QC_SCENE_COUNT } from "@qc-remote/client";
 import { demoSnapshot, footswitchLeds, sceneLetter, type ControlAccessMode, type PublicRelayUsage } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_LEGAL, QC_LEGAL_DOCUMENTS, QC_VISUAL_ASSETS } from "@qc-remote/theme";
-import { captureGatewaySession, ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, isConnectingPlaceholder, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, qcHardwareSwitchGestureKey, QcUiIcon, readControlAccessMode, refreshGridSnapshot, serializeDemoLibrary, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, useQcFollowSetting, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting } from "@qc-remote/ui";
+import { captureGatewaySession, useDeviceObservationPolicy, ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, isConnectingPlaceholder, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, qcHardwareSwitchGestureKey, QcUiIcon, readControlAccessMode, refreshGridSnapshot, serializeDemoLibrary, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, useQcFollowSetting, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
 import { androidGatewayTransport, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage } from "./native-services";
 import { useAndroidPrompts } from "./use-android-prompts";
@@ -36,6 +36,8 @@ function AppMark({ onClick }: { onClick: () => void }) {
 }
 
 export function App() {
+  const observationPolicy = useDeviceObservationPolicy();
+  const [remoteRefreshPending, setRemoteRefreshPending] = useState(false);
   const native = Capacitor.isNativePlatform();
   const iosPlatform = Capacitor.getPlatform() === "ios";
   const qcController = useQcController(demoSnapshot);
@@ -336,9 +338,9 @@ export function App() {
     workflows: { grid: gridWorkflow, preset: presetWorkflow, deviceSettings: deviceSettingsWorkflow, tempo: tempoWorkflow, tuner: tunerWorkflow, ioEq: ioEqWorkflow, modes: modesWorkflow, routing: routingWorkflow, scene: sceneWorkflow }
   });
   useEffect(() => {
-    if (!sessionReady) return;
+    if (!sessionReady || observationPolicy.mode === "on-demand") return;
     void deviceSettingsWorkflow.refresh();
-  }, [deviceSettingsWorkflow.refresh, sessionReady]);
+  }, [deviceSettingsWorkflow.refresh, sessionReady, observationPolicy.mode]);
   // Live Expression 1/2 pedal assignment, ported from Windows (App.tsx's own
   // expressionWorkflow) - shared qc-ui code, unmodified. Previously
   // "Assign Expression Pedal" opened the retired GridManagementPanel, which
@@ -493,6 +495,8 @@ export function App() {
       if (!attempt.current()) return;
       usbSessionReady.current = true;
       setHardwareConnected(true);
+      if (observationPolicy.mode === "on-demand") await qcController.readSnapshot(() => androidGatewayTransport.currentSnapshot());
+      if (!attempt.current()) return;
       if (result.synchronized) presetSynchronized.current = true;
       transitionConnection(presetSynchronized.current ? "connected" : "syncing");
       if (!presetSynchronized.current && isConnectingPlaceholder(snapshotRef.current)) setSnapshot(connectingPlaceholderSnapshot("synchronizing"));
@@ -1039,8 +1043,26 @@ export function App() {
     pending: controlAccessChangePending, busy: devicePending
   });
 
+  const refreshRemoteObservation = async () => {
+    if (!observationPolicy.refresh || remoteRefreshPending) return;
+    setRemoteRefreshPending(true);
+    try {
+      await qcController.readSnapshot(observationPolicy.refresh);
+      setHardwareConnected(true);
+      presetSynchronized.current = true;
+      transitionConnection("connected");
+      setNotice("Remote snapshot refreshed. Further host changes require Refresh.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not refresh the remote host. The displayed state may be stale.");
+    } finally { setRemoteRefreshPending(false); }
+  };
+
   return <main className={`android-app${screenDimmed ? " screen-dimmed" : ""}`} onPointerDown={resetScreenDimmer} onKeyDown={resetScreenDimmer} onTouchStart={resetScreenDimmer}>
-    <header className="mobile-header">
+    <header className={`mobile-header${observationPolicy.mode === "on-demand" ? " has-demand-observation" : ""}`}>
+    {observationPolicy.mode === "on-demand" && <aside className="remote-observation-status" aria-label="Remote observation status">
+      <span>{observationPolicy.lastObservedAt ? `Last observed ${new Date(observationPolicy.lastObservedAt).toLocaleTimeString()}.` : "No remote snapshot observed yet."} Changes are not streamed; displayed state may be stale.</span>
+      <button type="button" disabled={remoteRefreshPending || devicePending} onClick={() => void refreshRemoteObservation()}>Refresh host state</button>
+    </aside>}
       <div className="mobile-brand"><AppMark onClick={() => setWorkflowPanel("about")} /><span><strong>{QC_BRAND.appName}</strong><small>v{appPackage.version}</small></span></div>
       <div className="connection-pills">
         <button className={`connection-pill phase-${remotePresentation.phase}`} onClick={() => void openRemoteStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "remote"} aria-label={`REMOTE ${remotePresentation.state}; open remote access details`}><i /> REMOTE</button>

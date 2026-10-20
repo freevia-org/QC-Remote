@@ -26,7 +26,7 @@ pub const DEVICE_CONNECT_PATH: &str = "/v1/device/connect";
 pub const DEVICE_REVOKE_PATH: &str = "/v1/device/revoke";
 pub const DEVICE_ROSTER_PATH: &str = "/v1/device/roster";
 pub const DEVICE_CONNECTORS_PATH: &str = "/v1/device/connectors";
-pub const CREDENTIAL_TTL_DAYS: u32 = 90;
+pub const CREDENTIAL_TTL_DAYS: u32 = 0;
 pub const MAXIMUM_INVOKE_DEADLINE_MS: u64 = 1800000;
 pub const HOST_APPROVAL_TIMEOUT_MS: u64 = 120000;
 /// Field names, already lowercased, removed from every result that leaves a
