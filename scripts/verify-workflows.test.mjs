@@ -734,7 +734,7 @@ test('CI gates native jobs on the change filter and rebuilds them on master to k
   // when the change filter says nothing native changed, and they run unless
   // `changes` succeeded and answered exactly 'false' (fail open).
   const nativeGate = "if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}";
-  const nativeJobs = ['rust', 'rust-msrv', 'rust-windows-app', 'quadcortex-linux', 'android'];
+  const nativeJobs = ['rust', 'rust-msrv', 'rust-windows-app-static', 'rust-windows-app-tests', 'quadcortex-linux', 'android'];
   for (const name of nativeJobs) {
     const body = bodyOf(name);
     assert.match(body, /^    needs: changes$/m, `${name} must depend on the change filter`);

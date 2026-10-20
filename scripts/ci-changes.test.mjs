@@ -176,3 +176,67 @@ test('CI result aggregates every other CI job so one required context cannot dea
   const listed = needs[1].trim().split('\n').map((line) => line.replace(/^\s*- /, ''));
   assert.deepEqual([...listed].sort(), jobs.filter((job) => job !== 'changes' && job !== 'ci-result').sort());
 });
+
+// The files the 0.1.189 / 0.3.39 release preparation (public PR #168) changed.
+// A version bump edits manifests, lockfiles, a Gradle file and a plist that the
+// native jobs read, so it must keep running every job; only a records-only
+// change may skip them.
+const VERSION_BUMP_FILES = [
+  'CHANGELOG.md',
+  'apps/android/android/app/build.gradle',
+  'apps/android/package.json',
+  'apps/windows/macos-broker/Info.plist',
+  'apps/windows/package.json',
+  'apps/windows/src-tauri/Cargo.lock',
+  'apps/windows/src-tauri/Cargo.toml',
+  'apps/windows/src-tauri/tauri.conf.json',
+  'package-lock.json',
+];
+
+test('a version bump still runs the native, TypeScript and relay jobs', () => {
+  const result = classify(VERSION_BUMP_FILES);
+  assert.equal(result.native, true);
+  assert.equal(result.typescript, true);
+  assert.equal(result.cloud, true);
+  // Each manifest alone keeps the jobs on; the changelog alone does not.
+  for (const file of VERSION_BUMP_FILES.filter((entry) => entry !== 'CHANGELOG.md')) {
+    assert.equal(classify(['CHANGELOG.md', file]).native, true, file);
+  }
+  assert.equal(classify(['CHANGELOG.md']).native, false);
+});
+
+test('the Windows app runs as parallel static and test jobs behind the unchanged required context', () => {
+  const ci = workflow('ci.yml');
+  const jobsText = ci.slice(ci.indexOf('\njobs:\n') + 7);
+  const bodyOf = (name) => {
+    const start = jobsText.indexOf(`\n  ${name}:\n`);
+    assert.notEqual(start, -1, `${name} is missing`);
+    const rest = jobsText.slice(start + 1);
+    const next = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
+    return next === -1 ? rest : rest.slice(0, next + 1);
+  };
+  const aggregate = bodyOf('rust-windows-app');
+  assert.match(aggregate, /^ {4}name: Windows app \(Rust backend\)$/m, 'the required context keeps its name');
+  assert.match(aggregate, /^ {4}needs:\n {6}- rust-windows-app-static\n {6}- rust-windows-app-tests$/m);
+  assert.match(aggregate, /^ {4}if: \$\{\{ !cancelled\(\) \}\}$/m, 'it must report even when a Windows job failed');
+  assert.match(aggregate, /\.result == "success" or \.result == "skipped"/);
+  assert.doesNotMatch(aggregate, /cargo|node scripts/, 'the aggregate does no build work');
+
+  const tests = bodyOf('rust-windows-app-tests');
+  assert.match(tests, /node scripts\/test-windows-native\.mjs --root \./);
+  // The test script builds the broker from the root workspace, so that target must be cached.
+  assert.match(tests, /workspaces: \|\n\s+\. -> target\n\s+apps\/windows\/src-tauri -> target/);
+  assert.match(tests, /shared-key: rust-windows-app$/m, 'the test job inherits the existing master cache key');
+
+  const stat = bodyOf('rust-windows-app-static');
+  for (const step of [
+    'cargo fmt --check',
+    'cargo check --locked',
+    'cargo build --locked --features tray-sidecar --bin qc-device-broker',
+    'cargo clippy --locked --all-targets --features tray-sidecar -- -D warnings',
+  ]) {
+    assert.ok(stat.includes(step), `static job must keep: ${step}`);
+  }
+  assert.doesNotMatch(stat, /test-windows-native\.mjs --root/, 'the native tests run in the tests job only');
+  assert.doesNotMatch(tests, /cargo clippy|cargo fmt|cargo check/, 'static checks run in the static job only');
+});
