@@ -35,6 +35,50 @@ const SERVER_NAME: &str = "QC Remote";
 /// resolves each through [`resource_request`].
 const BACKEND_RESOURCES: &[&str] = &["qc://status", "qc://current-preset", "qc://models"];
 
+const TARGET_GUARD: &str = "expectedBrokerTarget";
+
+fn target_guard_schema() -> Value {
+    json!({
+        "type":"object", "additionalProperties":false,
+        "required":["source","sessionId","generation"],
+        "properties":{
+            "source":{"type":"string","enum":["physical","demo"]},
+            "sessionId":{"type":"string","minLength":1,"maxLength":256},
+            "generation":{"type":"integer","minimum":1,"maximum":9007199254740991_u64}
+        },
+        "description":"Copy brokerTarget from the accepted status to keep this request on that target across queues and hot-plug."
+    })
+}
+
+fn target_guarded_tool(spec: &ActionSpec) -> Tool {
+    let mut tool = spec.tool();
+    let schema = Arc::make_mut(&mut tool.input_schema);
+    schema.get_mut("properties").and_then(Value::as_object_mut)
+        .expect("generated properties").insert(TARGET_GUARD.into(), target_guard_schema());
+    tool
+}
+
+fn take_target_guard(args: &mut Map<String, Value>) -> Result<Option<crate::BrokerTarget>, String> {
+    let Some(value) = args.remove(TARGET_GUARD) else { return Ok(None); };
+    let valid = value.as_object().is_some_and(|object| object.len() == 3)
+        && crate::schema::matches(&value, &target_guard_schema())
+        && value["sessionId"].as_str().is_some_and(|id| !id.trim().is_empty());
+    if !valid { return Err("invalid expectedBrokerTarget".into()); }
+    serde_json::from_value(value).map(Some).map_err(|_| "invalid expectedBrokerTarget".into())
+}
+
+fn stamp_target_guard_capability(rpc: &str, mut value: Value) -> Value {
+    if rpc == "system.status" && let Some(object) = value.as_object_mut() {
+        let capabilities = object.entry("capabilities").or_insert_with(|| json!([]));
+        if !capabilities.is_array() { *capabilities = json!([]); }
+        let values = capabilities.as_array_mut().expect("capability array");
+        if !values.iter().any(|value| value == "mcpBrokerTargetGuard") {
+            values.push(json!("mcpBrokerTargetGuard"));
+        }
+    }
+    value
+}
+
 /// Every backend-answered resource as `(uri, rpc)`, resolved exactly as
 /// `read_resource` resolves it, so a host or bridge that must tell resource
 /// reads apart derives the set from here rather than keeping its own list.
@@ -152,7 +196,7 @@ impl QcMcp {
     pub fn tools(&self) -> Vec<Tool> {
         ACTIONS
             .iter()
-            .map(ActionSpec::tool)
+            .map(target_guarded_tool)
             .chain(std::iter::once(device_knowledge_search_tool()))
             .collect()
     }
@@ -168,6 +212,7 @@ impl QcMcp {
             .find(|a| a.name == name)
             .ok_or_else(|| format!("unknown tool: {name}"))?;
         let mut args = arguments.unwrap_or_default();
+        let expected_broker_target = take_target_guard(&mut args)?;
         restore_stringified_nulls(spec, &mut args);
         validate(spec, &args)?;
         let model_query =
@@ -176,7 +221,7 @@ impl QcMcp {
         let params = gateway_params(spec, args);
         let result = self
             .backend
-            .request(route, spec.rpc, params)
+            .request_targeted(route, spec.rpc, params, expected_broker_target)
             .await
             .map_err(|error| {
                 let mut details = backend_error_details(&error);
@@ -184,7 +229,7 @@ impl QcMcp {
                 details.to_string()
             })?;
         validate_backend_result(spec.rpc, &result)?;
-        let result = sanitize_model_result(result);
+        let result = sanitize_model_result(stamp_target_guard_capability(spec.rpc, result));
         match model_query {
             Some(query) => filter_models(result, &query),
             None => Ok(result),
@@ -378,7 +423,7 @@ impl ServerHandler for QcMcp {
         ACTIONS
             .iter()
             .find(|a| a.name == name)
-            .map(ActionSpec::tool)
+            .map(target_guarded_tool)
     }
 
     async fn call_tool(
@@ -504,7 +549,7 @@ impl ServerHandler for QcMcp {
                     )
                 })?;
                 Ok(ReadResourceResult::new(vec![ResourceContents::text(
-                    sanitize_model_result(value).to_string(),
+                    sanitize_model_result(stamp_target_guard_capability(rpc, value)).to_string(),
                     request.uri,
                 )])
                 .into())
@@ -911,6 +956,75 @@ fn gateway_params(spec: &ActionSpec, args: Map<String, Value>) -> Map<String, Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_guard_is_optional_tool_metadata_without_mutating_generated_actions() {
+        let spec = ACTIONS.iter().find(|spec| spec.name == "get_current_preset").unwrap();
+        let tool = target_guarded_tool(spec);
+        assert!(tool.input_schema["properties"].get(TARGET_GUARD).is_some());
+        assert!(!tool.input_schema["required"].as_array().unwrap().contains(&json!(TARGET_GUARD)));
+        assert!(spec.parsed_input_schema()["properties"].get(TARGET_GUARD).is_none());
+        let status = stamp_target_guard_capability("system.status", json!({"capabilities":["nativeBroker"]}));
+        let repeated = stamp_target_guard_capability("system.status", status.clone());
+        assert_eq!(status, repeated);
+        assert_eq!(status["capabilities"], json!(["nativeBroker", "mcpBrokerTargetGuard"]));
+    }
+
+    struct TargetBackend(std::sync::Mutex<Vec<(Map<String, Value>, Option<crate::BrokerTarget>)>>);
+
+    #[async_trait::async_trait]
+    impl QcBackend for TargetBackend {
+        async fn request(&self, _: &PrincipalRoute, _: &'static str, _: Map<String, Value>) -> Result<Value, BackendError> {
+            panic!("target-aware calls must use request_targeted")
+        }
+        async fn request_targeted(&self, _: &PrincipalRoute, _: &'static str, params: Map<String, Value>, target: Option<crate::BrokerTarget>) -> Result<Value, BackendError> {
+            self.0.lock().unwrap().push((params, target));
+            Ok(json!({"presetName":"Demo", "blocks":[]}))
+        }
+    }
+
+    #[tokio::test]
+    async fn accepted_target_reaches_backend_separately_and_malformed_guards_run_nothing() {
+        let backend = Arc::new(TargetBackend(std::sync::Mutex::new(Vec::new())));
+        let server = QcMcp::new(backend.clone());
+        let route = PrincipalRoute::new("fixture", "device");
+        let target = json!({"source":"demo", "sessionId":"broker-1:demo-1", "generation":1});
+        let args = json!({"expectedBrokerTarget":target});
+        server.execute(&route, "get_current_preset", Some(args.as_object().unwrap().clone())).await.unwrap();
+        let calls = backend.0.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].0.is_empty());
+        assert_eq!(serde_json::to_value(&calls[0].1).unwrap(), target);
+        drop(calls);
+        for malformed in [Value::Null, json!({}), json!({"source":"demo", "sessionId":" ", "generation":1}),
+            json!({"source":"demo", "sessionId":"x", "generation":0}),
+            json!({"source":"unknown", "sessionId":"x", "generation":1}),
+            json!({"source":"demo", "sessionId":"x", "generation":1, "extra":true})] {
+            let args = json!({"expectedBrokerTarget":malformed});
+            assert!(server.execute(&route, "get_current_preset", Some(args.as_object().unwrap().clone())).await.unwrap_err().contains("expectedBrokerTarget"));
+        }
+        assert_eq!(backend.0.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_backend_accepts_old_calls_but_never_silently_drops_a_target_guard() {
+        struct Legacy(std::sync::atomic::AtomicUsize);
+        #[async_trait::async_trait]
+        impl QcBackend for Legacy {
+            async fn request(&self, _: &PrincipalRoute, _: &'static str, _: Map<String, Value>) -> Result<Value, BackendError> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(json!({"presetName":"Legacy physical", "blocks":[]}))
+            }
+        }
+        let backend = Arc::new(Legacy(std::sync::atomic::AtomicUsize::new(0)));
+        let server = QcMcp::new(backend.clone());
+        let route = PrincipalRoute::new("fixture", "device");
+        let args = json!({"expectedBrokerTarget":{"source":"demo","sessionId":"demo-1","generation":1}});
+        assert!(server.execute(&route, "get_current_preset", Some(args.as_object().unwrap().clone())).await.is_err());
+        assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        server.execute(&route, "get_current_preset", None).await.unwrap();
+        assert_eq!(backend.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     struct RefusalBackend {
         code: Option<&'static str>,
