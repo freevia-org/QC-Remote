@@ -14,6 +14,12 @@ on:
       - "LICENSE-MIT"
       - "LICENSE-APACHE"
       - "LICENSES/**"
+      - "skills/qc-device-knowledge/LICENSE"
+      - "skills/qc-device-knowledge/LICENSE-MIT"
+      - "skills/qc-device-knowledge/LICENSE-APACHE"
+      - "skills/qc-device-knowledge/LICENSES/**"
+      - "skills/qc-device-knowledge/legal/**"
+      - "skills/qc-device-knowledge/THIRD_PARTY-NOTICES.md"
   push:
     branches: [master]
   workflow_dispatch:

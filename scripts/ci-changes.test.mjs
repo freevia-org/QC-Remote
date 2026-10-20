@@ -35,6 +35,9 @@ test('legal records are safe: the Rust code only embeds their bytes', () => {
     'LICENSE-APACHE',
     'LICENSES/LicenseRef-QC-Remote-Reference.txt',
     'THIRD_PARTY-NOTICES.md',
+    'skills/qc-device-knowledge/LICENSE',
+    'skills/qc-device-knowledge/legal/THIRD_PARTY-LICENSE-TEXTS.txt',
+    'skills/qc-device-knowledge/THIRD_PARTY-NOTICES.md',
   ]) assert.equal(isSafePath(file), true, file);
 });
 
@@ -84,7 +87,9 @@ test('anything that can feed a native build is not safe', () => {
     'apps/windows/src-tauri/tauri.conf.json',
     'scripts/verify-license-carveout.mjs',
     'scripts/verify-third-party-notices.mjs',
-    'skills/qc-device-knowledge/LICENSE',
+    'skills/qc-device-knowledge/SKILL.md',
+    'skills/qc-device-knowledge/references/data/qc-model-lineage.json',
+    'skills/qc-device-knowledge/CONTRIBUTING.md',
     'apps/windows/src-tauri/src/lib.rs',
     'apps/windows/src/App.tsx',
     'apps/android/android/app/build.gradle',

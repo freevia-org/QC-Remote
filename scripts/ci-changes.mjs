@@ -37,6 +37,11 @@
 //     to the inventory/notices verifier. Changing WHICH legal file is bundled
 //     means editing device_knowledge_skill.rs, tauri.conf.json or
 //     verify-license-carveout.mjs, none of which is a safe path.
+//   * The device-knowledge skill carries byte copies of the same legal files
+//     (skills/qc-device-knowledge/{LICENSE*,LICENSES,legal,THIRD_PARTY-NOTICES.md});
+//     the Rust shell embeds them as bytes too and verify-license-carveout.mjs
+//     keeps them identical to the originals. SKILL.md and the rest of skills/**
+//     stay unsafe: a Rust test asserts on their content.
 //   * Neither the Cloud relay (services/qc-remote-cloud plus qc-theme) nor the
 //     Rust jobs read any of the above, so the Cloud relay is skipped for them.
 //   * TypeScript is skipped only for markdown-only changes: tests read
@@ -61,6 +66,12 @@ export const SAFE_GLOBS = [
   'LICENSE-MIT',
   'LICENSE-APACHE',
   'LICENSES/**',
+  'skills/qc-device-knowledge/LICENSE',
+  'skills/qc-device-knowledge/LICENSE-MIT',
+  'skills/qc-device-knowledge/LICENSE-APACHE',
+  'skills/qc-device-knowledge/LICENSES/**',
+  'skills/qc-device-knowledge/legal/**',
+  'skills/qc-device-knowledge/THIRD_PARTY-NOTICES.md',
 ];
 
 // Matched files that are nevertheless never safe.
