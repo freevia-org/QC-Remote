@@ -38,3 +38,7 @@ export function deviceReadiness(frame: Record<string, unknown>): DeviceReadiness
 export function sameBrokerTarget(left: BrokerTarget | undefined, right: BrokerTarget | undefined): boolean {
   return left?.source === right?.source && left?.sessionId === right?.sessionId && left?.generation === right?.generation;
 }
+
+export function assertBrokerTarget(expected: BrokerTarget | undefined, current: BrokerTarget | undefined): void {
+  if (!sameBrokerTarget(expected, current)) throw new Error("The selected broker target changed before dispatch; read its current state before starting another operation.");
+}

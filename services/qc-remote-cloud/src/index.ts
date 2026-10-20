@@ -15,7 +15,7 @@ import { commandDeadlineMs, deadlineExceededMessage, innerBudgetMs } from "./dev
 import { LateResultLog } from "./late-results.ts";
 import { selectDeviceHost } from "./device-selection.ts";
 import { decodeDeviceMessage } from "./device-messages.ts";
-import { deviceReadiness, sameBrokerTarget, type BrokerTarget } from "./device-readiness.ts";
+import { assertBrokerTarget, deviceReadiness, sameBrokerTarget, type BrokerTarget } from "./device-readiness.ts";
 import { deviceInvocationError, deviceInvocationToolError, deviceResourceRead, deviceToolCall } from "./device-errors.ts";
 import { sanitizePublicResult } from "./public-result.ts";
 import { applyWorkerInputs } from "./model-query.ts";
@@ -68,7 +68,7 @@ type PairingMetadata = { email: string; device: string; pairedAt: number };
  * retention is measured from it (device-retention.ts). */
 /** `replaces` is a re-pair's pending predecessor (device-retention.ts). */
 type DeviceRecord = { credentialHash: string; name: string; pairedAt: number; expiresAt?: number | null; lastUsedAt?: number; identityProvider: "google"; pairing?: PairingMetadata; replaces?: PendingReplacement; replacedDeviceId?: string };
-type PendingCommand = { socket: WebSocket; method: string; resolve: (value: Json) => void; reject: (reason: Error) => void; timeout: ReturnType<typeof setTimeout> };
+type PendingCommand = { socket: WebSocket; method: string; expectedBrokerTarget?: BrokerTarget; resolve: (value: Json) => void; reject: (reason: Error) => void; timeout: ReturnType<typeof setTimeout> };
 type PairingDirectory = { owner: string; expiresAt: number; pairing?: PairingMetadata };
 type DeviceDirectory = { owner: string };
 /** `remaining` is the account's device count after the removal, which only the
@@ -1290,6 +1290,7 @@ export class DeviceSession extends DurableObject<Env> {
     const origin: InvokeOrigin | undefined = payload.origin === RESOURCE_READ_ORIGIN ? RESOURCE_READ_ORIGIN : undefined;
     if (!method) throw new Error("A device method is required");
     const socket = selectDeviceHost(this.ctx.getWebSockets(), method);
+    const expectedBrokerTarget = (socket.deserializeAttachment() as DeviceAttachment).brokerTarget;
     const day = new Date().toISOString().slice(0, 10);
     // A daily activity marker is enough for the owner-facing usage display.
     // Updating it for every command would turn normal use into storage-write
@@ -1310,31 +1311,32 @@ export class DeviceSession extends DurableObject<Env> {
       // This worker is generated from one gateway API version and every paired
       // host runs whatever build is installed on it. Send an older host only
       // what it accepts, and check here any guard it cannot receive.
-      const adapted = adaptForHost(method, params, await this.hostGatewayApiVersion(socket));
+      const adapted = adaptForHost(method, params, await this.hostGatewayApiVersion(socket, expectedBrokerTarget));
       request = adapted.params;
       if (adapted.modelGuard) {
-        const details = await this.dispatch(socket, action, "device.blockDetails", adapted.modelGuard.detailsParams, origin);
+        const details = await this.dispatch(socket, action, "device.blockDetails", adapted.modelGuard.detailsParams, origin, expectedBrokerTarget);
         const failure = legacyModelGuardFailure(adapted.modelGuard, details);
         if (failure) throw new Error(failure);
       }
       if (!this.ctx.getWebSockets().includes(socket)) throw new Error("The selected device host disconnected before dispatch");
     }
-    return this.dispatch(socket, action, method, request, origin);
+    return this.dispatch(socket, action, method, request, origin, expectedBrokerTarget);
   }
 
   /** The gateway API version the host behind `socket` reports, asked once per connection. */
-  private async hostGatewayApiVersion(socket: WebSocket): Promise<number> {
+  private async hostGatewayApiVersion(socket: WebSocket, expectedBrokerTarget?: BrokerTarget): Promise<number> {
     const known = (socket.deserializeAttachment() as DeviceAttachment | null)?.gatewayApiVersion;
     if (typeof known === "number") return known;
-    const version = reportedGatewayApiVersion(await this.dispatch(socket, "get_status", "system.status", {}));
+    const version = reportedGatewayApiVersion(await this.dispatch(socket, "get_status", "system.status", {}, undefined, expectedBrokerTarget));
     const attachment = socket.deserializeAttachment() as DeviceAttachment | null;
     if (attachment) socket.serializeAttachment({ ...attachment, gatewayApiVersion: version });
     return version;
   }
 
   /** Send one request to one host and wait for its answer. */
-  private async dispatch(socket: WebSocket, action: string, method: string, params: Json, origin?: InvokeOrigin): Promise<Json> {
+  private async dispatch(socket: WebSocket, action: string, method: string, params: Json, origin?: InvokeOrigin, expectedBrokerTarget?: BrokerTarget): Promise<Json> {
     if (!await this.deviceSocketValid(socket)) throw new Error("The selected device host credential expired or disconnected before dispatch");
+    assertBrokerTarget(expectedBrokerTarget, (socket.deserializeAttachment() as DeviceAttachment | null)?.brokerTarget);
     // The deadline is the one this method's own local verification needs. A
     // single shared number expired every long workflow early and reported it as
     // a device that had not answered.
@@ -1348,13 +1350,13 @@ export class DeviceSession extends DurableObject<Env> {
         void this.persistLateResults().catch(() => console.warn("Could not persist late device-result evidence"));
         reject(new Error(deadlineExceededMessage(method, gatewayApiVersion)));
       }, deadline);
-      this.pending.set(requestId, { socket, method, resolve, reject, timeout });
+      this.pending.set(requestId, { socket, method, expectedBrokerTarget, resolve, reject, timeout });
     });
     try {
       // Tell the host how long this call has. `innerBudgetMs` is the host's own
       // share of the deadline, without the transport margin the worker keeps for
       // itself, so a host that honours it always answers inside `deadline`.
-      socket.send(JSON.stringify({ type: "invoke", id: requestId, action, method, params, deadlineMs: innerBudgetMs(method), ...(origin ? { origin } : {}) }));
+      socket.send(JSON.stringify({ type: "invoke", id: requestId, action, method, params, deadlineMs: innerBudgetMs(method), ...(origin ? { origin } : {}), ...(expectedBrokerTarget ? { expectedBrokerTarget } : {}) }));
     } catch {
       const pending = this.pending.get(requestId)!;
       clearTimeout(pending.timeout);
@@ -1443,6 +1445,10 @@ export class DeviceSession extends DurableObject<Env> {
       if (pending.socket !== socket) return;
       clearTimeout(pending.timeout);
       this.pending.delete(parsed.id);
+      if (!sameBrokerTarget(pending.expectedBrokerTarget, attachment.brokerTarget)) {
+        pending.reject(new Error("The selected broker target changed while the operation was pending; inspect current state before repeating it."));
+        return;
+      }
       if (parsed.ok === true) pending.resolve(sanitizePublicResult(typeof parsed.result === "object" && parsed.result !== null ? parsed.result as Json : { result: parsed.result }));
       else {
         const failure = parsed.error as Json | undefined;

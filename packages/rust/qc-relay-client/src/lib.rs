@@ -140,6 +140,27 @@ fn readiness_changes_follow_target_identity_without_repeated_idle_frames() {
     assert_eq!(frame["brokerTarget"]["generation"], 3);
 }
 
+#[tokio::test]
+async fn adapters_without_target_pinning_refuse_guarded_calls_before_effects() {
+    struct Adapter(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl DeviceAdapter for Adapter {
+        async fn ready(&self) -> bool { true }
+        async fn invoke(&self, _method: &str, _params: Value) -> Result<Value, DeviceError> {
+            self.0.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(json!({}))
+        }
+    }
+    let adapter = Adapter(std::sync::atomic::AtomicUsize::new(0));
+    let target = BrokerTarget { source: BrokerTargetSource::Demo, session_id: "demo-1".into(), generation: 1 };
+    let error = adapter.invoke_targeted("device.setMasterVolume", json!({}), Some(target), false).await.unwrap_err();
+    assert_eq!(error.code, "BROKER_TARGET_UNSUPPORTED");
+    assert_eq!(error.details.unwrap()["requestSent"], false);
+    assert_eq!(adapter.0.load(AtomicOrdering::SeqCst), 0);
+    adapter.invoke_targeted("device.setMasterVolume", json!({}), None, false).await.unwrap();
+    assert_eq!(adapter.0.load(AtomicOrdering::SeqCst), 1);
+}
+
 const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const SOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -383,6 +404,26 @@ pub trait DeviceAdapter: Send + Sync + 'static {
         TargetReadiness { target_ready: ready, usb_connected: ready, broker_target: None }
     }
     async fn invoke(&self, method: &str, params: Value) -> Result<Value, DeviceError>;
+    /// A target-aware adapter must pin this identity through its native queue.
+    /// Never silently drop a target guard on an adapter that cannot enforce it.
+    async fn invoke_targeted(
+        &self,
+        method: &str,
+        params: Value,
+        expected_broker_target: Option<BrokerTarget>,
+        resource_read: bool,
+    ) -> Result<Value, DeviceError> {
+        if expected_broker_target.is_some() {
+            let mut error = DeviceError::new("BROKER_TARGET_UNSUPPORTED", "This host cannot enforce the selected broker target; update the host before controlling it.", false);
+            error.details = Some(Box::new(json!({"requestSent": false})));
+            return Err(error);
+        }
+        if resource_read {
+            self.invoke_resource_read(method, params).await
+        } else {
+            self.invoke(method, params).await
+        }
+    }
     /// A policy source that is authoritative for this serving adapter. Hosts
     /// with cross-process settings should override this and read their
     /// request-time policy here; older adapters keep the connection's watch
@@ -980,6 +1021,7 @@ async fn invoke_with_deadline(
     params: Value,
     deadline_ms: Option<u64>,
     received_at: Instant,
+    expected_broker_target: Option<BrokerTarget>,
     resource_read: bool,
     invoking: &AtomicBool,
 ) -> Result<Value, DeviceError> {
@@ -998,13 +1040,7 @@ async fn invoke_with_deadline(
         return Err(error);
     };
     invoking.store(true, AtomicOrdering::Release);
-    let call = async {
-        if resource_read {
-            adapter.invoke_resource_read(method, params).await
-        } else {
-            adapter.invoke(method, params).await
-        }
-    };
+    let call = adapter.invoke_targeted(method, params, expected_broker_target, resource_read);
     match tokio::time::timeout(remaining, call).await {
         Ok(result) => result,
         Err(_) => Err(admitted_request_failure(
@@ -1309,7 +1345,7 @@ impl Client {
                             }
                             continue;
                         }
-                        let DeviceFrame::Invoke { id, action: _, method, params, deadline_ms, origin } = frame else { return Err(()); };
+                        let DeviceFrame::Invoke { id, action: _, method, params, deadline_ms, origin, expected_broker_target } = frame else { return Err(()); };
                         // Only narrows: the relay's MCP ingress marks a resource read.
                         let resource_read = origin.as_deref() == Some(qc_relay_protocol::RESOURCE_READ_ORIGIN);
                         let response = if id.is_empty() || id.len() > 128 {
@@ -1346,6 +1382,7 @@ impl Client {
                                     params,
                                     deadline_ms,
                                     received_at,
+                                    expected_broker_target,
                                     resource_read,
                                     &invoking,
                                 );
@@ -1617,6 +1654,7 @@ mod tests {
                 json!({}),
                 Some(20),
                 Instant::now(),
+                None,
                 false,
                 &invoking,
             )

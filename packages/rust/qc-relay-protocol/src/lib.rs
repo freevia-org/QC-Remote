@@ -94,6 +94,9 @@ pub enum DeviceFrame {
         method: String,
         #[serde(default)]
         params: Value,
+        /// Pin the target selected by cloud admission, across network/local queues.
+        #[serde(rename = "expectedBrokerTarget", default, skip_serializing_if = "Option::is_none")]
+        expected_broker_target: Option<BrokerTarget>,
         /// How long the relay will wait for this call, in milliseconds.
         ///
         /// The relay derives this per method from the host's own timing
@@ -184,6 +187,12 @@ mod tests {
         assert_eq!(encoded["targetReady"], true);
         assert_eq!(encoded["brokerTarget"]["source"], "demo");
         assert_eq!(encoded["brokerTarget"]["generation"], 3);
+        let invoke: DeviceFrame = serde_json::from_value(serde_json::json!({
+            "type": "invoke", "id": "pinned", "action": "set_master_volume",
+            "method": "device.setMasterVolume", "params": {"value": 0.1},
+            "expectedBrokerTarget": encoded["brokerTarget"]
+        })).unwrap();
+        assert_eq!(serde_json::to_value(invoke).unwrap()["expectedBrokerTarget"], encoded["brokerTarget"]);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deviceReadiness, sameBrokerTarget } from "../src/device-readiness.ts";
+import { assertBrokerTarget, deviceReadiness, sameBrokerTarget } from "../src/device-readiness.ts";
 import { selectDeviceHost } from "../src/device-selection.ts";
 
 const demo = { source: "demo" as const, sessionId: "broker-1:demo-1", generation: 1 };
@@ -27,6 +27,15 @@ test("target switch metadata survives even when both targets stay ready", () => 
   assert.equal(sameBrokerTarget(resumed.brokerTarget, { ...demo, generation: 3 }), true);
   assert.equal(sameBrokerTarget(first.brokerTarget, undefined), false);
   assert.equal(sameBrokerTarget(undefined, undefined), true);
+});
+
+test("queued commands retain their admitted target across switches and ABA returns", () => {
+  assert.doesNotThrow(() => assertBrokerTarget(undefined, undefined));
+  assert.doesNotThrow(() => assertBrokerTarget(demo, { ...demo }));
+  assert.throws(() => assertBrokerTarget(demo, physical), /target changed/);
+  assert.throws(() => assertBrokerTarget(demo, { ...demo, generation: 3 }), /target changed/);
+  assert.throws(() => assertBrokerTarget(demo, undefined), /target changed/);
+  assert.throws(() => assertBrokerTarget(undefined, demo), /target changed/);
 });
 
 test("malformed target metadata cannot become a ready broker target", () => {

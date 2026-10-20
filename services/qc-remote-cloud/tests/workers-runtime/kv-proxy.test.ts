@@ -46,10 +46,12 @@ describe("MCP admission with presence in one RPC", () => {
     const host = upgraded.webSocket!;
     host.accept();
     const invocations: string[] = [];
+    const targetGuards: unknown[] = [];
     host.addEventListener("message", (event) => {
-      const frame = JSON.parse(String(event.data)) as { type: string; id: string; method: string };
+      const frame = JSON.parse(String(event.data)) as { type: string; id: string; method: string; expectedBrokerTarget?: unknown };
       if (frame.type !== "invoke") return;
       invocations.push(frame.method);
+      targetGuards.push(frame.expectedBrokerTarget);
       host.send(JSON.stringify({ type: "result", id: frame.id, ok: true, result: { tempo: 120 } }));
     });
     try {
@@ -70,6 +72,7 @@ describe("MCP admission with presence in one RPC", () => {
         await expect(instance.command({ method: "device.setTempo", params: { tempo: 122 } }, 0)).rejects.toThrow();
       });
       expect(invocations).toEqual(["device.setTempo"]);
+      expect(targetGuards).toEqual([readiness.brokerTarget]);
     } finally { host.close(1000, "Test complete"); }
   });
 
