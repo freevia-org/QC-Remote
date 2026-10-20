@@ -20,6 +20,16 @@ on:
       - "skills/qc-device-knowledge/LICENSES/**"
       - "skills/qc-device-knowledge/legal/**"
       - "skills/qc-device-knowledge/THIRD_PARTY-NOTICES.md"
+      - "services/qc-remote-cloud/src/**/*.ts"
+      - "services/qc-remote-cloud/tests/**/*.ts"
+      - "services/qc-remote-cloud/scripts/**/*.mjs"
+      - "services/qc-remote-cloud/wrangler.jsonc"
+      - "services/qc-remote-cloud/wrangler.*.jsonc"
+      - "services/qc-remote-cloud/worker-configuration.d.ts"
+      - "services/qc-remote-cloud/tsconfig.json"
+      - "services/qc-remote-cloud/tsconfig.*.json"
+      - "services/qc-remote-cloud/vitest.*.config.ts"
+      - "services/qc-remote-cloud/README.md"
   push:
     branches: [master]
   workflow_dispatch:
@@ -42,9 +52,29 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The same classifier ci.yml uses, for the one case paths-ignore cannot
+  # express: a services/qc-remote-cloud/package.json diff that changes only
+  # non-lifecycle scripts (decided by reading the file before and after). Any
+  # error or skip makes both jobs below run.
+  changes:
+    name: Select Linux jobs
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      native: ${{ steps.filter.outputs.native }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - id: filter
+        run: node scripts/ci-changes.mjs
+
   native-linux:
     name: Headless broker on native Linux
-    if: github.event_name != 'workflow_dispatch'
+    # `changes` runs on pull requests only; on push it is skipped, which runs this job.
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'workflow_dispatch' && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -93,7 +123,9 @@ jobs:
 
   linux-desktop-host:
     name: Linux Tauri host and resident tray
-    if: github.event_name != 'workflow_dispatch'
+    # `changes` runs on pull requests only; on push it is skipped, which runs this job.
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'workflow_dispatch' && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:

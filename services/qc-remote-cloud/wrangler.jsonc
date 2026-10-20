@@ -37,6 +37,12 @@
 	// missing; local dev without one proceeds unlimited.
 	"ratelimits": [
 		{
+			// Bound MCP polling before any OAuth KV or Durable Object work.
+			"name": "QCRC_MCP_RATE_LIMIT",
+			"namespace_id": "41003",
+			"simple": { "limit": 60, "period": 60 }
+		},
+		{
 			// POST /v1/host/pairing-sessions, /pair/sign-in, /pair/cancel,
 			// /v1/device/pair and /v1/device/pair/replace-v1,
 			// each route counted separately per address.

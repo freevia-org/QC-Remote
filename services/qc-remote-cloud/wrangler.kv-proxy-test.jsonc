@@ -23,6 +23,7 @@
     { "tag": "v1", "new_sqlite_classes": ["DeviceSession"] }
   ],
   "ratelimits": [
+    { "name": "QCRC_MCP_RATE_LIMIT", "namespace_id": "41003", "simple": { "limit": 60, "period": 60 } },
     { "name": "QCRC_OAUTH_RATE_LIMIT", "namespace_id": "41002", "simple": { "limit": 30, "period": 60 } },
     { "name": "QCRC_PAIRING_RATE_LIMIT", "namespace_id": "41001", "simple": { "limit": 10, "period": 60 } }
   ]

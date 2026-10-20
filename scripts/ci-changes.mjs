@@ -44,11 +44,24 @@
 //     stay unsafe: a Rust test asserts on their content.
 //   * Neither the Cloud relay (services/qc-remote-cloud plus qc-theme) nor the
 //     Rust jobs read any of the above, so the Cloud relay is skipped for them.
+//   * The Cloud relay Worker sources (CLOUD_ONLY_GLOBS below) are native
+//     independent: no Rust crate, Gradle file, Tauri config, script run by a
+//     native job, or iOS/macOS/Linux workflow reads, compiles, embeds or tests
+//     anything under services/qc-remote-cloud. Its only consumers are the
+//     `TypeScript packages and apps` job (qc-core's mcp-adapter test imports
+//     action-projection.ts and reads index.ts; contracts:check loads
+//     device-deadlines.ts) and the `Cloud relay` job, both of which still run
+//     for such a diff. The rest of the directory is NOT listed: package.json is
+//     an npm workspace manifest that `npm ci` in the Android job validates
+//     against the root lockfile, so it counts only when the diff provably
+//     changes nothing but non-lifecycle `scripts` entries
+//     (isCloudScriptsOnlyEdit); a Cargo.toml, .rs file or any file type not
+//     listed keeps every job on.
 //   * TypeScript is skipped only for markdown-only changes: tests read
 //     docs/reference/*.json, the vite legal-assets plugin reads legal/**, and
 //     qc-ui sources are what that job builds.
 //
-// The native globs are mirrored as `paths-ignore` in linux-broker.yml; the unit
+// NATIVE_SKIP_GLOBS are mirrored as `paths-ignore` in linux-broker.yml; the unit
 // test pins that the two lists are identical.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -73,6 +86,59 @@ export const SAFE_GLOBS = [
   'skills/qc-device-knowledge/legal/**',
   'skills/qc-device-knowledge/THIRD_PARTY-NOTICES.md',
 ];
+
+// services/qc-remote-cloud files no native job can observe (see the header).
+// Only these file kinds, in these directories: everything else under the
+// service stays default-run.
+export const CLOUD_ONLY_GLOBS = [
+  'services/qc-remote-cloud/src/**/*.ts',
+  'services/qc-remote-cloud/tests/**/*.ts',
+  'services/qc-remote-cloud/scripts/**/*.mjs',
+  'services/qc-remote-cloud/wrangler.jsonc',
+  'services/qc-remote-cloud/wrangler.*.jsonc',
+  'services/qc-remote-cloud/worker-configuration.d.ts',
+  'services/qc-remote-cloud/tsconfig.json',
+  'services/qc-remote-cloud/tsconfig.*.json',
+  'services/qc-remote-cloud/vitest.*.config.ts',
+  'services/qc-remote-cloud/README.md',
+];
+
+// What linux-broker.yml mirrors as `pull_request.paths-ignore`: a path none of
+// the native jobs and workflows can observe.
+export const NATIVE_SKIP_GLOBS = [...SAFE_GLOBS, ...CLOUD_ONLY_GLOBS];
+
+export const CLOUD_PACKAGE_JSON = 'services/qc-remote-cloud/package.json';
+// npm runs these around install/pack/publish (and `npm run build --workspaces`
+// runs build): editing one is not a "scripts only" edit.
+const LIFECYCLE_SCRIPT = /^(?:pre|post)?(?:install|prepare|prepublish|prepublishOnly|publish|pack|build|version|dependencies|uninstall|shrinkwrap)$/;
+
+/**
+ * True only when before/after are both valid JSON objects that are identical
+ * except for `scripts` entries, and no added, removed or changed script is an
+ * npm lifecycle script. Anything else (parse failure, new or deleted file,
+ * dependency, version, name, overrides, workspaces, files edits) is false.
+ */
+export function isCloudScriptsOnlyEdit(beforeText, afterText) {
+  let before;
+  let after;
+  try {
+    before = JSON.parse(beforeText);
+    after = JSON.parse(afterText);
+  } catch {
+    return false;
+  }
+  const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (!isObject(before) || !isObject(after)) return false;
+  const { scripts: scriptsBefore = {}, ...restBefore } = before;
+  const { scripts: scriptsAfter = {}, ...restAfter } = after;
+  if (!isObject(scriptsBefore) || !isObject(scriptsAfter)) return false;
+  if (JSON.stringify(restBefore) !== JSON.stringify(restAfter)) return false;
+  const names = new Set([...Object.keys(scriptsBefore), ...Object.keys(scriptsAfter)]);
+  for (const name of names) {
+    if (scriptsBefore[name] !== scriptsAfter[name] && LIFECYCLE_SCRIPT.test(name)) return false;
+  }
+  return true;
+}
 
 // Matched files that are nevertheless never safe.
 export const UNSAFE_EXCEPTIONS = [];
@@ -106,11 +172,17 @@ export function globToRegExp(glob) {
 
 const SAFE_PATTERNS = SAFE_GLOBS.map(globToRegExp);
 const MARKDOWN_PATTERNS = MARKDOWN_ONLY_GLOBS.map(globToRegExp);
+const CLOUD_ONLY_PATTERNS = CLOUD_ONLY_GLOBS.map(globToRegExp);
 
 export function isSafePath(file) {
   if (UNSAFE_EXCEPTIONS.includes(file)) return false;
   if (file.split('/').includes('node_modules')) return false;
   return SAFE_PATTERNS.some((pattern) => pattern.test(file));
+}
+
+export function isCloudOnlyPath(file) {
+  if (file.split('/').includes('node_modules')) return false;
+  return CLOUD_ONLY_PATTERNS.some((pattern) => pattern.test(file));
 }
 
 export function isMarkdownOnlyPath(file) {
@@ -122,26 +194,36 @@ export function isMarkdownOnlyPath(file) {
 const RUN_EVERYTHING = { native: true, typescript: true, cloud: true };
 
 /**
+ * @param {string[]} files
+ * @param {{ cloudPackageJsonEdit?: (file: string) => boolean }} [context]
+ *   `cloudPackageJsonEdit` answers whether the diff of services/qc-remote-cloud/package.json
+ *   is a scripts-only edit; without it that file is never skippable (fail closed).
  * @returns {{ native: boolean, typescript: boolean, cloud: boolean, reason: string }}
  *   Every job runs unless its skip set covers every changed file.
  */
-export function classify(files) {
+export function classify(files, context = {}) {
   if (!Array.isArray(files) || files.length === 0) {
     return { ...RUN_EVERYTHING, reason: 'no changed files could be listed' };
   }
-  const unsafe = files.filter((file) => !isSafePath(file));
+  const nativeFree = (file) =>
+    isSafePath(file) ||
+    isCloudOnlyPath(file) ||
+    (file === CLOUD_PACKAGE_JSON && context.cloudPackageJsonEdit?.(file) === true);
+  const unsafe = files.filter((file) => !nativeFree(file));
   if (unsafe.length > 0) {
     const shown = unsafe.slice(0, 5).join(', ');
     const more = unsafe.length > 5 ? ', ...' : '';
     return { ...RUN_EVERYTHING, reason: `${unsafe.length} changed file(s) outside the safe set: ${shown}${more}` };
   }
-  // Every changed file is in the safe set: no Rust, Android or relay input changed.
+  // Every changed file is native independent: no Rust, Android, Tauri or iOS
+  // input changed. The relay still runs when any file is not a plain safe path.
   const typescript = !files.every(isMarkdownOnlyPath);
+  const cloud = !files.every(isSafePath);
   return {
     native: false,
     typescript,
-    cloud: false,
-    reason: `all ${files.length} changed file(s) are in the safe set${typescript ? '' : ' and are markdown only'}`,
+    cloud,
+    reason: `all ${files.length} changed file(s) are native independent${cloud ? ' (relay sources: relay and TypeScript jobs still run)' : ''}${typescript ? '' : ' and are markdown only'}`,
   };
 }
 
@@ -149,12 +231,25 @@ function git(args) {
   return execFileSync('git', args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
 
+function cloudPackageJsonEditSince(base) {
+  return () => {
+    try {
+      return isCloudScriptsOnlyEdit(git(['show', `${base}:${CLOUD_PACKAGE_JSON}`]), git(['show', `HEAD:${CLOUD_PACKAGE_JSON}`]));
+    } catch {
+      return false;
+    }
+  };
+}
+
 function changedFilesOfPullRequest() {
   const parents = git(['rev-list', '--parents', '-n', '1', 'HEAD']).trim().split(' ');
   // refs/pull/N/merge is a merge commit: first parent = base tip, so this diff
   // is exactly what merging the pull request would change.
   if (parents.length !== 3) throw new Error('HEAD is not a two-parent merge commit');
-  return git(['diff', '--name-only', '--no-renames', '-z', 'HEAD^1', 'HEAD']).split('\0').filter(Boolean);
+  return {
+    files: git(['diff', '--name-only', '--no-renames', '-z', 'HEAD^1', 'HEAD']).split('\0').filter(Boolean),
+    base: 'HEAD^1',
+  };
 }
 
 // A push to master is classified on everything it brought in (before..HEAD), so
@@ -164,7 +259,10 @@ function changedFilesOfPullRequest() {
 function changedFilesOfPush() {
   const before = process.env.QC_PUSH_BEFORE ?? '';
   if (!/^[0-9a-f]{40}$/.test(before) || /^0+$/.test(before)) throw new Error('no usable previous commit');
-  return git(['diff', '--name-only', '--no-renames', '-z', before, 'HEAD']).split('\0').filter(Boolean);
+  return {
+    files: git(['diff', '--name-only', '--no-renames', '-z', before, 'HEAD']).split('\0').filter(Boolean),
+    base: before,
+  };
 }
 
 function main() {
@@ -174,7 +272,8 @@ function main() {
     result = { ...RUN_EVERYTHING, reason: `event ${event ?? '(none)'} is not a pull request or push` };
   } else {
     try {
-      result = classify(event === 'push' ? changedFilesOfPush() : changedFilesOfPullRequest());
+      const { files, base } = event === 'push' ? changedFilesOfPush() : changedFilesOfPullRequest();
+      result = classify(files, { cloudPackageJsonEdit: cloudPackageJsonEditSince(base) });
     } catch (error) {
       result = { ...RUN_EVERYTHING, reason: `could not determine the changed files (${error.message})` };
     }
