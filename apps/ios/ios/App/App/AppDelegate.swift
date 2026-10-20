@@ -47,3 +47,28 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
 }
+
+// UIKit 27 requires scene lifecycle adoption. Keep Capacitor's application
+// window and URL forwarding intact when UIKit creates the storyboard scene.
+class QCSceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        (UIApplication.shared.delegate as? AppDelegate)?.window = window
+        self.scene(scene, openURLContexts: connectionOptions.urlContexts)
+        for activity in connectionOptions.userActivities { self.scene(scene, continue: activity) }
+    }
+
+    func scene(_ scene: UIScene, openURLContexts contexts: Set<UIOpenURLContext>) {
+        for context in contexts {
+            _ = ApplicationDelegateProxy.shared.application(UIApplication.shared, open: context.url, options: [
+                .sourceApplication: context.options.sourceApplication as Any,
+                .openInPlace: context.options.openInPlace
+            ])
+        }
+    }
+
+    func scene(_ scene: UIScene, continue activity: NSUserActivity) {
+        _ = ApplicationDelegateProxy.shared.application(UIApplication.shared, continue: activity, restorationHandler: { _ in })
+    }
+}
