@@ -43,6 +43,7 @@ public final class QcRelayService extends Service {
     private RelayCredentialStore.Snapshot socketIdentity;
     private ScheduledFuture<?> retry;
     private ScheduledFuture<?> readiness;
+    private final RelayReadinessPublication readinessPublication = new RelayReadinessPublication();
     private int failures;
     private volatile RelayState state = RelayState.STOPPED;
     private final RelayFrameHandler relayFrameHandler = new RelayFrameHandler();
@@ -378,7 +379,7 @@ public final class QcRelayService extends Service {
                     try {
                         // WebSocket frames are ordered. Publish the post-operation
                         // USB state before the result so reset/reconnect callers
-                        // cannot race the next one-second readiness heartbeat.
+                        // cannot race the next local readiness observation.
                         sendReadiness(webSocket);
                         sendResult(webSocket, id, reply);
                     } catch (Exception sendError) {
@@ -427,6 +428,7 @@ public final class QcRelayService extends Service {
 
     private synchronized void startReadinessUpdates(WebSocket webSocket) {
         if (readiness != null) readiness.cancel(false);
+        readinessPublication.reset();
         sendReadiness(webSocket);
         readiness = scheduler.scheduleWithFixedDelay(
             () -> sendReadiness(webSocket), GeneratedRelayProfile.READINESS_INTERVAL_MS,
@@ -434,17 +436,22 @@ public final class QcRelayService extends Service {
     }
 
     private synchronized void stopReadinessUpdates(WebSocket webSocket) {
-        if (webSocket != socket || readiness == null) return;
-        readiness.cancel(false);
+        if (webSocket != socket) return;
+        if (readiness != null) readiness.cancel(false);
         readiness = null;
+        readinessPublication.reset();
     }
 
-    private void sendReadiness(WebSocket webSocket) {
+    private synchronized void sendReadiness(WebSocket webSocket) {
         if (webSocket != socket || state != RelayState.CONNECTED) return;
         try {
-            webSocket.send(new JSONObject().put("type", "ready").put("protocol", RelayProtocol.VERSION)
+            boolean ready = QcUsbPlugin.relaySessionAvailable();
+            // Continue observing USB locally, but publish only actual changes.
+            // OkHttp's protocol pings keep the idle socket alive without DO work.
+            String frame = new JSONObject().put("type", "ready").put("protocol", RelayProtocol.VERSION)
                 .put("gatewayApiVersion", GeneratedGatewayMethods.API_VERSION)
-                .put("usbConnected", QcUsbPlugin.relaySessionAvailable()).toString());
+                .put("usbConnected", ready).toString();
+            readinessPublication.publish(ready, () -> webSocket.send(frame));
         } catch (Exception ignored) {}
     }
 
@@ -494,6 +501,7 @@ public final class QcRelayService extends Service {
         if (retry != null) retry.cancel(false);
         if (readiness != null) readiness.cancel(false);
         readiness = null;
+        readinessPublication.reset();
         if (socket != null) socket.close(1000, "stopped");
         socket = null;
         socketIdentity = null;
