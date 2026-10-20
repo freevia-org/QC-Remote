@@ -71,6 +71,9 @@ pub trait QcBackend: Send + Sync + 'static {
     /// Carry the client's accepted target separately from generated operands.
     /// Hosts must enforce it through admission and completion, never retrying
     /// an uncertain request against a replacement target.
+    /// `mcpBrokerTargetGuard` advertises ingress validation and preservation of
+    /// this guard, not execution support in every host. Capability negotiation
+    /// remains per request; the default refuses guarded calls before effects.
     async fn request_targeted(
         &self,
         route: &PrincipalRoute,

@@ -372,8 +372,42 @@ async fn every_served_schema_preserves_all_canonical_constraints() {
     let mut mismatches = Vec::new();
     for action in actions.as_array().unwrap() {
         let name = action["name"].as_str().unwrap();
-        let actual = &served_tool(&tools, name)["inputSchema"];
-        if normalize_schema(actual) != normalize_schema(&action["inputSchema"]) {
+        let mut actual = served_tool(&tools, name)["inputSchema"].clone();
+        // The only non-generated addition is an optional transport-level
+        // target guard. Assert its complete constraints over the real wire,
+        // then compare EVERY original action constraint exactly as before.
+        assert!(
+            !actual["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("expectedBrokerTarget")),
+            "{name} made the target guard mandatory"
+        );
+        let mut guard = actual["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("expectedBrokerTarget")
+            .unwrap_or_else(|| panic!("{name} omitted its target guard"));
+        let description = guard
+            .as_object_mut()
+            .unwrap()
+            .remove("description")
+            .unwrap();
+        assert!(description.as_str().is_some_and(|text| !text.is_empty()));
+        assert_eq!(
+            guard,
+            json!({
+                "type":"object", "additionalProperties":false,
+                "required":["source","sessionId","generation"],
+                "properties":{
+                    "source":{"type":"string","enum":["physical","demo"]},
+                    "sessionId":{"type":"string","minLength":1,"maxLength":256},
+                    "generation":{"type":"integer","minimum":1,"maximum":9007199254740991_u64}
+                }
+            }),
+            "{name} serves a weakened or malformed target guard"
+        );
+        if normalize_schema(&actual) != normalize_schema(&action["inputSchema"]) {
             mismatches.push(name);
         }
     }

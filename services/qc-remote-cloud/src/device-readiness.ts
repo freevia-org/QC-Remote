@@ -47,3 +47,23 @@ export function sameBrokerTarget(left: BrokerTarget | undefined, right: BrokerTa
 export function assertBrokerTarget(expected: BrokerTarget | undefined, current: BrokerTarget | undefined): void {
   if (!sameBrokerTarget(expected, current)) throw new Error("The selected broker target changed before dispatch; read its current state before starting another operation.");
 }
+
+/** A trusted native host alone issues this after verifying its private device
+ * binding. Other writes may never use a lifecycle acknowledgement as a bypass. */
+export function verifiedTargetTransition(method: string, expected: BrokerTarget, current: BrokerTarget | undefined, result: unknown): boolean {
+  if (expected.source !== "physical" || !result || typeof result !== "object") return false;
+  const ack = (result as Record<string, unknown>).brokerTargetTransition;
+  if (!ack || typeof ack !== "object" || Array.isArray(ack)) return false;
+  const value = ack as Record<string, unknown>;
+  if (value.method !== method || !Object.hasOwn(value, "from") || !Object.hasOwn(value, "to") || value.to === undefined) return false;
+  try {
+    const from = parseBrokerTarget(value.from);
+    const to = value.to === null ? undefined : parseBrokerTarget(value.to);
+    if (!sameBrokerTarget(from, expected) || !sameBrokerTarget(to, current)) return false;
+    if (method === "device.resetSession" || method === "device.reconnect") {
+      return value.verification === "same_native_controller" && to?.source === "physical";
+    }
+    return method === "device.disconnect" && value.verification === "closed_native_controller"
+      && (to === undefined || to.source === "demo");
+  } catch { return false; }
+}
