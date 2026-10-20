@@ -4655,12 +4655,62 @@ fn broker_stderr_path() -> PathBuf {
     runtime_health_path().with_file_name("broker-stderr.log")
 }
 
+#[cfg(unix)]
+fn prepare_native_runtime_directory(directory: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        qc_native_platform::paths::prepare_directory(directory).map_err(std::io::Error::other)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        qc_native_platform::paths_macos::prepare_directory(directory).map_err(std::io::Error::other)
+    }
+}
+
+fn prepare_runtime_directory(directory: &Path) -> std::io::Result<()> {
+    #[cfg(all(unix, not(test)))]
+    {
+        prepare_native_runtime_directory(directory)
+    }
+    // Preserve Windows behavior and the existing owned native-test roots.
+    #[cfg(any(not(unix), test))]
+    {
+        fs::create_dir_all(directory)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod runtime_health_directory_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn first_runtime_directory_is_private_and_accepted_by_the_broker() {
+        let root = crate::tests::unique_fixture_directory("runtime-private-directory");
+        let _cleanup = crate::tests::RemoveDirOnDrop::new(root.clone());
+        let directory = root.join("new-state");
+        prepare_native_runtime_directory(&directory).unwrap();
+        assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o777, 0o700);
+        prepare_native_runtime_directory(&directory).unwrap();
+        let link = root.join("linked-state");
+        std::os::unix::fs::symlink(&directory, &link).unwrap();
+        assert!(prepare_native_runtime_directory(&link).is_err());
+        assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o777, 0o700);
+    }
+}
+
 /// Append-only stderr sink for the broker, falling back to discarding output
 /// only when the log cannot be opened at all.
 fn broker_stderr_sink() -> Stdio {
     let path = broker_stderr_path();
     if let Some(directory) = path.parent() {
-        let _ = fs::create_dir_all(directory);
+        let prepared = prepare_runtime_directory(directory);
+        #[cfg(all(unix, not(test)))]
+        if prepared.is_err() {
+            return Stdio::null();
+        }
+        #[cfg(any(not(unix), test))]
+        let _ = prepared;
     }
     // A broker restart loop must not grow this without bound.
     if fs::metadata(&path).is_ok_and(|meta| meta.len() > BROKER_STDERR_MAX_BYTES) {
@@ -4898,7 +4948,7 @@ fn write_runtime_health(gateway: &Gateway, method: &str, status: &str, detail: O
     let Some(directory) = path.parent() else {
         return;
     };
-    if let Err(error) = fs::create_dir_all(directory) {
+    if let Err(error) = prepare_runtime_directory(directory) {
         note_runtime_health_failure("could not create the health record's directory", &error);
         return;
     }
