@@ -33,7 +33,8 @@ describe("MCP admission with presence in one RPC", () => {
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(credential));
     const credentialHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
     await runInDurableObject(target, async (_instance: DeviceSession, state) => {
-      await state.storage.put(`device:${deviceId}`, { name: "Runtime host", credentialHash, pairedAt: Date.now(), identityProvider: "google" });
+      await state.storage.put(`device:${deviceId}`, { name: "Runtime host", credentialHash,
+        pairedAt: Date.now() - 365 * 24 * 60 * 60_000, expiresAt: null, identityProvider: "google" });
     });
     const upgraded = await target.fetch(new Request(`https://relay.example.test/connect?deviceId=${deviceId}`, {
       headers: { Upgrade: "websocket", Authorization: `Bearer ${credential}` },
@@ -60,6 +61,10 @@ describe("MCP admission with presence in one RPC", () => {
       await expect(target.command({ method: "device.setTempo", params: { tempo: 120 } }, 0)).resolves.toEqual({ tempo: 120 });
       await runInDurableObject(target, async (instance: DeviceSession) => {
         await expect(instance.command({ method: "device.setTempo", params: { tempo: 121 } }, 1)).rejects.toThrow();
+      });
+      await runInDurableObject(target, async (instance: DeviceSession, state) => {
+        await state.storage.delete(`device:${deviceId}`);
+        await expect(instance.command({ method: "device.setTempo", params: { tempo: 122 } }, 0)).rejects.toThrow();
       });
       expect(invocations).toEqual(["device.setTempo"]);
     } finally { host.close(1000, "Test complete"); }
@@ -303,7 +308,14 @@ describe("OAuth provider lifecycle on the fenced Workerd KV binding", () => {
       body: new URLSearchParams({ grant_type: "authorization_code", client_id: client.client_id, code: authorizationCode!, redirect_uri: redirectUri, code_verifier: verifier }),
     });
     expect(exchange.status).toBe(200);
-    const issued = await exchange.json() as { access_token: string; refresh_token: string };
+    const issued = await exchange.json() as { access_token: string; refresh_token: string; expires_in: number };
+    expect(issued.expires_in).toBe(3600);
+    const [tokenOwner, tokenGrant] = issued.access_token.split(":");
+    const savedGrant = await env.OAUTH_KV.get<{ expiresAt?: number; refreshTokenId?: string }>(`grant:${tokenOwner}:${tokenGrant}`, "json");
+    expect(savedGrant?.refreshTokenId).toEqual(expect.any(String));
+    expect(savedGrant?.expiresAt).toBeUndefined();
+    const registrations = await env.OAUTH_KV.list({ prefix: `client:${client.client_id}` });
+    expect(registrations.keys.find(key => key.name === `client:${client.client_id}`)?.expiration).toBeUndefined();
 
     // Production audience is deliberately pinned to this origin. Do not
     // weaken it to accommodate the fixture's consent-page example origin.
@@ -598,6 +610,19 @@ describe("provider retention on Durable Object storage and alarms", () => {
     });
   });
 
+  it("retains persistent grant tombstones without recurring retention alarms", async () => {
+    const target = stub();
+    const now = Date.now();
+    await runInDurableObject(target, async (_instance: DeviceSession, state) => {
+      await state.storage.put(PROVIDER_WRITES_KEY, {
+        open: {}, keys: { [providerKey]: { deleteIntent: true, deletedAt: now - 400 * 24 * 60 * 60_000 } },
+      });
+      await scheduleProviderWritesRetention(state.storage, now);
+      expect(await state.storage.getAlarm()).toBeNull();
+      expect(await state.storage.get(PROVIDER_WRITES_KEY)).toBeDefined();
+    });
+  });
+
   it("schedules a bounded retry for an expired tombstone through production alarm", async () => {
     const target = stub();
     const now = Date.now();
@@ -605,7 +630,7 @@ describe("provider retention on Durable Object storage and alarms", () => {
     await runInDurableObject(target, async (_instance: DeviceSession, state) => {
       await state.storage.put(PROVIDER_WRITES_KEY, {
         open: { [admissionId]: { key: providerKey, admittedAt: tombstoneAt, state: "compensating" } },
-        keys: { [providerKey]: { deleteIntent: true, deletedAt: tombstoneAt } },
+        keys: { [providerKey]: { deleteIntent: true, deletedAt: tombstoneAt, expiresAt: now - 24 * 60 * 60_000 } },
       });
       await scheduleProviderWritesRetention(state.storage, now);
     });

@@ -60,13 +60,13 @@ type Json = Record<string, unknown>;
  * holds it, so a socket accepted while its record was being revoked cannot run
  * anything. Sockets accepted before this field existed carry none and rely on
  * revocation closing them by device id. */
-type DeviceAttachment = { deviceId: string; deviceName: string; ready: boolean; connectionId?: string; gatewayApiVersion?: number; mcpPresence?: boolean; credentialExpiresAt?: number; credentialHash?: string };
+type DeviceAttachment = { deviceId: string; deviceName: string; ready: boolean; connectionId?: string; gatewayApiVersion?: number; mcpPresence?: boolean; credentialExpiresAt?: number | null; credentialHash?: string };
 type PairingOffer = { codeHash: string; expiresAt: number; redeemed: boolean };
 type PairingMetadata = { email: string; device: string; pairedAt: number };
 /** `lastUsedAt` is the last authenticated use, written at most once a day;
  * retention is measured from it (device-retention.ts). */
 /** `replaces` is a re-pair's pending predecessor (device-retention.ts). */
-type DeviceRecord = { credentialHash: string; name: string; pairedAt: number; expiresAt?: number; lastUsedAt?: number; identityProvider: "google"; pairing?: PairingMetadata; replaces?: PendingReplacement; replacedDeviceId?: string };
+type DeviceRecord = { credentialHash: string; name: string; pairedAt: number; expiresAt?: number | null; lastUsedAt?: number; identityProvider: "google"; pairing?: PairingMetadata; replaces?: PendingReplacement; replacedDeviceId?: string };
 type PendingCommand = { socket: WebSocket; method: string; resolve: (value: Json) => void; reject: (reason: Error) => void; timeout: ReturnType<typeof setTimeout> };
 type PairingDirectory = { owner: string; expiresAt: number; pairing?: PairingMetadata };
 type DeviceDirectory = { owner: string };
@@ -87,15 +87,9 @@ type DailyUsage = { day: string; commands: number; lastCommandAt?: number };
 const OWNER = PRIVATE_OWNER_KEY;
 const OFFER_TTL_MS = 10 * 60_000;
 const MCP_PRESENCE_KEY = "mcp-presence-v1";
-/** How long a paired host's credential stays valid without re-pairing.
- *
- * A credential that never expires is a credential that can only be withdrawn
- * by noticing it has leaked. The number comes from the shared relay profile so
- * the worker, both hosts and the privacy record cite one source. Records
- * written before this existed carry no `expiresAt` and are measured from
- * `pairedAt` instead, so an already paired host is neither locked out at once
- * nor exempt for ever. */
-const CREDENTIAL_TTL_MS = relayProfile.credentialTtlDays * 24 * 60 * 60_000;
+/** Fallback only for legacy records without an explicit expiry. New records
+ * use null (persistent), and valid legacy records migrate on authentication. */
+const CREDENTIAL_TTL_MS = 90 * 24 * 60 * 60_000;
 const MAX_JSON_BODY_BYTES = 64_000;
 /** The `origin` an `invoke` frame carries when it serves an MCP resource
  * read, set here at the MCP ingress, where a resource read and a tool call
@@ -612,7 +606,6 @@ function mcpHandler(env: Env, props: PrincipalProps) {
         throw new Error(`${reason.message} This assistant is signed in as ${props.email}.`);
       }
       throw reason;
-
     }
   };
   // A resource callback passes RESOURCE_READ_ORIGIN; a tool never does.
@@ -951,36 +944,30 @@ export class DeviceSession extends DurableObject<Env> {
   private async deviceSocketValid(socket: WebSocket): Promise<boolean> {
     const attachment = socket.deserializeAttachment() as DeviceAttachment | null;
     if (!attachment || socket.readyState !== 1) return false;
-    let expiresAt = attachment.credentialExpiresAt;
-    if (expiresAt === undefined) {
-      const record = await this.ctx.storage.get<DeviceRecord>(`device:${attachment.deviceId}`);
-      expiresAt = record ? record.expiresAt ?? record.pairedAt + CREDENTIAL_TTL_MS : 0;
-      const current = socket.deserializeAttachment() as DeviceAttachment | null;
-      if (!current || socket.readyState !== 1) return false;
-      socket.serializeAttachment({ ...current, credentialExpiresAt: expiresAt });
-      if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
-        const deadline = expiresAt;
-        await this.ctx.storage.transaction(async (transaction) => {
-          const alarm = await transaction.getAlarm();
-          if (alarm === null || alarm > deadline) await transaction.setAlarm(deadline);
-        });
-      }
+    // Re-read the authoritative record even for hibernated sockets. This
+    // observes both migration to persistent credentials and explicit revokes.
+    const record = await this.ctx.storage.get<DeviceRecord>(`device:${attachment.deviceId}`);
+    if (!record || (typeof attachment.credentialHash === "string" && record.credentialHash !== attachment.credentialHash)) {
+      this.failPending(socket, "This device was unpaired.");
+      if (socket.readyState === 1) socket.close(1008, "This device was unpaired");
+      return false;
     }
-    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    const expiresAt = record.expiresAt === null ? null : record.expiresAt ?? record.pairedAt + CREDENTIAL_TTL_MS;
+    if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) {
       this.failPending(socket, "The device host credential expired.");
       socket.close(4001, "Device credential expired; pair again");
       return false;
     }
-    // The record must still hold the credential this socket was admitted
-    // with: a revoke, re-pair or deletion that missed this socket (it was
-    // accepted while the revoke ran) is caught here, before anything runs.
-    if (typeof attachment.credentialHash === "string") {
-      const record = await this.ctx.storage.get<DeviceRecord>(`device:${attachment.deviceId}`);
-      if (!record || record.credentialHash !== attachment.credentialHash) {
-        this.failPending(socket, "This device was unpaired.");
-        if (socket.readyState === 1) socket.close(1008, "This device was unpaired");
-        return false;
-      }
+    // A socket opened by the old release must reconnect once so the normal
+    // authenticated connect migrates both its record and directory TTL. 1012
+    // is retryable by hosts; it does not discard credentials or request login.
+    if (expiresAt !== null || attachment.credentialExpiresAt !== null) {
+      this.failPending(socket, "The device host is reconnecting to renew its saved authorization.");
+      socket.close(1012, "Reconnect to update saved authorization");
+      return false;
+    }
+    if (attachment.credentialExpiresAt !== expiresAt || !attachment.credentialHash) {
+      socket.serializeAttachment({ ...attachment, credentialExpiresAt: expiresAt, credentialHash: record.credentialHash });
     }
     return true;
   }
@@ -1097,7 +1084,7 @@ export class DeviceSession extends DurableObject<Env> {
     if (!name) throw new Error("A device name is required");
     const credential = randomToken();
     const pairedAt = Date.now();
-    const record: DeviceRecord = { credentialHash: await hash(credential), name, pairedAt, expiresAt: pairedAt + CREDENTIAL_TTL_MS, lastUsedAt: pairedAt, identityProvider: "google", pairing };
+    const record: DeviceRecord = { credentialHash: await hash(credential), name, pairedAt, expiresAt: relayProfile.credentialTtlDays === 0 ? null : pairedAt + relayProfile.credentialTtlDays * 24 * 60 * 60_000, lastUsedAt: pairedAt, identityProvider: "google", pairing };
     const previousDevice = previous ? { deviceId: previous.deviceId, credentialHash: await hash(previous.credential) } : undefined;
     // The offer is validated inside the transaction that consumes it, so the
     // crypto awaits above cannot let two requests redeem one code. A proven
@@ -1176,10 +1163,10 @@ export class DeviceSession extends DurableObject<Env> {
     const record = await this.ctx.storage.get<DeviceRecord>(`device:${deviceId}`);
     if (!record || !await constantTimeEqual(await hash(credential), record.credentialHash)) return null;
     const now = Date.now();
-    if ((record.expiresAt ?? record.pairedAt + CREDENTIAL_TTL_MS) <= now) return null;
-    // Retention is measured from last use; written at most once a day, and
-    // never over a record a revocation or re-pair has since replaced.
-    try { await touchDeviceLastUse(this.ctx.storage, deviceId, record.credentialHash, now); }
+    if (record.expiresAt !== null && (record.expiresAt ?? record.pairedAt + CREDENTIAL_TTL_MS) <= now) return null;
+    // Migrate valid legacy credentials, then update activity at most daily.
+    // The transaction never restores a revoked or replaced record.
+    try { await touchDeviceLastUse(this.ctx.storage, deviceId, record.credentialHash, now); record.expiresAt = null; }
     catch { /* A missed write only shortens retention toward its pairing-time floor. */ }
     return record;
   }
@@ -1212,13 +1199,13 @@ export class DeviceSession extends DurableObject<Env> {
     const stored = await this.ctx.storage.list<DeviceRecord>({ prefix: "device:" });
     const devices = [...stored].map(([key, record]) => {
       const id = key.slice("device:".length);
-      const expiresAt = record.expiresAt ?? record.pairedAt + CREDENTIAL_TTL_MS;
+      const expiresAt = record.expiresAt === null ? null : record.expiresAt ?? record.pairedAt + CREDENTIAL_TTL_MS;
       return {
         deviceId: id,
         name: record.name,
         pairedAt: record.pairedAt,
-        expiresAt,
-        expired: expiresAt <= now,
+        expiresAt: expiresAt ?? 0,
+        expired: expiresAt !== null && expiresAt <= now,
         connected: live.has(id),
         current: id === deviceId,
         // A re-pair whose new credential has not connected yet: the record it
@@ -1265,7 +1252,7 @@ export class DeviceSession extends DurableObject<Env> {
     return {
       name: record.name,
       pairedAt: record.pairedAt,
-      expiresAt: record.expiresAt ?? record.pairedAt + CREDENTIAL_TTL_MS,
+      expiresAt: record.expiresAt === null ? 0 : record.expiresAt ?? record.pairedAt + CREDENTIAL_TTL_MS,
       identityProvider: record.identityProvider,
       ...(record.replaces ? { replacementPending: true, replacesDeviceId: record.replaces.deviceId } : {}),
       ...(record.pairing ? { email: record.pairing.email, device: record.pairing.device } : {}),
@@ -1398,7 +1385,7 @@ export class DeviceSession extends DurableObject<Env> {
     const replacedDeviceId = admission.replacedDeviceId;
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    server.serializeAttachment({ deviceId, deviceName: record.name, ready: false, connectionId: crypto.randomUUID(), credentialExpiresAt: record.expiresAt ?? record.pairedAt + CREDENTIAL_TTL_MS, credentialHash: record.credentialHash } satisfies DeviceAttachment);
+    server.serializeAttachment({ deviceId, deviceName: record.name, ready: false, connectionId: crypto.randomUUID(), credentialExpiresAt: record.expiresAt === null ? null : record.expiresAt ?? record.pairedAt + CREDENTIAL_TTL_MS, credentialHash: record.credentialHash } satisfies DeviceAttachment);
     this.ctx.acceptWebSocket(server);
     if (admission.revokedDeviceId) void drainDirectoryCleanup(this.ctx.storage, this.env.QCRC_OAUTH as unknown as DirectoryKv).catch(() => {});
     // Opt-in only: hosts built before this frame treat an unknown frame type

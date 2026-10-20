@@ -6,7 +6,7 @@
   "deviceRevokePath": "/v1/device/revoke",
   "deviceRosterPath": "/v1/device/roster",
   "deviceConnectorsPath": "/v1/device/connectors",
-  "credentialTtlDays": 90,
+  "credentialTtlDays": 0,
   "maximumInvokeDeadlineMs": 1800000,
   "hostApprovalTimeoutMs": 120000,
   "removedIdentifierFields": [

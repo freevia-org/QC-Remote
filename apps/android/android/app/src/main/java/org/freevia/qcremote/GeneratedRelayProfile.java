@@ -20,7 +20,7 @@ final class GeneratedRelayProfile {
     static final String DEVICE_REVOKE_PATH = "/v1/device/revoke";
     static final String DEVICE_ROSTER_PATH = "/v1/device/roster";
     static final String DEVICE_CONNECTORS_PATH = "/v1/device/connectors";
-    static final int CREDENTIAL_TTL_DAYS = 90;
+    static final int CREDENTIAL_TTL_DAYS = 0;
     static final long MAXIMUM_INVOKE_DEADLINE_MS = 1800000L;
     static final long HOST_APPROVAL_TIMEOUT_MS = 120000L;
     static final int PAIRING_CODE_MINIMUM_LENGTH = 6;
