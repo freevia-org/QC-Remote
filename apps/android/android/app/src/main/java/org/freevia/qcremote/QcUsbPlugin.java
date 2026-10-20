@@ -348,8 +348,8 @@ public class QcUsbPlugin extends Plugin {
             call.reject("The demo session identity is invalid.", "INVALID_PARAMS");
             return;
         }
-        Long generation = call.getLong("generation");
-        if (generation == null || generation < 0 || generation > 9007199254740991L) {
+        long generation = demoGeneration(call);
+        if (generation < 0) {
             call.reject("The demo generation is invalid.", "INVALID_PARAMS");
             return;
         }
@@ -365,7 +365,7 @@ public class QcUsbPlugin extends Plugin {
             catch (IllegalArgumentException malformed) { call.resolve(new JSObject().put("admitted", false)); return; }
         }
         boolean admitted = demoProvider.admit(call.getString("id", ""), call.getString("sessionId", ""),
-            call.getLong("generation", -1L), target);
+            demoGeneration(call), target);
         call.resolve(new JSObject().put("admitted", admitted));
     }
 
@@ -378,8 +378,14 @@ public class QcUsbPlugin extends Plugin {
             catch (Exception malformed) { result = null; }
         }
         demoProvider.complete(call.getString("id", ""), call.getString("sessionId", ""),
-            call.getLong("generation", -1L), result, call.getObject("error"));
+            demoGeneration(call), result, call.getObject("error"));
         call.resolve();
+    }
+
+    private static long demoGeneration(PluginCall call) {
+        // Capacitor getLong rejects small JSON integers (Integer), including 1.
+        try { return QcBrokerTarget.generation(call.getData(), 0); }
+        catch (IllegalArgumentException malformed) { return -1; }
     }
 
     /** Android granted this app the attached device through its own
