@@ -1,6 +1,6 @@
 import test from 'node:test';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 test('owned test fixture', async () => {
@@ -23,7 +23,12 @@ test('owned test fixture', async () => {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
   }
-  writeFileSync(process.env.QC_FIXTURE_REPORT, JSON.stringify({ worker: process.pid, child: child.pid, root, profile }));
+  // The observer treats existence as readiness and may kill this worker next.
+  // Publish only complete JSON, so it cannot observe a newly created empty file.
+  const report = process.env.QC_FIXTURE_REPORT;
+  const pendingReport = `${report}.${process.pid}.tmp`;
+  writeFileSync(pendingReport, JSON.stringify({ worker: process.pid, child: child.pid, root, profile }), { flag: 'wx' });
+  renameSync(pendingReport, report);
   if (process.env.QC_FIXTURE_MODE === 'failure') throw new Error('deliberate fixture assertion failure');
   if (process.env.QC_FIXTURE_MODE === 'success') return;
   await new Promise(() => { setInterval(() => {}, 1000); });
