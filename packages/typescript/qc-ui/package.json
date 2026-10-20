@@ -20,11 +20,11 @@
     "@qc-remote/theme": "0.1.0"
   },
   "peerDependencies": {
-    "react": ">=19",
-    "react-dom": ">=19"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
-    "react-test-renderer": "19.3.0"
+    "react-test-renderer": "19.3.1"
   }
 }
