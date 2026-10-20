@@ -4047,7 +4047,9 @@ fn dispatch_demo_provider_request(
                     .and_then(Value::as_u64)
                     .ok_or("Missing sequence")?;
                 if let Err(message) = readiness {
-                    shared.demo.reject(connection, &target, sequence, message)?;
+                    shared
+                        .demo
+                        .reject(connection, &target, sequence, message.message())?;
                     return Ok(if request.method == "broker.demoAdmit" {
                         json!({"admitted":false,"reason":"readinessUnavailable"})
                     } else {
@@ -4170,6 +4172,10 @@ fn dispatch_cached_status(
                 "Broker target changed or is unavailable; request was not sent",
             );
         }
+    } else if matches!(canonical, Err(TargetSelectionError::Ambiguous)) {
+        // Unlike cache contention, verified ambiguity is an authoritative
+        // unavailable observation. Clear prior demo publication explicitly.
+        result["targetReady"] = json!(false);
     }
     let mut response = json!({"jsonrpc":"2.0", "id": request.id, "result": result});
     if let Some(target) = response["result"].get("brokerTarget").cloned() {
@@ -4216,7 +4222,7 @@ fn dispatch_broker_client_request(
             if !request.physical_only
                 && generated_gateway::broker_dispatch(&request.method).is_some() =>
         {
-            return error(request.id, -32002, message);
+            return error(request.id, -32002, message.message());
         }
         Err(_) => None,
     };
@@ -6000,6 +6006,29 @@ struct DisconnectDevicesReport {
     failures: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetSelectionError {
+    ReadinessBusy,
+    InventoryBusy,
+    Ambiguous,
+}
+
+impl TargetSelectionError {
+    fn message(self) -> &'static str {
+        match self {
+            Self::ReadinessBusy => "Broker target readiness is temporarily unavailable",
+            Self::InventoryBusy => "Broker target inventory is temporarily unavailable",
+            Self::Ambiguous => {
+                "Multiple usable Quad Cortex devices require an explicit canonical selection"
+            }
+        }
+    }
+
+    fn is_unknown(self) -> bool {
+        matches!(self, Self::ReadinessBusy | Self::InventoryBusy)
+    }
+}
+
 impl BrokerShared {
     fn capture_request_target(&self, connection_id: Option<u64>, request: &mut Request) -> bool {
         if request.physical_only
@@ -6172,11 +6201,13 @@ impl BrokerShared {
         let _ = self.selected_target();
     }
 
-    fn canonical_physical(&self) -> Result<Option<(Arc<DeviceController>, u64)>, &'static str> {
+    fn canonical_physical(
+        &self,
+    ) -> Result<Option<(Arc<DeviceController>, u64)>, TargetSelectionError> {
         let (connected, synchronized, epoch) = self
             .controller
             .try_target_readiness()
-            .ok_or("Broker target readiness is temporarily unavailable")?;
+            .ok_or(TargetSelectionError::ReadinessBusy)?;
         if connected && synchronized {
             return Ok(Some((self.controller.clone(), epoch)));
         }
@@ -6184,17 +6215,17 @@ impl BrokerShared {
             Ok(known) => known.clone(),
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner().clone(),
             Err(std::sync::TryLockError::WouldBlock) => {
-                return Err("Broker target inventory is temporarily unavailable")
+                return Err(TargetSelectionError::InventoryBusy)
             }
         };
         let mut ready = None;
         for controller in known {
             let (connected, synchronized, epoch) = controller
                 .try_target_readiness()
-                .ok_or("Broker target readiness is temporarily unavailable")?;
+                .ok_or(TargetSelectionError::ReadinessBusy)?;
             if connected && synchronized {
                 if ready.is_some() {
-                    return Err("Multiple usable Quad Cortex devices require an explicit canonical selection");
+                    return Err(TargetSelectionError::Ambiguous);
                 }
                 ready = Some((controller, epoch));
             }
@@ -6202,12 +6233,10 @@ impl BrokerShared {
         Ok(ready)
     }
 
-    fn selected_target(&self) -> Result<Option<Arc<DeviceController>>, &'static str> {
+    fn selected_target(&self) -> Result<Option<Arc<DeviceController>>, TargetSelectionError> {
         let choice = self.canonical_physical();
-        if matches!(
-            choice,
-            Err("Multiple usable Quad Cortex devices require an explicit canonical selection")
-        ) && self.targets.update(None, None).unwrap_or(false)
+        if matches!(choice, Err(TargetSelectionError::Ambiguous))
+            && self.targets.update(None, None).unwrap_or(false)
         {
             self.demo.target_changed();
         }
@@ -7364,18 +7393,21 @@ impl BrokerHandle {
                 "the device broker is shutting down".into(),
             );
         }
-        let (connected, phase) = self.0.controller.connection_readiness();
         let physical = match self.0.selected_target() {
             Ok(physical) => physical,
-            Err(message) => return crate::resident::DeviceReadiness::Unavailable(message.into()),
+            Err(reason) if reason.is_unknown() => return crate::resident::DeviceReadiness::Unknown,
+            Err(reason) => {
+                return crate::resident::DeviceReadiness::Unavailable(reason.message().into())
+            }
+        };
+        let Some((connected, phase)) = self.0.controller.try_connection_readiness() else {
+            return crate::resident::DeviceReadiness::Unknown;
         };
         if let Some(target) = self.0.targets.identity() {
             crate::resident::DeviceReadiness::ReadyTarget {
                 usb_connected: physical.is_some() || connected,
                 target,
             }
-        } else if connected {
-            crate::resident::DeviceReadiness::Ready
         } else {
             crate::resident::DeviceReadiness::NotReady { phase }
         }
@@ -8837,6 +8869,99 @@ mod tcp_tests {
         fn drop(&mut self) {
             let _ = self.0.shutdown(std::net::Shutdown::Both);
         }
+    }
+
+    #[test]
+    fn demo_publication_readiness_distinguishes_contention_from_unavailable() {
+        use crate::resident::DeviceReadiness;
+        let shared = Arc::new(broker_shared_for_test());
+        let owner = demo_owner(&shared);
+        let registered = demo_rpc(
+            &shared,
+            owner,
+            "broker.demoRegister",
+            json!({"sessionId":"visible-demo"}),
+        );
+        let target = registered["result"]["target"].clone();
+        let handle = BrokerHandle(shared.clone());
+        assert!(matches!(
+            handle.device_readiness(),
+            DeviceReadiness::ReadyTarget { .. }
+        ));
+        {
+            let _held = shared.controller.hold_status_lock_for_test();
+            let started = Instant::now();
+            assert_eq!(handle.device_readiness(), DeviceReadiness::Unknown);
+            assert!(started.elapsed() < Duration::from_millis(100));
+            assert_eq!(json!(shared.targets.identity()), target);
+            assert!(
+                dispatch_broker_request(&shared, rpc_request("device.setTempo"))
+                    .get("error")
+                    .is_some()
+            );
+        }
+        {
+            let _held = shared.devices.lock_recover();
+            let started = Instant::now();
+            assert_eq!(handle.device_readiness(), DeviceReadiness::Unknown);
+            assert!(started.elapsed() < Duration::from_millis(100));
+            assert_eq!(json!(shared.targets.identity()), target);
+        }
+        let (first, first_commands) = demo_ready_controller("native-A", 11);
+        let (second, second_commands) = demo_ready_controller("native-B", 12);
+        shared
+            .devices
+            .lock_recover()
+            .extend([first.clone(), second.clone()]);
+        {
+            let _held = first.hold_status_lock_for_test();
+            assert_eq!(handle.device_readiness(), DeviceReadiness::Unknown);
+            assert_eq!(json!(shared.targets.identity()), target);
+        }
+        let status = dispatch_broker_request(&shared, rpc_request("system.status"));
+        assert_eq!(status["result"]["targetReady"], false);
+        assert!(status["result"].get("brokerTarget").is_none());
+        assert!(status.get("brokerTarget").is_none());
+        assert!(matches!(
+            handle.device_readiness(),
+            DeviceReadiness::Unavailable(_)
+        ));
+        assert!(
+            shared.targets.identity().is_none(),
+            "ambiguity must not keep demo ready"
+        );
+        shared.demo.withdraw(owner);
+        shared.devices.lock_recover().clear();
+        shared
+            .controller
+            .set_connection_for_test(true, "handshaking");
+        assert_eq!(
+            handle.device_readiness(),
+            DeviceReadiness::NotReady {
+                phase: "handshaking".into()
+            }
+        );
+        shared
+            .controller
+            .set_connection_for_test(false, "disconnected");
+        assert_eq!(
+            handle.device_readiness(),
+            DeviceReadiness::NotReady {
+                phase: "disconnected".into()
+            }
+        );
+        shared.clients.lock_recover().shutting_down = true;
+        {
+            let _held = shared.controller.hold_status_lock_for_test();
+            assert!(matches!(
+                handle.device_readiness(),
+                DeviceReadiness::Unavailable(_)
+            ));
+        }
+        shared.clients.lock_recover().shutting_down = false;
+        assert_eq!(first_commands.device_work(), 0);
+        assert_eq!(second_commands.device_work(), 0);
+        crate::rpc::test_support::finish(&handle);
     }
 
     #[test]

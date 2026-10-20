@@ -4942,14 +4942,22 @@ struct WindowsRelayAdapter {
     app: AppHandle,
 }
 
+fn status_supports_broker_target_guard(status: &Value) -> bool {
+    status
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|values| values.iter().any(|value| value == "expectedBrokerTarget"))
+}
+
 pub(crate) fn target_readiness_from_status(status: &Value) -> qc_relay_client::TargetReadiness {
+    let target_aware = status_supports_broker_target_guard(status);
     let diagnostic_usb_connected = status
         .pointer("/usbDiagnostics/connected")
         .and_then(Value::as_bool);
     let target_ready = status
         .get("targetReady")
         .and_then(Value::as_bool)
-        .unwrap_or(diagnostic_usb_connected.unwrap_or(false));
+        .unwrap_or(!target_aware && diagnostic_usb_connected.unwrap_or(false));
     let broker_target = status
         .get("brokerTarget")
         .cloned()
@@ -4978,6 +4986,29 @@ pub(crate) fn target_readiness_from_status(status: &Value) -> qc_relay_client::T
         } else {
             None
         },
+    }
+}
+
+/// Unknown successful status is not a disconnect publication. Effect and
+/// completion callers still use the fresh fail-closed mapping above.
+pub(crate) fn publication_readiness_from_status(
+    status: &Value,
+) -> Option<qc_relay_client::TargetReadiness> {
+    let target_known = status.get("targetReady").and_then(Value::as_bool).is_some();
+    let target_aware = status_supports_broker_target_guard(status);
+    // A modern broker can know one controller's USB fact while canonical
+    // target selection is still uncertain (including another connected QC).
+    // Only legacy physical-only hosts use raw USB as effective readiness.
+    if !target_known
+        && (target_aware
+            || status
+                .pointer("/usbDiagnostics/connected")
+                .and_then(Value::as_bool)
+                .is_none())
+    {
+        None
+    } else {
+        Some(target_readiness_from_status(status))
     }
 }
 
@@ -5105,28 +5136,13 @@ impl DeviceAdapter for WindowsRelayAdapter {
     }
 
     async fn target_readiness(&self) -> qc_relay_client::TargetReadiness {
-        let app = self.app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let status = request_gateway(
-                &app.state::<Mutex<Gateway>>(),
-                &app.state::<LockFreeReadSlot>(),
-                rpc::RUNTIME_STATUS,
-                json!({}),
-                WhenGatewayBusy::Refuse,
-                |gateway, params| {
-                    gateway.request_detailed_as(
-                        rpc::RUNTIME_STATUS,
-                        params,
-                        ConnectionUse::ExistingOnly,
-                    )
-                },
-            );
-            status
-                .map(|status| target_readiness_from_status(&status))
-                .unwrap_or_default()
-        })
-        .await
-        .unwrap_or_default()
+        self.sample_publication_readiness()
+            .await
+            .unwrap_or_default()
+    }
+
+    async fn publication_readiness(&self) -> Option<qc_relay_client::TargetReadiness> {
+        self.sample_publication_readiness().await
     }
 
     async fn invoke_targeted(
@@ -5180,6 +5196,31 @@ impl DeviceAdapter for WindowsRelayAdapter {
 }
 
 impl WindowsRelayAdapter {
+    async fn sample_publication_readiness(&self) -> Option<qc_relay_client::TargetReadiness> {
+        let app = self.app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let status = request_gateway(
+                &app.state::<Mutex<Gateway>>(),
+                &app.state::<LockFreeReadSlot>(),
+                rpc::RUNTIME_STATUS,
+                json!({}),
+                WhenGatewayBusy::Refuse,
+                |gateway, params| {
+                    gateway.request_detailed_as(
+                        rpc::RUNTIME_STATUS,
+                        params,
+                        ConnectionUse::ExistingOnly,
+                    )
+                },
+            );
+            status
+                .map(|status| publication_readiness_from_status(&status))
+                .unwrap_or(Some(Default::default()))
+        })
+        .await
+        .unwrap_or(Some(Default::default()))
+    }
+
     /// One relay call, in the connection mode the caller chose.
     async fn invoke_as(
         &self,
