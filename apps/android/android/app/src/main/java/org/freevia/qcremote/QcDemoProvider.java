@@ -7,12 +7,14 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import org.json.JSONObject;
 
 /** A foreground WebView owns the demo. Requests never fall through to USB. */
 final class QcDemoProvider {
     private final BooleanSupplier physicalReady;
     private final LongSupplier physicalGeneration;
+    private final Supplier<QcBrokerTarget> currentTarget;
     private final Map<String, Pending> pending = new HashMap<>();
     private String sessionId;
     private long providerGeneration;
@@ -24,13 +26,17 @@ final class QcDemoProvider {
         final String session;
         final String method;
         final long generation;
+        final QcBrokerTarget target;
         final CompletableFuture<JSONObject> result = new CompletableFuture<>();
-        Pending(String session, long generation, String method) { this.session = session; this.generation = generation; this.method = method; }
+        Pending(String session, long generation, String method, QcBrokerTarget target) {
+            this.session = session; this.generation = generation; this.method = method; this.target = target;
+        }
     }
 
-    QcDemoProvider(BooleanSupplier physicalReady, LongSupplier physicalGeneration) {
+    QcDemoProvider(BooleanSupplier physicalReady, LongSupplier physicalGeneration, Supplier<QcBrokerTarget> currentTarget) {
         this.physicalReady = physicalReady;
         this.physicalGeneration = physicalGeneration;
+        this.currentTarget = currentTarget;
     }
 
     void publish(String session, long generation) {
@@ -68,8 +74,18 @@ final class QcDemoProvider {
 
     synchronized boolean canDeliver(String id) {
         Pending request = pending.get(id);
+        return current(request);
+    }
+
+    private boolean current(Pending request) {
         return request != null && available() && request.session.equals(sessionId)
-            && request.generation == physicalGeneration.getAsLong();
+            && request.generation == physicalGeneration.getAsLong() && request.target.same(currentTarget.get());
+    }
+
+    synchronized boolean admit(String id, String session, long generation, QcBrokerTarget expectedTarget) {
+        Pending request = pending.get(id);
+        return current(request) && request.session.equals(session) && providerGeneration == generation
+            && (expectedTarget == null || request.target.same(expectedTarget));
     }
 
     CompletableFuture<JSONObject> invoke(String method, JSONObject params,
@@ -80,10 +96,14 @@ final class QcDemoProvider {
         synchronized (this) {
             if (!available()) return failed("NOT_CONNECTED", "The foreground demo provider is unavailable.");
             if (pending.size() >= MAX_PENDING) return failed("BUSY", "The demo provider is at its request limit.");
-            request = new Pending(sessionId, physicalGeneration.getAsLong(), method);
+            QcBrokerTarget target = currentTarget.get();
+            if (target == null || !"demo".equals(target.source))
+                return failed("TARGET_SUPERSEDED", "The demo broker target is no longer active.");
+            request = new Pending(sessionId, physicalGeneration.getAsLong(), method, target);
             try {
                 envelope = new JSONObject().put("id", id).put("sessionId", sessionId)
                     .put("generation", providerGeneration).put("sequence", ++sequence)
+                    .put("brokerTarget", target.json())
                     .put("method", method).put("params", params).put("expectedState", expected);
             } catch (Exception malformed) {
                 return failed("INVALID_PARAMS", "The demo request could not be encoded.");
@@ -106,8 +126,7 @@ final class QcDemoProvider {
             request = pending.get(id);
             if (request == null || !request.session.equals(session) || providerGeneration != generation) return;
             pending.remove(id);
-            current = available() && request.session.equals(sessionId)
-                && request.generation == physicalGeneration.getAsLong();
+            current = current(request);
         }
         if (!current) {
             request.result.completeExceptionally(changed());

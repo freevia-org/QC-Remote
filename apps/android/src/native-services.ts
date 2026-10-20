@@ -31,6 +31,7 @@ export type AndroidUsbDiagnostics = {
 
 interface QcUsbNativePlugin {
   publishDemoProvider(options: { sessionId: string | null; generation: number }): Promise<void>;
+  admitDemoRequest(options: { id: string; sessionId: string; generation: number; brokerTarget?: AndroidDemoRequest["brokerTarget"] }): Promise<{ admitted: boolean }>;
   completeDemoRequest(options: { id: string; sessionId: string; generation: number; result?: Record<string, unknown>; error?: { code: string; message: string } }): Promise<void>;
   addListener(eventName: "qcDemoRequest", listener: (request: AndroidDemoRequest) => void): Promise<PluginListenerHandle>;
   internetForwarding(): Promise<{ enabled: boolean }>;
@@ -49,6 +50,7 @@ export interface AndroidDemoRequest {
   sessionId: string;
   generation: number;
   sequence: number;
+  brokerTarget: { source: "physical" | "demo"; sessionId: string; generation: number };
   method: string;
   params: Record<string, unknown>;
   expectedState: Record<string, unknown>;

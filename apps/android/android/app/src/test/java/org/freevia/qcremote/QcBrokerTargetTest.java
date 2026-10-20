@@ -49,11 +49,15 @@ public class QcBrokerTargetTest {
     @Test public void targetValidationDoesNotCoerceMalformedOrUnknownFields() throws Exception {
         for (String raw : new String[]{"null", "{}", "{\"source\":\"virtual\",\"sessionId\":\"x\",\"generation\":1}",
                 "{\"source\":\"demo\",\"sessionId\":\"\",\"generation\":1}",
+                "{\"source\":\"demo\",\"sessionId\":\"   \",\"generation\":1}",
+                "{\"source\":\"demo\",\"sessionId\":\"x\",\"generation\":0}",
                 "{\"source\":\"demo\",\"sessionId\":\"x\",\"generation\":1.5}",
                 "{\"source\":\"demo\",\"sessionId\":\"x\",\"generation\":\"1\"}",
                 "{\"source\":\"demo\",\"sessionId\":\"x\",\"generation\":1,\"extra\":true}"}) {
             try { QcBrokerTarget.parse("null".equals(raw) ? JSONObject.NULL : new JSONObject(raw)); fail(raw); }
             catch (IllegalArgumentException expected) { /* Strict target admission. */ }
         }
+        assertEquals(256, QcBrokerTarget.parse(new JSONObject().put("source", "demo")
+            .put("sessionId", "x".repeat(256)).put("generation", 1)).sessionId.length());
     }
 }
