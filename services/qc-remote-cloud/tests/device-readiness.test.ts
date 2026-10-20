@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertBrokerTarget, deviceReadiness, sameBrokerTarget } from "../src/device-readiness.ts";
+import { assertBrokerTarget, deviceReadiness, parseBrokerTarget, sameBrokerTarget } from "../src/device-readiness.ts";
 import { selectDeviceHost } from "../src/device-selection.ts";
 
 const demo = { source: "demo" as const, sessionId: "broker-1:demo-1", generation: 1 };
@@ -30,6 +30,9 @@ test("target switch metadata survives even when both targets stay ready", () => 
 });
 
 test("queued commands retain their admitted target across switches and ABA returns", () => {
+  assert.deepEqual(parseBrokerTarget({ ...demo }), demo);
+  assert.equal(parseBrokerTarget(undefined), undefined);
+  assert.throws(() => parseBrokerTarget(null));
   assert.doesNotThrow(() => assertBrokerTarget(undefined, undefined));
   assert.doesNotThrow(() => assertBrokerTarget(demo, { ...demo }));
   assert.throws(() => assertBrokerTarget(demo, physical), /target changed/);

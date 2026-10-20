@@ -16,7 +16,16 @@ export function deviceReadiness(frame: Record<string, unknown>): DeviceReadiness
   if (frame.targetReady !== undefined && typeof frame.targetReady !== "boolean") {
     throw new Error("Invalid target readiness");
   }
-  const value = frame.brokerTarget;
+  const brokerTarget = parseBrokerTarget(frame.brokerTarget);
+  return {
+    ready: typeof frame.targetReady === "boolean" ? frame.targetReady : frame.usbConnected === true,
+    usbConnected: frame.usbConnected === true,
+    ...(brokerTarget ? { brokerTarget } : {})
+  };
+}
+
+/** Shared validation for host status and the client's explicitly accepted target. */
+export function parseBrokerTarget(value: unknown): BrokerTarget | undefined {
   let brokerTarget: BrokerTarget | undefined;
   if (value !== undefined) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid broker target");
@@ -28,11 +37,7 @@ export function deviceReadiness(frame: Record<string, unknown>): DeviceReadiness
     }
     brokerTarget = { source: target.source, sessionId: target.sessionId, generation: target.generation as number };
   }
-  return {
-    ready: typeof frame.targetReady === "boolean" ? frame.targetReady : frame.usbConnected === true,
-    usbConnected: frame.usbConnected === true,
-    ...(brokerTarget ? { brokerTarget } : {})
-  };
+  return brokerTarget;
 }
 
 export function sameBrokerTarget(left: BrokerTarget | undefined, right: BrokerTarget | undefined): boolean {
