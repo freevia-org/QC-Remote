@@ -4761,7 +4761,12 @@ fn validate_native_test_state_root(root: Option<&Path>) -> Result<PathBuf, Strin
     Ok(root.to_path_buf())
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), unix))]
+fn runtime_health_path() -> PathBuf {
+    crate::broker_paths::app_local_data_dir().join("runtime-health.json")
+}
+
+#[cfg(all(not(test), not(unix)))]
 fn runtime_health_path() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
