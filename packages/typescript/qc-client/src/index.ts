@@ -114,6 +114,8 @@ export interface UpdaterRelayDiagnostics {
 }
 
 export interface RuntimeStatus {
+  /** Effective broker target availability; USB diagnostics stay physical-only. */
+  targetReady?: boolean;
   brokerTarget?: BrokerTarget;
   platform: string;
   gatewayAvailable: boolean;

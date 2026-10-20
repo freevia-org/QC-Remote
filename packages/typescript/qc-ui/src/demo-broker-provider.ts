@@ -75,6 +75,9 @@ export function createDemoBrokerProvider(
         throw new DemoBrokerProviderError("INVALID_PROVIDER_REQUEST", "The demo request contains unsupported arguments.");
       }
       if (pending >= 8) throw new DemoBrokerProviderError("PROVIDER_BUSY", "The demo provider request queue is full.");
+      if (request.expectedState !== undefined && (!request.expectedState || typeof request.expectedState !== "object" || Array.isArray(request.expectedState))) {
+        throw new DemoBrokerProviderError("INVALID_PROVIDER_REQUEST", "Expected state must be an object.");
+      }
       const expected = structuredClone(request.expectedState ?? {});
       const stateFields: Readonly<Record<string, string>> = {
         presetName: "presetName", position: "presetPosition", presetPosition: "presetPosition",
