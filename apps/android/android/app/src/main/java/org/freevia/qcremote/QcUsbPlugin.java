@@ -313,19 +313,28 @@ public class QcUsbPlugin extends Plugin {
     void assertBrokerTarget(QcBrokerTarget expected) { expected.assertCurrent(currentBrokerTarget()); }
 
     private org.json.JSONObject targetMetadata(String method, org.json.JSONObject result) throws Exception {
+        return projectBrokerTarget(method, result, currentBrokerTarget());
+    }
+
+    static org.json.JSONObject projectBrokerTarget(String method, org.json.JSONObject result, QcBrokerTarget target) throws Exception {
         if ("system.status".equals(method) || "device.identity".equals(method)
                 || "device.reconnect".equals(method) || "device.resetSession".equals(method)
                 || "device.disconnect".equals(method)) {
-            QcBrokerTarget target = currentBrokerTarget();
             if (target != null) result.put("brokerTarget", target.json());
             else result.remove("brokerTarget");
             if ("system.status".equals(method)) {
+                result.put("gatewayApiVersion", GeneratedGatewayMethods.API_VERSION);
                 org.json.JSONArray capabilities = result.optJSONArray("capabilities");
+                if (capabilities == null) { capabilities = capabilitiesJson(); result.put("capabilities", capabilities); }
                 if (capabilities != null) {
                     boolean found = false;
                     for (int index = 0; index < capabilities.length(); index++)
                         if ("expectedBrokerTarget".equals(capabilities.optString(index))) found = true;
                     if (!found) capabilities.put("expectedBrokerTarget");
+                }
+                if (target != null && "demo".equals(target.source)) {
+                    result.put("connected", true).put("synchronized", true)
+                        .put("transport", "android-demo-relay");
                 }
             }
         }
