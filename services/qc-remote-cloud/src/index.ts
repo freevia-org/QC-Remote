@@ -15,7 +15,7 @@ import { commandDeadlineMs, deadlineExceededMessage, innerBudgetMs } from "./dev
 import { LateResultLog } from "./late-results.ts";
 import { selectDeviceHost } from "./device-selection.ts";
 import { decodeDeviceMessage } from "./device-messages.ts";
-import { assertBrokerTarget, deviceReadiness, parseBrokerTarget, sameBrokerTarget, type BrokerTarget } from "./device-readiness.ts";
+import { assertBrokerTarget, deviceReadiness, parseBrokerTarget, sameBrokerTarget, verifiedTargetTransition, type BrokerTarget } from "./device-readiness.ts";
 import { deviceInvocationError, deviceInvocationToolError, deviceResourceRead, deviceToolCall } from "./device-errors.ts";
 import { sanitizePublicResult } from "./public-result.ts";
 import { applyWorkerInputs } from "./model-query.ts";
@@ -1461,7 +1461,9 @@ export class DeviceSession extends DurableObject<Env> {
       if (pending.socket !== socket) return;
       clearTimeout(pending.timeout);
       this.pending.delete(parsed.id);
-      if (!sameBrokerTarget(pending.expectedBrokerTarget, attachment.brokerTarget)) {
+      if (!sameBrokerTarget(pending.expectedBrokerTarget, attachment.brokerTarget)
+          && !(pending.expectedBrokerTarget && parsed.ok === true
+            && verifiedTargetTransition(pending.method, pending.expectedBrokerTarget, attachment.brokerTarget, parsed.result))) {
         pending.reject(new Error("The selected broker target changed while the operation was pending; inspect current state before repeating it."));
         return;
       }

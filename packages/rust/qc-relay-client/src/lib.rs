@@ -228,6 +228,34 @@ async fn a_result_before_the_next_ready_frame_is_fenced_by_a_fresh_local_target(
     assert!(failure.message.contains("target changed"));
 }
 
+#[tokio::test]
+async fn intentional_reset_can_publish_its_verified_new_session_but_global_writes_cannot() {
+    struct LifecycleAdapter(std::sync::atomic::AtomicU64);
+    #[async_trait]
+    impl DeviceAdapter for LifecycleAdapter {
+        async fn ready(&self) -> bool { true }
+        async fn target_readiness(&self) -> TargetReadiness {
+            TargetReadiness { target_ready: true, usb_connected: true, broker_target: Some(BrokerTarget {
+                source: BrokerTargetSource::Physical, session_id: "physical".into(), generation: self.0.load(AtomicOrdering::SeqCst)
+            }) }
+        }
+        async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> { unreachable!() }
+        async fn invoke_targeted(&self, method: &str, _: Value, from: Option<BrokerTarget>, _: bool) -> Result<Value, DeviceError> {
+            self.0.store(2, AtomicOrdering::SeqCst);
+            let to = self.target_readiness().await.broker_target;
+            Ok(json!({"brokerTargetTransition":{"method":method,"from":from,"to":to,"verification":"same_native_controller"}}))
+        }
+    }
+    for method in ["device.resetSession", "device.setMasterVolume"] {
+        let adapter = Arc::new(LifecycleAdapter(std::sync::atomic::AtomicU64::new(1)));
+        let expected = adapter.target_readiness().await.broker_target;
+        let invoking = AtomicBool::new(false);
+        let result = invoke_with_deadline(adapter, method, json!({}), Some(1000), Instant::now(), expected, false, &invoking).await;
+        if method == "device.resetSession" { assert!(result.is_ok()); }
+        else { assert_eq!(result.unwrap_err().code, "WRITE_OUTCOME_AMBIGUOUS"); }
+    }
+}
+
 const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const SOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1125,7 +1153,10 @@ async fn invoke_with_deadline(
         // the cloud's cached socket metadata alone cannot detect that race.
         if let Some(expected) = expected_broker_target {
             let current = adapter.target_readiness().await;
-            if !current.target_ready || current.broker_target.as_ref() != Some(&expected) {
+            let actual = current.target_ready.then_some(current.broker_target.as_ref()).flatten();
+            if (!current.target_ready || actual != Some(&expected))
+                && !qc_relay_protocol::verified_target_transition(method, &expected, actual, &result)
+            {
                 return Err(admitted_request_failure(
                     method,
                     "BROKER_TARGET_CHANGED",
