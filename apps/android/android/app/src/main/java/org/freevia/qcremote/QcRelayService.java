@@ -45,6 +45,20 @@ public final class QcRelayService extends Service {
     private ScheduledFuture<?> readiness;
     private final RelayReadinessPublication readinessPublication = new RelayReadinessPublication();
     private String publishedProvider;
+
+    enum HostMode { NONE, VISIBLE_DEMO, CONNECTED_DEVICE }
+    static HostMode hostMode(boolean physicalEligible, boolean demoAvailable) {
+        return physicalEligible ? HostMode.CONNECTED_DEVICE : demoAvailable ? HostMode.VISIBLE_DEMO : HostMode.NONE;
+    }
+
+    static JSONObject readinessPayload(QcBrokerTarget target) throws Exception {
+        JSONObject payload = new JSONObject().put("type", "ready").put("protocol", RelayProtocol.VERSION)
+            .put("gatewayApiVersion", GeneratedGatewayMethods.API_VERSION)
+            .put("usbConnected", target != null && "physical".equals(target.source))
+            .put("targetReady", target != null);
+        if (target != null) payload.put("brokerTarget", target.json());
+        return payload;
+    }
     private int failures;
     private volatile RelayState state = RelayState.STOPPED;
     private final RelayFrameHandler relayFrameHandler = new RelayFrameHandler();
@@ -74,7 +88,8 @@ public final class QcRelayService extends Service {
         // whole app process. Stop cleanly and let the app restart us after its
         // USB session owns the attached QC.
         boolean physicalEligible = QcUsbPlugin.relayForegroundServiceEligible();
-        if (!physicalEligible && !QcUsbPlugin.relayDemoAvailable()) {
+        HostMode mode = hostMode(physicalEligible, QcUsbPlugin.relayDemoAvailable());
+        if (mode == HostMode.NONE) {
             state = RelayState.STOPPED;
             sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra(EXTRA_STATE, state.wireValue()));
             stopSelf();
@@ -83,7 +98,7 @@ public final class QcRelayService extends Service {
         try {
             // A simulated device does not grant Android's connectedDevice
             // foreground-service prerequisite. Its WebView must stay visible.
-            if (physicalEligible) startForeground(NOTIFICATION_ID, notification("Connecting securely…"));
+            if (mode == HostMode.CONNECTED_DEVICE) startForeground(NOTIFICATION_ID, notification("Connecting securely…"));
             else stopForeground(STOP_FOREGROUND_REMOVE);
         } catch (RuntimeException error) {
             // Foreground-service eligibility can change between the check
@@ -301,11 +316,11 @@ public final class QcRelayService extends Service {
             // method/parameter contract above; its device workflow retains
             // exact target and expected-name checks.
             dispatch(webSocket, decision.id, decision.method, decision.params,
-                decision.expected, decision.deadlineMs);
+                decision.expected, decision.expectedBrokerTarget, decision.deadlineMs);
         }
 
         private void dispatch(WebSocket webSocket, String id, String method,
-                JSONObject params, JSONObject expected, long deadlineMs) {
+                JSONObject params, JSONObject expected, QcBrokerTarget expectedTarget, long deadlineMs) {
             final java.util.concurrent.CompletableFuture<JSONObject> invocation;
             synchronized (QcRelayService.this) {
             // Linearize admission and ownership registration against stop/unpair.
@@ -315,7 +330,7 @@ public final class QcRelayService extends Service {
                     "The Android device host is at its bounded in-flight request limit.", true);
                 return;
             }
-            try { invocation = QcUsbPlugin.invokeFromRelay(method, params, expected); }
+            try { invocation = QcUsbPlugin.invokeFromRelay(method, params, expected, expectedTarget); }
             catch (RuntimeException error) {
                 invocationAdmission.release();
                 sendError(webSocket, id, "DEVICE_ERROR", "The device request could not be admitted.");
@@ -450,19 +465,13 @@ public final class QcRelayService extends Service {
     private synchronized void sendReadiness(WebSocket webSocket) {
         if (webSocket != socket || state != RelayState.CONNECTED) return;
         try {
-            boolean physical = QcUsbPlugin.relaySessionAvailable();
-            boolean demo = QcUsbPlugin.relayDemoAvailable();
-            boolean ready = physical || demo;
-            String provider = physical ? "device" : demo ? "virtual" : "none";
+            QcBrokerTarget target = QcUsbPlugin.relayBrokerTarget();
+            boolean ready = target != null;
+            String provider = target == null ? "none" : target.json().toString();
             if (!provider.equals(publishedProvider)) { readinessPublication.reset(); publishedProvider = provider; }
             // Continue observing USB locally, but publish only actual changes.
             // OkHttp's protocol pings keep the idle socket alive without DO work.
-            String frame = new JSONObject().put("type", "ready").put("protocol", RelayProtocol.VERSION)
-                .put("gatewayApiVersion", GeneratedGatewayMethods.API_VERSION)
-                // usbConnected is the relay protocol's legacy admission flag;
-                // distinguish actual USB from a foreground demo explicitly.
-                .put("usbConnected", ready).put("source", provider)
-                .put("physicalUsbConnected", physical).toString();
+            String frame = readinessPayload(target).toString();
             readinessPublication.publish(ready, () -> webSocket.send(frame));
         } catch (Exception ignored) {}
     }

@@ -22,9 +22,10 @@ final class QcDemoProvider {
 
     private static final class Pending {
         final String session;
+        final String method;
         final long generation;
         final CompletableFuture<JSONObject> result = new CompletableFuture<>();
-        Pending(String session, long generation) { this.session = session; this.generation = generation; }
+        Pending(String session, long generation, String method) { this.session = session; this.generation = generation; this.method = method; }
     }
 
     QcDemoProvider(BooleanSupplier physicalReady, LongSupplier physicalGeneration) {
@@ -57,6 +58,14 @@ final class QcDemoProvider {
         return foreground && sessionId != null && !physicalReady.getAsBoolean();
     }
 
+    static final class Registration {
+        final String id;
+        final long generation;
+        Registration(String id, long generation) { this.id = id; this.generation = generation; }
+    }
+    synchronized Registration registration() { return sessionId == null ? null : new Registration(sessionId, providerGeneration); }
+    synchronized String pendingMethod(String id) { Pending request = pending.get(id); return request == null ? null : request.method; }
+
     synchronized boolean canDeliver(String id) {
         Pending request = pending.get(id);
         return request != null && available() && request.session.equals(sessionId)
@@ -71,7 +80,7 @@ final class QcDemoProvider {
         synchronized (this) {
             if (!available()) return failed("NOT_CONNECTED", "The foreground demo provider is unavailable.");
             if (pending.size() >= MAX_PENDING) return failed("BUSY", "The demo provider is at its request limit.");
-            request = new Pending(sessionId, physicalGeneration.getAsLong());
+            request = new Pending(sessionId, physicalGeneration.getAsLong(), method);
             try {
                 envelope = new JSONObject().put("id", id).put("sessionId", sessionId)
                     .put("generation", providerGeneration).put("sequence", ++sequence)
