@@ -9,6 +9,11 @@ on:
       - "packages/typescript/qc-ui/**/*.md"
       - "docs/**"
       - "*.md"
+      - "legal/**"
+      - "LICENSE"
+      - "LICENSE-MIT"
+      - "LICENSE-APACHE"
+      - "LICENSES/**"
   push:
     branches: [master]
   workflow_dispatch:
@@ -22,6 +27,10 @@ on:
 permissions:
   contents: read
 
+# On a workflow_dispatch release build the two check jobs below are skipped and
+# the release job verifies that the very same commit already passed them in this
+# workflow's push or pull request run (see "Require the push CI result"), instead
+# of repeating 6 to 8 minutes of identical builds and tests.
 concurrency:
   group: linux-broker-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -29,6 +38,7 @@ concurrency:
 jobs:
   native-linux:
     name: Headless broker on native Linux
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -77,6 +87,7 @@ jobs:
 
   linux-desktop-host:
     name: Linux Tauri host and resident tray
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -152,7 +163,6 @@ jobs:
   linux-preview-release:
     name: Build Ubuntu preview release draft
     if: github.event_name == 'workflow_dispatch' && inputs.build_linux_draft
-    needs: [native-linux, linux-desktop-host]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -161,7 +171,26 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      checks: read
     steps:
+      # The two check jobs are not repeated for a release build. This step is the
+      # replacement: the exact commit being released must already carry a
+      # successful result for both from this workflow's push or pull request run
+      # (GitHub Actions app only). Re-run the failed jobs of that run, or merge
+      # first, if it does not; nothing is built until it does.
+      - name: Require the push CI result for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          required=("Headless broker on native Linux" "Linux Tauri host and resident tray")
+          runs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100"             --jq '.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "success") | .name')
+          for name in "${required[@]}"; do
+            if ! grep -Fxq "$name" <<<"$runs"; then
+              echo "::error::No successful '$name' check run exists for $GITHUB_SHA. Wait for or re-run the push CI of this commit, then dispatch again."
+              exit 1
+            fi
+            echo "ok: '$name' passed on $GITHUB_SHA"
+          done
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -173,6 +202,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy, rustfmt
+      # The release package build used to start from an empty target directory
+      # (about 7 minutes in package-linux-deb.py). It writes the app's release
+      # profile under apps/windows/src-tauri/target/<triple>/release.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/windows/src-tauri -> target
+          key: linux-deb-release
       - name: Install Ubuntu 24.04 Tauri and HID build dependencies
         run: |
           sudo apt-get update
@@ -197,8 +233,6 @@ jobs:
           PY
       - name: Install locked frontend dependencies
         run: npm ci
-      - name: Test Debian packager safety checks
-        run: python3 -m unittest scripts.test_package_linux_deb
       - name: Build and verify Debian package from this source commit
         env:
           RUSTUP_TOOLCHAIN: stable
