@@ -1,15 +1,14 @@
-import { brokerTargetKey, validateGatewayResult, type ConnectionState, type PresetSnapshot, type RuntimeStatus } from "@qc-remote/client";
+import { brokerTargetKey, selectedBrokerTarget, validateGatewayResult, type ConnectionState, type PresetSnapshot, type RuntimeStatus } from "@qc-remote/client";
 
 /** MCP connectivity and a usable selected target are different observations.
  * brokerTarget is published only for a usable selected provider. USB diagnostics
  * stay physical-only even when the selected provider is the host's demo. */
 export function pairedHostConnection(status: RuntimeStatus): ConnectionState {
-  const target = status.brokerTarget;
-  brokerTargetKey(target);
+  const target = selectedBrokerTarget(status);
   const usb = status.usbDiagnostics;
   const available = status.gatewayAvailable !== false;
-  const ready = available && (Boolean(target) || Boolean(usb?.connected && (usb.synchronized || usb.phase === "ready")));
-  const phase = ready ? "ready" : !available || !usb?.connected ? "disconnected" : usb.phase === "syncing" ? "syncing" : "opening";
+  const ready = available && (status.targetReady ?? (Boolean(target) || Boolean(usb?.connected && (usb.synchronized || usb.phase === "ready"))));
+  const phase = ready ? "ready" : status.targetReady === false || !available || !usb?.connected ? "disconnected" : usb.phase === "syncing" ? "syncing" : "opening";
   return {
     phase, source: "device", demo: !ready,
     ...(ready && target ? { brokerTarget: { ...target } } : {}),

@@ -436,6 +436,7 @@ import type { GatewayTransport } from "./generated-gateway-transport.ts";
 export function withDeviceConnectionSource<T extends GatewayTransport>(transport: T): T {
   const stamp = async (state: Promise<ConnectionState>): Promise<ConnectionState> => {
     const connection = normalizeBrokerConnection(await state);
+    brokerTargetKey(connection.brokerTarget);
     if (connection.source !== undefined && connection.source !== "device" && connection.source !== "virtual") {
       throw new Error("The device connection source is unsupported. Refresh before editing.");
     }
@@ -458,6 +459,19 @@ export function brokerTargetKey(target: BrokerTarget | undefined): string | unde
     throw new Error("The selected broker target identity is unsupported. Refresh before editing.");
   }
   return JSON.stringify([target.source, target.sessionId, target.generation]);
+}
+
+/** Normalize optional selected-target metadata without mistaking API/USB
+ * availability for the broker's effective target readiness. */
+export function selectedBrokerTarget(status: Pick<RuntimeStatus, "brokerTarget" | "targetReady">): BrokerTarget | undefined {
+  brokerTargetKey(status.brokerTarget);
+  if (status.targetReady !== undefined && typeof status.targetReady !== "boolean") {
+    throw new Error("The selected broker target readiness is unsupported. Refresh before editing.");
+  }
+  if (status.targetReady === true && !status.brokerTarget) {
+    throw new Error("The selected broker target has no identity. Refresh before editing.");
+  }
+  return status.targetReady === false ? undefined : status.brokerTarget;
 }
 
 /** Require the model identifier observed with a parameter or Grid target. */

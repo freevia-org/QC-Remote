@@ -45,3 +45,12 @@ test("legacy physical reads remain finite and malformed snapshots are rejected",
   assert.equal(result.snapshot?.presetName, "QC"); assert.equal(calls.length, 2);
   await assert.rejects(readPairedHostTarget({ callTool: async name => name === "get_qc_status" ? live : {} }), /malformed PresetSnapshot/);
 });
+
+
+test("explicit targetReady overrides stale physical diagnostics and requires target identity", () => {
+  const usb = { connected: true, synchronized: true, phase: "ready" };
+  assert.equal(pairedHostConnection(status({ targetReady: false, brokerTarget: demo, usbDiagnostics: usb })).phase, "disconnected");
+  assert.equal(pairedHostConnection(status({ targetReady: false, brokerTarget: demo, usbDiagnostics: usb })).brokerTarget, undefined);
+  assert.throws(() => pairedHostConnection(status({ targetReady: true })), /has no identity/);
+  assert.equal(pairedHostConnection(status({ targetReady: true, brokerTarget: demo })).phase, "ready");
+});

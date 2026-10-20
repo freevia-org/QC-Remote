@@ -154,9 +154,9 @@ function appMcpRequestForRecall() {
 }
 
 
-test('connection actions preserve explicit source independently of demo:false', async () => {
+test('connection actions retain the paired host route independently of demo:false', async () => {
   for (const method of ['device.reconnect', 'device.resetSession', 'device.disconnect']) {
-    for (const source of ['virtual', 'device', undefined]) {
+    for (const source of ['device', undefined]) {
       const result = await invokeAppMcp(method, {}, { accessMode: 'full', confirm: async () => true, callTool: async name => name === 'get_qc_status'
         ? { usbDiagnostics: { phase: 'ready', connected: true } }
         : { phase: 'ready', detail: 'Observed', demo: false, source, restarted: false } });
@@ -184,4 +184,13 @@ test('remote demo metadata preserves the host route and latest broker generation
   assert.deepEqual(result.brokerTarget, target);
   assert.equal(result.phase, "ready", "selected usable demo does not require physical USB");
   assert.match(result.detail, /demo device is ready/);
+});
+
+
+test('legacy host virtual source cannot select a phone-local demo without broker target identity', async () => {
+  await assert.rejects(invokeAppMcp('device.reconnect', {}, { accessMode: 'full', confirm: async () => true, callTool: async name => name === 'get_qc_status'
+    ? { usbDiagnostics: { phase: 'ready', connected: true } } : { source: 'virtual' } }), /no broker target identity/);
+  const unavailable = await invokeAppMcp('device.reconnect', {}, { accessMode: 'full', confirm: async () => true, callTool: async name => name === 'get_qc_status'
+    ? { targetReady: false, usbDiagnostics: { phase: 'disconnected', connected: false } } : { source: 'virtual' } });
+  assert.equal(unavailable.source, 'device'); assert.equal(unavailable.phase, 'disconnected');
 });

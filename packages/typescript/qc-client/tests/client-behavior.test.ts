@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { brokerTargetKey, normalizeBrokerConnection, requireModelId, requirePresetIdentity, withDeviceConnectionSource, type GatewayTransport } from "../src/index.ts";
+import { brokerTargetKey, selectedBrokerTarget, normalizeBrokerConnection, requireModelId, requirePresetIdentity, withDeviceConnectionSource, type GatewayTransport } from "../src/index.ts";
 
 const state = (phase: "ready" | "disconnected") => ({ phase, detail: phase, demo: false, source: "virtual" as const });
 
@@ -69,4 +69,14 @@ test("broker target keys validate kind and generation and distinguish a return t
   for (const invalid of [null, {}, { ...demo, source: "virtual" }, { ...demo, sessionId: " " }, { ...demo, generation: 0 }, { ...demo, generation: 1.5 }, { ...demo, generation: Number.MAX_SAFE_INTEGER + 1 }]) {
     assert.throws(() => brokerTargetKey(invalid as any), /identity is unsupported/);
   }
+});
+
+
+test("effective readiness cannot revive absent or withdrawn target metadata", () => {
+  const target = { source: "demo" as const, sessionId: "provider", generation: 1 };
+  assert.equal(selectedBrokerTarget({}), undefined);
+  assert.equal(selectedBrokerTarget({ targetReady: false, brokerTarget: target }), undefined);
+  assert.equal(selectedBrokerTarget({ targetReady: true, brokerTarget: target }), target);
+  assert.throws(() => selectedBrokerTarget({ targetReady: true }), /has no identity/);
+  assert.throws(() => selectedBrokerTarget({ targetReady: "yes" } as any), /readiness is unsupported/);
 });

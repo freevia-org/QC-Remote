@@ -134,3 +134,13 @@ test("shared dispatcher validates native expected-state constraints before an ef
   assert.equal(await bridge.handle(request({ method: "device.setMasterVolume", params: { value: 20 }, expectedState: { presetName: "another preset" } })), "discarded");
   assert.equal(effects, 0); assert.equal(f.replies[0].error.code, "STATE_CONFLICT");
 });
+
+
+test("malformed expected-state constraints are forwarded and refused, never silently dropped", async () => {
+  const f = fixture(); let effects = 0;
+  const gateway = { currentSnapshot: async () => ({}), setMasterVolume: async () => { effects++; return {}; } } as unknown as GatewayTransport;
+  const bridge = createNativeDemoProviderBridge(f.port);
+  await bridge.bind({ sessionId: "ui-demo-session", gateway, current: () => true });
+  await bridge.handle(request({ method: "device.setMasterVolume", params: { value: 20 }, expectedState: null as any }));
+  assert.equal(effects, 0); assert.equal(f.replies[0].error.code, "INVALID_PROVIDER_REQUEST");
+});

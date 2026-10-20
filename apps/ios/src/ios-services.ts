@@ -284,19 +284,21 @@ export const QcUsbNative = nativePlugin as any;
 export const androidGatewayTransport = withDeviceConnectionSource(createGatewayClientTransport<GatewayTransport>(<T,>(method: string, params?: Record<string, unknown>) => nativePlugin.gatewayInvoke({ method, params }) as Promise<T>, "rpc"));
 export async function androidUsbRuntimeDiagnostics(): Promise<NonNullable<RuntimeStatus["usbDiagnostics"]> & { android: any }> {
   const android = await nativePlugin.diagnostics();
-  const hostRelay = lastStatus?.usbDiagnostics?.updaterRelay;
+  const physicalUsb = directIpadSession ? undefined : lastStatus?.usbDiagnostics;
+  const hostRelay = physicalUsb?.updaterRelay;
   const relayDetail = hostRelay && typeof hostRelay.enabled === "boolean"
     ? ` The paired host's QC internet forwarding is ${hostRelay.enabled ? "enabled" : "disabled"}.`
     : " Forwarding for QC account, cloud, and update requests depends on the paired host's QC Remote version and settings.";
   return {
-    phase: android.phase,
+    ...(physicalUsb ?? {}),
+    phase: directIpadSession ? android.phase : physicalUsb?.phase ?? "disconnected",
     detail: directIpadSession
       ? "Connected directly through the iPad DriverKit prototype. This direct iOS path does not provide the QC internet request forwarder; use Paired host mode for QC account, cloud, and update requests."
       : mcpConnected
         ? `Connected through the QC Remote paired host.${relayDetail}`
         : "Sign in to QC Remote Cloud to reach a paired host.",
-    connected: android.connected,
-    synchronized: android.synchronized,
+    connected: directIpadSession ? android.connected : Boolean(physicalUsb?.connected),
+    synchronized: directIpadSession ? android.synchronized : Boolean(physicalUsb?.synchronized),
     android
   };
 }

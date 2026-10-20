@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
  * browser, simulator, saved profile, or installed application is accessed. */
 async function loadService(t: any) {
   const state = { calls: [] as string[], failConnect: true, client: undefined as any,
+    runtimeStatus: { deviceName: "fixture", usbDiagnostics: { connected: true, synchronized: true } } as any,
+    toolHook: undefined as undefined | ((name: string) => any),
     saved: JSON.stringify({ tokens: { access_token: "fixture-only", token_type: "bearer" } }),
     appEvents: new Map<string, any>(), documentEvents: new Map<string, any>() };
   const replaceGlobal = (key: string, value: unknown) => {
@@ -22,10 +24,10 @@ async function loadService(t: any) {
     "@capacitor/app": `export const App={addListener:async (name,fn)=>{globalThis.__qcIosTest.appEvents.set(name,fn);return {remove:async()=>{}}}};`,
     "@capacitor/browser": `export const Browser={open:async()=>{},close:async()=>{}};`,
     "@capacitor/core": `export const Capacitor={isNativePlatform:()=>true};export const registerPlugin=()=>({});`,
-    "@modelcontextprotocol/sdk/client/index.js": `export class Client { constructor(){globalThis.__qcIosTest.client=this;} async connect(){const s=globalThis.__qcIosTest;s.calls.push('initialize');if(s.failConnect)throw Error('HTTP 503');}async callTool({name}){const s=globalThis.__qcIosTest;s.calls.push(name);return name==='get_current_preset'?{presetName:'fixture',blocks:[]}:{deviceName:'fixture',usbDiagnostics:{connected:true,synchronized:true}};}async close(){this.onclose?.();}}`,
+    "@modelcontextprotocol/sdk/client/index.js": `export class Client { constructor(){globalThis.__qcIosTest.client=this;} async connect(){const s=globalThis.__qcIosTest;s.calls.push('initialize');if(s.failConnect)throw Error('HTTP 503');}async callTool({name}){const s=globalThis.__qcIosTest;s.calls.push(name);return s.toolHook?s.toolHook(name):name==='get_current_preset'?{presetName:'fixture',blocks:[]}:s.runtimeStatus;}async close(){this.onclose?.();}}`,
     "@modelcontextprotocol/sdk/client/streamableHttp.js": `export class StreamableHTTPClientTransport {constructor(url,options){if(options.reconnectionOptions.maxRetries!==0)throw Error('SDK reconnect must be disabled');}async finishAuth(){}}`,
     "@modelcontextprotocol/sdk/client/auth.js": `export class UnauthorizedError extends Error {} export const auth=async()=>"AUTHORIZED";`,
-    "@qc-remote/client": `export const brokerTargetKey=x=>x?JSON.stringify([x.source,x.sessionId,x.generation]):undefined;export const validateGatewayResult=(method,x)=>x;export const GATEWAY_CLIENT_METHODS={};export const withDeviceConnectionSource=x=>x;export const createGatewayClientTransport=fn=>({invoke:fn});`,
+    "@qc-remote/client": `export const selectedBrokerTarget=x=>x.targetReady===false?undefined:x.brokerTarget;export const brokerTargetKey=x=>x?JSON.stringify([x.source,x.sessionId,x.generation]):undefined;export const validateGatewayResult=(method,x)=>x;export const GATEWAY_CLIENT_METHODS={};export const withDeviceConnectionSource=x=>x;export const createGatewayClientTransport=fn=>({invoke:fn});`,
     "@qc-remote/core": `export const parseControlAccessMode=()=>"read-only";export const controlAccessPermitsAction=()=>true;export const SHARED_QC_ACTIONS=[];export const createQcGatewayTransport=x=>x;export const parseAppMcpResult=x=>x;export const invokeAppMcp=(method,args,opts)=>opts.callTool(method==='system.status'?'get_qc_status':'get_current_preset',args);`,
     "@qc-remote/theme": `export const QC_BRAND={publicRelayEndpoint:'https://example.test'};`,
     "../native-bridge": `export const QCIosNativeBridge={secureGet:async()=>({value:globalThis.__qcIosTest.saved}),secureSet:async({value})=>{globalThis.__qcIosTest.saved=value;},addListener:async()=>({remove:async()=>{}}),setScreenAwake:async()=>{},platformCapabilities:async()=>({deviceFamily:'iphone'})};`,
@@ -74,4 +76,58 @@ test("failed connection, passive scans, background and resume never retry MCP; e
   assert.equal((await service.publicRelay.status()).paired, true);
   await service.publicRelay.unpair();
   assert.equal((await service.publicRelay.status()).paired, false, "only explicit sign-out clears saved credentials");
+});
+
+
+test("actual iOS service observes host demo without USB, preserves host route and keeps raw USB diagnostics physical", async t => {
+  const { state, service } = await loadService(t);
+  state.failConnect = false;
+  state.runtimeStatus = { gatewayAvailable: true, targetReady: true, brokerTarget: { source: "demo", sessionId: "same-Mac-UI-demo", generation: 1 }, usbDiagnostics: { connected: false, synchronized: false, phase: "disconnected" } };
+  const saved = state.saved, events: any[] = [];
+  await service.QcUsbNative.addListener("qcConnection", (value: any) => events.push(value));
+  const observation = await service.refreshRemoteTargetObservation();
+  assert.equal(observation.connection.source, "device");
+  assert.equal(observation.connection.brokerTarget.source, "demo");
+  assert.equal(observation.connection.phase, "ready");
+  assert.equal(observation.snapshot.presetName, "fixture");
+  assert.deepEqual(events, [], "explicit refresh must not start a competing availability-driven connection attempt");
+  const before = state.calls.length;
+  const scan = await service.QcUsbNative.scan();
+  assert.equal(scan.connected, true); assert.match(scan.devices[0].name, /Demo device via paired host/);
+  const diagnostics = await service.androidUsbRuntimeDiagnostics();
+  assert.equal(diagnostics.connected, false, "raw USB truth must remain absent");
+  assert.equal(diagnostics.android.connected, true, "the selected demo gateway is usable");
+  assert.equal(state.calls.length, before, "passive scan/diagnostics must not create MCP traffic");
+  assert.equal(state.saved, saved); assert.equal((await service.publicRelay.status()).paired, true);
+});
+
+test("actual iOS service keeps saved authentication while the selected host target becomes unavailable", async t => {
+  const { state, service } = await loadService(t);
+  state.failConnect = false;
+  await service.refreshRemoteTargetObservation();
+  state.runtimeStatus = { gatewayAvailable: true, targetReady: false, usbDiagnostics: { connected: false, synchronized: false, phase: "disconnected" } };
+  const saved = state.saved, before = state.calls.length;
+  const observation = await service.refreshRemoteTargetObservation();
+  assert.equal(observation.connection.phase, "disconnected"); assert.equal(observation.snapshot, undefined);
+  assert.deepEqual(state.calls.slice(before), ["get_qc_status"]);
+  assert.equal((await service.QcUsbNative.scan()).connected, false);
+  assert.equal(state.saved, saved); assert.equal((await service.publicRelay.status()).paired, true);
+});
+
+test("a target change during actual iOS refresh does not publish a successful observation timestamp", async t => {
+  const { state, service } = await loadService(t);
+  state.failConnect = false;
+  const target = { source: "demo", sessionId: "same-Mac-UI-demo", generation: 1 };
+  state.runtimeStatus = { gatewayAvailable: true, targetReady: true, brokerTarget: target, usbDiagnostics: { connected: false, synchronized: false, phase: "disconnected" } };
+  const observations: number[] = [];
+  await service.subscribeRemoteObservation((value: number) => observations.push(value));
+  await service.refreshRemoteTargetObservation();
+  assert.equal(observations.length, 1);
+  state.toolHook = name => {
+    if (name === "get_current_preset") { state.runtimeStatus = { ...state.runtimeStatus, brokerTarget: { ...target, generation: 3 } }; return { presetName: "old demo", blocks: [] }; }
+    return state.runtimeStatus;
+  };
+  const saved = state.saved;
+  await assert.rejects(service.refreshRemoteTargetObservation(), /target changed during refresh/);
+  assert.equal(observations.length, 1); assert.equal(state.saved, saved);
 });

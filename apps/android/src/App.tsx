@@ -105,6 +105,9 @@ export function App() {
   const [catalogRevision, setCatalogRevision] = useState(0);
   const demoActive = connection.source === "virtual" && connection.phase === "ready";
   const hostDemoActive = connection.brokerTarget?.source === "demo" && connection.phase === "ready";
+  const physicalSelected = hardwareConnected && connection.phase === "ready" && !demoActive && !hostDemoActive;
+  const physicalSelectedRef = useRef(physicalSelected);
+  physicalSelectedRef.current = physicalSelected;
   const targetIdentity = brokerTargetKey(connection.brokerTarget) ?? "";
   const targetIdentityRef = useRef(targetIdentity);
   targetIdentityRef.current = targetIdentity;
@@ -733,7 +736,7 @@ export function App() {
 
   const startDemoDevice = async (reason?: string) => {
     if (!native || corpusFixtureEnabled || demoStartInFlight.current || demoActive) return;
-    if (hardwareConnected && !hostDemoActive) { setNotice("The connected Quad Cortex takes precedence over the local demo."); return; }
+    if (hardwareConnected && connection.phase === "ready" && !hostDemoActive) { setNotice("The connected Quad Cortex takes precedence over the local demo."); return; }
     if (reason === undefined) usbRetryRequested.current = false;
     const attempt = connectionAttempts.begin();
     demoStartInFlight.current = true;
@@ -1056,16 +1059,17 @@ export function App() {
   useEffect(() => {
     // iOS is an MCP client. Only Android publishes its foreground local demo.
     const gateway = demoDeviceSession.virtual;
-    if (!native || iosPlatform || !demoActive || !gateway) return;
+    if (!native || iosPlatform || !gateway) return;
     const provider = attachNativeDemoProvider({
       port: QcUsbNative, gateway,
-      current: () => appOperationMounted.current && activeSourceRef.current === "virtual" && demoDeviceSession.virtual === gateway,
+      current: () => appOperationMounted.current && !physicalSelectedRef.current && demoDeviceSession.virtual === gateway,
       sessionId: () => crypto.randomUUID(), visible: () => document.visibilityState !== "hidden",
       subscribeVisibility: changed => { document.addEventListener("visibilitychange", changed); return () => document.removeEventListener("visibilitychange", changed); },
       onResult: async (transport, current) => {
+        if (activeSourceRef.current !== "virtual") return; // Keep a hidden demo's edits in its existing store.
         await qcController.readSnapshot(async () => {
           const value = await transport.currentSnapshot();
-          if (!current()) throw new Error("The demo provider changed before its view refresh completed.");
+          if (!current() || activeSourceRef.current !== "virtual") throw new Error("The demo provider changed before its view refresh completed.");
           return value;
         }, { sessionRecovery: true });
       },
@@ -1073,7 +1077,7 @@ export function App() {
     });
     void provider.ready.catch(() => { if (appOperationMounted.current) setNotice("The local demo is open, but its MCP provider is unavailable."); });
     return () => { void provider.dispose(); };
-  }, [native, iosPlatform, demoActive, demoDeviceSession, snapshot.stateVersion?.session, qcController.readSnapshot]);
+  }, [native, iosPlatform, demoActive, physicalSelected, demoDeviceSession, snapshot.stateVersion?.session, qcController.readSnapshot]);
 
   const refreshRemoteObservation = async () => {
     if ((!observationPolicy.refresh && !observationPolicy.readTarget) || remoteRefreshPending) return;
