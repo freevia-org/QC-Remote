@@ -7,6 +7,15 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.191 / Android 0.3.41 — 20 October 2026
+
+Changes since Windows 0.1.190 / Android 0.3.40. This is a small maintenance
+release. It keeps the emergency MCP guard in place during the relay quota
+rollout (#179), validates the app MCP adapter and corrects paired-host command
+mappings, and carries CI, simulator-test
+and iOS scene-lifecycle changes that do not alter desktop or Android behavior.
+Everything else in 0.1.190 / 0.3.40 is unchanged.
+
 ## QC Remote Windows 0.1.190 / Android 0.3.40 — 20 October 2026
 
 Changes since Windows 0.1.189 / Android 0.3.39. This release carries one
