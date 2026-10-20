@@ -64,6 +64,11 @@ describe("MCP admission with presence in one RPC", () => {
       }
       expect(ready).toBe(true);
       await expect(target.command({ method: "device.setTempo", params: { tempo: 120 } }, 0)).resolves.toEqual({ tempo: 120 });
+      if (readiness.brokerTarget) {
+        await runInDurableObject(target, async (instance: DeviceSession) => {
+          await expect(instance.command({ method: "device.setTempo", params: { tempo: 119 }, expectedBrokerTarget: { ...readiness.brokerTarget, generation: 2 } }, 0)).rejects.toThrow("target changed");
+        });
+      }
       await runInDurableObject(target, async (instance: DeviceSession) => {
         await expect(instance.command({ method: "device.setTempo", params: { tempo: 121 } }, 1)).rejects.toThrow();
       });
