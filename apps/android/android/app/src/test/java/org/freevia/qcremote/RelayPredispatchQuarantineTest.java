@@ -48,11 +48,13 @@ public class RelayPredispatchQuarantineTest {
             .replace("package org.freevia.qcremote;", "");
         String protocol = new String(Files.readAllBytes(pluginPath.resolveSibling("RelayProtocol.java")), StandardCharsets.UTF_8)
             .replace("package org.freevia.qcremote;", "").replace("import org.json.JSONObject;", "");
+        String targetPolicy = new String(Files.readAllBytes(pluginPath.resolveSibling("QcGatewayTargetPolicy.java")), StandardCharsets.UTF_8)
+            .replace("package org.freevia.qcremote;", "");
         String generated = new String(Files.readAllBytes(pluginPath.resolveSibling("GeneratedGatewayMethods.java")), StandardCharsets.UTF_8);
         String dispatch = slice(generated, "    static String dispatchKind(String method)", "    static String resultKind(String method)");
         String java = HARNESS + prefix
             + "            submissions++; return CompletableFuture.completedFuture(new JSONObject());\n"
-            + catches + mutation + failed + "}\n" + exception + protocol + DEPENDENCIES
+            + catches + mutation + failed + "}\n" + exception + protocol + targetPolicy + DEPENDENCIES
             + "class GeneratedGatewayMethods {static boolean contains(String s){return true;} static void validateParams(String s,JSONObject p){}"
             + dispatch + "}";
         Path output = Files.createTempDirectory("qc-predispatch-quarantine-");

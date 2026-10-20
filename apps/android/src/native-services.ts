@@ -4,6 +4,7 @@ import { createQcGatewayTransport, type ControlAccessMode, type PublicRelayPort,
 import { QC_BRAND } from "@qc-remote/theme";
 import type { VirtualDeviceStorage } from "@qc-remote/ui";
 import { readAndroidPhysicalTarget, type AndroidGatewayRuntimeStatus } from "./android-gateway-target.ts";
+import { createAndroidGatewayContext } from "./android-gateway-context.ts";
 
 export type { QcStateUpdate } from "@qc-remote/core";
 
@@ -41,7 +42,7 @@ interface QcUsbNativePlugin {
   connect(options?: { allowPermissionPrompt?: boolean }): Promise<{ connected: boolean; synchronized: boolean; name: string; deviceId: number }>;
   disconnect(): Promise<void>;
   diagnostics(): Promise<AndroidUsbDiagnostics>;
-  gatewayInvoke<T>(options: { method: string; params?: Record<string, unknown>; expectedState?: Record<string, unknown>; expectedBrokerTarget?: AndroidDemoRequest["brokerTarget"] }): Promise<T>;
+  gatewayInvoke<T>(options: { method: string; params?: Record<string, unknown>; expectedState?: Record<string, unknown>; expectedBrokerTarget?: AndroidDemoRequest["brokerTarget"]; requireAcceptedBrokerTarget?: boolean }): Promise<T>;
   addListener(eventName: "qcStateBatch", listener: (frame: NativeStateFrame<QcStateUpdate>) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "qcConnection", listener: (status: { state: "available" | "disconnected"; name?: string }) => void): Promise<PluginListenerHandle>;
 }
@@ -135,12 +136,11 @@ export const publicRelay: PublicRelayPort = {
   },
 };
 
-let acceptedAndroidBrokerTarget: AndroidDemoRequest["brokerTarget"] | undefined;
+const androidGatewayContext = createAndroidGatewayContext(<T,>(request: Parameters<QcUsbNativePlugin["gatewayInvoke"]>[0]) => QcUsbNative.gatewayInvoke<T>(request));
 
 /** Commit only a UI-adopted physical context; status discovery never changes it. */
 export function acceptAndroidGatewayBrokerTarget(target: AndroidDemoRequest["brokerTarget"] | undefined): void {
-  if (target && target.source !== "physical") throw new TypeError("The native USB gateway requires a physical broker target.");
-  acceptedAndroidBrokerTarget = target ? Object.freeze({ ...target }) : undefined;
+  androidGatewayContext.accept(target);
 }
 
 export function readAndroidGatewayTarget() {
@@ -155,9 +155,7 @@ export function readAndroidGatewayTarget() {
 }
 
 export const androidGatewayTransport = withDeviceConnectionSource(createGatewayClientTransport<GatewayTransport>(
-  <T,>(method: string, params?: Record<string, unknown>) => QcUsbNative.gatewayInvoke<T>({
-    method, params, ...(acceptedAndroidBrokerTarget ? { expectedBrokerTarget: acceptedAndroidBrokerTarget } : {})
-  }),
+  androidGatewayContext.invoke,
   "rpc"
 ));
 

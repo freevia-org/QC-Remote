@@ -947,10 +947,7 @@ public class QcUsbPlugin extends Plugin {
     }
 
     private static boolean isMutationDispatch(String dispatch) {
-        return "SET_DEVICE_NAME".equals(dispatch) || "TAP_SCREEN".equals(dispatch)
-            || "PREVIEW_PARAMETER".equals(dispatch) || "PLANNED_WRITE".equals(dispatch)
-            || "PRESET_WRITE".equals(dispatch) || "PERSISTENT_WRITE".equals(dispatch)
-            || "BACKUP".equals(dispatch);
+        return QcGatewayTargetPolicy.isMutationDispatch(dispatch);
     }
 
     private CompletableFuture<org.json.JSONObject> relayPlannedGatewayWrite(
@@ -1937,6 +1934,10 @@ public class QcUsbPlugin extends Plugin {
         }
         JSObject params = call.getObject("params");
         JSObject expected = call.getObject("expectedState");
+        try {
+            QcGatewayTargetPolicy.requireAccepted(method,
+                Boolean.TRUE.equals(call.getBoolean("requireAcceptedBrokerTarget", false)), call.getData().has("expectedBrokerTarget"));
+        } catch (RelayException missingContext) { call.reject(missingContext.getMessage(), missingContext.code); return; }
         QcBrokerTarget captured = currentBrokerTarget();
         if (captured != null && !"physical".equals(captured.source)) captured = null;
         if (call.getData().has("expectedBrokerTarget")) {
