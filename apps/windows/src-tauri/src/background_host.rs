@@ -482,6 +482,41 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn try_reacquire_host_lease_until(
+        directory: &Path,
+        timeout: Duration,
+    ) -> Result<Option<HostLease>, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(lease) = HostLease::try_acquire(directory, "host")? {
+                return Ok(Some(lease));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn bounded_host_lease_reacquire_waits_for_a_held_lease_to_drop() {
+        let directory = crate::tests::unique_fixture_directory("bounded-host-lease");
+        let root = crate::tests::RemoveDirOnDrop::new(directory.clone());
+        let lease = HostLease::try_acquire(&directory, "host").unwrap().unwrap();
+        assert!(
+            try_reacquire_host_lease_until(&directory, Duration::from_millis(50))
+                .unwrap()
+                .is_none()
+        );
+        drop(lease);
+        let reacquired =
+            try_reacquire_host_lease_until(&directory, Duration::from_secs(2)).unwrap();
+        assert!(reacquired.is_some());
+        drop(reacquired);
+        drop(root);
+        assert!(!directory.exists());
+    }
     #[test]
     fn the_background_host_publishes_exactly_the_gui_set() {
         // Never an environment-chosen path: the set is a function of the two
@@ -643,9 +678,13 @@ mod tests {
         drop(release);
         host.stop_within(Duration::from_secs(2));
         assert!(host.finished());
-        assert!(HostLease::try_acquire(&directory, "host")
-            .unwrap()
-            .is_some());
+        // A concurrently forked pre-exec child can briefly retain the flock's
+        // file description after the original actor has actually retired.
+        // Observe OS lock release without weakening either retirement check.
+        let reacquired =
+            try_reacquire_host_lease_until(&directory, Duration::from_secs(2)).unwrap();
+        assert!(reacquired.is_some());
+        drop(reacquired);
         drop(host);
         drop(root);
         assert!(!directory.exists());
