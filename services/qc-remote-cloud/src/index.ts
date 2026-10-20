@@ -15,6 +15,7 @@ import { commandDeadlineMs, deadlineExceededMessage, innerBudgetMs } from "./dev
 import { LateResultLog } from "./late-results.ts";
 import { selectDeviceHost } from "./device-selection.ts";
 import { decodeDeviceMessage } from "./device-messages.ts";
+import { deviceReadiness, sameBrokerTarget, type BrokerTarget } from "./device-readiness.ts";
 import { deviceInvocationError, deviceInvocationToolError, deviceResourceRead, deviceToolCall } from "./device-errors.ts";
 import { sanitizePublicResult } from "./public-result.ts";
 import { applyWorkerInputs } from "./model-query.ts";
@@ -60,7 +61,7 @@ type Json = Record<string, unknown>;
  * holds it, so a socket accepted while its record was being revoked cannot run
  * anything. Sockets accepted before this field existed carry none and rely on
  * revocation closing them by device id. */
-type DeviceAttachment = { deviceId: string; deviceName: string; ready: boolean; connectionId?: string; gatewayApiVersion?: number; mcpPresence?: boolean; credentialExpiresAt?: number | null; credentialHash?: string };
+type DeviceAttachment = { deviceId: string; deviceName: string; ready: boolean; usbConnected?: boolean; brokerTarget?: BrokerTarget; connectionId?: string; gatewayApiVersion?: number; mcpPresence?: boolean; credentialExpiresAt?: number | null; credentialHash?: string };
 type PairingOffer = { codeHash: string; expiresAt: number; redeemed: boolean };
 type PairingMetadata = { email: string; device: string; pairedAt: number };
 /** `lastUsedAt` is the last authenticated use, written at most once a day;
@@ -1146,7 +1147,7 @@ export class DeviceSession extends DurableObject<Env> {
     const lateResults = this.lateResults.arrivals();
     return {
       connected: devices.filter((item) => item.ready).length,
-      devices: devices.map(({ deviceId, deviceName, ready }) => ({ deviceId, deviceName, ready })),
+      devices: devices.map(({ deviceId, deviceName, ready, usbConnected, brokerTarget }) => ({ deviceId, deviceName, ready, ...(usbConnected !== undefined ? { usbConnected } : {}), ...(brokerTarget ? { brokerTarget } : {}) })),
       ...(lateResults.length > 0 ? { lateResults } : {})
     };
   }
@@ -1412,11 +1413,13 @@ export class DeviceSession extends DurableObject<Env> {
       const reported = typeof parsed.gatewayApiVersion === "number" && Number.isInteger(parsed.gatewayApiVersion)
         ? { gatewayApiVersion: parsed.gatewayApiVersion }
         : {};
-      const next = { ...attachment, ...reported, ready: parsed.usbConnected === true, mcpPresence: parsed.mcpPresence === true };
-      if (next.ready !== attachment.ready || next.mcpPresence !== attachment.mcpPresence || next.gatewayApiVersion !== attachment.gatewayApiVersion) {
+      let readiness;
+      try { readiness = deviceReadiness(parsed); } catch { socket.close(1003, "Invalid readiness"); return; }
+      const next = { ...attachment, ...reported, ...readiness, brokerTarget: readiness.brokerTarget, mcpPresence: parsed.mcpPresence === true };
+      if (next.ready !== attachment.ready || next.usbConnected !== attachment.usbConnected || !sameBrokerTarget(next.brokerTarget, attachment.brokerTarget) || next.mcpPresence !== attachment.mcpPresence || next.gatewayApiVersion !== attachment.gatewayApiVersion) {
         socket.serializeAttachment(next);
       }
-      // Ready is also the host's periodic USB heartbeat. Send its initial
+      // Readiness is event-driven; unchanged frames require no attachment write. Send its initial
       // snapshot only on opt-in; activity and alarms publish later changes.
       if (parsed.mcpPresence === true && attachment.mcpPresence !== true) await this.refreshMcpPresence();
       return;

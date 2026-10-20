@@ -26,7 +26,10 @@ import { DEVICE_RETENTION_MS, DEVICE_SWEEP_KEY } from "../../src/device-retentio
 import type { DeviceSession } from "../../src/index.ts";
 
 describe("MCP admission with presence in one RPC", () => {
-  it("keeps remote command dispatch and session fencing through a real socket", async () => {
+  it.each([
+    { usbConnected: true },
+    { usbConnected: false, targetReady: true, brokerTarget: { source: "demo", sessionId: "runtime-demo-1", generation: 1 } }
+  ])("keeps remote command dispatch and session fencing through a ready socket (%j)", async (readiness) => {
     const target = env.DEVICE_SESSION.getByName(`request-control-${crypto.randomUUID()}`);
     const deviceId = crypto.randomUUID();
     const credential = `runtime-device-${crypto.randomUUID()}`;
@@ -50,7 +53,7 @@ describe("MCP admission with presence in one RPC", () => {
       host.send(JSON.stringify({ type: "result", id: frame.id, ok: true, result: { tempo: 120 } }));
     });
     try {
-      host.send(JSON.stringify({ type: "ready", protocol: "qc-relay.v1", usbConnected: true, gatewayApiVersion: 31 }));
+      host.send(JSON.stringify({ type: "ready", protocol: "qc-relay.v1", ...readiness, gatewayApiVersion: 31 }));
       let ready = false;
       for (let attempt = 0; attempt < 50; attempt++) {
         const status: unknown = await target.status();

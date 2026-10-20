@@ -43,6 +43,21 @@ impl DeviceError {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerTarget {
+    pub source: BrokerTargetSource,
+    pub session_id: String,
+    pub generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BrokerTargetSource {
+    Physical,
+    Demo,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeviceFrame {
@@ -50,6 +65,11 @@ pub enum DeviceFrame {
         protocol: String,
         #[serde(rename = "usbConnected")]
         usb_connected: bool,
+        /// Effective target availability. Older hosts publish only USB state.
+        #[serde(rename = "targetReady", default, skip_serializing_if = "Option::is_none")]
+        target_ready: Option<bool>,
+        #[serde(rename = "brokerTarget", default, skip_serializing_if = "Option::is_none")]
+        broker_target: Option<BrokerTarget>,
         #[serde(
             rename = "mcpPresence",
             default,
@@ -153,6 +173,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn demo_readiness_keeps_usb_disconnected_and_target_identity_distinct() {
+        let frame: DeviceFrame = serde_json::from_value(serde_json::json!({
+            "type": "ready", "protocol": "qc-relay.v1", "usbConnected": false,
+            "targetReady": true,
+            "brokerTarget": {"source": "demo", "sessionId": "broker-1:demo-1", "generation": 3}
+        })).unwrap();
+        let encoded = serde_json::to_value(frame).unwrap();
+        assert_eq!(encoded["usbConnected"], false);
+        assert_eq!(encoded["targetReady"], true);
+        assert_eq!(encoded["brokerTarget"]["source"], "demo");
+        assert_eq!(encoded["brokerTarget"]["generation"], 3);
+    }
+
+    #[test]
     fn device_error_details_are_optional_and_keep_old_wire_shape() {
         let legacy = serde_json::json!({
             "code": "DEVICE_TRANSPORT",
@@ -203,6 +237,8 @@ mod tests {
         let ready = serde_json::to_value(DeviceFrame::Ready {
             protocol: PROTOCOL_VERSION.into(),
             usb_connected: true,
+            target_ready: None,
+            broker_target: None,
             mcp_presence: false,
             gateway_api_version: Some(31),
         })
