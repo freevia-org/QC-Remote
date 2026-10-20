@@ -30,6 +30,9 @@ export type AndroidUsbDiagnostics = {
 };
 
 interface QcUsbNativePlugin {
+  publishDemoProvider(options: { sessionId: string | null; generation: number }): Promise<void>;
+  completeDemoRequest(options: { id: string; sessionId: string; generation: number; result?: Record<string, unknown>; error?: { code: string; message: string } }): Promise<void>;
+  addListener(eventName: "qcDemoRequest", listener: (request: AndroidDemoRequest) => void): Promise<PluginListenerHandle>;
   internetForwarding(): Promise<{ enabled: boolean }>;
   setInternetForwarding(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
   scan(): Promise<{ devices: QcUsbDevice[]; connected: boolean; synchronized: boolean }>;
@@ -39,6 +42,16 @@ interface QcUsbNativePlugin {
   gatewayInvoke<T>(options: { method: string; params?: Record<string, unknown>; expectedState?: Record<string, unknown> }): Promise<T>;
   addListener(eventName: "qcStateBatch", listener: (frame: NativeStateFrame<QcStateUpdate>) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "qcConnection", listener: (status: { state: "available" | "disconnected"; name?: string }) => void): Promise<PluginListenerHandle>;
+}
+
+export interface AndroidDemoRequest {
+  id: string;
+  sessionId: string;
+  generation: number;
+  sequence: number;
+  method: string;
+  params: Record<string, unknown>;
+  expectedState: Record<string, unknown>;
 }
 
 interface ScreenWakeNativePlugin {
