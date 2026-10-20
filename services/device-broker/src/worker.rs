@@ -1374,6 +1374,14 @@ impl DeviceController {
         self.state.lock_recover().session_epoch
     }
 
+    /// Target projection must not acquire the retained device/session tree.
+    /// A busy status writer leaves the previous projection intact; it must
+    /// never turn an unknown physical fact into permission to select demo.
+    pub(crate) fn try_target_readiness(&self) -> Option<(bool, bool, u64)> {
+        let state = self.state.try_lock().ok()?;
+        Some((state.connected, state.synchronized, state.session_epoch))
+    }
+
     /// Request a reconnect that leaves a healthy session alone. The returned
     /// outcome says which of the two happened; see [`ReconnectOutcome`].
     pub fn reconnect(&self) -> Result<ReconnectOutcome, String> {

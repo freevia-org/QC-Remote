@@ -4125,19 +4125,6 @@ fn dispatch_broker_client_request(
             "A physical-only request cannot use a demo identity",
         );
     }
-    if request.method == "system.status" && request.origin.as_deref() != Some(RESOURCE_READ_ORIGIN)
-    {
-        let controller = shared.controller_for(connection_id);
-        let mut response = handle(&controller, &shared.performance_midi, request);
-        if let Some(result) = response.get_mut("result") {
-            let target = shared.targets.identity();
-            result["targetReady"] = json!(target.is_some());
-            if let Some(target) = target {
-                result["brokerTarget"] = json!(target);
-            }
-        }
-        return response;
-    }
     if request
         .expected_broker_target
         .as_ref()
@@ -4148,6 +4135,24 @@ fn dispatch_broker_client_request(
             -32002,
             "Broker target changed; request was not sent",
         );
+    }
+    if request.method == "system.status" {
+        // Both MCP tool and resource status are cache-only. Demo availability
+        // must never replace the physical USB diagnostics with virtual data.
+        let controller = shared.controller_for(connection_id);
+        let target = shared.targets.identity();
+        let expected = request
+            .expected_broker_target
+            .clone()
+            .or_else(|| target.clone());
+        let mut response = handle(&controller, &shared.performance_midi, request);
+        if let Some(result) = response.get_mut("result") {
+            result["targetReady"] = json!(target.is_some());
+            if let Some(target) = target {
+                result["brokerTarget"] = json!(target);
+            }
+        }
+        return shared.fence_result(expected.as_ref(), response);
     }
     if !request.physical_only
         && generated_gateway::broker_dispatch(&request.method).is_some()
@@ -4165,13 +4170,24 @@ fn dispatch_broker_client_request(
             .targets
             .admit(request.expected_broker_target.as_ref())
             .map_err(|_| "Broker target changed; request was not sent".to_string())
-            .and_then(|lease| shared.demo.invoke(lease, &request.method, request.params));
+            .and_then(|lease| {
+                let target = lease.identity().clone();
+                shared
+                    .demo
+                    .invoke(lease, &request.method, request.params)
+                    .map(|result| (target, result))
+            });
         shared.refresh_targets();
         return match result {
-            Ok(mut envelope) => {
+            Ok((target, mut envelope)) => {
+                envelope["brokerTarget"] = json!(target);
+                if let Some(result) = envelope.get_mut("result").filter(|value| value.is_object()) {
+                    result["brokerTarget"] = json!(target);
+                    result["targetReady"] = json!(true);
+                }
                 envelope["jsonrpc"] = json!("2.0");
                 envelope["id"] = request.id;
-                envelope
+                shared.fence_result(Some(&target), envelope)
             }
             Err(message) => error(request.id, -32002, &message),
         };
@@ -5902,15 +5918,11 @@ impl BrokerShared {
     }
 
     fn refresh_targets(&self) {
-        let status = self.controller.status();
-        let physical = (status.connected && status.synchronized).then(|| {
-            format!(
-                "{}:physical:{}:{}",
-                self.instance_id,
-                self.controller.device_id().unwrap_or_default(),
-                status.session_epoch
-            )
-        });
+        let Some((connected, synchronized, epoch)) = self.controller.try_target_readiness() else {
+            return;
+        };
+        let physical =
+            (connected && synchronized).then(|| format!("{}:physical:{}", self.instance_id, epoch));
         if self
             .targets
             .update(physical, self.demo.session())
@@ -7043,7 +7055,8 @@ impl BrokerHandle {
 
     /// Providers of the authenticated participants, in connection order.
     pub fn served_target(&self) -> Option<crate::target::TargetIdentity> {
-        self.0.refresh_targets();
+        // The tray heartbeat must not wait behind the retained device tree.
+        // Provider and request/readiness transitions publish this cache.
         self.0.targets.identity()
     }
 

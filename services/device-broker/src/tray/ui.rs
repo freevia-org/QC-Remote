@@ -708,7 +708,7 @@ mod tests {
                 )
             };
             assert_eq!(lines, model::ICON_SIZE as i32);
-            for pixel in pixels.chunks_exact_mut(4) {
+            for pixel in pixels.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2); // Native BGRA back to the shared RGBA contract.
             }
             assert_eq!(pixels, expected, "native LED pixels: {tone:?}/{frame}");
