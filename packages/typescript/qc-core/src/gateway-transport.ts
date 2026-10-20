@@ -32,9 +32,9 @@ export function createQcGatewayTransport(
       const position = adjacentPresetPosition(state.presetPosition, delta);
       // Recalling the loaded preset again is not a step and may reload it.
       if (position === state.presetPosition) return Promise.resolve({ detail: presetBoundaryDetail(delta) });
-      // An empty expected name deliberately avoids comparing the new preset's
-      // name while retaining the position guard that serializes rapid taps.
-      return gateway.recallPreset(state.setlistKey, position, "", state.presetPosition, state.setlistKey, requirePresetIdentity(state));
+      // Recall guards describe the loaded preset, not the destination. The
+      // cloud contract requires its name as well as its address and identity.
+      return gateway.recallPreset(state.setlistKey, position, state.presetName, state.presetPosition, state.setlistKey, requirePresetIdentity(state));
     },
     pressFootswitch(index, snapshot) {
       const state = expected(snapshot);

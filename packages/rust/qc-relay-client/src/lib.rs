@@ -33,6 +33,31 @@ pub use qc_relay_protocol::{
 
 mod generated_actions;
 
+// Dedicated MCP read tools need not be actions in execute_qc_action's catalog.
+// Identity is an existing argument-free native read, admitted at every read tier.
+fn relay_method_allowed(method: &str) -> bool {
+    method == "device.identity" || generated_actions::contains(method)
+}
+fn relay_method_read_only(method: &str) -> bool {
+    method == "device.identity" || generated_actions::is_read_only(method)
+}
+
+#[test]
+fn dedicated_identity_read_does_not_widen_write_access() {
+    for mode in [
+        AccessMode::ReadOnly,
+        AccessMode::Performance,
+        AccessMode::Modify,
+        AccessMode::Full,
+    ] {
+        assert!(mode.permits("device.identity"));
+    }
+    assert!(relay_method_allowed("device.identity"));
+    assert!(relay_method_read_only("device.identity"));
+    assert!(!relay_method_allowed("device.unknown"));
+    assert!(!AccessMode::ReadOnly.permits("device.setDeviceName"));
+}
+
 const ADAPTER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 /// The deadline used when a relay sends no `deadlineMs`.
 ///
@@ -121,16 +146,16 @@ impl AccessMode {
     /// Apply the shared assistant-access policy at every provider transport.
     pub fn permits(self, method: &str) -> bool {
         match self {
-            Self::Full => generated_actions::contains(method),
+            Self::Full => relay_method_allowed(method),
             Self::Modify => {
-                generated_actions::is_read_only(method)
+                relay_method_read_only(method)
                     || generated_actions::is_performance(method)
                     || generated_actions::is_modify(method)
             }
             Self::Performance => {
-                generated_actions::is_read_only(method) || generated_actions::is_performance(method)
+                relay_method_read_only(method) || generated_actions::is_performance(method)
             }
-            Self::ReadOnly => generated_actions::is_read_only(method),
+            Self::ReadOnly => relay_method_read_only(method),
         }
     }
 }
@@ -942,7 +967,7 @@ async fn invoke_with_deadline(
 // Adapter admission is not proof of USB delivery or non-delivery. Only a
 // generated read can safely retain retry advice after its answer is lost.
 fn admitted_request_failure(method: &str, code: &str, message: &str) -> DeviceError {
-    if generated_actions::is_read_only(method) {
+    if relay_method_read_only(method) {
         DeviceError::new(code, message, true)
     } else {
         DeviceError::new(
@@ -1249,7 +1274,7 @@ impl Client {
                                     "Public relay access has been disabled on this device",
                                     false,
                                 ))
-                            } else if !generated_actions::contains(&method) {
+                            } else if !relay_method_allowed(&method) {
                                 Err(DeviceError::new("METHOD_NOT_ALLOWED", qc_relay_protocol::METHOD_NOT_ALLOWED_TEXT, false))
                             } else if !self
                                 .adapter

@@ -20,3 +20,5 @@ export type { PublicRelayBrowserPairingOffer, PublicRelayBrowserPairingPort, Pub
 export { demoSnapshot } from "./device-reference/demo-snapshot.ts";
 export { QC_CATEGORY_COLORS, QC_HARDWARE_COLORS, QC_PRESET_SLOT_COLORS, QC_SCENE_COLOR_ARGB, QC_SCENE_COLORS } from "./device-reference/generated-device-colors.ts";
 export { transitionWriteQuarantine } from "./write-health.ts";
+
+export { APP_MCP_READ_TOOLS, appMcpRequest, invokeAppMcp, parseAppMcpResult, type AppMcpOptions } from "./app-mcp-adapter.ts";

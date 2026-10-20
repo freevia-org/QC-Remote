@@ -12,6 +12,20 @@ import { buildWorkspaceDocument, saveWorkspaceDocument, type WorkspaceWriter } f
 import { admitGlobalEqPreset, adoptModelPresetCatalog, globalEqPresetsFor, globalEqPresetsFrom, globalEqUnavailableNotice, withoutModelPresetCatalog, type GlobalEqPresets } from "../src/model-preset-catalog.ts";
 import { recordTempoTap, synchronizeTempoPulseEpoch } from "../src/tempo.ts";
 
+import { createQcGatewayTransport } from "../src/gateway-transport.ts";
+import type { GatewayTransport } from "../../qc-client/src/index.ts";
+
+test("UP and DOWN recall adjacent slots with the loaded preset guards", async () => {
+  const loaded = { ...demoSnapshot, presetName: "Loaded preset", presetPosition: 53, setlistKey: "/user/Live", presetIdentity: "loaded-generation" };
+  const calls: unknown[][] = [];
+  const gateway = { recallPreset: async (...args: unknown[]) => { calls.push(args); return { detail: "accepted" }; } } as unknown as GatewayTransport;
+  const transport = createQcGatewayTransport(gateway, () => ({ ...loaded, presetName: "Newer preset", presetIdentity: "newer-generation" }));
+  for (const delta of [-1, 1] as const) {
+    await transport.movePreset(delta, loaded);
+    assert.deepEqual(calls.at(-1), [loaded.setlistKey, loaded.presetPosition + delta, loaded.presetName, loaded.presetPosition, loaded.setlistKey, loaded.presetIdentity]);
+  }
+});
+
 test("tempo pulse phase follows the beat message, and tick 1 is only a pulse flag", () => {
   // Observed on a CorOS 4.1.0 unit (2026-10-07): one message at each beat start
   // (tick absent or 0) and one with tick 1 about 23 ms later at 120 BPM.

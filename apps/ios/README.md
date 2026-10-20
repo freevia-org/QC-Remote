@@ -19,3 +19,9 @@ npm run ios:open --workspace @qc-remote/ios
 ```
 
 Building and running the native app requires macOS, Xcode, Rust via rustup, and the Rust target for the selected SDK (`aarch64-apple-ios` for devices, `aarch64-apple-ios-sim` for Apple Silicon simulators, or `x86_64-apple-ios` for Intel simulators). The `iOS build` GitHub Actions workflow compiles the web app, native app, Rust bridge, and DriverKit target without signing, then uploads the unsigned `.app` as a workflow artifact. An installable iPad build still needs Apple-approved DriverKit entitlements and provisioning. From Xcode, select an iPhone simulator or a connected device and run the `App` scheme.
+
+### Paired-host adapter validation
+
+`npm run test:mcp-adapter --workspace @qc-remote/core` verifies every generated app method against the MCP projection, including access policy, confirmations, result decoding and captured preset guards. It also runs through `npm run contracts:check`. The adapter uses direct, on-demand cloud reads; it adds no idle polling. Device identity requires both the dedicated cloud read tool and a host admitting `device.identity`.
+
+The opt-in XCTest suite in `tests/UI` checks saved sign-in after cold launches, read-only model browsing and reversible UP/DOWN navigation. Set `TEST_RUNNER_QC_EXPECTED_PRESET` and `TEST_RUNNER_QC_EXPECTED_PREVIOUS_PRESET` only against a known, clean live preset. It refreshes host state explicitly and never saves a preset or changes persistent settings.

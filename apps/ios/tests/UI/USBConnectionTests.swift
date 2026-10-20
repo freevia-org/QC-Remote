@@ -1,0 +1,81 @@
+import XCTest
+
+final class USBConnectionTests: XCTestCase {
+    override func setUp() { continueAfterFailure = false }
+
+    private func refreshPairedHost(_ app: XCUIApplication) {
+        let refresh = app.buttons["Refresh host state"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 45), app.debugDescription)
+        refresh.tap()
+    }
+
+    func testPairedHostModelCatalog() throws {
+        guard let preset = ProcessInfo.processInfo.environment["QC_EXPECTED_PRESET"] else {
+            throw XCTSkip("Requires a paired live host")
+        }
+        let app = XCUIApplication(bundleIdentifier: "org.freevia.qcremote")
+        app.launch()
+        refreshPairedHost(app)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", preset)).firstMatch.waitForExistence(timeout: 90))
+        let empty = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Add a block at row 2, column 1")).firstMatch
+        XCTAssertTrue(empty.waitForExistence(timeout: 15))
+        empty.tap()
+        // Read only: never select a model or pin anything on the hardware.
+        XCTAssertTrue(app.buttons["Brit 2203"].waitForExistence(timeout: 90), app.debugDescription)
+        let close = app.buttons.matching(NSPredicate(format: "label == %@", "Close device browser"))
+        for index in 0..<close.count where close.element(boundBy: index).isHittable {
+            close.element(boundBy: index).tap()
+            break
+        }
+        XCTAssertFalse(app.otherElements["TopBrowserBar"].exists)
+    }
+
+    // Opt-in live control check: two recalls only; no saves, rename or settings writes.
+    func testPairedHostPresetControls() throws {
+        guard let preset = ProcessInfo.processInfo.environment["QC_EXPECTED_PRESET"],
+              let previous = ProcessInfo.processInfo.environment["QC_EXPECTED_PREVIOUS_PRESET"] else {
+            throw XCTSkip("Requires explicit live preset-navigation test configuration")
+        }
+        let app = XCUIApplication(bundleIdentifier: "org.freevia.qcremote")
+        app.launch()
+        refreshPairedHost(app)
+        let up = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "BANK UP encoder footswitch;")).firstMatch
+        let down = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "BANK DOWN encoder footswitch;")).firstMatch
+        let original = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND label ENDSWITH %@", "Open preset Directory; current preset ", preset)).firstMatch
+        XCTAssertTrue(original.waitForExistence(timeout: 90), app.debugDescription)
+        XCTAssertTrue(up.waitForExistence(timeout: 15))
+        up.tap()
+        let recalled = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND label ENDSWITH %@", "Open preset Directory; current preset ", previous)).firstMatch
+        XCTAssertTrue(recalled.waitForExistence(timeout: 90), app.debugDescription)
+        down.tap()
+        XCTAssertTrue(original.waitForExistence(timeout: 90), app.debugDescription)
+        XCTAssertFalse(app.otherElements["TopBrowserBar"].exists)
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Paired-host UP and DOWN restored original preset"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testPairedHostRestoresSavedSignIn() throws {
+        guard let preset = ProcessInfo.processInfo.environment["QC_EXPECTED_PRESET"] else {
+            throw XCTSkip("Requires a paired live host and TEST_RUNNER_QC_EXPECTED_PRESET")
+        }
+        let app = XCUIApplication(bundleIdentifier: "org.freevia.qcremote")
+        for launch in 1...2 {
+            app.launch()
+            let paired = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Paired host")).firstMatch
+            XCTAssertTrue(paired.waitForExistence(timeout: 45))
+            paired.tap()
+            refreshPairedHost(app)
+            let livePreset = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", preset)).firstMatch
+            XCTAssertTrue(livePreset.waitForExistence(timeout: 60), "Live preset missing after launch \(launch): \(app.debugDescription)")
+            XCTAssertFalse(app.otherElements["TopBrowserBar"].exists, "Saved sign-in unexpectedly reopened authorization")
+            let attachment = XCTAttachment(screenshot: app.screenshot())
+            attachment.name = "Live QC after launch \(launch)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            app.terminate()
+        }
+    }
+
+}
