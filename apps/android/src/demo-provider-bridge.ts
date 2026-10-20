@@ -37,6 +37,9 @@ export function createNativeDemoProviderBridge(port: NativeDemoPort, onResult?: 
       catch (error) { if (active === registration) withdraw(); throw error; }
     },
     async handle(request: NativeDemoRequest): Promise<"completed" | "discarded"> {
+      if (!request || typeof request.id !== "string" || !request.id
+          || typeof request.sessionId !== "string" || !request.sessionId
+          || !Number.isSafeInteger(request.generation) || request.generation < 1) return "discarded";
       const registration = active;
       let result: unknown;
       let failure: { code: string; message: string } | undefined;
@@ -45,7 +48,7 @@ export function createNativeDemoProviderBridge(port: NativeDemoPort, onResult?: 
         result = await registration.provider.invoke({
           target: { source: "demo", sessionId: request.sessionId, generation: request.generation },
           sequence: request.sequence, method: request.method, params: request.params,
-          ...(request.expectedState ? { expectedState: request.expectedState } : {})
+          ...("expectedState" in request ? { expectedState: request.expectedState } : {})
         });
       } catch (error) {
         failure = error instanceof DemoBrokerProviderError
@@ -65,6 +68,62 @@ export function createNativeDemoProviderBridge(port: NativeDemoPort, onResult?: 
     async dispose(): Promise<void> {
       withdraw();
       await port.publishDemoProvider({ sessionId: null, generation: ++generation });
+    }
+  };
+}
+
+export interface NativeDemoListenerPort extends NativeDemoPort {
+  addListener(event: "qcDemoRequest", listener: (request: NativeDemoRequest) => void): Promise<{ remove(): Promise<void> }>;
+}
+
+/** Own the native listener and foreground registration as one lifetime. The
+ * listener is installed before readiness is published; foreground changes
+ * renew registration rather than reviving a suspended request queue. */
+export function attachNativeDemoProvider(options: {
+  port: NativeDemoListenerPort;
+  gateway: GatewayTransport;
+  current(): boolean;
+  sessionId(): string;
+  visible(): boolean;
+  subscribeVisibility(changed: () => void): () => void;
+  onResult?(gateway: GatewayTransport, current: () => boolean): Promise<void>;
+  onError?(error: unknown): void;
+}) {
+  let alive = true, initialized = false, visible = options.visible(), revision = 0;
+  const bridge = createNativeDemoProviderBridge(options.port, options.onResult);
+  const renew = async () => {
+    const owner = ++revision;
+    await bridge.bind(alive && visible && options.current() ? {
+      gateway: options.gateway, sessionId: options.sessionId(),
+      current: () => alive && visible && owner === revision && options.current()
+    } : undefined);
+  };
+  const unsubscribe = options.subscribeVisibility(() => {
+    visible = options.visible();
+    revision++; // Invalidate old effects synchronously, before the native call.
+    if (initialized) void renew().catch(error => { if (alive) options.onError?.(error); });
+  });
+  let listenerRemoved = false;
+  const removeListener = async (handle: { remove(): Promise<void> }) => {
+    if (listenerRemoved) return;
+    listenerRemoved = true;
+    await handle.remove();
+  };
+  const listener = Promise.resolve().then(() => options.port.addListener("qcDemoRequest", request => {
+    if (alive) void bridge.handle(request).catch(error => { if (alive) options.onError?.(error); });
+  }));
+  const ready = listener.then(async handle => {
+    if (!alive) { await removeListener(handle); return; }
+    initialized = true;
+    await renew();
+  });
+  return {
+    ready,
+    async dispose() {
+      if (!alive) return;
+      alive = false; visible = false; revision++;
+      unsubscribe();
+      await Promise.allSettled([bridge.dispose(), listener.then(removeListener)]);
     }
   };
 }

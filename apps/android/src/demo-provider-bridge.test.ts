@@ -9,7 +9,7 @@ import type { NativeDemoRequest } from "./demo-provider-bridge.ts";
 const compiled = await build({ entryPoints: [fileURLToPath(new URL("./demo-provider-bridge.ts", import.meta.url))], bundle: true, write: false, format: "esm", platform: "node", plugins: [{ name: "shared-dispatcher", setup(build) {
   build.onResolve({ filter: /^@qc-remote\/ui$/ }, () => ({ path: fileURLToPath(new URL("../../../packages/typescript/qc-ui/src/demo-broker-provider.ts", import.meta.url)) }));
 } }] });
-const { createNativeDemoProviderBridge } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`) as typeof import("./demo-provider-bridge.ts");
+const { createNativeDemoProviderBridge, attachNativeDemoProvider } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString("base64")}`) as typeof import("./demo-provider-bridge.ts");
 function fixture() {
   const publications: any[] = [], replies: any[] = [];
   const port = { publishDemoProvider: async (registration: any) => { publications.push(registration); }, completeDemoRequest: async (reply: any) => { replies.push(reply); } };
@@ -93,4 +93,44 @@ test("provider registration failure and explicit foreground teardown fail closed
   await bridge.dispose();
   assert.equal(await bridge.handle(request({ generation: 2 })), "discarded");
   assert.equal(effects, 0); assert.equal(f.publications.at(-1).sessionId, null);
+});
+
+
+test("foreground binding installs the listener before publishing and resumes with a fresh registration", async () => {
+  const f = fixture(), order: string[] = []; let visible = true, changed!: () => void, serial = 0, handler: any, removed = 0;
+  const port = { ...f.port, addListener: async (_name: string, listener: any) => { order.push("listener"); handler = listener; return { remove: async () => { removed++; } }; }, publishDemoProvider: async (value: any) => { order.push("publish"); f.publications.push(value); } };
+  const gateway = { currentSnapshot: async () => ({ presetName: "same live UI" }) } as unknown as GatewayTransport;
+  const owner = attachNativeDemoProvider({ port, gateway, current: () => true, sessionId: () => `registration-${++serial}`, visible: () => visible, subscribeVisibility: callback => { changed = callback; return () => { order.push("unsubscribe"); }; } });
+  await owner.ready;
+  assert.deepEqual(order.slice(0, 2), ["listener", "publish"]);
+  visible = false; changed(); await Promise.resolve();
+  assert.equal(f.publications.at(-1).sessionId, null);
+  visible = true; changed(); await Promise.resolve();
+  assert.equal(f.publications.at(-1).sessionId, "registration-2");
+  assert.equal(f.publications.at(-1).generation, 3);
+  await owner.dispose();
+  assert.equal(removed, 1); assert.equal(f.publications.at(-1).sessionId, null);
+  handler(request()); await Promise.resolve();
+  assert.equal(f.replies.length, 0);
+});
+
+test("unmount before listener registration completes never publishes a live provider", async () => {
+  const f = fixture(), gate = deferred(); let removed = 0, unsubscribed = 0;
+  const port = { ...f.port, addListener: async () => gate.promise };
+  const owner = attachNativeDemoProvider({ port, gateway: {} as GatewayTransport, current: () => true, sessionId: () => "retired", visible: () => true, subscribeVisibility: () => () => { unsubscribed++; } });
+  const retired = owner.dispose();
+  gate.resolve({ remove: async () => { removed++; } });
+  await retired; await owner.ready;
+  assert.equal(f.publications.filter(value => value.sessionId !== null).length, 0);
+  assert.equal(unsubscribed, 1);
+  assert.equal(removed, 1);
+});
+
+test("shared dispatcher validates native expected-state constraints before an effect", async () => {
+  const f = fixture(); let effects = 0;
+  const gateway = { currentSnapshot: async () => ({ presetName: "UI preset", presetPosition: 1 }), setMasterVolume: async () => { effects++; return {}; } } as unknown as GatewayTransport;
+  const bridge = createNativeDemoProviderBridge(f.port);
+  await bridge.bind({ sessionId: "ui-demo-session", gateway, current: () => true });
+  assert.equal(await bridge.handle(request({ method: "device.setMasterVolume", params: { value: 20 }, expectedState: { presetName: "another preset" } })), "discarded");
+  assert.equal(effects, 0); assert.equal(f.replies[0].error.code, "STATE_CONFLICT");
 });

@@ -53,3 +53,33 @@ test("missing session identity or unknown target kind fail before dispatch", () 
   assert.throws(() => bindMobileTarget({ origin: "paired-host", phase: "ready", kind: "future" as MobileTargetKind, sessionIdentity: "g1", providers }), /kind is unavailable/);
   assert.equal(reads, 0);
 });
+
+test("presentation of a host demo never rewrites its host transport route", async () => {
+  const { mobileIndicatorConnection } = await import("./mobile-target-binding.ts");
+  const connection = { phase: "ready" as const, source: "device" as const, demo: false, detail: "Host", brokerTarget: { source: "demo" as const, sessionId: "host-demo", generation: 1 } };
+  assert.equal(mobileIndicatorConnection(connection).source, "virtual");
+  assert.equal(connection.source, "device");
+});
+
+test("actual observation adoption selects the original host gateway before accepting a host demo", async () => {
+  const { refreshMobileTarget } = await import("./mobile-target-binding.ts");
+  const host = gateway("same host"), calls: string[] = [];
+  const connection = { phase: "ready" as const, source: "device" as const, demo: false, detail: "Host", brokerTarget: { source: "demo" as const, sessionId: "host-demo", generation: 3 } };
+  const snapshot = { presetName: "Host demo", blocks: [] } as any;
+  assert.equal(await refreshMobileTarget({ origin: "paired-host", provider: host, current: () => true,
+    read: async () => ({ connection, snapshot }), identity: () => "generation-3",
+    reset: () => { calls.push("retire old operations"); }, select: binding => { assert.equal(binding.gateway, host); assert.equal(binding.kind, "demo"); calls.push("host selected"); },
+    adopt: async value => { assert.equal(value, snapshot); calls.push("snapshot accepted"); }, connection: value => { assert.equal(value.source, "device"); calls.push("connection accepted"); }
+  }), true);
+  assert.deepEqual(calls, ["retire old operations", "host selected", "snapshot accepted", "connection accepted"]);
+});
+
+test("superseded observations never select/adopt a replacement provider or retry", async () => {
+  const { refreshMobileTarget } = await import("./mobile-target-binding.ts");
+  let reads = 0, effects = 0;
+  await assert.rejects(refreshMobileTarget({ origin: "paired-host", provider: gateway("host"), current: () => false,
+    read: async () => { reads++; return { connection: { phase: "ready", source: "device", demo: false, detail: "old" }, snapshot: { presetName: "old", blocks: [] } as any }; },
+    identity: () => "old", reset: () => { effects++; }, select: () => { effects++; }, adopt: async () => { effects++; }, connection: () => { effects++; }
+  }), /superseded/);
+  assert.equal(reads, 1); assert.equal(effects, 0);
+});

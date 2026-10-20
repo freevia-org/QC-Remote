@@ -1,10 +1,13 @@
 import { createContext, useContext } from "react";
-import type { PresetSnapshot } from "@qc-remote/client";
+import type { ConnectionState, PresetSnapshot } from "@qc-remote/client";
 
 export interface DeviceObservationPolicy {
   mode: "live" | "on-demand";
   lastObservedAt?: number;
   refresh?(): Promise<PresetSnapshot>;
+  /** Explicit atomic host observation; unavailable targets carry no snapshot. */
+  readTarget?(): Promise<{ connection: ConnectionState; snapshot?: PresetSnapshot }>;
+  connection?(): ConnectionState | undefined;
 }
 
 /** Local USB keeps its normal passive readers. Paid remote transports opt out

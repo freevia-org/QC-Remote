@@ -12,6 +12,7 @@ import type { VirtualDeviceStorage } from "@qc-remote/ui";
 import { QCIosNativeBridge } from "../native-bridge";
 import { confirmIosWorkflow } from "./workflow-confirmations";
 import { RemoteTraffic } from "./remote-traffic";
+import { pairedHostConnection, readPairedHostTarget } from "./paired-host-target";
 
 const endpoint = QC_BRAND.publicRelayEndpoint.replace(/\/$/, "");
 const serverUrl = `${endpoint}/mcp`;
@@ -117,7 +118,8 @@ async function connectMcp(): Promise<void> {
     lastStatus = await callTool("get_qc_status", {});
     if (client !== nextClient || !cloudActive()) return;
     mcpConnected = true;
-    emit("qcConnection", { state: "available", name: lastStatus?.deviceName ?? "Quad Cortex via QC Remote" });
+    // Paired-host reads are explicit demand. Publishing availability here
+    // starts a second mobile connection attempt during the initiating refresh.
     cursor = 0;
   } catch (error) {
     if (client !== nextClient || transport !== nextTransport) return;
@@ -133,10 +135,10 @@ let lastRemoteObservationAt: number | undefined;
 export const remoteObservation = () => lastRemoteObservationAt;
 export const subscribeRemoteObservation = (listener: (value: number) => void) => addListener("remoteObservation", listener);
 
-async function callTool(name: string, args: Record<string, unknown>): Promise<any> {
+async function callTool(name: string, args: Record<string, unknown>, observe = true): Promise<any> {
   if (!client) throw new Error("Connect or refresh the paired host to continue. Your sign-in is saved.");
   const result = parseAppMcpResult(await client.callTool({ name, arguments: args }));
-  if (name === "get_current_preset") {
+  if (observe && name === "get_current_preset") {
     lastRemoteObservationAt = Date.now();
     emit("remoteObservation", lastRemoteObservationAt);
   }
@@ -145,16 +147,29 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<an
 
 /** Explicit user refresh, never called by a polling timer. Ordinary gateway
  * reads also stay direct: last-observed UI state is not an authoritative cache. */
-export async function refreshRemoteObservation(): Promise<PresetSnapshot> {
+export const remoteConnection = () => lastStatus ? pairedHostConnection(lastStatus) : undefined;
+export async function refreshRemoteTargetObservation() {
   if (!client) await connectMcp();
-  lastStatus = await callTool("get_qc_status", {});
-  return await callTool("get_current_preset", {});
+  const result = await readPairedHostTarget({
+    callTool: (name, args) => callTool(name, args, false),
+    onStatus: status => { lastStatus = status; }
+  });
+  if (result.snapshot) {
+    lastRemoteObservationAt = Date.now();
+    emit("remoteObservation", lastRemoteObservationAt);
+  }
+  return result;
+}
+export async function refreshRemoteObservation(): Promise<PresetSnapshot> {
+  const result = await refreshRemoteTargetObservation();
+  if (!result.snapshot) throw new Error(result.connection.detail);
+  return result.snapshot;
 }
 async function invokeRemote(method: string, args: Record<string, unknown> = {}): Promise<any> {
   const result = await invokeAppMcp(method, args, {
     accessMode: mode,
     confirm: confirmIosWorkflow,
-    onStatus: status => { lastStatus = status; },
+    onStatus: status => { pairedHostConnection(status); lastStatus = status; },
     callTool
   });
   if (method === "device.stateEvents") {
@@ -179,7 +194,11 @@ const nativePlugin = {
         }
       }
     }
-    return { devices: mcpConnected ? [{ deviceId: 1, name: lastStatus?.deviceName ?? "Quad Cortex via QC Remote", permission: true, interfaces: 1 }] : [], connected: mcpConnected, synchronized: mcpConnected };
+    const observed = mcpConnected ? remoteConnection() : undefined;
+    const ready = observed?.phase === "ready";
+    const name = observed?.brokerTarget?.source === "demo" ? "Demo device via paired host" : "Quad Cortex via paired host";
+    return { devices: ready ? [{ deviceId: 1, name, permission: true, interfaces: 1 }] : [], connected: ready, synchronized: ready };
+
   },
   async connect() {
     if (Capacitor.isNativePlatform()) {
@@ -202,7 +221,10 @@ const nativePlugin = {
     }
     try { await connectMcp(); } catch (error) { throw error; }
     if (authPending || !mcpConnected) throw new Error("Finish QC Remote Cloud sign-in in the browser to connect the paired host.");
-    return { connected: mcpConnected, synchronized: mcpConnected, name: lastStatus?.deviceName ?? "Quad Cortex via QC Remote", deviceId: 1 };
+    const observed = remoteConnection();
+    if (observed?.phase !== "ready") throw new Error(observed?.detail ?? "The paired host has no available device. Your sign-in is saved.");
+    return { connected: true, synchronized: true, name: observed.brokerTarget?.source === "demo" ? "Demo device via paired host" : "Quad Cortex via paired host", deviceId: 1 };
+
   },
   async disconnect() {
     if (directIpadSession) {
@@ -217,7 +239,8 @@ const nativePlugin = {
       const [usb, driver] = await Promise.all([QCIosNativeBridge.scanUsbDriver(), QCIosNativeBridge.usbDriverDiagnostics()]);
       return { connected: true, synchronized: Boolean(usb.synchronized), phase: usb.synchronized ? "ready" : "syncing", device: "Quad Cortex USB DriverKit", messagesReceived: 0, messagesSent: 0, decodeErrors: 0, expectedWriteStalls: 0, lastMessageType: 0, connectedAt: 0, setlistKnown: false, presetPosition: 0, modelCount: 0, readAttempts: 0, negativeReads: 0, interfaceId: driver.interfaceNumber ?? -1, inputEndpointAddress: driver.inputEndpointAddress ?? 0, inputMaxPacketSize: driver.inputPacketSize ?? 0, reportBytes: driver.reportLength ?? 0, midiAvailable: false, midiInterfaceId: -1, midiOutputEndpointAddress: 0, lastMidiQueueDelayMs: 0, maxMidiQueueDelayMs: 0, lastHidWriteDurationMs: 0, maxHidWriteDurationMs: 0, lastStateAt: Date.now(), writesQuarantined: driver.writesQuarantined === 1 };
     }
-    return { connected: mcpConnected, synchronized: mcpConnected, phase: mcpConnected ? "ready" : authPending ? "connecting" : "disconnected", device: "QC Remote Cloud", messagesReceived: 0, messagesSent: 0, decodeErrors: 0, expectedWriteStalls: 0, lastMessageType: 0, connectedAt: 0, setlistKnown: false, presetPosition: 0, modelCount: 0, readAttempts: 0, negativeReads: 0, interfaceId: -1, inputEndpointAddress: 0, inputMaxPacketSize: 0, reportBytes: 0, midiAvailable: false, midiInterfaceId: -1, midiOutputEndpointAddress: 0, lastMidiQueueDelayMs: 0, maxMidiQueueDelayMs: 0, lastHidWriteDurationMs: 0, maxHidWriteDurationMs: 0, lastStateAt: Date.now(), writesQuarantined: false };
+    const observed = mcpConnected ? remoteConnection() : undefined;
+    return { connected: observed?.phase === "ready", synchronized: observed?.phase === "ready", phase: observed?.phase ?? (authPending ? "connecting" : "disconnected"), device: observed?.brokerTarget?.source === "demo" ? "Paired host demo" : "QC Remote Cloud", messagesReceived: 0, messagesSent: 0, decodeErrors: 0, expectedWriteStalls: 0, lastMessageType: 0, connectedAt: 0, setlistKnown: false, presetPosition: 0, modelCount: 0, readAttempts: 0, negativeReads: 0, interfaceId: -1, inputEndpointAddress: 0, inputMaxPacketSize: 0, reportBytes: 0, midiAvailable: false, midiInterfaceId: -1, midiOutputEndpointAddress: 0, lastMidiQueueDelayMs: 0, maxMidiQueueDelayMs: 0, lastHidWriteDurationMs: 0, maxHidWriteDurationMs: 0, lastStateAt: Date.now(), writesQuarantined: false };
   },
   async gatewayInvoke({ method, params }: { method: string; params?: Record<string, unknown> }) {
     if (directIpadSession) {

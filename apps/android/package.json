@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
-    "test": "node --experimental-strip-types --test src/native-sync.test.ts src/mobile-ui.test.ts",
+    "test": "node --experimental-strip-types --test src/native-sync.test.ts src/mobile-ui.test.ts src/mobile-target-binding.test.ts src/demo-provider-bridge.test.ts",
     "branding:generate": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/generate-android-branding.ps1",
     "android:update": "cap update android",
     "android:sync": "node ../../scripts/sync-theme-assets.mjs && npm run build && cap sync android",

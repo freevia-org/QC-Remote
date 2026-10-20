@@ -9,7 +9,7 @@ import { DeviceObservationProvider } from "@qc-remote/ui";
 import { QCIosNativeBridge } from "../native-bridge";
 import { IPhoneMidiController } from "./IPhoneMidiController";
 import { IPadDriverStatus } from "./IPadDriverStatus";
-import { getIosConnectionMode, setIosConnectionMode, remoteObservation, subscribeRemoteObservation, refreshRemoteObservation, type IosConnectionMode } from "./ios-services";
+import { getIosConnectionMode, setIosConnectionMode, remoteObservation, subscribeRemoteObservation, refreshRemoteObservation, refreshRemoteTargetObservation, remoteConnection, type IosConnectionMode } from "./ios-services";
 import "@qc-remote/theme/theme.css";
 import "@qc-remote/android-src/styles.css";
 import "./ios-midi.css";
@@ -29,7 +29,7 @@ function ObservedApp({ remote }: { remote: boolean }) {
     return () => { disposed = true; void subscription.then(value => value.remove()); };
   }, []);
   return <DeviceObservationProvider value={remote
-    ? { mode: "on-demand", lastObservedAt, refresh: refreshRemoteObservation }
+    ? { mode: "on-demand", lastObservedAt, refresh: refreshRemoteObservation, readTarget: refreshRemoteTargetObservation, connection: remoteConnection }
     : { mode: "live" }}><App /></DeviceObservationProvider>;
 }
 
