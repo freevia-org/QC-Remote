@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { auth, UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { createGatewayClientTransport, withDeviceConnectionSource, type GatewayTransport, type NativeStateFrame, type PresetSnapshot, type RuntimeStatus } from "@qc-remote/client";
+import { createGatewayClientTransport, withDeviceConnectionSource, type BrokerTarget, type GatewayTransport, type NativeStateFrame, type PresetSnapshot, type RuntimeStatus } from "@qc-remote/client";
 import { controlAccessPermitsAction, createQcGatewayTransport, invokeAppMcp, parseAppMcpResult, parseControlAccessMode, SHARED_QC_ACTIONS, type ControlAccessMode, type PublicRelayPort, type PublicRelayState, type PublicRelayStatus, type PublicRelayUsage, type QcDeviceTransport, type QcStateUpdate } from "@qc-remote/core";
 import { QC_BRAND } from "@qc-remote/theme";
 import type { VirtualDeviceStorage } from "@qc-remote/ui";
@@ -33,6 +33,8 @@ const remoteTraffic = new RemoteTraffic(Date.now, cloudActive);
 let connecting = false;
 let mode: ControlAccessMode = parseControlAccessMode(localStorage.getItem("qc-control.device-access-mode-v1"));
 let lastStatus: any;
+let acceptedRemoteContext: { target?: BrokerTarget; guardSupported: boolean } | undefined;
+export const clearRemoteTarget = () => { acceptedRemoteContext = undefined; };
 let cursor = 0;
 let directIpadSession = false;
 const iosConnectionModeKey = "qc.remote.ios.connection-mode-v1";
@@ -158,7 +160,11 @@ export async function refreshRemoteTargetObservation() {
     lastRemoteObservationAt = Date.now();
     emit("remoteObservation", lastRemoteObservationAt);
   }
-  return result;
+  const context = {
+    target: result.connection.brokerTarget ? Object.freeze({ ...result.connection.brokerTarget }) : undefined,
+    guardSupported: Array.isArray(lastStatus?.capabilities) && lastStatus.capabilities.includes("mcpBrokerTargetGuard")
+  };
+  return { ...result, accept: () => { acceptedRemoteContext = result.connection.phase === "ready" ? context : undefined; } };
 }
 export async function refreshRemoteObservation(): Promise<PresetSnapshot> {
   const result = await refreshRemoteTargetObservation();
@@ -166,8 +172,17 @@ export async function refreshRemoteObservation(): Promise<PresetSnapshot> {
   return result.snapshot;
 }
 async function invokeRemote(method: string, args: Record<string, unknown> = {}): Promise<any> {
+  const context = acceptedRemoteContext;
+  const action = SHARED_QC_ACTIONS.find(candidate => candidate.rpc === method);
+  const guardSupported = Boolean(context?.guardSupported && Array.isArray(lastStatus?.capabilities) && lastStatus.capabilities.includes("mcpBrokerTargetGuard"));
+  if (action && action.classification !== "read") {
+    if (lastStatus?.brokerTarget && !context?.target) throw new Error("Refresh the paired host before editing; its selected target has not been accepted.");
+    if (context?.target && !guardSupported) throw new Error("The cloud service cannot safely bind this write to the selected device. Update QC Remote Cloud before editing.");
+  }
   const result = await invokeAppMcp(method, args, {
     accessMode: mode,
+    expectedBrokerTarget: context?.target,
+    brokerTargetGuardSupported: guardSupported,
     confirm: confirmIosWorkflow,
     onStatus: status => { pairedHostConnection(status); lastStatus = status; },
     callTool
@@ -227,6 +242,7 @@ const nativePlugin = {
 
   },
   async disconnect() {
+    clearRemoteTarget();
     if (directIpadSession) {
       directIpadSession = false;
       directStateFrames.splice(0);

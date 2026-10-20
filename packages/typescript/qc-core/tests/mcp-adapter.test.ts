@@ -194,3 +194,31 @@ test('legacy host virtual source cannot select a phone-local demo without broker
     ? { targetReady: false, usbDiagnostics: { phase: 'disconnected', connected: false } } : { source: 'virtual' } });
   assert.equal(unavailable.source, 'device'); assert.equal(unavailable.phase, 'disconnected');
 });
+
+test('target-aware writes use a cloned top-level UI target, never generated action params', async () => {
+  const target = { source: 'demo' as const, sessionId: 'accepted-UI-provider', generation: 1 };
+  let captured: any;
+  const action = SHARED_QC_ACTIONS.find(action => action.rpc === 'device.renameCurrentPreset')!;
+  const args = argumentsFor(GATEWAY_CLIENT_METHODS.renameCurrentPreset, action);
+  await invokeAppMcp('device.renameCurrentPreset', args, { accessMode: 'full', expectedBrokerTarget: target, brokerTargetGuardSupported: true,
+    confirm: async () => { target.generation = 7; return true; }, callTool: async (_name, args) => { captured = args; return outcome; } });
+  assert.deepEqual(captured.expectedBrokerTarget, { source: 'demo', sessionId: 'accepted-UI-provider', generation: 1 });
+  assert.equal(target.generation, 7, 'confirmation must yield after the guard was captured');
+  assert.equal('expectedBrokerTarget' in captured.params, false);
+  assert.equal('expected_broker_target' in captured.params, false);
+});
+
+test('a cloud without advertised binding capability cannot receive target-aware writes', async () => {
+  let calls = 0, prompts = 0;
+  await assert.rejects(invokeAppMcp('device.setMasterVolume', { value: 20 }, { accessMode: 'full', expectedBrokerTarget: { source: 'demo', sessionId: 'UI', generation: 1 },
+    confirm: async () => { prompts++; return true; }, callTool: async () => { calls++; return outcome; } }), /cannot safely bind/);
+  assert.equal(calls, 0); assert.equal(prompts, 0);
+});
+
+test('read-only MCP requests stay compatible without cloud binding support', async () => {
+  let captured: any;
+  await invokeAppMcp('device.listModels', {}, { accessMode: 'read-only', expectedBrokerTarget: { source: 'demo', sessionId: 'UI', generation: 1 },
+    confirm: async () => true, callTool: async (_name, args) => { captured = args; return { models: [] }; } });
+  assert.equal('expectedBrokerTarget' in captured, false);
+  assert.deepEqual(captured.params, { query: null });
+});

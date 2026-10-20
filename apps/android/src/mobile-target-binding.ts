@@ -42,7 +42,7 @@ export function mobileIndicatorConnection(connection: import("@qc-remote/client"
  * let the mobile controller retire old operations before accepting the new
  * snapshot, including a return to the same demo with a new broker generation. */
 export async function refreshMobileTarget(options: {
-  read(): Promise<{ connection: import("@qc-remote/client").ConnectionState; snapshot?: import("@qc-remote/client").PresetSnapshot }>;
+  read(): Promise<{ connection: import("@qc-remote/client").ConnectionState; snapshot?: import("@qc-remote/client").PresetSnapshot; accept?(): void }>;
   current(): boolean;
   origin: MobileProviderOrigin;
   provider: GatewayTransport;
@@ -56,9 +56,10 @@ export async function refreshMobileTarget(options: {
   const assertCurrent = () => { if (!options.current()) throw new Error("The mobile target observation was superseded. Refresh again before editing."); };
   assertCurrent();
   const { connection, snapshot } = observation;
-  if (connection.phase !== "ready" || !snapshot) {
-    options.reset(); options.connection(connection); return false;
+  if (connection.phase !== "ready") {
+    options.reset(); observation.accept?.(); options.connection(connection); return false;
   }
+  if (!snapshot) throw new Error("The selected host device has not published its snapshot. Refresh before editing.");
   const binding = bindMobileTarget({ origin: options.origin, phase: connection.phase,
     kind: connection.brokerTarget?.source ?? (connection.source === "virtual" ? "demo" : "physical"),
     sessionIdentity: options.identity(connection, snapshot), providers: { [options.origin]: () => options.provider } })!;
@@ -67,6 +68,7 @@ export async function refreshMobileTarget(options: {
   assertCurrent();
   await options.adopt(snapshot);
   assertCurrent();
+  observation.accept?.();
   options.connection(connection);
   return true;
 }

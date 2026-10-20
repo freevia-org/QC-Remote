@@ -6,8 +6,9 @@ export interface DeviceObservationPolicy {
   lastObservedAt?: number;
   refresh?(): Promise<PresetSnapshot>;
   /** Explicit atomic host observation; unavailable targets carry no snapshot. */
-  readTarget?(): Promise<{ connection: ConnectionState; snapshot?: PresetSnapshot }>;
+  readTarget?(): Promise<{ connection: ConnectionState; snapshot?: PresetSnapshot; accept?(): void }>;
   connection?(): ConnectionState | undefined;
+  clearTarget?(): void;
 }
 
 /** Local USB keeps its normal passive readers. Paid remote transports opt out

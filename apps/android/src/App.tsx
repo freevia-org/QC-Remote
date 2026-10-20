@@ -507,7 +507,12 @@ export function App() {
       if (!attempt.current()) return;
       usbSessionReady.current = true;
       setHardwareConnected(true);
-      if (observationPolicy.mode === "on-demand") await qcController.readSnapshot(() => androidGatewayTransport.currentSnapshot());
+      if (observationPolicy.readTarget) {
+        const ready = await applyRemoteObservation(() => appOperationMounted.current && attempt.current());
+        if (announce && attempt.current()) setNotice(ready ? "Paired-host device refreshed." : "The paired host has no available device. Your sign-in is saved.");
+        return;
+      }
+      if (observationPolicy.mode === "on-demand") await qcController.readSnapshot(() => androidGatewayTransport.currentSnapshot(), { sessionRecovery: true });
       if (!attempt.current()) return;
       if (result.synchronized) presetSynchronized.current = true;
       transitionConnection(presetSynchronized.current ? "connected" : "syncing");
@@ -529,7 +534,7 @@ export function App() {
           if (attempt.current()) setNotice(`${primary} ${diagnostics}`);
         } catch { if (attempt.current()) setNotice(primary); }
       }
-      if (fromDemo && attempt.current()) void startDemoDeviceRef.current(primary);
+      if (fromDemo && attempt.current() && observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current(primary);
     } finally {
       const released = connectAttemptLatch.current.release(latchOwner);
       if (released && usbRetryRequested.current && !usbSessionReady.current
@@ -1079,15 +1084,9 @@ export function App() {
     return () => { void provider.dispose(); };
   }, [native, iosPlatform, demoActive, physicalSelected, demoDeviceSession, snapshot.stateVersion?.session, qcController.readSnapshot]);
 
-  const refreshRemoteObservation = async () => {
-    if ((!observationPolicy.refresh && !observationPolicy.readTarget) || remoteRefreshPending) return;
-    const attempt = connectionAttempts.begin();
-    const current = () => appOperationMounted.current && attempt.current();
-    setRemoteRefreshPending(true);
-    try {
-      if (observationPolicy.readTarget) {
-        const ready = await refreshMobileTarget({
-          read: observationPolicy.readTarget, current, origin: "paired-host", provider: androidGatewayTransport,
+  const applyRemoteObservation = async (current: () => boolean) => {
+    return refreshMobileTarget({
+          read: observationPolicy.readTarget!, current, origin: "paired-host", provider: androidGatewayTransport,
           identity: (state, value) => brokerTargetKey(state.brokerTarget) ?? `legacy:${value.stateVersion?.session ?? value.presetIdentity ?? "physical-host"}`,
           reset: () => { resetCommands(); deviceHistory.clear(); presetWorkflow.resetCache(); },
           select: () => { demoDeviceSession.useDevice(); activeSourceRef.current = "device"; setSelectedBlockId(""); },
@@ -1100,6 +1099,16 @@ export function App() {
             setConnection(state);
           }
         });
+  };
+
+  const refreshRemoteObservation = async () => {
+    if ((!observationPolicy.refresh && !observationPolicy.readTarget) || remoteRefreshPending) return;
+    const attempt = connectionAttempts.begin();
+    const current = () => appOperationMounted.current && attempt.current();
+    setRemoteRefreshPending(true);
+    try {
+      if (observationPolicy.readTarget) {
+        const ready = await applyRemoteObservation(current);
         if (current()) setNotice(ready ? "Remote snapshot refreshed. Further host changes require Refresh." : "The paired host has no available device. Your sign-in is saved.");
       } else {
         await qcController.readSnapshot(observationPolicy.refresh!, { sessionRecovery: true });
@@ -1110,7 +1119,7 @@ export function App() {
       }
     } catch (error) {
       if (!current()) return;
-      resetCommands(); setHardwareConnected(false);
+      resetCommands(); setHardwareConnected(false); observationPolicy.clearTarget?.();
       const detail = error instanceof Error ? error.message : "Could not refresh the remote host. The displayed state may be stale.";
       setConnection({ phase: "needs-attention", source: "device", demo: true, detail });
       setNotice(detail);

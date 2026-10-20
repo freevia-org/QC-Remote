@@ -1,4 +1,4 @@
-import { selectedBrokerTarget, GATEWAY_CLIENT_METHODS } from "@qc-remote/client";
+import { brokerTargetKey, selectedBrokerTarget, GATEWAY_CLIENT_METHODS, type BrokerTarget } from "@qc-remote/client";
 import { controlAccessPermitsAction, type ControlAccessMode } from "./control-access.ts";
 import { SHARED_QC_ACTIONS } from "./generated-actions.ts";
 
@@ -15,6 +15,9 @@ export interface AppMcpOptions {
   callTool(name: string, args: Record<string, unknown>): Promise<any>;
   confirm(message: string): Promise<boolean>;
   onStatus?(status: any): void;
+  /** Captured with the accepted UI observation, never a later guard read. */
+  expectedBrokerTarget?: BrokerTarget;
+  brokerTargetGuardSupported?: boolean;
 }
 
 /** Decode the actual MCP tool envelope before gateway result validation. */
@@ -48,9 +51,13 @@ export function appMcpRequest(method: string, args: Record<string, unknown> = {}
 
 export async function invokeAppMcp(method: string, args: Record<string, unknown>, options: AppMcpOptions): Promise<any> {
   const input = { ...args };
+  const expectedBrokerTarget = options.expectedBrokerTarget ? { ...options.expectedBrokerTarget } : undefined;
+  brokerTargetKey(expectedBrokerTarget);
+  const guardSupported = options.brokerTargetGuardSupported === true;
   const action = SHARED_QC_ACTIONS.find(entry => entry.rpc === method);
   if (action) {
     if (!controlAccessPermitsAction(options.accessMode, action.name)) throw new Error(`The current ${options.accessMode} access mode does not allow ${action.name}.`);
+    if (action.classification !== "read" && expectedBrokerTarget && !guardSupported) throw new Error("The cloud service cannot safely bind this write to the selected device. Update QC Remote Cloud before editing.");
     if (["risky-write", "persistent-write"].includes(action.classification) || ["show_tuner", "show_gig_view", "copy_scene"].includes(action.name)) {
       if (!await options.confirm(`${action.description}\n\nContinue with ${action.name.replaceAll("_", " ")}?`)) throw new Error("Cancelled.");
       const required: readonly string[] = action.required;
@@ -59,8 +66,10 @@ export async function invokeAppMcp(method: string, args: Record<string, unknown>
     }
   }
   const request = appMcpRequest(method, input);
+  const requestArgs = action && expectedBrokerTarget && guardSupported
+    ? { ...request.arguments, expectedBrokerTarget } : request.arguments;
   let result;
-  try { result = await options.callTool(request.name, request.arguments); }
+  try { result = await options.callTool(request.name, requestArgs); }
   catch (error) {
     if (method === "device.identity" && /not found|not allowed|unknown tool|METHOD_NOT_ALLOWED/i.test(String(error))) throw new Error("Device information requires an updated QC Remote cloud service and paired host. Existing sign-in is preserved.");
     throw error;
