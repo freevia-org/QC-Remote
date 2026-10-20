@@ -19,7 +19,7 @@ final class USBConnectionTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", preset)).firstMatch.waitForExistence(timeout: 90))
         let empty = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Add a block at row 2, column 1")).firstMatch
         XCTAssertTrue(empty.waitForExistence(timeout: 15))
-        empty.tap()
+        empty.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         // Read only: never select a model or pin anything on the hardware.
         XCTAssertTrue(app.buttons["Brit 2203"].waitForExistence(timeout: 90), app.debugDescription)
         let close = app.buttons.matching(NSPredicate(format: "label == %@", "Close device browser"))
@@ -39,8 +39,8 @@ final class USBConnectionTests: XCTestCase {
         let app = XCUIApplication(bundleIdentifier: "org.freevia.qcremote")
         app.launch()
         refreshPairedHost(app)
-        let up = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "BANK UP encoder footswitch;")).firstMatch
-        let down = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "BANK DOWN encoder footswitch;")).firstMatch
+        let up = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Previous preset encoder footswitch;")).firstMatch
+        let down = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Next preset encoder footswitch;")).firstMatch
         let original = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND label ENDSWITH %@", "Open preset Directory; current preset ", preset)).firstMatch
         XCTAssertTrue(original.waitForExistence(timeout: 90), app.debugDescription)
         XCTAssertTrue(up.waitForExistence(timeout: 15))
