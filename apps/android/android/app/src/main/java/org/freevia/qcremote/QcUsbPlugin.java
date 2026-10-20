@@ -432,6 +432,12 @@ public class QcUsbPlugin extends Plugin {
                     }
                 }));
         }
+        return session.invokePhysicalGateway(method, params, expected, captured);
+    }
+
+    private CompletableFuture<org.json.JSONObject> invokePhysicalGateway(String method, org.json.JSONObject params,
+            org.json.JSONObject expected, QcBrokerTarget captured) {
+        QcUsbPlugin session = this;
         if (captured == null && !"system.status".equals(method) && !"device.reconnect".equals(method))
             return failedRelay("NOT_CONNECTED", "No usable provider was available when this request arrived.");
         RelayDeadline deadline = new RelayDeadline(session, captured);
@@ -1931,8 +1937,19 @@ public class QcUsbPlugin extends Plugin {
         }
         JSObject params = call.getObject("params");
         JSObject expected = call.getObject("expectedState");
-        relayInvoke(method, params == null ? new JSObject() : params,
-            expected == null ? new JSObject() : expected).whenComplete((result, error) -> {
+        QcBrokerTarget captured = currentBrokerTarget();
+        if (captured != null && !"physical".equals(captured.source)) captured = null;
+        if (call.getData().has("expectedBrokerTarget")) {
+            final QcBrokerTarget requested;
+            try { requested = QcBrokerTarget.parse(call.getData().opt("expectedBrokerTarget")); }
+            catch (IllegalArgumentException malformed) { call.reject(malformed.getMessage(), "INVALID_ARGUMENT"); return; }
+            if (!requested.same(captured)) {
+                call.reject("The accepted physical QC target is no longer active.", "TARGET_SUPERSEDED");
+                return;
+            }
+        }
+        invokePhysicalGateway(method, params == null ? new JSObject() : params,
+            expected == null ? new JSObject() : expected, captured).whenComplete((result, error) -> {
                 error = unwrapCompletion(error);
                 if (error == null) {
                     try {
