@@ -78,6 +78,9 @@ fn take_target_guard(args: &mut Map<String, Value>) -> Result<Option<crate::Brok
         .map_err(|_| "invalid expectedBrokerTarget".into())
 }
 
+/// Advertise ingress recognition and preservation, never silent guard removal.
+/// An unsupported backend still refuses a guarded request before effects;
+/// native host execution capabilities are negotiated separately per request.
 fn stamp_target_guard_capability(rpc: &str, mut value: Value) -> Value {
     if rpc == "system.status"
         && let Some(object) = value.as_object_mut()

@@ -233,26 +233,57 @@ async fn intentional_reset_can_publish_its_verified_new_session_but_global_write
     struct LifecycleAdapter(std::sync::atomic::AtomicU64);
     #[async_trait]
     impl DeviceAdapter for LifecycleAdapter {
-        async fn ready(&self) -> bool { true }
-        async fn target_readiness(&self) -> TargetReadiness {
-            TargetReadiness { target_ready: true, usb_connected: true, broker_target: Some(BrokerTarget {
-                source: BrokerTargetSource::Physical, session_id: "physical".into(), generation: self.0.load(AtomicOrdering::SeqCst)
-            }) }
+        async fn ready(&self) -> bool {
+            true
         }
-        async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> { unreachable!() }
-        async fn invoke_targeted(&self, method: &str, _: Value, from: Option<BrokerTarget>, _: bool) -> Result<Value, DeviceError> {
+        async fn target_readiness(&self) -> TargetReadiness {
+            TargetReadiness {
+                target_ready: true,
+                usb_connected: true,
+                broker_target: Some(BrokerTarget {
+                    source: BrokerTargetSource::Physical,
+                    session_id: "physical".into(),
+                    generation: self.0.load(AtomicOrdering::SeqCst),
+                }),
+            }
+        }
+        async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> {
+            unreachable!()
+        }
+        async fn invoke_targeted(
+            &self,
+            method: &str,
+            _: Value,
+            from: Option<BrokerTarget>,
+            _: bool,
+        ) -> Result<Value, DeviceError> {
             self.0.store(2, AtomicOrdering::SeqCst);
             let to = self.target_readiness().await.broker_target;
-            Ok(json!({"brokerTargetTransition":{"method":method,"from":from,"to":to,"verification":"same_native_controller"}}))
+            Ok(
+                json!({"brokerTargetTransition":{"method":method,"from":from,"to":to,"verification":"same_native_controller"}}),
+            )
         }
     }
     for method in ["device.resetSession", "device.setMasterVolume"] {
         let adapter = Arc::new(LifecycleAdapter(std::sync::atomic::AtomicU64::new(1)));
         let expected = adapter.target_readiness().await.broker_target;
         let invoking = AtomicBool::new(false);
-        let result = invoke_with_deadline(adapter, method, json!({}), Some(1000), Instant::now(), expected, false, &invoking).await;
-        if method == "device.resetSession" { assert!(result.is_ok()); }
-        else { assert_eq!(result.unwrap_err().code, "WRITE_OUTCOME_AMBIGUOUS"); }
+        let result = invoke_with_deadline(
+            adapter,
+            method,
+            json!({}),
+            Some(1000),
+            Instant::now(),
+            expected,
+            false,
+            &invoking,
+        )
+        .await;
+        if method == "device.resetSession" {
+            assert!(result.is_ok());
+        } else {
+            assert_eq!(result.unwrap_err().code, "WRITE_OUTCOME_AMBIGUOUS");
+        }
     }
 }
 
@@ -1114,6 +1145,9 @@ pub async fn poll_host_pairing(
 /// `invoking` flips when the adapter owns the call, so the caller's heartbeat
 /// knows whether asking the adapter for its readiness would queue behind this
 /// request.
+// Keep the captured target and original admission time explicit: neither may
+// be refreshed by dispatch or completion retries.
+#[allow(clippy::too_many_arguments)]
 async fn invoke_with_deadline(
     adapter: Arc<dyn DeviceAdapter>,
     method: &str,
@@ -1153,9 +1187,14 @@ async fn invoke_with_deadline(
         // the cloud's cached socket metadata alone cannot detect that race.
         if let Some(expected) = expected_broker_target {
             let current = adapter.target_readiness().await;
-            let actual = current.target_ready.then_some(current.broker_target.as_ref()).flatten();
+            let actual = current
+                .target_ready
+                .then_some(current.broker_target.as_ref())
+                .flatten();
             if (!current.target_ready || actual != Some(&expected))
-                && !qc_relay_protocol::verified_target_transition(method, &expected, actual, &result)
+                && !qc_relay_protocol::verified_target_transition(
+                    method, &expected, actual, &result,
+                )
             {
                 return Err(admitted_request_failure(
                     method,

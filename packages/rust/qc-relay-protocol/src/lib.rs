@@ -67,11 +67,25 @@ pub fn verified_target_transition(
     actual: Option<&BrokerTarget>,
     result: &Value,
 ) -> bool {
-    if expected.source != BrokerTargetSource::Physical { return false; }
-    let Some(ack) = result.get("brokerTargetTransition").and_then(Value::as_object) else { return false; };
-    if ack.get("method").and_then(Value::as_str) != Some(method) { return false; }
-    let from = ack.get("from").cloned().and_then(|v| serde_json::from_value::<BrokerTarget>(v).ok());
-    if from.as_ref() != Some(expected) { return false; }
+    if expected.source != BrokerTargetSource::Physical {
+        return false;
+    }
+    let Some(ack) = result
+        .get("brokerTargetTransition")
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    if ack.get("method").and_then(Value::as_str) != Some(method) {
+        return false;
+    }
+    let from = ack
+        .get("from")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<BrokerTarget>(v).ok());
+    if from.as_ref() != Some(expected) {
+        return false;
+    }
     let to = match ack.get("to") {
         Some(Value::Null) => None,
         Some(value) => match serde_json::from_value::<BrokerTarget>(value.clone()) {
@@ -80,14 +94,22 @@ pub fn verified_target_transition(
         },
         None => return false,
     };
-    if to.as_ref() != actual { return false; }
+    if to.as_ref() != actual {
+        return false;
+    }
     match method {
-        "device.resetSession" | "device.reconnect" =>
+        "device.resetSession" | "device.reconnect" => {
             ack.get("verification").and_then(Value::as_str) == Some("same_native_controller")
-                && to.as_ref().is_some_and(|target| target.source == BrokerTargetSource::Physical),
-        "device.disconnect" =>
+                && to
+                    .as_ref()
+                    .is_some_and(|target| target.source == BrokerTargetSource::Physical)
+        }
+        "device.disconnect" => {
             ack.get("verification").and_then(Value::as_str) == Some("closed_native_controller")
-                && to.as_ref().is_none_or(|target| target.source == BrokerTargetSource::Demo),
+                && to
+                    .as_ref()
+                    .is_none_or(|target| target.source == BrokerTargetSource::Demo)
+        }
         _ => false,
     }
 }
@@ -223,24 +245,76 @@ mod tests {
 
     #[test]
     fn lifecycle_ack_requires_exact_operation_old_target_new_target_and_native_verification() {
-        let old = BrokerTarget { source: BrokerTargetSource::Physical, session_id: "old".into(), generation: 1 };
-        let new = BrokerTarget { source: BrokerTargetSource::Physical, session_id: "new".into(), generation: 2 };
-        let demo = BrokerTarget { source: BrokerTargetSource::Demo, session_id: "demo".into(), generation: 3 };
+        let old = BrokerTarget {
+            source: BrokerTargetSource::Physical,
+            session_id: "old".into(),
+            generation: 1,
+        };
+        let new = BrokerTarget {
+            source: BrokerTargetSource::Physical,
+            session_id: "new".into(),
+            generation: 2,
+        };
+        let demo = BrokerTarget {
+            source: BrokerTargetSource::Demo,
+            session_id: "demo".into(),
+            generation: 3,
+        };
         let mut result = serde_json::json!({"brokerTargetTransition":{
             "method":"device.resetSession", "from":old, "to":new, "verification":"same_native_controller"
         }});
-        assert!(verified_target_transition("device.resetSession", &old, Some(&new), &result));
-        assert!(!verified_target_transition("device.setMasterVolume", &old, Some(&new), &result));
-        assert!(!verified_target_transition("device.resetSession", &old, Some(&demo), &result));
-        assert!(!verified_target_transition("device.resetSession", &new, Some(&new), &result));
+        assert!(verified_target_transition(
+            "device.resetSession",
+            &old,
+            Some(&new),
+            &result
+        ));
+        assert!(!verified_target_transition(
+            "device.setMasterVolume",
+            &old,
+            Some(&new),
+            &result
+        ));
+        assert!(!verified_target_transition(
+            "device.resetSession",
+            &old,
+            Some(&demo),
+            &result
+        ));
+        assert!(!verified_target_transition(
+            "device.resetSession",
+            &new,
+            Some(&new),
+            &result
+        ));
         result["brokerTargetTransition"]["verification"] = serde_json::json!("unverified");
-        assert!(!verified_target_transition("device.resetSession", &old, Some(&new), &result));
+        assert!(!verified_target_transition(
+            "device.resetSession",
+            &old,
+            Some(&new),
+            &result
+        ));
         result["brokerTargetTransition"] = serde_json::json!({"method":"device.disconnect","from":old,"to":null,"verification":"closed_native_controller"});
-        assert!(verified_target_transition("device.disconnect", &old, None, &result));
+        assert!(verified_target_transition(
+            "device.disconnect",
+            &old,
+            None,
+            &result
+        ));
         result["brokerTargetTransition"]["to"] = serde_json::json!(demo);
-        assert!(verified_target_transition("device.disconnect", &old, Some(&demo), &result));
+        assert!(verified_target_transition(
+            "device.disconnect",
+            &old,
+            Some(&demo),
+            &result
+        ));
         result["brokerTargetTransition"]["to"] = serde_json::json!(new);
-        assert!(!verified_target_transition("device.disconnect", &old, Some(&new), &result));
+        assert!(!verified_target_transition(
+            "device.disconnect",
+            &old,
+            Some(&new),
+            &result
+        ));
     }
 
     #[test]
