@@ -7,6 +7,25 @@ import org.json.JSONObject;
 import org.junit.Test;
 
 public class QcGatewayStatusTest {
+    @Test public void demoStatusNegotiatesTheRealGatewayWithoutClaimingUsb() throws Exception {
+        QcBrokerTarget target = new QcBrokerTarget("demo", "native-demo", 1);
+        JSONObject status = new JSONObject().put("platform", "Demo device")
+            .put("gatewayAvailable", true).put("message", "Local simulation");
+        QcUsbPlugin.projectBrokerTarget("system.status", status, target);
+        QcUsbPlugin.projectBrokerTarget("system.status", status, target);
+        assertEquals(GeneratedGatewayMethods.API_VERSION, status.getInt("gatewayApiVersion"));
+        assertTrue(status.getBoolean("connected"));
+        assertTrue(status.getBoolean("synchronized"));
+        assertEquals("android-demo-relay", status.getString("transport"));
+        assertEquals("Demo device", status.getString("platform"));
+        assertTrue(target.same(QcBrokerTarget.parse(status.get("brokerTarget"))));
+        assertFalse(status.has("usbDiagnostics"));
+        JSONArray capabilities = status.getJSONArray("capabilities");
+        int targetCapabilityCount = 0;
+        for (int index = 0; index < capabilities.length(); index++)
+            if ("expectedBrokerTarget".equals(capabilities.getString(index))) targetCapabilityCount++;
+        assertEquals(1, targetCapabilityCount);
+    }
     @Test public void statusCarriesCapabilitiesAsAJsonArrayOfStrings() throws Exception {
         JSONObject status = QcUsbPlugin.systemStatus(true, false, new JSONObject());
 

@@ -58,6 +58,7 @@ public class QcUsbPlugin extends Plugin {
     private UsbManager manager;
     private UsbDevice device;
     private UsbDeviceConnection connection;
+    private volatile UsbDeviceConnection lastClosedController;
     private UsbInterface hidInterface;
     private UsbEndpoint inputEndpoint;
     private volatile UsbRequest[] activeInputRequests;
@@ -313,19 +314,28 @@ public class QcUsbPlugin extends Plugin {
     void assertBrokerTarget(QcBrokerTarget expected) { expected.assertCurrent(currentBrokerTarget()); }
 
     private org.json.JSONObject targetMetadata(String method, org.json.JSONObject result) throws Exception {
+        return projectBrokerTarget(method, result, currentBrokerTarget());
+    }
+
+    static org.json.JSONObject projectBrokerTarget(String method, org.json.JSONObject result, QcBrokerTarget target) throws Exception {
         if ("system.status".equals(method) || "device.identity".equals(method)
                 || "device.reconnect".equals(method) || "device.resetSession".equals(method)
                 || "device.disconnect".equals(method)) {
-            QcBrokerTarget target = currentBrokerTarget();
             if (target != null) result.put("brokerTarget", target.json());
             else result.remove("brokerTarget");
             if ("system.status".equals(method)) {
+                result.put("gatewayApiVersion", GeneratedGatewayMethods.API_VERSION);
                 org.json.JSONArray capabilities = result.optJSONArray("capabilities");
+                if (capabilities == null) { capabilities = capabilitiesJson(); result.put("capabilities", capabilities); }
                 if (capabilities != null) {
                     boolean found = false;
                     for (int index = 0; index < capabilities.length(); index++)
                         if ("expectedBrokerTarget".equals(capabilities.optString(index))) found = true;
                     if (!found) capabilities.put("expectedBrokerTarget");
+                }
+                if (target != null && "demo".equals(target.source)) {
+                    result.put("connected", true).put("synchronized", true)
+                        .put("transport", "android-demo-relay");
                 }
             }
         }
@@ -361,6 +371,7 @@ public class QcUsbPlugin extends Plugin {
 
     @PluginMethod public void completeDemoRequest(PluginCall call) {
         JSObject result = call.getObject("result");
+        if (result != null) result.remove("brokerTargetTransition");
         String method = demoProvider.pendingMethod(call.getString("id", ""));
         if (result != null && method != null) {
             try { targetMetadata(method, result); }
@@ -441,6 +452,10 @@ public class QcUsbPlugin extends Plugin {
         if (captured == null && !"system.status".equals(method) && !"device.reconnect".equals(method))
             return failedRelay("NOT_CONNECTED", "No usable provider was available when this request arrived.");
         RelayDeadline deadline = new RelayDeadline(session, captured);
+        boolean lifecycle = "device.reconnect".equals(method) || "device.resetSession".equals(method)
+            || "device.disconnect".equals(method);
+        UsbDeviceConnection originalController = lifecycle && captured != null ? session.connection : null;
+        String originalPrivateKey = lifecycle && captured != null ? session.privateControllerKey() : null;
         CompletableFuture<org.json.JSONObject> invocation = new CompletableFuture<>();
         RELAY_DEADLINES.put(invocation, deadline);
         deadline.retirement().whenComplete((ignored, error) -> RELAY_DEADLINES.remove(invocation, deadline));
@@ -456,16 +471,40 @@ public class QcUsbPlugin extends Plugin {
         deadline.attachOperation(operation);
         operation.whenComplete((result, error) -> {
             try {
-                boolean lifecycle = "device.reconnect".equals(method) || "device.resetSession".equals(method)
-                    || "device.disconnect".equals(method);
                 if (error != null) invocation.completeExceptionally(error);
-                else if (!lifecycle && captured != null && !session.matchesBrokerTarget(captured))
-                    invocation.completeExceptionally(new RelayException("TARGET_SUPERSEDED", "The broker target changed while the request was running."));
-                else invocation.complete(session.targetMetadata(method, result));
+                else {
+                    QcBrokerTarget current = session.currentBrokerTarget();
+                    result.remove("brokerTargetTransition");
+                    if (captured != null && !captured.same(current)) {
+                        if (!lifecycle) throw new RelayException("TARGET_SUPERSEDED", "The broker target changed while the request was running.");
+                        String newPrivateKey = "device.disconnect".equals(method) ? null : session.privateControllerKey();
+                        QcBrokerTarget afterIdentityRead = session.currentBrokerTarget();
+                        boolean stable = current == null ? afterIdentityRead == null : current.same(afterIdentityRead);
+                        org.json.JSONObject transition = stable ? QcBrokerTargetTransition.verified(method, captured, current,
+                            originalPrivateKey, newPrivateKey, originalController != null
+                                && session.lastClosedController == originalController && session.connection != originalController) : null;
+                        if (transition == null) throw new RelayException("DEVICE_OUTCOME_UNKNOWN",
+                            "The lifecycle operation completed, but the resulting controller could not be verified. Do not retry automatically.");
+                        result.put("brokerTargetTransition", transition);
+                    }
+                    invocation.complete(projectBrokerTarget(method, result, current));
+                }
             } catch (Exception malformed) { invocation.completeExceptionally(malformed); }
             deadline.operationFinished();
         });
         return invocation;
+    }
+
+    private String privateControllerKey() {
+        UsbDevice observed = device;
+        if (observed == null) return null;
+        try {
+            String serial = observed.getSerialNumber();
+            if (serial == null || serial.trim().isEmpty() || observed != device) return null;
+            // Kept only in this operation's closure; never serialized or logged.
+            return observed.getVendorId() + ":" + observed.getProductId() + ":"
+                + observed.getDeviceId() + ":" + observed.getDeviceName() + ":" + serial;
+        } catch (RuntimeException unavailable) { return null; }
     }
 
     static void expireRelayInvocation(CompletableFuture<org.json.JSONObject> invocation) {
@@ -3214,6 +3253,7 @@ public class QcUsbPlugin extends Plugin {
         if (connection != null) {
             if (hidInterface != null) connection.releaseInterface(hidInterface);
             connection.close();
+            lastClosedController = connection;
         }
         connection = null;
         device = null;
