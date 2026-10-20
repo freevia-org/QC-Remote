@@ -255,34 +255,38 @@ class ProbeCleanupTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux procfs process groups")
     def test_normal_launcher_exit_waits_for_descendant_and_leaves_sibling_alive(self):
-        import threading
         with tempfile.TemporaryDirectory(prefix="qc-tray-group-settle-") as root:
             release = pathlib.Path(root) / "release"
-            child_script = ("import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); "
-                            "deadline=time.monotonic()+10; "
-                            "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.01)')")
+            child_script = ("import pathlib,sys,time\np=pathlib.Path(sys.argv[1])\ndeadline=time.monotonic()+10\n"
+                            "while not p.exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+                            "if p.exists(): time.sleep(0.15)\n")
             parent_script = ("import subprocess,sys; p=subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]]); "
                              "print(p.pid,flush=True)")
-            parent = subprocess.Popen([sys.executable, "-c", parent_script, child_script, str(release)],
-                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
-            sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
-            timer = None
+            parent = sibling = None
             try:
+                parent = subprocess.Popen([sys.executable, "-c", parent_script, child_script, str(release)],
+                                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+                sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
                 self.assertTrue(parent.stdout.readline().strip().isdigit())
                 self.assertEqual(parent.wait(timeout=3), 0)
                 self.assertTrue(probe.group_has_live_members(parent.pid), "the child outlives its launcher")
-                timer = threading.Timer(0.15, release.touch)
-                timer.start()
+                release.touch()
                 self.assertTrue(probe.wait_for_group_exit(parent.pid, grace=3))
                 self.assertIsNone(sibling.poll(), "unrelated processes must survive group retirement")
             finally:
                 release.touch()
-                if timer is not None: timer.join(timeout=2)
-                parent.wait(timeout=3)
-                self.assertTrue(probe.wait_for_group_exit(parent.pid, grace=12))
-                parent.stdout.close()
-                sibling.terminate()
-                sibling.wait(timeout=3)
+                try:
+                    if parent is not None:
+                        try: parent.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            parent.terminate()
+                            parent.wait(timeout=3)
+                        self.assertTrue(probe.wait_for_group_exit(parent.pid, grace=12))
+                finally:
+                    if parent is not None and parent.stdout is not None: parent.stdout.close()
+                    if sibling is not None:
+                        sibling.terminate()
+                        sibling.wait(timeout=3)
 
     def test_report_does_not_claim_staging_cleanup_before_rmtree_succeeds(self):
         real_rmtree = shutil.rmtree
