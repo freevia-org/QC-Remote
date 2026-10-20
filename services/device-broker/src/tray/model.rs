@@ -218,9 +218,7 @@ pub fn status_text(snapshot: &Snapshot) -> String {
     if snapshot.stale {
         return "QC Remote broker is not responding".into();
     }
-    if !snapshot.connected()
-        && snapshot.served_source == Some(crate::target::TargetSource::Demo)
-    {
+    if !snapshot.connected() && snapshot.served_source == Some(crate::target::TargetSource::Demo) {
         return "QC Remote demo device ready (local simulation)".into();
     }
     let device = snapshot
@@ -966,9 +964,7 @@ pub fn icon_tone(snapshot: &Snapshot) -> IconTone {
     if snapshot.stale {
         return IconTone::Error;
     }
-    if !snapshot.connected()
-        && snapshot.served_source == Some(crate::target::TargetSource::Demo)
-    {
+    if !snapshot.connected() && snapshot.served_source == Some(crate::target::TargetSource::Demo) {
         return IconTone::Demo;
     }
     // A stale quarantine reason can outlive the USB link; with no device there

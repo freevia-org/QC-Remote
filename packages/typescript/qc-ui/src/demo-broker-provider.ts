@@ -13,11 +13,12 @@ export interface DemoBrokerRequest {
   sequence: number;
   method: string;
   params: Record<string, unknown>;
+  expectedState?: Record<string, unknown>;
 }
 
 export class DemoBrokerProviderError extends Error {
   readonly retryable = false;
-  readonly code: "TARGET_SUPERSEDED" | "INVALID_PROVIDER_REQUEST" | "METHOD_NOT_SUPPORTED" | "PROVIDER_BUSY";
+  readonly code: "TARGET_SUPERSEDED" | "INVALID_PROVIDER_REQUEST" | "METHOD_NOT_SUPPORTED" | "PROVIDER_BUSY" | "STATE_CONFLICT";
   constructor(code: DemoBrokerProviderError["code"], message: string) {
     super(message);
     this.code = code;
@@ -74,6 +75,15 @@ export function createDemoBrokerProvider(
         throw new DemoBrokerProviderError("INVALID_PROVIDER_REQUEST", "The demo request contains unsupported arguments.");
       }
       if (pending >= 8) throw new DemoBrokerProviderError("PROVIDER_BUSY", "The demo provider request queue is full.");
+      const expected = structuredClone(request.expectedState ?? {});
+      const stateFields: Readonly<Record<string, string>> = {
+        presetName: "presetName", position: "presetPosition", presetPosition: "presetPosition",
+        activeScene: "activeScene", scene: "activeScene", tempo: "tempo", presetIdentity: "presetIdentity"
+      };
+      if (!expected || typeof expected !== "object" || Array.isArray(expected)
+          || Object.keys(expected).some(key => !Object.hasOwn(stateFields, key))) {
+        throw new DemoBrokerProviderError("INVALID_PROVIDER_REQUEST", "The demo provider cannot verify these expected-state constraints.");
+      }
       // Capture arguments now. Neither queueing nor a later source change can
       // replace the method/transport or alter the admitted request document.
       const params = structuredClone({ ...method.descriptor.defaults, ...request.params }) as Record<string, unknown>;
@@ -83,6 +93,15 @@ export function createDemoBrokerProvider(
       const run = queue.then(async () => {
         assertCurrent();
         try {
+          if (Object.keys(expected).length) {
+            const snapshot = await transport.currentSnapshot() as unknown as Record<string, unknown>;
+            assertCurrent();
+            for (const [field, value] of Object.entries(expected)) {
+              if (snapshot[stateFields[field]!] !== value) {
+                throw new DemoBrokerProviderError("STATE_CONFLICT", "The demo state changed before this operation. Refresh it before editing.");
+              }
+            }
+          }
           const result = await implementation.apply(transport, args);
           assertCurrent();
           return result;

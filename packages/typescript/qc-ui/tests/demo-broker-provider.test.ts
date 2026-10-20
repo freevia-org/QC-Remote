@@ -74,3 +74,28 @@ test("pending requests are bounded and withdrawal drains the queue without effec
   await Promise.all(rejected);
   assert.equal(calls, 1);
 });
+
+test("return to the same demo store uses a fresh generation and rejects the old lease", async () => {
+  let generation = 1;
+  let name = "before";
+  const virtual = { currentSnapshot: async () => ({ presetName: name }), setDeviceName: async (value: string) => { name = value; } } as unknown as GatewayTransport;
+  const old = createDemoBrokerProvider(virtual, target, () => generation === 1);
+  generation = 2; // physical selected
+  await assert.rejects(old.invoke(request(1)), { code: "TARGET_SUPERSEDED" });
+  generation = 3; // physical disconnected, same demo store resumes
+  const resumedTarget = { ...target, generation };
+  const resumed = createDemoBrokerProvider(virtual, resumedTarget, () => generation === 3);
+  await resumed.invoke({ ...request(1, "device.setDeviceName", { name: "resumed" }), target: resumedTarget });
+  assert.deepEqual(await virtual.currentSnapshot(), { presetName: "resumed" });
+  await assert.rejects(resumed.invoke(request(2)), { code: "TARGET_SUPERSEDED" });
+});
+
+test("expected-state checks use the captured demo snapshot and refuse unsupported constraints", async () => {
+  let writes = 0;
+  const virtual = { currentSnapshot: async () => ({ presetName: "demo preset", presetPosition: 3 }), setDeviceName: async () => { writes += 1; } } as unknown as GatewayTransport;
+  const provider = createDemoBrokerProvider(virtual, target, () => true);
+  await assert.rejects(provider.invoke({ ...request(1, "device.setDeviceName", { name: "wrong" }), expectedState: { presetName: "physical preset" } }), { code: "STATE_CONFLICT" });
+  await assert.rejects(provider.invoke({ ...request(2, "device.setDeviceName", { name: "unknown guard" }), expectedState: { unknownConstraint: true } }), { code: "INVALID_PROVIDER_REQUEST" });
+  await provider.invoke({ ...request(3, "device.setDeviceName", { name: "matches" }), expectedState: { presetName: "demo preset", position: 3 } });
+  assert.equal(writes, 1);
+});
