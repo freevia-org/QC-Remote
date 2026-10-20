@@ -42,9 +42,13 @@ fn legacy_store_root() -> PathBuf {
 #[cfg(unix)]
 fn prepare_store_directory(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "linux")]
-    return qc_native_platform::paths::prepare_directory(path);
+    {
+        qc_native_platform::paths::prepare_directory(path)
+    }
     #[cfg(target_os = "macos")]
-    return qc_native_platform::paths_macos::prepare_directory(path);
+    {
+        qc_native_platform::paths_macos::prepare_directory(path)
+    }
 }
 
 /// Copy an owned legacy document without ever replacing a concurrently saved
