@@ -853,9 +853,14 @@ impl DesktopBackend {
         if expected.is_some() {
             // Older /rpc publishers ignore unknown JSON fields. Prove support
             // before sending a guarded action; never retry it without a fence.
+            // Bind the credential to the already-validated RPC origin, never
+            // to the descriptor's unvalidated diagnostic URL.
+            let mut health_url = endpoint.rpc_url.clone();
+            health_url.set_path("/health");
             let health = self
                 .client
-                .get(&endpoint.health_url)
+                .get(health_url)
+                .bearer_auth(&endpoint.bearer_token)
                 .timeout(Duration::from_secs(3))
                 .send()
                 .await
@@ -2545,6 +2550,82 @@ fn startup_host(
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn guarded_local_relay_authenticates_the_real_listener_capability_probe() {
+        type Captured = (Value, Option<qc_relay_client::BrokerTarget>);
+        struct Adapter(Mutex<Vec<Captured>>);
+        #[async_trait]
+        impl DeviceAdapter for Adapter {
+            async fn ready(&self) -> bool {
+                true
+            }
+            async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> {
+                panic!("the relay must retain its expected target")
+            }
+            async fn invoke_targeted(
+                &self,
+                method: &str,
+                params: Value,
+                target: Option<qc_relay_client::BrokerTarget>,
+                _: bool,
+            ) -> Result<Value, DeviceError> {
+                assert_eq!(method, "device.setTempo");
+                self.0.lock().unwrap().push((params, target));
+                Ok(serde_json::json!({"accepted":true}))
+            }
+        }
+        let (directory, _directory) = exclusive_fixture_dir("guarded-health-auth");
+        let paths = vec![directory.join("local-mcp.json")];
+        let adapter = Arc::new(Adapter(Mutex::new(Vec::new())));
+        let (_access, receiver) = watch::channel(AccessMode::Full);
+        let listener = local_access::start_listener(paths.clone(), adapter.clone(), receiver)
+            .unwrap_or_else(|e| panic!("listener: {}", e.message));
+        let mut endpoint =
+            descriptor_from_paths(&paths).unwrap_or_else(|e| panic!("descriptor: {e}"));
+        let client = reqwest::Client::new();
+        assert_eq!(
+            client
+                .get(&endpoint.health_url)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "the production capability endpoint must remain authenticated"
+        );
+        // An edited diagnostic URL must neither receive the bearer nor divert
+        // a guarded call away from the instance that proved its identity.
+        endpoint.health_url = "http://127.0.0.1:1/untrusted-diagnostic".into();
+        let backend = DesktopBackend {
+            client,
+            session_id: None,
+        };
+        let target = qc_relay_client::BrokerTarget {
+            source: qc_relay_client::BrokerTargetSource::Demo,
+            session_id: "isolated-demo".into(),
+            generation: 1,
+        };
+        let params = serde_json::json!({"tempo":121});
+        let answer = backend
+            .send_targeted(
+                endpoint,
+                "device.setTempo",
+                params.as_object().unwrap().clone(),
+                Some(target.clone()),
+            )
+            .await;
+        assert!(
+            matches!(answer, Ok(ref value) if value["accepted"] == true),
+            "authenticated guarded call was refused"
+        );
+        assert_eq!(
+            *adapter.0.lock().unwrap(),
+            vec![(params, Some(target))],
+            "send once, retaining the original guard"
+        );
+        assert!(listener.stop(), "the exact listener must retire");
+    }
+
+    #[tokio::test]
     async fn guarded_local_relay_refuses_old_publishers_and_keeps_metadata_out_of_action_params() {
         for supported in [false, true] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2552,8 +2633,14 @@ mod tests {
             let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
             let recorded = calls.clone();
             let router = axum::Router::new()
-                .route("/health", axum::routing::get(move || async move {
-                    axum::Json(serde_json::json!({"instanceId":"instance", "capabilities":if supported { vec!["localRpcBrokerTargetGuard"] } else { vec![] }}))
+                .route("/health", axum::routing::get(move |headers: axum::http::HeaderMap| async move {
+                    // The real local router protects /health, unlike /identity.
+                    // An unauthenticated capability probe must not pass this fixture.
+                    if headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok())
+                        != Some(format!("Bearer {}", "T".repeat(43)).as_str()) {
+                        return axum::response::IntoResponse::into_response(axum::http::StatusCode::UNAUTHORIZED);
+                    }
+                    axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({"instanceId":"instance", "capabilities":if supported { vec!["localRpcBrokerTargetGuard"] } else { vec![] }})))
                 }))
                 .route("/rpc", axum::routing::post(move |axum::Json(value): axum::Json<serde_json::Value>| {
                     let recorded = recorded.clone();
