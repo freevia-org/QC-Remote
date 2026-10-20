@@ -19,7 +19,9 @@ final class USBConnectionTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", preset)).firstMatch.waitForExistence(timeout: 90))
         let empty = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "Add a block at row 2, column 1")).firstMatch
         XCTAssertTrue(empty.waitForExistence(timeout: 15))
-        empty.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        // WebKit includes the preceding SVG lane in this accessibility frame.
+        // Its lower portion is the empty cell’s actual touch target.
+        empty.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).tap()
         // Read only: never select a model or pin anything on the hardware.
         XCTAssertTrue(app.buttons["Brit 2203"].waitForExistence(timeout: 90), app.debugDescription)
         let close = app.buttons.matching(NSPredicate(format: "label == %@", "Close device browser"))
