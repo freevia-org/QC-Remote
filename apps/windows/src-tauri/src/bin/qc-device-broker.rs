@@ -107,6 +107,7 @@ fn host_readiness(
     use qc_device_broker::resident::DeviceReadiness;
     use qc_remote_lib::BrokerDeviceReadiness;
     match readiness {
+        DeviceReadiness::Unknown => BrokerDeviceReadiness::Unknown,
         DeviceReadiness::Ready => BrokerDeviceReadiness::Ready,
         DeviceReadiness::ReadyTarget {
             usb_connected,
@@ -152,6 +153,10 @@ mod tests {
     /// crate boundary: only `Ready` may become ready.
     #[test]
     fn every_broker_readiness_maps_to_the_same_host_readiness() {
+        assert_eq!(
+            host_readiness(DeviceReadiness::Unknown),
+            BrokerDeviceReadiness::Unknown
+        );
         assert_eq!(
             host_readiness(DeviceReadiness::Ready),
             BrokerDeviceReadiness::Ready

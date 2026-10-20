@@ -1048,6 +1048,8 @@ impl Drop for BrokerReadSlot {
 /// the broker crate outside that build.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BrokerDeviceReadiness {
+    /// Only a temporary native cache/inventory contention, not target loss.
+    Unknown,
     /// The session is open.
     Ready,
     ReadyTarget {
@@ -1089,6 +1091,7 @@ impl HeadlessDeviceAdapter {
         }
         if self.broker.is_some() {
             return Some(match self.broker_readiness_answer().await {
+                Ok(BrokerDeviceReadiness::Unknown) => return None,
                 Ok(BrokerDeviceReadiness::ReadyTarget {
                     usb_connected,
                     target,
@@ -1178,6 +1181,9 @@ impl HeadlessDeviceAdapter {
 
     async fn broker_readiness(&self) -> HostReadiness {
         match self.broker_readiness_answer().await {
+            Ok(BrokerDeviceReadiness::Unknown) => HostReadiness::NotReady(
+                "the device broker's current target readiness is temporarily unknown".into(),
+            ),
             Ok(BrokerDeviceReadiness::Ready | BrokerDeviceReadiness::ReadyTarget { .. }) => {
                 HostReadiness::Ready
             }
@@ -2639,6 +2645,66 @@ mod tests {
         );
         assert!(adapter.ready().await);
         assert!(adapter.gateway.lock().unwrap().process.is_none());
+    }
+    #[tokio::test]
+    async fn resident_unknown_skips_publication_but_loss_and_ambiguity_clear_readiness() {
+        use qc_relay_client::DeviceAdapter;
+        let physical = super::BrokerDeviceReadiness::ReadyTarget {
+            usb_connected: true,
+            target: qc_relay_client::BrokerTarget {
+                source: qc_relay_client::BrokerTargetSource::Physical,
+                session_id: "physical".into(),
+                generation: 1,
+            },
+        };
+        let sample = std::sync::Arc::new(std::sync::Mutex::new(physical));
+        let observed = sample.clone();
+        let adapter = super::HeadlessDeviceAdapter::new(
+            std::env::temp_dir().join("unused-publication-probe.json"),
+            false,
+        )
+        .with_broker_readiness(std::sync::Arc::new(move || {
+            observed.lock().unwrap().clone()
+        }));
+        let known = adapter.publication_readiness().await.unwrap();
+        assert!(known.target_ready && known.usb_connected);
+        *sample.lock().unwrap() = super::BrokerDeviceReadiness::Unknown;
+        assert!(adapter.publication_readiness().await.is_none());
+        assert!(!adapter.target_readiness().await.target_ready);
+        assert!(!adapter.ready().await);
+        for unavailable in [
+            super::BrokerDeviceReadiness::Unavailable {
+                reason: "verified ambiguity".into(),
+            },
+            super::BrokerDeviceReadiness::Unavailable {
+                reason: "shutting down".into(),
+            },
+            super::BrokerDeviceReadiness::NotReady {
+                phase: "handshaking".into(),
+            },
+            super::BrokerDeviceReadiness::NotReady {
+                phase: "disconnected".into(),
+            },
+        ] {
+            *sample.lock().unwrap() = unavailable;
+            let published = adapter.publication_readiness().await.unwrap();
+            assert!(!published.target_ready);
+            assert!(published.broker_target.is_none());
+        }
+        *sample.lock().unwrap() = super::BrokerDeviceReadiness::ReadyTarget {
+            usb_connected: false,
+            target: qc_relay_client::BrokerTarget {
+                source: qc_relay_client::BrokerTargetSource::Demo,
+                session_id: "demo".into(),
+                generation: 3,
+            },
+        };
+        let demo = adapter.publication_readiness().await.unwrap();
+        assert!(demo.target_ready && !demo.usb_connected);
+        assert!(
+            adapter.gateway.lock().unwrap().process.is_none(),
+            "a publication probe never attaches or opens USB"
+        );
     }
     use super::*;
     struct StdioRelease(Option<std::sync::mpsc::Sender<()>>);
