@@ -7,6 +7,88 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.190 / Android 0.3.40 — 20 October 2026
+
+Changes since Windows 0.1.189 / Android 0.3.39. This release carries one
+change, merged after 0.1.189 was cut (#171): the apps no longer generate
+recurring idle requests to the cloud relay, and the relay keeps credentials and
+AI-app authorizations until you remove them. Everything else in 0.1.189 /
+0.3.39 is unchanged.
+
+### Both apps
+
+- **No more idle relay requests.** The apps no longer send periodic Ready or
+  status reads while nothing has changed. A paired host reports USB readiness
+  once per connection and then only when readiness changes; the connection is
+  kept alive with WebSocket protocol pings, which do not use relay request
+  quota. The paid idle relay requests that previously accumulated while an app
+  sat open are gone. Unchanged views show the last observed local state and
+  mark it stale; they refresh on explicit demand. Anything that plans or
+  guards a command still reads fresh device state first, and every explicit
+  read and control is still authorized on each request.
+- **Persistent device credentials and AI-app authorizations (see
+  PRIVACY.md).** Paired-device credentials and AI-app authorizations (refresh
+  grants) no longer expire after 90 and 30 days. They persist until you unpair
+  the device, unlink or revoke the AI app, unpair your account's last device,
+  or delete your remote account. Access tokens still expire after one hour.
+  Valid historical credentials migrate to this policy when they are next used
+  to authenticate; expired or revoked credentials are not restored, and
+  historical records that are never used again are removed after their former
+  90-day lifetime plus a 30-day grace period. PRIVACY.md describes this change
+  in full.
+- **Client roster registry (relay service).** The relay's list of AI apps is a
+  registry of up to 128 clients that is recorded when a client first uses the
+  relay and is removed when its authorization is revoked, the account is
+  deleted, or it is evicted at capacity. It no longer renews a presence lease or
+  records each request as activity, and it does not mean a client is connected
+  at this moment. Account admission and client registration are now one
+  relay step, so an ordinary device call needs two Durable Object calls instead
+  of three, without removing any authorization check. The relay changes are a
+  service change that is deployed separately from the apps and are listed here
+  because they ship in the same public source release.
+
+### Android
+
+- Reads that were polled on a timer now wait for an explicit refresh or a real
+  change, and the readiness frame is published once per connection and on
+  change only (build 45).
+
+### iOS (source only)
+
+- **On-demand reads (#171).** The iOS app's source follows the same
+  on-demand observation policy. No iOS build is part of this release.
+
+### Windows
+
+- Version and build number only (0.1.190) beyond the shared changes above.
+
+### Known limitations
+
+- **macOS, broker output deadline (confirmed gap).** The shared broker framing
+  does not enforce an absolute output deadline: on both macOS CI runners a
+  stalled peer held a write for about 7.0 to 7.1 s against the 5 s budget. No
+  macOS artifact is part of this release.
+- **Windows, broker output deadline (not confirmed, not cleared).** The same
+  output-deadline behaviour has neither been confirmed nor cleared on Windows,
+  and no validated hard 5 s output bound is claimed.
+- **Broker output-mutex admission.** Callers can wait on the output lock before
+  the 5 s timer starts. This is a separate, tracked caller issue.
+- **Type-61 update requests.** The unit's update-request relay attempts every
+  request, with no promise that each one is served and no aggregate resource
+  bound. This is unchanged by decision of the project owner.
+- **Android with the internet relay switch off.** Nothing answers the unit's
+  cloud-account (Type 29) requests, unlike Windows.
+- **Tray icon.** The tray icon belongs to the broker process, not to the app
+  window.
+- **Idle release.** Release of the device after idle has not been observed.
+- **Cloud Backup timeout.** A reported Cloud Backup timeout has not been
+  reproduced.
+- **Screens.** On the I/O screen, OUT LEVEL and LIMITER show idle placeholders,
+  not live meters. Settings text is slightly heavier than the unit's.
+  Settings > Connection data is not exposed by the gateway.
+
+A production fix for the framing deadline is the first follow-up.
+
 ## QC Remote Windows 0.1.189 / Android 0.3.39 — 20 October 2026
 
 Changes since Windows 0.1.188 / Android 0.3.38. This release carries two
