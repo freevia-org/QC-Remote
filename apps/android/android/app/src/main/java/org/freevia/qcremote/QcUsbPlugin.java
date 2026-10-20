@@ -360,8 +360,13 @@ public class QcUsbPlugin extends Plugin {
                 params == null ? new org.json.JSONObject() : params,
                 expected == null ? new org.json.JSONObject() : expected,
                 request -> session.getActivity().runOnUiThread(() -> {
-                    if (session.demoProvider.canDeliver(request.optString("id")))
+                    if (!session.demoProvider.canDeliver(request.optString("id"))) return;
+                    try {
                         session.notifyListeners("qcDemoRequest", JSObject.fromJSONObject(request), false);
+                    } catch (Exception malformed) {
+                        session.demoProvider.complete(request.optString("id"), request.optString("sessionId"),
+                            request.optLong("generation"), null, null);
+                    }
                 }));
         }
         RelayDeadline deadline = new RelayDeadline(session);
