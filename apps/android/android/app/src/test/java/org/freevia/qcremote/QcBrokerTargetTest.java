@@ -10,6 +10,7 @@ public class QcBrokerTargetTest {
         assertTrue("The bridge's JSON decoder produces Integer for 1", small.get("generation") instanceof Integer);
         assertEquals(1, QcBrokerTarget.generation(small, 0));
         assertEquals(2147483648L, QcBrokerTarget.generation(new JSONObject("{\"generation\":2147483648}"), 0));
+        assertEquals(9007199254740991L, QcBrokerTarget.generation(new JSONObject("{\"generation\":9007199254740991}"), 0));
         for (String raw : new String[]{"{}", "{\"generation\":null}", "{\"generation\":\"1\"}",
                 "{\"generation\":1.5}", "{\"generation\":-1}", "{\"generation\":9007199254740992}"}) {
             try { QcBrokerTarget.generation(new JSONObject(raw), 0); fail(raw); }
