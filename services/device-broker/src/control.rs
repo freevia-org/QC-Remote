@@ -38,6 +38,7 @@ pub const SCHEMA: &str = "qc-broker-control/v1";
 pub const AUDIT_LOG: &str = "broker-control.log";
 /// Past this the log is truncated before the next line is written.
 pub const AUDIT_LOG_MAX_BYTES: u64 = 64 * 1024;
+#[cfg(not(target_os = "macos"))]
 const SESSION_MARKER: &str = crate::resident::SESSION_MARKER;
 /// The largest frame this client reads. Every control answer is tiny.
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -1309,9 +1310,9 @@ impl Env for NativeEnv {
     fn session_marker_present(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
-            return self.own_directory().is_some_and(|directory| {
+            self.own_directory().is_some_and(|directory| {
                 qc_native_platform::resident_marker::is_running(&directory)
-            });
+            })
         }
         #[cfg(not(target_os = "macos"))]
         named_mutex_exists(SESSION_MARKER)
