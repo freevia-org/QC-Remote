@@ -23,6 +23,7 @@ const listeners = new Map<string, Set<(value: any) => void>>();
 const directStateFrames: Array<{ streamId?: string; sequence: number; observedAt: number; states: unknown[]; tempoClock?: Record<string, unknown> }> = [];
 let stored: Stored = {};
 let loaded = false;
+let loading: Promise<void> | undefined;
 let client: Client | undefined;
 let transport: StreamableHTTPClientTransport | undefined;
 let authPending = false;
@@ -30,7 +31,8 @@ let mcpConnected = false;
 let appActive = true;
 const cloudActive = () => appActive && document.visibilityState !== "hidden";
 const remoteTraffic = new RemoteTraffic(Date.now, cloudActive);
-let connecting = false;
+let connectionGeneration = 0;
+let connectionTask: { generation: number; promise: Promise<void> } | undefined;
 let mode: ControlAccessMode = parseControlAccessMode(localStorage.getItem("qc-control.device-access-mode-v1"));
 let lastStatus: any;
 let acceptedRemoteContext: { target?: BrokerTarget; guardSupported: boolean } | undefined;
@@ -52,8 +54,16 @@ function prefersRemoteHost(): boolean {
 
 async function load(): Promise<void> {
   if (loaded) return;
-  loaded = true;
-  try { const raw = (await QCIosNativeBridge.secureGet({ key: storageKey })).value; if (raw) stored = JSON.parse(raw); } catch { stored = {}; }
+  if (loading) return loading;
+  const pending = (async () => {
+    const raw = (await QCIosNativeBridge.secureGet({ key: storageKey })).value;
+    const value: unknown = raw == null ? {} : JSON.parse(raw);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The saved sign-in data is invalid.");
+    stored = value as Stored;
+    loaded = true;
+  })();
+  loading = pending;
+  try { await pending; } finally { if (loading === pending) loading = undefined; }
 }
 async function save(): Promise<void> { await QCIosNativeBridge.secureSet({ key: storageKey, value: JSON.stringify(stored) }); }
 function emit(name: string, value: unknown): void {
@@ -96,17 +106,39 @@ const provider = {
   }
 };
 
-async function connectMcp(): Promise<void> {
+function retireMcpAttempt(): void {
+  connectionGeneration++;
+  connectionTask = undefined;
+}
+function connectMcp(): Promise<void> {
+  if (connectionTask) return connectionTask.promise;
+  if (mcpConnected && client) return Promise.resolve();
+  const generation = ++connectionGeneration;
+  const promise = establishMcp(generation);
+  const task = { generation, promise };
+  connectionTask = task;
+  const finished = () => { if (connectionTask === task) connectionTask = undefined; };
+  void promise.then(finished, finished);
+  return promise;
+}
+async function awaitDemandConnection(): Promise<void> {
+  const pending = connectMcp();
+  const generation = connectionGeneration;
+  await pending;
+  if (generation !== connectionGeneration) throw new Error("The paired-host connection changed before this request completed. Refresh before editing.");
+  if (!mcpConnected) throw new Error(authPending ? "Finish QC Remote Cloud sign-in in the browser to connect the paired host." : "Refresh the paired host to continue. Your sign-in is saved.");
+}
+async function establishMcp(generation: number): Promise<void> {
   if (Capacitor.isNativePlatform() && !prefersRemoteHost()) throw new Error("Choose Remote mode before connecting to QC Remote Cloud.");
-  if (connecting || client || !cloudActive()) return;
+  if (generation !== connectionGeneration || client || !cloudActive()) return;
   await load();
-  if (connecting || client || !cloudActive()) return;
-  connecting = true;
+  if (generation !== connectionGeneration || client || !cloudActive()) return;
   mcpConnected = false;
   const nextClient = new Client({ name: "QC Remote for iOS", version: "0.1.0" });
   const nextTransport = new StreamableHTTPClientTransport(new URL(serverUrl), { authProvider: provider, fetch: (input, init) => remoteTraffic.fetch(input, init), reconnectionOptions: { initialReconnectionDelay: 5_000, maxReconnectionDelay: 300_000, reconnectionDelayGrowFactor: 2, maxRetries: 0 } });
   nextClient.onclose = () => {
     if (transport !== nextTransport) return;
+    retireMcpAttempt();
     client = undefined; transport = undefined;
     mcpConnected = false;
     emit("qcConnection", { state: "disconnected" });
@@ -115,10 +147,12 @@ async function connectMcp(): Promise<void> {
   client = nextClient; transport = nextTransport;
   try {
     await nextClient.connect(nextTransport);
-    if (client !== nextClient || !cloudActive()) { await nextClient.close().catch(() => undefined); return; }
+    if (generation !== connectionGeneration || client !== nextClient || !cloudActive()) { await nextClient.close().catch(() => undefined); return; }
     authPending = false;
-    lastStatus = await callTool("get_qc_status", {});
-    if (client !== nextClient || !cloudActive()) return;
+    const observedStatus = await callTool("get_qc_status", {});
+    if (generation !== connectionGeneration || client !== nextClient || !cloudActive()) return;
+    pairedHostConnection(observedStatus);
+    lastStatus = observedStatus;
     mcpConnected = true;
     // Paired-host reads are explicit demand. Publishing availability here
     // starts a second mobile connection attempt during the initiating refresh.
@@ -131,7 +165,7 @@ async function connectMcp(): Promise<void> {
     await nextClient.close().catch(() => undefined);
     emit("qcConnection", { state: "disconnected" });
     throw error;
-  } finally { connecting = false; }
+  }
 }
 let lastRemoteObservationAt: number | undefined;
 export const remoteObservation = () => lastRemoteObservationAt;
@@ -151,7 +185,7 @@ async function callTool(name: string, args: Record<string, unknown>, observe = t
  * reads also stay direct: last-observed UI state is not an authoritative cache. */
 export const remoteConnection = () => lastStatus ? pairedHostConnection(lastStatus) : undefined;
 export async function refreshRemoteTargetObservation() {
-  if (!client) await connectMcp();
+  if (!mcpConnected) await awaitDemandConnection();
   const result = await readPairedHostTarget({
     callTool: (name, args) => callTool(name, args, false),
     onStatus: status => { lastStatus = status; }
@@ -171,8 +205,7 @@ export async function refreshRemoteObservation(): Promise<PresetSnapshot> {
   if (!result.snapshot) throw new Error(result.connection.detail);
   return result.snapshot;
 }
-async function invokeRemote(method: string, args: Record<string, unknown> = {}): Promise<any> {
-  const context = acceptedRemoteContext;
+async function invokeRemote(method: string, args: Record<string, unknown>, context: typeof acceptedRemoteContext): Promise<any> {
   const action = SHARED_QC_ACTIONS.find(candidate => candidate.rpc === method);
   const guardSupported = Boolean(context?.guardSupported && Array.isArray(lastStatus?.capabilities) && lastStatus.capabilities.includes("mcpBrokerTargetGuard"));
   if (action && action.classification !== "read") {
@@ -242,6 +275,7 @@ const nativePlugin = {
 
   },
   async disconnect() {
+    retireMcpAttempt();
     clearRemoteTarget();
     if (directIpadSession) {
       directIpadSession = false;
@@ -259,6 +293,7 @@ const nativePlugin = {
     return { connected: observed?.phase === "ready", synchronized: observed?.phase === "ready", phase: observed?.phase ?? (authPending ? "connecting" : "disconnected"), device: observed?.brokerTarget?.source === "demo" ? "Paired host demo" : "QC Remote Cloud", messagesReceived: 0, messagesSent: 0, decodeErrors: 0, expectedWriteStalls: 0, lastMessageType: 0, connectedAt: 0, setlistKnown: false, presetPosition: 0, modelCount: 0, readAttempts: 0, negativeReads: 0, interfaceId: -1, inputEndpointAddress: 0, inputMaxPacketSize: 0, reportBytes: 0, midiAvailable: false, midiInterfaceId: -1, midiOutputEndpointAddress: 0, lastMidiQueueDelayMs: 0, maxMidiQueueDelayMs: 0, lastHidWriteDurationMs: 0, maxHidWriteDurationMs: 0, lastStateAt: Date.now(), writesQuarantined: false };
   },
   async gatewayInvoke({ method, params }: { method: string; params?: Record<string, unknown> }) {
+    const capturedRemoteContext = acceptedRemoteContext;
     if (directIpadSession) {
       if (method === "system.status") {
         const diagnostics = await nativePlugin.diagnostics();
@@ -291,8 +326,9 @@ const nativePlugin = {
       }
       return QCIosNativeBridge.gatewayReadUsb({ method, params });
     }
-    if (!client && stored.tokens && !authPending) await connectMcp();
-    return invokeRemote(method, params);
+    if (!mcpConnected && stored.tokens && !authPending) await awaitDemandConnection();
+    if (!mcpConnected) throw new Error(authPending ? "Finish QC Remote Cloud sign-in in the browser to connect the paired host." : "Refresh the paired host to continue. Your sign-in is saved.");
+    return invokeRemote(method, params ?? {}, capturedRemoteContext);
   },
   addListener
 };
@@ -414,6 +450,7 @@ async function drainOAuthCallback(): Promise<void> {
 function updateCloudActivity(): void {
   if (cloudActive()) { void drainOAuthCallback(); return; }
   const previous = client;
+  retireMcpAttempt();
   client = undefined;
   transport = undefined;
   mcpConnected = false;
