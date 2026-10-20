@@ -65,7 +65,7 @@ describe("MCP admission with presence in one RPC", () => {
     } finally { host.close(1000, "Test complete"); }
   });
 
-  it("records activity only for the admitted generation and removes it on DELETE", async () => {
+  it("records a client only for the admitted generation and supports explicit removal", async () => {
     const target = env.DEVICE_SESSION.getByName(`request-efficiency-${crypto.randomUUID()}`);
     const observation = { key: "a".repeat(64), name: "Test MCP client" };
     expect(await target.admitMcpRequest(0, observation)).toBe("ok");
