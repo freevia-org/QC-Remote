@@ -5,8 +5,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { auth, UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { createGatewayClientTransport, GATEWAY_CLIENT_METHODS, withDeviceConnectionSource, type GatewayTransport, type NativeStateFrame, type PresetSnapshot, type RuntimeStatus } from "@qc-remote/client";
-import { controlAccessPermitsAction, createQcGatewayTransport, parseControlAccessMode, SHARED_QC_ACTIONS, type ControlAccessMode, type PublicRelayPort, type PublicRelayState, type PublicRelayStatus, type PublicRelayUsage, type QcDeviceTransport, type QcStateUpdate } from "@qc-remote/core";
+import { createGatewayClientTransport, withDeviceConnectionSource, type GatewayTransport, type NativeStateFrame, type PresetSnapshot, type RuntimeStatus } from "@qc-remote/client";
+import { controlAccessPermitsAction, createQcGatewayTransport, invokeAppMcp, parseAppMcpResult, parseControlAccessMode, SHARED_QC_ACTIONS, type ControlAccessMode, type PublicRelayPort, type PublicRelayState, type PublicRelayStatus, type PublicRelayUsage, type QcDeviceTransport, type QcStateUpdate } from "@qc-remote/core";
 import { QC_BRAND } from "@qc-remote/theme";
 import type { VirtualDeviceStorage } from "@qc-remote/ui";
 import { QCIosNativeBridge } from "../native-bridge";
@@ -68,13 +68,6 @@ if (Capacitor.isNativePlatform()) {
   void QCIosNativeBridge.addListener("qcStateBatch", (frame) => emit("qcStateBatch", frame)).catch(() => undefined);
   void QCIosNativeBridge.addListener("qcConnection", (status) => emit("qcConnection", status)).catch(() => undefined);
 }
-function parseResult(result: any): any {
-  if (result?.isError) throw new Error(result.content?.map((c: any) => c.text ?? "").join("\n") || "QC Remote request failed.");
-  const text = result?.content?.find((c: any) => c.type === "text")?.text;
-  if (!text) return result;
-  try { return JSON.parse(text); } catch { return text; }
-}
-const snake = (name: string) => name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
 const provider = {
   get redirectUrl() { return callbackUrl; },
   get clientMetadata(): OAuthClientMetadata {
@@ -142,7 +135,7 @@ export const subscribeRemoteObservation = (listener: (value: number) => void) =>
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<any> {
   if (!client) throw new Error("Connect or refresh the paired host to continue. Your sign-in is saved.");
-  const result = parseResult(await client.callTool({ name, arguments: args }));
+  const result = parseAppMcpResult(await client.callTool({ name, arguments: args }));
   if (name === "get_current_preset") {
     lastRemoteObservationAt = Date.now();
     emit("remoteObservation", lastRemoteObservationAt);
@@ -158,37 +151,12 @@ export async function refreshRemoteObservation(): Promise<PresetSnapshot> {
   return await callTool("get_current_preset", {});
 }
 async function invokeRemote(method: string, args: Record<string, unknown> = {}): Promise<any> {
-  if (method === "system.status") {
-    lastStatus = await callTool("get_qc_status", {});
-    return lastStatus;
-  }
-  if (method === "device.snapshot" || method === "device.currentPreset") return await callTool("get_current_preset", {});
-  const descriptor = GATEWAY_CLIENT_METHODS[Object.keys(GATEWAY_CLIENT_METHODS).find((key) => (GATEWAY_CLIENT_METHODS as any)[key].rpc === method) as keyof typeof GATEWAY_CLIENT_METHODS];
-  if (!descriptor) throw new Error(`This iOS remote session does not provide ${method}.`);
-  const action = SHARED_QC_ACTIONS.find((candidate) => candidate.rpc === method);
-  if (!action) throw new Error(`The cloud host does not publish the ${method} action.`);
-  if (!controlAccessPermitsAction(mode, action.name)) throw new Error(`The current ${mode} access mode does not allow ${action.name}.`);
-  if (["risky-write", "persistent-write"].includes(action.classification)
-      || ["show_tuner", "show_gig_view", "copy_scene"].includes(action.name)) {
-    const accepted = await confirmIosWorkflow(`${action.description}\n\nContinue with ${action.name.replaceAll("_", " ")}?`);
-    if (!accepted) throw new Error("Cancelled.");
-    const required = action.required as readonly string[];
-    if (required.includes("confirm_risky_operation")) args.confirmRiskyOperation = true;
-    if (required.includes("confirm_persistent_write")) args.confirmPersistentWrite = true;
-  }
-  const params = Object.fromEntries(Object.entries(args).map(([key, value]) => [snake(key), value]));
-  if (action.name === "rename_current_preset" && "name" in args) { delete params.name; params.new_name = args.name; }
-  const result = await callTool("execute_qc_action", { action: action.name, params });
-  if (["device.reconnect", "device.resetSession", "device.disconnect"].includes(method)) {
-    const runtime = await callTool("get_qc_status", {});
-    return {
-      phase: runtime.usbDiagnostics?.phase === "ready" ? "ready" : runtime.usbDiagnostics?.phase === "syncing" ? "syncing" : runtime.usbDiagnostics?.connected ? "opening" : "disconnected",
-      detail: runtime.usbDiagnostics?.detail ?? "Remote host connection updated.",
-      demo: false,
-      source: "device",
-      restarted: result?.changed !== false
-    };
-  }
+  const result = await invokeAppMcp(method, args, {
+    accessMode: mode,
+    confirm: confirmIosWorkflow,
+    onStatus: status => { lastStatus = status; },
+    callTool
+  });
   if (method === "device.stateEvents") {
     for (const frame of result.frames ?? []) cursor = Math.max(cursor, frame.sequence ?? cursor);
   }
