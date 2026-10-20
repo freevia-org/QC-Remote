@@ -114,7 +114,14 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: apps/windows/src-tauri
+          # scripts/test-windows-native.mjs first builds the broker from the ROOT
+          # workspace (cargo build -p qc-device-broker, target/ at the repository
+          # root), then the app's own tests. Caching only the app left that root
+          # build compiling every dependency from source on each run (2m21s of
+          # the 9m36s test step in the 0.1.189 pull request run).
+          workspaces: |
+            . -> target
+            apps/windows/src-tauri -> target
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Stage check-only sidecar placeholders
         working-directory: apps/windows/src-tauri
