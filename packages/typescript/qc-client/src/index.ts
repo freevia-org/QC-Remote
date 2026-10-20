@@ -16,15 +16,12 @@ export function normalizeBrokerConnection(state: ConnectionState): ConnectionSta
 }
 
 /**
- * What a connection state describes: the real Quad Cortex behind the device
- * gateway, or the local virtual device.
+ * The client gateway route: a native/paired-host gateway (`device`) or this
+ * client's local virtual runtime (`virtual`). A paired host can itself serve
+ * a demo without changing the client route; read brokerTarget for its actual
+ * physical/demo target before describing the selected target as hardware.
  *
- * `demo` cannot carry this. Every workflow hook refuses to run while `demo` is
- * true, so a virtual session reports `demo: false` to get the same Grid,
- * parameter, scene and routing paths a real device gets - and without this
- * field it would then be indistinguishable from real hardware. Anything that
- * shows, logs or reports connection state reads `source` before it says
- * "Quad Cortex".
+ * `demo` is not a source marker: editable virtual workflows use demo:false.
  */
 export type ConnectionSource = "device" | "virtual";
 
@@ -451,6 +448,18 @@ export function withDeviceConnectionSource<T extends GatewayTransport>(transport
     disconnect: () => stamp(transport.disconnect())
   };
 }
+/** Validate selected-target metadata before it becomes an operation fence.
+ * Missing metadata is a legacy/unavailable host, never an inferred demo. */
+export function brokerTargetKey(target: BrokerTarget | undefined): string | undefined {
+  if (target === undefined) return undefined;
+  if (!target || (target.source !== "physical" && target.source !== "demo")
+      || typeof target.sessionId !== "string" || !target.sessionId.trim()
+      || !Number.isSafeInteger(target.generation) || target.generation < 1) {
+    throw new Error("The selected broker target identity is unsupported. Refresh before editing.");
+  }
+  return JSON.stringify([target.source, target.sessionId, target.generation]);
+}
+
 /** Require the model identifier observed with a parameter or Grid target. */
 export function requireModelId(target: { modelId?: number | null } | undefined): number {
   const modelId = target?.modelId;

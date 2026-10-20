@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeBrokerConnection, requireModelId, requirePresetIdentity, withDeviceConnectionSource, type GatewayTransport } from "../src/index.ts";
+import { brokerTargetKey, normalizeBrokerConnection, requireModelId, requirePresetIdentity, withDeviceConnectionSource, type GatewayTransport } from "../src/index.ts";
 
 const state = (phase: "ready" | "disconnected") => ({ phase, detail: phase, demo: false, source: "virtual" as const });
 
@@ -58,4 +58,15 @@ test("unknown explicit sources fail closed instead of becoming physical", async 
   const invalid = async () => ({ ...state("ready"), source: "future" });
   const wrapped = withDeviceConnectionSource({ reconnect: invalid, resetSession: invalid, disconnect: invalid } as unknown as GatewayTransport);
   for (const method of ["reconnect", "resetSession", "disconnect"] as const) await assert.rejects(wrapped[method](), /source is unsupported/);
+});
+
+
+test("broker target keys validate kind and generation and distinguish a return to the same provider", () => {
+  const demo = { source: "demo" as const, sessionId: "provider", generation: 1 };
+  assert.equal(brokerTargetKey(undefined), undefined);
+  assert.notEqual(brokerTargetKey(demo), brokerTargetKey({ ...demo, generation: 3 }));
+  assert.notEqual(brokerTargetKey(demo), brokerTargetKey({ ...demo, source: "physical" }));
+  for (const invalid of [null, {}, { ...demo, source: "virtual" }, { ...demo, sessionId: " " }, { ...demo, generation: 0 }, { ...demo, generation: 1.5 }, { ...demo, generation: Number.MAX_SAFE_INTEGER + 1 }]) {
+    assert.throws(() => brokerTargetKey(invalid as any), /identity is unsupported/);
+  }
 });

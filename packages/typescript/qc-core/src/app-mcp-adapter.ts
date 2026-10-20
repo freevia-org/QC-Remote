@@ -1,4 +1,4 @@
-import { GATEWAY_CLIENT_METHODS } from "@qc-remote/client";
+import { brokerTargetKey, GATEWAY_CLIENT_METHODS } from "@qc-remote/client";
 import { controlAccessPermitsAction, type ControlAccessMode } from "./control-access.ts";
 import { SHARED_QC_ACTIONS } from "./generated-actions.ts";
 
@@ -70,8 +70,9 @@ export async function invokeAppMcp(method: string, args: Record<string, unknown>
     const source = result?.source;
     if (source !== undefined && source !== "device" && source !== "virtual") throw new Error("The paired host returned an unsupported connection source. Refresh before editing.");
     const runtime = await options.callTool("get_qc_status", {});
+    brokerTargetKey(runtime.brokerTarget);
     options.onStatus?.(runtime);
-    return { phase: runtime.usbDiagnostics?.phase === "ready" ? "ready" : runtime.usbDiagnostics?.phase === "syncing" ? "syncing" : runtime.usbDiagnostics?.connected ? "opening" : "disconnected", detail: runtime.usbDiagnostics?.detail ?? "Remote host connection updated.", demo: false, source: source ?? "device", restarted: result?.restarted ?? result?.changed !== false };
+    return { phase: runtime.brokerTarget ? "ready" : runtime.usbDiagnostics?.phase === "ready" ? "ready" : runtime.usbDiagnostics?.phase === "syncing" ? "syncing" : runtime.usbDiagnostics?.connected ? "opening" : "disconnected", detail: runtime.brokerTarget?.source === "demo" ? "The paired host’s demo device is ready." : runtime.usbDiagnostics?.detail ?? "Remote host connection updated.", demo: false, source: runtime.brokerTarget ? "device" : source ?? "device", brokerTarget: runtime.brokerTarget, restarted: result?.restarted ?? result?.changed !== false };
   }
   return result;
 }

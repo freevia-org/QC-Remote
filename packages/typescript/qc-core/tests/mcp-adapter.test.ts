@@ -173,3 +173,15 @@ test('unsupported explicit host connection source is rejected without status ret
   } }), /unsupported connection source/);
   assert.deepEqual(calls, ['execute_qc_action']);
 });
+
+
+test('remote demo metadata preserves the host route and latest broker generation', async () => {
+  const target = { source: 'demo', sessionId: 'same-host-demo', generation: 7 };
+  const result = await invokeAppMcp('device.reconnect', {}, { accessMode: 'full', confirm: async () => true, callTool: async name => name === 'get_qc_status'
+    ? { brokerTarget: target, usbDiagnostics: { phase: 'disconnected', connected: false } }
+    : { phase: 'ready', source: 'virtual', brokerTarget: { ...target, generation: 5 } } });
+  assert.equal(result.source, 'device', 'host demo must not select the phone-local demo gateway');
+  assert.deepEqual(result.brokerTarget, target);
+  assert.equal(result.phase, "ready", "selected usable demo does not require physical USB");
+  assert.match(result.detail, /demo device is ready/);
+});
