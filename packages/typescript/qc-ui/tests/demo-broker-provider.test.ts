@@ -19,6 +19,11 @@ test("the real UI VirtualDeviceStore observes reverse-provider mutations immedia
   assert.deepEqual(await provider.invoke(request(2, "device.identity")), await virtual.identity());
   assert.match(JSON.stringify(await virtual.identity()), /Shared demo/);
   assert.deepEqual(await provider.invoke(request(3)), await virtual.currentSnapshot());
+  const previous = (await virtual.generalSettings()).looperStompAssignments!;
+  const assignments = [...previous].reverse();
+  await provider.invoke(request(4, "device.setLooperStompAssignments", { assignments, expectedAssignments: previous }));
+  assert.deepEqual((await virtual.generalSettings()).looperStompAssignments, assignments);
+  assert.deepEqual(await provider.invoke(request(5, "device.generalSettings")), await virtual.generalSettings());
 });
 
 test("UI physical/demo reactivation and concurrent opening retain one provider runtime", async () => {

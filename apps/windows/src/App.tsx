@@ -1,5 +1,5 @@
 import { applicationModifier, shortcutLabel } from "./host-platform.ts";
-import { exposeDesktopDemo } from "./demo-broker.ts";
+import { exposeDesktopDemo, observeDemoBrokerInstance } from "./demo-broker.ts";
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, type PresetSnapshot, type RuntimeStatus, type WorkspaceDocument } from "@qc-remote/client";
@@ -256,6 +256,7 @@ export function App() {
       try {
         const inventory = await physicalDevices.list();
         if (disposed) return;
+        observeDemoBrokerInstance(inventory.brokerInstanceId);
         setPhysicalQcDevices((previous) => {
           const selected = selectedPhysicalRef.current;
           if (!selected || inventory.devices.some((device) => device.id === selected)) return inventory.devices;
@@ -270,6 +271,7 @@ export function App() {
         followReadyInventory.current({ kind: "answered", inventoryReady: qcInventoryDeviceReady(inventory.devices, selectedPhysicalRef.current), instanceId: inventory.brokerInstanceId });
       } catch {
         if (disposed) return;
+        observeDemoBrokerInstance(undefined);
         // Not the last answer: the broker quit, was released or cannot be
         // reached, so nothing it said earlier may stay green.
         setPhysicalQcDevices((previous) => qcInventoryWhenUnreachable(previous));
@@ -297,6 +299,8 @@ export function App() {
   // backups, the broker heartbeat) keep calling tauriTransport directly.
   const demoDeviceSession = useMemo(() => createDemoDeviceSession(tauriTransport), []);
   const demoBrokerCleanup = useRef<(() => void) | undefined>(undefined);
+  const demoBrokerTransport = useRef<typeof demoDeviceSession.virtual>(undefined);
+  const demoBrokerReady = useRef(false);
   useEffect(() => () => { demoBrokerCleanup.current?.(); }, []);
   const activeGateway = demoDeviceSession.gateway;
   const captureDeviceOperation = () => {
@@ -1600,20 +1604,30 @@ export function App() {
       const opened = await demoDeviceSession.start(virtualDeviceStorage, attempt.current);
       if (!opened || !attempt.current()) return;
       const { transport: demo, connection: state, snapshot: current } = opened;
-      demoBrokerCleanup.current?.();
-      demoBrokerCleanup.current = await exposeDesktopDemo(demo, (ready, message) => {
-        if (!ready && message && appOperationMounted.current) {
-          setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-mcp-unavailable", result: "info", detail: `The demo remains available in this editor. MCP access is unavailable: ${message}` }]);
-        }
-      }, refreshed => {
-        if (appOperationMounted.current && demoDeviceSession.source === "virtual" && demoDeviceSession.virtual === demo) {
-          setSnapshot(refreshed);
-        }
-      }).catch(error => {
-        setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-mcp-unavailable", result: "info", detail: String(error) }]);
-        return undefined;
-      });
-      if (!attempt.current()) { demoBrokerCleanup.current?.(); return; }
+      // Reusing an already-served demo must not replace its registration or
+      // publish a fresh cloud identity on every UI fallback/reactivation.
+      if (demoBrokerTransport.current !== demo || !demoBrokerCleanup.current
+          || (!automaticFallback && !demoBrokerReady.current)) {
+        demoBrokerCleanup.current?.();
+        demoBrokerCleanup.current = undefined;
+        demoBrokerReady.current = false;
+        const cleanupDemoBroker = await exposeDesktopDemo(demo, (ready, message) => {
+          demoBrokerReady.current = ready;
+          if (!ready && message && appOperationMounted.current) {
+            setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-mcp-unavailable", result: "info", detail: `The demo remains available in this editor. MCP access is unavailable: ${message}` }]);
+          }
+        }, refreshed => {
+          if (appOperationMounted.current && demoDeviceSession.source === "virtual" && demoDeviceSession.virtual === demo) {
+            setSnapshot(refreshed);
+          }
+        }).catch(error => {
+          if (appOperationMounted.current) setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-mcp-unavailable", result: "info", detail: String(error) }]);
+          return undefined;
+        });
+        if (!attempt.current()) { cleanupDemoBroker?.(); return; }
+        demoBrokerCleanup.current = cleanupDemoBroker;
+        demoBrokerTransport.current = demo;
+      }
       clearUndo();
       presetWorkflow.resetCache();
       nativeStateAvailable.current = false;
@@ -1697,6 +1711,8 @@ export function App() {
     if (suspendDemoDevice()) setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
     demoBrokerCleanup.current?.();
     demoBrokerCleanup.current = undefined;
+    demoBrokerTransport.current = undefined;
+    demoBrokerReady.current = false;
     resetCommands();
     setDemoPending(false);
     const idle = { phase: "disconnected" as const, detail: "Demo device stopped. Its presets stay saved on this computer.", demo: true, source: "device" as const };

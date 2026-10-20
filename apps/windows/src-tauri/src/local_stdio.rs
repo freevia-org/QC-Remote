@@ -743,6 +743,20 @@ impl DesktopBackend {
         rpc: &str,
         params: Map<String, Value>,
     ) -> reqwest::RequestBuilder {
+        self.rpc_request_targeted(endpoint, rpc, params, None)
+    }
+
+    fn rpc_request_targeted(
+        &self,
+        endpoint: &Endpoint,
+        rpc: &str,
+        params: Map<String, Value>,
+        expected: Option<&qc_remote_mcp::BrokerTarget>,
+    ) -> reqwest::RequestBuilder {
+        let mut body = serde_json::json!({ "rpc":rpc, "params":params });
+        if let Some(expected) = expected {
+            body["expectedBrokerTarget"] = serde_json::json!(expected);
+        }
         let request = self
             .client
             .post(endpoint.rpc_url.clone())
@@ -764,7 +778,7 @@ impl DesktopBackend {
             ),
             None => request,
         }
-        .json(&serde_json::json!({ "rpc": rpc, "params": params }))
+        .json(&body)
     }
 
     async fn relay(
@@ -772,6 +786,16 @@ impl DesktopBackend {
         route: &PrincipalRoute,
         rpc: &'static str,
         params: Map<String, Value>,
+    ) -> Result<Value, RelayFailure> {
+        self.relay_targeted(route, rpc, params, None).await
+    }
+
+    async fn relay_targeted(
+        &self,
+        route: &PrincipalRoute,
+        rpc: &'static str,
+        params: Map<String, Value>,
+        expected: Option<qc_remote_mcp::BrokerTarget>,
     ) -> Result<Value, RelayFailure> {
         if !is_local_route(route) {
             return Err(RelayFailure::Refused(BackendError {
@@ -784,7 +808,7 @@ impl DesktopBackend {
         }
         let paths = state_paths()
             .map_err(|error| RelayFailure::NoPublisher(BackendError::unavailable(error)))?;
-        self.relay_at(&paths, rpc, params).await
+        self.relay_at_targeted(&paths, rpc, params, expected).await
     }
 
     /// Relay to whichever process publishes at `paths`.
@@ -794,9 +818,19 @@ impl DesktopBackend {
         rpc: &'static str,
         params: Map<String, Value>,
     ) -> Result<Value, RelayFailure> {
+        self.relay_at_targeted(paths, rpc, params, None).await
+    }
+
+    async fn relay_at_targeted(
+        &self,
+        paths: &[PathBuf],
+        rpc: &'static str,
+        params: Map<String, Value>,
+        expected: Option<qc_remote_mcp::BrokerTarget>,
+    ) -> Result<Value, RelayFailure> {
         let endpoint = descriptor_from_paths(paths)
             .map_err(|error| RelayFailure::NoPublisher(BackendError::unavailable(error)))?;
-        self.send(endpoint, rpc, params).await
+        self.send_targeted(endpoint, rpc, params, expected).await
     }
 
     async fn send(
@@ -804,6 +838,16 @@ impl DesktopBackend {
         endpoint: Endpoint,
         rpc: &'static str,
         params: Map<String, Value>,
+    ) -> Result<Value, RelayFailure> {
+        self.send_targeted(endpoint, rpc, params, None).await
+    }
+
+    async fn send_targeted(
+        &self,
+        endpoint: Endpoint,
+        rpc: &'static str,
+        params: Map<String, Value>,
+        expected: Option<qc_remote_mcp::BrokerTarget>,
     ) -> Result<Value, RelayFailure> {
         // Nothing was sent if the proof fails, so nobody legitimate is serving
         // this descriptor and the request may be answered elsewhere.
@@ -813,8 +857,49 @@ impl DesktopBackend {
                 OFFLINE_ADVICE.to_string(),
             )));
         }
+        if expected.is_some() {
+            // Older /rpc publishers ignore unknown JSON fields. Prove support
+            // before sending a guarded action; never retry it without a fence.
+            let health = self
+                .client
+                .get(&endpoint.health_url)
+                .timeout(Duration::from_secs(3))
+                .send()
+                .await
+                .map_err(|_| {
+                    RelayFailure::Refused(BackendError::unavailable(
+                        "The local host could not confirm target-guard support",
+                    ))
+                })?;
+            let health = qc_relay_client::bounded_response_json::<Value>(health)
+                .await
+                .map_err(|_| {
+                    RelayFailure::Refused(BackendError::unavailable(
+                        "The local host returned invalid target-guard capabilities",
+                    ))
+                })?;
+            if health["instanceId"].as_str() != Some(endpoint.instance_id.as_str())
+                || !health["capabilities"].as_array().is_some_and(|values| {
+                    values
+                        .iter()
+                        .any(|value| value == "localRpcBrokerTargetGuard")
+                })
+            {
+                return Err(RelayFailure::Refused(BackendError {
+                    code: "device_error",
+                    message:
+                        "Update QC Remote before using target-aware actions through this local host"
+                            .into(),
+                    retryable: false,
+                    detail_code: Some("BROKER_TARGET_GUARD_UNAVAILABLE".into()),
+                    details: Some(Box::new(
+                        serde_json::json!({"requestSent":false,"retryable":false}),
+                    )),
+                }));
+            }
+        }
         let response = self
-            .rpc_request(&endpoint, rpc, params)
+            .rpc_request_targeted(&endpoint, rpc, params, expected.as_ref())
             .send()
             .await
             .map_err(|error| match unreachable_app(error) {
@@ -877,6 +962,17 @@ impl DesktopBackend {
 
 #[async_trait]
 impl QcBackend for DesktopBackend {
+    async fn request_targeted(
+        &self,
+        route: &PrincipalRoute,
+        rpc: &'static str,
+        params: Map<String, Value>,
+        expected: Option<qc_remote_mcp::BrokerTarget>,
+    ) -> Result<Value, BackendError> {
+        self.relay_targeted(route, rpc, params, expected)
+            .await
+            .map_err(RelayFailure::into_backend_error)
+    }
     async fn request(
         &self,
         route: &PrincipalRoute,
@@ -961,6 +1057,10 @@ impl Drop for BrokerReadSlot {
 pub enum BrokerDeviceReadiness {
     /// The session is open.
     Ready,
+    ReadyTarget {
+        usb_connected: bool,
+        target: qc_relay_client::BrokerTarget,
+    },
     /// The broker is serving and the session is not open.
     NotReady { phase: String },
     /// The broker cannot answer for the device at all.
@@ -1006,6 +1106,9 @@ impl HeadlessDeviceAdapter {
     /// Never waits for the gateway lock, and never waits on the broker longer
     /// than [`BROKER_READINESS_TIMEOUT`].
     pub(crate) async fn readiness(&self) -> HostReadiness {
+        if self.broker.is_some() {
+            return self.broker_readiness().await;
+        }
         match crate::gateway_attachment(&self.gateway) {
             crate::GatewayAttachment::Attached(true) => HostReadiness::Ready,
             crate::GatewayAttachment::Attached(false) => HostReadiness::NotReady(
@@ -1035,8 +1138,22 @@ impl HeadlessDeviceAdapter {
     }
 
     async fn broker_readiness(&self) -> HostReadiness {
+        match self.broker_readiness_answer().await {
+            Ok(BrokerDeviceReadiness::Ready | BrokerDeviceReadiness::ReadyTarget { .. }) => {
+                HostReadiness::Ready
+            }
+            Ok(BrokerDeviceReadiness::NotReady { phase }) => HostReadiness::NotReady(format!(
+                "the device broker reports the Quad Cortex session {phase}"
+            )),
+            Ok(BrokerDeviceReadiness::Unavailable { reason }) | Err(reason) => {
+                HostReadiness::NotReady(reason)
+            }
+        }
+    }
+
+    async fn broker_readiness_answer(&self) -> Result<BrokerDeviceReadiness, String> {
         let Some(probe) = self.broker.clone() else {
-            return HostReadiness::NotReady("this host has no broker to ask".into());
+            return Err("this host has no broker to ask".into());
         };
         let (mut answer, deadline) = self.join_or_start_broker_read(probe);
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
@@ -1048,17 +1165,11 @@ impl HeadlessDeviceAdapter {
         })
         .await;
         match answered {
-            Ok(Ok(Some(Ok(BrokerDeviceReadiness::Ready)))) => HostReadiness::Ready,
-            Ok(Ok(Some(Ok(BrokerDeviceReadiness::NotReady { phase })))) => HostReadiness::NotReady(
-                format!("the device broker reports the Quad Cortex session {phase}"),
-            ),
-            Ok(Ok(Some(Ok(BrokerDeviceReadiness::Unavailable { reason })))) => {
-                HostReadiness::NotReady(reason)
-            }
+            Ok(Ok(Some(Ok(answer)))) => Ok(answer),
             Ok(Ok(Some(Err(())) | None)) | Ok(Err(_)) => {
-                HostReadiness::NotReady("the readiness read of the device broker failed".into())
+                Err("the readiness read of the device broker failed".into())
             }
-            Err(_) => HostReadiness::NotReady(format!(
+            Err(_) => Err(format!(
                 "the device broker did not answer the readiness read within {} ms",
                 self.broker_read_budget.as_millis()
             )),
@@ -1242,6 +1353,75 @@ impl HeadlessDeviceAdapter {
 
 #[async_trait]
 impl DeviceAdapter for HeadlessDeviceAdapter {
+    async fn target_readiness(&self) -> qc_relay_client::TargetReadiness {
+        if self.stopped.load(Ordering::Acquire) {
+            return Default::default();
+        }
+        if self.broker.is_some() {
+            return match self.broker_readiness_answer().await {
+                Ok(BrokerDeviceReadiness::ReadyTarget {
+                    usb_connected,
+                    target,
+                }) => qc_relay_client::TargetReadiness {
+                    target_ready: true,
+                    usb_connected,
+                    broker_target: Some(target),
+                },
+                Ok(BrokerDeviceReadiness::Ready) => qc_relay_client::TargetReadiness {
+                    target_ready: true,
+                    usb_connected: true,
+                    broker_target: None,
+                },
+                _ => Default::default(),
+            };
+        }
+        let gateway = self.gateway.clone();
+        let reads = self.lock_free_reads.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::request_gateway(
+                &gateway,
+                &reads,
+                "system.status",
+                serde_json::json!({}),
+                crate::WhenGatewayBusy::Refuse,
+                |gateway, params| {
+                    gateway.request_detailed_as(
+                        "system.status",
+                        params,
+                        crate::ConnectionUse::ExistingOnly,
+                    )
+                },
+            )
+            .map(|status| crate::target_readiness_from_status(&status))
+            .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    async fn invoke_targeted(
+        &self,
+        method: &str,
+        params: Value,
+        expected: Option<qc_relay_client::BrokerTarget>,
+        resource_read: bool,
+    ) -> Result<Value, DeviceError> {
+        let expected = expected
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| DeviceError::new("INVALID_ARGUMENT", error.to_string(), false))?;
+        self.invoke_with_target_as(
+            method,
+            params,
+            if resource_read {
+                crate::ConnectionUse::ExistingOnly
+            } else {
+                crate::ConnectionUse::MayConnect
+            },
+            expected,
+        )
+        .await
+    }
     fn effective_access_mode(&self) -> Option<AccessMode> {
         self.access_policy_directory
             .as_deref()
@@ -1298,13 +1478,24 @@ impl HeadlessDeviceAdapter {
         params: Value,
         connection: crate::ConnectionUse,
     ) -> Result<Value, DeviceError> {
+        self.invoke_with_target_as(method, params, connection, None)
+            .await
+    }
+
+    async fn invoke_with_target_as(
+        &self,
+        method: &str,
+        params: Value,
+        connection: crate::ConnectionUse,
+        expected: Option<Value>,
+    ) -> Result<Value, DeviceError> {
         // A remote or MCP backup is written to this PC; the caller gets its
         // location, never the document (see `remote_backup`).
         crate::remote_backup::invoke_saving_backups(
             method,
             params,
             crate::remote_backup::default_backup_directory(),
-            |params| self.invoke_gateway(method, params, connection),
+            |params| self.invoke_gateway_targeted(method, params, connection, expected),
         )
         .await
     }
@@ -1316,6 +1507,17 @@ impl HeadlessDeviceAdapter {
         method: &str,
         params: Value,
         connection: crate::ConnectionUse,
+    ) -> Result<Value, DeviceError> {
+        self.invoke_gateway_targeted(method, params, connection, None)
+            .await
+    }
+
+    async fn invoke_gateway_targeted(
+        &self,
+        method: &str,
+        params: Value,
+        connection: crate::ConnectionUse,
+        expected: Option<Value>,
     ) -> Result<Value, DeviceError> {
         let gateway = self.gateway.clone();
         let lock_free_reads = self.lock_free_reads.clone();
@@ -1329,7 +1531,7 @@ impl HeadlessDeviceAdapter {
             move |admission| {
                 // The same routing as a window's relay adapter, plus this host's
                 // stop flag.
-                crate::relay_gateway_request(
+                crate::relay_gateway_request_targeted(
                     &gateway,
                     &lock_free_reads,
                     &method_for_action,
@@ -1337,6 +1539,7 @@ impl HeadlessDeviceAdapter {
                     connection,
                     Some(&*stopped),
                     Some(&admission),
+                    expected,
                 )
             },
         )
@@ -2086,6 +2289,16 @@ impl QcBackend for BridgeBackend {
         rpc: &'static str,
         params: Map<String, Value>,
     ) -> Result<Value, BackendError> {
+        self.request_targeted(route, rpc, params, None).await
+    }
+
+    async fn request_targeted(
+        &self,
+        route: &PrincipalRoute,
+        rpc: &'static str,
+        params: Map<String, Value>,
+        expected: Option<qc_remote_mcp::BrokerTarget>,
+    ) -> Result<Value, BackendError> {
         if self.host_stopping.load(Ordering::Acquire) {
             return Err(BackendError::unavailable(
                 "The local MCP bridge is stopping.",
@@ -2095,9 +2308,12 @@ impl QcBackend for BridgeBackend {
         // broker connection it holds, or offline; its gateway decides that
         // under its own lock (`crate::ConnectionUse`).
         if let Some(backend) = self.hosted_backend().await {
-            return backend.request(route, rpc, params).await;
+            return backend.request_targeted(route, rpc, params, expected).await;
         }
-        match self.relay_once(route, rpc, params.clone()).await {
+        match self
+            .relay_once_targeted(route, rpc, params.clone(), expected.clone())
+            .await
+        {
             // A resource read is the client reading context, not the chat
             // asking (`DesktopBackend::rpc_request` sends no session on it
             // for the same reason), and a host's device call spawns an
@@ -2114,11 +2330,11 @@ impl QcBackend for BridgeBackend {
                     return Err(BackendError::unavailable(advice));
                 }
                 match self.host_now().await {
-                    Some(backend) => backend.request(route, rpc, params).await,
+                    Some(backend) => backend.request_targeted(route, rpc, params, expected).await,
                     // Hosting was refused. If that is because another process
                     // began publishing meanwhile, relay to it; the first attempt
                     // reached no one, so sending again cannot repeat anything.
-                    None => match self.relay_once(route, rpc, params).await {
+                    None => match self.relay_once_targeted(route, rpc, params, expected).await {
                         // Refused at the hosting admission because a Quit was
                         // recorded while this request waited: say so.
                         Err(RelayFailure::NoPublisher(_)) => match self.user_quit_refusal() {
@@ -2149,9 +2365,27 @@ impl BridgeBackend {
         rpc: &'static str,
         params: Map<String, Value>,
     ) -> Result<Value, RelayFailure> {
+        self.relay_once_targeted(route, rpc, params, None).await
+    }
+
+    async fn relay_once_targeted(
+        &self,
+        route: &PrincipalRoute,
+        rpc: &'static str,
+        params: Map<String, Value>,
+        expected: Option<qc_remote_mcp::BrokerTarget>,
+    ) -> Result<Value, RelayFailure> {
         match &self.paths {
-            Some(paths) if is_local_route(route) => self.relay.relay_at(paths, rpc, params).await,
-            _ => self.relay.relay(route, rpc, params).await,
+            Some(paths) if is_local_route(route) => {
+                self.relay
+                    .relay_at_targeted(paths, rpc, params, expected)
+                    .await
+            }
+            _ => {
+                self.relay
+                    .relay_targeted(route, rpc, params, expected)
+                    .await
+            }
         }
     }
 }
@@ -2318,6 +2552,108 @@ fn startup_host(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn guarded_local_relay_refuses_old_publishers_and_keeps_metadata_out_of_action_params() {
+        for supported in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+            let recorded = calls.clone();
+            let router = axum::Router::new()
+                .route("/health", axum::routing::get(move || async move {
+                    axum::Json(serde_json::json!({"instanceId":"instance", "capabilities":if supported { vec!["localRpcBrokerTargetGuard"] } else { vec![] }}))
+                }))
+                .route("/rpc", axum::routing::post(move |axum::Json(value): axum::Json<serde_json::Value>| {
+                    let recorded = recorded.clone();
+                    async move {
+                        recorded.lock().unwrap().push(value);
+                        axum::Json(serde_json::json!({"ok":true,"result":{"accepted":true}}))
+                    }
+                }));
+            let (stop, stopped) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(async {
+                        let _ = stopped.await;
+                    })
+                    .await
+                    .unwrap();
+            });
+            let endpoint = super::validate_descriptor(document(
+                &format!("http://127.0.0.1:{port}/rpc"),
+                &"T".repeat(43),
+            ))
+            .unwrap();
+            let backend = super::DesktopBackend {
+                client: reqwest::Client::new(),
+                session_id: None,
+            };
+            let target = qc_remote_mcp::BrokerTarget {
+                source: qc_relay_client::BrokerTargetSource::Demo,
+                session_id: "broker-1:demo-1".into(),
+                generation: 1,
+            };
+            let mut params = serde_json::Map::new();
+            params.insert("tempo".into(), serde_json::json!(120));
+            let answer = backend
+                .send_targeted(endpoint, "device.setTempo", params, Some(target.clone()))
+                .await;
+            let _ = stop.send(());
+            server.await.unwrap();
+            let calls = calls.lock().unwrap();
+            if supported {
+                assert!(answer.is_ok());
+                assert_eq!(calls.len(), 1);
+                assert_eq!(
+                    calls[0]["expectedBrokerTarget"],
+                    serde_json::to_value(target).unwrap()
+                );
+                assert_eq!(calls[0]["params"], serde_json::json!({"tempo":120}));
+            } else {
+                assert!(matches!(answer, Err(super::RelayFailure::Refused(_))));
+                assert!(
+                    calls.is_empty(),
+                    "an older publisher must never receive a guarded action it would ignore"
+                );
+            }
+        }
+    }
+    #[tokio::test]
+    async fn resident_demo_readiness_is_fresh_and_never_attaches_or_claims_usb() {
+        use qc_relay_client::DeviceAdapter;
+        let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let observed = generation.clone();
+        let adapter = super::HeadlessDeviceAdapter::new(
+            std::env::temp_dir().join("unused-demo-readiness.json"),
+            false,
+        )
+        .with_broker_readiness(std::sync::Arc::new(move || {
+            super::BrokerDeviceReadiness::ReadyTarget {
+                usb_connected: false,
+                target: qc_relay_client::BrokerTarget {
+                    source: qc_relay_client::BrokerTargetSource::Demo,
+                    session_id: "broker-1:demo-1".into(),
+                    generation: observed.load(std::sync::atomic::Ordering::Acquire),
+                },
+            }
+        }));
+        let first = adapter.target_readiness().await;
+        assert!(first.target_ready);
+        assert!(!first.usb_connected);
+        assert_eq!(first.broker_target.unwrap().generation, 1);
+        generation.store(3, std::sync::atomic::Ordering::Release);
+        assert_eq!(
+            adapter
+                .target_readiness()
+                .await
+                .broker_target
+                .unwrap()
+                .generation,
+            3
+        );
+        assert!(adapter.ready().await);
+        assert!(adapter.gateway.lock().unwrap().process.is_none());
+    }
     use super::*;
     struct StdioRelease(Option<std::sync::mpsc::Sender<()>>);
     impl Drop for StdioRelease {
