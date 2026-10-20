@@ -25,17 +25,21 @@ export type RateLimitEnv = {
   QCRC_ENVIRONMENT?: string;
   QCRC_PAIRING_RATE_LIMIT?: RateLimitBinding;
   QCRC_OAUTH_RATE_LIMIT?: RateLimitBinding;
+  QCRC_MCP_RATE_LIMIT?: RateLimitBinding;
 };
 
-export type RateLimitedRoute = "pairing-session" | "pairing-sign-in" | "pairing-cancel" | "pairing-device" | "pairing-replace" | "account-delete-sign-in" | "account-delete-confirm" | "oauth-authorize" | "oauth-register";
+export type RateLimitedRoute = "mcp" | "pairing-session" | "pairing-sign-in" | "pairing-cancel" | "pairing-device" | "pairing-replace" | "account-delete-sign-in" | "account-delete-confirm" | "oauth-authorize" | "oauth-register";
 
 /** Which limit, if any, applies to this request.
  *
  * The binding is chosen per family so each carries its own budget in
  * wrangler.jsonc; the route is part of the key so one family's routes do not
  * spend each other's allowance. */
-export function rateLimitedRoute(request: Request, url = new URL(request.url)): { route: RateLimitedRoute; binding: "QCRC_PAIRING_RATE_LIMIT" | "QCRC_OAUTH_RATE_LIMIT" } | null {
+export function rateLimitedRoute(request: Request, url = new URL(request.url)): { route: RateLimitedRoute; binding: "QCRC_PAIRING_RATE_LIMIT" | "QCRC_OAUTH_RATE_LIMIT" | "QCRC_MCP_RATE_LIMIT" } | null {
   const { pathname } = url;
+  // Stop polling storms before OAuth KV reads and account DO admission.
+  // Include the origin alias used by Claude Mobile and all MCP HTTP methods.
+  if ((pathname === "/mcp" || pathname === "/") && ["POST", "GET", "DELETE"].includes(request.method) && (pathname === "/mcp" || request.method === "POST")) return { route: "mcp", binding: "QCRC_MCP_RATE_LIMIT" };
   if (request.method === "POST" && pathname === "/v1/host/pairing-sessions") return { route: "pairing-session", binding: "QCRC_PAIRING_RATE_LIMIT" };
   if (request.method === "POST" && pathname === "/pair/sign-in") return { route: "pairing-sign-in", binding: "QCRC_PAIRING_RATE_LIMIT" };
   if (request.method === "POST" && pathname === "/pair/cancel") return { route: "pairing-cancel", binding: "QCRC_PAIRING_RATE_LIMIT" };
@@ -63,7 +67,7 @@ export function clientAddress(request: Request): string {
 function tooManyRequests(): Response {
   return new Response(JSON.stringify({ error: "Too many requests. Wait a minute and try again." }), {
     status: 429,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "retry-after": "60" }
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "retry-after": "60", "access-control-allow-origin": "*", "access-control-expose-headers": "Retry-After" }
   });
 }
 
