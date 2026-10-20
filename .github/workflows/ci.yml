@@ -16,22 +16,33 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Decides whether a pull request needs the native jobs (Rust, Windows app,
-  # Android). Only a change confined to the safe set in scripts/ci-changes.mjs
-  # skips them. A job skipped by `if:` reports "Skipped", which branch protection
-  # accepts for a required check; `changes` itself is not required and fails
-  # open: if it errors or is skipped, the native jobs run.
+  # Decides which jobs a change needs: the native jobs (Rust, Windows app,
+  # Android), the TypeScript job and the Cloud relay job. Only a change confined
+  # to the matching skip set in scripts/ci-changes.mjs skips a job (legal
+  # records, documentation and qc-ui source skip the native jobs and the relay;
+  # markdown-only changes also skip TypeScript). A job skipped by `if:` reports
+  # "Skipped", which branch protection accepts for a required check, so no
+  # required check can stay pending; `changes` itself is not required and fails
+  # open: if it errors or is skipped, every job runs. Pushes to master are
+  # classified on what the push brought in (before..HEAD), so a legal-only merge
+  # does not rebuild the native caches either.
   changes:
-    name: Select native jobs
+    name: Select jobs
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       native: ${{ steps.filter.outputs.native }}
+      typescript: ${{ steps.filter.outputs.typescript }}
+      cloud: ${{ steps.filter.outputs.cloud }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2
+          # A pull request is the two-parent merge commit; a push needs the
+          # commits it brought in, which a rebase merge can make many.
+          fetch-depth: ${{ github.event_name == 'push' && 0 || 2 }}
       - id: filter
+        env:
+          QC_PUSH_BEFORE: ${{ github.event.before }}
         run: node scripts/ci-changes.mjs
 
   rust:
@@ -145,6 +156,8 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # Always runs on a pull request, including legal-only ones: it is the check
+  # that guards the legal records the native jobs only embed as bytes.
   third-party-notices:
     name: Third-party notices drift check
     if: github.event_name == 'pull_request'
@@ -173,7 +186,8 @@ jobs:
 
   typescript:
     name: TypeScript packages and apps
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.typescript != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -249,7 +263,8 @@ jobs:
 
   cloud-relay:
     name: Cloud relay (dry-run deploy)
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.cloud != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # services/qc-remote-cloud is an npm workspace of the root package.json and
@@ -328,3 +343,32 @@ jobs:
       - name: Gradle debug build and unit tests
         working-directory: apps/android/android
         run: ./gradlew assembleDebug testDebugUnitTest --no-daemon
+
+  # One context that is green exactly when no CI job failed or was cancelled
+  # (skipped jobs count as passing, which is what the path filters rely on).
+  # It always runs, so it can never stay pending. Branch protection can require
+  # just this check instead of ten job names, which also makes adding, renaming
+  # or conditionally skipping a job a workflow-only change. `changes` is left
+  # out on purpose: it fails open.
+  ci-result:
+    name: CI result
+    if: ${{ always() }}
+    needs:
+      - rust
+      - rust-msrv
+      - rust-windows-app
+      - quadcortex-linux
+      - third-party-notices
+      - typescript
+      - public-history
+      - cloud-relay
+      - android
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any CI job failed or was cancelled
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | .key + ": " + .value.result'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null

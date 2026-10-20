@@ -1,5 +1,9 @@
 name: macOS desktop build
 
+# Legal records (THIRD_PARTY-NOTICES.md, legal/**, LICENSE*, LICENSES/**) are
+# deliberately absent from the path lists below: the Rust code only embeds their
+# bytes (see the rationale in scripts/ci-changes.mjs), and the always-run
+# "Third-party notices drift check" job in ci.yml verifies them.
 on:
   workflow_dispatch:
   pull_request:
@@ -15,12 +19,6 @@ on:
       - "!packages/typescript/qc-ui/**/*.md"
       - services/device-broker/**
       - services/rust-mcp/**
-      - THIRD_PARTY-NOTICES.md
-      - legal/**
-      - LICENSE
-      - LICENSE-MIT
-      - LICENSE-APACHE
-      - LICENSES/**
       - package.json
       - package-lock.json
       - Cargo.toml
@@ -40,12 +38,6 @@ on:
       - "!packages/typescript/qc-ui/**/*.md"
       - services/device-broker/**
       - services/rust-mcp/**
-      - THIRD_PARTY-NOTICES.md
-      - legal/**
-      - LICENSE
-      - LICENSE-MIT
-      - LICENSE-APACHE
-      - LICENSES/**
       - package.json
       - package-lock.json
       - Cargo.toml
@@ -68,12 +60,10 @@ jobs:
       RUSTUP_TOOLCHAIN: stable
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: macos-26
-            target: aarch64-apple-darwin
-          - runner: macos-26-intel
-            target: x86_64-apple-darwin
+      # A pull request builds Apple silicon only (27 min); the Intel runner
+      # (49 min, the same source on another architecture) runs on master and on
+      # manual dispatch. Neither check is required by branch protection.
+      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"runner":"macos-26","target":"aarch64-apple-darwin"}]}' || '{"include":[{"runner":"macos-26","target":"aarch64-apple-darwin"},{"runner":"macos-26-intel","target":"x86_64-apple-darwin"}]}') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
