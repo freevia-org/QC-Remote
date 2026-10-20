@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { network } from "./network-setup.ts";
 import {
   ACCOUNT_DELETION_KEY,
+  ACCOUNT_GENERATION_KEY,
   InvalidProviderWritesJournalError,
   PROVIDER_0_10_4_MAX_LIFETIME_MS,
   PROVIDER_WRITES_DELETION_RETRY_MAX_MS,
@@ -23,6 +24,73 @@ import {
 import type { ConnectorGrantRegistry } from "../../src/connector-grants.ts";
 import { DEVICE_RETENTION_MS, DEVICE_SWEEP_KEY } from "../../src/device-retention.ts";
 import type { DeviceSession } from "../../src/index.ts";
+
+describe("MCP admission with presence in one RPC", () => {
+  it("keeps remote command dispatch and session fencing through a real socket", async () => {
+    const target = env.DEVICE_SESSION.getByName(`request-control-${crypto.randomUUID()}`);
+    const deviceId = crypto.randomUUID();
+    const credential = `runtime-device-${crypto.randomUUID()}`;
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(credential));
+    const credentialHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+    await runInDurableObject(target, async (_instance: DeviceSession, state) => {
+      await state.storage.put(`device:${deviceId}`, { name: "Runtime host", credentialHash, pairedAt: Date.now(), identityProvider: "google" });
+    });
+    const upgraded = await target.fetch(new Request(`https://relay.example.test/connect?deviceId=${deviceId}`, {
+      headers: { Upgrade: "websocket", Authorization: `Bearer ${credential}` },
+    }));
+    expect(upgraded.status).toBe(101);
+    const host = upgraded.webSocket!;
+    host.accept();
+    const invocations: string[] = [];
+    host.addEventListener("message", (event) => {
+      const frame = JSON.parse(String(event.data)) as { type: string; id: string; method: string };
+      if (frame.type !== "invoke") return;
+      invocations.push(frame.method);
+      host.send(JSON.stringify({ type: "result", id: frame.id, ok: true, result: { tempo: 120 } }));
+    });
+    try {
+      host.send(JSON.stringify({ type: "ready", protocol: "qc-relay.v1", usbConnected: true, gatewayApiVersion: 31 }));
+      let ready = false;
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const status: unknown = await target.status();
+        if (status && typeof status === "object" && "connected" in status && status.connected === 1) { ready = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      expect(ready).toBe(true);
+      await expect(target.command({ method: "device.setTempo", params: { tempo: 120 } }, 0)).resolves.toEqual({ tempo: 120 });
+      await runInDurableObject(target, async (instance: DeviceSession) => {
+        await expect(instance.command({ method: "device.setTempo", params: { tempo: 121 } }, 1)).rejects.toThrow();
+      });
+      expect(invocations).toEqual(["device.setTempo"]);
+    } finally { host.close(1000, "Test complete"); }
+  });
+
+  it("records activity only for the admitted generation and removes it on DELETE", async () => {
+    const target = env.DEVICE_SESSION.getByName(`request-efficiency-${crypto.randomUUID()}`);
+    const observation = { key: "a".repeat(64), name: "Test MCP client" };
+    expect(await target.admitMcpRequest(0, observation)).toBe("ok");
+    expect(await target.mcpClientActivity()).toMatchObject([{ name: "Test MCP client" }]);
+    await runInDurableObject(target, async (_instance: DeviceSession, state) => {
+      await state.storage.put(ACCOUNT_GENERATION_KEY, 1);
+    });
+    expect(await target.admitMcpRequest(0, { key: "b".repeat(64), name: "Stale client" })).toBe("stale");
+    expect(await target.mcpClientActivity()).toHaveLength(1);
+    expect(await target.admitMcpRequest(1, { key: observation.key, remove: true })).toBe("ok");
+    expect(await target.mcpClientActivity()).toEqual([]);
+  });
+
+  it("does not record presence or admit commands during account deletion", async () => {
+    const target = env.DEVICE_SESSION.getByName(`request-efficiency-deleting-${crypto.randomUUID()}`);
+    await runInDurableObject(target, async (_instance: DeviceSession, state) => {
+      await beginAccountDeletion(state.storage, "request-efficiency-subject", Date.now());
+    });
+    expect(await target.admitMcpRequest(1, { key: "c".repeat(64), name: "Denied client" })).toBe("deleting");
+    expect(await target.mcpClientActivity()).toEqual([]);
+    await runInDurableObject(target, async (instance: DeviceSession) => {
+      await expect(instance.command({ method: "system.status", params: {} }, 1)).rejects.toThrow("deletion");
+    });
+  });
+});
 
 type ProxyableKv = KVNamespace & {
   put(key: string, value: unknown, options?: unknown): Promise<void>;
@@ -237,6 +305,32 @@ describe("OAuth provider lifecycle on the fenced Workerd KV binding", () => {
     expect(exchange.status).toBe(200);
     const issued = await exchange.json() as { access_token: string; refresh_token: string };
 
+    // Production audience is deliberately pinned to this origin. Do not
+    // weaken it to accommodate the fixture's consent-page example origin.
+    const mcp = (payload: unknown, token = issued.access_token) => exports.default.fetch(new Request("https://qcrc.freevia.org/mcp", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": "2025-03-26" },
+      body: JSON.stringify(payload),
+    }));
+    const initialized = await mcp({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+      protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "Runtime MCP client", version: "1" },
+    } });
+    expect(initialized.status).toBe(200);
+    expect(await initialized.text()).toContain("protocolVersion");
+    const statusRead = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "get_qc_status", arguments: {} } };
+    expect((await mcp(statusRead)).status).toBe(200);
+    const repeated = await mcp(statusRead);
+    expect(repeated.status).toBe(429);
+    expect(Number(repeated.headers.get("retry-after"))).toBeGreaterThan(0);
+    const forbiddenControl = await mcp({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "set_tempo", arguments: {
+      bpm: 120, expected_tempo: 100, expected_preset_name: "Fixture", expected_preset_identity: "fixture-identity",
+    } } });
+    expect(forbiddenControl.status).toBe(200);
+    expect(await forbiddenControl.text()).toContain("qc:control");
+    expect((await mcp({ jsonrpc: "2.0", id: 4, method: "tools/list", params: {} }, "invalid-runtime-token")).status).toBe(401);
+    expect((await mcp(statusRead, "invalid-runtime-token")).status).toBe(401);
+    expect((await mcp(statusRead, "invalid-runtime-token")).status).toBe(401);
+
     const refresh = await workerRequest("/token", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -253,6 +347,7 @@ describe("OAuth provider lifecycle on the fenced Workerd KV binding", () => {
       body: new URLSearchParams({ client_id: client.client_id, token: rotated.refresh_token, token_type_hint: "refresh_token" }),
     });
     expect(revoke.status).toBe(200);
+    expect((await mcp({ jsonrpc: "2.0", id: 5, method: "tools/list", params: {} }, rotated.access_token)).status).toBe(401);
   });
 
 });

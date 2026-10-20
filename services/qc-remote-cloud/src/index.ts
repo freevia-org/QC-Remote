@@ -25,6 +25,7 @@ import { fencedProviderEnv, accountDeletionDeadline, accountDeletionDenial, admi
 import { confirmAccountDeletion, continueAccountDeletion, showAccountDeletionConfirmation, showAccountDeletionStart, showAccountDeletionStatus, startAccountDeletionSignIn, type AccountDeletionWebDeps } from "./account-deletion-web.ts";
 import { clientFailure, htmlPageHeaders } from "./http-security.ts";
 import { enforceRateLimit } from "./rate-limit.ts";
+import { McpPollingBudget, limitMcpPolling, mcpPollingKey } from "./mcp-polling.ts";
 import { OAUTH_TOKEN_LIFETIMES } from "./oauth-lifetimes.ts";
 import { QC_SCOPES } from "./scopes.ts";
 import { NO_PAIRED_HOST } from "./device-selection.ts";
@@ -249,7 +250,7 @@ function rpcSession(env: Env, owner = OWNER): {
   accountDeletionStatus(): Promise<PublicDeletionStatus>;
   admitGrant(admissionId: string): Promise<{ admitted: true; generation: number } | { admitted: false }>;
   settleGrant(admissionId: string, generation: number): Promise<boolean>;
-  admitMcpRequest(generation: unknown): Promise<"ok" | "deleting" | "stale">;
+  admitMcpRequest(generation: unknown, observation?: McpObservation): Promise<"ok" | "deleting" | "stale">;
   admitProviderWrite(key: string, generation: number | undefined, expiresAt: number | undefined): Promise<{ admitted: true; admissionId: string } | { admitted: false }>;
   settleProviderWrite(admissionId: string): Promise<"keep" | "compensate">;
   closeCompensation(admissionId: string, now: number): Promise<void>;
@@ -582,9 +583,11 @@ function toolResult(value: Json): { content: Array<{ type: "text"; text: string 
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
-type PresenceActivity = { renew(): Promise<void>; remove(): Promise<void> };
+type PresenceActivity = { observation: McpObservation; renew(): Promise<void>; remove(): Promise<void> };
+// Bounded counters only, never cached authorization, device data or I/O handles.
+const mcpPollingBudget = new McpPollingBudget();
 
-async function observeMcpRequest(request: Request, env: Env, props: PrincipalProps): Promise<PresenceActivity | undefined> {
+async function observeMcpRequest(request: Request, env: Env, props: PrincipalProps, defer = false): Promise<PresenceActivity | undefined> {
   const token = bearer(request);
   if (!token || !["POST", "DELETE"].includes(request.method)) return undefined;
   const sessionId = request.headers.get("mcp-session-id") ?? "";
@@ -599,16 +602,21 @@ async function observeMcpRequest(request: Request, env: Env, props: PrincipalPro
   // segment is the authorization a paired host may revoke (connector-grants.ts).
   const grantId = accessTokenGrantId(token, props.subject);
   const session = rpcSession(env, ownerSessionKey(env.QCRC_ENVIRONMENT, props.subject));
+  const observation: McpObservation = request.method === "DELETE" ? { key, remove: true }
+    : { key, clientId: props.clientId, grantId, name: initialized.name, version: initialized.version, fallbackName, ...caller };
   const activity: PresenceActivity = {
-    renew: () => session.observeMcpClient({ key, clientId: props.clientId, grantId, name: initialized.name, version: initialized.version, fallbackName, ...caller }, props.accountGeneration ?? 0),
+    observation,
+    renew: () => session.observeMcpClient(observation, props.accountGeneration ?? 0),
     remove: () => session.observeMcpClient({ key, remove: true }),
   };
-  if (request.method === "DELETE") await activity.remove();
-  else await activity.renew();
+  if (!defer) {
+    if (request.method === "DELETE") await activity.remove();
+    else await activity.renew();
+  }
   return activity;
 }
 
-function mcpHandler(env: Env, props: PrincipalProps, presence?: PresenceActivity) {
+function mcpHandler(env: Env, props: PrincipalProps, presence?: PresenceActivity, pollingKey?: string | null) {
   const scopes = new Set(props.scopes ?? []);
   const route = async (command: Json, requiredScope: "qc:read" | "qc:control"): Promise<Json> => {
     if (!props.subject) throw new Error("QC Remote identity is required");
@@ -631,6 +639,7 @@ function mcpHandler(env: Env, props: PrincipalProps, presence?: PresenceActivity
       throw reason;
     } finally {
       if (heartbeat !== undefined) clearInterval(heartbeat);
+      if (requiredScope === "qc:control" && pollingKey) mcpPollingBudget.control(pollingKey);
     }
   };
   // A resource callback passes RESOURCE_READ_ORIGIN; a tool never does.
@@ -738,8 +747,12 @@ const OAUTH_OPTIONS: OAuthProviderOptions<Env> = {
     if (!props?.subject || !props.email || !props.name) return error("QC Remote identity is required", 401);
     // A grant from before a deletion of this account can reach nothing, and
     // is revoked here when it is used; requests during a deletion wait.
-    if (relayEnvironment(env.QCRC_ENVIRONMENT) === "production") {
-      const admission = await rpcSession(env, ownerSessionKey(env.QCRC_ENVIRONMENT, props.subject)).admitMcpRequest(props.accountGeneration ?? 0);
+    const production = relayEnvironment(env.QCRC_ENVIRONMENT) === "production";
+    // Prepare metadata without storing it; production records it inside the
+    // same DO call that checks the account fence, saving one RPC per request.
+    const presence = await observeMcpRequest(request, env, props, production).catch(() => undefined);
+    if (production) {
+      const admission = await rpcSession(env, ownerSessionKey(env.QCRC_ENVIRONMENT, props.subject)).admitMcpRequest(props.accountGeneration ?? 0, presence?.observation);
       if (admission === "stale") {
         const grantId = accessTokenGrantId(bearer(request), props.subject);
         // Inert either way; a failed revoke is logged, and the account's next
@@ -749,9 +762,8 @@ const OAUTH_OPTIONS: OAuthProviderOptions<Env> = {
       }
       if (admission === "deleting") return error(ACCOUNT_DELETION_PENDING_MESSAGE, 503);
     }
-    const presence = await observeMcpRequest(request, env, props).catch(() => undefined);
     // Admission records activity once; in-flight device calls renew their own lease.
-    return mcpHandler(env, props, presence)(request, env, ctx);
+    return mcpHandler(env, props, presence, await mcpPollingKey(request))(request, env, ctx);
   } },
   defaultHandler: { async fetch(request, env, ctx) { return await handleGoogleAuthorization(request, env, grantFence(env)) ?? baseHandler.fetch!(request, env, ctx); } },
   authorizeEndpoint: "/authorize",
@@ -786,7 +798,16 @@ export default {
       url.pathname = "/mcp";
       request = new Request(url, request);
     }
-    return oauth.fetch(request, providerEnv(env), ctx);
+    const polling = await limitMcpPolling(request, mcpPollingBudget);
+    if (polling) return polling;
+    const response = await oauth.fetch(request, providerEnv(env), ctx);
+    // Failed credentials must not leave a read slot behind. Nothing here
+    // caches a successful credential or bypasses the provider's next check.
+    if (response.status === 401 || response.status === 403) {
+      const key = await mcpPollingKey(request);
+      if (key) mcpPollingBudget.forget(key);
+    }
+    return response;
   }
 };
 
@@ -1074,7 +1095,16 @@ export class DeviceSession extends DurableObject<Env> {
 
   async admitGrant(admissionId: string) { return admitGrant(this.ctx.storage, admissionId, Date.now()); }
   async settleGrant(admissionId: string, generation: number) { return settleGrant(this.ctx.storage, admissionId, generation); }
-  async admitMcpRequest(generation: unknown) { return admitMcpRequest(this.ctx.storage, generation); }
+  async admitMcpRequest(generation: unknown, observation?: McpObservation) {
+    const admission = await admitMcpRequest(this.ctx.storage, generation);
+    if (admission === "ok" && observation) {
+      // Presence remains best-effort telemetry. Its own transaction repeats
+      // the generation/deletion check if deletion starts after admission.
+      try { await this.observeMcpClient(observation, typeof generation === "number" ? generation : 0); }
+      catch { /* Never turn failed presence tracking into failed authentication. */ }
+    }
+    return admission;
+  }
   async admitProviderWrite(key: string, generation: number | undefined, expiresAt: number | undefined) { return admitProviderWrite(this.ctx.storage, key, generation, expiresAt, Date.now()); }
   async settleProviderWrite(admissionId: string) { return settleProviderWrite(this.ctx.storage, admissionId); }
   async closeCompensation(admissionId: string, now: number) { return closeCompensation(this.ctx.storage, admissionId, now); }

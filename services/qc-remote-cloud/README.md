@@ -19,6 +19,25 @@ single-owner compatibility deployment; it is never sent to an MCP client or
 embedded in either app, and the routes it unlocks do not exist when
 `QCRC_ENVIRONMENT` is `production` (they answer 404 whatever the token).
 
+## MCP polling and request costs
+
+Read status and the current preset on demand. Repeating those same observations
+while idle receives HTTP 429 with `Retry-After`: wait that long before retrying.
+The edge currently admits one idle read of each kind per credential every
+15 seconds. After an authorized control attempt, immediate fresh readback is
+allowed and the interval is one second for 30 seconds. Control commands, OAuth
+sign-in/refresh/revocation and other reads are not delayed by this poll policy.
+No device result or successful authorization is cached; each admitted request
+still passes OAuth, scope checks and the account deletion/generation fence.
+
+The bounded edge counters retain only credential fingerprints and timestamps,
+not bearer tokens or device data. They are best-effort load shedding per Worker
+isolate, not a global billing cap. Clients must obey `Retry-After` and stop
+background polling when their view is inactive. Rejected repeated polls do no
+OAuth KV reads or Durable Object calls. Admitted MCP requests record presence
+inside account admission, reducing an ordinary device call from three Durable
+Object RPCs to two without removing either authorization check.
+
 ## Cloudflare KV namespace id
 
 `wrangler.jsonc` binds `QCRC_OAUTH` and `OAUTH_KV` (the fixed name the OAuth
