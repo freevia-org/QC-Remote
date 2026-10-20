@@ -6,6 +6,7 @@ pub mod orphan_guard;
 pub mod platform;
 pub mod resident;
 pub mod rpc;
+pub mod target;
 pub mod tray;
 pub mod tray_settings;
 pub mod updater_relay;
