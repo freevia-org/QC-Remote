@@ -1338,7 +1338,8 @@ test("Android teardown cancels handshake work and closes native state off the ca
 
 test("Android quarantine blocks device mutations but preserves reads and reconnect", () => {
   assert.match(javaSource, /relayAdmissionGuard\.writesQuarantined\(\) && isMutationDispatch\(dispatch\)/);
-  const mutationPolicy = javaSource.slice(javaSource.indexOf('private static boolean isMutationDispatch'), javaSource.indexOf('private CompletableFuture<org.json.JSONObject> relayPlannedGatewayWrite'));
+  assert.match(javaSource, /private static boolean isMutationDispatch\(String dispatch\) \{\s*return QcGatewayTargetPolicy\.isMutationDispatch\(dispatch\);/);
+  const mutationPolicy = readFileSync(new URL("../android/app/src/main/java/org/freevia/qcremote/QcGatewayTargetPolicy.java", import.meta.url), "utf8");
   for (const dispatch of ["SET_DEVICE_NAME", "TAP_SCREEN", "PREVIEW_PARAMETER", "PLANNED_WRITE", "PRESET_WRITE", "PERSISTENT_WRITE"])
     assert.ok(mutationPolicy.includes(`"${dispatch}"`), `${dispatch} must stay quarantined`);
   assert.match(javaSource, /if \("RECONNECT"\.equals\(dispatch\)\) return relayReconnect/);
