@@ -7,13 +7,15 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.json.JSONObject;
 import org.junit.Test;
 
 public class QcDemoProviderTest {
     private final AtomicBoolean physical = new AtomicBoolean();
     private final AtomicLong physicalGeneration = new AtomicLong();
-    private final QcDemoProvider provider = new QcDemoProvider(physical::get, physicalGeneration::get);
+    private final AtomicReference<QcBrokerTarget> brokerTarget = new AtomicReference<>(new QcBrokerTarget("demo", "native-demo", 1));
+    private final QcDemoProvider provider = new QcDemoProvider(physical::get, physicalGeneration::get, brokerTarget::get);
     private final List<JSONObject> requests = new ArrayList<>();
 
     private CompletableFuture<JSONObject> invoke() {
@@ -119,5 +121,37 @@ public class QcDemoProviderTest {
         result.whenComplete((value, error) -> held.set(Thread.holdsLock(provider)));
         provider.publish(null, 2);
         assertFalse(held.get());
+    }
+
+    @Test public void beforeEffectAdmissionIsIdempotentAndPinsTheNativeTarget() {
+        provider.publish("ui-demo", 1);
+        CompletableFuture<JSONObject> result = invoke();
+        JSONObject request = requests.get(0);
+        String id = request.optString("id");
+        assertTrue(provider.admit(id, "ui-demo", 1, brokerTarget.get()));
+        assertTrue(provider.admit(id, "ui-demo", 1, brokerTarget.get()));
+        assertFalse(provider.admit(id, "wrong-ui", 1, brokerTarget.get()));
+        assertFalse(provider.admit(id, "ui-demo", 2, brokerTarget.get()));
+        assertFalse(provider.admit(id, "ui-demo", 1, new QcBrokerTarget("demo", "other", 3)));
+        brokerTarget.set(new QcBrokerTarget("demo", "replacement-native-target", 2));
+        assertFalse(provider.admit(id, "ui-demo", 1, null));
+        assertFalse(provider.canDeliver(id));
+        complete(0, new JSONObject());
+        fails(result, "DEVICE_IDENTITY_MISMATCH");
+    }
+
+    @Test public void expiredOrBackgroundedRequestsCannotPassTheStoreEffectGate() {
+        provider.publish("ui-demo", 1);
+        CompletableFuture<JSONObject> expired = invoke();
+        String expiredId = requests.get(0).optString("id");
+        provider.expire(expired);
+        assertFalse(provider.admit(expiredId, "ui-demo", 1, null));
+        CompletableFuture<JSONObject> paused = invoke();
+        String pausedId = requests.get(1).optString("id");
+        provider.foreground(false);
+        assertFalse(provider.admit(pausedId, "ui-demo", 1, null));
+        provider.foreground(true);
+        assertFalse(provider.admit(pausedId, "ui-demo", 1, null));
+        fails(paused, "DEVICE_IDENTITY_MISMATCH");
     }
 }

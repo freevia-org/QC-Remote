@@ -177,7 +177,7 @@ public class QcUsbPlugin extends Plugin {
         }, this::writeForwardingMessage);
     private static volatile QcUsbPlugin relaySession;
     private final QcDemoProvider demoProvider = new QcDemoProvider(
-        QcUsbPlugin::relaySessionAvailable, connectionGeneration::get);
+        QcUsbPlugin::relaySessionAvailable, connectionGeneration::get, this::currentBrokerTarget);
     private final QcBrokerTarget.Registry brokerTargets = new QcBrokerTarget.Registry();
     private static final ThreadLocal<RelayDeadline> CURRENT_RELAY_DEADLINE = new ThreadLocal<>();
     private static final ConcurrentHashMap<CompletableFuture<org.json.JSONObject>, RelayDeadline> RELAY_DEADLINES = new ConcurrentHashMap<>();
@@ -346,6 +346,17 @@ public class QcUsbPlugin extends Plugin {
         demoProvider.publish(session, generation);
         startForegroundDemoRelay();
         call.resolve();
+    }
+
+    @PluginMethod public void admitDemoRequest(PluginCall call) {
+        QcBrokerTarget target = null;
+        if (call.getData().has("brokerTarget")) {
+            try { target = QcBrokerTarget.parse(call.getData().opt("brokerTarget")); }
+            catch (IllegalArgumentException malformed) { call.resolve(new JSObject().put("admitted", false)); return; }
+        }
+        boolean admitted = demoProvider.admit(call.getString("id", ""), call.getString("sessionId", ""),
+            call.getLong("generation", -1L), target);
+        call.resolve(new JSObject().put("admitted", admitted));
     }
 
     @PluginMethod public void completeDemoRequest(PluginCall call) {

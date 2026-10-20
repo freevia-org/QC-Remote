@@ -21,11 +21,11 @@ final class QcBrokerTarget {
         JSONObject target = (JSONObject) value;
         Object source = target.opt("source"), session = target.opt("sessionId"), generation = target.opt("generation");
         if (target.length() != 3 || !("physical".equals(source) || "demo".equals(source))
-                || !(session instanceof String) || ((String) session).isEmpty() || ((String) session).length() > 128
+                || !(session instanceof String) || ((String) session).trim().isEmpty() || ((String) session).length() > 256
                 || !(generation instanceof Number)) throw new IllegalArgumentException("The broker target is invalid.");
         double numeric = ((Number) generation).doubleValue();
         long integer = ((Number) generation).longValue();
-        if (!Double.isFinite(numeric) || numeric != integer || integer < 0 || integer > 9007199254740991L)
+        if (!Double.isFinite(numeric) || numeric != integer || integer < 1 || integer > 9007199254740991L)
             throw new IllegalArgumentException("The broker target generation is invalid.");
         return new QcBrokerTarget((String) source, (String) session, integer);
     }
