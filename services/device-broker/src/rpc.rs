@@ -537,6 +537,30 @@ impl Drop for StdioControllerOwner {
     }
 }
 
+fn runtime_status_payload(status: Option<BrokerStatus>, broker_transport: bool) -> Value {
+    let mut capabilities = vec!["nativeGateway"];
+    capabilities.extend_from_slice(generated_gateway::CAPABILITIES);
+    capabilities.extend([
+        "hostMidiPerformance",
+        "multiDeviceSelection",
+        RESOURCE_READ_ORIGIN_CAPABILITY,
+    ]);
+    if broker_transport {
+        capabilities.extend(["physicalTargetOrigin", "expectedBrokerTarget"]);
+    }
+    let mut result = json!({
+        "platform": "Rust device gateway",
+        "gatewayAvailable": true,
+        "gatewayApiVersion": generated_gateway::API_VERSION,
+        "capabilities": capabilities,
+        "message": "Shared Rust QC engine active"
+    });
+    if let Some(status) = status {
+        result["usbDiagnostics"] = json!(status);
+    }
+    result
+}
+
 fn handle(
     controller: &DeviceController,
     performance_midi: &PerformanceMidiWorkers,
@@ -641,21 +665,7 @@ fn handle_with_disconnect_admission(
     ));
     let result = match generated_gateway::broker_dispatch(&request.method) {
         Some(generated_gateway::BrokerDispatch::SystemStatus) => {
-            let mut capabilities = vec!["nativeGateway"];
-            capabilities.extend_from_slice(generated_gateway::CAPABILITIES);
-            capabilities.push("hostMidiPerformance");
-            capabilities.push("multiDeviceSelection");
-            capabilities.push(RESOURCE_READ_ORIGIN_CAPABILITY);
-            capabilities.push("physicalTargetOrigin");
-            capabilities.push("expectedBrokerTarget");
-            Ok(json!({
-                "platform": "Rust device gateway",
-                "gatewayAvailable": true,
-                "gatewayApiVersion": generated_gateway::API_VERSION,
-                "capabilities": capabilities,
-                "message": "Shared Rust QC engine active",
-                "usbDiagnostics": controller.status()
-            }))
+            Ok(runtime_status_payload(Some(controller.status()), false))
         }
         Some(generated_gateway::BrokerDispatch::Reconnect) => {
             rpc_reconnect(controller, queue_reconnect_after_idle_close).map(|outcome| {
@@ -4091,6 +4101,83 @@ fn dispatch_broker_request(shared: &BrokerShared, request: Request) -> Value {
     dispatch_broker_client_request(shared, None, request)
 }
 
+/// API liveness is independent of device readiness. A busy cache must not make
+/// initial host attachment fail, and must not fabricate a usable target either.
+fn dispatch_cached_status(
+    shared: &BrokerShared,
+    connection_id: Option<u64>,
+    request: Request,
+) -> Value {
+    if request.jsonrpc != "2.0" || request.id.as_u64().is_none_or(|id| id == 0) {
+        return error(request.id, -32600, "Invalid JSON-RPC request");
+    }
+    if !request.params.is_object() {
+        return error(request.id, -32602, "JSON-RPC params must be an object");
+    }
+    if let Err(message) = generated_gateway::validate_params(&request.method, &request.params) {
+        return error(request.id, -32602, &message);
+    }
+    let canonical = shared.selected_target();
+    let controller = match &canonical {
+        Ok(canonical) => match shared.request_controller(
+            connection_id,
+            request.physical_only,
+            canonical.as_ref(),
+        ) {
+            Ok(controller) => controller,
+            Err(message) => return error(request.id, -32002, message),
+        },
+        Err(_) => shared.controller_for(connection_id),
+    };
+    let observed = shared.targets.identity();
+    if request
+        .expected_broker_target
+        .as_ref()
+        .is_some_and(|expected| {
+            (request.physical_only && expected.source != crate::target::TargetSource::Physical)
+                || canonical.is_err()
+                || observed.as_ref() != Some(expected)
+        })
+    {
+        return error(
+            request.id,
+            -32002,
+            "Broker target changed or is unavailable; request was not sent",
+        );
+    }
+    let mut result = runtime_status_payload(controller.try_cached_status(), true);
+    if canonical.is_ok() {
+        let target = observed.clone().filter(|target| {
+            !request.physical_only
+                || (target.source == crate::target::TargetSource::Physical
+                    && canonical
+                        .as_ref()
+                        .ok()
+                        .and_then(Option::as_ref)
+                        .is_some_and(|chosen| Arc::ptr_eq(chosen, &controller)))
+        });
+        // A second try-only observation fences metadata, not API liveness.
+        // Never turn transient uncertainty into targetReady=false or a stale ID.
+        if shared.selected_target().is_ok() && shared.targets.identity() == observed {
+            result["targetReady"] = json!(target.is_some());
+            if let Some(target) = target {
+                result["brokerTarget"] = json!(target);
+            }
+        } else if request.expected_broker_target.is_some() {
+            return error(
+                request.id,
+                -32002,
+                "Broker target changed or is unavailable; request was not sent",
+            );
+        }
+    }
+    let mut response = json!({"jsonrpc":"2.0", "id": request.id, "result": result});
+    if let Some(target) = response["result"].get("brokerTarget").cloned() {
+        response["brokerTarget"] = target;
+    }
+    response
+}
+
 fn dispatch_broker_client_request(
     shared: &BrokerShared,
     connection_id: Option<u64>,
@@ -4117,6 +4204,9 @@ fn dispatch_broker_client_request(
             -32601,
             "This method is not available to a control connection",
         );
+    }
+    if request.method == "system.status" {
+        return dispatch_cached_status(shared, connection_id, request);
     }
     // Demo calls remain pinned to the UI provider; physical-only GUI calls
     // never enter this route, including during physical discovery.
@@ -4160,35 +4250,6 @@ fn dispatch_broker_client_request(
             -32002,
             "Broker target changed; request was not sent",
         );
-    }
-    if request.method == "system.status" {
-        // Both MCP tool and resource status are cache-only. Demo availability
-        // must never replace the physical USB diagnostics with virtual data.
-        let controller = selected_controller.clone();
-        let target = if request.physical_only
-            && canonical
-                .as_ref()
-                .is_none_or(|chosen| !Arc::ptr_eq(chosen, &controller))
-        {
-            None
-        } else {
-            shared.targets.identity()
-        };
-        let target = target.filter(|target| {
-            !request.physical_only || target.source == crate::target::TargetSource::Physical
-        });
-        let expected = request
-            .expected_broker_target
-            .clone()
-            .or_else(|| target.clone());
-        let mut response = handle(&controller, &shared.performance_midi, request);
-        if let Some(result) = response.get_mut("result") {
-            result["targetReady"] = json!(target.is_some());
-            if let Some(target) = target {
-                result["brokerTarget"] = json!(target);
-            }
-        }
-        return shared.fence_result(expected.as_ref(), response);
     }
     if !request.physical_only
         && generated_gateway::broker_dispatch(&request.method).is_some()
@@ -8776,6 +8837,56 @@ mod tcp_tests {
         fn drop(&mut self) {
             let _ = self.0.shutdown(std::net::Shutdown::Both);
         }
+    }
+
+    #[test]
+    fn demo_status_attach_survives_busy_readiness_without_claiming_a_target() {
+        let shared = Arc::new(broker_shared_for_test());
+        let expected = crate::target::TargetIdentity {
+            source: crate::target::TargetSource::Physical,
+            session_id: "unverified".into(),
+            generation: 1,
+        };
+        let held = shared.controller.hold_status_lock_for_test();
+        let started = Instant::now();
+        let response = dispatch_broker_request(&shared, rpc_request("system.status"));
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert_eq!(response["result"]["gatewayAvailable"], true);
+        assert_eq!(
+            response["result"]["gatewayApiVersion"],
+            generated_gateway::API_VERSION
+        );
+        assert!(response["result"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("expectedBrokerTarget")));
+        assert!(response["result"].get("usbDiagnostics").is_none());
+        assert!(response["result"].get("targetReady").is_none());
+        assert!(response["result"].get("brokerTarget").is_none());
+        assert!(response.get("brokerTarget").is_none());
+        let mut guarded = rpc_request("system.status");
+        guarded.expected_broker_target = Some(expected);
+        assert_eq!(
+            dispatch_broker_request(&shared, guarded)["error"]["code"],
+            -32002
+        );
+        let effect = dispatch_broker_request(&shared, rpc_request("device.setTempo"));
+        assert_eq!(effect["error"]["code"], -32002);
+        let mut malformed = rpc_request("system.status");
+        malformed.id = json!(0);
+        assert_eq!(
+            dispatch_broker_request(&shared, malformed)["error"]["code"],
+            -32600
+        );
+        drop(held);
+        let retained = shared.controller.hold_session_lock_for_test();
+        let mut resource = rpc_request("system.status");
+        resource.origin = Some(RESOURCE_READ_ORIGIN.into());
+        let response = dispatch_broker_request(&shared, resource);
+        assert_eq!(response["result"]["gatewayAvailable"], true);
+        assert!(response["result"].get("usbDiagnostics").is_none());
+        drop(retained);
+        crate::rpc::test_support::finish(&BrokerHandle(shared));
     }
 
     #[test]

@@ -1237,6 +1237,35 @@ impl DeviceController {
         status
     }
 
+    /// Cache-only RPC diagnostics. Suspension is authoritative in the session
+    /// owner, not the short worker record. If either cache is busy, omit the
+    /// diagnostics rather than reporting a suspended unit as unsuspended.
+    /// Unlike `status`, this performs no settings I/O and never waits for a lock.
+    pub(crate) fn try_cached_status(&self) -> Option<BrokerStatus> {
+        let updater_relay = self.updater_relay.try_cached_status()?;
+        let mut status = match self.state.try_lock() {
+            Ok(status) => status.clone(),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner().clone(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        let owner = match self.session_owner.try_lock() {
+            Ok(owner) => owner,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        if status.synchronized {
+            if let Some(preset) = owner.current_preset() {
+                status.active_preset_location = Some(preset.preset_location.clone());
+                status.active_preset_name = Some(preset.preset_name.clone());
+            }
+        }
+        status.suspension = owner.suspension();
+        status.device_suspended = status.suspension.active.is_some();
+        status.retention = self.raw_events.retention.snapshot();
+        status.updater_relay = updater_relay;
+        Some(status)
+    }
+
     /// The tray's display projection. Unlike [`Self::status`], this never
     /// waits for either worker lock: the tray's own liveness indicator must
     /// not call a healthy broker unresponsive merely because a device
