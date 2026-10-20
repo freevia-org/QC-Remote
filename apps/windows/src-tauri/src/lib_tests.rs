@@ -10713,6 +10713,32 @@ fn verified_physical_readiness_preserves_usb_when_optional_diagnostics_are_missi
     assert!(!target_readiness_from_status(&status).usb_connected);
 }
 #[test]
+fn capability_only_status_is_unknown_for_publication_and_unready_for_effects() {
+    for status in [
+        json!({"gatewayAvailable":true,"capabilities":["nativeGateway"]}),
+        json!({"usbDiagnostics":{}}),
+        json!({"capabilities":["expectedBrokerTarget"],"usbDiagnostics":{"connected":false}}),
+        json!({"capabilities":["expectedBrokerTarget"],"usbDiagnostics":{"connected":true}}),
+    ] {
+        assert!(publication_readiness_from_status(&status).is_none());
+        let effect = target_readiness_from_status(&status);
+        assert!(!effect.target_ready);
+        assert!(effect.broker_target.is_none());
+    }
+    for status in [
+        json!({"targetReady":false}),
+        json!({"usbDiagnostics":{"connected":false}}),
+        json!({"targetReady":true,"brokerTarget":{"source":"physical","sessionId":"physical","generation":1}}),
+        json!({"targetReady":true,"brokerTarget":{"source":"demo","sessionId":"demo","generation":2}}),
+    ] {
+        assert_eq!(
+            publication_readiness_from_status(&status),
+            Some(target_readiness_from_status(&status))
+        );
+    }
+}
+
+#[test]
 fn array_result_keeps_its_demo_target_in_the_native_envelope() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();

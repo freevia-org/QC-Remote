@@ -1083,6 +1083,52 @@ pub(crate) enum HostReadiness {
 }
 
 impl HeadlessDeviceAdapter {
+    async fn sample_publication_readiness(&self) -> Option<qc_relay_client::TargetReadiness> {
+        if self.stopped.load(Ordering::Acquire) {
+            return Some(Default::default());
+        }
+        if self.broker.is_some() {
+            return Some(match self.broker_readiness_answer().await {
+                Ok(BrokerDeviceReadiness::ReadyTarget {
+                    usb_connected,
+                    target,
+                }) => qc_relay_client::TargetReadiness {
+                    target_ready: true,
+                    usb_connected,
+                    broker_target: Some(target),
+                },
+                Ok(BrokerDeviceReadiness::Ready) => qc_relay_client::TargetReadiness {
+                    target_ready: true,
+                    usb_connected: true,
+                    broker_target: None,
+                },
+                _ => Default::default(),
+            });
+        }
+        let gateway = self.gateway.clone();
+        let reads = self.lock_free_reads.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::request_gateway(
+                &gateway,
+                &reads,
+                "system.status",
+                serde_json::json!({}),
+                crate::WhenGatewayBusy::Refuse,
+                |gateway, params| {
+                    gateway.request_detailed_as(
+                        "system.status",
+                        params,
+                        crate::ConnectionUse::ExistingOnly,
+                    )
+                },
+            )
+            .map(|status| crate::publication_readiness_from_status(&status))
+            .unwrap_or(Some(Default::default()))
+        })
+        .await
+        .unwrap_or(Some(Default::default()))
+    }
+
     /// Readiness for `/health` and the relay's `DeviceFrame::Ready`.
     ///
     /// The gateway's `connected` is consulted only while the gateway is
@@ -1347,49 +1393,13 @@ impl HeadlessDeviceAdapter {
 #[async_trait]
 impl DeviceAdapter for HeadlessDeviceAdapter {
     async fn target_readiness(&self) -> qc_relay_client::TargetReadiness {
-        if self.stopped.load(Ordering::Acquire) {
-            return Default::default();
-        }
-        if self.broker.is_some() {
-            return match self.broker_readiness_answer().await {
-                Ok(BrokerDeviceReadiness::ReadyTarget {
-                    usb_connected,
-                    target,
-                }) => qc_relay_client::TargetReadiness {
-                    target_ready: true,
-                    usb_connected,
-                    broker_target: Some(target),
-                },
-                Ok(BrokerDeviceReadiness::Ready) => qc_relay_client::TargetReadiness {
-                    target_ready: true,
-                    usb_connected: true,
-                    broker_target: None,
-                },
-                _ => Default::default(),
-            };
-        }
-        let gateway = self.gateway.clone();
-        let reads = self.lock_free_reads.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::request_gateway(
-                &gateway,
-                &reads,
-                "system.status",
-                serde_json::json!({}),
-                crate::WhenGatewayBusy::Refuse,
-                |gateway, params| {
-                    gateway.request_detailed_as(
-                        "system.status",
-                        params,
-                        crate::ConnectionUse::ExistingOnly,
-                    )
-                },
-            )
-            .map(|status| crate::target_readiness_from_status(&status))
+        self.sample_publication_readiness()
+            .await
             .unwrap_or_default()
-        })
-        .await
-        .unwrap_or_default()
+    }
+
+    async fn publication_readiness(&self) -> Option<qc_relay_client::TargetReadiness> {
+        self.sample_publication_readiness().await
     }
 
     async fn invoke_targeted(
