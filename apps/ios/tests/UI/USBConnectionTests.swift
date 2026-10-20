@@ -72,6 +72,7 @@ final class USBConnectionTests: XCTestCase {
             let livePreset = app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", preset)).firstMatch
             XCTAssertTrue(livePreset.waitForExistence(timeout: 60), "Live preset missing after launch \(launch): \(app.debugDescription)")
             XCTAssertFalse(app.otherElements["TopBrowserBar"].exists, "Saved sign-in unexpectedly reopened authorization")
+            XCTAssertFalse(app.staticTexts["The preset or device session changed before this operation completed."].exists, "Explicit refresh must adopt the target without a competing connection attempt")
             let attachment = XCTAttachment(screenshot: app.screenshot())
             attachment.name = "Live QC after launch \(launch)"
             attachment.lifetime = .keepAlways

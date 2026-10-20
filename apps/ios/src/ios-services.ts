@@ -318,6 +318,14 @@ export async function androidUsbRuntimeDiagnostics(): Promise<NonNullable<Runtim
     android
   };
 }
+// Compatibility exports for the shared mobile shell. iOS never hosts the
+// Android native gateway; its paired-host observation/acceptance is separate.
+export function acceptAndroidGatewayBrokerTarget(_target: BrokerTarget | undefined): void {
+  throw new Error("Android physical gateway acceptance is unavailable on iOS.");
+}
+export async function readAndroidGatewayTarget(): Promise<never> {
+  throw new Error("Android physical gateway discovery is unavailable on iOS.");
+}
 export const createAndroidQcTransport = (gateway: GatewayTransport, currentSnapshot: () => PresetSnapshot): QcDeviceTransport => createQcGatewayTransport(gateway, currentSnapshot);
 export const ScreenWakeNative = { setEnabled: ({ enabled }: { enabled: boolean }) => QCIosNativeBridge.setScreenAwake({ enabled }) };
 export const virtualDeviceStorage: VirtualDeviceStorage = { async read() { return localStorage.getItem("qc-demo-device-v1"); }, async write(text) { localStorage.setItem("qc-demo-device-v1", text); } };

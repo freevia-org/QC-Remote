@@ -566,7 +566,7 @@ test("Android 16 starts the connected-device relay only after the USB permission
   assert.match(androidManifestSource, /android:foregroundServiceType="connectedDevice"/);
   assert.match(javaSource, /static boolean relayForegroundServiceEligible\(\)/);
   assert.match(javaSource, /manager\.hasPermission\(candidate\)/);
-  assert.match(relayServiceSource, /boolean physicalEligible = QcUsbPlugin\.relayForegroundServiceEligible\(\);[\s\S]{0,100}if \(!physicalEligible && !QcUsbPlugin\.relayDemoAvailable\(\)\)[\s\S]{0,300}stopSelf\(\)/);
+  assert.match(relayServiceSource, /HostMode mode = hostMode\(physicalEligible, QcUsbPlugin\.relayDemoAvailable\(\)\);[\s\S]{0,100}if \(mode == HostMode\.NONE\)[\s\S]{0,300}stopSelf\(\)/);
   assert.match(relayPluginSource, /USB_PERMISSION_REQUIRED/);
   assert.match(appSource, /usePublicRelayWorkflow\(\{[^}]*autoStart: hardwareConnected/);
 });
@@ -1313,7 +1313,7 @@ test("Android relay lifecycle and pairing failures remain recoverable", () => {
   assert.doesNotMatch(credentialFailure, /store\.clear\(\)/);
   assert.match(credentialFailure, /RelayState\.RECONNECTING/);
   assert.match(credentialFailure, /reconnect\(attemptGeneration\)/);
-  assert.match(relayServiceSource, /try \{[\s\S]{0,400}if \(physicalEligible\) startForeground\([\s\S]*?\} catch \(RuntimeException error\)/);
+  assert.match(relayServiceSource, /try \{[\s\S]{0,400}if \(mode == HostMode\.CONNECTED_DEVICE\) startForeground\([\s\S]*?\} catch \(RuntimeException error\)/);
 });
 
 test("Android teardown cancels handshake work and closes native state off the callback thread", () => {
