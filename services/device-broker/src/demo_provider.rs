@@ -315,6 +315,38 @@ impl Hub {
         self.changed.notify_all();
         Ok(accepted)
     }
+
+    pub fn reject(
+        &self,
+        connection: u64,
+        target: &TargetIdentity,
+        sequence: u64,
+        message: &str,
+    ) -> Result<bool, String> {
+        let pending = {
+            let mut state = self.lock();
+            if !Self::owner_matches(&state, connection) {
+                return Err("This connection does not own the demo provider".into());
+            }
+            let Some(index) = state
+                .pending
+                .iter()
+                .position(|pending| pending.call.sequence == sequence)
+            else {
+                return Ok(false);
+            };
+            if state.pending[index].call.target != *target {
+                return Err("Demo request identity mismatch".into());
+            }
+            state
+                .pending
+                .remove(index)
+                .expect("located pending request")
+        };
+        let retired = pending.response.try_send(Err(message.into())).is_ok();
+        self.changed.notify_all();
+        Ok(retired)
+    }
 }
 
 #[cfg(test)]

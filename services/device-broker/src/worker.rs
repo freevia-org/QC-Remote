@@ -1378,8 +1378,17 @@ impl DeviceController {
     /// A busy status writer leaves the previous projection intact; it must
     /// never turn an unknown physical fact into permission to select demo.
     pub(crate) fn try_target_readiness(&self) -> Option<(bool, bool, u64)> {
-        let state = self.state.try_lock().ok()?;
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
         Some((state.connected, state.synchronized, state.session_epoch))
+    }
+
+    /// Opaque per-controller UUID, unrelated to any hardware serial or path.
+    pub(crate) fn target_stream_id(&self) -> &str {
+        &self.state_stream_id
     }
 
     /// Request a reconnect that leaves a healthy session alone. The returned
