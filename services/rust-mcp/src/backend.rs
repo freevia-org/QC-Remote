@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+pub use qc_relay_protocol::BrokerTarget;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use thiserror::Error;
@@ -66,4 +67,26 @@ pub trait QcBackend: Send + Sync + 'static {
         rpc: &'static str,
         params: Map<String, Value>,
     ) -> Result<Value, BackendError>;
+
+    /// Carry the client's accepted target separately from generated operands.
+    /// Hosts must enforce it through admission and completion, never retrying
+    /// an uncertain request against a replacement target.
+    async fn request_targeted(
+        &self,
+        route: &PrincipalRoute,
+        rpc: &'static str,
+        params: Map<String, Value>,
+        expected_broker_target: Option<BrokerTarget>,
+    ) -> Result<Value, BackendError> {
+        if expected_broker_target.is_some() {
+            return Err(BackendError {
+                code: "broker_target_unsupported",
+                message: "This host cannot enforce the selected broker target; update it before controlling that target.".into(),
+                retryable: false,
+                detail_code: Some("BROKER_TARGET_UNSUPPORTED".into()),
+                details: Some(Box::new(serde_json::json!({"requestSent": false}))),
+            });
+        }
+        self.request(route, rpc, params).await
+    }
 }
