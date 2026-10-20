@@ -28,7 +28,21 @@ export function normalizeBrokerConnection(state: ConnectionState): ConnectionSta
  */
 export type ConnectionSource = "device" | "virtual";
 
+/** The broker-served target, independent of the client's transport route.
+ * A remote demo still uses the host/MCP (`source: "device"`) transport;
+ * `source: "virtual"` continues to select this client's local demo runtime.
+ * Older hosts omit this metadata; absence must not imply a demo target.
+ */
+export interface BrokerTarget {
+  source: "physical" | "demo";
+  /** Unique live provider session, including a broker/registration nonce. */
+  sessionId: string;
+  /** Changes on every effective target switch, including return to a prior session. */
+  generation: number;
+}
+
 export interface ConnectionState {
+  brokerTarget?: BrokerTarget;
   phase: ConnectionPhase;
   detail: string;
   lastSync?: string;
@@ -100,6 +114,7 @@ export interface UpdaterRelayDiagnostics {
 }
 
 export interface RuntimeStatus {
+  brokerTarget?: BrokerTarget;
   platform: string;
   gatewayAvailable: boolean;
   gatewayApiVersion?: number;

@@ -56,3 +56,19 @@ new generation, stale expected identity, provider withdrawal/replacement,
 duplicate notifications, queued effect refusal and in-flight result rejection
 without replay. The tray tests cover purple eligibility and physical/stale
 precedence. Hardware and live callback integration remain unvalidated here.
+
+## Shared TypeScript provider
+
+`createDemoBrokerProvider` accepts the already-opened, immutable virtual
+transport, a registration identity and a synchronous current-selection check.
+It maps generated gateway RPC names back to the existing transport methods,
+clones arguments at admission, serializes work with at most eight pending
+requests, rejects non-increasing sequence numbers, and checks selection before
+and after each call. Native adapters still own authentication, deadlines,
+registration exclusivity and final effect admission. Disposing it rejects queued
+work; a pending operation is never retried on a replacement target.
+
+Optional `brokerTarget` metadata is defined on the shared client status and
+connection types; production status projection remains to be connected. Remote
+demo clients retain the host transport route (`source: device`), rather than
+routing requests to their own phone-local demo.
