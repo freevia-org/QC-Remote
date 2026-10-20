@@ -4943,14 +4943,13 @@ struct WindowsRelayAdapter {
 }
 
 pub(crate) fn target_readiness_from_status(status: &Value) -> qc_relay_client::TargetReadiness {
-    let usb_connected = status
+    let diagnostic_usb_connected = status
         .pointer("/usbDiagnostics/connected")
-        .and_then(Value::as_bool)
-        == Some(true);
+        .and_then(Value::as_bool);
     let target_ready = status
         .get("targetReady")
         .and_then(Value::as_bool)
-        .unwrap_or(usb_connected);
+        .unwrap_or(diagnostic_usb_connected.unwrap_or(false));
     let broker_target = status
         .get("brokerTarget")
         .cloned()
@@ -4962,6 +4961,15 @@ pub(crate) fn target_readiness_from_status(status: &Value) -> qc_relay_client::T
                 && target.generation <= 9_007_199_254_740_991
         });
     let invalid = status.get("brokerTarget").is_some() && broker_target.is_none();
+    // Optional diagnostic caches may be busy while native target selection
+    // freshly verifies a connected, synchronized physical controller. Retain
+    // that USB fact without inventing one for demo or capability-only status.
+    let usb_connected = diagnostic_usb_connected.unwrap_or_else(|| {
+        target_ready
+            && broker_target.as_ref().is_some_and(|target| {
+                target.source == qc_relay_client::BrokerTargetSource::Physical
+            })
+    });
     qc_relay_client::TargetReadiness {
         target_ready: target_ready && !invalid,
         usb_connected,
