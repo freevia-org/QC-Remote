@@ -21,14 +21,14 @@ use tokio_tungstenite::{
 };
 
 pub use qc_relay_protocol::{
-    is_valid_grant_id, pairing_owner_refusal, project_dispatch_error_details, DeviceError,
-    BrokerTarget, BrokerTargetSource, DeviceFrame, McpClientPresence, BACKOFF_JITTER_MS, COMPLETED_REQUEST_CACHE_SIZE,
-    CREDENTIAL_TTL_DAYS, DEVICE_CONNECTORS_PATH, DEVICE_CONNECT_PATH, DEVICE_PAIR_PATH,
-    DEVICE_REPLACEMENT_PATH, DEVICE_REVOKE_PATH, DEVICE_ROSTER_PATH, HOST_APPROVAL_TIMEOUT_MS,
-    MAXIMUM_BACKOFF_EXPONENT, MAXIMUM_BACKOFF_SECONDS, MAXIMUM_FAILURE_COUNT,
-    MAXIMUM_INVOKE_DEADLINE_MS, MAX_REQUEST_FRAME_BYTES, MAX_RESULT_FRAME_BYTES,
-    MINIMUM_CREDENTIAL_LENGTH, PAIRING_CODE_MAXIMUM_LENGTH, PAIRING_CODE_MINIMUM_LENGTH,
-    PROTOCOL_VERSION, READINESS_INTERVAL_MS,
+    is_valid_grant_id, pairing_owner_refusal, project_dispatch_error_details, BrokerTarget,
+    BrokerTargetSource, DeviceError, DeviceFrame, McpClientPresence, BACKOFF_JITTER_MS,
+    COMPLETED_REQUEST_CACHE_SIZE, CREDENTIAL_TTL_DAYS, DEVICE_CONNECTORS_PATH, DEVICE_CONNECT_PATH,
+    DEVICE_PAIR_PATH, DEVICE_REPLACEMENT_PATH, DEVICE_REVOKE_PATH, DEVICE_ROSTER_PATH,
+    HOST_APPROVAL_TIMEOUT_MS, MAXIMUM_BACKOFF_EXPONENT, MAXIMUM_BACKOFF_SECONDS,
+    MAXIMUM_FAILURE_COUNT, MAXIMUM_INVOKE_DEADLINE_MS, MAX_REQUEST_FRAME_BYTES,
+    MAX_RESULT_FRAME_BYTES, MINIMUM_CREDENTIAL_LENGTH, PAIRING_CODE_MAXIMUM_LENGTH,
+    PAIRING_CODE_MINIMUM_LENGTH, PROTOCOL_VERSION, READINESS_INTERVAL_MS,
 };
 
 mod generated_actions;
@@ -145,19 +145,31 @@ async fn adapters_without_target_pinning_refuse_guarded_calls_before_effects() {
     struct Adapter(std::sync::atomic::AtomicUsize);
     #[async_trait]
     impl DeviceAdapter for Adapter {
-        async fn ready(&self) -> bool { true }
+        async fn ready(&self) -> bool {
+            true
+        }
         async fn invoke(&self, _method: &str, _params: Value) -> Result<Value, DeviceError> {
             self.0.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(json!({}))
         }
     }
     let adapter = Adapter(std::sync::atomic::AtomicUsize::new(0));
-    let target = BrokerTarget { source: BrokerTargetSource::Demo, session_id: "demo-1".into(), generation: 1 };
-    let error = adapter.invoke_targeted("device.setMasterVolume", json!({}), Some(target), false).await.unwrap_err();
+    let target = BrokerTarget {
+        source: BrokerTargetSource::Demo,
+        session_id: "demo-1".into(),
+        generation: 1,
+    };
+    let error = adapter
+        .invoke_targeted("device.setMasterVolume", json!({}), Some(target), false)
+        .await
+        .unwrap_err();
     assert_eq!(error.code, "BROKER_TARGET_UNSUPPORTED");
     assert_eq!(error.details.unwrap()["requestSent"], false);
     assert_eq!(adapter.0.load(AtomicOrdering::SeqCst), 0);
-    adapter.invoke_targeted("device.setMasterVolume", json!({}), None, false).await.unwrap();
+    adapter
+        .invoke_targeted("device.setMasterVolume", json!({}), None, false)
+        .await
+        .unwrap();
     assert_eq!(adapter.0.load(AtomicOrdering::SeqCst), 1);
 }
 
@@ -401,7 +413,11 @@ pub trait DeviceAdapter: Send + Sync + 'static {
     /// Existing adapters retain their physical-only behavior.
     async fn target_readiness(&self) -> TargetReadiness {
         let ready = self.ready().await;
-        TargetReadiness { target_ready: ready, usb_connected: ready, broker_target: None }
+        TargetReadiness {
+            target_ready: ready,
+            usb_connected: ready,
+            broker_target: None,
+        }
     }
     async fn invoke(&self, method: &str, params: Value) -> Result<Value, DeviceError>;
     /// A target-aware adapter must pin this identity through its native queue.

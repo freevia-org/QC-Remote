@@ -66,9 +66,17 @@ pub enum DeviceFrame {
         #[serde(rename = "usbConnected")]
         usb_connected: bool,
         /// Effective target availability. Older hosts publish only USB state.
-        #[serde(rename = "targetReady", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "targetReady",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         target_ready: Option<bool>,
-        #[serde(rename = "brokerTarget", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "brokerTarget",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         broker_target: Option<BrokerTarget>,
         #[serde(
             rename = "mcpPresence",
@@ -95,7 +103,11 @@ pub enum DeviceFrame {
         #[serde(default)]
         params: Value,
         /// Pin the target selected by cloud admission, across network/local queues.
-        #[serde(rename = "expectedBrokerTarget", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "expectedBrokerTarget",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         expected_broker_target: Option<BrokerTarget>,
         /// How long the relay will wait for this call, in milliseconds.
         ///
@@ -181,7 +193,8 @@ mod tests {
             "type": "ready", "protocol": "qc-relay.v1", "usbConnected": false,
             "targetReady": true,
             "brokerTarget": {"source": "demo", "sessionId": "broker-1:demo-1", "generation": 3}
-        })).unwrap();
+        }))
+        .unwrap();
         let encoded = serde_json::to_value(frame).unwrap();
         assert_eq!(encoded["usbConnected"], false);
         assert_eq!(encoded["targetReady"], true);
@@ -191,8 +204,12 @@ mod tests {
             "type": "invoke", "id": "pinned", "action": "set_master_volume",
             "method": "device.setMasterVolume", "params": {"value": 0.1},
             "expectedBrokerTarget": encoded["brokerTarget"]
-        })).unwrap();
-        assert_eq!(serde_json::to_value(invoke).unwrap()["expectedBrokerTarget"], encoded["brokerTarget"]);
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(invoke).unwrap()["expectedBrokerTarget"],
+            encoded["brokerTarget"]
+        );
     }
 
     #[test]
