@@ -21,6 +21,16 @@ embedded in either app, and the routes it unlocks do not exist when
 
 ## MCP polling and request costs
 
+Unchanged foreground and background views must generate no recurring cloud
+reads. Display last-observed local state, identify stale observations, and refresh
+on explicit demand; command planning and guard reads must still use fresh device
+state. A retry interval is a safety limit, not a polling schedule.
+
+Hosts sample USB readiness locally and publish one initial `ready` frame per
+connection and subsequent readiness changes only. WebSocket protocol pings keep
+the connection alive without calling the Durable Object message handler or
+consuming request quota; repeated JSON readiness heartbeats do consume quota.
+
 Read status and the current preset on demand. Repeating those same observations
 while idle receives HTTP 429 with `Retry-After`: wait that long before retrying.
 The edge currently admits one idle read of each kind per credential every
