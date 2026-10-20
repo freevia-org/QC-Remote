@@ -533,6 +533,13 @@ pub trait DeviceAdapter: Send + Sync + 'static {
             broker_target: None,
         }
     }
+    /// Readiness for Ready-frame publication only. `None` means a healthy
+    /// status sample could not establish availability; retain the previous
+    /// publication without granting authority to any action or completion.
+    /// I/O failure and authoritative loss must still return `Some(unavailable)`.
+    async fn publication_readiness(&self) -> Option<TargetReadiness> {
+        Some(self.target_readiness().await)
+    }
     async fn invoke(&self, method: &str, params: Value) -> Result<Value, DeviceError>;
     /// A target-aware adapter must pin this identity through its native queue.
     /// Never silently drop a target guard on an adapter that cannot enforce it.
@@ -1472,15 +1479,16 @@ impl Client {
                 _ = readiness.tick() => {
                     let adapter = Arc::clone(&self.adapter);
                     let ready = tokio::select! {
-                        result = tokio::time::timeout(ADAPTER_READY_TIMEOUT, adapter.target_readiness()) => result.unwrap_or_default(),
+                        result = tokio::time::timeout(ADAPTER_READY_TIMEOUT, adapter.publication_readiness()) => result.unwrap_or(Some(TargetReadiness::default())),
                         changed = self.stop.changed() => {
                             if changed.is_err() || *self.stop.borrow() {
                                 let _ = send_close(&mut sink).await;
                                 return Ok(());
                             }
-                            TargetReadiness::default()
+                            Some(TargetReadiness::default())
                         }
                     };
+                    let Some(ready) = ready else { continue; };
                     if !readiness_due(last_readiness.as_ref(), &ready) { continue; }
                     let frame = ready.frame(self.mcp_presence.is_some(), self.gateway_api_version);
                     last_readiness = Some(ready);
@@ -1561,12 +1569,13 @@ impl Client {
                                         outcome = &mut work => break outcome,
                                         _ = readiness.tick() => {
                                             let ready = if invoking.load(AtomicOrdering::Acquire) {
-                                                last_readiness.clone().unwrap_or_default()
+                                                last_readiness.clone()
                                             } else {
-                                                tokio::time::timeout(ADAPTER_READY_TIMEOUT, self.adapter.target_readiness())
+                                                tokio::time::timeout(ADAPTER_READY_TIMEOUT, self.adapter.publication_readiness())
                                                     .await
-                                                    .unwrap_or_default()
+                                                    .unwrap_or(Some(TargetReadiness::default()))
                                             };
+                                            let Some(ready) = ready else { continue; };
                                             if !readiness_due(last_readiness.as_ref(), &ready) { continue; }
                                             let frame = ready.frame(self.mcp_presence.is_some(), self.gateway_api_version);
                                             last_readiness = Some(ready);
@@ -2823,6 +2832,140 @@ mod tests {
         )
         .unwrap();
         assert!(current.uses_current_identity_provider());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unknown_publication_keeps_physical_priority_but_never_authorizes_an_effect() {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        struct Adapter {
+            phase: AtomicUsize,
+            effects: AtomicUsize,
+        }
+        impl Adapter {
+            fn sample(&self) -> Option<TargetReadiness> {
+                let phase = self.phase.load(Ordering::SeqCst);
+                if phase == 1 {
+                    return None;
+                }
+                if phase == 3 {
+                    return Some(TargetReadiness::default());
+                }
+                Some(TargetReadiness {
+                    target_ready: true,
+                    usb_connected: phase != 4,
+                    broker_target: Some(BrokerTarget {
+                        source: if phase == 4 {
+                            BrokerTargetSource::Demo
+                        } else {
+                            BrokerTargetSource::Physical
+                        },
+                        session_id: if phase == 4 { "same-demo" } else { "physical" }.into(),
+                        generation: if phase == 4 { 3 } else { 1 },
+                    }),
+                })
+            }
+        }
+        #[async_trait]
+        impl DeviceAdapter for Adapter {
+            async fn ready(&self) -> bool {
+                self.target_readiness().await.target_ready
+            }
+            async fn target_readiness(&self) -> TargetReadiness {
+                self.sample().unwrap_or_default()
+            }
+            async fn publication_readiness(&self) -> Option<TargetReadiness> {
+                self.sample()
+            }
+            async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> {
+                panic!("guarded work must not fall back to an unguarded invoke")
+            }
+            async fn invoke_targeted(
+                &self,
+                _: &str,
+                _: Value,
+                expected: Option<BrokerTarget>,
+                _: bool,
+            ) -> Result<Value, DeviceError> {
+                let fresh = self.target_readiness().await;
+                if !fresh.target_ready || fresh.broker_target != expected {
+                    return Err(DeviceError::new(
+                        "TARGET_SUPERSEDED",
+                        "fresh target unavailable",
+                        false,
+                    ));
+                }
+                self.effects.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({}))
+            }
+        }
+        let adapter = Arc::new(Adapter {
+            phase: AtomicUsize::new(0),
+            effects: AtomicUsize::new(0),
+        });
+        let credentials: Credentials = serde_json::from_value(json!({
+            "endpoint":"https://relay.example.test", "deviceId":"fixture", "deviceCredential":"fixture-only"
+        })).unwrap();
+        let (state, _) = watch::channel(ConnectionState::Connected);
+        let (_access_tx, access) = watch::channel(AccessMode::Full);
+        let (stop_tx, stop) = watch::channel(false);
+        let mut client = Client::new(credentials, adapter.clone(), state, access, stop);
+        let (host_io, relay_io) = tokio::io::duplex(8192);
+        let socket = WebSocketStream::from_raw_socket(host_io, Role::Client, None).await;
+        let mut relay = WebSocketStream::from_raw_socket(relay_io, Role::Server, None).await;
+        let mut host = OwnedHost(tokio::spawn(async move { client.connected(socket).await }));
+        let initial = next_frame(&mut relay).await;
+        let Message::Text(initial) = initial else {
+            panic!("expected readiness")
+        };
+        let initial: Value = serde_json::from_str(&initial).unwrap();
+        assert_eq!(initial["brokerTarget"]["source"], "physical");
+        let quiet_window = Duration::from_millis(READINESS_INTERVAL_MS * 2 + 1);
+        adapter.phase.store(1, Ordering::SeqCst);
+        assert!(
+            tokio::time::timeout(quiet_window, relay.next())
+                .await
+                .is_err(),
+            "unknown must not publish a disconnect"
+        );
+        relay.send(Message::Text(json!({"type":"invoke", "id":"uncertain", "action":"set_master_volume", "method":"device.setMasterVolume", "params":{}, "deadlineMs":1000, "expectedBrokerTarget":initial["brokerTarget"]}).to_string().into())).await.unwrap();
+        let result = result_frame(&mut relay, "uncertain").await;
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["error"]["code"], "TARGET_SUPERSEDED");
+        assert_eq!(adapter.effects.load(Ordering::SeqCst), 0);
+        adapter.phase.store(2, Ordering::SeqCst);
+        assert!(
+            tokio::time::timeout(quiet_window, relay.next())
+                .await
+                .is_err(),
+            "same physical must not publish again"
+        );
+        adapter.phase.store(3, Ordering::SeqCst);
+        let Message::Text(lost) = next_frame(&mut relay).await else {
+            panic!("expected loss")
+        };
+        let lost: Value = serde_json::from_str(&lost).unwrap();
+        assert_eq!(lost["targetReady"], false);
+        assert!(tokio::time::timeout(quiet_window, relay.next())
+            .await
+            .is_err());
+        adapter.phase.store(4, Ordering::SeqCst);
+        let Message::Text(demo) = next_frame(&mut relay).await else {
+            panic!("expected demo")
+        };
+        let demo: Value = serde_json::from_str(&demo).unwrap();
+        assert_eq!(demo["brokerTarget"]["source"], "demo");
+        assert_eq!(demo["usbConnected"], false);
+        assert!(tokio::time::timeout(quiet_window, relay.next())
+            .await
+            .is_err());
+        stop_tx.send(true).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), &mut host.0)
+                .await
+                .unwrap()
+                .unwrap(),
+            Ok(())
+        );
     }
 
     #[tokio::test(start_paused = true)]
