@@ -2,13 +2,18 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { qcDemoDeviceAssets } from "../../packages/typescript/qc-ui/vite-demo-device-assets.mjs";
 
 const repositoryPath = (path: string) => fileURLToPath(new URL(`../../${path}`, import.meta.url));
 const androidSource = repositoryPath("apps/android/src");
 const publicRoot = repositoryPath("");
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), qcDemoDeviceAssets({
+    parameterScalesSource: repositoryPath("docs/reference/qc-live-parameter-scales.json"),
+    parameterDefaultsSource: repositoryPath("docs/reference/qc-live-parameter-defaults.json"),
+    referenceOutput: resolve("dist/reference")
+  })],
   publicDir: false,
   base: "./",
   resolve: {

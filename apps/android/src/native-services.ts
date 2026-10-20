@@ -3,6 +3,8 @@ import { createGatewayClientTransport, withDeviceConnectionSource, type GatewayT
 import { createQcGatewayTransport, type ControlAccessMode, type PublicRelayPort, type PublicRelayState, type PublicRelayStatus, type PublicRelayUsage, type QcDeviceTransport, type QcStateUpdate } from "@qc-remote/core";
 import { QC_BRAND } from "@qc-remote/theme";
 import type { VirtualDeviceStorage } from "@qc-remote/ui";
+import { readAndroidPhysicalTarget, type AndroidGatewayRuntimeStatus } from "./android-gateway-target.ts";
+import { createAndroidGatewayContext } from "./android-gateway-context.ts";
 
 export type { QcStateUpdate } from "@qc-remote/core";
 
@@ -30,15 +32,30 @@ export type AndroidUsbDiagnostics = {
 };
 
 interface QcUsbNativePlugin {
+  publishDemoProvider(options: { sessionId: string | null; generation: number }): Promise<void>;
+  admitDemoRequest(options: { id: string; sessionId: string; generation: number; brokerTarget?: AndroidDemoRequest["brokerTarget"] }): Promise<{ admitted: boolean }>;
+  completeDemoRequest(options: { id: string; sessionId: string; generation: number; result?: Record<string, unknown>; error?: { code: string; message: string } }): Promise<void>;
+  addListener(eventName: "qcDemoRequest", listener: (request: AndroidDemoRequest) => void): Promise<PluginListenerHandle>;
   internetForwarding(): Promise<{ enabled: boolean }>;
   setInternetForwarding(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
   scan(): Promise<{ devices: QcUsbDevice[]; connected: boolean; synchronized: boolean }>;
   connect(options?: { allowPermissionPrompt?: boolean }): Promise<{ connected: boolean; synchronized: boolean; name: string; deviceId: number }>;
   disconnect(): Promise<void>;
   diagnostics(): Promise<AndroidUsbDiagnostics>;
-  gatewayInvoke<T>(options: { method: string; params?: Record<string, unknown>; expectedState?: Record<string, unknown> }): Promise<T>;
+  gatewayInvoke<T>(options: { method: string; params?: Record<string, unknown>; expectedState?: Record<string, unknown>; expectedBrokerTarget?: AndroidDemoRequest["brokerTarget"]; requireAcceptedBrokerTarget?: boolean }): Promise<T>;
   addListener(eventName: "qcStateBatch", listener: (frame: NativeStateFrame<QcStateUpdate>) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "qcConnection", listener: (status: { state: "available" | "disconnected"; name?: string }) => void): Promise<PluginListenerHandle>;
+}
+
+export interface AndroidDemoRequest {
+  id: string;
+  sessionId: string;
+  generation: number;
+  sequence: number;
+  brokerTarget: { source: "physical" | "demo"; sessionId: string; generation: number };
+  method: string;
+  params: Record<string, unknown>;
+  expectedState: Record<string, unknown>;
 }
 
 interface ScreenWakeNativePlugin {
@@ -119,8 +136,26 @@ export const publicRelay: PublicRelayPort = {
   },
 };
 
+const androidGatewayContext = createAndroidGatewayContext(<T,>(request: Parameters<QcUsbNativePlugin["gatewayInvoke"]>[0]) => QcUsbNative.gatewayInvoke<T>(request));
+
+/** Commit only a UI-adopted physical context; status discovery never changes it. */
+export function acceptAndroidGatewayBrokerTarget(target: AndroidDemoRequest["brokerTarget"] | undefined): void {
+  androidGatewayContext.accept(target);
+}
+
+export function readAndroidGatewayTarget() {
+  return readAndroidPhysicalTarget({
+    status: () => QcUsbNative.gatewayInvoke<AndroidGatewayRuntimeStatus>({ method: "system.status" }),
+    snapshot: (target) => createGatewayClientTransport<GatewayTransport>(
+      <T,>(method: string, params?: Record<string, unknown>) => QcUsbNative.gatewayInvoke<T>({ method, params, expectedBrokerTarget: target }),
+      "rpc"
+    ).currentSnapshot(),
+    accept: acceptAndroidGatewayBrokerTarget
+  });
+}
+
 export const androidGatewayTransport = withDeviceConnectionSource(createGatewayClientTransport<GatewayTransport>(
-  <T,>(method: string, params?: Record<string, unknown>) => QcUsbNative.gatewayInvoke<T>({ method, params }),
+  androidGatewayContext.invoke,
   "rpc"
 ));
 

@@ -8,6 +8,20 @@ import org.json.JSONObject;
 import org.junit.Test;
 
 public class RelayFrameHandlerTest {
+    @Test public void expectedBrokerTargetIsPreservedAndInvalidShapesAreRefused() throws Exception {
+        RelayFrameHandler handler = new RelayFrameHandler();
+        QcBrokerTarget target = new QcBrokerTarget("demo", "broker-session", 12);
+        JSONObject request = new JSONObject().put("type", "invoke").put("id", "target")
+            .put("method", "device.setTempo").put("params", new JSONObject().put("bpm", 123))
+            .put("expectedBrokerTarget", target.json());
+        RelayFrameHandler.Decision decision = handler.inspect(request.toString(), ALLOW_ALL, ALLOW_ALL);
+        assertEquals(RelayFrameHandler.Kind.ACCEPT, decision.kind);
+        assertTrue(target.same(decision.expectedBrokerTarget));
+        request.put("id", "bad-target").put("expectedBrokerTarget", "demo");
+        assertEquals("INVALID_ARGUMENT", handler.inspect(request.toString(), ALLOW_ALL, ALLOW_ALL).errorCode);
+        request.put("expectedBrokerTarget", target.json());
+        assertEquals("REPLAYED_REQUEST", handler.inspect(request.toString(), ALLOW_ALL, ALLOW_ALL).errorCode);
+    }
     private static final RelayFrameHandler.MethodPolicy ALLOW_ALL = method -> true;
     private static final RelayFrameHandler.MethodPolicy DENY_ALL = method -> false;
 

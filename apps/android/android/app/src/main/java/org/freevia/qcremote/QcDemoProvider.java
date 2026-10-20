@@ -1,0 +1,171 @@
+package org.freevia.qcremote;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
+import org.json.JSONObject;
+
+/** A foreground WebView owns the demo. Requests never fall through to USB. */
+final class QcDemoProvider {
+    private final BooleanSupplier physicalReady;
+    private final LongSupplier physicalGeneration;
+    private final Supplier<QcBrokerTarget> currentTarget;
+    private final Map<String, Pending> pending = new HashMap<>();
+    private String sessionId;
+    private long providerGeneration;
+    private long sequence;
+    private boolean foreground = true;
+    private static final int MAX_PENDING = 8;
+
+    private static final class Pending {
+        final String session;
+        final String method;
+        final long generation;
+        final QcBrokerTarget target;
+        final CompletableFuture<JSONObject> result = new CompletableFuture<>();
+        Pending(String session, long generation, String method, QcBrokerTarget target) {
+            this.session = session; this.generation = generation; this.method = method; this.target = target;
+        }
+    }
+
+    QcDemoProvider(BooleanSupplier physicalReady, LongSupplier physicalGeneration, Supplier<QcBrokerTarget> currentTarget) {
+        this.physicalReady = physicalReady;
+        this.physicalGeneration = physicalGeneration;
+        this.currentTarget = currentTarget;
+    }
+
+    void publish(String session, long generation) {
+        Pending[] held;
+        synchronized (this) {
+            if (java.util.Objects.equals(sessionId, session) && providerGeneration == generation) return;
+            held = drain();
+            sessionId = session;
+            providerGeneration = generation;
+            sequence = 0;
+        }
+        retire(held);
+    }
+
+    void foreground(boolean value) {
+        Pending[] held;
+        synchronized (this) {
+            held = foreground != value ? drain() : new Pending[0];
+            foreground = value;
+        }
+        retire(held);
+    }
+
+    synchronized boolean available() {
+        return foreground && sessionId != null && !physicalReady.getAsBoolean();
+    }
+
+    static final class Registration {
+        final String id;
+        final long generation;
+        Registration(String id, long generation) { this.id = id; this.generation = generation; }
+    }
+    synchronized Registration registration() { return sessionId == null ? null : new Registration(sessionId, providerGeneration); }
+    synchronized String pendingMethod(String id) { Pending request = pending.get(id); return request == null ? null : request.method; }
+
+    synchronized boolean canDeliver(String id) {
+        Pending request = pending.get(id);
+        return current(request);
+    }
+
+    private boolean current(Pending request) {
+        return request != null && available() && request.session.equals(sessionId)
+            && request.generation == physicalGeneration.getAsLong() && request.target.same(currentTarget.get());
+    }
+
+    synchronized boolean admit(String id, String session, long generation, QcBrokerTarget expectedTarget) {
+        Pending request = pending.get(id);
+        return current(request) && request.session.equals(session) && providerGeneration == generation
+            && (expectedTarget == null || request.target.same(expectedTarget));
+    }
+
+    CompletableFuture<JSONObject> invoke(String method, JSONObject params,
+            JSONObject expected, Consumer<JSONObject> emit) {
+        String id = UUID.randomUUID().toString();
+        Pending request;
+        JSONObject envelope;
+        synchronized (this) {
+            if (!available()) return failed("NOT_CONNECTED", "The foreground demo provider is unavailable.");
+            if (pending.size() >= MAX_PENDING) return failed("BUSY", "The demo provider is at its request limit.");
+            QcBrokerTarget target = currentTarget.get();
+            if (target == null || !"demo".equals(target.source))
+                return failed("TARGET_SUPERSEDED", "The demo broker target is no longer active.");
+            request = new Pending(sessionId, physicalGeneration.getAsLong(), method, target);
+            try {
+                envelope = new JSONObject().put("id", id).put("sessionId", sessionId)
+                    .put("generation", providerGeneration).put("sequence", ++sequence)
+                    .put("brokerTarget", target.json())
+                    .put("method", method).put("params", params).put("expectedState", expected);
+            } catch (Exception malformed) {
+                return failed("INVALID_PARAMS", "The demo request could not be encoded.");
+            }
+            pending.put(id, request);
+        }
+        try {
+            emit.accept(envelope);
+        } catch (Exception error) {
+            synchronized (this) { pending.remove(id); }
+            request.result.completeExceptionally(error);
+        }
+        return request.result;
+    }
+
+    void complete(String id, String session, long generation, JSONObject result, JSONObject error) {
+        Pending request;
+        boolean current;
+        synchronized (this) {
+            request = pending.get(id);
+            if (request == null || !request.session.equals(session) || providerGeneration != generation) return;
+            pending.remove(id);
+            current = current(request);
+        }
+        if (!current) {
+            request.result.completeExceptionally(changed());
+        } else if (error != null) {
+            request.result.completeExceptionally(new RelayException(
+                error.optString("code", "DEVICE_ERROR"), error.optString("message", "The demo request failed.")));
+        } else if (result == null) {
+            request.result.completeExceptionally(new RelayException("MALFORMED_RESPONSE", "The demo returned no result."));
+        } else request.result.complete(result);
+    }
+
+    void expire(CompletableFuture<JSONObject> invocation) {
+        synchronized (this) {
+            String key = null;
+            for (Map.Entry<String, Pending> entry : pending.entrySet())
+                if (entry.getValue().result == invocation) { key = entry.getKey(); break; }
+            if (key == null) return;
+            pending.remove(key);
+        }
+        invocation.completeExceptionally(new RelayException("DEVICE_OUTCOME_UNKNOWN", "The demo request expired; do not replay it."));
+    }
+
+    private Pending[] drain() {
+        Pending[] held = pending.values().toArray(new Pending[0]);
+        pending.clear();
+        return held;
+    }
+
+    private static void retire(Pending[] held) {
+        for (Pending request : held) request.result.completeExceptionally(changed());
+    }
+
+    private static RelayException changed() {
+        return new RelayException("DEVICE_IDENTITY_MISMATCH", "The active demo or physical device changed; read the current target again.");
+    }
+
+    private static CompletableFuture<JSONObject> failed(String code, String message) {
+        CompletableFuture<JSONObject> result = new CompletableFuture<>();
+        result.completeExceptionally(new RelayException(code, message));
+        return result;
+    }
+}

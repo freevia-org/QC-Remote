@@ -2,13 +2,13 @@ import { RemoteAccountDeletionLink } from "@qc-remote/ui";
 import { openRemoteAccountDeletionPage } from "./native-services";
 import { Capacitor } from "@capacitor/core";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { QC_SCENE_COUNT } from "@qc-remote/client";
+import { brokerTargetKey, QC_SCENE_COUNT, type BrokerTarget } from "@qc-remote/client";
 import { demoSnapshot, footswitchLeds, sceneLetter, type ControlAccessMode, type PublicRelayUsage } from "@qc-remote/core";
 import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_LEGAL, QC_LEGAL_DOCUMENTS, QC_VISUAL_ASSETS } from "@qc-remote/theme";
 import { captureGatewaySession, useDeviceObservationPolicy, ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, isConnectingPlaceholder, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, qcHardwareSwitchGestureKey, QcUiIcon, readControlAccessMode, refreshGridSnapshot, serializeDemoLibrary, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, useQcFollowSetting, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
-import { androidGatewayTransport, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage } from "./native-services";
+import { androidGatewayTransport, acceptAndroidGatewayBrokerTarget, readAndroidGatewayTarget, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage } from "./native-services";
 import { useAndroidPrompts } from "./use-android-prompts";
 import { useAndroidSessionBlocks } from "./use-android-session-blocks";
 import { OwnedAttemptLatch } from "./owned-attempt-latch.ts";
@@ -18,6 +18,8 @@ import { refreshOwnedNativeSnapshot } from "./native-session-refresh.ts";
 import { createBrowserPairingPoll } from "./browser-pairing-poll.ts";
 import { createControlAccessChange, controlAccessPresentation } from "./control-access-change.ts";
 import { openOwnedLooper } from "./open-owned-looper.ts";
+import { attachNativeDemoProvider } from "./demo-provider-bridge.ts";
+import { mobileIndicatorConnection, refreshMobileTarget } from "./mobile-target-binding.ts";
 import appPackage from "../package.json";
 import { qcStreamRestartClearsBulkOperation } from "@qc-remote/ui";
 
@@ -40,6 +42,11 @@ export function App() {
   const [remoteRefreshPending, setRemoteRefreshPending] = useState(false);
   const native = Capacitor.isNativePlatform();
   const iosPlatform = Capacitor.getPlatform() === "ios";
+  const acceptedPhysicalContext = useRef<BrokerTarget | undefined>(undefined);
+  const clearPhysicalContext = useCallback(() => {
+    if (!iosPlatform) { acceptedPhysicalContext.current = undefined; acceptAndroidGatewayBrokerTarget(undefined); }
+  }, [iosPlatform]);
+  useEffect(() => { if (native && !iosPlatform) clearPhysicalContext(); return () => { if (native && !iosPlatform) clearPhysicalContext(); }; }, [native, iosPlatform, clearPhysicalContext]);
   const qcController = useQcController(demoSnapshot);
   const {
     snapshot, snapshotRef, setSnapshot, updateSnapshot,
@@ -58,7 +65,7 @@ export function App() {
   const [parameterMenuInitiallyOpen, setParameterMenuInitiallyOpen] = useState(false);
   const connectionPending = false; // USB connection progress retains its existing usbBusy owner.
   const mutationBusy = useSyncExternalStore(qcController.lifetime.mutations.subscribe, qcController.lifetime.mutations.snapshot);
-  const devicePending = connectionPending || mutationBusy;
+  const devicePending = connectionPending || mutationBusy || remoteRefreshPending;
   const setWorkflowPending = useCallback((_pending: boolean | ((current: boolean) => boolean)) => {}, []);
   const appOperationMounted = useRef(true);
   const appOperationEpoch = useRef(0);
@@ -72,7 +79,12 @@ export function App() {
     demo: true,
     source: "device"
   });
-  const { connection, setConnection, transition: transitionConnection, attempts: connectionAttempts, busy: usbBusy } = deviceConnection;
+  const { connection, setConnection, transition: transitionBase, attempts: connectionAttempts, busy: usbBusy } = deviceConnection;
+  const transitionConnection = useCallback((phase: Parameters<typeof transitionBase>[0], detail?: string) => {
+    transitionBase(phase, detail);
+    const target = acceptedPhysicalContext.current;
+    if (!iosPlatform && target && (phase === "connected" || phase === "syncing")) setConnection(state => ({ ...state, brokerTarget: target }));
+  }, [transitionBase, setConnection, iosPlatform]);
   const [hardwareConnected, setHardwareConnected] = useState(false);
   const [internetForwarding, setInternetForwarding] = useState<boolean>();
   const [internetForwardingPending, setInternetForwardingPending] = useState(false);
@@ -102,12 +114,18 @@ export function App() {
   const { deviceSuspended, deviceBulkBlocking, setDeviceSuspended, setDeviceBulkBlocking, resetSessionBlocks } = useAndroidSessionBlocks();
   const [catalogRevision, setCatalogRevision] = useState(0);
   const demoActive = connection.source === "virtual" && connection.phase === "ready";
+  const hostDemoActive = connection.brokerTarget?.source === "demo" && connection.phase === "ready";
+  const physicalSelected = hardwareConnected && connection.phase === "ready" && !demoActive && !hostDemoActive;
+  const physicalSelectedRef = useRef(physicalSelected);
+  physicalSelectedRef.current = physicalSelected;
+  const targetIdentity = brokerTargetKey(connection.brokerTarget) ?? "";
+  const targetIdentityRef = useRef(targetIdentity);
+  targetIdentityRef.current = targetIdentity;
   const sessionReady = demoActive || (hardwareConnected && !deviceSuspended && !deviceBulkBlocking);
   const [demoPending, setDemoPending] = useState(false);
   const demoStartInFlight = useRef(false);
   const demoPasteInFlight = useRef(false);
-  // Automatic fallback Demo yields to a newly detected QC. A Demo session the
-  // user deliberately selected stays active until they select USB.
+  // A usable physical QC always takes precedence, including after an explicit demo selection.
   const demoCanYieldToDevice = useRef(true);
   // Native availability may be published while connect() is still in flight.
   // Remember that edge and retry once if the owning attempt does not connect.
@@ -136,8 +154,8 @@ export function App() {
   const [browserRelayPairing, setBrowserRelayPairing] = useState<{ expiresAt: number }>();
   const [browserRelayPairingPending, setBrowserRelayPairingPending] = useState(false);
   const remotePresentation = qcRelayPresentation(relayWorkflow.status, Boolean(browserRelayPairing));
-  const usbIndicatorPhase = qcConnectionIndicatorPhase(connection, hardwareConnected && !demoActive, null, { actionRequired: usbWritesQuarantined });
-  const usbStatusText = usbIndicatorPhase === "ready"
+  const usbIndicatorPhase = qcConnectionIndicatorPhase(mobileIndicatorConnection(connection), hardwareConnected && !demoActive, null, { actionRequired: usbWritesQuarantined });
+  const usbStatusText = hostDemoActive ? "Paired-host demo ready" : usbIndicatorPhase === "ready"
     ? "Quad Cortex ready"
     : usbIndicatorPhase === "syncing"
       ? "Quad Cortex synchronizing"
@@ -211,7 +229,7 @@ export function App() {
     resetScreenDimmer();
     return () => { if (screenDimTimer.current !== undefined) window.clearTimeout(screenDimTimer.current); };
   }, [keepScreenAwake, native, resetScreenDimmer, hardwareConnected]);
-  const deviceCommandSessionKey = `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`;
+  const deviceCommandSessionKey = `${demoDeviceSession.source}:${targetIdentity}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`;
   const workflows = useQcWorkflows({
     commandSessionKey: deviceCommandSessionKey,
     controller: qcController,
@@ -275,12 +293,13 @@ export function App() {
   const deviceWorkflowSession = {
     lifetime: qcController.lifetime,
     commandSessionKey: deviceCommandSessionKey,
-    sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
+    sessionKey: `${demoDeviceSession.source}:${targetIdentity}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
       const attempt = connectionAttempts.capture();
       const source = demoDeviceSession.source;
       const stream = nativeStateStream.current;
-      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+      const target = targetIdentityRef.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream && targetIdentityRef.current === target;
     }
   };
   const deviceSettingsWorkflow = useDeviceSettingsWorkflow({
@@ -288,12 +307,13 @@ export function App() {
     gateway: activeGateway,
     ioSettingsError: snapshot.ioSettingsError,
     lifetime: qcController.lifetime,
-    sessionKey: `${connection.source}:${snapshot.stateVersion?.session ?? ""}:${hardwareConnected}:${nativeStateStream.current ?? ""}`,
+    sessionKey: `${connection.source}:${targetIdentity}:${snapshot.stateVersion?.session ?? ""}:${hardwareConnected}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
       const attempt = connectionAttempts.capture();
       const source = demoDeviceSession.source;
       const stream = nativeStateStream.current;
-      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+      const target = targetIdentityRef.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream && targetIdentityRef.current === target;
     },
     connected: corpusFixtureEnabled || sessionReady,
     pending: devicePending,
@@ -318,7 +338,8 @@ export function App() {
       const attempt = connectionAttempts.capture();
       const source = demoDeviceSession.source;
       const stream = nativeStateStream.current;
-      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+      const target = targetIdentityRef.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream && targetIdentityRef.current === target;
     }
   });
   const modesWorkflow = useModesConfigurationWorkflow({ ...deviceWorkflowSession, gateway: activeGateway, connected: sessionReady, pending: devicePending, setPending: setWorkflowPending, notice: setNotice, fail: workflowFailed });
@@ -350,12 +371,13 @@ export function App() {
     lifetime: qcController.lifetime,
     commandSessionKey: deviceWorkflowSession.commandSessionKey,
     gateway: activeGateway,
-    sessionKey: `${demoDeviceSession.source}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
+    sessionKey: `${demoDeviceSession.source}:${targetIdentity}:${snapshot.stateVersion?.session ?? ""}:${sessionReady}:${nativeStateStream.current ?? ""}`,
     captureSessionCurrent: () => {
       const attempt = connectionAttempts.capture();
       const source = demoDeviceSession.source;
       const stream = nativeStateStream.current;
-      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream;
+      const target = targetIdentityRef.current;
+      return () => attempt.current() && demoDeviceSession.source === source && nativeStateStream.current === stream && targetIdentityRef.current === target;
     },
     snapshot,
     connected: sessionReady,
@@ -442,9 +464,10 @@ export function App() {
         }
       }
       if (states.some((state) => state.kind === "preset")) {
+        if (!iosPlatform && !acceptedPhysicalContext.current && activeSourceRef.current !== "virtual") { void attemptUsbConnection(); return; }
         setHardwareConnected(true);
         if (activeSourceRef.current === "virtual") {
-          if (demoCanYieldToDevice.current) void resumeHardwareDeviceRef.current(true);
+          if (demoCanYieldToDevice.current && !resumeHardwareInFlight.current) { resetCommands(); void resumeHardwareDeviceRef.current(true); }
           return;
         }
         presetSynchronized.current = true;
@@ -470,11 +493,12 @@ export function App() {
     usbRetryRequested.current = false;
     const fromDemo = activeSourceRef.current === "virtual";
     const attempt = connectionAttempts.begin();
+    clearPhysicalContext(); resetCommands(); setHardwareConnected(false);
     if (!usbSessionReady.current) resetSessionBlocks();
     if (fromDemo) {
       demoDeviceSession.useDevice();
       activeSourceRef.current = "device";
-      demoCanYieldToDevice.current = false;
+      demoCanYieldToDevice.current = true;
       deviceHistory.clear();
       presetWorkflow.resetCache();
       setSelectedBlockId("");
@@ -491,11 +515,26 @@ export function App() {
       // the app is running already puts Android's own confirmation on screen,
       // and asking as well showed two prompts for one plug. The system's grant
       // comes back as a fresh availability event, which retries this.
+      if (observationPolicy.readTarget) {
+        const ready = await applyRemoteObservation(() => appOperationMounted.current && attempt.current());
+        usbSessionReady.current = ready;
+        if (announce && attempt.current()) setNotice(ready ? "Paired-host device refreshed." : "The paired host has no available device. Your sign-in is saved.");
+        return;
+      }
       const result = await QcUsbNative.connect({ allowPermissionPrompt: announce });
       if (!attempt.current()) return;
+      if (!iosPlatform) {
+        const ready = await applyNativeObservation(() => appOperationMounted.current && attempt.current());
+        usbSessionReady.current = ready;
+        if (!ready && attempt.current()) {
+          setHardwareConnected(false); transitionConnection("absent");
+          void startDemoDeviceRef.current("No synchronized physical Quad Cortex was available.");
+        } else if (announce && attempt.current()) setNotice("Quad Cortex connected directly over USB.");
+        return;
+      }
       usbSessionReady.current = true;
       setHardwareConnected(true);
-      if (observationPolicy.mode === "on-demand") await qcController.readSnapshot(() => androidGatewayTransport.currentSnapshot());
+      if (observationPolicy.mode === "on-demand") await qcController.readSnapshot(() => androidGatewayTransport.currentSnapshot(), { sessionRecovery: true });
       if (!attempt.current()) return;
       if (result.synchronized) presetSynchronized.current = true;
       transitionConnection(presetSynchronized.current ? "connected" : "syncing");
@@ -517,7 +556,7 @@ export function App() {
           if (attempt.current()) setNotice(`${primary} ${diagnostics}`);
         } catch { if (attempt.current()) setNotice(primary); }
       }
-      if (fromDemo && attempt.current()) void startDemoDeviceRef.current(primary);
+      if (fromDemo && attempt.current() && observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current(primary);
     } finally {
       const released = connectAttemptLatch.current.release(latchOwner);
       if (released && usbRetryRequested.current && !usbSessionReady.current
@@ -538,6 +577,7 @@ export function App() {
         if (state === "available") {
           if (activeSourceRef.current !== "virtual" || demoCanYieldToDevice.current) void attemptUsbConnection();
         } else {
+          clearPhysicalContext();
           connectionAttempts.invalidate();
           connectAttemptLatch.current.clear();
           usbRetryRequested.current = false;
@@ -551,7 +591,7 @@ export function App() {
           resetCommands();
           if (activeSourceRef.current !== "virtual") {
             transitionConnection("absent");
-            void startDemoDeviceRef.current("The Quad Cortex was disconnected.");
+            if (observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current("The Quad Cortex was disconnected.");
           }
         }
       }),
@@ -559,7 +599,7 @@ export function App() {
         if (cancelled) return;
         setHardwareConnected(true);
         if (activeSourceRef.current === "virtual") {
-          if (demoCanYieldToDevice.current) void resumeHardwareDeviceRef.current(true);
+          if (demoCanYieldToDevice.current && !resumeHardwareInFlight.current) { resetCommands(); void resumeHardwareDeviceRef.current(true); }
           return;
         }
         consumeQcNativeStateFrame(frame, {
@@ -573,6 +613,7 @@ export function App() {
           // screen rejoins the device where it actually is.
           onStreamRestart: (reason) => {
             resetCommands();
+            if (!iosPlatform && reason === "restarted") { clearPhysicalContext(); setHardwareConnected(false); void attemptUsbConnection(); }
             if (qcStreamRestartClearsBulkOperation(reason)) {
               resetSessionBlocks();
             }
@@ -587,6 +628,7 @@ export function App() {
       const { devices, connected, synchronized } = await QcUsbNative.scan();
       if (cancelled || !scanAttempt.current()) return;
       if (connected) {
+        if (!iosPlatform) { void attemptUsbConnection(); return; }
         usbSessionReady.current = true;
         setHardwareConnected(true);
         // Raise, never lower -- as the connect path at attemptUsbConnection
@@ -599,7 +641,7 @@ export function App() {
         // time: connected, streaming, and showing disconnected.
         if (synchronized) presetSynchronized.current = true;
         if (activeSourceRef.current === "virtual") {
-          if (demoCanYieldToDevice.current) void resumeHardwareDeviceRef.current(true);
+          if (demoCanYieldToDevice.current && !resumeHardwareInFlight.current) { resetCommands(); void resumeHardwareDeviceRef.current(true); }
         } else {
           transitionConnection(presetSynchronized.current ? "connected" : "syncing");
         }
@@ -609,7 +651,7 @@ export function App() {
         setHardwareConnected(false);
         if (activeSourceRef.current !== "virtual") {
           transitionConnection("absent");
-          void startDemoDeviceRef.current("No Quad Cortex was found.");
+          if (observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current("No Quad Cortex was found.");
         }
         return;
       }
@@ -617,7 +659,7 @@ export function App() {
     }).catch((error) => {
       if (!cancelled && scanAttempt.current()) {
         transitionConnection("error");
-        void startDemoDeviceRef.current(error instanceof Error ? error.message : "USB discovery failed.");
+        if (observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current(error instanceof Error ? error.message : "USB discovery failed.");
       }
     });
     return () => {
@@ -724,7 +766,9 @@ export function App() {
 
   const startDemoDevice = async (reason?: string) => {
     if (!native || corpusFixtureEnabled || demoStartInFlight.current || demoActive) return;
+    if (hardwareConnected && connection.phase === "ready" && !hostDemoActive) { setNotice("The connected Quad Cortex takes precedence over the local demo."); return; }
     if (reason === undefined) usbRetryRequested.current = false;
+    clearPhysicalContext();
     const attempt = connectionAttempts.begin();
     demoStartInFlight.current = true;
     setDemoPending(true);
@@ -734,7 +778,7 @@ export function App() {
       if (!opened || !attempt.current()) return;
       const { connection: state, snapshot: current } = opened;
       activeSourceRef.current = "virtual";
-      demoCanYieldToDevice.current = reason !== undefined;
+      demoCanYieldToDevice.current = true;
       deviceHistory.clear();
       presetWorkflow.resetCache();
       setConnection(state);
@@ -773,6 +817,7 @@ export function App() {
     try {
       if (!native || devicePending || demoPending || resumeHardwareInFlight.current) return;
       resumeHardwareInFlight.current = true;
+      if (!iosPlatform || observationPolicy.readTarget) { await attemptUsbConnection(true); return; }
       if (!hardwareConnected && !knownConnected) {
         try { await attemptUsbConnection(true); }
         finally { resumeHardwareInFlight.current = false; }
@@ -784,7 +829,7 @@ export function App() {
         if (!attempt.current() || !operationCurrent()) return;
         demoDeviceSession.useDevice();
         activeSourceRef.current = "device";
-        demoCanYieldToDevice.current = false;
+        demoCanYieldToDevice.current = true;
         deviceHistory.clear();
         presetWorkflow.resetCache();
         setSnapshot(current);
@@ -798,7 +843,7 @@ export function App() {
       } finally {
         resumeHardwareInFlight.current = false;
       }
-    } finally { operationLease.release(); }
+    } finally { resumeHardwareInFlight.current = false; operationLease.release(); }
   };
   resumeHardwareDeviceRef.current = resumeHardwareDevice;
 
@@ -809,6 +854,7 @@ export function App() {
       return;
     }
     connectionAttempts.begin();
+    clearPhysicalContext();
     demoDeviceSession.useDevice();
     activeSourceRef.current = "device";
     deviceHistory.clear();
@@ -1043,18 +1089,83 @@ export function App() {
     pending: controlAccessChangePending, busy: devicePending
   });
 
+  useEffect(() => {
+    // iOS is an MCP client. Only Android publishes its foreground local demo.
+    const gateway = demoDeviceSession.virtual;
+    if (!native || iosPlatform || !gateway) return;
+    const provider = attachNativeDemoProvider({
+      port: QcUsbNative, gateway,
+      current: () => appOperationMounted.current && !physicalSelectedRef.current && demoDeviceSession.virtual === gateway,
+      sessionId: () => crypto.randomUUID(), visible: () => document.visibilityState !== "hidden",
+      subscribeVisibility: changed => { document.addEventListener("visibilitychange", changed); return () => document.removeEventListener("visibilitychange", changed); },
+      onResult: async (transport, current) => {
+        if (activeSourceRef.current !== "virtual") return; // Keep a hidden demo's edits in its existing store.
+        await qcController.readSnapshot(async () => {
+          const value = await transport.currentSnapshot();
+          if (!current() || activeSourceRef.current !== "virtual") throw new Error("The demo provider changed before its view refresh completed.");
+          return value;
+        }, { sessionRecovery: true });
+      },
+      onError: () => { if (appOperationMounted.current) setNotice("The local demo is open, but its MCP provider is unavailable."); }
+    });
+    void provider.ready.catch(() => { if (appOperationMounted.current) setNotice("The local demo is open, but its MCP provider is unavailable."); });
+    return () => { void provider.dispose(); };
+  }, [native, iosPlatform, demoActive, physicalSelected, demoDeviceSession, snapshot.stateVersion?.session, qcController.readSnapshot]);
+
+  const applyNativeObservation = async (current: () => boolean) => {
+    const observation = await readAndroidGatewayTarget();
+    if (!current()) throw new Error("The physical connection observation was superseded.");
+    if (observation.connection.phase !== "ready" || !observation.snapshot) { clearPhysicalContext(); return false; }
+    return refreshMobileTarget({
+      read: async () => observation, current, origin: "native-gateway", provider: androidGatewayTransport,
+      identity: state => brokerTargetKey(state.brokerTarget)!,
+      reset: () => { resetCommands(); deviceHistory.clear(); presetWorkflow.resetCache(); },
+      select: () => { demoDeviceSession.useDevice(); activeSourceRef.current = "device"; setSelectedBlockId(""); },
+      adopt: value => qcController.readSnapshot(() => Promise.resolve(value), { sessionRecovery: true }),
+      connection: state => { acceptedPhysicalContext.current = state.brokerTarget; setConnection(state); setHardwareConnected(true); presetSynchronized.current = true; }
+    });
+  };
+
+  const applyRemoteObservation = async (current: () => boolean) => {
+    return refreshMobileTarget({
+          read: observationPolicy.readTarget!, current, origin: "paired-host", provider: androidGatewayTransport,
+          identity: (state, value) => brokerTargetKey(state.brokerTarget) ?? `legacy:${value.stateVersion?.session ?? value.presetIdentity ?? "physical-host"}`,
+          reset: () => { resetCommands(); deviceHistory.clear(); presetWorkflow.resetCache(); },
+          select: () => { demoDeviceSession.useDevice(); activeSourceRef.current = "device"; setSelectedBlockId(""); },
+          adopt: value => qcController.readSnapshot(() => Promise.resolve(value), { sessionRecovery: true }),
+          connection: state => {
+            if (state.phase !== "ready") {
+              demoDeviceSession.useDevice(); activeSourceRef.current = "device";
+              setHardwareConnected(false); setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
+            } else { setHardwareConnected(true); presetSynchronized.current = true; }
+            setConnection(state);
+          }
+        });
+  };
+
   const refreshRemoteObservation = async () => {
-    if (!observationPolicy.refresh || remoteRefreshPending) return;
+    if ((!observationPolicy.refresh && !observationPolicy.readTarget) || remoteRefreshPending) return;
+    const attempt = connectionAttempts.begin();
+    const current = () => appOperationMounted.current && attempt.current();
     setRemoteRefreshPending(true);
     try {
-      await qcController.readSnapshot(observationPolicy.refresh);
-      setHardwareConnected(true);
-      presetSynchronized.current = true;
-      transitionConnection("connected");
-      setNotice("Remote snapshot refreshed. Further host changes require Refresh.");
+      if (observationPolicy.readTarget) {
+        const ready = await applyRemoteObservation(current);
+        if (current()) setNotice(ready ? "Remote snapshot refreshed. Further host changes require Refresh." : "The paired host has no available device. Your sign-in is saved.");
+      } else {
+        await qcController.readSnapshot(observationPolicy.refresh!, { sessionRecovery: true });
+        if (!current()) return;
+        setHardwareConnected(true); presetSynchronized.current = true;
+        transitionConnection("connected");
+        setNotice("Remote snapshot refreshed. Further host changes require Refresh.");
+      }
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not refresh the remote host. The displayed state may be stale.");
-    } finally { setRemoteRefreshPending(false); }
+      if (!current()) return;
+      resetCommands(); setHardwareConnected(false); observationPolicy.clearTarget?.();
+      const detail = error instanceof Error ? error.message : "Could not refresh the remote host. The displayed state may be stale.";
+      setConnection({ phase: "needs-attention", source: "device", demo: true, detail });
+      setNotice(detail);
+    } finally { if (appOperationMounted.current) setRemoteRefreshPending(false); }
   };
 
   return <main className={`android-app${screenDimmed ? " screen-dimmed" : ""}`} onPointerDown={resetScreenDimmer} onKeyDown={resetScreenDimmer} onTouchStart={resetScreenDimmer}>
@@ -1066,7 +1177,7 @@ export function App() {
       <div className="mobile-brand"><AppMark onClick={() => setWorkflowPanel("about")} /><span><strong>{QC_BRAND.appName}</strong><small>v{appPackage.version}</small></span></div>
       <div className="connection-pills">
         <button className={`connection-pill phase-${remotePresentation.phase}`} onClick={() => void openRemoteStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "remote"} aria-label={`REMOTE ${remotePresentation.state}; open remote access details`}><i /> REMOTE</button>
-        <button className={`connection-pill phase-${usbIndicatorPhase}`} onClick={() => void openUsbStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "usb"} aria-label={`${demoActive ? "DEMO" : iosPlatform ? "HOST" : "USB"}; open device connection details`}><i /> {demoActive ? "DEMO" : iosPlatform ? "HOST" : "USB"}</button>
+        <button className={`connection-pill phase-${usbIndicatorPhase}`} onClick={() => void openUsbStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "usb"} aria-label={`${demoActive ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}; open device connection details`}><i /> {demoActive ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}</button>
       </div>
     </header>
 
@@ -1100,12 +1211,12 @@ export function App() {
       <section className="mobile-workflow-panel" role="dialog" aria-modal="true" aria-labelledby="dialog-title" onClick={(event) => event.stopPropagation()}>
         <button className="mobile-workflow-close" aria-label="Close" onClick={() => setWorkflowPanel(null)}><QcUiIcon kind="close" /></button>
         {workflowPanel === "usb" && <div className={`mobile-connection-panel${demoActive ? " is-demo" : ""}`}>
-          <div className="dialog-kicker">DEVICE CONNECTION</div><h2 id="dialog-title">{demoActive ? "Demo device" : "Quad Cortex"}</h2>
+          <div className="dialog-kicker">DEVICE CONNECTION</div><h2 id="dialog-title">{demoActive || hostDemoActive ? "Demo device" : "Quad Cortex"}</h2>
           <div className="mobile-device-tabs" role="group" aria-label="Active device">
-            <button type="button" aria-pressed={!demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void (demoActive ? resumeHardwareDevice() : openUsbStatusPanel())}><i className={`panel-status-dot phase-${demoActive ? hardwareConnected ? "ready" : "idle" : usbIndicatorPhase}`} />Quad Cortex<small>{iosPlatform ? "Remote host" : "USB"}</small></button>
-            <button type="button" className="demo-device-tab" aria-pressed={demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => { if (!demoActive) void startDemoDevice(); }}>DEMO{demoPending && <small>Opening…</small>}</button>
+            <button type="button" aria-pressed={!demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void (demoActive ? resumeHardwareDevice() : openUsbStatusPanel())}><i className={`panel-status-dot phase-${demoActive ? hardwareConnected ? "ready" : "idle" : usbIndicatorPhase}`} />{hostDemoActive ? "Host demo" : "Quad Cortex"}<small>{iosPlatform ? "Remote host" : "USB"}</small></button>
+            <button type="button" className="demo-device-tab" aria-pressed={demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => { if (!demoActive) void startDemoDevice(); }}>LOCAL DEMO{demoPending && <small>Opening…</small>}</button>
           </div>
-          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${demoActive ? "demo" : usbIndicatorPhase}`} />{demoActive ? "Demo device ready" : usbStatusText}</span>{!demoActive && <button type="button" disabled={!native || usbBusy} onClick={() => void connectUsb().then(openUsbStatusPanel)}>{hardwareConnected ? "Reconnect" : iosPlatform ? "Sign in and connect" : "Connect"}</button>}{demoActive && !hardwareConnected && <button type="button" disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void resumeHardwareDevice()}>{iosPlatform ? "Connect to host" : "Connect Quad Cortex"}</button>}</div>
+          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${demoActive ? "demo" : usbIndicatorPhase}`} />{demoActive ? "Demo device ready" : usbStatusText}</span>{!demoActive && <button type="button" disabled={!native || usbBusy} onClick={() => void connectUsb().then(openUsbStatusPanel)}>{hardwareConnected ? "Reconnect" : iosPlatform ? "Refresh host" : "Connect"}</button>}{demoActive && !hardwareConnected && <button type="button" disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void resumeHardwareDevice()}>{iosPlatform ? "Connect to host" : "Connect Quad Cortex"}</button>}</div>
           <dl className="mobile-connection-details">
             <div><dt>Connection</dt><dd>{demoActive ? "Local simulation · no hardware changes" : connection.detail || (hardwareConnected ? (iosPlatform ? "The Quad Cortex is connected through your paired QC Remote host." : "The Quad Cortex is connected directly over USB.") : (iosPlatform ? "Sign in to reach the Quad Cortex through a paired QC Remote host." : "No Quad Cortex is connected directly over USB."))}</dd></div>
             <div><dt>Current preset</dt><dd>{demoActive ? `${snapshot.presetLocation} · ${snapshot.presetName}` : hardwareConnected ? `${snapshot.presetLocation} · ${snapshot.presetName}` : "Not synchronized"}</dd></div>

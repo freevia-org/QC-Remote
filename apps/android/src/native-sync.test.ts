@@ -229,15 +229,15 @@ test("USB attachment connects automatically and reports synchronization separate
   assert.match(appSource, /if \(state === "available"\)[\s\S]{0,120}attemptUsbConnection\(\)/);
   assert.match(
     appSource,
-    /if \(!devices\.length\) \{\s*setHardwareConnected\(false\);\s*if \(activeSourceRef\.current !== "virtual"\) \{\s*transitionConnection\("absent"\);\s*void startDemoDeviceRef\.current\("No Quad Cortex was found\."\);/,
-    "an empty scan falls back to Demo only when hardware was the active source",
+    /if \(!devices\.length\) \{\s*setHardwareConnected\(false\);\s*if \(activeSourceRef\.current !== "virtual"\) \{\s*transitionConnection\("absent"\);\s*if \(observationPolicy\.mode !== "on-demand"\) void startDemoDeviceRef\.current\("No Quad Cortex was found\."\);/,
+    "an empty local scan may fall back to demo; a paired-host scan never opens the phone-local demo",
   );
   assert.match(appSource, /state\.kind === "preset"[\s\S]*usbSessionReady\.current[\s\S]*transitionConnection\("connected"\)/);
   assert.match(appSource, /const \[hardwareConnected, setHardwareConnected\] = useState\(false\)/, "native USB readiness remains independent while the demo is active");
-  assert.match(appSource, /qcConnectionIndicatorPhase\(connection, hardwareConnected && !demoActive, null, \{ actionRequired: usbWritesQuarantined \}\)/, "the device pill uses the global indicator contract, including write quarantine state");
+  assert.match(appSource, /qcConnectionIndicatorPhase\(mobileIndicatorConnection\(connection\), hardwareConnected && !demoActive, null, \{ actionRequired: usbWritesQuarantined \}\)/, "the device pill uses the global indicator contract, including write quarantine state");
   assert.doesNotMatch(appSource, /hardwareConnected \? "ready" : usbIndicatorPhase/, "a merely open USB handle cannot force any active-device status dot green");
   assert.match(appSource, /usbIndicatorPhase === "ready"[\s\S]{0,320}"Quad Cortex disconnected"/, "the USB panel words and colors share the same readiness phase");
-  assert.match(appSource, /demoActive \? "DEMO" : iosPlatform \? "HOST" : "USB"/, "the compact pill names the active device source on Android and iOS");
+  assert.match(appSource, /demoActive \? "LOCAL DEMO" : hostDemoActive \? "HOST DEMO" : iosPlatform \? "HOST" : "USB"/, "the compact pill names the active device source on Android and iOS");
   assert.doesNotMatch(appSource, /qcReadyLabel\(connection\)/, "Android does not repeat the verbose desktop readiness label");
 });
 
@@ -566,7 +566,7 @@ test("Android 16 starts the connected-device relay only after the USB permission
   assert.match(androidManifestSource, /android:foregroundServiceType="connectedDevice"/);
   assert.match(javaSource, /static boolean relayForegroundServiceEligible\(\)/);
   assert.match(javaSource, /manager\.hasPermission\(candidate\)/);
-  assert.match(relayServiceSource, /if \(!QcUsbPlugin\.relayForegroundServiceEligible\(\)\)[\s\S]{0,300}stopSelf\(\)/);
+  assert.match(relayServiceSource, /HostMode mode = hostMode\(physicalEligible, QcUsbPlugin\.relayDemoAvailable\(\)\);[\s\S]{0,100}if \(mode == HostMode\.NONE\)[\s\S]{0,300}stopSelf\(\)/);
   assert.match(relayPluginSource, /USB_PERMISSION_REQUIRED/);
   assert.match(appSource, /usePublicRelayWorkflow\(\{[^}]*autoStart: hardwareConnected/);
 });
@@ -1277,7 +1277,7 @@ test("Android surfaces a write-quarantine notice analogous to Windows App.tsx, w
   assert.match(appSource, /androidUsbRuntimeDiagnostics\(\)/);
   assert.match(appSource, /observeWriteHealth\(Boolean\(runtimeDiagnostics\.writesQuarantined\), runtimeDiagnostics\.writeQuarantineReason\)/);
   assert.match(appSource, /onQuarantineChange: setUsbWritesQuarantined/);
-  assert.match(appSource, /qcConnectionIndicatorPhase\(connection, hardwareConnected && !demoActive, null, \{ actionRequired: usbWritesQuarantined \}\)/);
+  assert.match(appSource, /qcConnectionIndicatorPhase\(mobileIndicatorConnection\(connection\), hardwareConnected && !demoActive, null, \{ actionRequired: usbWritesQuarantined \}\)/);
   assert.doesNotMatch(appSource, /wasWritesQuarantinedRef|transitionWriteQuarantine/);
   assert.match(servicesSource, /androidUsbRuntimeDiagnostics/);
   assert.match(servicesSource, /phase, detail, connected: android\.connected, synchronized: android\.synchronized/);
@@ -1313,7 +1313,7 @@ test("Android relay lifecycle and pairing failures remain recoverable", () => {
   assert.doesNotMatch(credentialFailure, /store\.clear\(\)/);
   assert.match(credentialFailure, /RelayState\.RECONNECTING/);
   assert.match(credentialFailure, /reconnect\(attemptGeneration\)/);
-  assert.match(relayServiceSource, /try \{\s*startForeground\([\s\S]*?\} catch \(RuntimeException error\)/);
+  assert.match(relayServiceSource, /try \{[\s\S]{0,400}if \(mode == HostMode\.CONNECTED_DEVICE\) startForeground\([\s\S]*?\} catch \(RuntimeException error\)/);
 });
 
 test("Android teardown cancels handshake work and closes native state off the callback thread", () => {
@@ -1338,7 +1338,8 @@ test("Android teardown cancels handshake work and closes native state off the ca
 
 test("Android quarantine blocks device mutations but preserves reads and reconnect", () => {
   assert.match(javaSource, /relayAdmissionGuard\.writesQuarantined\(\) && isMutationDispatch\(dispatch\)/);
-  const mutationPolicy = javaSource.slice(javaSource.indexOf('private static boolean isMutationDispatch'), javaSource.indexOf('private CompletableFuture<org.json.JSONObject> relayPlannedGatewayWrite'));
+  assert.match(javaSource, /private static boolean isMutationDispatch\(String dispatch\) \{\s*return QcGatewayTargetPolicy\.isMutationDispatch\(dispatch\);/);
+  const mutationPolicy = readFileSync(new URL("../android/app/src/main/java/org/freevia/qcremote/QcGatewayTargetPolicy.java", import.meta.url), "utf8");
   for (const dispatch of ["SET_DEVICE_NAME", "TAP_SCREEN", "PREVIEW_PARAMETER", "PLANNED_WRITE", "PRESET_WRITE", "PERSISTENT_WRITE"])
     assert.ok(mutationPolicy.includes(`"${dispatch}"`), `${dispatch} must stay quarantined`);
   assert.match(javaSource, /if \("RECONNECT"\.equals\(dispatch\)\) return relayReconnect/);

@@ -9,8 +9,16 @@ final class RelayDeadline {
     private final QcRelayTaskRetirement retirement = new QcRelayTaskRetirement();
     private volatile CompletableFuture<org.json.JSONObject> operation;
     private volatile boolean cancelledForShutdown;
+    private final QcBrokerTarget target;
+    private volatile boolean recoveryAdmitted;
 
-    RelayDeadline(QcUsbPlugin session) { this.session = session; }
+    RelayDeadline(QcUsbPlugin session) { this(session, null); }
+    RelayDeadline(QcUsbPlugin session, QcBrokerTarget target) { this.session = session; this.target = target; }
+
+    void assertTarget() {
+        if (target != null && !recoveryAdmitted) session.assertBrokerTarget(target);
+    }
+    void recoveryAdmitted() { recoveryAdmitted = true; }
 
     QcUsbPlugin session() { return session; }
     QcRelayDeadlineState state() { return state; }

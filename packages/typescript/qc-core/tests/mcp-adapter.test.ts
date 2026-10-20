@@ -152,3 +152,73 @@ test('cloud validator rejects empty guards rather than substituting fresh state'
 function appMcpRequestForRecall() {
   return { setlist_key: '/user/Observed', position: 52, expected_preset_name: 'Observed name', expected_position: 53, expected_setlist_key: '/user/Observed', expected_preset_identity: 'Observed identity' };
 }
+
+
+test('connection actions retain the paired host route independently of demo:false', async () => {
+  for (const method of ['device.reconnect', 'device.resetSession', 'device.disconnect']) {
+    for (const source of ['device', undefined]) {
+      const result = await invokeAppMcp(method, {}, { accessMode: 'full', confirm: async () => true, callTool: async name => name === 'get_qc_status'
+        ? { usbDiagnostics: { phase: 'ready', connected: true } }
+        : { phase: 'ready', detail: 'Observed', demo: false, source, restarted: false } });
+      assert.equal(result.source, source ?? 'device');
+      assert.equal(result.restarted, false);
+    }
+  }
+});
+
+test('unsupported explicit host connection source is rejected without status retry', async () => {
+  const calls: string[] = [];
+  await assert.rejects(invokeAppMcp('device.reconnect', {}, { accessMode: 'full', confirm: async () => true, callTool: async name => {
+    calls.push(name); return { source: 'future' };
+  } }), /unsupported connection source/);
+  assert.deepEqual(calls, ['execute_qc_action']);
+});
+
+
+test('remote demo metadata preserves the host route and latest broker generation', async () => {
+  const target = { source: 'demo', sessionId: 'same-host-demo', generation: 7 };
+  const result = await invokeAppMcp('device.reconnect', {}, { accessMode: 'full', confirm: async () => true, callTool: async name => name === 'get_qc_status'
+    ? { brokerTarget: target, usbDiagnostics: { phase: 'disconnected', connected: false } }
+    : { phase: 'ready', source: 'virtual', brokerTarget: { ...target, generation: 5 } } });
+  assert.equal(result.source, 'device', 'host demo must not select the phone-local demo gateway');
+  assert.deepEqual(result.brokerTarget, target);
+  assert.equal(result.phase, "ready", "selected usable demo does not require physical USB");
+  assert.match(result.detail, /demo device is ready/);
+});
+
+
+test('legacy host virtual source cannot select a phone-local demo without broker target identity', async () => {
+  await assert.rejects(invokeAppMcp('device.reconnect', {}, { accessMode: 'full', confirm: async () => true, callTool: async name => name === 'get_qc_status'
+    ? { usbDiagnostics: { phase: 'ready', connected: true } } : { source: 'virtual' } }), /no broker target identity/);
+  const unavailable = await invokeAppMcp('device.reconnect', {}, { accessMode: 'full', confirm: async () => true, callTool: async name => name === 'get_qc_status'
+    ? { targetReady: false, usbDiagnostics: { phase: 'disconnected', connected: false } } : { source: 'virtual' } });
+  assert.equal(unavailable.source, 'device'); assert.equal(unavailable.phase, 'disconnected');
+});
+
+test('target-aware writes use a cloned top-level UI target, never generated action params', async () => {
+  const target = { source: 'demo' as const, sessionId: 'accepted-UI-provider', generation: 1 };
+  let captured: any;
+  const action = SHARED_QC_ACTIONS.find(action => action.rpc === 'device.renameCurrentPreset')!;
+  const args = argumentsFor(GATEWAY_CLIENT_METHODS.renameCurrentPreset, action);
+  await invokeAppMcp('device.renameCurrentPreset', args, { accessMode: 'full', expectedBrokerTarget: target, brokerTargetGuardSupported: true,
+    confirm: async () => { target.generation = 7; return true; }, callTool: async (_name, args) => { captured = args; return outcome; } });
+  assert.deepEqual(captured.expectedBrokerTarget, { source: 'demo', sessionId: 'accepted-UI-provider', generation: 1 });
+  assert.equal(target.generation, 7, 'confirmation must yield after the guard was captured');
+  assert.equal('expectedBrokerTarget' in captured.params, false);
+  assert.equal('expected_broker_target' in captured.params, false);
+});
+
+test('a cloud without advertised binding capability cannot receive target-aware writes', async () => {
+  let calls = 0, prompts = 0;
+  await assert.rejects(invokeAppMcp('device.setMasterVolume', { value: 20 }, { accessMode: 'full', expectedBrokerTarget: { source: 'demo', sessionId: 'UI', generation: 1 },
+    confirm: async () => { prompts++; return true; }, callTool: async () => { calls++; return outcome; } }), /cannot safely bind/);
+  assert.equal(calls, 0); assert.equal(prompts, 0);
+});
+
+test('read-only MCP requests stay compatible without cloud binding support', async () => {
+  let captured: any;
+  await invokeAppMcp('device.listModels', {}, { accessMode: 'read-only', expectedBrokerTarget: { source: 'demo', sessionId: 'UI', generation: 1 },
+    confirm: async () => true, callTool: async (_name, args) => { captured = args; return { models: [] }; } });
+  assert.equal('expectedBrokerTarget' in captured, false);
+  assert.deepEqual(captured.params, { query: null });
+});

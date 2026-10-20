@@ -16,15 +16,12 @@ export function normalizeBrokerConnection(state: ConnectionState): ConnectionSta
 }
 
 /**
- * What a connection state describes: the real Quad Cortex behind the device
- * gateway, or the local virtual device.
+ * The client gateway route: a native/paired-host gateway (`device`) or this
+ * client's local virtual runtime (`virtual`). A paired host can itself serve
+ * a demo without changing the client route; read brokerTarget for its actual
+ * physical/demo target before describing the selected target as hardware.
  *
- * `demo` cannot carry this. Every workflow hook refuses to run while `demo` is
- * true, so a virtual session reports `demo: false` to get the same Grid,
- * parameter, scene and routing paths a real device gets - and without this
- * field it would then be indistinguishable from real hardware. Anything that
- * shows, logs or reports connection state reads `source` before it says
- * "Quad Cortex".
+ * `demo` is not a source marker: editable virtual workflows use demo:false.
  */
 export type ConnectionSource = "device" | "virtual";
 
@@ -431,13 +428,20 @@ export type { GatewayTransport } from "./generated-gateway-transport.ts";
 import type { GatewayTransport } from "./generated-gateway-transport.ts";
 
 /**
- * Stamp `source: "device"` on every connection state a real device gateway
- * returns. The native brokers predate the field and never send it, so the
- * host-side transport adds it here rather than leaving it absent - an absent
- * source is not something a display may guess at.
+ * Preserve an explicit connection source; legacy native device brokers omit
+ * it and need the physical gateway default. Never derive source from `demo`:
+ * virtual workflows also use demo:false. Host-selected target metadata, when
+ * present, is separate from this gateway/provider source.
  */
 export function withDeviceConnectionSource<T extends GatewayTransport>(transport: T): T {
-  const stamp = async (state: Promise<ConnectionState>): Promise<ConnectionState> => ({ ...normalizeBrokerConnection(await state), source: "device" });
+  const stamp = async (state: Promise<ConnectionState>): Promise<ConnectionState> => {
+    const connection = normalizeBrokerConnection(await state);
+    brokerTargetKey(connection.brokerTarget);
+    if (connection.source !== undefined && connection.source !== "device" && connection.source !== "virtual") {
+      throw new Error("The device connection source is unsupported. Refresh before editing.");
+    }
+    return { ...connection, source: connection.source ?? "device" };
+  };
   return {
     ...transport,
     reconnect: () => stamp(transport.reconnect()),
@@ -445,6 +449,31 @@ export function withDeviceConnectionSource<T extends GatewayTransport>(transport
     disconnect: () => stamp(transport.disconnect())
   };
 }
+/** Validate selected-target metadata before it becomes an operation fence.
+ * Missing metadata is a legacy/unavailable host, never an inferred demo. */
+export function brokerTargetKey(target: BrokerTarget | undefined): string | undefined {
+  if (target === undefined) return undefined;
+  if (!target || (target.source !== "physical" && target.source !== "demo")
+      || typeof target.sessionId !== "string" || !target.sessionId.trim()
+      || !Number.isSafeInteger(target.generation) || target.generation < 1) {
+    throw new Error("The selected broker target identity is unsupported. Refresh before editing.");
+  }
+  return JSON.stringify([target.source, target.sessionId, target.generation]);
+}
+
+/** Normalize optional selected-target metadata without mistaking API/USB
+ * availability for the broker's effective target readiness. */
+export function selectedBrokerTarget(status: Pick<RuntimeStatus, "brokerTarget" | "targetReady">): BrokerTarget | undefined {
+  brokerTargetKey(status.brokerTarget);
+  if (status.targetReady !== undefined && typeof status.targetReady !== "boolean") {
+    throw new Error("The selected broker target readiness is unsupported. Refresh before editing.");
+  }
+  if (status.targetReady === true && !status.brokerTarget) {
+    throw new Error("The selected broker target has no identity. Refresh before editing.");
+  }
+  return status.targetReady === false ? undefined : status.brokerTarget;
+}
+
 /** Require the model identifier observed with a parameter or Grid target. */
 export function requireModelId(target: { modelId?: number | null } | undefined): number {
   const modelId = target?.modelId;

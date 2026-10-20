@@ -331,7 +331,7 @@ public final class QcRelayPlugin extends Plugin {
                         // Pairing is durable even when the QC is not attached.
                         // The connectedDevice service starts after USB access
                         // is granted, never before Android's runtime prerequisite.
-                        if (QcUsbPlugin.relayForegroundServiceEligible()) startService();
+                        if (QcUsbPlugin.relayForegroundServiceEligible() || QcUsbPlugin.relayDemoAvailable()) startService();
                         else relayState = "stopped";
                         JSObject result = new JSObject(); result.put("paired", true); result.put("endpoint", endpoint); result.put("state", "paired");
                         if (payload.opt("previousDeviceReplacementPending") instanceof Boolean)
@@ -366,7 +366,7 @@ public final class QcRelayPlugin extends Plugin {
     }
 
     private void startRelay(PluginCall call) {
-        if (!QcUsbPlugin.relayForegroundServiceEligible()) {
+        if (!QcUsbPlugin.relayForegroundServiceEligible() && !QcUsbPlugin.relayDemoAvailable()) {
             call.reject("Connect the Quad Cortex and grant USB access before starting Remote.", "USB_PERMISSION_REQUIRED");
             return;
         }
@@ -618,7 +618,9 @@ public final class QcRelayPlugin extends Plugin {
     }
 
     private void startService() {
-        ContextCompat.startForegroundService(getContext(), new Intent(getContext(), QcRelayService.class).setAction(QcRelayService.ACTION_START));
+        Intent intent = new Intent(getContext(), QcRelayService.class).setAction(QcRelayService.ACTION_START);
+        if (QcUsbPlugin.relayForegroundServiceEligible()) ContextCompat.startForegroundService(getContext(), intent);
+        else getContext().startService(intent);
     }
 
     /** The relay endpoint if this build may send a credential there, else null.

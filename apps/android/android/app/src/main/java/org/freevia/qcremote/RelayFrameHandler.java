@@ -17,6 +17,7 @@ final class RelayFrameHandler {
         final String method;
         final JSONObject params;
         final JSONObject expected;
+        QcBrokerTarget expectedBrokerTarget;
         final long deadlineMs;
         final int closeCode;
         final String closeReason;
@@ -106,9 +107,18 @@ final class RelayFrameHandler {
         if (rawExpected != null && rawExpected != JSONObject.NULL && !(rawExpected instanceof JSONObject)) {
             return Decision.error(id, "INVALID_ARGUMENT", "expectedState must be an object.", false);
         }
-        return Decision.accept(id, method,
+        final QcBrokerTarget brokerTarget;
+        try {
+            brokerTarget = request.has("expectedBrokerTarget")
+                ? QcBrokerTarget.parse(request.opt("expectedBrokerTarget")) : null;
+        } catch (IllegalArgumentException malformed) {
+            return Decision.error(id, "INVALID_ARGUMENT", malformed.getMessage(), false);
+        }
+        Decision decision = Decision.accept(id, method,
             (JSONObject) (rawParams == JSONObject.NULL ? null : rawParams),
             (JSONObject) (rawExpected == JSONObject.NULL ? null : rawExpected), deadlineMs);
+        decision.expectedBrokerTarget = brokerTarget;
+        return decision;
     }
 
     static long requestDeadlineMs(JSONObject request) {

@@ -25,3 +25,11 @@ Building and running the native app requires macOS, Xcode, Rust via rustup, and 
 `npm run test:mcp-adapter --workspace @qc-remote/core` verifies every generated app method against the MCP projection, including access policy, confirmations, result decoding and captured preset guards. It also runs through `npm run contracts:check`. The adapter uses direct, on-demand cloud reads; it adds no idle polling. Device identity requires both the dedicated cloud read tool and a host admitting `device.identity`.
 
 The opt-in XCTest suite in `tests/UI` checks saved sign-in after cold launches, read-only model browsing and reversible UP/DOWN navigation. Set `TEST_RUNNER_QC_EXPECTED_PRESET` and `TEST_RUNNER_QC_EXPECTED_PREVIOUS_PRESET` only against a known, clean live preset. It refreshes host state explicitly and never saves a preset or changes persistent settings.
+
+### Paired-host demo targets
+
+iOS remains an MCP client. It does not host the phone-local demo through MCP or claim simulator USB access. A paired host may select its own existing UI demo and report `brokerTarget` with `targetReady`; the phone keeps the host gateway and shows HOST DEMO with the demo indicator. Phone-local demo is labeled LOCAL DEMO and uses its separate local gateway.
+
+Explicit Refresh checks a metadata-bearing target before and after reading its snapshot, rejects a selection change without retry, and retires old UI operations before adopting the observation. It adds no idle timer, SSE stream or background reconnect. Raw USB diagnostics remain physical-only. A connected MCP transport alone does not imply an available device; missing/unavailable targets preserve sign-in and stay unavailable.
+
+`tests/paired-host-target.test.ts` covers demo readiness with no USB, physical legacy compatibility, unavailable/malformed targets and generation changes. Shared mobile tests cover host routing, exact local-demo provider binding, foreground disposal and stale request/result refusal. Native host projection and cloud deployment must support this metadata before a live host demo can be exercised; synthetic coverage is not proof of live demo serving.
