@@ -253,3 +253,17 @@ test("background retirement cancels an old cold demand while a later explicit de
   assert.equal(state.calls.filter(name => name === "initialize").length, 2);
   assert.equal((await service.publicRelay.status()).paired, true);
 });
+
+
+test("switching away from paired-host mode cannot reuse that host's USB diagnostics", async t => {
+  const { state, service, storage } = await loadService(t);
+  state.failConnect = false;
+  await service.refreshRemoteTargetObservation();
+  assert.equal((await service.androidUsbRuntimeDiagnostics()).connected, true);
+  storage.set("qc.remote.ios.connection-mode-v1", "auto");
+  const before = state.calls.length;
+  const diagnostics = await service.androidUsbRuntimeDiagnostics();
+  assert.equal(diagnostics.connected, false);
+  assert.match(diagnostics.detail, /No direct Quad Cortex USB session/);
+  assert.equal(state.calls.length, before);
+});

@@ -81,4 +81,35 @@ final class USBConnectionTests: XCTestCase {
         }
     }
 
+    // iPad Simulator has no usable direct USB provider. This checks the local
+    // UI demo assets only; iOS does not expose that local demo through MCP.
+    func testIPadLocalDemoAssetsAndReturnToPairedHost() throws {
+        guard ProcessInfo.processInfo.environment["QC_IPAD_LOCAL_DEMO_TEST"] == "1",
+              let preset = ProcessInfo.processInfo.environment["QC_EXPECTED_PRESET"] else {
+            throw XCTSkip("Requires explicit iPad local-demo validation")
+        }
+        let app = XCUIApplication(bundleIdentifier: "org.freevia.qcremote")
+        app.launch()
+        let direct = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Direct USB when available")).firstMatch
+        XCTAssertTrue(direct.waitForExistence(timeout: 45))
+        direct.tap()
+        let local = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", "LOCAL DEMO;")).firstMatch
+        let localReady = local.waitForExistence(timeout: 60)
+        let demo = XCTAttachment(screenshot: app.screenshot())
+        demo.name = "Local iPad demo uses bundled assets; not an MCP server"
+        demo.lifetime = .keepAlways
+        add(demo)
+        let browserOpened = app.otherElements["TopBrowserBar"].exists
+        // Restore the original route before checking the local-demo assertion.
+        let paired = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Paired host")).firstMatch
+        XCTAssertTrue(paired.waitForExistence(timeout: 15))
+        paired.tap()
+        refreshPairedHost(app)
+        let restored = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@ AND label ENDSWITH %@", "Open preset Directory; current preset ", preset)).firstMatch.waitForExistence(timeout: 90)
+        XCTAssertTrue(localReady, "The bundled local demo did not become ready")
+        XCTAssertFalse(browserOpened)
+        XCTAssertTrue(restored, "Paired-host sign-in did not restore after the local demo")
+        XCTAssertFalse(app.otherElements["TopBrowserBar"].exists)
+    }
+
 }
