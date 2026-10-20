@@ -103,6 +103,11 @@ capabilities when readiness is contended. Unavailable cached USB diagnostics
 and unverified target identity/readiness are omitted, not synthesized. Explicit
 expected-target guards and device effects still fail closed. The status path
 uses try-only cached reads and never waits for the retained device tree.
+The in-process `DeviceReadiness` probe likewise returns `Unknown` on short
+readiness/inventory lock contention, rather than reporting a disconnect. A
+publication adapter may skip that sample; ordinary availability checks must
+remain fail-closed. Shutdown and canonical ambiguity remain `Unavailable`.
+No publication cache grants authority to execute a device request.
 
 Native and shared-store fixtures cover selection generations, stale leases,
 provider ownership, queued effect refusal, result metadata (including arrays),

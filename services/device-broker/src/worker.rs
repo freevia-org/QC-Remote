@@ -1185,6 +1185,16 @@ impl DeviceController {
         (status.connected, status.phase.clone())
     }
 
+    /// Publication probe only: lock contention is unknown, never a disconnect.
+    pub(crate) fn try_connection_readiness(&self) -> Option<(bool, String)> {
+        let status = match self.state.try_lock() {
+            Ok(status) => status,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some((status.connected, status.phase.clone()))
+    }
+
     /// Test-only: what the worker would record for an opened or closed
     /// session, with no worker or USB behind it.
     #[cfg(test)]

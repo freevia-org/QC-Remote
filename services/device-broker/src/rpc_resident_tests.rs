@@ -2118,7 +2118,14 @@ fn device_readiness_answers_from_the_cached_session_without_device_demand() {
     let probe = crate::resident::DeviceReadinessProbe::new(handle.clone());
 
     controller.set_connection_for_test(true, "ready");
-    assert_eq!(probe.read(), crate::resident::DeviceReadiness::Ready);
+    controller.hold_status_lock_for_test().synchronized = true;
+    assert!(matches!(
+        probe.read(),
+        crate::resident::DeviceReadiness::ReadyTarget {
+            usb_connected: true,
+            ..
+        }
+    ));
 
     // A session closed for idleness reads not ready, and stays closed.
     controller.set_connection_for_test(false, "disconnected");
@@ -2261,32 +2268,41 @@ fn readiness_polling_leaves_the_idle_clock_alone() {
     shared.clients.lock_recover().shutting_down = true;
 }
 
-/// The read waits only on the worker's own status lock: blocked while a
-/// worker update holds it, answered as soon as it is released. (The host
-/// bounds the wait itself; see the app's
-/// `an_unreadable_broker_answers_not_ready_promptly_and_opens_nothing`.)
+/// A busy short status cache is unknown, not a disconnect or an unbounded
+/// publication wait. Once released, fresh readiness is observed normally.
 #[test]
-fn readiness_waits_only_for_the_status_lock() {
+fn readiness_returns_unknown_while_the_status_lock_is_busy() {
     let (controller, commands) = DeviceController::live_session_for_test();
     let controller = Arc::new(controller);
     let shared = readiness_shared(&controller);
     let probe = crate::resident::DeviceReadinessProbe::new(BrokerHandle(Arc::clone(&shared)));
-    controller.set_connection_for_test(true, "ready");
+    controller.set_connection_for_test(true, "handshaking");
     let held = controller.hold_status_lock_for_test();
     let (answered_tx, answered) = mpsc::channel();
     let reader = spawn_fixture(move || {
         let _ = answered_tx.send(probe.read());
     });
-    assert!(
-        answered.recv_timeout(Duration::from_millis(150)).is_err(),
-        "the read answered past a held status lock"
-    );
-    drop(held);
     assert_eq!(
         answered.recv_timeout(Duration::from_secs(2)),
-        Ok(crate::resident::DeviceReadiness::Ready)
+        Ok(crate::resident::DeviceReadiness::Unknown)
     );
+    drop(held);
     reader.join().unwrap();
+    assert_eq!(
+        crate::resident::DeviceReadinessProbe::new(BrokerHandle(shared.clone())).read(),
+        crate::resident::DeviceReadiness::NotReady {
+            phase: "handshaking".into()
+        }
+    );
+    controller.set_connection_for_test(true, "ready");
+    controller.hold_status_lock_for_test().synchronized = true;
+    assert!(matches!(
+        crate::resident::DeviceReadinessProbe::new(BrokerHandle(shared.clone())).read(),
+        crate::resident::DeviceReadiness::ReadyTarget {
+            usb_connected: true,
+            ..
+        }
+    ));
     assert_eq!(commands.device_work(), 0);
     shared.clients.lock_recover().shutting_down = true;
 }

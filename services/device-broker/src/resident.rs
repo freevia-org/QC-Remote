@@ -95,6 +95,9 @@ pub enum RemoteUnlink {
 /// [`BrokerHandle::device_readiness`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceReadiness {
+    /// Short readiness/inventory facts are contended. Publication may retain
+    /// its previous observation; this grants no authority to device effects.
+    Unknown,
     /// The session is open.
     Ready,
     /// Effective target availability and physical USB fact are separate.
