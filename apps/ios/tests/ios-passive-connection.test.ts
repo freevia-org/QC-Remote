@@ -44,7 +44,7 @@ async function loadService(t: any) {
     build.onLoad({ filter: /.*/, namespace: "mock" }, args => ({ contents: mocks[args.path], loader: "js" }));
   } }] });
   const service = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}#${Math.random()}`);
-  return { state, service };
+  return { state, service, storage };
 }
 
 test("failed connection, passive scans, background and resume never retry MCP; explicit demand reconnects", async t => {
