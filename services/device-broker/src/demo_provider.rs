@@ -44,9 +44,18 @@ struct State {
 pub(crate) struct Hub {
     state: Mutex<State>,
     changed: Condvar,
+    #[cfg(test)]
+    recheck_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Hub {
+    #[cfg(test)]
+    fn run_recheck_hook(&self) {
+        let hook = self.recheck_hook.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -220,23 +229,34 @@ impl Hub {
     ) -> Result<bool, String> {
         let mut state = self.lock();
         Self::prune(&mut state);
+        #[cfg(test)]
+        self.run_recheck_hook();
         if !Self::owner_matches(&state, connection) {
             return Err("This connection does not own the demo provider".into());
         }
-        let Some(pending) = state
+        let Some(index) = state
             .pending
-            .iter_mut()
-            .find(|p| p.call.sequence == sequence)
+            .iter()
+            .position(|p| p.call.sequence == sequence)
         else {
             return Ok(false);
         };
+        let pending = &mut state.pending[index];
         if !pending.delivered || pending.call.target != *target {
             return Err("Demo request cannot be admitted with this identity/state".into());
         }
-        pending
-            .lease
-            .assert_current()
-            .map_err(|_| "Demo target changed")?;
+        if pending.lease.assert_current().is_err() || Instant::now() >= pending.deadline {
+            let retired = state
+                .pending
+                .remove(index)
+                .expect("located pending request");
+            drop(state);
+            let _ = retired
+                .response
+                .try_send(Err("Demo target changed or request expired".into()));
+            self.changed.notify_all();
+            return Ok(false);
+        }
         pending.admitted = true;
         Ok(true)
     }
@@ -258,6 +278,8 @@ impl Hub {
         let pending = {
             let mut state = self.lock();
             Self::prune(&mut state);
+            #[cfg(test)]
+            self.run_recheck_hook();
             if !Self::owner_matches(&state, connection) {
                 return Err("This connection does not own the demo provider".into());
             }
@@ -272,10 +294,18 @@ impl Hub {
             if !pending.admitted || pending.call.target != *target {
                 return Err("Demo reply does not match an admitted request".into());
             }
-            pending
-                .lease
-                .assert_current()
-                .map_err(|_| "Demo target changed")?;
+            if pending.lease.assert_current().is_err() || Instant::now() >= pending.deadline {
+                let retired = state
+                    .pending
+                    .remove(index)
+                    .expect("located pending request");
+                drop(state);
+                let _ = retired
+                    .response
+                    .try_send(Err("Demo target changed or request expired".into()));
+                self.changed.notify_all();
+                return Ok(false);
+            }
             state
                 .pending
                 .remove(index)
@@ -284,6 +314,38 @@ impl Hub {
         let accepted = pending.response.try_send(result).is_ok();
         self.changed.notify_all();
         Ok(accepted)
+    }
+
+    pub fn reject(
+        &self,
+        connection: u64,
+        target: &TargetIdentity,
+        sequence: u64,
+        message: &str,
+    ) -> Result<bool, String> {
+        let pending = {
+            let mut state = self.lock();
+            if !Self::owner_matches(&state, connection) {
+                return Err("This connection does not own the demo provider".into());
+            }
+            let Some(index) = state
+                .pending
+                .iter()
+                .position(|pending| pending.call.sequence == sequence)
+            else {
+                return Ok(false);
+            };
+            if state.pending[index].call.target != *target {
+                return Err("Demo request identity mismatch".into());
+            }
+            state
+                .pending
+                .remove(index)
+                .expect("located pending request")
+        };
+        let retired = pending.response.try_send(Err(message.into())).is_ok();
+        self.changed.notify_all();
+        Ok(retired)
     }
 }
 
@@ -443,5 +505,32 @@ mod tests {
             }
             assert!(hub.lock().pending.is_empty());
         });
+    }
+
+    #[test]
+    fn target_changes_after_prune_return_false_without_retiring_the_provider() {
+        for replying in [false, true] {
+            let (hub, targets) = fixture();
+            let caller = call(hub.clone(), &targets);
+            let next = hub.next(1, Duration::from_secs(1)).unwrap().unwrap();
+            if replying {
+                assert!(hub.admit(1, &next.target, next.sequence).unwrap());
+            }
+            let changing = targets.clone();
+            let session = hub.session();
+            *hub.recheck_hook.lock().unwrap() = Some(Box::new(move || {
+                changing
+                    .update(Some("new-physical".into()), session)
+                    .unwrap();
+            }));
+            let accepted = if replying {
+                hub.reply(1, &next.target, next.sequence, Ok(Value::Null))
+            } else {
+                hub.admit(1, &next.target, next.sequence)
+            };
+            assert!(!accepted.unwrap());
+            assert!(caller.join().unwrap().is_err());
+            assert_eq!(hub.session().as_deref(), Some("window-session"));
+        }
     }
 }

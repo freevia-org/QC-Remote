@@ -108,6 +108,23 @@ fn host_readiness(
     use qc_remote_lib::BrokerDeviceReadiness;
     match readiness {
         DeviceReadiness::Ready => BrokerDeviceReadiness::Ready,
+        DeviceReadiness::ReadyTarget {
+            usb_connected,
+            target,
+        } => {
+            match serde_json::to_value(target)
+                .ok()
+                .and_then(|value| serde_json::from_value(value).ok())
+            {
+                Some(target) => BrokerDeviceReadiness::ReadyTarget {
+                    usb_connected,
+                    target,
+                },
+                None => BrokerDeviceReadiness::Unavailable {
+                    reason: "The broker target metadata was invalid".into(),
+                },
+            }
+        }
         DeviceReadiness::NotReady { phase } => BrokerDeviceReadiness::NotReady { phase },
         DeviceReadiness::Unavailable(reason) => BrokerDeviceReadiness::Unavailable { reason },
     }

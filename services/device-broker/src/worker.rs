@@ -1374,6 +1374,23 @@ impl DeviceController {
         self.state.lock_recover().session_epoch
     }
 
+    /// Target projection must not acquire the retained device/session tree.
+    /// A busy status writer leaves the previous projection intact; it must
+    /// never turn an unknown physical fact into permission to select demo.
+    pub(crate) fn try_target_readiness(&self) -> Option<(bool, bool, u64)> {
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some((state.connected, state.synchronized, state.session_epoch))
+    }
+
+    /// Opaque per-controller UUID, unrelated to any hardware serial or path.
+    pub(crate) fn target_stream_id(&self) -> &str {
+        &self.state_stream_id
+    }
+
     /// Request a reconnect that leaves a healthy session alone. The returned
     /// outcome says which of the two happened; see [`ReconnectOutcome`].
     pub fn reconnect(&self) -> Result<ReconnectOutcome, String> {

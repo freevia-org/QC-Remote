@@ -1,9 +1,13 @@
 # Broker demo target integration
 
-This is an incremental foundation, not a published demo MCP endpoint. The
-registry and palette are implemented; production provider registration and
-reverse dispatch are still required. Until then `Snapshot.served_source` is
-unset and installed broker behavior is unchanged.
+The desktop editor exposes its already-opened demo through an authenticated
+reverse broker connection. MCP and the editor share one virtual store and its
+transient runtime. A usable physical QC takes precedence; unplugging returns
+to that same demo with a fresh target generation. This draft integration has
+fixture coverage; live desktop UI/MCP and physical hot-plug acceptance are
+separate release gates. Installed applications are unchanged by this branch.
+
+A headless broker without a live editor provider does not invent demo availability.
 
 ## Admission contract
 
@@ -24,11 +28,53 @@ Never retry a superseded or uncertain write on a newly selected target.
 Provider transport adapters must coordinate final effect admission with native
 selection changes and retain their existing write identity/confirmation guards.
 
-The registry's serialized identity is internal. It does not change the public
-MCP status schema. Existing `ConnectionState.source` uses `virtual` for a demo
-and `device` for hardware; `demo: false` alone does not establish hardware.
+Status and relay readiness expose additive `brokerTarget` and `targetReady`
+metadata while USB diagnostics continue to describe physical hardware.
+`ConnectionState.source` describes the transport route: `virtual` for a
+client-local demo and `device` for a host connection, including a remote demo.
+It alone does not establish whether the host serves physical hardware.
 
-## Provider requirements for the next increment
+Target session IDs are opaque and contain no hardware serials or USB paths.
+
+## Native provider protocol
+
+A dedicated authenticated `demoProvider` connection owns registration. It is
+not a participant, observer or control connection, does not renew USB demand,
+and may call only the internal `broker.demoRegister`, `broker.demoNext`,
+`broker.demoAdmit`, `broker.demoReply` and `broker.demoWithdraw` methods.
+These are not MCP tools or remotely exposed methods.
+
+Registration receives a fresh broker-issued provider session id. `Next` is a
+bounded local long poll (20 seconds when quiet), not cloud polling. At most
+eight calls may remain pending, and each keeps its original 20-second deadline.
+Admit revalidates the delivered target and sequence; repeated checks are
+idempotent. Stale admission/reply is acknowledged as false without terminating
+the live provider. Connection death withdraws it and retires pending work.
+
+Hosts negotiate `expectedBrokerTarget` and `physicalTargetOrigin` before sending
+the corresponding envelope guard or `physicalOnly` constraint. A physical-only
+app request never falls back to demo. Rejected capabilities must not cause a
+mutation to be replayed without its guard.
+
+## Physical selection and lifecycle acknowledgments
+
+MCP selects the usable default QC, otherwise the single known ready QC. It
+binds the participant, native method route and target identity to that same
+controller before queueing. An explicit noncanonical MCP selection is refused;
+the physical-only app keeps its own selected controller. Multiple unresolved
+physical candidates never cause demo fallback. This is not a general
+multi-target MCP selection API.
+
+Reset/reconnect may legitimately change the native epoch. A successful result
+can carry `brokerTargetTransition` only with evidence from the bound native
+controller and unchanged private backend selection key, plus fresh readiness.
+Disconnect additionally requires a verified close, and its new target may only
+be absent or demo, never another physical QC. The verification strings are
+`same_native_controller` and `closed_native_controller`, respectively. An
+unverified transition stays ambiguous and is never replayed. Such proof is not
+independent hardware-serial attestation and grants no permission for later writes.
+
+## Provider and desktop bridge contract
 
 - Use the exact `VirtualDeviceStore` transport already opened by the editor.
   Do not read its saved file into a second simulated device.
@@ -51,11 +97,12 @@ Stale broker state remains red, and a usable physical reading takes precedence.
 
 ## Validation
 
-The native target tests cover physical-first selection, return to demo with a
-new generation, stale expected identity, provider withdrawal/replacement,
-duplicate notifications, queued effect refusal and in-flight result rejection
-without replay. The tray tests cover purple eligibility and physical/stale
-precedence. Hardware and live callback integration remain unvalidated here.
+Native and shared-store fixtures cover selection generations, stale leases,
+provider ownership, queued effect refusal, result metadata (including arrays),
+worker shutdown and old local-host refusal before RPC effects. The UI lifecycle
+fixtures cover startup/disposal races and replacement identities. The tray
+fixtures cover purple eligibility and physical/stale precedence. These tests
+do not replace live GUI/MCP, broker restart or hardware hot-plug acceptance.
 
 ## Shared TypeScript provider
 
@@ -68,7 +115,25 @@ and after each call. Native adapters still own authentication, deadlines,
 registration exclusivity and final effect admission. Disposing it rejects queued
 work; a pending operation is never retried on a replacement target.
 
-Optional `brokerTarget` metadata is defined on the shared client status and
-connection types; production status projection remains to be connected. Remote
-demo clients retain the host transport route (`source: device`), rather than
-routing requests to their own phone-local demo.
+Effect admission runs inside the original virtual store mutation queue, so a
+physical selection that supersedes a queued MCP request prevents its mutation.
+Per-invocation admission does not interfere with intentional editor edits.
+
+The desktop native worker uses bounded original-thread ownership and exact
+socket shutdown. Broker instance observations trigger re-registration through
+the existing local inventory events; no cloud timer is added. Returning to an
+already-served demo does not re-register it just because the UI changed views.
+
+The Tauri relay, local MCP backend and local HTTP bridge preserve a captured
+`expectedBrokerTarget` separately from generated RPC parameters. Unsupported
+older hosts are refused before receiving a guarded action. Physical editor
+requests use a separately negotiated physical-only origin. Guarded reads cannot
+use an unguarded status shortcut, and array response metadata stays in the
+native envelope. Uncertain writes are never retried on a replacement target.
+
+Broker tests also cover ownership, bounded saturation, actual
+controller routing, serial-free identities and narrow lifecycle proof. The tray
+tests cover native icon pixels and a heartbeat while retained device state is
+busy. The existing tray tick uses short try-readiness facts, not a blocking
+graphics/device-tree read or a new cloud timer.
+

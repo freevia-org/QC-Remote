@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertBrokerTarget, deviceReadiness, sameBrokerTarget } from "../src/device-readiness.ts";
+import { assertBrokerTarget, deviceReadiness, parseBrokerTarget, sameBrokerTarget, verifiedTargetTransition } from "../src/device-readiness.ts";
 import { selectDeviceHost } from "../src/device-selection.ts";
 
 const demo = { source: "demo" as const, sessionId: "broker-1:demo-1", generation: 1 };
@@ -8,6 +8,22 @@ const physical = { source: "physical" as const, sessionId: "broker-1:qc-1", gene
 const host = (deviceId: string, frame: Record<string, unknown>) => ({
   readyState: 1,
   deserializeAttachment: () => ({ deviceId, ...deviceReadiness(frame) })
+});
+
+test("only verified lifecycle acknowledgements allow an intentional target transition", () => {
+  const next = { ...physical, sessionId: "new-session", generation: 3 };
+  const reset = { brokerTargetTransition: { method: "device.resetSession", from: physical, to: next, verification: "same_native_controller" } };
+  assert.equal(verifiedTargetTransition("device.resetSession", physical, next, reset), true);
+  assert.equal(verifiedTargetTransition("device.setMasterVolume", physical, next, reset), false);
+  assert.equal(verifiedTargetTransition("device.resetSession", physical, demo, reset), false);
+  assert.equal(verifiedTargetTransition("device.resetSession", next, next, reset), false);
+  assert.equal(verifiedTargetTransition("device.resetSession", demo, next, reset), false);
+  assert.equal(verifiedTargetTransition("device.resetSession", physical, next, { brokerTargetTransition: { ...reset.brokerTargetTransition, verification: "unknown" } }), false);
+  const close = { brokerTargetTransition: { method: "device.disconnect", from: physical, to: null, verification: "closed_native_controller" } };
+  assert.equal(verifiedTargetTransition("device.disconnect", physical, undefined, close), true);
+  assert.equal(verifiedTargetTransition("device.disconnect", physical, demo, { brokerTargetTransition: { ...close.brokerTargetTransition, to: demo } }), true);
+  assert.equal(verifiedTargetTransition("device.disconnect", physical, next, { brokerTargetTransition: { ...close.brokerTargetTransition, to: next } }), false);
+  assert.equal(verifiedTargetTransition("device.disconnect", physical, undefined, { brokerTargetTransition: { ...close.brokerTargetTransition, to: undefined } }), false);
 });
 
 test("legacy readiness stays compatible and new demo readiness preserves USB truth", () => {
@@ -30,6 +46,9 @@ test("target switch metadata survives even when both targets stay ready", () => 
 });
 
 test("queued commands retain their admitted target across switches and ABA returns", () => {
+  assert.deepEqual(parseBrokerTarget({ ...demo }), demo);
+  assert.equal(parseBrokerTarget(undefined), undefined);
+  assert.throws(() => parseBrokerTarget(null));
   assert.doesNotThrow(() => assertBrokerTarget(undefined, undefined));
   assert.doesNotThrow(() => assertBrokerTarget(demo, { ...demo }));
   assert.throws(() => assertBrokerTarget(demo, physical), /target changed/);

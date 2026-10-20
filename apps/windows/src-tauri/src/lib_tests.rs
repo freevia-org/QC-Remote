@@ -1499,6 +1499,7 @@ fn gateway_with_concurrent_fake_broker() -> (
             broker_pid: 4242,
             intentional_release,
             participant_announced: true,
+            last_broker_target: None,
             lock_free_reads: Some(reads),
         }),
         ..Gateway::default()
@@ -1830,6 +1831,7 @@ fn a_late_lock_free_reply_never_reaches_the_request_in_flight() {
         broker_pid: 4242,
         intentional_release: flag,
         participant_announced: true,
+        last_broker_target: None,
         lock_free_reads: Some(reads),
     };
     assert_eq!(
@@ -1905,6 +1907,7 @@ fn gateway_with_fake_broker_result(result: Value) -> (Gateway, TcpStream) {
             broker_pid: 4242,
             intentional_release,
             participant_announced: false,
+            last_broker_target: None,
             lock_free_reads: None,
         }),
         ..Gateway::default()
@@ -4117,6 +4120,7 @@ fn typed_idle_reopen_refusal_updates_actual_gateway_readiness_without_replacing_
                 broker_pid: 4242,
                 intentional_release,
                 participant_announced: true,
+                last_broker_target: None,
                 lock_free_reads: None,
             }),
             ..Gateway::default()
@@ -4806,6 +4810,7 @@ fn an_older_brokers_unknown_hello_keeps_the_same_participant_transport_usable() 
         broker_pid: std::process::id(),
         intentional_release: flag,
         participant_announced: false,
+        last_broker_target: None,
         lock_free_reads: None,
     };
     assert!(process.announce_participant("QC Remote window").is_ok());
@@ -5094,6 +5099,7 @@ fn gateway_with_a_failed_writer_and_gated_release_reader(
             broker_pid: std::process::id(),
             intentional_release: flag.clone(),
             participant_announced: false,
+            last_broker_target: None,
             lock_free_reads: None,
         }),
         ..Gateway::default()
@@ -5453,6 +5459,7 @@ fn gateway_with_scripted_broker(
             broker_pid: 4242,
             intentional_release,
             participant_announced: true,
+            last_broker_target: None,
             lock_free_reads: Some(reads),
         }),
         descriptor_path: Some(descriptor_path.to_path_buf()),
@@ -5850,6 +5857,7 @@ fn gateway_with_admitting_broker(
             broker_pid: 4242,
             intentional_release,
             participant_announced: true,
+            last_broker_target: None,
             lock_free_reads: Some(reads),
         }),
         descriptor_path: Some(descriptor_path.to_path_buf()),
@@ -10661,4 +10669,65 @@ fn explicit_broker_disconnect_validates_the_device_disconnect_contract() {
         .unwrap()
         .request(DEVICE_BROKER_DISCONNECT_METHOD, json!({}))
         .is_err());
+}
+#[test]
+fn effective_demo_readiness_keeps_physical_usb_fact_and_refuses_malformed_identity() {
+    let status = json!({"targetReady":true, "brokerTarget":{"source":"demo","sessionId":"broker-1:demo-1","generation":1},
+        "usbDiagnostics":{"connected":false}});
+    let ready = target_readiness_from_status(&status);
+    assert!(ready.target_ready);
+    assert!(!ready.usb_connected);
+    assert_eq!(
+        ready.broker_target.unwrap().source,
+        qc_relay_client::BrokerTargetSource::Demo
+    );
+    let invalid = json!({"targetReady":true,"brokerTarget":{"source":"demo","sessionId":"","generation":0},"usbDiagnostics":{"connected":true}});
+    let refused = target_readiness_from_status(&invalid);
+    assert!(!refused.target_ready);
+    assert!(refused.usb_connected);
+    assert!(refused.broker_target.is_none());
+}
+#[test]
+fn array_result_keeps_its_demo_target_in_the_native_envelope() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (_peer, _) = listener.accept().unwrap();
+    let target = json!({"source":"demo","sessionId":"broker-1:demo-1","generation":1});
+    let mut frames = Vec::new();
+    write_frame(
+        &mut frames,
+        &serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1,"result":[1,2],"brokerTarget":target}))
+            .unwrap(),
+    )
+    .unwrap();
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let GatewayReader {
+        responses,
+        completed,
+    } = spawn_gateway_reader(std::io::Cursor::new(frames), None, flag.clone()).unwrap();
+    let mut process = GatewayProcess {
+        transport: GatewayTransport::SharedBroker {
+            stream,
+            hosted_child: None,
+            instance_id: "broker-1".into(),
+            release_marker_path: PathBuf::new(),
+        },
+        responses,
+        reader_completed: completed,
+        next_id: 1,
+        broker_pid: std::process::id(),
+        intentional_release: flag,
+        participant_announced: true,
+        last_broker_target: None,
+        lock_free_reads: None,
+    };
+    let result = process
+        .request_unchecked("test.array", json!({}))
+        .ok()
+        .unwrap();
+    assert_eq!(result, json!([1, 2]));
+    assert_eq!(
+        process.last_broker_target.as_ref().unwrap().source,
+        qc_relay_client::BrokerTargetSource::Demo
+    );
 }
