@@ -173,6 +173,42 @@ async fn adapters_without_target_pinning_refuse_guarded_calls_before_effects() {
     assert_eq!(adapter.0.load(AtomicOrdering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn a_result_before_the_next_ready_frame_is_fenced_by_a_fresh_local_target() {
+    struct SwitchingAdapter(std::sync::atomic::AtomicU64);
+    #[async_trait]
+    impl DeviceAdapter for SwitchingAdapter {
+        async fn ready(&self) -> bool { true }
+        async fn target_readiness(&self) -> TargetReadiness {
+            TargetReadiness {
+                target_ready: true,
+                usb_connected: false,
+                broker_target: Some(BrokerTarget {
+                    source: BrokerTargetSource::Demo,
+                    session_id: "demo-1".into(),
+                    generation: self.0.load(AtomicOrdering::SeqCst),
+                }),
+            }
+        }
+        async fn invoke(&self, _method: &str, _params: Value) -> Result<Value, DeviceError> {
+            // The adapter completes before any readiness timer gets another
+            // turn, but the original admitted target has already changed.
+            self.0.store(2, AtomicOrdering::SeqCst);
+            Ok(json!({"changed": true}))
+        }
+        async fn invoke_targeted(&self, method: &str, params: Value, _target: Option<BrokerTarget>, _resource: bool) -> Result<Value, DeviceError> {
+            self.invoke(method, params).await
+        }
+    }
+    let adapter = Arc::new(SwitchingAdapter(std::sync::atomic::AtomicU64::new(1)));
+    let expected = adapter.target_readiness().await.broker_target;
+    let invoking = AtomicBool::new(false);
+    let failure = invoke_with_deadline(adapter, "device.setMasterVolume", json!({}), Some(1000), Instant::now(), expected, false, &invoking).await.unwrap_err();
+    assert_eq!(failure.code, "WRITE_OUTCOME_AMBIGUOUS");
+    assert!(!failure.retryable);
+    assert!(failure.message.contains("target changed"));
+}
+
 const SOCKET_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const SOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const MANAGEMENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1056,7 +1092,25 @@ async fn invoke_with_deadline(
         return Err(error);
     };
     invoking.store(true, AtomicOrdering::Release);
-    let call = adapter.invoke_targeted(method, params, expected_broker_target, resource_read);
+    let call = async {
+        let result = adapter
+            .invoke_targeted(method, params, expected_broker_target.clone(), resource_read)
+            .await?;
+        // A call can finish before the next readiness publication. Check the
+        // authoritative local target now, before sending a successful result;
+        // the cloud's cached socket metadata alone cannot detect that race.
+        if let Some(expected) = expected_broker_target {
+            let current = adapter.target_readiness().await;
+            if !current.target_ready || current.broker_target.as_ref() != Some(&expected) {
+                return Err(admitted_request_failure(
+                    method,
+                    "BROKER_TARGET_CHANGED",
+                    "The broker target changed while the operation was pending",
+                ));
+            }
+        }
+        Ok(result)
+    };
     match tokio::time::timeout(remaining, call).await {
         Ok(result) => result,
         Err(_) => Err(admitted_request_failure(
