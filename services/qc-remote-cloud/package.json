@@ -11,7 +11,7 @@
     "deploy:dry": "npm run kv:configure:dry-run && wrangler deploy --dry-run -c wrangler.check.jsonc",
     "deploy": "npm run kv:configure && node scripts/apply-kv-namespace-id.mjs --verify-deployable && wrangler deploy -c wrangler.local.jsonc",
     "dev": "npm run kv:configure && wrangler dev -c wrangler.local.jsonc",
-    "test": "node --experimental-strip-types --test scripts/apply-kv-namespace-id.test.mjs tests/mcp-polling.test.ts",
+    "test": "node --experimental-strip-types --test scripts/apply-kv-namespace-id.test.mjs",
     "test:workers:kv-proxy": "tsc --noEmit -p tsconfig.workers-tests.json && vitest run --config vitest.kv-proxy.config.ts"
   },
   "devDependencies": {

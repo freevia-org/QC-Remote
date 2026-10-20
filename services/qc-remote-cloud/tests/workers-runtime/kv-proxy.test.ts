@@ -320,8 +320,8 @@ describe("OAuth provider lifecycle on the fenced Workerd KV binding", () => {
     const statusRead = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "get_qc_status", arguments: {} } };
     expect((await mcp(statusRead)).status).toBe(200);
     const repeated = await mcp(statusRead);
-    expect(repeated.status).toBe(429);
-    expect(Number(repeated.headers.get("retry-after"))).toBeGreaterThan(0);
+    // Consecutive explicit fresh reads must remain available to command guards.
+    expect(repeated.status).toBe(200);
     const forbiddenControl = await mcp({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "set_tempo", arguments: {
       bpm: 120, expected_tempo: 100, expected_preset_name: "Fixture", expected_preset_identity: "fixture-identity",
     } } });

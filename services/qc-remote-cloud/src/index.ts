@@ -25,7 +25,6 @@ import { fencedProviderEnv, accountDeletionDeadline, accountDeletionDenial, admi
 import { confirmAccountDeletion, continueAccountDeletion, showAccountDeletionConfirmation, showAccountDeletionStart, showAccountDeletionStatus, startAccountDeletionSignIn, type AccountDeletionWebDeps } from "./account-deletion-web.ts";
 import { clientFailure, htmlPageHeaders } from "./http-security.ts";
 import { enforceRateLimit } from "./rate-limit.ts";
-import { McpPollingBudget, limitMcpPolling, mcpPollingKey } from "./mcp-polling.ts";
 import { OAUTH_TOKEN_LIFETIMES } from "./oauth-lifetimes.ts";
 import { QC_SCOPES } from "./scopes.ts";
 import { NO_PAIRED_HOST } from "./device-selection.ts";
@@ -583,9 +582,6 @@ function toolResult(value: Json): { content: Array<{ type: "text"; text: string 
   return { content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
-// Bounded counters only, never cached authorization, device data or I/O handles.
-const mcpPollingBudget = new McpPollingBudget();
-
 async function observeMcpRequest(request: Request, env: Env, props: PrincipalProps, defer = false): Promise<McpObservation | undefined> {
   const token = bearer(request);
   if (!token || request.method !== "POST") return;
@@ -600,7 +596,7 @@ async function observeMcpRequest(request: Request, env: Env, props: PrincipalPro
   return observation;
 }
 
-function mcpHandler(env: Env, props: PrincipalProps, pollingKey?: string | null) {
+function mcpHandler(env: Env, props: PrincipalProps) {
   const scopes = new Set(props.scopes ?? []);
   const route = async (command: Json, requiredScope: "qc:read" | "qc:control"): Promise<Json> => {
     if (!props.subject) throw new Error("QC Remote identity is required");
@@ -616,8 +612,7 @@ function mcpHandler(env: Env, props: PrincipalProps, pollingKey?: string | null)
         throw new Error(`${reason.message} This assistant is signed in as ${props.email}.`);
       }
       throw reason;
-    } finally {
-      if (requiredScope === "qc:control" && pollingKey) mcpPollingBudget.control(pollingKey);
+
     }
   };
   // A resource callback passes RESOURCE_READ_ORIGIN; a tool never does.
@@ -741,7 +736,7 @@ const OAUTH_OPTIONS: OAuthProviderOptions<Env> = {
       if (admission === "deleting") return error(ACCOUNT_DELETION_PENDING_MESSAGE, 503);
     }
     // Admission records each authenticated client once; requests never renew it.
-    return mcpHandler(env, props, await mcpPollingKey(request))(request, env, ctx);
+    return mcpHandler(env, props)(request, env, ctx);
   } },
   defaultHandler: { async fetch(request, env, ctx) { return await handleGoogleAuthorization(request, env, grantFence(env)) ?? baseHandler.fetch!(request, env, ctx); } },
   authorizeEndpoint: "/authorize",
@@ -776,16 +771,7 @@ export default {
       url.pathname = "/mcp";
       request = new Request(url, request);
     }
-    const polling = await limitMcpPolling(request, mcpPollingBudget);
-    if (polling) return polling;
-    const response = await oauth.fetch(request, providerEnv(env), ctx);
-    // Failed credentials must not leave a read slot behind. Nothing here
-    // caches a successful credential or bypasses the provider's next check.
-    if (response.status === 401 || response.status === 403) {
-      const key = await mcpPollingKey(request);
-      if (key) mcpPollingBudget.forget(key);
-    }
-    return response;
+    return oauth.fetch(request, providerEnv(env), ctx);
   }
 };
 
