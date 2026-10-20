@@ -67,9 +67,11 @@ export async function invokeAppMcp(method: string, args: Record<string, unknown>
   }
   if (method === "system.status") options.onStatus?.(result);
   if (["device.reconnect", "device.resetSession", "device.disconnect"].includes(method)) {
+    const source = result?.source;
+    if (source !== undefined && source !== "device" && source !== "virtual") throw new Error("The paired host returned an unsupported connection source. Refresh before editing.");
     const runtime = await options.callTool("get_qc_status", {});
     options.onStatus?.(runtime);
-    return { phase: runtime.usbDiagnostics?.phase === "ready" ? "ready" : runtime.usbDiagnostics?.phase === "syncing" ? "syncing" : runtime.usbDiagnostics?.connected ? "opening" : "disconnected", detail: runtime.usbDiagnostics?.detail ?? "Remote host connection updated.", demo: false, source: "device", restarted: result?.restarted ?? result?.changed !== false };
+    return { phase: runtime.usbDiagnostics?.phase === "ready" ? "ready" : runtime.usbDiagnostics?.phase === "syncing" ? "syncing" : runtime.usbDiagnostics?.connected ? "opening" : "disconnected", detail: runtime.usbDiagnostics?.detail ?? "Remote host connection updated.", demo: false, source: source ?? "device", restarted: result?.restarted ?? result?.changed !== false };
   }
   return result;
 }

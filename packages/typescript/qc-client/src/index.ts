@@ -431,13 +431,19 @@ export type { GatewayTransport } from "./generated-gateway-transport.ts";
 import type { GatewayTransport } from "./generated-gateway-transport.ts";
 
 /**
- * Stamp `source: "device"` on every connection state a real device gateway
- * returns. The native brokers predate the field and never send it, so the
- * host-side transport adds it here rather than leaving it absent - an absent
- * source is not something a display may guess at.
+ * Preserve an explicit connection source; legacy native device brokers omit
+ * it and need the physical gateway default. Never derive source from `demo`:
+ * virtual workflows also use demo:false. Host-selected target metadata, when
+ * present, is separate from this gateway/provider source.
  */
 export function withDeviceConnectionSource<T extends GatewayTransport>(transport: T): T {
-  const stamp = async (state: Promise<ConnectionState>): Promise<ConnectionState> => ({ ...normalizeBrokerConnection(await state), source: "device" });
+  const stamp = async (state: Promise<ConnectionState>): Promise<ConnectionState> => {
+    const connection = normalizeBrokerConnection(await state);
+    if (connection.source !== undefined && connection.source !== "device" && connection.source !== "virtual") {
+      throw new Error("The device connection source is unsupported. Refresh before editing.");
+    }
+    return { ...connection, source: connection.source ?? "device" };
+  };
   return {
     ...transport,
     reconnect: () => stamp(transport.reconnect()),

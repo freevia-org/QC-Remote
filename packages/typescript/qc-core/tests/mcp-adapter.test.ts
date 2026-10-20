@@ -152,3 +152,24 @@ test('cloud validator rejects empty guards rather than substituting fresh state'
 function appMcpRequestForRecall() {
   return { setlist_key: '/user/Observed', position: 52, expected_preset_name: 'Observed name', expected_position: 53, expected_setlist_key: '/user/Observed', expected_preset_identity: 'Observed identity' };
 }
+
+
+test('connection actions preserve explicit source independently of demo:false', async () => {
+  for (const method of ['device.reconnect', 'device.resetSession', 'device.disconnect']) {
+    for (const source of ['virtual', 'device', undefined]) {
+      const result = await invokeAppMcp(method, {}, { accessMode: 'full', confirm: async () => true, callTool: async name => name === 'get_qc_status'
+        ? { usbDiagnostics: { phase: 'ready', connected: true } }
+        : { phase: 'ready', detail: 'Observed', demo: false, source, restarted: false } });
+      assert.equal(result.source, source ?? 'device');
+      assert.equal(result.restarted, false);
+    }
+  }
+});
+
+test('unsupported explicit host connection source is rejected without status retry', async () => {
+  const calls: string[] = [];
+  await assert.rejects(invokeAppMcp('device.reconnect', {}, { accessMode: 'full', confirm: async () => true, callTool: async name => {
+    calls.push(name); return { source: 'future' };
+  } }), /unsupported connection source/);
+  assert.deepEqual(calls, ['execute_qc_action']);
+});
