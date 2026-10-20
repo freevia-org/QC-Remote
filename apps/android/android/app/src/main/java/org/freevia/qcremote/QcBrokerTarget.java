@@ -23,11 +23,18 @@ final class QcBrokerTarget {
         if (target.length() != 3 || !("physical".equals(source) || "demo".equals(source))
                 || !(session instanceof String) || ((String) session).trim().isEmpty() || ((String) session).length() > 256
                 || !(generation instanceof Number)) throw new IllegalArgumentException("The broker target is invalid.");
-        double numeric = ((Number) generation).doubleValue();
-        long integer = ((Number) generation).longValue();
-        if (!Double.isFinite(numeric) || numeric != integer || integer < 1 || integer > 9007199254740991L)
-            throw new IllegalArgumentException("The broker target generation is invalid.");
+        long integer = generation(target, 1);
         return new QcBrokerTarget((String) source, (String) session, integer);
+    }
+
+    static long generation(JSONObject envelope, long minimum) {
+        Object value = envelope.opt("generation");
+        if (!(value instanceof Number)) throw new IllegalArgumentException("The generation must be a number.");
+        double numeric = ((Number) value).doubleValue();
+        long integer = ((Number) value).longValue();
+        if (!Double.isFinite(numeric) || numeric != integer || integer < minimum || integer > 9007199254740991L)
+            throw new IllegalArgumentException("The generation must be a safe integer.");
+        return integer;
     }
 
     JSONObject json() {

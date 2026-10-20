@@ -5,6 +5,18 @@ import org.json.JSONObject;
 import org.junit.Test;
 
 public class QcBrokerTargetTest {
+    @Test public void bridgeGenerationsAcceptParsedSmallJsonIntegersWithoutCoercingOtherTypes() throws Exception {
+        JSONObject small = new JSONObject("{\"generation\":1}");
+        assertTrue("The bridge's JSON decoder produces Integer for 1", small.get("generation") instanceof Integer);
+        assertEquals(1, QcBrokerTarget.generation(small, 0));
+        assertEquals(2147483648L, QcBrokerTarget.generation(new JSONObject("{\"generation\":2147483648}"), 0));
+        assertEquals(9007199254740991L, QcBrokerTarget.generation(new JSONObject("{\"generation\":9007199254740991}"), 0));
+        for (String raw : new String[]{"{}", "{\"generation\":null}", "{\"generation\":\"1\"}",
+                "{\"generation\":1.5}", "{\"generation\":-1}", "{\"generation\":9007199254740992}"}) {
+            try { QcBrokerTarget.generation(new JSONObject(raw), 0); fail(raw); }
+            catch (IllegalArgumentException expected) { /* Invalid generations cannot revive a pending request. */ }
+        }
+    }
     @Test public void queuedWorkCannotAdmitAgainstAReplacementTarget() {
         QcBrokerTarget.Registry registry = new QcBrokerTarget.Registry();
         QcBrokerTarget admitted = registry.select("physical", "usb", 1);
