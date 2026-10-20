@@ -402,7 +402,9 @@ public class QcUsbPlugin extends Plugin {
         CompletableFuture<org.json.JSONObject> invocation
     ) {
         RelayDeadline deadline = RELAY_DEADLINES.get(invocation);
-        return deadline == null ? CompletableFuture.completedFuture(null) : deadline.retirement();
+        // Demo futures have no USB deadline owner. Keep the relay's unpair/stop
+        // cancellation ownership until their exact provider invocation ends.
+        return deadline == null ? invocation.handle((result, error) -> (Void) null) : deadline.retirement();
     }
 
     private static void cancelDroppedRelayTasks(List<Runnable> dropped) {
