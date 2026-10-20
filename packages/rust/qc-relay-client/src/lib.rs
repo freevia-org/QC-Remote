@@ -178,7 +178,9 @@ async fn a_result_before_the_next_ready_frame_is_fenced_by_a_fresh_local_target(
     struct SwitchingAdapter(std::sync::atomic::AtomicU64);
     #[async_trait]
     impl DeviceAdapter for SwitchingAdapter {
-        async fn ready(&self) -> bool { true }
+        async fn ready(&self) -> bool {
+            true
+        }
         async fn target_readiness(&self) -> TargetReadiness {
             TargetReadiness {
                 target_ready: true,
@@ -196,14 +198,31 @@ async fn a_result_before_the_next_ready_frame_is_fenced_by_a_fresh_local_target(
             self.0.store(2, AtomicOrdering::SeqCst);
             Ok(json!({"changed": true}))
         }
-        async fn invoke_targeted(&self, method: &str, params: Value, _target: Option<BrokerTarget>, _resource: bool) -> Result<Value, DeviceError> {
+        async fn invoke_targeted(
+            &self,
+            method: &str,
+            params: Value,
+            _target: Option<BrokerTarget>,
+            _resource: bool,
+        ) -> Result<Value, DeviceError> {
             self.invoke(method, params).await
         }
     }
     let adapter = Arc::new(SwitchingAdapter(std::sync::atomic::AtomicU64::new(1)));
     let expected = adapter.target_readiness().await.broker_target;
     let invoking = AtomicBool::new(false);
-    let failure = invoke_with_deadline(adapter, "device.setMasterVolume", json!({}), Some(1000), Instant::now(), expected, false, &invoking).await.unwrap_err();
+    let failure = invoke_with_deadline(
+        adapter,
+        "device.setMasterVolume",
+        json!({}),
+        Some(1000),
+        Instant::now(),
+        expected,
+        false,
+        &invoking,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(failure.code, "WRITE_OUTCOME_AMBIGUOUS");
     assert!(!failure.retryable);
     assert!(failure.message.contains("target changed"));
@@ -1094,7 +1113,12 @@ async fn invoke_with_deadline(
     invoking.store(true, AtomicOrdering::Release);
     let call = async {
         let result = adapter
-            .invoke_targeted(method, params, expected_broker_target.clone(), resource_read)
+            .invoke_targeted(
+                method,
+                params,
+                expected_broker_target.clone(),
+                resource_read,
+            )
             .await?;
         // A call can finish before the next readiness publication. Check the
         // authoritative local target now, before sending a successful result;
