@@ -718,15 +718,23 @@ test('CI gates native jobs on the change filter and rebuilds them on master to k
     const next = ci.slice(bodyStart).search(/^  [a-z][a-z0-9-]*:\s*$/m);
     return next === -1 ? ci.slice(bodyStart) : ci.slice(bodyStart, bodyStart + next);
   };
-  for (const name of ['third-party-notices', 'typescript', 'cloud-relay']) {
-    assert.match(bodyOf(name), /^    if: github\.event_name == 'pull_request'$/m, `${name} must not rebuild protected master`);
+  assert.match(bodyOf('third-party-notices'), /^    if: github\.event_name == 'pull_request'$/m, 'third-party-notices must not rebuild protected master');
+  // TypeScript and the relay are pull-request only too, and are skipped (never
+  // dropped) when the filter says their inputs did not change; same fail-open rule.
+  for (const [name, output] of [['typescript', 'typescript'], ['cloud-relay', 'cloud']]) {
+    const body = bodyOf(name);
+    assert.match(body, /^    needs: changes$/m, `${name} must depend on the change filter`);
+    assert.ok(
+      body.includes(`    if: \${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.${output} != 'false') }}\n`),
+      `${name} must be pull-request only and carry the fail-open ${output} gate`,
+    );
   }
   // The native jobs also run on master, to refresh the Rust/Gradle caches that
   // pull requests restore. On a pull request they are skipped (never dropped)
   // when the change filter says nothing native changed, and they run unless
   // `changes` succeeded and answered exactly 'false' (fail open).
   const nativeGate = "if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}";
-  const nativeJobs = ['rust', 'rust-msrv', 'rust-windows-app', 'quadcortex-linux', 'android'];
+  const nativeJobs = ['rust', 'rust-msrv', 'rust-windows-app-static', 'rust-windows-app-tests', 'quadcortex-linux', 'android'];
   for (const name of nativeJobs) {
     const body = bodyOf(name);
     assert.match(body, /^    needs: changes$/m, `${name} must depend on the change filter`);

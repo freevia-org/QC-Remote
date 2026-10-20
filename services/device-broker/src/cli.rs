@@ -335,6 +335,12 @@ pub fn main(binary: Binary) {
         return;
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--tray-menu" || arg == "--tray-action")
+    {
+        crate::control::menu_main(&args, binary.default_directory);
+    }
     if mode(&args) == Mode::ResolveHostOnly {
         if crate::updater_relay::resolver_helper::serve(
             std::io::stdin().lock(),

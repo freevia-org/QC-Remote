@@ -13,6 +13,8 @@ pub(crate) enum WriteStallPolicy {
     WindowsQcError31,
     #[cfg(target_os = "macos")]
     MacosSerialized,
+    #[cfg(target_os = "macos")]
+    MacosQc880aControlStatusStall,
     #[cfg(target_os = "linux")]
     LinuxQc880aControlStatusEpipe,
 }

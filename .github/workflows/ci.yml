@@ -16,22 +16,33 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Decides whether a pull request needs the native jobs (Rust, Windows app,
-  # Android). Only a change confined to the safe set in scripts/ci-changes.mjs
-  # skips them. A job skipped by `if:` reports "Skipped", which branch protection
-  # accepts for a required check; `changes` itself is not required and fails
-  # open: if it errors or is skipped, the native jobs run.
+  # Decides which jobs a change needs: the native jobs (Rust, Windows app,
+  # Android), the TypeScript job and the Cloud relay job. Only a change confined
+  # to the matching skip set in scripts/ci-changes.mjs skips a job (legal
+  # records, documentation and qc-ui source skip the native jobs and the relay;
+  # markdown-only changes also skip TypeScript). A job skipped by `if:` reports
+  # "Skipped", which branch protection accepts for a required check, so no
+  # required check can stay pending; `changes` itself is not required and fails
+  # open: if it errors or is skipped, every job runs. Pushes to master are
+  # classified on what the push brought in (before..HEAD), so a legal-only merge
+  # does not rebuild the native caches either.
   changes:
-    name: Select native jobs
+    name: Select jobs
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       native: ${{ steps.filter.outputs.native }}
+      typescript: ${{ steps.filter.outputs.typescript }}
+      cloud: ${{ steps.filter.outputs.cloud }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2
+          # A pull request is the two-parent merge commit; a push needs the
+          # commits it brought in, which a rebase merge can make many.
+          fetch-depth: ${{ github.event_name == 'push' && 0 || 2 }}
       - id: filter
+        env:
+          QC_PUSH_BEFORE: ${{ github.event.before }}
         run: node scripts/ci-changes.mjs
 
   rust:
@@ -82,8 +93,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo +1.87 test -p quadcortex --locked
 
-  rust-windows-app:
-    name: Windows app (Rust backend)
+  # The Windows app used to be one 13 to 15 minute job. Its static checks and its
+  # native tests share nothing at run time, so they are two jobs that run side by
+  # side (the critical path is the tests job, about 9 minutes), and the job named
+  # below is the unchanged required context that is green exactly when both are.
+  rust-windows-app-static:
+    name: Windows app static checks (fmt, check, clippy, broker build)
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: windows-latest
@@ -125,8 +140,58 @@ jobs:
         working-directory: apps/windows/src-tauri
       - run: cargo clippy --locked --all-targets --features tray-sidecar -- -D warnings
         working-directory: apps/windows/src-tauri
+
+  rust-windows-app-tests:
+    name: Windows app native tests
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No clippy or rustfmt here: this job only builds and runs the tests.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Keeps the key (and so the cache already on master) of the job this
+          # one was split out of.
+          shared-key: rust-windows-app
+          # scripts/test-windows-native.mjs first builds the broker from the ROOT
+          # workspace (cargo build -p qc-device-broker, target/ at the repository
+          # root), then the app's own tests. Caching only the app left that root
+          # build compiling every dependency from source on each run (2m21s of
+          # the 9m36s test step in the 0.1.189 pull request run).
+          workspaces: |
+            . -> target
+            apps/windows/src-tauri -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - name: Stage check-only sidecar placeholders
+        working-directory: apps/windows/src-tauri
+        shell: pwsh
+        run: |
+          New-Item -ItemType File -Force binaries/qc-device-broker-x86_64-pc-windows-msvc.exe | Out-Null
       - name: Test the Windows shell with prebuilt broker and harness
         run: node scripts/test-windows-native.mjs --root .
+
+  # The required context "Windows app (Rust backend)", kept under its old name
+  # so branch protection needs no edit: green when the static checks and the
+  # native tests both passed (or both were skipped by the change filter). It
+  # runs for a few seconds after the slower of the two.
+  rust-windows-app:
+    name: Windows app (Rust backend)
+    needs:
+      - rust-windows-app-static
+      - rust-windows-app-tests
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless both Windows app jobs passed or were skipped together
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | .key + ": " + .value.result'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null
 
   quadcortex-linux:
     name: Quad Cortex crate docs and Linux tests
@@ -145,6 +210,8 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # Always runs on a pull request, including legal-only ones: it is the check
+  # that guards the legal records the native jobs only embed as bytes.
   third-party-notices:
     name: Third-party notices drift check
     if: github.event_name == 'pull_request'
@@ -173,7 +240,8 @@ jobs:
 
   typescript:
     name: TypeScript packages and apps
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.typescript != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -249,7 +317,8 @@ jobs:
 
   cloud-relay:
     name: Cloud relay (dry-run deploy)
-    if: github.event_name == 'pull_request'
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.cloud != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # services/qc-remote-cloud is an npm workspace of the root package.json and
@@ -328,3 +397,34 @@ jobs:
       - name: Gradle debug build and unit tests
         working-directory: apps/android/android
         run: ./gradlew assembleDebug testDebugUnitTest --no-daemon
+
+  # One context that is green exactly when no CI job failed or was cancelled
+  # (skipped jobs count as passing, which is what the path filters rely on).
+  # It always runs, so it can never stay pending. Branch protection can require
+  # just this check instead of ten job names, which also makes adding, renaming
+  # or conditionally skipping a job a workflow-only change. `changes` is left
+  # out on purpose: it fails open.
+  ci-result:
+    name: CI result
+    if: ${{ always() }}
+    needs:
+      - rust
+      - rust-msrv
+      - rust-windows-app-static
+      - rust-windows-app-tests
+      - rust-windows-app
+      - quadcortex-linux
+      - third-party-notices
+      - typescript
+      - public-history
+      - cloud-relay
+      - android
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any CI job failed or was cancelled
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | .key + ": " + .value.result'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null

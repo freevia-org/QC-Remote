@@ -6,6 +6,29 @@ use super::*;
 use crate::local_access::LocalClientLiveness;
 use std::io::Read;
 
+#[cfg(target_os = "macos")]
+#[test]
+fn claude_install_delivers_a_document_to_an_already_running_macos_app() {
+    let app = Path::new("/Applications/Claude.app/Contents/MacOS/Claude");
+    let document =
+        Path::new("/Users/test/Library/Application Support/QC Remote/QC-Remote-Claude.mcpb");
+    let command = desktop_document_command(app, document);
+    assert_eq!(command.get_program(), "/usr/bin/open");
+    let args: Vec<_> = command.get_args().collect();
+    assert_eq!(
+        args,
+        vec![
+            std::ffi::OsStr::new("-a"),
+            std::ffi::OsStr::new("/Applications/Claude.app"),
+            document.as_os_str()
+        ]
+    );
+    assert!(
+        !args.contains(&std::ffi::OsStr::new("--args")),
+        "argv would be ignored by an already-running Claude"
+    );
+}
+
 /// The fixture's own bound for whole-script checks: a cold Windows PowerShell
 /// or node start plus its script. Loaded CI runners exceeded the former 10s,
 /// so the run, not the product, timed out. A healthy run returns in seconds;
