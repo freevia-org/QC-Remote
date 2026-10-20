@@ -1114,6 +1114,7 @@ pub(crate) fn request_gateway(
 /// test of it covers the gateway half of either. `stopped` is a headless
 /// host's own stop flag: set, the call is refused before it starts and the
 /// connection is retired after it. A window has none and passes `None`.
+#[cfg(test)]
 pub(crate) fn relay_gateway_request(
     gateway: &Mutex<Gateway>,
     lock_free_reads: &LockFreeReadSlot,
@@ -1129,10 +1130,14 @@ pub(crate) fn relay_gateway_request(
         method,
         params,
         connection,
-        stopped,
-        admission,
+        RelayGatewayContext { stopped, admission },
         None,
     )
+}
+
+pub(crate) struct RelayGatewayContext<'a> {
+    pub(crate) stopped: Option<&'a std::sync::atomic::AtomicBool>,
+    pub(crate) admission: Option<&'a owned_blocking::Context>,
 }
 
 pub(crate) fn relay_gateway_request_targeted(
@@ -1141,12 +1146,14 @@ pub(crate) fn relay_gateway_request_targeted(
     method: &str,
     params: Value,
     connection: ConnectionUse,
-    stopped: Option<&std::sync::atomic::AtomicBool>,
-    admission: Option<&owned_blocking::Context>,
+    context: RelayGatewayContext<'_>,
     expected: Option<Value>,
 ) -> Result<Value, GatewayRequestFailure> {
-    let is_stopped =
-        || stopped.is_some_and(|stopped| stopped.load(std::sync::atomic::Ordering::Acquire));
+    let is_stopped = || {
+        context
+            .stopped
+            .is_some_and(|stopped| stopped.load(std::sync::atomic::Ordering::Acquire))
+    };
     let stopping = || GatewayRequestFailure::Transport("The MCP host is stopping".into());
     if is_stopped() {
         return Err(stopping());
@@ -1173,7 +1180,10 @@ pub(crate) fn relay_gateway_request_targeted(
             }
             // Cancellation and dispatch compete under the gateway's own lock.
             // Queued requests must not dispatch after their caller has left.
-            if admission.is_some_and(|admission| !admission.begin_dispatch()) {
+            if context
+                .admission
+                .is_some_and(|admission| !admission.begin_dispatch())
+            {
                 return Err(GatewayRequestFailure::Transport(
                     "The request ended before gateway dispatch".into(),
                 ));
@@ -1686,37 +1696,6 @@ impl GatewayProcess {
             }
             Err(error) => Err(error),
         }
-    }
-
-    fn announce_if_enabled_then_request(
-        &mut self,
-        enabled: bool,
-        provider: &str,
-        host_token: Option<&str>,
-        method: &str,
-        params: Value,
-        origin: Option<&str>,
-    ) -> Result<Value, GatewayRequestFailure> {
-        if enabled {
-            self.announce_participant_with(provider, host_token)?;
-        }
-        self.request_as(method, params, origin)
-    }
-
-    fn announce_then_request_targeted(
-        &mut self,
-        enabled: bool,
-        provider: &str,
-        host_token: Option<&str>,
-        method: &str,
-        params: Value,
-        origin: Option<&str>,
-        expected: Option<&Value>,
-    ) -> Result<Value, GatewayRequestFailure> {
-        if enabled {
-            self.announce_participant_with(provider, host_token)?;
-        }
-        self.request_targeted_as_within(method, params, origin, expected, GATEWAY_RESPONSE_TIMEOUT)
     }
 
     fn request(&mut self, method: &str, params: Value) -> Result<Value, GatewayRequestFailure> {
@@ -4524,23 +4503,24 @@ impl Gateway {
             )
         });
         let provider = self.participant_provider.unwrap_or("QC Remote window");
-        let result = self
-            .process
-            .as_mut()
-            .ok_or_else(|| {
-                GatewayRequestFailure::Transport(
-                    "Gateway process initialization did not produce a process".into(),
-                )
-            })?
-            .announce_then_request_targeted(
-                announce,
-                provider,
-                self.participant_host_token.as_deref(),
+        let process = self.process.as_mut().ok_or_else(|| {
+            GatewayRequestFailure::Transport(
+                "Gateway process initialization did not produce a process".into(),
+            )
+        })?;
+        let result = (|| {
+            if announce {
+                process
+                    .announce_participant_with(provider, self.participant_host_token.as_deref())?;
+            }
+            process.request_targeted_as_within(
                 method,
                 params,
                 origin,
                 self.expected_broker_target.as_ref(),
-            );
+                GATEWAY_RESPONSE_TIMEOUT,
+            )
+        })();
         // The broker's own refusal of a narrowed read (`dispatch_resource_read`
         // in `services/device-broker/src/rpc.rs`: -32002, `notConnected`) is
         // the same offline answer this gateway gives when it has nothing to
@@ -5013,6 +4993,7 @@ fn publish_gateway_readiness(connected: bool) {
 /// A contended lock says nothing about the device, so fall back to what the
 /// gateway last published rather than inventing a disconnection. Poisoning is
 /// different: the state behind it is not trustworthy, so that stays unready.
+#[cfg(test)]
 fn gateway_readiness(gateway: &Mutex<Gateway>) -> bool {
     gateway_readiness_with(gateway, &PUBLISHED_READINESS)
 }
@@ -5037,6 +5018,7 @@ fn gateway_readiness(gateway: &Mutex<Gateway>) -> bool {
 /// instead of scheduling around it, so a test added later cannot reintroduce
 /// the race by calling `.request(...)` - and the logic under test is this
 /// function either way.
+#[cfg(test)]
 fn gateway_readiness_with(
     gateway: &Mutex<Gateway>,
     published: &std::sync::atomic::AtomicBool,
@@ -5230,8 +5212,10 @@ impl WindowsRelayAdapter {
                                 &method_for_action,
                                 params,
                                 connection,
-                                None,
-                                Some(&admission),
+                                RelayGatewayContext {
+                                    stopped: None,
+                                    admission: Some(&admission),
+                                },
                                 expected,
                             )
                         },
