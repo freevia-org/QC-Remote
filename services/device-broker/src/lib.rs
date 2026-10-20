@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod control;
+mod demo_provider;
 pub mod device_lease;
 mod generated_broker_surface;
 pub mod orphan_guard;

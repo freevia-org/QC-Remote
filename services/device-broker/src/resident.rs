@@ -97,6 +97,11 @@ pub enum RemoteUnlink {
 pub enum DeviceReadiness {
     /// The session is open.
     Ready,
+    /// Effective target availability and physical USB fact are separate.
+    ReadyTarget {
+        usb_connected: bool,
+        target: crate::target::TargetIdentity,
+    },
     /// The broker is serving and the session is not open; `phase` is the
     /// worker's own phase (for example `disconnected`, also after an idle
     /// release, or `handshaking` while a connect runs).

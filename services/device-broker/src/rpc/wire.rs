@@ -18,6 +18,44 @@ pub(super) struct Request {
     /// broker rejects unknown envelope fields.
     #[serde(default)]
     pub(super) origin: Option<String>,
+    #[serde(default, rename = "physicalOnly")]
+    pub(super) physical_only: bool,
+    #[serde(
+        default,
+        rename = "expectedBrokerTarget",
+        deserialize_with = "deserialize_expected_target"
+    )]
+    pub(super) expected_broker_target: Option<crate::target::TargetIdentity>,
+}
+
+pub(super) fn parse_target_identity(value: Value) -> Result<crate::target::TargetIdentity, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Target {
+        source: crate::target::TargetSource,
+        session_id: String,
+        generation: u64,
+    }
+    let target: Target = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    if target.session_id.trim().is_empty()
+        || target.session_id.chars().count() > 512
+        || !(1..=9_007_199_254_740_991).contains(&target.generation)
+    {
+        return Err("Invalid broker target session id or generation".into());
+    }
+    Ok(crate::target::TargetIdentity {
+        source: target.source,
+        session_id: target.session_id,
+        generation: target.generation,
+    })
+}
+
+fn deserialize_expected_target<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::target::TargetIdentity>, D::Error> {
+    parse_target_identity(Value::deserialize(deserializer)?)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
 
 /// The `origin` value that marks an MCP resource read.

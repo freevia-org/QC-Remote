@@ -1,0 +1,447 @@
+//! Bounded reverse calls into one authenticated UI-owned demo session.
+//!
+//! This owns no simulation and never falls back to USB. The RPC layer supplies
+//! the authenticated connection id and an already-captured target lease.
+use crate::target::{TargetIdentity, TargetLease};
+use serde::Serialize;
+use serde_json::Value;
+use std::collections::VecDeque;
+use std::sync::{mpsc, Condvar, Mutex};
+use std::time::{Duration, Instant};
+
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const NEXT_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_PENDING: usize = 8;
+const MAX_PARAMS_BYTES: usize = 1024 * 1024;
+const MAX_REPLY_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Call {
+    pub target: TargetIdentity,
+    pub sequence: u64,
+    pub method: String,
+    pub params: Value,
+}
+
+struct Pending {
+    call: Call,
+    lease: TargetLease,
+    deadline: Instant,
+    delivered: bool,
+    admitted: bool,
+    response: mpsc::SyncSender<Result<Value, String>>,
+}
+
+#[derive(Default)]
+struct State {
+    owner: Option<(u64, String)>,
+    sequence: u64,
+    pending: VecDeque<Pending>,
+}
+
+#[derive(Default)]
+pub(crate) struct Hub {
+    state: Mutex<State>,
+    changed: Condvar,
+}
+
+impl Hub {
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn register(&self, connection: u64, session: String) -> Result<(), String> {
+        if session.trim().is_empty() || session.len() > 512 {
+            return Err("Demo session id must contain 1..512 UTF-8 bytes".into());
+        }
+        let mut state = self.lock();
+        if state.owner.is_some() {
+            return Err("A live UI already owns the demo provider".into());
+        }
+        state.owner = Some((connection, session));
+        self.changed.notify_all();
+        Ok(())
+    }
+
+    pub fn session(&self) -> Option<String> {
+        self.lock().owner.as_ref().map(|(_, id)| id.clone())
+    }
+
+    pub fn target_changed(&self) {
+        Self::prune(&mut self.lock());
+        self.changed.notify_all();
+    }
+
+    pub fn withdraw(&self, connection: u64) -> bool {
+        let retired = {
+            let mut state = self.lock();
+            if !state
+                .owner
+                .as_ref()
+                .is_some_and(|(id, _)| *id == connection)
+            {
+                return false;
+            }
+            state.owner = None;
+            std::mem::take(&mut state.pending)
+        };
+        // Dropping senders wakes all callers, outside the hub lock.
+        drop(retired);
+        self.changed.notify_all();
+        true
+    }
+
+    fn prune(state: &mut State) {
+        let now = Instant::now();
+        state.pending.retain(|pending| {
+            let current = now < pending.deadline && pending.lease.assert_current().is_ok();
+            if !current {
+                let _ = pending
+                    .response
+                    .try_send(Err("Demo target changed or request expired".into()));
+            }
+            current
+        });
+    }
+
+    fn owner_matches(state: &State, connection: u64) -> bool {
+        state
+            .owner
+            .as_ref()
+            .is_some_and(|(id, _)| *id == connection)
+    }
+
+    /// Queue once and wait against one original deadline. A late response is
+    /// discarded and this call is never retried against a different target.
+    pub fn invoke(&self, lease: TargetLease, method: &str, params: Value) -> Result<Value, String> {
+        self.invoke_with_timeout(lease, method, params, REQUEST_TIMEOUT)
+    }
+
+    fn invoke_with_timeout(
+        &self,
+        lease: TargetLease,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        let deadline = Instant::now() + timeout;
+        if serde_json::to_vec(&params)
+            .map_err(|e| e.to_string())?
+            .len()
+            > MAX_PARAMS_BYTES
+        {
+            return Err("Demo request exceeds 1 MiB".into());
+        }
+        lease.assert_current().map_err(|_| "Demo target changed")?;
+        let (response, receiver) = mpsc::sync_channel(1);
+        let sequence = {
+            let mut state = self.lock();
+            Self::prune(&mut state);
+            if !state.owner.as_ref().is_some_and(|(_, session)| {
+                lease.identity().source == crate::target::TargetSource::Demo
+                    && *session == lease.identity().session_id
+            }) {
+                return Err("Demo provider is unavailable for this target".into());
+            }
+            if state.pending.len() >= MAX_PENDING {
+                return Err("Demo provider request queue is full; request was not sent".into());
+            }
+            state.sequence = state
+                .sequence
+                .checked_add(1)
+                .ok_or("Demo sequence exhausted")?;
+            let sequence = state.sequence;
+            state.pending.push_back(Pending {
+                call: Call {
+                    target: lease.identity().clone(),
+                    sequence,
+                    method: method.into(),
+                    params,
+                },
+                lease: lease.clone(),
+                deadline,
+                delivered: false,
+                admitted: false,
+                response,
+            });
+            sequence
+        };
+        self.changed.notify_all();
+        let result = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        self.lock()
+            .pending
+            .retain(|pending| pending.call.sequence != sequence);
+        self.changed.notify_all();
+        lease
+            .assert_current()
+            .map_err(|_| "Demo target changed; result discarded")?;
+        result.map_err(|_| "Demo provider stopped or request deadline expired".to_string())?
+    }
+
+    pub fn next(&self, connection: u64, wait: Duration) -> Result<Option<Call>, String> {
+        let deadline = Instant::now() + wait.min(NEXT_TIMEOUT);
+        let mut state = self.lock();
+        loop {
+            if !Self::owner_matches(&state, connection) {
+                return Err("This connection does not own the demo provider".into());
+            }
+            Self::prune(&mut state);
+            // One outstanding delivered call: a second Next must not cause
+            // the UI to execute requests concurrently or execute one twice.
+            if state.pending.iter().any(|pending| pending.delivered) {
+                return Err("Reply to the delivered demo request before requesting another".into());
+            }
+            if let Some(pending) = state.pending.front_mut() {
+                pending
+                    .lease
+                    .assert_current()
+                    .map_err(|_| "Demo target changed")?;
+                pending.delivered = true;
+                return Ok(Some(pending.call.clone()));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            state = self
+                .changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+    }
+
+    pub fn admit(
+        &self,
+        connection: u64,
+        target: &TargetIdentity,
+        sequence: u64,
+    ) -> Result<bool, String> {
+        let mut state = self.lock();
+        Self::prune(&mut state);
+        if !Self::owner_matches(&state, connection) {
+            return Err("This connection does not own the demo provider".into());
+        }
+        let Some(pending) = state
+            .pending
+            .iter_mut()
+            .find(|p| p.call.sequence == sequence)
+        else {
+            return Ok(false);
+        };
+        if !pending.delivered || pending.call.target != *target {
+            return Err("Demo request cannot be admitted with this identity/state".into());
+        }
+        pending
+            .lease
+            .assert_current()
+            .map_err(|_| "Demo target changed")?;
+        pending.admitted = true;
+        Ok(true)
+    }
+
+    pub fn reply(
+        &self,
+        connection: u64,
+        target: &TargetIdentity,
+        sequence: u64,
+        result: Result<Value, String>,
+    ) -> Result<bool, String> {
+        let bytes = match &result {
+            Ok(value) => serde_json::to_vec(value).map_err(|e| e.to_string())?.len(),
+            Err(message) => message.len(),
+        };
+        if bytes > MAX_REPLY_BYTES {
+            return Err("Demo reply exceeds 16 MiB".into());
+        }
+        let pending = {
+            let mut state = self.lock();
+            Self::prune(&mut state);
+            if !Self::owner_matches(&state, connection) {
+                return Err("This connection does not own the demo provider".into());
+            }
+            let Some(index) = state
+                .pending
+                .iter()
+                .position(|p| p.call.sequence == sequence)
+            else {
+                return Ok(false);
+            };
+            let pending = &state.pending[index];
+            if !pending.admitted || pending.call.target != *target {
+                return Err("Demo reply does not match an admitted request".into());
+            }
+            pending
+                .lease
+                .assert_current()
+                .map_err(|_| "Demo target changed")?;
+            state
+                .pending
+                .remove(index)
+                .expect("located pending request")
+        };
+        let accepted = pending.response.try_send(result).is_ok();
+        self.changed.notify_all();
+        Ok(accepted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::target::TargetRegistry;
+    use std::sync::Arc;
+
+    fn fixture() -> (Arc<Hub>, TargetRegistry) {
+        let hub = Arc::new(Hub::default());
+        hub.register(1, "window-session".into()).unwrap();
+        let targets = TargetRegistry::default();
+        targets.update(None, hub.session()).unwrap();
+        (hub, targets)
+    }
+
+    fn call(
+        hub: Arc<Hub>,
+        targets: &TargetRegistry,
+    ) -> std::thread::JoinHandle<Result<Value, String>> {
+        let lease = targets.admit(None).unwrap();
+        std::thread::spawn(move || {
+            hub.invoke_with_timeout(
+                lease,
+                "device.snapshot",
+                Value::Null,
+                Duration::from_secs(2),
+            )
+        })
+    }
+
+    #[test]
+    fn registration_is_exclusive_and_withdrawal_is_connection_owned() {
+        let (hub, _) = fixture();
+        assert!(hub.register(2, "other".into()).is_err());
+        assert!(!hub.withdraw(2));
+        assert_eq!(hub.session().as_deref(), Some("window-session"));
+        assert!(hub.withdraw(1));
+        hub.register(2, "replacement".into()).unwrap();
+        assert!(!hub.withdraw(1));
+        assert_eq!(hub.session().as_deref(), Some("replacement"));
+        assert!(hub.next(1, Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn a_request_is_delivered_admitted_and_answered_exactly_once() {
+        let (hub, targets) = fixture();
+        let caller = call(hub.clone(), &targets);
+        let next = hub.next(1, Duration::from_secs(1)).unwrap().unwrap();
+        assert_eq!(next.method, "device.snapshot");
+        assert_eq!(next.target, targets.identity().unwrap());
+        assert!(hub.next(1, Duration::ZERO).is_err());
+        assert!(hub.admit(2, &next.target, next.sequence).is_err());
+        assert!(hub
+            .reply(1, &next.target, next.sequence, Ok(Value::Null))
+            .is_err());
+        hub.admit(1, &next.target, next.sequence).unwrap();
+        assert!(hub.admit(1, &next.target, next.sequence).unwrap());
+        let value = serde_json::json!({"sessionId":"window-session", "name":"shared UI preset"});
+        hub.reply(1, &next.target, next.sequence, Ok(value.clone()))
+            .unwrap();
+        assert_eq!(caller.join().unwrap().unwrap(), value);
+        assert!(!hub
+            .reply(1, &next.target, next.sequence, Ok(Value::Null))
+            .unwrap());
+        assert!(hub.next(1, Duration::ZERO).unwrap().is_none());
+    }
+
+    #[test]
+    fn hotplug_rejects_delayed_demo_admission_and_never_retargets_the_call() {
+        let (hub, targets) = fixture();
+        let caller = call(hub.clone(), &targets);
+        let next = hub.next(1, Duration::from_secs(1)).unwrap().unwrap();
+        targets
+            .update(Some("physical-session".into()), hub.session())
+            .unwrap();
+        assert!(!hub.admit(1, &next.target, next.sequence).unwrap());
+        assert!(caller.join().unwrap().is_err());
+        assert!(hub.next(1, Duration::ZERO).unwrap().is_none());
+        targets.update(None, hub.session()).unwrap();
+        assert_ne!(targets.identity().unwrap(), next.target);
+        assert!(!hub
+            .reply(1, &next.target, next.sequence, Ok(Value::Null))
+            .unwrap());
+    }
+
+    #[test]
+    fn disconnect_wakes_admitted_callers_and_late_replies_cannot_enter_a_new_session() {
+        let (hub, targets) = fixture();
+        let caller = call(hub.clone(), &targets);
+        let next = hub.next(1, Duration::from_secs(1)).unwrap().unwrap();
+        hub.admit(1, &next.target, next.sequence).unwrap();
+        assert!(hub.withdraw(1));
+        assert!(caller.join().unwrap().is_err());
+        hub.register(2, "new-window".into()).unwrap();
+        targets.update(None, hub.session()).unwrap();
+        assert!(hub
+            .reply(1, &next.target, next.sequence, Ok(Value::Null))
+            .is_err());
+        assert!(hub.next(2, Duration::ZERO).unwrap().is_none());
+    }
+
+    #[test]
+    fn timeout_retires_the_request_instead_of_accepting_a_late_reply() {
+        let (hub, targets) = fixture();
+        assert!(hub
+            .invoke_with_timeout(
+                targets.admit(None).unwrap(),
+                "device.snapshot",
+                Value::Null,
+                Duration::ZERO
+            )
+            .is_err());
+        assert!(hub.next(1, Duration::ZERO).unwrap().is_none());
+    }
+
+    #[test]
+    fn saturation_refuses_the_ninth_call_and_withdrawal_retires_every_waiter() {
+        let (hub, targets) = fixture();
+        std::thread::scope(|scope| {
+            let callers: Vec<_> = (0..MAX_PENDING)
+                .map(|_| {
+                    let hub = hub.clone();
+                    let lease = targets.admit(None).unwrap();
+                    scope.spawn(move || {
+                        hub.invoke_with_timeout(
+                            lease,
+                            "device.snapshot",
+                            Value::Null,
+                            Duration::from_secs(3),
+                        )
+                    })
+                })
+                .collect();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let mut state = hub.lock();
+            while state.pending.len() != MAX_PENDING {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                assert!(
+                    !remaining.is_zero(),
+                    "callers did not reach the bounded queue"
+                );
+                state = hub.changed.wait_timeout(state, remaining).unwrap().0;
+            }
+            drop(state);
+            let refused = hub.invoke_with_timeout(
+                targets.admit(None).unwrap(),
+                "device.snapshot",
+                Value::Null,
+                Duration::from_secs(1),
+            );
+            assert!(refused.unwrap_err().contains("queue is full"));
+            assert!(hub.withdraw(1));
+            for caller in callers {
+                assert!(caller.join().unwrap().is_err());
+            }
+            assert!(hub.lock().pending.is_empty());
+        });
+    }
+}

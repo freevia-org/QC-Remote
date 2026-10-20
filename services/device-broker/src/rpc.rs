@@ -646,6 +646,8 @@ fn handle_with_disconnect_admission(
             capabilities.push("hostMidiPerformance");
             capabilities.push("multiDeviceSelection");
             capabilities.push(RESOURCE_READ_ORIGIN_CAPABILITY);
+            capabilities.push("physicalTargetOrigin");
+            capabilities.push("expectedBrokerTarget");
             Ok(json!({
                 "platform": "Rust device gateway",
                 "gatewayAvailable": true,
@@ -3880,6 +3882,7 @@ fn authenticate_tcp_client_before(
     let role = match frame.get("params").and_then(|params| params.get("role")) {
         None => AuthenticatedAs::Participant,
         Some(Value::String(role)) if role == CONTROL_ROLE => AuthenticatedAs::Control,
+        Some(Value::String(role)) if role == DEMO_PROVIDER_ROLE => AuthenticatedAs::DemoProvider,
         Some(_) => {
             let _ = write_response(
                 stream,
@@ -3895,6 +3898,9 @@ fn authenticate_tcp_client_before(
     let result = match role {
         AuthenticatedAs::Participant => json!({"instanceId": instance_id}),
         AuthenticatedAs::Control => json!({"instanceId": instance_id, "role": CONTROL_ROLE}),
+        AuthenticatedAs::DemoProvider => {
+            json!({"instanceId": instance_id, "role": DEMO_PROVIDER_ROLE})
+        }
     };
     if write_response(
         stream,
@@ -3912,6 +3918,7 @@ fn authenticate_tcp_client_before(
 enum AuthenticatedAs {
     Participant,
     Control,
+    DemoProvider,
 }
 
 /// The role `qc-device-broker.exe --control` declares in `broker.authenticate`
@@ -3920,6 +3927,7 @@ enum AuthenticatedAs {
 /// clock, is not listed to observers, and may call only the
 /// `CONTROL_METHODS`. See `crate::control`.
 pub(crate) const CONTROL_ROLE: &str = "control";
+const DEMO_PROVIDER_ROLE: &str = "demoProvider";
 /// Read-only: the broker's own accounting, from caches. No USB, no clock.
 pub(crate) const BROKER_CONTROL_STATUS_METHOD: &str = "broker.controlStatus";
 /// The icon's Disconnect without its exit: see [`BrokerHandle::release_devices_staying`].
@@ -3959,6 +3967,117 @@ const CONTROL_METHODS: [&str; 6] = [
 /// One request from one TCP client: the broker-level methods answered here,
 /// everything else through `handle`, under the broker-wide request lock
 /// unless `runs_without_request_lock` exempts it.
+fn dispatch_demo_provider_request(
+    shared: &BrokerShared,
+    connection: u64,
+    request: Request,
+) -> Value {
+    let result = (|| -> Result<Value, String> {
+        if shared
+            .clients
+            .lock_recover()
+            .connections
+            .get(&connection)
+            .is_none_or(|row| row.demo_provider_closed)
+        {
+            return Err("Demo provider connection has ended".into());
+        }
+        if request.jsonrpc != "2.0" || request.id.as_u64().is_none_or(|id| id == 0) {
+            return Err("Invalid JSON-RPC request".into());
+        }
+        let params = request
+            .params
+            .as_object()
+            .ok_or("Demo params must be an object")?;
+        shared.refresh_targets();
+        match request.method.as_str() {
+            "broker.demoRegister" => {
+                if params.len() != 1 {
+                    return Err("Register takes exactly sessionId".into());
+                }
+                let id = params
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .ok_or("Missing sessionId")?;
+                if id.trim().is_empty() || id.len() > 512 {
+                    return Err("Invalid sessionId".into());
+                }
+                // A registration is never identified by a persisted/UI-chosen
+                // id: even re-registration on the same socket has a new lease.
+                let session = format!("{}:demo:{}", shared.instance_id, generate_token(16));
+                shared.demo.register(connection, session.clone())?;
+                shared.refresh_targets();
+                Ok(json!({"target":shared.targets.identity(),"providerSessionId":session}))
+            }
+            "broker.demoNext" => {
+                if !params.is_empty() {
+                    return Err("Next takes no params".into());
+                }
+                serde_json::to_value(
+                    shared
+                        .demo
+                        .next(connection, crate::demo_provider::NEXT_TIMEOUT)?,
+                )
+                .map_err(|e| e.to_string())
+            }
+            "broker.demoWithdraw" => {
+                if !params.is_empty() {
+                    return Err("Withdraw takes no params".into());
+                }
+                let withdrawn = shared.demo.withdraw(connection);
+                shared.refresh_targets();
+                Ok(json!({"withdrawn":withdrawn}))
+            }
+            "broker.demoAdmit" | "broker.demoReply" => {
+                let target = wire::parse_target_identity(
+                    params.get("target").cloned().ok_or("Missing target")?,
+                )?;
+                let sequence = params
+                    .get("sequence")
+                    .and_then(Value::as_u64)
+                    .ok_or("Missing sequence")?;
+                if request.method == "broker.demoAdmit" {
+                    if params.len() != 2 {
+                        return Err("Admit takes target and sequence".into());
+                    }
+                    let admitted = shared.demo.admit(connection, &target, sequence)?;
+                    Ok(
+                        json!({"admitted":admitted,"reason":if admitted { "current" } else { "superseded" }}),
+                    )
+                } else {
+                    if params.len() != 3 {
+                        return Err("Reply takes target, sequence and result or error".into());
+                    }
+                    let response = match (params.get("result"), params.get("error")) {
+                        (Some(value), None) => json!({"result":value}),
+                        (None, Some(value))
+                            if value.get("code").and_then(Value::as_i64).is_some()
+                                && value.get("message").and_then(Value::as_str).is_some() =>
+                        {
+                            json!({"error":value})
+                        }
+                        _ => {
+                            return Err("Reply requires exactly one result or JSON-RPC error".into())
+                        }
+                    };
+                    let accepted =
+                        shared
+                            .demo
+                            .reply(connection, &target, sequence, Ok(response))?;
+                    Ok(
+                        json!({"accepted":accepted,"reason":if accepted { "current" } else { "superseded" }}),
+                    )
+                }
+            }
+            _ => Err("This method is not available to a demoProvider connection".into()),
+        }
+    })();
+    match result {
+        Ok(value) => json!({"jsonrpc":"2.0","id":request.id,"result":value}),
+        Err(message) => error(request.id, -32002, &message),
+    }
+}
+
 #[cfg(test)]
 fn dispatch_broker_request(shared: &BrokerShared, request: Request) -> Value {
     dispatch_broker_client_request(shared, None, request)
@@ -3969,6 +4088,17 @@ fn dispatch_broker_client_request(
     connection_id: Option<u64>,
     mut request: Request,
 ) -> Value {
+    if let Some(id) = connection_id.filter(|id| shared.clients.lock_recover().is_demo_provider(*id))
+    {
+        return dispatch_demo_provider_request(shared, id, request);
+    }
+    if request.method.starts_with("broker.demo") {
+        return error(
+            request.id,
+            -32601,
+            "A dedicated demoProvider connection is required",
+        );
+    }
     // A control connection is served by `dispatch_control_request` alone.
     // Anything that reaches this from one (the reader answers `system.status`
     // itself) is refused: it is not a participant, so no request of its may
@@ -3979,6 +4109,72 @@ fn dispatch_broker_client_request(
             -32601,
             "This method is not available to a control connection",
         );
+    }
+    // Demo calls remain pinned to the UI provider; physical-only GUI calls
+    // never enter this route, including during physical discovery.
+    shared.refresh_targets();
+    if request.physical_only
+        && request
+            .expected_broker_target
+            .as_ref()
+            .is_some_and(|target| target.source != crate::target::TargetSource::Physical)
+    {
+        return error(
+            request.id,
+            -32002,
+            "A physical-only request cannot use a demo identity",
+        );
+    }
+    if request.method == "system.status" && request.origin.as_deref() != Some(RESOURCE_READ_ORIGIN)
+    {
+        let controller = shared.controller_for(connection_id);
+        let mut response = handle(&controller, &shared.performance_midi, request);
+        if let Some(result) = response.get_mut("result") {
+            let target = shared.targets.identity();
+            result["targetReady"] = json!(target.is_some());
+            if let Some(target) = target {
+                result["brokerTarget"] = json!(target);
+            }
+        }
+        return response;
+    }
+    if request
+        .expected_broker_target
+        .as_ref()
+        .is_some_and(|expected| shared.targets.identity().as_ref() != Some(expected))
+    {
+        return error(
+            request.id,
+            -32002,
+            "Broker target changed; request was not sent",
+        );
+    }
+    if !request.physical_only
+        && generated_gateway::broker_dispatch(&request.method).is_some()
+        && shared
+            .targets
+            .identity()
+            .is_some_and(|target| target.source == crate::target::TargetSource::Demo)
+    {
+        if request.origin.as_deref() == Some(RESOURCE_READ_ORIGIN)
+            && !resource_read_may_reach(&request.method)
+        {
+            return error(request.id, -32601, "This method is not a resource read");
+        }
+        let result = shared
+            .targets
+            .admit(request.expected_broker_target.as_ref())
+            .map_err(|_| "Broker target changed; request was not sent".to_string())
+            .and_then(|lease| shared.demo.invoke(lease, &request.method, request.params));
+        shared.refresh_targets();
+        return match result {
+            Ok(mut envelope) => {
+                envelope["jsonrpc"] = json!("2.0");
+                envelope["id"] = request.id;
+                envelope
+            }
+            Err(message) => error(request.id, -32002, &message),
+        };
     }
     // Before every other branch: a resource read reaches none of them, so no
     // broker-level method (a `broker.selectDevice` with `autoConnect`, say)
@@ -4184,7 +4380,18 @@ fn dispatch_broker_client_request(
         });
     }
     if runs_without_request_lock(&request.method) {
-        return handle(&controller, &shared.performance_midi, request);
+        let expected = request.expected_broker_target.clone();
+        if !shared.target_matches(expected.as_ref()) {
+            return error(
+                request.id,
+                -32002,
+                "Broker target changed; request was not sent",
+            );
+        }
+        return shared.fence_result(
+            expected.as_ref(),
+            handle(&controller, &shared.performance_midi, request),
+        );
     }
     if request.method == generated_gateway::rpc::DISCONNECT {
         shared.test_point("disconnect:after_precheck");
@@ -4266,6 +4473,20 @@ fn dispatch_broker_client_request(
             .lock_recover()
             .forget_idle_release(&controller);
     }
+    let expected = request.expected_broker_target.clone();
+    if !shared.target_matches(expected.as_ref()) {
+        return error(
+            request.id,
+            -32002,
+            "Broker target changed; request was not sent",
+        );
+    }
+    let changes_session = matches!(
+        request.method.as_str(),
+        generated_gateway::rpc::RECONNECT
+            | generated_gateway::rpc::RESET_SESSION
+            | generated_gateway::rpc::DISCONNECT
+    );
     let response = handle_with_disconnect_admission(
         &controller,
         &shared.performance_midi,
@@ -4280,7 +4501,11 @@ fn dispatch_broker_client_request(
         clients.forget_idle_release(&controller);
         shared.observer_changed.notify_all();
     }
-    response
+    if changes_session {
+        response
+    } else {
+        shared.fence_result(expected.as_ref(), response)
+    }
 }
 
 /// Reconcile an idle close published while a participant waited for
@@ -4399,7 +4624,18 @@ fn dispatch_resource_read(
     if !controller.status().connected {
         return idle_reopen_error(request.id, NOT_OPEN);
     }
-    handle(&controller, &shared.performance_midi, request)
+    let expected = request.expected_broker_target.clone();
+    if !shared.target_matches(expected.as_ref()) {
+        return error(
+            request.id,
+            -32002,
+            "Broker target changed; request was not sent",
+        );
+    }
+    shared.fence_result(
+        expected.as_ref(),
+        handle(&controller, &shared.performance_midi, request),
+    )
 }
 
 /// Commit while holding the accounting lock after waiting for device work.
@@ -4735,7 +4971,10 @@ fn serve_registered_tcp_connection(
         return;
     };
     // A control connection is nobody's session: no state frames for it.
-    let control = shared.clients.lock_recover().is_control(connection_id);
+    let control = {
+        let clients = shared.clients.lock_recover();
+        clients.is_control(connection_id) || clients.is_demo_provider(connection_id)
+    };
     let events = Mutex::new(
         (!control).then(|| Arc::new(ConnectionSubscription::of(Arc::clone(&shared.controller)))),
     );
@@ -4890,7 +5129,8 @@ fn serve_registered_tcp_connection(
         let reader = thread::Builder::new()
             .name("qc-broker-tcp-reader".into())
             .spawn_scoped(scope, move || {
-                while let Ok(Some(request)) = read_request(&mut input) {
+                while let Ok(Some(mut request)) = read_request(&mut input) {
+                    shared.capture_request_target(&mut request);
                     let response = if answers_beside_running_request(&request.method) {
                         dispatch_broker_client_request(shared, Some(connection_id), request)
                     } else {
@@ -4907,6 +5147,15 @@ fn serve_registered_tcp_connection(
                         let _ = writer.shutdown(std::net::Shutdown::Both);
                         break;
                     }
+                }
+                {
+                    let mut clients = shared.clients.lock_recover();
+                    if let Some(row) = clients.connections.get_mut(&connection_id) {
+                        row.demo_provider_closed = true;
+                    }
+                }
+                if shared.demo.withdraw(connection_id) {
+                    shared.refresh_targets();
                 }
                 // Dropping `queued_tx` here lets the queue finish what was
                 // already admitted, then end, as an EOF always did.
@@ -5176,6 +5425,8 @@ struct ConnectionInfo {
     /// observer, for the whole life of the connection (a control connection
     /// cannot send `broker.hello`).
     control: bool,
+    demo_provider: bool,
+    demo_provider_closed: bool,
 }
 
 impl ConnectionInfo {
@@ -5184,7 +5435,10 @@ impl ConnectionInfo {
     /// not distinguish a participant from a socket still authenticating.
     /// A control connection is never one.
     fn is_participant(&self) -> bool {
-        self.authenticated && !self.control && matches!(self.role, ConnectionRole::Participant)
+        self.authenticated
+            && !self.control
+            && !self.demo_provider
+            && matches!(self.role, ConnectionRole::Participant)
     }
 }
 
@@ -5247,6 +5501,8 @@ fn connection_hello(params: &Value) -> Result<ConnectionInfo, &'static str> {
         },
         // A control connection never reaches hello (`CONTROL_METHODS`).
         control: false,
+        demo_provider: false,
+        demo_provider_closed: false,
     })
 }
 
@@ -5329,6 +5585,12 @@ impl ClientAccounting {
         self.connections.get(&id).is_some_and(|row| row.control)
     }
 
+    fn is_demo_provider(&self, id: u64) -> bool {
+        self.connections
+            .get(&id)
+            .is_some_and(|row| row.authenticated && row.demo_provider)
+    }
+
     fn is_observer(&self, id: u64) -> bool {
         self.connections
             .get(&id)
@@ -5370,7 +5632,7 @@ impl ClientAccounting {
     fn authenticated_rows(&self) -> Vec<Value> {
         self.connections
             .values()
-            .filter(|row| row.authenticated && !row.control)
+            .filter(|row| row.authenticated && !row.control && !row.demo_provider)
             .map(|row| json!({"provider":row.provider,"role":row.role.wire_name()}))
             .collect()
     }
@@ -5573,6 +5835,8 @@ struct BrokerShared {
     observer_changed: Condvar,
     background: background::Manager,
     observer_actions: background::Manager,
+    demo: crate::demo_provider::Hub,
+    targets: crate::target::TargetRegistry,
     /// Duration of a policy minute, injected only by in-module tests.
     observer_minute: Duration,
 }
@@ -5600,6 +5864,62 @@ struct DisconnectDevicesReport {
 }
 
 impl BrokerShared {
+    fn capture_request_target(&self, request: &mut Request) {
+        if request.physical_only
+            || request.expected_broker_target.is_some()
+            || request.method == "system.status"
+            || generated_gateway::broker_dispatch(&request.method).is_none()
+        {
+            return;
+        }
+        self.refresh_targets();
+        if let Some(target) = self.targets.identity() {
+            request.expected_broker_target = Some(target);
+        } else {
+            // Preserve existing physical open/reopen behavior while ensuring
+            // that a demo window appearing later cannot take this queued call.
+            request.physical_only = true;
+        }
+    }
+
+    fn target_matches(&self, expected: Option<&crate::target::TargetIdentity>) -> bool {
+        self.refresh_targets();
+        expected.is_none_or(|expected| self.targets.identity().as_ref() == Some(expected))
+    }
+
+    fn fence_result(
+        &self,
+        expected: Option<&crate::target::TargetIdentity>,
+        response: Value,
+    ) -> Value {
+        if self.target_matches(expected) {
+            return response;
+        }
+        json!({"jsonrpc":"2.0","id":response["id"],"error":{
+            "code":-32002,"message":"Broker target changed while the request ran; result discarded. Do not replay this request on another target.",
+            "data":{"code":"BROKER_TARGET_SUPERSEDED","requestSent":true,"retryable":false}
+        }})
+    }
+
+    fn refresh_targets(&self) {
+        let status = self.controller.status();
+        let physical = (status.connected && status.synchronized).then(|| {
+            format!(
+                "{}:physical:{}:{}",
+                self.instance_id,
+                self.controller.device_id().unwrap_or_default(),
+                status.session_epoch
+            )
+        });
+        if self
+            .targets
+            .update(physical, self.demo.session())
+            .unwrap_or(false)
+        {
+            self.demo.target_changed();
+        }
+    }
+
     fn controller_for(&self, connection_id: Option<u64>) -> Arc<DeviceController> {
         connection_id
             .and_then(|id| {
@@ -6158,10 +6478,16 @@ impl BrokerShared {
                     row.output = Some(output);
                 }
             }
-            if role == AuthenticatedAs::Control || clients.is_control(connection_id) {
+            if matches!(
+                role,
+                AuthenticatedAs::Control | AuthenticatedAs::DemoProvider
+            ) || clients.is_control(connection_id)
+                || clients.is_demo_provider(connection_id)
+            {
                 if let Some(row) = clients.connections.get_mut(&connection_id) {
                     row.authenticated = true;
-                    row.control = true;
+                    row.control = role == AuthenticatedAs::Control || row.control;
+                    row.demo_provider = role == AuthenticatedAs::DemoProvider || row.demo_provider;
                 }
                 // No clock moves, but the backstop watcher was woken by this
                 // socket's accept and parked while it was authenticating
@@ -6363,13 +6689,16 @@ impl BrokerShared {
     }
 
     fn detach_client(self: &Arc<Self>, connection_id: u64) {
+        if self.demo.withdraw(connection_id) {
+            self.refresh_targets();
+        }
         let previous = self.controller_for(Some(connection_id));
         let (control, arm) = {
             let mut clients = self.clients.lock_recover();
             let control = clients
                 .connections
                 .remove(&connection_id)
-                .is_some_and(|row| row.control);
+                .is_some_and(|row| row.control || row.demo_provider);
             clients.count -= 1;
             let arm = if clients.count != 0 {
                 if !control {
@@ -6698,12 +7027,24 @@ impl BrokerHandle {
                 "the device broker is shutting down".into(),
             );
         }
+        self.0.refresh_targets();
         let (connected, phase) = self.0.controller.connection_readiness();
-        if connected {
+        if let Some(target) = self.0.targets.identity() {
+            crate::resident::DeviceReadiness::ReadyTarget {
+                usb_connected: connected,
+                target,
+            }
+        } else if connected {
             crate::resident::DeviceReadiness::Ready
         } else {
             crate::resident::DeviceReadiness::NotReady { phase }
         }
+    }
+
+    /// Providers of the authenticated participants, in connection order.
+    pub fn served_target(&self) -> Option<crate::target::TargetIdentity> {
+        self.0.refresh_targets();
+        self.0.targets.identity()
     }
 
     /// Providers of the authenticated participants, in connection order.
@@ -6877,6 +7218,8 @@ impl BrokerHandle {
             method: "broker.shutdown".into(),
             params: json!({"force": forced}),
             origin: None,
+            physical_only: false,
+            expected_broker_target: None,
         };
         let response = request_broker_shutdown_recording(&self.0, request, None, || {}, user_quit);
         if let Some(message) = response["error"]["message"].as_str() {
@@ -7247,6 +7590,8 @@ fn serve_broker_tcp_full_with_stop(
         observer_changed: Condvar::new(),
         background: background::Manager::default(),
         observer_actions: background::Manager::default(),
+        demo: crate::demo_provider::Hub::default(),
+        targets: crate::target::TargetRegistry::default(),
         observer_minute: Duration::from_secs(60),
     });
     serving.shared = Some(Arc::clone(&shared));
@@ -7493,6 +7838,8 @@ pub(crate) mod test_support {
             observer_changed: Condvar::new(),
             background: background::Manager::default(),
             observer_actions: background::Manager::default(),
+            demo: crate::demo_provider::Hub::default(),
+            targets: crate::target::TargetRegistry::default(),
             observer_minute: Duration::from_secs(60),
         }))
     }
@@ -7687,6 +8034,188 @@ mod tcp_tests {
     use super::*;
     use crate::worker::DecodedStateFrame;
     use quadcortex::state::StateUpdate;
+
+    fn demo_rpc(shared: &BrokerShared, owner: u64, method: &str, params: Value) -> Value {
+        let mut request = rpc_request(method);
+        request.params = params;
+        dispatch_broker_client_request(shared, Some(owner), request)
+    }
+
+    fn demo_owner(shared: &Arc<BrokerShared>) -> u64 {
+        let owner = accept_client(&shared.clients).unwrap();
+        shared
+            .mark_client_authenticated_as(owner, AuthenticatedAs::DemoProvider, None)
+            .unwrap();
+        owner
+    }
+
+    #[test]
+    fn demo_provider_is_not_a_participant_or_observer_and_cannot_escalate() {
+        let shared = Arc::new(broker_shared_for_test());
+        let owner = demo_owner(&shared);
+        {
+            let clients = shared.clients.lock_recover();
+            assert_eq!(clients.participants(), 0);
+            assert_eq!(clients.observers(), 0);
+            assert!(clients.authenticated_rows().is_empty());
+        }
+        for method in [
+            "device.snapshot",
+            "broker.hello",
+            "broker.controlRelease",
+            "broker.shutdown",
+        ] {
+            assert!(demo_rpc(&shared, owner, method, json!({}))
+                .get("error")
+                .is_some());
+        }
+        let registered = demo_rpc(
+            &shared,
+            owner,
+            "broker.demoRegister",
+            json!({"sessionId":"UI-instance"}),
+        );
+        assert_eq!(registered["result"]["target"]["source"], "demo");
+        assert_ne!(registered["result"]["providerSessionId"], "UI-instance");
+        let status = demo_rpc(&shared, owner, "system.status", json!({}));
+        assert!(status.get("error").is_some());
+        let mut ordinary_status = rpc_request("system.status");
+        ordinary_status.physical_only = true;
+        let status = dispatch_broker_request(&shared, ordinary_status);
+        assert_eq!(status["result"]["targetReady"], true);
+        assert_eq!(status["result"]["usbDiagnostics"]["connected"], false);
+        assert!(matches!(
+            BrokerHandle(shared.clone()).device_readiness(),
+            crate::resident::DeviceReadiness::ReadyTarget {
+                usb_connected: false,
+                ..
+            }
+        ));
+        shared
+            .clients
+            .lock_recover()
+            .connections
+            .get_mut(&owner)
+            .unwrap()
+            .demo_provider_closed = true;
+        assert!(demo_rpc(
+            &shared,
+            owner,
+            "broker.demoRegister",
+            json!({"sessionId":"late"})
+        )
+        .get("error")
+        .is_some());
+        crate::rpc::test_support::finish(&BrokerHandle(shared));
+    }
+
+    #[test]
+    fn demo_inflight_hotplug_returns_to_the_same_provider_without_replaying() {
+        let shared = Arc::new(broker_shared_for_test());
+        let owner = demo_owner(&shared);
+        let registered = demo_rpc(
+            &shared,
+            owner,
+            "broker.demoRegister",
+            json!({"sessionId":"UI-instance"}),
+        );
+        let session = registered["result"]["providerSessionId"].clone();
+        let request_shared = shared.clone();
+        let request = test_support::FixtureJob::spawn_plain(move || {
+            dispatch_broker_request(&request_shared, rpc_request("device.snapshot"))
+        });
+        // Holding the normal broker request lock must not block the reverse
+        // provider Next/Admit/Reply path needed to complete an MCP request.
+        let held = shared.request_lock.lock_recover();
+        let next = demo_rpc(&shared, owner, "broker.demoNext", json!({}))["result"].clone();
+        let identity = json!({"target":next["target"],"sequence":next["sequence"]});
+        assert_eq!(
+            demo_rpc(&shared, owner, "broker.demoAdmit", identity.clone())["result"]["admitted"],
+            true
+        );
+        {
+            let mut status = shared.controller.hold_status_lock_for_test();
+            status.connected = true;
+            status.synchronized = true;
+            status.phase = "ready".into();
+        }
+        let stale =
+            json!({"target":next["target"],"sequence":next["sequence"],"result":{"name":"old"}});
+        assert_eq!(
+            demo_rpc(&shared, owner, "broker.demoReply", stale)["result"]["accepted"],
+            false
+        );
+        assert!(request.join().unwrap().get("error").is_some());
+        {
+            let mut status = shared.controller.hold_status_lock_for_test();
+            status.connected = false;
+            status.synchronized = false;
+            status.phase = "disconnected".into();
+        }
+        shared.refresh_targets();
+        let target = shared.targets.identity().unwrap();
+        assert_eq!(json!(target.session_id), session);
+        assert_ne!(json!(target.generation), next["target"]["generation"]);
+        let request_shared = shared.clone();
+        let request = test_support::FixtureJob::spawn_plain(move || {
+            dispatch_broker_request(&request_shared, rpc_request("device.snapshot"))
+        });
+        let next = demo_rpc(&shared, owner, "broker.demoNext", json!({}))["result"].clone();
+        assert_eq!(
+            demo_rpc(
+                &shared,
+                owner,
+                "broker.demoAdmit",
+                json!({"target":next["target"],"sequence":next["sequence"]})
+            )["result"]["admitted"],
+            true
+        );
+        assert_eq!(
+            demo_rpc(
+                &shared,
+                owner,
+                "broker.demoReply",
+                json!({"target":next["target"],"sequence":next["sequence"],"result":{"name":"same UI store"}})
+            )["result"]["accepted"],
+            true
+        );
+        assert_eq!(request.join().unwrap()["result"]["name"], "same UI store");
+        drop(held);
+        crate::rpc::test_support::finish(&BrokerHandle(shared));
+    }
+
+    #[test]
+    fn demo_requests_are_fenced_before_the_tcp_queue_and_on_provider_replacement() {
+        let shared = Arc::new(broker_shared_for_test());
+        let owner = demo_owner(&shared);
+        let first = demo_rpc(
+            &shared,
+            owner,
+            "broker.demoRegister",
+            json!({"sessionId":"same-UI"}),
+        );
+        let mut request = rpc_request("device.snapshot");
+        shared.capture_request_target(&mut request);
+        assert_eq!(
+            request.expected_broker_target.as_ref().unwrap().source,
+            crate::target::TargetSource::Demo
+        );
+        demo_rpc(&shared, owner, "broker.demoWithdraw", json!({}));
+        let replacement = demo_rpc(
+            &shared,
+            owner,
+            "broker.demoRegister",
+            json!({"sessionId":"same-UI"}),
+        );
+        assert_ne!(
+            first["result"]["providerSessionId"],
+            replacement["result"]["providerSessionId"]
+        );
+        let refused = dispatch_broker_request(&shared, request);
+        assert!(refused.get("error").is_some());
+        assert!(shared.demo.next(owner, Duration::ZERO).unwrap().is_none());
+        crate::rpc::test_support::finish(&BrokerHandle(shared));
+    }
 
     struct ReleaseGate(Arc<(Mutex<bool>, Condvar)>);
     impl Drop for ReleaseGate {
@@ -10532,6 +11061,8 @@ mod tcp_tests {
             observer_changed: Condvar::new(),
             background: background::Manager::default(),
             observer_actions: background::Manager::default(),
+            demo: crate::demo_provider::Hub::default(),
+            targets: crate::target::TargetRegistry::default(),
             observer_minute: Duration::from_secs(60),
         }
     }
@@ -11160,6 +11691,8 @@ mod tcp_tests {
             method: method.into(),
             params: json!({}),
             origin: None,
+            physical_only: false,
+            expected_broker_target: None,
         }
     }
 
@@ -12034,6 +12567,8 @@ pub(crate) fn dispatch_gesture_regression_request(
             method: method.into(),
             params,
             origin: None,
+            physical_only: false,
+            expected_broker_target: None,
         },
     )
 }

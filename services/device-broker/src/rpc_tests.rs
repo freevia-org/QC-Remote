@@ -238,6 +238,8 @@ fn history_rpc_preserves_caller_identity_through_native_admission() {
                 method: method.into(),
                 params: json!({"expectedPresetIdentity": "previous-session"}),
                 origin: None,
+                physical_only: false,
+                expected_broker_target: None,
             },
         );
         assert_eq!(
@@ -1409,6 +1411,8 @@ fn call(controller: &DeviceController, method: &str, params: Value) -> Value {
             method: method.into(),
             params,
             origin: None,
+            physical_only: false,
+            expected_broker_target: None,
         },
     )
 }
@@ -1631,6 +1635,8 @@ fn request_envelope_rejects_unknown_fields_and_nonpositive_ids() {
             method: "system.status".into(),
             params: json!({}),
             origin: None,
+            physical_only: false,
+            expected_broker_target: None,
         },
     );
     assert_eq!(response["error"]["code"], -32600);
@@ -1851,6 +1857,8 @@ fn system_status_identifies_the_rust_gateway_contract() {
             method: "system.status".into(),
             params: json!({}),
             origin: None,
+            physical_only: false,
+            expected_broker_target: None,
         },
     );
     assert_eq!(response["result"]["platform"], "Rust device gateway");
@@ -1919,6 +1927,8 @@ fn quarantine_blocks_mutations_but_keeps_reads_available() {
                 "expectedPresetName": "Clean", "expectedPresetIdentity": "fixture-native-A"
             }),
             origin: None,
+            physical_only: false,
+            expected_broker_target: None,
         },
     );
     assert_eq!(write["error"]["code"], WRITE_QUARANTINED_ERROR_CODE);
@@ -1933,6 +1943,8 @@ fn quarantine_blocks_mutations_but_keeps_reads_available() {
             method: "system.status".into(),
             params: json!({}),
             origin: None,
+            physical_only: false,
+            expected_broker_target: None,
         },
     );
     assert!(read.get("result").is_some(), "{read}");
@@ -2226,6 +2238,8 @@ fn hello_provider_budget_preserves_previous_identity_and_counts_utf8_bytes() {
                 method: "broker.hello".into(),
                 params: json!({"provider":provider}),
                 origin: None,
+                physical_only: false,
+                expected_broker_target: None,
             },
         )
     };

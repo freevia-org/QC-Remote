@@ -4,6 +4,17 @@
   "title": "QC native broker JSON-RPC v1",
   "description": "Local host IPC for the canonical gateway plus three host-internal methods (device.status, device.state.events, device.state.blockDetails). Frames are four-byte big-endian length followed by UTF-8 JSON. The host-internal methods must never be exposed through MCP or a remote relay. The legacy device.raw.* and device.command.* methods were removed and answer Method not found. This document validates broker requests (see $defs/request); host-specific response extensions are outside this core contract.",
   "$defs": {
+    "brokerTarget": {
+      "description": "A broker-selected usable target session, independent of the UI transport. This is an expected-state fence, not authorization. A changed selection invalidates the complete identity, including when the same demo session becomes selected again.",
+      "type": "object",
+      "required": ["source", "sessionId", "generation"],
+      "properties": {
+        "source": { "enum": ["physical", "demo"] },
+        "sessionId": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "\\S" },
+        "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+      },
+      "additionalProperties": false
+    },
     "internalCompatibilityRequest": {
       "description": "Host-process compatibility API. This is not a public, relayable, or MCP tool surface.",
       "x-visibility": "host-internal",
@@ -18,7 +29,15 @@
             "device.state.events", "device.state.blockDetails"
           ]
         },
-        "params": { "type": "object" }
+        "params": { "type": "object" },
+        "expectedBrokerTarget": {
+          "description": "Send only after capability negotiation. Omission still captures the broker's current target at admission; it does not permit a queued request to retarget. A mismatch is rejected without replay on another target.",
+          "$ref": "#/$defs/brokerTarget"
+        },
+        "physicalOnly": {
+          "description": "Capability-negotiated host routing constraint: this request must never fall back to the demo provider. Independent of resource-read origin narrowing.",
+          "type": "boolean"
+        }
       },
       "additionalProperties": false
     },
