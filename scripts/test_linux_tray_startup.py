@@ -215,6 +215,75 @@ class ProbeCleanupTests(unittest.TestCase):
                     if identity is not None and child.poll() is None:
                         self.assertTrue(probe.stop_owned_group(child, identity, grace=1))
 
+    def test_normal_exit_wait_is_bounded_and_preserves_staging_for_a_live_group(self):
+        clock = [0.0]
+        def advance(seconds): clock[0] += seconds
+        with mock.patch.object(probe, "group_has_live_members", return_value=True), \
+             mock.patch.object(probe.time, "monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(probe.time, "sleep", side_effect=advance), \
+             mock.patch.object(probe.os, "killpg") as signal_group:
+            clean = probe.wait_for_group_exit(7000, grace=0.15)
+        self.assertFalse(clean)
+        self.assertAlmostEqual(clock[0], 0.15)
+        signal_group.assert_not_called()
+        with tempfile.TemporaryDirectory(prefix="qc-tray-group-retained-") as root:
+            staging = pathlib.Path(tempfile.mkdtemp(prefix="qc-tray-startup-test-", dir=root))
+            report = {"sandboxGroupReaped": clean, "innerCleanupVerified": True, "ok": True}
+            probe.finalize_outer_report(pathlib.Path(root) / "report.json", report, staging, not clean, "test")
+            self.assertFalse(report["ok"])
+            self.assertFalse(report["cleanupVerified"])
+            self.assertTrue(staging.exists())
+            self.assertEqual(report["stagingPathPreserved"], str(staging))
+
+    def test_group_survivor_diagnostics_are_bounded_without_reading_command_lines(self):
+        with tempfile.TemporaryDirectory(prefix="qc-tray-group-facts-") as root:
+            entries = []
+            for pid in [10, 11]:
+                entry = pathlib.Path(root) / str(pid)
+                entry.mkdir()
+                fields = ["S", "1", "7000"] + ["0"] * 17
+                fields[19] = "1234"
+                (entry / "stat").write_text(f"{pid} (owned child) " + " ".join(fields))
+                entries.append(entry)
+            with mock.patch.object(probe.pathlib.Path, "iterdir", return_value=iter(entries)), \
+                 mock.patch.object(probe.os, "readlink", return_value="/fixture/owned"), \
+                 mock.patch.object(probe, "proc_identity") as unrelated_identity:
+                facts = probe.group_survivor_diagnostics(7000, limit=1)
+            self.assertEqual(facts, {"members": [{"pid": 10, "startTicks": 1234, "ppid": 1,
+                                                   "pgrp": 7000, "exe": "/fixture/owned"}], "truncated": True})
+            unrelated_identity.assert_not_called()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux procfs process groups")
+    def test_normal_launcher_exit_waits_for_descendant_and_leaves_sibling_alive(self):
+        import threading
+        with tempfile.TemporaryDirectory(prefix="qc-tray-group-settle-") as root:
+            release = pathlib.Path(root) / "release"
+            child_script = ("import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); "
+                            "deadline=time.monotonic()+10; "
+                            "exec('while not p.exists() and time.monotonic()<deadline: time.sleep(0.01)')")
+            parent_script = ("import subprocess,sys; p=subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]]); "
+                             "print(p.pid,flush=True)")
+            parent = subprocess.Popen([sys.executable, "-c", parent_script, child_script, str(release)],
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+            sibling = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+            timer = None
+            try:
+                self.assertTrue(parent.stdout.readline().strip().isdigit())
+                self.assertEqual(parent.wait(timeout=3), 0)
+                self.assertTrue(probe.group_has_live_members(parent.pid), "the child outlives its launcher")
+                timer = threading.Timer(0.15, release.touch)
+                timer.start()
+                self.assertTrue(probe.wait_for_group_exit(parent.pid, grace=3))
+                self.assertIsNone(sibling.poll(), "unrelated processes must survive group retirement")
+            finally:
+                release.touch()
+                if timer is not None: timer.join(timeout=2)
+                parent.wait(timeout=3)
+                self.assertTrue(probe.wait_for_group_exit(parent.pid, grace=12))
+                parent.stdout.close()
+                sibling.terminate()
+                sibling.wait(timeout=3)
+
     def test_report_does_not_claim_staging_cleanup_before_rmtree_succeeds(self):
         real_rmtree = shutil.rmtree
         with tempfile.TemporaryDirectory(prefix="qc-tray-report-cleanup-test-") as root:
