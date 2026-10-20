@@ -226,6 +226,7 @@ const nativePlugin = {
           const previousClient = client;
           client = undefined;
           transport = undefined;
+          mcpConnected = false;
           void previousClient?.close().catch(() => undefined);
           return { connected: true, synchronized: result.synchronized, name: result.name, deviceId: result.deviceId };
         }
@@ -346,37 +347,78 @@ export async function setIosConnectionMode(mode: IosConnectionMode): Promise<voi
   }
 }
 
+type PendingOAuthCallback = { code: string; state: string };
+let pendingOAuthCallback: PendingOAuthCallback | undefined;
+let activeOAuthState: string | undefined;
+const handledOAuthStates = new Set<string>();
+
+function signInFailed(error: unknown): void {
+  authPending = false;
+  emit("qcConnection", { state: "disconnected" });
+  console.error("QC Remote sign-in failed", error);
+}
+
+/** Native URL and foreground events may arrive in either order. Retain the
+ * callback until HTTP is allowed, then exchange its one-time code once. */
+async function drainOAuthCallback(): Promise<void> {
+  if (!cloudActive() || activeOAuthState || !pendingOAuthCallback) return;
+  const callback = pendingOAuthCallback;
+  pendingOAuthCallback = undefined;
+  activeOAuthState = callback.state;
+  try {
+    await load();
+    if (!cloudActive()) { pendingOAuthCallback ??= callback; return; }
+    if (!stored.state || callback.state !== stored.state) throw new Error("The sign-in callback could not be verified. Start sign-in again.");
+    await Browser.close().catch(() => undefined);
+    if (!cloudActive()) { pendingOAuthCallback ??= callback; return; }
+    // Duplicated appUrlOpen events must not redeem a one-time code twice,
+    // including after an ambiguous exchange failure. A new sign-in gets a
+    // new state. Retain only bounded state identifiers, never consumed codes.
+    handledOAuthStates.add(callback.state);
+    if (handledOAuthStates.size > 16) handledOAuthStates.delete(handledOAuthStates.values().next().value!);
+    if (transport) await transport.finishAuth(callback.code);
+    else if (await auth(provider, { serverUrl, authorizationCode: callback.code, fetchFn: (input, init) => remoteTraffic.fetch(input, init) }) !== "AUTHORIZED") {
+      throw new Error("QC Remote Cloud did not authorize this sign-in.");
+    }
+    stored.state = undefined;
+    await save();
+    authPending = false;
+    client = undefined; transport = undefined; mcpConnected = false;
+    // If the app went inactive during the exchange, keep the saved tokens;
+    // connectMcp's foreground gate leaves reconnect to the next user demand.
+    await connectMcp();
+  } catch (error) { signInFailed(error); }
+  finally {
+    activeOAuthState = undefined;
+    if (cloudActive() && pendingOAuthCallback) void drainOAuthCallback();
+  }
+}
+
 function updateCloudActivity(): void {
-  if (cloudActive()) return;
+  if (cloudActive()) { void drainOAuthCallback(); return; }
   const previous = client;
   client = undefined;
   transport = undefined;
   mcpConnected = false;
   // No background keepalive, SSE reconnect, or foreground-resume retry.
-  // The next explicit action refreshes OAuth through the normal provider.
+  // Only an already-received OAuth callback is drained on foreground events.
   void previous?.close().catch(() => undefined);
 }
 void App.addListener("appStateChange", ({ isActive }) => { appActive = isActive; updateCloudActivity(); });
 document.addEventListener("visibilitychange", updateCloudActivity);
 
 const appUrlListener = App.addListener("appUrlOpen", ({ url }) => {
-  void (async () => {
+  try {
     const callback = new URL(url);
     if (callback.protocol !== "qcremote:" || callback.hostname !== "oauth") return;
-    await load();
     const code = callback.searchParams.get("code");
     const state = callback.searchParams.get("state");
-    if (!code || !state || !stored.state || state !== stored.state) throw new Error("The sign-in callback could not be verified. Start sign-in again.");
-    await Browser.close().catch(() => undefined);
-    if (transport) await transport.finishAuth(code);
-    else if (await auth(provider, { serverUrl, authorizationCode: code, fetchFn: (input, init) => remoteTraffic.fetch(input, init) }) !== "AUTHORIZED") {
-      throw new Error("QC Remote Cloud did not authorize this sign-in.");
-    }
-    stored.state = undefined;
-    await save();
-    client = undefined; transport = undefined;
-    await connectMcp();
-  })().catch((error) => { authPending = false; emit("qcConnection", { state: "disconnected" }); console.error("QC Remote sign-in failed", error); });
+    if (!code || !state) throw new Error("The sign-in callback could not be verified. Start sign-in again.");
+    if (handledOAuthStates.has(state) || activeOAuthState === state || pendingOAuthCallback?.state === state) return;
+    pendingOAuthCallback = { code, state };
+    authPending = true;
+    void drainOAuthCallback();
+  } catch (error) { signInFailed(error); }
 });
 void appUrlListener;
 
