@@ -30,6 +30,7 @@ pub mod broker_tray_control;
 pub mod broker_tray_settings;
 mod client_packages;
 mod credential_io;
+mod demo_provider;
 mod device_broker_descriptor;
 mod external_host;
 mod external_links;
@@ -1026,6 +1027,9 @@ fn device_session_open(status: &Value) -> bool {
 /// `services/device-broker/src/rpc/wire.rs`.
 const BROKER_RESOURCE_READ_ORIGIN: &str = "resourceRead";
 const BROKER_RESOURCE_READ_ORIGIN_CAPABILITY: &str = "resourceReadOrigin";
+// Internal serialization marker; the wire carries a separate boolean so it
+// composes with resourceRead. It is sent only after capability negotiation.
+const PHYSICAL_TARGET_ORIGIN: &str = "physicalTargetOrigin";
 /// A device-backed resource read refused because the attached broker does not
 /// list [`BROKER_RESOURCE_READ_ORIGIN_CAPABILITY`]. It has the offline shape
 /// (a retryable transport failure: restarting QC Remote replaces the broker),
@@ -1738,7 +1742,11 @@ impl GatewayProcess {
             "jsonrpc": "2.0", "id": id, "method": method, "params": params
         });
         if let Some(origin) = origin {
-            envelope["origin"] = json!(origin);
+            if origin == PHYSICAL_TARGET_ORIGIN {
+                envelope["physicalOnly"] = json!(true);
+            } else {
+                envelope["origin"] = json!(origin);
+            }
         }
         let payload = serde_json::to_vec(&envelope)
             .map_err(|error| GatewayRequestFailure::Transport(error.to_string()))?;
@@ -3662,6 +3670,9 @@ struct DeviceSession {
 
 #[derive(Default)]
 struct Gateway {
+    /// Scoped to a UI invoke under the gateway mutex, never a global default:
+    /// this same Gateway also serves MCP requests for the effective target.
+    physical_only: bool,
     selected_device_id: Option<String>,
     process: Option<GatewayProcess>,
     /// A failed writer may race a delayed notification reader. Keep that
@@ -4159,6 +4170,14 @@ impl Gateway {
         }))
     }
 
+    fn with_physical_target<T>(&mut self, request: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = self.physical_only;
+        self.physical_only = true;
+        let result = request(self);
+        self.physical_only = previous;
+        result
+    }
+
     fn request_detailed(
         &mut self,
         method: &str,
@@ -4267,6 +4286,26 @@ impl Gateway {
             self.publish_lock_free_reads();
         }
         let mut origin = None;
+        if self.physical_only && method != rpc::RUNTIME_STATUS {
+            let status = self
+                .process
+                .as_mut()
+                .ok_or_else(existing_connection_unavailable)?
+                .request_unchecked(rpc::RUNTIME_STATUS, json!({}))?;
+            let supported = status
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .is_some_and(|values| values.iter().any(|value| value == PHYSICAL_TARGET_ORIGIN));
+            if supported {
+                origin = Some(PHYSICAL_TARGET_ORIGIN);
+            } else if status.get("brokerTarget").is_some() {
+                return Err(GatewayRequestFailure::Transport(
+                    "The broker cannot guarantee a physical-only UI request".into(),
+                ));
+            }
+            // Older brokers have no demo target and receive their original
+            // envelope. A refused write is never retried without its fence.
+        }
         if existing_only && method != rpc::RUNTIME_STATUS {
             // Device demand on a session the broker closed would reopen USB.
             // Asked under the same lock, on the connection this request would
@@ -5210,7 +5249,7 @@ async fn gateway_invoke(
             app.state::<Mutex<Gateway>>()
                 .lock()
                 .map_err(|_| "Gateway session lock was poisoned".to_string())?
-                .restart(rpc::RESET_SESSION)
+                .with_physical_target(|gateway| gateway.restart(rpc::RESET_SESSION))
         })
         .await
         .map_err(|error| GatewayUiError {
@@ -5240,7 +5279,9 @@ async fn gateway_invoke(
             } else {
                 WhenGatewayBusy::Wait
             },
-            |gateway, params| gateway.request_detailed(&method, params),
+            |gateway, params| {
+                gateway.with_physical_target(|gateway| gateway.request_detailed(&method, params))
+            },
         )
     })
     .await
@@ -5756,6 +5797,7 @@ pub fn run() {
     let lock_free_reads = gateway.lock_free_read_slot();
     builder
         .manage(Mutex::new(gateway))
+        .manage(demo_provider::DemoProviderBridge::default())
         .manage(lock_free_reads)
         .manage(RelayBridge::default())
         .manage(MacMenuEventBridge::default())
@@ -5880,6 +5922,10 @@ pub fn run() {
             if !main_window_is_gone(window.label(), event) {
                 return;
             }
+            window
+                .app_handle()
+                .state::<demo_provider::DemoProviderBridge>()
+                .stop();
             // The Help and app windows belong to the main window. Left open,
             // they would keep the process, the device session, and the local
             // MCP listener alive behind windows that ask a main window that no
@@ -5911,6 +5957,10 @@ pub fn run() {
             retry_public_relay_withdrawal,
             set_public_relay_access_mode,
             gateway_invoke,
+            demo_provider::start_demo_provider,
+            demo_provider::admit_demo_provider_request,
+            demo_provider::complete_demo_provider_request,
+            demo_provider::stop_demo_provider,
             acknowledge_user_connect,
             disconnect_broker_device,
             broker_devices,

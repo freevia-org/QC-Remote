@@ -85,6 +85,7 @@ export function createDemoDeviceSession(
   let source: DemoDeviceSource = "device";
   let revision = 0;
   let virtualTransport: GatewayTransport | undefined;
+  let opening: Promise<GatewayTransport> | undefined;
   const active = (): GatewayTransport => {
     if (source === "device") return device;
     if (!virtualTransport) throw new Error("The demo device has not been opened.");
@@ -116,7 +117,13 @@ export function createDemoDeviceSession(
     async start(storage, shouldActivate = () => true) {
       // Do not switch routing until the virtual device has opened and answered
       // both readiness reads. A corrupt store therefore leaves a live QC alone.
-      const transport = await opener(storage);
+      // Reactivation must retain the very same runtime that MCP serves, not
+      // reread its saved file into a second store. Concurrent opens share the
+      // same promise; a failed open remains retryable.
+      const transport = virtualTransport ?? await (opening ??= opener(storage).then(transport => {
+        virtualTransport = transport;
+        return transport;
+      }).finally(() => { opening = undefined; }));
       const connection = await transport.reconnect();
       const snapshot = await transport.currentSnapshot();
       if (!shouldActivate()) return undefined;

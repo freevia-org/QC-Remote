@@ -5,6 +5,7 @@ import type { GatewayTransport } from "../../qc-client/src/index.ts";
 import { createDemoBrokerProvider, type DemoBrokerRequest } from "../src/demo-broker-provider.ts";
 import { createMemoryVirtualDeviceStorage, createVirtualGatewayTransport, VirtualDeviceStore } from "../src/virtual-gateway.ts";
 import type { VirtualModelCatalogue } from "../src/virtual-device-defaults.ts";
+import { createDemoDeviceSession } from "../src/demo-device-session.ts";
 
 const target = { source: "demo" as const, sessionId: "ui-demo-1", generation: 1 };
 const request = (sequence: number, method = "device.snapshot", params = {}): DemoBrokerRequest => ({ target, sequence, method, params });
@@ -18,6 +19,26 @@ test("the real UI VirtualDeviceStore observes reverse-provider mutations immedia
   assert.deepEqual(await provider.invoke(request(2, "device.identity")), await virtual.identity());
   assert.match(JSON.stringify(await virtual.identity()), /Shared demo/);
   assert.deepEqual(await provider.invoke(request(3)), await virtual.currentSnapshot());
+});
+
+test("UI physical/demo reactivation and concurrent opening retain one provider runtime", async () => {
+  let opens = 0;
+  let name = "original";
+  const virtual = {
+    reconnect: async () => ({ phase: "ready", detail: "Demo", source: "virtual", demo: false }),
+    currentSnapshot: async () => ({ presetName: name }),
+    setDeviceName: async (value: string) => { name = value; }
+  } as unknown as GatewayTransport;
+  const session = createDemoDeviceSession({} as GatewayTransport, async () => { opens += 1; return virtual; });
+  const storage = createMemoryVirtualDeviceStorage();
+  await Promise.all([session.start(storage), session.start(storage)]);
+  const provider = createDemoBrokerProvider(session.virtual!, target, () => true);
+  await provider.invoke(request(1, "device.setDeviceName", { name: "MCP edit" }));
+  session.useDevice();
+  const resumed = await session.start(storage);
+  assert.equal(resumed?.transport, virtual);
+  assert.deepEqual(resumed?.snapshot, { presetName: "MCP edit" });
+  assert.equal(opens, 1);
 });
 
 test("MCP calls the same demo state and never falls back for an unsupported RPC", async () => {

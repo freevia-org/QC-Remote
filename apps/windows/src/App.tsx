@@ -1,4 +1,5 @@
 import { applicationModifier, shortcutLabel } from "./host-platform.ts";
+import { exposeDesktopDemo } from "./demo-broker.ts";
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, type PresetSnapshot, type RuntimeStatus, type WorkspaceDocument } from "@qc-remote/client";
@@ -295,6 +296,8 @@ export function App() {
   // demo device. Real-hardware-only paths (connect, live frames, recovery,
   // backups, the broker heartbeat) keep calling tauriTransport directly.
   const demoDeviceSession = useMemo(() => createDemoDeviceSession(tauriTransport), []);
+  const demoBrokerCleanup = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => { demoBrokerCleanup.current?.(); }, []);
   const activeGateway = demoDeviceSession.gateway;
   const captureDeviceOperation = () => {
     const attempt = connectionAttempts.capture();
@@ -1597,6 +1600,20 @@ export function App() {
       const opened = await demoDeviceSession.start(virtualDeviceStorage, attempt.current);
       if (!opened || !attempt.current()) return;
       const { transport: demo, connection: state, snapshot: current } = opened;
+      demoBrokerCleanup.current?.();
+      demoBrokerCleanup.current = await exposeDesktopDemo(demo, (ready, message) => {
+        if (!ready && message && appOperationMounted.current) {
+          setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-mcp-unavailable", result: "info", detail: `The demo remains available in this editor. MCP access is unavailable: ${message}` }]);
+        }
+      }, refreshed => {
+        if (appOperationMounted.current && demoDeviceSession.source === "virtual" && demoDeviceSession.virtual === demo) {
+          setSnapshot(refreshed);
+        }
+      }).catch(error => {
+        setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-mcp-unavailable", result: "info", detail: String(error) }]);
+        return undefined;
+      });
+      if (!attempt.current()) { demoBrokerCleanup.current?.(); return; }
       clearUndo();
       presetWorkflow.resetCache();
       nativeStateAvailable.current = false;
@@ -1678,6 +1695,8 @@ export function App() {
     // device-sourced idle state is shown, so it is never paired with that
     // state or with the error of a later Connect that fails.
     if (suspendDemoDevice()) setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
+    demoBrokerCleanup.current?.();
+    demoBrokerCleanup.current = undefined;
     resetCommands();
     setDemoPending(false);
     const idle = { phase: "disconnected" as const, detail: "Demo device stopped. Its presets stay saved on this computer.", demo: true, source: "device" as const };
