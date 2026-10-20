@@ -178,6 +178,7 @@ public class QcUsbPlugin extends Plugin {
     private static volatile QcUsbPlugin relaySession;
     private final QcDemoProvider demoProvider = new QcDemoProvider(
         QcUsbPlugin::relaySessionAvailable, connectionGeneration::get);
+    private final QcBrokerTarget.Registry brokerTargets = new QcBrokerTarget.Registry();
     private static final ThreadLocal<RelayDeadline> CURRENT_RELAY_DEADLINE = new ThreadLocal<>();
     private static final ConcurrentHashMap<CompletableFuture<org.json.JSONObject>, RelayDeadline> RELAY_DEADLINES = new ConcurrentHashMap<>();
 
@@ -294,6 +295,43 @@ public class QcUsbPlugin extends Plugin {
         return relaySessionAvailable() || relayDemoAvailable();
     }
 
+    static QcBrokerTarget relayBrokerTarget() {
+        QcUsbPlugin session = relaySession;
+        return session == null ? null : session.currentBrokerTarget();
+    }
+
+    private QcBrokerTarget currentBrokerTarget() {
+        if (relaySessionAvailable()) return brokerTargets.select("physical", stateStreamId, connectionGeneration.get());
+        if (demoProvider.available()) {
+            QcDemoProvider.Registration registration = demoProvider.registration();
+            if (registration != null) return brokerTargets.select("demo", registration.id, registration.generation);
+        }
+        return brokerTargets.select(null, null, 0);
+    }
+
+    boolean matchesBrokerTarget(QcBrokerTarget expected) { return expected.same(currentBrokerTarget()); }
+    void assertBrokerTarget(QcBrokerTarget expected) { expected.assertCurrent(currentBrokerTarget()); }
+
+    private org.json.JSONObject targetMetadata(String method, org.json.JSONObject result) throws Exception {
+        if ("system.status".equals(method) || "device.identity".equals(method)
+                || "device.reconnect".equals(method) || "device.resetSession".equals(method)
+                || "device.disconnect".equals(method)) {
+            QcBrokerTarget target = currentBrokerTarget();
+            if (target != null) result.put("brokerTarget", target.json());
+            else result.remove("brokerTarget");
+            if ("system.status".equals(method)) {
+                org.json.JSONArray capabilities = result.optJSONArray("capabilities");
+                if (capabilities != null) {
+                    boolean found = false;
+                    for (int index = 0; index < capabilities.length(); index++)
+                        if ("expectedBrokerTarget".equals(capabilities.optString(index))) found = true;
+                    if (!found) capabilities.put("expectedBrokerTarget");
+                }
+            }
+        }
+        return result;
+    }
+
     @PluginMethod public void publishDemoProvider(PluginCall call) {
         String session = call.getString("sessionId");
         if (session != null && (session.isEmpty() || session.length() > 128)) {
@@ -311,8 +349,14 @@ public class QcUsbPlugin extends Plugin {
     }
 
     @PluginMethod public void completeDemoRequest(PluginCall call) {
+        JSObject result = call.getObject("result");
+        String method = demoProvider.pendingMethod(call.getString("id", ""));
+        if (result != null && method != null) {
+            try { targetMetadata(method, result); }
+            catch (Exception malformed) { result = null; }
+        }
         demoProvider.complete(call.getString("id", ""), call.getString("sessionId", ""),
-            call.getLong("generation", -1L), call.getObject("result"), call.getObject("error"));
+            call.getLong("generation", -1L), result, call.getObject("error"));
         call.resolve();
     }
 
@@ -353,9 +397,17 @@ public class QcUsbPlugin extends Plugin {
     }
 
     static CompletableFuture<org.json.JSONObject> invokeFromRelay(String method, org.json.JSONObject params, org.json.JSONObject expected) {
+        return invokeFromRelay(method, params, expected, null);
+    }
+
+    static CompletableFuture<org.json.JSONObject> invokeFromRelay(String method, org.json.JSONObject params,
+            org.json.JSONObject expected, QcBrokerTarget expectedTarget) {
         QcUsbPlugin session = relaySession;
         if (session == null) return failedRelay("NOT_CONNECTED", "QC Remote is not running with a Quad Cortex session.");
-        if (!relaySessionAvailable() && session.demoProvider.available()) {
+        QcBrokerTarget captured = session.currentBrokerTarget();
+        if (expectedTarget != null && !expectedTarget.same(captured))
+            return failedRelay("TARGET_SUPERSEDED", "The requested broker target is no longer active.");
+        if (captured != null && "demo".equals(captured.source)) {
             return session.demoProvider.invoke(method,
                 params == null ? new org.json.JSONObject() : params,
                 expected == null ? new org.json.JSONObject() : expected,
@@ -369,7 +421,9 @@ public class QcUsbPlugin extends Plugin {
                     }
                 }));
         }
-        RelayDeadline deadline = new RelayDeadline(session);
+        if (captured == null && !"system.status".equals(method) && !"device.reconnect".equals(method))
+            return failedRelay("NOT_CONNECTED", "No usable provider was available when this request arrived.");
+        RelayDeadline deadline = new RelayDeadline(session, captured);
         CompletableFuture<org.json.JSONObject> invocation = new CompletableFuture<>();
         RELAY_DEADLINES.put(invocation, deadline);
         deadline.retirement().whenComplete((ignored, error) -> RELAY_DEADLINES.remove(invocation, deadline));
@@ -384,8 +438,14 @@ public class QcUsbPlugin extends Plugin {
         } finally { CURRENT_RELAY_DEADLINE.remove(); }
         deadline.attachOperation(operation);
         operation.whenComplete((result, error) -> {
-            if (error == null) invocation.complete(result);
-            else invocation.completeExceptionally(error);
+            try {
+                boolean lifecycle = "device.reconnect".equals(method) || "device.resetSession".equals(method)
+                    || "device.disconnect".equals(method);
+                if (error != null) invocation.completeExceptionally(error);
+                else if (!lifecycle && captured != null && !session.matchesBrokerTarget(captured))
+                    invocation.completeExceptionally(new RelayException("TARGET_SUPERSEDED", "The broker target changed while the request was running."));
+                else invocation.complete(session.targetMetadata(method, result));
+            } catch (Exception malformed) { invocation.completeExceptionally(malformed); }
             deadline.operationFinished();
         });
         return invocation;
@@ -1750,15 +1810,20 @@ public class QcUsbPlugin extends Plugin {
     }
 
     private boolean beginRelayMutation(RelayDeadline deadline) {
+        if (deadline != null) deadline.assertTarget();
         return relayAdmissionGuard.beginMutation(deadline == null ? null : deadline.state());
     }
 
     private boolean beginRelayRead(RelayDeadline deadline) {
+        if (deadline != null) deadline.assertTarget();
         return relayAdmissionGuard.beginRead(deadline == null ? null : deadline.state());
     }
 
     private boolean beginRelayRecovery(RelayDeadline deadline) {
-        return relayAdmissionGuard.beginRecovery(deadline == null ? null : deadline.state());
+        if (deadline != null) deadline.assertTarget();
+        boolean admitted = relayAdmissionGuard.beginRecovery(deadline == null ? null : deadline.state());
+        if (admitted && deadline != null) deadline.recoveryAdmitted();
+        return admitted;
     }
 
     private static RelayException relayDeadlineExpired() {
@@ -1860,6 +1925,7 @@ public class QcUsbPlugin extends Plugin {
                 error = unwrapCompletion(error);
                 if (error == null) {
                     try {
+                        targetMetadata(method, result);
                         GeneratedGatewayMethods.validateResult(method, result);
                         call.resolve(JSObject.fromJSONObject(result));
                     }
@@ -3136,6 +3202,7 @@ public class QcUsbPlugin extends Plugin {
 
     @Override protected void handleOnPause() {
         demoProvider.foreground(false);
+        if (!relaySessionAvailable()) brokerTargets.clear();
         if (!relayForegroundServiceEligible()) getContext().stopService(new Intent(getContext(), QcRelayService.class));
         super.handleOnPause();
     }
