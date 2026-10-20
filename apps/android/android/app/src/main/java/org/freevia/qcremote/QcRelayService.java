@@ -44,6 +44,7 @@ public final class QcRelayService extends Service {
     private ScheduledFuture<?> retry;
     private ScheduledFuture<?> readiness;
     private final RelayReadinessPublication readinessPublication = new RelayReadinessPublication();
+    private String publishedProvider;
     private int failures;
     private volatile RelayState state = RelayState.STOPPED;
     private final RelayFrameHandler relayFrameHandler = new RelayFrameHandler();
@@ -72,14 +73,18 @@ public final class QcRelayService extends Service {
         // not a recoverable state: it throws SecurityException and kills the
         // whole app process. Stop cleanly and let the app restart us after its
         // USB session owns the attached QC.
-        if (!QcUsbPlugin.relayForegroundServiceEligible()) {
+        boolean physicalEligible = QcUsbPlugin.relayForegroundServiceEligible();
+        if (!physicalEligible && !QcUsbPlugin.relayDemoAvailable()) {
             state = RelayState.STOPPED;
             sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra(EXTRA_STATE, state.wireValue()));
             stopSelf();
             return START_NOT_STICKY;
         }
         try {
-            startForeground(NOTIFICATION_ID, notification("Connecting securely…"));
+            // A simulated device does not grant Android's connectedDevice
+            // foreground-service prerequisite. Its WebView must stay visible.
+            if (physicalEligible) startForeground(NOTIFICATION_ID, notification("Connecting securely…"));
+            else stopForeground(STOP_FOREGROUND_REMOVE);
         } catch (RuntimeException error) {
             // Foreground-service eligibility can change between the check
             // above and this platform call. Fail this service start cleanly;
@@ -445,12 +450,19 @@ public final class QcRelayService extends Service {
     private synchronized void sendReadiness(WebSocket webSocket) {
         if (webSocket != socket || state != RelayState.CONNECTED) return;
         try {
-            boolean ready = QcUsbPlugin.relaySessionAvailable();
+            boolean physical = QcUsbPlugin.relaySessionAvailable();
+            boolean demo = QcUsbPlugin.relayDemoAvailable();
+            boolean ready = physical || demo;
+            String provider = physical ? "device" : demo ? "virtual" : "none";
+            if (!provider.equals(publishedProvider)) { readinessPublication.reset(); publishedProvider = provider; }
             // Continue observing USB locally, but publish only actual changes.
             // OkHttp's protocol pings keep the idle socket alive without DO work.
             String frame = new JSONObject().put("type", "ready").put("protocol", RelayProtocol.VERSION)
                 .put("gatewayApiVersion", GeneratedGatewayMethods.API_VERSION)
-                .put("usbConnected", ready).toString();
+                // usbConnected is the relay protocol's legacy admission flag;
+                // distinguish actual USB from a foreground demo explicitly.
+                .put("usbConnected", ready).put("source", provider)
+                .put("physicalUsbConnected", physical).toString();
             readinessPublication.publish(ready, () -> webSocket.send(frame));
         } catch (Exception ignored) {}
     }

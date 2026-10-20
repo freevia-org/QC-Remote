@@ -176,6 +176,8 @@ public class QcUsbPlugin extends Plugin {
             public void release(long task) { stateDecoder.closeForwarding(task); }
         }, this::writeForwardingMessage);
     private static volatile QcUsbPlugin relaySession;
+    private final QcDemoProvider demoProvider = new QcDemoProvider(
+        QcUsbPlugin::relaySessionAvailable, connectionGeneration::get);
     private static final ThreadLocal<RelayDeadline> CURRENT_RELAY_DEADLINE = new ThreadLocal<>();
     private static final ConcurrentHashMap<CompletableFuture<org.json.JSONObject>, RelayDeadline> RELAY_DEADLINES = new ConcurrentHashMap<>();
 
@@ -283,6 +285,37 @@ public class QcUsbPlugin extends Plugin {
             && session.stateDecoder.sessionSynchronized();
     }
 
+    static boolean relayDemoAvailable() {
+        QcUsbPlugin session = relaySession;
+        return session != null && session.demoProvider.available();
+    }
+
+    static boolean relayProviderAvailable() {
+        return relaySessionAvailable() || relayDemoAvailable();
+    }
+
+    @PluginMethod public void publishDemoProvider(PluginCall call) {
+        String session = call.getString("sessionId");
+        if (session != null && (session.isEmpty() || session.length() > 128)) {
+            call.reject("The demo session identity is invalid.", "INVALID_PARAMS");
+            return;
+        }
+        Long generation = call.getLong("generation");
+        if (generation == null || generation < 0 || generation > 9007199254740991L) {
+            call.reject("The demo generation is invalid.", "INVALID_PARAMS");
+            return;
+        }
+        demoProvider.publish(session, generation);
+        startForegroundDemoRelay();
+        call.resolve();
+    }
+
+    @PluginMethod public void completeDemoRequest(PluginCall call) {
+        demoProvider.complete(call.getString("id", ""), call.getString("sessionId", ""),
+            call.getLong("generation", -1L), call.getObject("result"), call.getObject("error"));
+        call.resolve();
+    }
+
     /** Android granted this app the attached device through its own
      * confirmation dialog, which arrives as an activity launch rather than as
      * a permission broadcast. Republishing availability lets the ordinary
@@ -322,6 +355,15 @@ public class QcUsbPlugin extends Plugin {
     static CompletableFuture<org.json.JSONObject> invokeFromRelay(String method, org.json.JSONObject params, org.json.JSONObject expected) {
         QcUsbPlugin session = relaySession;
         if (session == null) return failedRelay("NOT_CONNECTED", "QC Remote is not running with a Quad Cortex session.");
+        if (!relaySessionAvailable() && session.demoProvider.available()) {
+            return session.demoProvider.invoke(method,
+                params == null ? new org.json.JSONObject() : params,
+                expected == null ? new org.json.JSONObject() : expected,
+                request -> session.getActivity().runOnUiThread(() -> {
+                    if (session.demoProvider.canDeliver(request.optString("id")))
+                        session.notifyListeners("qcDemoRequest", JSObject.fromJSONObject(request), false);
+                }));
+        }
         RelayDeadline deadline = new RelayDeadline(session);
         CompletableFuture<org.json.JSONObject> invocation = new CompletableFuture<>();
         RELAY_DEADLINES.put(invocation, deadline);
@@ -345,6 +387,8 @@ public class QcUsbPlugin extends Plugin {
     }
 
     static void expireRelayInvocation(CompletableFuture<org.json.JSONObject> invocation) {
+        QcUsbPlugin session = relaySession;
+        if (session != null) session.demoProvider.expire(invocation);
         RelayDeadline deadline = RELAY_DEADLINES.get(invocation);
         if (deadline != null) deadline.expire();
     }
@@ -3083,8 +3127,32 @@ public class QcUsbPlugin extends Plugin {
         if (flight != null && hadSession) flight.event("transport-closed");
     }
 
+    @Override protected void handleOnPause() {
+        demoProvider.foreground(false);
+        if (!relayForegroundServiceEligible()) getContext().stopService(new Intent(getContext(), QcRelayService.class));
+        super.handleOnPause();
+    }
+
+    @Override protected void handleOnResume() {
+        demoProvider.foreground(true);
+        startForegroundDemoRelay();
+        super.handleOnResume();
+    }
+
+    private void startForegroundDemoRelay() {
+        if (!demoProvider.available() || !new RelayCredentialStore(getContext()).paired()) return;
+        try {
+            getContext().startService(new Intent(getContext(), QcRelayService.class).setAction(QcRelayService.ACTION_START));
+        } catch (RuntimeException unavailable) {
+            // A foreground-to-background race must not crash the app. Resume
+            // or the explicit Remote action can start this provider again.
+            android.util.Log.w("QcUsbPlugin", "The foreground demo relay could not start.");
+        }
+    }
+
     @Override
     protected void handleOnDestroy() {
+        demoProvider.publish(null, 0);
         automaticReconnectGeneration.incrementAndGet();
         internetForwarder.close();
         relayAdmissionGuard.markTerminal();
