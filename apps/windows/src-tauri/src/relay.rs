@@ -957,16 +957,18 @@ fn load_credentials_sync() -> Result<Option<Credentials>, String> {
         Ok(value) => serde_json::from_str(&value).map(Some).map_err(|_| {
             "The stored public-relay credential is invalid; unpair and pair again".into()
         }),
-        Err(crate::credential_store::Error::NoEntry) => match legacy_credential_entry()?.get_password() {
-            Ok(value) => serde_json::from_str(&value).map(Some).map_err(|_| {
-                "The stored public-relay credential is invalid; unpair and pair again".into()
-            }),
-            Err(crate::credential_store::Error::NoEntry) => Ok(None),
-            Err(_) => Err(
-                "Could not read the public-relay credential from the system credential store"
-                    .into(),
-            ),
-        },
+        Err(crate::credential_store::Error::NoEntry) => {
+            match legacy_credential_entry()?.get_password() {
+                Ok(value) => serde_json::from_str(&value).map(Some).map_err(|_| {
+                    "The stored public-relay credential is invalid; unpair and pair again".into()
+                }),
+                Err(crate::credential_store::Error::NoEntry) => Ok(None),
+                Err(_) => Err(
+                    "Could not read the public-relay credential from the system credential store"
+                        .into(),
+                ),
+            }
+        }
         Err(_) => Err(
             "Could not read the public-relay credential from the system credential store".into(),
         ),
