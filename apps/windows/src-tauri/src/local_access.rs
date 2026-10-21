@@ -725,9 +725,6 @@ async fn local_rpc(
             .broker_descriptor
             .as_deref()
             .map(crate::local_stdio::broker_lifecycle_hint);
-        if lifecycle.as_ref().is_some_and(|hint| hint.user_quit) {
-            return Json(serde_json::json!({"ok":true,"result":{"connected":false,"brokerLifecycle":lifecycle}})).into_response();
-        }
         if let (Some(id), Some(name)) = (
             request.params.get("sessionId").and_then(Value::as_str),
             request.params.get("clientName").and_then(Value::as_str),
@@ -761,7 +758,11 @@ async fn local_rpc(
                 record_local_client_attach(client, observed_at);
             }
         }
-        let mut result = serde_json::json!({"connected":true});
+        // A newly launched bridge may be serving offline advice after Quit.
+        // It still announced an initialized MCP session and belongs in the
+        // client list; this does not authorize broker startup or device I/O.
+        let connected = !lifecycle.as_ref().is_some_and(|hint| hint.user_quit);
+        let mut result = serde_json::json!({"connected":connected});
         if let Some(lifecycle) = lifecycle {
             result["brokerLifecycle"] = serde_json::json!(lifecycle);
         }
@@ -4549,16 +4550,38 @@ mod tests {
             r#"{"instanceId":"publisher-broker","source":"tray"}"#,
         )
         .unwrap();
+        let post_quit_client = format!("post-quit-client-{:032x}", rand::random::<u128>());
         for method in ["local.bridgeLifecycle", "local.bridgeHeartbeat"] {
             let response = router
                 .clone()
-                .oneshot(rpc_request(method, Some("test-token")))
+                .oneshot(rpc_request_with_params(
+                    method,
+                    Some("test-token"),
+                    serde_json::json!({"client":post_quit_client,"sessionId":post_quit_client,"clientName":post_quit_client}),
+                ))
                 .await
                 .unwrap();
             let body: Value =
                 serde_json::from_slice(&to_bytes(response.into_body(), 16 * 1024).await.unwrap())
                     .unwrap();
             assert_eq!(body["result"]["brokerLifecycle"]["userQuit"], true);
+            if method == "local.bridgeHeartbeat" {
+                assert_eq!(body["result"]["connected"], false);
+                assert!(local_client_evidence(&post_quit_client).connected());
+                assert!(local_client_evidence(&post_quit_client).attached());
+                let response = router
+                    .clone()
+                    .oneshot(rpc_request("host.status", Some("test-token")))
+                    .await
+                    .unwrap();
+                let body = error_body(response).await;
+                assert!(body["result"]["clients"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["name"] == post_quit_client));
+                crate::host_presence::bridge_closed(&post_quit_client);
+            }
         }
     }
 
