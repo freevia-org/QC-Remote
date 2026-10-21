@@ -221,7 +221,14 @@ The short-lived control client discovers that same default directory:
 ./target/debug/qc-device-broker --control quit --confirm
 ```
 
-`quit --confirm` releases all this broker's clients and records the user's Quit.
+`release` closes USB without exiting the broker or detaching its clients,
+even while a window or MCP client is attached. Ordinary requests cannot undo
+that explicit Disconnect; `connect` reopens the session. Automatic idle release
+is different: the next device request may reopen an idle-released session.
+
+`quit --confirm` releases USB and records the user's Quit. MCP bridges observing
+that broker generation close their MCP transport and exit; an open app window
+stays open and disconnected until the user chooses Connect.
 SIGTERM and SIGINT perform bounded shared shutdown and release the descriptor,
 without recording a user Quit. A killed/crashed owner cannot clean up its files;
 the next election reclaims only a demonstrably dead, unlocked claim. It never

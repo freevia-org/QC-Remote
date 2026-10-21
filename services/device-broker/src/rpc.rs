@@ -3480,6 +3480,8 @@ enum IdleReopen {
 /// One device a resident idle release (or the icon's Disconnect) closed.
 struct IdleReopenEntry {
     controller: Arc<DeviceController>,
+    /// An explicit Disconnect is not idleness: only Connect may reopen it.
+    manually_released: bool,
     /// The accepted HID close has not been acknowledged. The cached worker
     /// phase can still look ready until this command is handled, so reconnect
     /// must enter the same FIFO queue as a barrier behind the close.
@@ -3504,6 +3506,7 @@ impl IdleReopenEntry {
     ) -> Self {
         Self {
             controller,
+            manually_released: false,
             close_unacknowledged,
             reopening: false,
             attempt: 0,
@@ -3960,8 +3963,7 @@ pub(crate) fn with_broker_version(status: &mut Value, version: Option<&str>) {
     }
 }
 
-/// `data.code` of a control release refused because a client other than
-/// this process's host is attached.
+/// Legacy control-release refusal, retained for clients talking to older brokers.
 pub(crate) const CONTROL_PARTICIPANTS_ATTACHED: &str = "PARTICIPANTS_ATTACHED";
 /// Everything a control connection may ask. `broker.shutdown` only with
 /// `force: true`, the icon's forced Release and exit.
@@ -4449,6 +4451,9 @@ fn dispatch_broker_client_request(
     let forced_disconnect = request.method == BROKER_DISCONNECT_DEVICE_METHOD;
     if forced_disconnect {
         request.method = generated_gateway::rpc::DISCONNECT.into();
+        if let Err(message) = generated_gateway::validate_params(&request.method, &request.params) {
+            return error(request.id, -32602, &message);
+        }
     }
     let controller = selected_controller;
     // Dialog-bound exports must never reopen a session to make a stale fence
@@ -4553,7 +4558,7 @@ fn dispatch_broker_client_request(
         let clients = shared.clients.lock_recover();
         clients
             .idle_entry(&controller)
-            .is_some_and(|entry| entry.close_unacknowledged)
+            .is_some_and(|entry| entry.close_unacknowledged || entry.manually_released)
             && matches!(
                 request.method.as_str(),
                 generated_gateway::rpc::DISCONNECT
@@ -4561,8 +4566,12 @@ fn dispatch_broker_client_request(
                     | generated_gateway::rpc::RESET_SESSION
             )
     };
-    let queue_reconnect_after_idle_close =
-        preserve_idle_close_marker && request.method == generated_gateway::rpc::RECONNECT;
+    let queue_reconnect_after_idle_close = request.method == generated_gateway::rpc::RECONNECT
+        && shared
+            .clients
+            .lock_recover()
+            .idle_entry(&controller)
+            .is_some_and(|entry| entry.close_unacknowledged);
     // The second, immediately-before-effect re-check: a second client could
     // have attached while this request queued behind `request_lock` (e.g.
     // behind another client's in-flight backup).
@@ -4614,14 +4623,33 @@ fn dispatch_broker_client_request(
                 .and_then(|from| shared.capture_lifecycle(&controller, &request.method, from))
         })
         .flatten();
-    let response = handle_with_disconnect_admission(
-        &controller,
-        &shared.performance_midi,
-        request,
-        _disconnect_admission.map(|admission| Box::new(admission) as Box<dyn Send>),
-        queue_reconnect_after_idle_close,
-    );
-    if preserve_idle_close_marker && response.get("error").is_none() {
+    let disconnecting = request.method == generated_gateway::rpc::DISCONNECT;
+    let response = if forced_disconnect {
+        let all = shared.all_controllers();
+        let report = shared.disconnect_controllers_report(vec![Arc::clone(&controller)]);
+        if report.midi_retired && !report.queued.is_empty() {
+            let mut clients = shared.clients.lock_recover();
+            clients.record_release(report.queued, report.close_unacknowledged, true);
+            clients.idle_released = all
+                .iter()
+                .all(|device| clients.idle_entry(device).is_some());
+        }
+        if report.failures.is_empty() {
+            json!({"jsonrpc":"2.0", "id":request.id,
+                "result":connection_state(&controller, "Disconnected. Choose Connect to use the Quad Cortex again.")})
+        } else {
+            error(request.id, -32002, &report.failures.join("; "))
+        }
+    } else {
+        handle_with_disconnect_admission(
+            &controller,
+            &shared.performance_midi,
+            request,
+            _disconnect_admission.map(|admission| Box::new(admission) as Box<dyn Send>),
+            queue_reconnect_after_idle_close,
+        )
+    };
+    if preserve_idle_close_marker && !disconnecting && response.get("error").is_none() {
         let mut clients = shared.clients.lock_recover();
         clients.idle_released = false;
         clients.idle_release_retry_not_before = None;
@@ -4668,6 +4696,9 @@ fn idle_release_recheck(
             generated_gateway::rpc::RECONNECT | generated_gateway::rpc::RESET_SESSION
         )
         && !close_unacknowledged
+        && !clients
+            .idle_entry(controller)
+            .is_some_and(|entry| entry.manually_released)
     {
         // The earlier preflight may have cleared the old entry before it
         // queued behind the close. Clear a marker published by that close
@@ -4882,11 +4913,8 @@ fn request_broker_shutdown_recording(
 /// Each command is the icon's own action, so automation and the menu can
 /// never behave differently:
 /// - status: [`BrokerShared::control_status`], from caches only;
-/// - release: the icon's Disconnect without its exit,
-///   [`BrokerHandle::release_devices_staying`], with nobody but this
-///   process's host attached. With anyone else attached, where the icon
-///   would release and exit, it is refused with `data.code`
-///   [`CONTROL_PARTICIPANTS_ATTACHED`] and changes nothing;
+/// - release: the icon's Disconnect, [`BrokerHandle::release_devices_staying`].
+///   The broker and its clients stay attached; only USB is released;
 /// - connect: the icon's Connect, [`BrokerHandle::reconnect`];
 /// - `broker.shutdown {"force": true}`: the icon's forced Release and exit,
 ///   through the same committed shutdown every client's forced shutdown
@@ -4921,29 +4949,10 @@ fn dispatch_control_request(
                 .reconnect()
                 .map(|detail| json!({"connecting": true, "detail": detail})),
         ),
-        BROKER_CONTROL_RELEASE_METHOD => {
-            // Where the icon's Disconnect would release and exit (anyone but
-            // this process's host attached), the control client refuses
-            // instead and changes nothing: `quit --confirm` is the forced
-            // release.
-            let attached = |id: Value| {
-                json!({"jsonrpc": "2.0", "id": id, "error": {
-                    "code": -32002,
-                    "message": "A client other than the background host is attached; the device \
-                                was left open (quit --confirm is the forced release)",
-                    "data": {"code": CONTROL_PARTICIPANTS_ATTACHED},
-                }})
-            };
-            if handle.participants_other_than_host() != 0 {
-                return attached(request.id);
-            }
-            match handle.release_devices_staying() {
-                Ok(detail) => outcome(Ok(json!({"released": true, "detail": detail}))),
-                // One attached between the check and the release.
-                Err(_) if handle.participants_other_than_host() != 0 => attached(request.id),
-                Err(message) => outcome(Err(message)),
-            }
-        }
+        BROKER_CONTROL_RELEASE_METHOD => match handle.release_devices_staying() {
+            Ok(detail) => outcome(Ok(json!({"released": true, "detail": detail}))),
+            Err(message) => outcome(Err(message)),
+        },
         _ => {
             if request.params != json!({"force": true}) {
                 return error(
@@ -5827,6 +5836,15 @@ impl ClientAccounting {
         closed: Vec<Arc<DeviceController>>,
         close_unacknowledged: Vec<Arc<DeviceController>>,
     ) {
+        self.record_release(closed, close_unacknowledged, false);
+    }
+
+    fn record_release(
+        &mut self,
+        closed: Vec<Arc<DeviceController>>,
+        close_unacknowledged: Vec<Arc<DeviceController>>,
+        manually_released: bool,
+    ) {
         self.idle_released = true;
         let previous = std::mem::take(&mut self.idle_released_devices);
         // A partial later release must not erase an earlier controller's
@@ -5846,6 +5864,7 @@ impl ClientAccounting {
             })
             .map(|entry| IdleReopenEntry {
                 controller: Arc::clone(&entry.controller),
+                manually_released: entry.manually_released,
                 close_unacknowledged: entry.close_unacknowledged,
                 reopening: entry.reopening,
                 attempt: entry.attempt,
@@ -5864,13 +5883,19 @@ impl ClientAccounting {
             {
                 Some(entry) => IdleReopenEntry {
                     controller,
+                    manually_released: manually_released || entry.manually_released,
                     close_unacknowledged,
                     reopening: false,
                     attempt: entry.attempt,
                     last_failure: entry.last_failure.clone(),
                 },
                 None => {
-                    IdleReopenEntry::released_with_pending_close(controller, close_unacknowledged)
+                    let mut entry = IdleReopenEntry::released_with_pending_close(
+                        controller,
+                        close_unacknowledged,
+                    );
+                    entry.manually_released = manually_released;
+                    entry
                 }
             }
         }));
@@ -6531,9 +6556,15 @@ impl BrokerShared {
     }
 
     fn disconnect_devices_report(&self) -> DisconnectDevicesReport {
+        self.disconnect_controllers_report(self.all_controllers())
+    }
+
+    fn disconnect_controllers_report(
+        &self,
+        devices: Vec<Arc<DeviceController>>,
+    ) -> DisconnectDevicesReport {
         // A failed close must not release ANY HID session while raw MIDI still
         // owns the matching device. Request callers already hold admission.
-        let devices = self.all_controllers();
         let attempted = devices.len();
         for device in &devices {
             if let Err(error) = self.performance_midi.retire_controller(device) {
@@ -7185,7 +7216,11 @@ impl BrokerShared {
                 .idle_entry(controller)
                 .is_some_and(|entry| entry.close_unacknowledged);
             if session_command && authenticated {
-                if close_unacknowledged {
+                if close_unacknowledged
+                    || clients
+                        .idle_entry(controller)
+                        .is_some_and(|entry| entry.manually_released)
+                {
                     // Keep this marker until the session command has crossed
                     // the worker FIFO barrier and succeeds. An unforced
                     // reconnect must not trust cached `ready` state here.
@@ -7214,6 +7249,12 @@ impl BrokerShared {
                 // committed shutdown exactly as they did before.
                 return Ok(());
             };
+            if entry.manually_released {
+                return Err(
+                    "The Quad Cortex is disconnected by the user. Choose Connect to use it again."
+                        .into(),
+                );
+            }
             let joining = entry.reopening.then_some(entry.attempt);
             if clients.shutting_down {
                 return Err(
@@ -7246,6 +7287,9 @@ impl BrokerShared {
                 let Some(entry) = clients.idle_entry(controller) else {
                     return Ok(());
                 };
+                if entry.manually_released {
+                    return Err("The Quad Cortex is disconnected by the user. Choose Connect to use it again.".into());
+                }
                 if let Some((failed, reason)) = &entry.last_failure {
                     if *failed >= attempt {
                         return Err(format!("The Quad Cortex is not connected: {reason}"));
@@ -7519,34 +7563,19 @@ impl BrokerHandle {
         outcome.map(|_| "Connecting to the Quad Cortex…".to_owned())
     }
 
-    /// The icon's one Disconnect. With no client attached other than this
-    /// process's own MCP host, it closes every device session and the broker
-    /// stays: the devices are recorded as released, so Connect, or the next
-    /// device request from any client (an AI client through the host
-    /// included), opens them again. With another participant attached it is
-    /// the explicit forced release: recorded, so those clients cannot
-    /// silently reacquire the device, and the broker exits.
+    /// Explicit Disconnect releases USB without exiting or detaching clients.
+    /// Ordinary client demand cannot undo it; Connect reopens the session.
     pub fn disconnect(&self) -> Result<String, String> {
-        if self.0.clients.lock_recover().participants_other_than_host() != 0 {
-            return self.release_and_exit(true);
-        }
         self.release_devices_staying()
     }
 
-    /// The icon's Disconnect with nobody but this process's own MCP host
-    /// attached: close every device session, record them as released, and
-    /// keep serving. Never exits: a client that attached meanwhile refuses it
-    /// instead. `qc-device-broker.exe --control release` runs exactly this.
+    /// The icon and control CLI share this release, regardless of participants.
+    /// Preserve accepted-close barriers even when acknowledgment times out.
     pub(crate) fn release_devices_staying(&self) -> Result<String, String> {
         let _exclusive = self.0.request_lock.lock_recover();
         let clients = self.0.clients.lock_recover();
         if clients.shutting_down {
             return Err("Broker shutdown is already committed".into());
-        }
-        if clients.participants_other_than_host() != 0 {
-            return Err(
-                "A client attached meanwhile; choose Disconnect again to release it".into(),
-            );
         }
         if clients.reopens_in_flight != 0 {
             return Err("The Quad Cortex is reopening; choose Disconnect again in a moment".into());
@@ -7556,7 +7585,7 @@ impl BrokerHandle {
         if report.midi_retired && !report.queued.is_empty() {
             let queued_count = report.queued.len();
             let mut clients = self.0.clients.lock_recover();
-            clients.record_idle_release(report.queued, report.close_unacknowledged);
+            clients.record_release(report.queued, report.close_unacknowledged, true);
             clients.idle_released = queued_count == report.attempted;
         }
         if !report.failures.is_empty() {

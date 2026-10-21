@@ -36,6 +36,9 @@ pub(super) fn selected(
                     let clients = clients.lock_recover();
                     !clients.shutting_down
                         && !clients.device_is_closing(&controller)
+                        && !clients
+                            .idle_entry(&controller)
+                            .is_some_and(|entry| entry.manually_released)
                         && requesters.iter().any(|id| {
                             clients.connections.get(id).is_some_and(|row| {
                                 row.is_participant()

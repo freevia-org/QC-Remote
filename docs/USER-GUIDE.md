@@ -445,9 +445,12 @@ presses a footswitch.
   **Disconnect** action, a summary such as "2 local and 1 remote client
   active", one entry per active client and per linked remote app, a
   **Release QC after last client: …** submenu, and **Quit**. **Quit**
-  releases the unit and closes the tray icon and the background MCP host;
-  nothing restarts them by itself, and they return only on a user action, such
-  as opening QC Remote. Remote clients are
+  releases the unit and closes the tray icon, background MCP host and its MCP
+  bridge processes. The broker does not restart until a user action, such as
+  opening QC Remote or choosing Connect. An open window stays open, disconnected; choose
+  **Connect** to use the unit again. **Disconnect** releases USB only: the broker,
+  window and MCP clients stay running. Client requests do not reconnect a device
+  you explicitly disconnected; choose **Connect** when you want it back. Remote clients are
   marked "(remote)"; several sessions of one app share an entry that says how
   many it holds. Each entry opens the client's details (kind, version, when
   it connected and, for a remote client, the route and location the relay

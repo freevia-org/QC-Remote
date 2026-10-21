@@ -407,6 +407,7 @@ struct LocalRpc {
     backend: Arc<dyn QcBackend>,
     endpoint: String,
     instance_id: Arc<str>,
+    broker_descriptor: Option<PathBuf>,
 }
 
 /// The header a native stdio bridge puts on a `/rpc` request that serves an
@@ -439,6 +440,7 @@ struct LocalRpcRequest {
     expected_broker_target: Option<qc_remote_mcp::BrokerTarget>,
 }
 
+#[cfg(test)]
 fn local_router(
     backend: Arc<dyn QcBackend>,
     health: LocalHealth,
@@ -454,12 +456,24 @@ fn local_router(
     )
 }
 
+#[cfg(test)]
 fn local_router_with_body_timeout(
     backend: Arc<dyn QcBackend>,
     health: LocalHealth,
     token: Arc<str>,
     allowed_hosts: Vec<String>,
     body_timeout: Duration,
+) -> Router {
+    local_router_with_lifecycle(backend, health, token, allowed_hosts, body_timeout, None)
+}
+
+fn local_router_with_lifecycle(
+    backend: Arc<dyn QcBackend>,
+    health: LocalHealth,
+    token: Arc<str>,
+    allowed_hosts: Vec<String>,
+    body_timeout: Duration,
+    broker_descriptor: Option<PathBuf>,
 ) -> Router {
     let auth = LocalAuth {
         token,
@@ -489,6 +503,7 @@ fn local_router_with_body_timeout(
             backend: rpc_backend,
             endpoint,
             instance_id,
+            broker_descriptor,
         }),
     )
     .route_layer(middleware::from_fn_with_state(auth, authenticate_local))
@@ -696,7 +711,23 @@ async fn local_rpc(
         }
         return Json(serde_json::json!({"ok":true,"result":{}})).into_response();
     }
+    if request.rpc == "local.bridgeLifecycle" {
+        // Passive and authenticated: no adapter call, host election or USB.
+        let lifecycle = state
+            .broker_descriptor
+            .as_deref()
+            .map(crate::local_stdio::broker_lifecycle_hint);
+        return Json(serde_json::json!({"ok":true,"result":{"brokerLifecycle":lifecycle}}))
+            .into_response();
+    }
     if request.rpc == "local.bridgeHeartbeat" {
+        let lifecycle = state
+            .broker_descriptor
+            .as_deref()
+            .map(crate::local_stdio::broker_lifecycle_hint);
+        if lifecycle.as_ref().is_some_and(|hint| hint.user_quit) {
+            return Json(serde_json::json!({"ok":true,"result":{"connected":false,"brokerLifecycle":lifecycle}})).into_response();
+        }
         if let (Some(id), Some(name)) = (
             request.params.get("sessionId").and_then(Value::as_str),
             request.params.get("clientName").and_then(Value::as_str),
@@ -730,11 +761,15 @@ async fn local_rpc(
                 record_local_client_attach(client, observed_at);
             }
         }
+        let mut result = serde_json::json!({"connected":true});
+        if let Some(lifecycle) = lifecycle {
+            result["brokerLifecycle"] = serde_json::json!(lifecycle);
+        }
         return (
             StatusCode::OK,
             Json(serde_json::json!({
                 "ok": true,
-                "result": { "connected": true },
+                "result": result,
             })),
         )
             .into_response();
@@ -1408,7 +1443,7 @@ fn start_listener_with_budget(
         adapter: adapter.clone(),
         access,
     });
-    let router = local_router(
+    let router = local_router_with_lifecycle(
         backend,
         LocalHealth {
             adapter,
@@ -1418,6 +1453,11 @@ fn start_listener_with_budget(
         },
         Arc::from(token),
         allowed_hosts(port),
+        Duration::from_secs(15),
+        state_files
+            .first()
+            .and_then(|path| path.parent())
+            .map(crate::device_broker_descriptor::device_broker_descriptor_path),
     );
     let task_state_files = state_files.clone();
     #[cfg(test)]
@@ -4417,6 +4457,98 @@ mod tests {
                 serde_json::json!({ "rpc": rpc, "params": params }).to_string(),
             ))
             .expect("RPC request")
+    }
+
+    #[tokio::test]
+    async fn bridge_lifecycle_is_authenticated_passive_and_uses_the_publishers_store() {
+        struct NoDeviceCalls;
+        #[async_trait]
+        impl DeviceAdapter for NoDeviceCalls {
+            async fn ready(&self) -> bool {
+                panic!("lifecycle must not probe USB");
+            }
+            async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> {
+                panic!("lifecycle must not invoke a device");
+            }
+        }
+        let root = scratch_directory("bridge-lifecycle-views");
+        let _root = crate::tests::RemoveDirOnDrop::new(root.clone());
+        let installed = root.join("installed-view");
+        let packaged = root.join("packaged-view");
+        std::fs::create_dir(&installed).unwrap();
+        std::fs::create_dir(&packaged).unwrap();
+        let descriptor = installed.join("device-broker.json");
+        let created =
+            qc_native_platform::process::os_process_created_at(std::process::id()).unwrap();
+        std::fs::write(&descriptor, serde_json::json!({
+            "port":41001, "bearerToken":"DO-NOT-RETURN-THIS-SECRET", "instanceId":"publisher-broker",
+            "processId":std::process::id(), "processCreatedAt":created, "publishedAtUnixMs":unix_time_ms(),
+        }).to_string()).unwrap();
+        // A stale Quit in the launcher's other view must not override the
+        // publisher that this authenticated connection actually reaches.
+        std::fs::write(
+            crate::device_broker_descriptor::user_quit_path(&packaged.join("device-broker.json")),
+            r#"{"instanceId":"unrelated","source":"tray"}"#,
+        )
+        .unwrap();
+        let adapter: Arc<dyn DeviceAdapter> = Arc::new(NoDeviceCalls);
+        let (_access, access) = watch::channel(AccessMode::ReadOnly);
+        let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
+            adapter: adapter.clone(),
+            access,
+        });
+        let router = local_router_with_lifecycle(
+            backend,
+            LocalHealth {
+                adapter,
+                instance_id: Arc::from("publisher"),
+                tool_contract_sha256: Arc::from(tool_contract_sha256()),
+                process_id: 42,
+            },
+            Arc::from("test-token"),
+            allowed_hosts(41000),
+            Duration::from_secs(15),
+            Some(descriptor.clone()),
+        );
+        let denied = router
+            .clone()
+            .oneshot(rpc_request("local.bridgeLifecycle", None))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+        for method in ["local.bridgeLifecycle", "local.bridgeHeartbeat"] {
+            let response = router
+                .clone()
+                .oneshot(rpc_request(method, Some("test-token")))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+            assert!(!String::from_utf8_lossy(&bytes).contains("DO-NOT-RETURN-THIS-SECRET"));
+            let body: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["result"]["brokerLifecycle"]["userQuit"], false);
+            let owner = &body["result"]["brokerLifecycle"]["owner"];
+            assert_eq!(owner["processId"], std::process::id());
+            assert_eq!(owner["processCreatedAt"], created);
+            assert_eq!(owner["instanceId"], "publisher-broker");
+            assert!(owner.get("bearerToken").is_none() && owner.get("port").is_none());
+        }
+        std::fs::write(
+            crate::device_broker_descriptor::user_quit_path(&descriptor),
+            r#"{"instanceId":"publisher-broker","source":"tray"}"#,
+        )
+        .unwrap();
+        for method in ["local.bridgeLifecycle", "local.bridgeHeartbeat"] {
+            let response = router
+                .clone()
+                .oneshot(rpc_request(method, Some("test-token")))
+                .await
+                .unwrap();
+            let body: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 16 * 1024).await.unwrap())
+                    .unwrap();
+            assert_eq!(body["result"]["brokerLifecycle"]["userQuit"], true);
+        }
     }
 
     #[tokio::test]

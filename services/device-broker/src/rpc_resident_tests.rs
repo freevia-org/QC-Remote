@@ -1220,9 +1220,217 @@ fn the_icons_disconnect_does_not_count_the_in_process_host() {
     assert!(handle.disconnect().is_ok());
     shutdown
         .recv_timeout(Duration::from_secs(2))
-        .expect("a real client attached: the forced release");
-    assert!(marker.exists());
-    std::fs::remove_file(marker).unwrap();
+        .expect_err("Disconnect must keep the broker and clients running");
+    assert!(!marker.exists());
+    assert!(!shared.clients.lock_recover().shutting_down);
+}
+
+#[test]
+fn explicit_disconnect_keeps_clients_but_refuses_demand_until_connect_succeeds() {
+    let (shared, shutdown) = resident_shared(Duration::from_secs(60));
+    let handle = BrokerHandle(Arc::clone(&shared));
+    let participant = attach_participant(&shared);
+    let (reopens, _reconnect, _wait) = count_reopens(&shared);
+    handle.disconnect().unwrap();
+    assert!(shutdown.try_recv().is_err());
+    assert!(!handle.shutting_down());
+    assert_eq!(handle.participants_other_than_host(), 1);
+    for method in [
+        generated_gateway::rpc::CURRENT_STATE_EVENTS,
+        generated_gateway::rpc::CURRENT_PRESET,
+    ] {
+        let refused =
+            dispatch_broker_client_request(&shared, Some(participant), request(1, method));
+        assert_eq!(
+            refused["error"]["data"]["category"], "notConnected",
+            "{refused}"
+        );
+        assert!(refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Choose Connect"));
+    }
+    assert_eq!(reopens.load(Ordering::SeqCst), 0);
+    let status = dispatch_broker_client_request(
+        &shared,
+        Some(participant),
+        request(2, generated_gateway::rpc::RUNTIME_STATUS),
+    );
+    assert!(
+        status.get("error").is_none(),
+        "status stays available: {status}"
+    );
+    assert!(
+        shared
+            .clients
+            .lock_recover()
+            .idle_entry(&shared.controller)
+            .unwrap()
+            .manually_released
+    );
+    let connected = dispatch_broker_client_request(
+        &shared,
+        Some(participant),
+        request(3, generated_gateway::rpc::RECONNECT),
+    );
+    assert!(connected.get("error").is_none(), "{connected}");
+    assert!(shared
+        .clients
+        .lock_recover()
+        .idle_entry(&shared.controller)
+        .is_none());
+    assert_eq!(reopens.load(Ordering::SeqCst), 1);
+    assert_eq!(handle.participants_other_than_host(), 1);
+}
+
+#[test]
+fn explicit_disconnect_keeps_a_failed_connect_held_and_other_devices_independent() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let other = Arc::new(DeviceController::start_disconnected().unwrap());
+    shared.devices.lock_recover().push(Arc::clone(&other));
+    let handle = BrokerHandle(Arc::clone(&shared));
+    handle.disconnect().unwrap();
+    let _reconnect = ReconnectHook::install(&shared.controller, || Err("fixture failure".into()));
+    let participant = attach_participant(&shared);
+    let failed = dispatch_broker_client_request(
+        &shared,
+        Some(participant),
+        request(1, generated_gateway::rpc::RECONNECT),
+    );
+    assert!(
+        failed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("fixture failure"),
+        "{failed}"
+    );
+    let clients = shared.clients.lock_recover();
+    for device in [&shared.controller, &other] {
+        assert!(clients.idle_entry(device).unwrap().manually_released);
+    }
+}
+
+#[test]
+fn an_explicit_panel_disconnect_holds_only_its_controller_with_other_clients_attached() {
+    let (shared, shutdown) = resident_shared(Duration::from_secs(60));
+    let first = attach_participant(&shared);
+    let _second = attach_participant(&shared);
+    let other = Arc::new(DeviceController::start_disconnected().unwrap());
+    shared.devices.lock_recover().push(Arc::clone(&other));
+    let response = dispatch_broker_client_request(
+        &shared,
+        Some(first),
+        request(1, BROKER_DISCONNECT_DEVICE_METHOD),
+    );
+    assert!(response.get("error").is_none(), "{response}");
+    let clients = shared.clients.lock_recover();
+    assert!(!clients.shutting_down);
+    assert_eq!(clients.participants(), 2);
+    assert!(
+        clients
+            .idle_entry(&shared.controller)
+            .unwrap()
+            .manually_released
+    );
+    assert!(clients.idle_entry(&other).is_none());
+    assert!(
+        !clients.idle_released,
+        "another device remains eligible for its idle release"
+    );
+    assert!(shutdown.try_recv().is_err());
+}
+
+#[test]
+fn a_request_waiting_for_the_lock_cannot_undo_manual_disconnect() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let participant = attach_participant(&shared);
+    let (reopens, _reconnect, _wait) = count_reopens(&shared);
+    let (resume, reached) = pause_at(&shared, "request:before-request-lock");
+    let asking = {
+        let shared = Arc::clone(&shared);
+        spawn_fixture(move || {
+            dispatch_broker_client_request(
+                &shared,
+                Some(participant),
+                request(1, generated_gateway::rpc::CURRENT_PRESET),
+            )
+        })
+    };
+    reached.recv_timeout(Duration::from_secs(2)).unwrap();
+    BrokerHandle(Arc::clone(&shared)).disconnect().unwrap();
+    resume.send(()).unwrap();
+    let response = asking.join().unwrap();
+    assert_eq!(
+        response["error"]["data"]["category"], "notConnected",
+        "{response}"
+    );
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Choose Connect"));
+    assert_eq!(reopens.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn selected_background_reconnect_cannot_undo_manual_disconnect() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let participant = attach_participant(&shared);
+    let (reopens, _reconnect, _wait) = count_reopens(&shared);
+    BrokerHandle(Arc::clone(&shared)).disconnect().unwrap();
+    let (admitted, observed) = mpsc::channel();
+    on_point(&shared, "selected-reconnect:after-admission", move || {
+        let _ = admitted.send(());
+    });
+    background_policy::selected(&shared, participant, Arc::clone(&shared.controller)).unwrap();
+    observed
+        .recv_timeout(Duration::from_secs(2))
+        .expect("exercise the actual admission decision before stopping its manager");
+    shared
+        .background
+        .finish_before(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+    assert_eq!(reopens.load(Ordering::SeqCst), 0);
+    assert!(
+        shared
+            .clients
+            .lock_recover()
+            .idle_entry(&shared.controller)
+            .unwrap()
+            .manually_released
+    );
+}
+
+#[test]
+fn manual_disconnect_retains_the_pending_close_barrier_until_connect_succeeds() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let handle = BrokerHandle(Arc::clone(&shared));
+    shared.clients.lock_recover().record_release(
+        vec![Arc::clone(&shared.controller)],
+        vec![Arc::clone(&shared.controller)],
+        true,
+    );
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&attempts);
+    let _barrier = PendingCloseReconnectHook::install(&shared.controller, move || {
+        if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err("close still draining".into())
+        } else {
+            Ok(())
+        }
+    });
+    assert!(handle.reconnect().is_err());
+    {
+        let clients = shared.clients.lock_recover();
+        let entry = clients.idle_entry(&shared.controller).unwrap();
+        assert!(entry.manually_released && entry.close_unacknowledged);
+    }
+    handle.reconnect().unwrap();
+    assert!(shared
+        .clients
+        .lock_recover()
+        .idle_entry(&shared.controller)
+        .is_none());
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
 }
 
 /// L3: no grace, reap or installer stop commits under a running reopen.
@@ -1652,8 +1860,7 @@ fn a_request_during_resident_idle_close_reopens_after_the_close() {
 
 /// Only the token proves the host. A client naming
 /// itself after the host, with no token, a wrong one, or after a re-hello
-/// without it, is an ordinary participant, and the icon's Disconnect forces
-/// it off.
+/// without it, is an ordinary participant. Disconnect keeps either attached.
 #[test]
 fn the_host_is_recognised_by_its_token_never_by_its_name() {
     let (shared, shutdown) = resident_shared(Duration::from_secs(60));
@@ -1691,10 +1898,9 @@ fn the_host_is_recognised_by_its_token_never_by_its_name() {
     assert!(handle.disconnect().is_ok());
     shutdown
         .recv_timeout(Duration::from_secs(2))
-        .expect("an unproven 'host' is a client: Disconnect is the forced release");
+        .expect_err("Disconnect keeps even an ordinary participant attached");
     let marker = BrokerReleaseMarker::path_for(&shared.descriptor_path, &shared.instance_id);
-    assert!(marker.exists());
-    std::fs::remove_file(marker).unwrap();
+    assert!(!marker.exists());
 }
 
 /// The reap rechecks shortly while a reopen runs.
@@ -2048,6 +2254,7 @@ fn recording_a_device_again_keeps_its_attempt_and_last_failure() {
     let controller = Arc::new(DeviceController::start_disconnected().unwrap());
     clients.idle_released_devices = vec![IdleReopenEntry {
         controller: Arc::clone(&controller),
+        manually_released: false,
         close_unacknowledged: true,
         reopening: false,
         attempt: 3,
@@ -2199,6 +2406,7 @@ fn a_reopening_or_failed_idle_reopen_reads_not_ready() {
     controller.set_connection_for_test(false, "handshaking");
     shared.clients.lock_recover().idle_released_devices = vec![IdleReopenEntry {
         controller: Arc::clone(&controller),
+        manually_released: false,
         close_unacknowledged: false,
         reopening: true,
         attempt: 1,
@@ -2215,6 +2423,7 @@ fn a_reopening_or_failed_idle_reopen_reads_not_ready() {
     controller.set_connection_for_test(false, "disconnected");
     shared.clients.lock_recover().idle_released_devices = vec![IdleReopenEntry {
         controller: Arc::clone(&controller),
+        manually_released: false,
         close_unacknowledged: false,
         reopening: false,
         attempt: 1,
