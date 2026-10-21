@@ -30,6 +30,7 @@ pub mod broker_tray_control;
 pub mod broker_tray_settings;
 mod client_packages;
 mod credential_io;
+mod credential_store;
 mod demo_provider;
 mod device_broker_descriptor;
 mod external_host;

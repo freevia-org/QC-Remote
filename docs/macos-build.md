@@ -46,3 +46,10 @@ attached client or renew the idle clock.
 
 Local builds use ad-hoc signatures. Distribution signing and notarization need
 appropriate Apple credentials.
+
+macOS stores cloud pairing secrets in private files under
+`~/Library/Application Support/org.freevia.qcremote/credentials` (directory
+0700, files 0600), shared by the app and standalone broker. It does not use
+Keychain. An installation upgraded from Keychain storage needs to pair again
+unless its credentials were explicitly migrated beforehand. Old Keychain
+items are left untouched; the app never reads or deletes them.

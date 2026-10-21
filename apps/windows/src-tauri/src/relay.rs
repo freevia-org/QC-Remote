@@ -776,8 +776,8 @@ where
     Ok(false)
 }
 
-fn pending_revocations_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new(CREDENTIAL_SERVICE, PENDING_REVOCATIONS_ACCOUNT)
+fn pending_revocations_entry() -> Result<crate::credential_store::Entry, String> {
+    crate::credential_store::Entry::new(CREDENTIAL_SERVICE, PENDING_REVOCATIONS_ACCOUNT)
         .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
@@ -785,7 +785,7 @@ fn load_pending_revocations() -> Result<Vec<Credentials>, String> {
     match pending_revocations_entry()?.get_password() {
         Ok(value) => serde_json::from_str(&value)
             .map_err(|_| "The pending cloud withdrawal record is invalid".into()),
-        Err(keyring::Error::NoEntry) => Ok(Vec::new()),
+        Err(crate::credential_store::Error::NoEntry) => Ok(Vec::new()),
         Err(_) => Err("Could not read the pending cloud withdrawal record".into()),
     }
 }
@@ -794,7 +794,7 @@ fn store_pending_revocations(entries: &[Credentials]) -> Result<(), String> {
     let entry = pending_revocations_entry()?;
     if entries.is_empty() {
         return match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Ok(()) | Err(crate::credential_store::Error::NoEntry) => Ok(()),
             Err(_) => Err("Could not clear the pending cloud withdrawal record".into()),
         };
     }
@@ -815,34 +815,34 @@ impl Drop for RelayBridge {
     }
 }
 
-fn credential_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new(CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT)
+fn credential_entry() -> Result<crate::credential_store::Entry, String> {
+    crate::credential_store::Entry::new(CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT)
         .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
-fn legacy_credential_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new(LEGACY_CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT)
+fn legacy_credential_entry() -> Result<crate::credential_store::Entry, String> {
+    crate::credential_store::Entry::new(LEGACY_CREDENTIAL_SERVICE, CREDENTIAL_ACCOUNT)
         .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
-fn access_mode_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new(CREDENTIAL_SERVICE, ACCESS_MODE_ACCOUNT)
+fn access_mode_entry() -> Result<crate::credential_store::Entry, String> {
+    crate::credential_store::Entry::new(CREDENTIAL_SERVICE, ACCESS_MODE_ACCOUNT)
         .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
-fn legacy_access_mode_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new(LEGACY_CREDENTIAL_SERVICE, ACCESS_MODE_ACCOUNT)
+fn legacy_access_mode_entry() -> Result<crate::credential_store::Entry, String> {
+    crate::credential_store::Entry::new(LEGACY_CREDENTIAL_SERVICE, ACCESS_MODE_ACCOUNT)
         .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
-fn auto_approve_remote_actions_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new(CREDENTIAL_SERVICE, AUTO_APPROVE_REMOTE_ACTIONS_ACCOUNT)
+fn auto_approve_remote_actions_entry() -> Result<crate::credential_store::Entry, String> {
+    crate::credential_store::Entry::new(CREDENTIAL_SERVICE, AUTO_APPROVE_REMOTE_ACTIONS_ACCOUNT)
         .map_err(|_| "The system credential store is unavailable".to_string())
 }
 
 fn clear_auto_approve_remote_actions_sync() -> Result<(), String> {
     match auto_approve_remote_actions_entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(crate::credential_store::Error::NoEntry) => Ok(()),
         Err(_) => Err(
             "Could not clear the remote approval preference from the system credential store"
                 .into(),
@@ -859,7 +859,7 @@ fn read_access_mode_value_sync(
     }?;
     match entry.get_password() {
         Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(crate::credential_store::Error::NoEntry) => Ok(None),
         Err(_) => {
             Err("Could not read the relay access mode from the system credential store".into())
         }
@@ -957,11 +957,11 @@ fn load_credentials_sync() -> Result<Option<Credentials>, String> {
         Ok(value) => serde_json::from_str(&value).map(Some).map_err(|_| {
             "The stored public-relay credential is invalid; unpair and pair again".into()
         }),
-        Err(keyring::Error::NoEntry) => match legacy_credential_entry()?.get_password() {
+        Err(crate::credential_store::Error::NoEntry) => match legacy_credential_entry()?.get_password() {
             Ok(value) => serde_json::from_str(&value).map(Some).map_err(|_| {
                 "The stored public-relay credential is invalid; unpair and pair again".into()
             }),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(crate::credential_store::Error::NoEntry) => Ok(None),
             Err(_) => Err(
                 "Could not read the public-relay credential from the system credential store"
                     .into(),
@@ -1419,7 +1419,7 @@ fn store_credentials_sync(credentials: &Credentials) -> Result<(), String> {
 fn clear_credentials_sync() -> Result<(), String> {
     clear_auto_approve_remote_actions_sync()?;
     match credential_entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Ok(()) | Err(crate::credential_store::Error::NoEntry) => {}
         Err(_) => {
             return Err(
                 "Could not remove the public-relay credential from the system credential store"
@@ -1428,7 +1428,7 @@ fn clear_credentials_sync() -> Result<(), String> {
         }
     }
     match legacy_credential_entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(crate::credential_store::Error::NoEntry) => Ok(()),
         Err(_) => Err(
             "Could not remove the legacy public-relay credential from the system credential store"
                 .into(),
