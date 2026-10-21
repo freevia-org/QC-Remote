@@ -647,6 +647,10 @@ struct BridgeAnnouncement {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeLifecycleHint {
     pub(crate) user_quit: bool,
+    #[serde(default)]
+    quit_instance_id: Option<String>,
+    #[serde(default)]
+    quit_unknown: bool,
     owner: Option<BridgeOwner>,
 }
 
@@ -656,15 +660,6 @@ struct BridgeOwner {
     process_id: u32,
     process_created_at: u64,
     instance_id: String,
-}
-
-impl BridgeOwner {
-    fn valid(&self) -> bool {
-        self.process_id != 0
-            && self.process_created_at != 0
-            && !self.instance_id.is_empty()
-            && self.instance_id.len() <= 256
-    }
 }
 
 pub(crate) fn broker_lifecycle_hint(descriptor: &std::path::Path) -> BridgeLifecycleHint {
@@ -680,8 +675,14 @@ pub(crate) fn broker_lifecycle_hint(descriptor: &std::path::Path) -> BridgeLifec
                 instance_id: owner.instance_id,
             })
         });
+    let quit = bridge_quit_evidence(descriptor);
     BridgeLifecycleHint {
-        user_quit: crate::user_quit_refusal(descriptor).is_some(),
+        user_quit: matches!(quit, BridgeQuitEvidence::Recorded(_)),
+        quit_instance_id: match &quit {
+            BridgeQuitEvidence::Recorded(instance) => Some(instance.clone()),
+            _ => None,
+        },
+        quit_unknown: matches!(quit, BridgeQuitEvidence::Unknown),
         owner,
     }
 }
@@ -2461,37 +2462,101 @@ fn finish_bridge_shutdown(
     }
 }
 
-/// A bridge follows one broker generation, not the lifetime of its AI host's
-/// stdin. Missing/stale metadata and inaccessible process identity are NOT
-/// proof of death. Disconnect leaves this generation alive and never stops MCP.
+#[derive(Clone)]
+enum BridgeQuitEvidence {
+    Unknown,
+    Clear,
+    Recorded(String),
+}
+
+fn bridge_quit_evidence(descriptor: &std::path::Path) -> BridgeQuitEvidence {
+    match crate::device_broker_descriptor::read_user_quit(descriptor) {
+        Some(Err(_)) => BridgeQuitEvidence::Unknown,
+        Some(Ok(record)) if crate::user_quit_refusal(descriptor).is_some() => {
+            BridgeQuitEvidence::Recorded(record.instance_id)
+        }
+        _ => BridgeQuitEvidence::Clear,
+    }
+}
+
+#[derive(Default)]
+struct BridgeQuitTracker {
+    // None: no trustworthy snapshot yet. Some(None): no Quit recorded.
+    // A pre-existing Quit is a baseline, not an instruction to kill a newly
+    // launched MCP server before it can explain how to reconnect.
+    observed: Option<Option<String>>,
+}
+
+impl BridgeQuitTracker {
+    fn observe(&mut self, evidence: BridgeQuitEvidence) -> bool {
+        let current = match evidence {
+            BridgeQuitEvidence::Unknown => return false,
+            BridgeQuitEvidence::Clear => None,
+            BridgeQuitEvidence::Recorded(instance) => Some(instance),
+        };
+        let stopped = current.is_some()
+            && self
+                .observed
+                .as_ref()
+                .is_some_and(|previous| *previous != current);
+        self.observed = Some(current);
+        stopped
+    }
+}
+
+/// A new explicit Quit or proven death of a previously verified broker ends
+/// an attached bridge. A changed/missing descriptor or Unknown never does.
 struct BridgeLifecycle {
     descriptor: PathBuf,
+    quit: BridgeQuitTracker,
     observed: Option<crate::device_broker_descriptor::DeviceBrokerDescriptor>,
 }
 
 impl BridgeLifecycle {
+    fn new(descriptor: PathBuf) -> Self {
+        let mut quit = BridgeQuitTracker::default();
+        quit.observe(bridge_quit_evidence(&descriptor));
+        Self {
+            descriptor,
+            quit,
+            observed: None,
+        }
+    }
+
     fn stopped(&mut self) -> bool {
-        if crate::user_quit_refusal(&self.descriptor).is_some() {
+        let evidence = bridge_quit_evidence(&self.descriptor);
+        let attachable = matches!(evidence, BridgeQuitEvidence::Clear);
+        if self.quit.observe(evidence) {
             return true;
         }
-        self.observe(
-            crate::device_broker_descriptor::read_descriptor(
-                &self.descriptor,
-                crate::device_broker_descriptor::unix_time_ms(),
-            ),
-            crate::broker_attach::published_broker_process_is_alive,
+        self.observe_owner(
+            if attachable {
+                crate::device_broker_descriptor::read_descriptor(&self.descriptor, now_unix_ms())
+            } else {
+                None
+            },
+            |owner| {
+                qc_native_platform::owner_identity::native(
+                    owner.process_id,
+                    owner.process_created_at,
+                )
+            },
         )
     }
 
-    fn observe(
+    fn observe_owner(
         &mut self,
         current: Option<crate::device_broker_descriptor::DeviceBrokerDescriptor>,
-        alive: impl Fn(&crate::device_broker_descriptor::DeviceBrokerDescriptor) -> bool,
+        assessment: impl Fn(
+            &crate::device_broker_descriptor::DeviceBrokerDescriptor,
+        ) -> qc_native_platform::owner_identity::Assessment,
     ) -> bool {
+        use qc_native_platform::owner_identity::Assessment;
         if let Some(observed) = &self.observed {
-            return !alive(observed);
+            return assessment(observed) == Assessment::GoneOrDifferent;
         }
-        self.observed = current.filter(alive);
+        // Unknown is not sufficient to bind this bridge to an OS identity.
+        self.observed = current.filter(|owner| assessment(owner) == Assessment::Same);
         false
     }
 }
@@ -2517,17 +2582,15 @@ async fn wait_for_bridge_stop(
                 .parent()
                 .map(crate::device_broker_descriptor::device_broker_descriptor_path)
         });
-    let mut lifecycle = descriptor.map(|descriptor| BridgeLifecycle {
-        descriptor,
-        observed: None,
-    });
-    let mut publisher_authoritative = false;
-    let mut publisher_owner = None;
+    let mut lifecycle = descriptor.map(BridgeLifecycle::new);
+    let mut publisher_quit = BridgeQuitTracker::default();
+    let mut publisher_owner: Option<BridgeOwner> = None;
     let mut next_heartbeat = std::time::Instant::now();
     let started = std::time::Instant::now();
     let mut report = HeartbeatReport::default();
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     loop {
+        let mut publisher_authoritative = false;
         if std::time::Instant::now() >= next_heartbeat {
             let row = announcement.borrow_and_update().clone();
             let outcome =
@@ -2538,11 +2601,31 @@ async fn wait_for_bridge_stop(
                 // even when our launcher virtualizes LocalAppData. Do not let
                 // an unrelated old marker in our own view override it.
                 publisher_authoritative = true;
-                if hint.user_quit {
+                let evidence = if hint.quit_unknown {
+                    BridgeQuitEvidence::Unknown
+                } else if hint.user_quit {
+                    BridgeQuitEvidence::Recorded(
+                        hint.quit_instance_id
+                            .clone()
+                            .unwrap_or_else(|| "legacy-explicit-quit".into()),
+                    )
+                } else {
+                    BridgeQuitEvidence::Clear
+                };
+                if publisher_quit.observe(evidence) {
                     return;
                 }
-                if publisher_owner.is_none() {
-                    publisher_owner = hint.owner.as_ref().filter(|owner| owner.valid()).cloned();
+                if publisher_owner.is_none() && !hint.user_quit && !hint.quit_unknown {
+                    publisher_owner = hint
+                        .owner
+                        .as_ref()
+                        .filter(|owner| {
+                            qc_native_platform::owner_identity::native(
+                                owner.process_id,
+                                Some(owner.process_created_at),
+                            ) == qc_native_platform::owner_identity::Assessment::Same
+                        })
+                        .cloned();
                 }
             }
             if let Some(row) = &row {
@@ -2570,6 +2653,8 @@ async fn wait_for_bridge_stop(
         tokio::select! {
             _ = interval.tick() => {},
             changed = announcement.changed() => {
+                // serve_bridge owns announcement_tx through service cleanup;
+                // closure here means that owner has already left, not Quit.
                 if changed.is_err() { return; }
                 next_heartbeat = std::time::Instant::now();
             },
@@ -2760,76 +2845,111 @@ mod tests {
     fn bridge_quit_exits_with_ai_host_input_still_open() {
         use crate::tests::{ExitObservation, OwnedChild};
         use std::io::Write;
-        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
-            let (directory, guard) = exclusive_fixture_dir("bridge-open-stdin");
-            let stdout = directory.join("stdout");
-            let stderr = directory.join("stderr");
-            let slot: crate::tests::ChildSlot = Default::default();
-            crate::tests::arm_owned_child(
-                cleanup,
-                "bridge-open-stdin",
-                &slot,
-                None,
-                Duration::ZERO,
-            );
-            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "local_stdio::tests::bridge_quit_open_stdin_child",
-                    "--ignored",
-                    "--nocapture",
-                ])
-                .env(STATE_OVERRIDE, directory.join(STATE_FILE))
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::fs::File::create(&stdout).unwrap())
-                .stderr(std::fs::File::create(&stderr).unwrap())
-                .spawn()
-                .unwrap();
-            let mut input = child.stdin.take().unwrap();
-            crate::tests::fill_slot(&slot, OwnedChild::new(child).with_resource(guard));
-            input.write_all(concat!(
+        for preexisting_quit in [false, true] {
+            let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+                let (directory, guard) = exclusive_fixture_dir("bridge-open-stdin");
+                if preexisting_quit {
+                    std::fs::write(
+                        crate::device_broker_descriptor::user_quit_path(
+                            &directory.join("device-broker.json"),
+                        ),
+                        r#"{"instanceId":"before-this-chat","source":"tray"}"#,
+                    )
+                    .unwrap();
+                }
+                let stdout = directory.join("stdout");
+                let stderr = directory.join("stderr");
+                let slot: crate::tests::ChildSlot = Default::default();
+                crate::tests::arm_owned_child(
+                    cleanup,
+                    "bridge-open-stdin",
+                    &slot,
+                    None,
+                    Duration::ZERO,
+                );
+                let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "local_stdio::tests::bridge_quit_open_stdin_child",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env(STATE_OVERRIDE, directory.join(STATE_FILE))
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::fs::File::create(&stdout).unwrap())
+                    .stderr(std::fs::File::create(&stderr).unwrap())
+                    .spawn()
+                    .unwrap();
+                let mut input = child.stdin.take().unwrap();
+                crate::tests::fill_slot(&slot, OwnedChild::new(child).with_resource(guard));
+                input.write_all(concat!(
                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"fixture\",\"version\":\"1\"}}}\n",
                 "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
             ).as_bytes()).unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(8);
-            while !std::fs::read_to_string(&stdout)
-                .unwrap_or_default()
-                .contains("\"protocolVersion\"")
-            {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "child did not initialize MCP: {}",
-                    std::fs::read_to_string(&stderr).unwrap_or_default()
-                );
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            std::fs::write(
-                crate::device_broker_descriptor::user_quit_path(
-                    &directory.join("device-broker.json"),
-                ),
-                r#"{"instanceId":"fixture-quit","source":"tray"}"#,
-            )
-            .unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            loop {
-                let observation = slot.lock().unwrap().as_mut().unwrap().observe();
-                if observation == ExitObservation::Exited {
-                    break;
+                let deadline = std::time::Instant::now() + Duration::from_secs(8);
+                while !std::fs::read_to_string(&stdout)
+                    .unwrap_or_default()
+                    .contains("\"protocolVersion\"")
+                {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "child did not initialize MCP: {}",
+                        std::fs::read_to_string(&stderr).unwrap_or_default()
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
                 }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "bridge must exit without the AI host closing stdin: {observation:?}"
-                );
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert!(std::fs::read_to_string(&stderr)
-                .unwrap()
-                .contains("bridge-shutdown-completed"));
-            // Keep the host's input alive until AFTER the original child exited.
-            drop(input);
-        });
-        assert!(outcome.is_ok(), "{outcome:?}");
-        assert!(report.is_clean(), "{report}");
+                if preexisting_quit {
+                    let mut message = list_models_tool_call();
+                    message["jsonrpc"] = Value::from("2.0");
+                    message["id"] = Value::from(2);
+                    input.write_all(format!("{message}\n").as_bytes()).unwrap();
+                    let deadline = std::time::Instant::now() + Duration::from_secs(8);
+                    loop {
+                        let output = std::fs::read_to_string(&stdout).unwrap_or_default();
+                        let answer = output
+                            .lines()
+                            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                            .find(|value| value["id"] == 2);
+                        if let Some(answer) = answer {
+                            assert!(answer.to_string().contains(POST_QUIT_ADVICE), "{answer}");
+                            break;
+                        }
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "post-Quit chat must serve reconnect advice: {}",
+                            std::fs::read_to_string(&stderr).unwrap_or_default()
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                }
+                std::fs::write(
+                    crate::device_broker_descriptor::user_quit_path(
+                        &directory.join("device-broker.json"),
+                    ),
+                    r#"{"instanceId":"fixture-quit","source":"tray"}"#,
+                )
+                .unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    let observation = slot.lock().unwrap().as_mut().unwrap().observe();
+                    if observation == ExitObservation::Exited {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "bridge must exit without the AI host closing stdin: {observation:?}"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(std::fs::read_to_string(&stderr)
+                    .unwrap()
+                    .contains("bridge-shutdown-completed"));
+                // Keep the host's input alive until AFTER the original child exited.
+                drop(input);
+            });
+            assert!(outcome.is_ok(), "{outcome:?}");
+            assert!(report.is_clean(), "{report}");
+        }
     }
 
     #[tokio::test]
@@ -2874,9 +2994,30 @@ mod tests {
     }
 
     #[test]
-    fn bridge_lifecycle_keeps_missing_metadata_and_stops_only_a_proven_gone_generation() {
+    fn bridge_lifecycle_hint_accepts_extensions_but_never_infers_quit_from_legacy_metadata() {
+        for metadata in [
+            Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"owner":null}),
+            serde_json::json!({"userQuit":"unknown","owner":null}),
+        ] {
+            assert!(serde_json::from_value::<BridgeLifecycleHint>(metadata).is_err());
+        }
+        let hint: BridgeLifecycleHint = serde_json::from_value(serde_json::json!({
+            "userQuit":false,
+            "owner":null,
+            "futureField":"ignored by older readers",
+        }))
+        .unwrap();
+        assert!(!hint.user_quit);
+        assert!(hint.owner.is_none());
+    }
+
+    #[test]
+    fn bridge_lifecycle_binds_only_verified_identity_and_keeps_descriptor_changes_and_unknown() {
         use crate::device_broker_descriptor::DeviceBrokerDescriptor;
-        let descriptor = DeviceBrokerDescriptor {
+        use qc_native_platform::owner_identity::Assessment;
+        let owner = DeviceBrokerDescriptor {
             port: 1,
             bearer_token: "fixture-only".into(),
             instance_id: "original".into(),
@@ -2885,31 +3026,44 @@ mod tests {
             published_at_unix_ms: 0,
             gateway_api_version: None,
         };
-        // Same policy in the ordinary user store and a packaged filesystem view.
-        for path in [
-            "user-store/device-broker.json",
-            "package-view/device-broker.json",
-        ] {
-            let mut lifecycle = BridgeLifecycle {
-                descriptor: PathBuf::from(path),
-                observed: None,
-            };
-            assert!(
-                !lifecycle.observe(None, |_| false),
-                "not running at startup is not a Quit"
+        let mut lifecycle = BridgeLifecycle {
+            descriptor: PathBuf::from("unused-fixture"),
+            quit: BridgeQuitTracker::default(),
+            observed: None,
+        };
+        assert!(!lifecycle.observe_owner(Some(owner.clone()), |_| Assessment::Unknown));
+        assert!(
+            lifecycle.observed.is_none(),
+            "Unknown is not a verified binding"
+        );
+        assert!(!lifecycle.observe_owner(Some(owner.clone()), |_| Assessment::Same));
+        let mut replacement = owner.clone();
+        replacement.instance_id = "replacement".into();
+        replacement.process_id = 43;
+        assert!(!lifecycle.observe_owner(Some(replacement.clone()), |_| Assessment::Same));
+        assert!(!lifecycle.observe_owner(None, |_| Assessment::Unknown));
+        assert_eq!(lifecycle.observed.as_ref().unwrap().process_id, 42);
+        assert!(lifecycle.observe_owner(Some(replacement), |checked| {
+            assert_eq!(
+                checked.process_id, 42,
+                "probe the ORIGINAL, never the replacement"
             );
-            assert!(!lifecycle.observe(Some(descriptor.clone()), |_| true));
-            assert!(
-                !lifecycle.observe(None, |_| true),
-                "stale/missing file is not process death"
-            );
-            let mut replacement = descriptor.clone();
-            replacement.instance_id = "replacement".into();
-            assert!(
-                lifecycle.observe(Some(replacement), |_| false),
-                "replacement cannot prolong the original session"
-            );
-        }
+            Assessment::GoneOrDifferent
+        }));
+    }
+
+    #[test]
+    fn bridge_lifecycle_keeps_a_preexisting_quit_and_unknown_until_a_new_explicit_quit() {
+        let mut quit = BridgeQuitTracker::default();
+        assert!(!quit.observe(BridgeQuitEvidence::Recorded("before-launch".into())));
+        assert!(!quit.observe(BridgeQuitEvidence::Unknown));
+        assert!(!quit.observe(BridgeQuitEvidence::Recorded("before-launch".into())));
+        assert!(quit.observe(BridgeQuitEvidence::Recorded("new-quit".into())));
+        let mut quit = BridgeQuitTracker::default();
+        assert!(!quit.observe(BridgeQuitEvidence::Clear));
+        assert!(!quit.observe(BridgeQuitEvidence::Unknown));
+        assert!(!quit.observe(BridgeQuitEvidence::Clear));
+        assert!(quit.observe(BridgeQuitEvidence::Recorded("after-launch".into())));
     }
 
     #[test]
@@ -2919,14 +3073,8 @@ mod tests {
         let second = root.join("package-view");
         std::fs::create_dir(&first).unwrap();
         std::fs::create_dir(&second).unwrap();
-        let mut first = BridgeLifecycle {
-            descriptor: first.join("device-broker.json"),
-            observed: None,
-        };
-        let mut second = BridgeLifecycle {
-            descriptor: second.join("device-broker.json"),
-            observed: None,
-        };
+        let mut first = BridgeLifecycle::new(first.join("device-broker.json"));
+        let mut second = BridgeLifecycle::new(second.join("device-broker.json"));
         std::fs::write(
             crate::device_broker_descriptor::user_quit_path(&first.descriptor),
             r#"{"instanceId":"fixture-generation","source":"tray"}"#,
@@ -2939,6 +3087,20 @@ mod tests {
         assert!(
             !second.stopped(),
             "another filesystem view is not this bridge's broker"
+        );
+        let mut launched_after_quit = BridgeLifecycle::new(first.descriptor.clone());
+        assert!(
+            !launched_after_quit.stopped(),
+            "a new MCP chat must initialize after an earlier Quit"
+        );
+        std::fs::write(
+            crate::device_broker_descriptor::user_quit_path(&first.descriptor),
+            b"unreadable record",
+        )
+        .unwrap();
+        assert!(
+            !launched_after_quit.stopped(),
+            "unreadable is Unknown, not an explicit Quit"
         );
     }
 
@@ -5316,6 +5478,54 @@ mod tests {
             }
         }
     }
+    fn unwrap_after_native_reap<T>(
+        mut resource: Arc<T>,
+        deadline: std::time::Instant,
+        mut reap: impl FnMut(),
+    ) -> Result<T, Arc<T>> {
+        loop {
+            // On Unix one observation can start, rather than complete, the
+            // exact original's join helper. Another fixture may also be
+            // reaping it. Only sole Arc ownership authorizes cleanup.
+            reap();
+            resource = match Arc::try_unwrap(resource) {
+                Ok(resource) => return Ok(resource),
+                Err(shared) => shared,
+            };
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(resource);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(1)));
+        }
+    }
+
+    #[test]
+    fn dependent_cleanup_waits_for_reaping_but_never_unwraps_a_retained_original() {
+        let value = Arc::new(42);
+        let mut retained = Some(value.clone());
+        let mut observations = 0;
+        let unwrapped = unwrap_after_native_reap(
+            value,
+            std::time::Instant::now() + Duration::from_secs(2),
+            || {
+                observations += 1;
+                if observations == 3 {
+                    drop(retained.take());
+                }
+            },
+        );
+        assert_eq!(unwrapped.unwrap(), 42);
+        assert_eq!(observations, 3, "one reap is not a retirement proof");
+
+        let value = Arc::new(24);
+        let retained = value.clone();
+        let still_shared = unwrap_after_native_reap(value, std::time::Instant::now(), || {})
+            .expect_err("an unresolved original must keep its resource");
+        assert_eq!(Arc::strong_count(&still_shared), 2);
+        assert!(Arc::ptr_eq(&still_shared, &retained));
+    }
+
     fn arm_mcp_exchange(
         cleanup: &mut crate::tests::CleanupStack,
         within: Duration,
@@ -5371,8 +5581,11 @@ mod tests {
         let owned = actors.clone();
         let retained_dependencies = dependencies.clone();
         cleanup.arm("MCP actor and dependent transaction", move |outer| {
+            let deadline = std::time::Instant::now() + within;
             if let Some(mut actor) = take(&owned) {
-                if let Err(error) = actor.stop_within(within) {
+                if let Err(error) = actor.stop_within(
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                ) {
                     outer.unacknowledged(error);
                 }
                 // Unknown Owned retains the same dependencies Arc in the
@@ -5381,9 +5594,12 @@ mod tests {
             }
             // Ready resource holders must be actually reaped before deciding
             // whether this callback is the sole dependency authority.
-            qc_native_platform::thread_owner::reap();
             let direct = if tokio::runtime::Handle::try_current().is_err() {
-                match Arc::try_unwrap(retained_dependencies) {
+                match unwrap_after_native_reap(
+                    retained_dependencies,
+                    deadline,
+                    qc_native_platform::thread_owner::reap,
+                ) {
                     Ok(mut dependencies) => dependencies.complete_on_outer(),
                     Err(shared) => { drop(shared); None }
                 }

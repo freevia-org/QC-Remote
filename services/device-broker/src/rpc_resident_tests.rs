@@ -1311,6 +1311,88 @@ fn explicit_disconnect_keeps_a_failed_connect_held_and_other_devices_independent
 }
 
 #[test]
+fn an_explicit_panel_disconnect_refuses_an_admitted_reopen_without_marking_release() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let participant = attach_participant(&shared);
+    shared.clients.lock_recover().reopens_in_flight = 1;
+    let response = dispatch_broker_client_request(
+        &shared,
+        Some(participant),
+        request(1, BROKER_DISCONNECT_DEVICE_METHOD),
+    );
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("reopening"),
+        "{response}"
+    );
+    assert!(shared
+        .clients
+        .lock_recover()
+        .idle_entry(&shared.controller)
+        .is_none());
+    shared.clients.lock_recover().reopens_in_flight = 0;
+}
+
+#[test]
+fn an_explicit_panel_disconnect_reports_an_accepted_close_as_pending_not_failed() {
+    let released = Arc::new(AtomicBool::new(false));
+    struct ReleaseOnDrop(Arc<AtomicBool>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let _release = ReleaseOnDrop(Arc::clone(&released));
+    let controller = Arc::new(DeviceController::with_stuck_worker_for_test(Arc::clone(
+        &released,
+    )));
+    let (shared, _shutdown) =
+        resident_shared_with_controller(Duration::from_secs(60), Arc::clone(&controller));
+    let participant = attach_participant(&shared);
+    let response = dispatch_broker_client_request(
+        &shared,
+        Some(participant),
+        request(1, BROKER_DISCONNECT_DEVICE_METHOD),
+    );
+    assert!(response.get("error").is_none(), "{response}");
+    assert!(
+        response["result"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("verification is pending"),
+        "{response}"
+    );
+    let clients = shared.clients.lock_recover();
+    let entry = clients.idle_entry(&controller).unwrap();
+    assert!(entry.manually_released && entry.close_unacknowledged);
+}
+
+#[test]
+fn manual_disconnect_connect_lifts_all_manual_holds_without_losing_secondary_close_barriers() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let other = Arc::new(DeviceController::start_disconnected().unwrap());
+    shared.devices.lock_recover().push(Arc::clone(&other));
+    let handle = BrokerHandle(Arc::clone(&shared));
+    handle.disconnect().unwrap();
+    shared.clients.lock_recover().record_release(
+        vec![Arc::clone(&other)],
+        vec![Arc::clone(&other)],
+        true,
+    );
+    handle.reconnect().unwrap();
+    let clients = shared.clients.lock_recover();
+    assert!(clients.idle_entry(&shared.controller).is_none());
+    let entry = clients.idle_entry(&other).unwrap();
+    assert!(!entry.manually_released);
+    assert!(
+        entry.close_unacknowledged,
+        "secondary lazy reconnect still needs the FIFO barrier"
+    );
+}
+
+#[test]
 fn an_explicit_panel_disconnect_holds_only_its_controller_with_other_clients_attached() {
     let (shared, shutdown) = resident_shared(Duration::from_secs(60));
     let first = attach_participant(&shared);

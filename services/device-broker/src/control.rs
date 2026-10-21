@@ -42,6 +42,7 @@ pub const AUDIT_LOG_MAX_BYTES: u64 = 64 * 1024;
 const SESSION_MARKER: &str = crate::resident::SESSION_MARKER;
 /// The largest frame this client reads. Every control answer is tiny.
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
+const RESIDENT_NOT_VISIBLE_ADVICE: &str = "A resident host's session marker exists, but its connection details are not visible from this filesystem view. Use the QC Remote tray menu, or run this command from the same app context that started the broker (for example, Windows rather than the Codex package).";
 
 pub const USAGE: &str = "Usage: qc-device-broker --control <status|release|connect|quit|start> \
      [--directory <app-data-dir>] [--confirm (quit only)]";
@@ -852,8 +853,7 @@ fn status(directory: &Path, env: &dyn Env, report: &mut Map<String, Value>) -> S
             return (
                 exit::OK,
                 "residentNotVisible",
-                "the resident host's session marker exists but its descriptor is not visible here"
-                    .into(),
+                RESIDENT_NOT_VISIBLE_ADVICE.into(),
             );
         }
         return (
@@ -1079,9 +1079,7 @@ fn start(directory: &Path, env: &dyn Env, report: &mut Map<String, Value>) -> St
         return (
             exit::REFUSED,
             "residentNotVisible",
-            "the resident host's session marker exists but its descriptor is not visible here; \
-             nothing was started"
-                .into(),
+            format!("{RESIDENT_NOT_VISIBLE_ADVICE} Nothing was started."),
         );
     }
     if before["trayEnabled"] != true {
