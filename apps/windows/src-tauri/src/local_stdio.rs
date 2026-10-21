@@ -3040,6 +3040,14 @@ mod tests {
             let own = root.join("package-view");
             std::fs::create_dir(&publisher).unwrap();
             std::fs::create_dir(&own).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                for directory in [&root, &publisher, &own] {
+                    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
+                        .unwrap();
+                }
+            }
             let paths = vec![publisher.join(STATE_FILE)];
             let settings = test_settings(&own, full_access());
             record_user_quit(&settings, "unrelated-old-generation");
