@@ -323,7 +323,7 @@ fn an_installer_stop_is_honoured_only_with_nobody_attached() {
 }
 
 #[test]
-fn the_icons_disconnect_keeps_an_unattended_broker_and_forces_an_attended_one() {
+fn the_icons_disconnect_keeps_both_unattended_and_attended_brokers() {
     let (shared, shutdown) = shared_with_minute(Duration::from_secs(60));
     let handle = BrokerHandle(Arc::clone(&shared));
     assert!(handle.disconnect().is_ok());
@@ -341,10 +341,10 @@ fn the_icons_disconnect_keeps_an_unattended_broker_and_forces_an_attended_one() 
     assert!(handle.disconnect().is_ok());
     shutdown
         .recv_timeout(Duration::from_secs(2))
-        .expect("disconnecting attached clients is the explicit forced release");
+        .expect_err("Disconnect must not exit an attended broker");
     let marker = BrokerReleaseMarker::path_for(&shared.descriptor_path, &shared.instance_id);
-    assert!(marker.exists(), "attached clients learn it was deliberate");
-    std::fs::remove_file(marker).unwrap();
+    assert!(!marker.exists(), "Disconnect is not Quit");
+    assert!(!shared.clients.lock_recover().shutting_down);
 }
 
 #[test]

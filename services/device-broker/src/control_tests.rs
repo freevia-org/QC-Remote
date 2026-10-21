@@ -848,24 +848,16 @@ fn release_is_the_icons_disconnect_without_its_exit_and_is_idempotent() {
         assert!(test_support::idle_released(&served.handle));
         assert!(!served.exited.load(Ordering::Acquire));
     }
-    // A window attached, where the icon's Disconnect would release and exit:
-    // refused, and nothing changes. The device the icon reopened stays open.
+    // A window attached: release still closes USB, not the resident or clients.
     served.handle.reconnect().unwrap();
     assert!(!test_support::idle_released(&served.handle));
     let _window = participant(&scratch);
     wait_for_participants(&served.handle, 2);
-    let refused = invoke(Command::Release, false, &env);
-    assert_eq!(refused.exit_code, exit::BROKER_ERROR, "{}", refused.report);
-    assert_eq!(refused.report["outcome"], "participantsAttached");
-    assert!(refused.report.get("result").is_none());
-    assert!(refused.report["detail"]
-        .as_str()
-        .unwrap()
-        .contains("quit --confirm"));
-    assert!(
-        !test_support::idle_released(&served.handle),
-        "nothing closed"
-    );
+    let released = invoke(Command::Release, false, &env);
+    assert_eq!(released.exit_code, exit::OK, "{}", released.report);
+    assert_eq!(released.report["outcome"], "released");
+    assert_eq!(released.report["result"]["released"], true);
+    assert!(test_support::idle_released(&served.handle));
     assert!(!served.exited.load(Ordering::Acquire));
     assert!(!served.handle.shutting_down());
     assert_eq!(served.handle.participants().len(), 2);
@@ -895,13 +887,9 @@ fn release_is_the_icons_disconnect_without_its_exit_and_is_idempotent() {
                 line["exitCode"].as_i64().unwrap()
             ))
             .collect::<Vec<_>>(),
-        [
-            ("released", 0),
-            ("released", 0),
-            ("participantsAttached", 4)
-        ]
+        [("released", 0), ("released", 0), ("released", 0)]
     );
-    assert_no_token(&scratch, &token(&scratch), &refused);
+    assert_no_token(&scratch, &token(&scratch), &released);
     test_support::finish(&served.handle);
 }
 

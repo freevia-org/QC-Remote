@@ -524,7 +524,7 @@ fn configured_client_id() -> Option<String> {
 ///
 /// The announcement is telemetry: whatever it reports, the caller keeps serving
 /// MCP. What it must not do is report nothing, which is what discarding the
-/// `Result` did - `send_heartbeat` distinguishes an unreadable descriptor, an
+/// `Result` did - `send_bridge_status` distinguishes an unreadable descriptor, an
 /// unreachable endpoint and a refused status, and every one of those was
 /// dropped on the floor.
 #[derive(Default)]
@@ -634,27 +634,79 @@ impl HeartbeatReport {
     }
 }
 
-async fn send_heartbeat(
+#[derive(Clone)]
+struct BridgeAnnouncement {
+    client_id: String,
+    client_name: String,
+    client_version: Option<String>,
+}
+
+/// Token-free lifecycle metadata conveyed only over authenticated local RPC.
+/// Read it in the publisher's filesystem view, not the bridge launcher's view.
+#[derive(Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BridgeLifecycleHint {
+    pub(crate) user_quit: bool,
+    owner: Option<BridgeOwner>,
+}
+
+#[derive(Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeOwner {
+    process_id: u32,
+    process_created_at: u64,
+    instance_id: String,
+}
+
+impl BridgeOwner {
+    fn valid(&self) -> bool {
+        self.process_id != 0
+            && self.process_created_at != 0
+            && !self.instance_id.is_empty()
+            && self.instance_id.len() <= 256
+    }
+}
+
+pub(crate) fn broker_lifecycle_hint(descriptor: &std::path::Path) -> BridgeLifecycleHint {
+    let owner = crate::device_broker_descriptor::read_descriptor(descriptor, now_unix_ms())
+        .filter(|owner| {
+            qc_native_platform::owner_identity::native(owner.process_id, owner.process_created_at)
+                == qc_native_platform::owner_identity::Assessment::Same
+        })
+        .and_then(|owner| {
+            Some(BridgeOwner {
+                process_id: owner.process_id,
+                process_created_at: owner.process_created_at?,
+                instance_id: owner.instance_id,
+            })
+        });
+    BridgeLifecycleHint {
+        user_quit: crate::user_quit_refusal(descriptor).is_some(),
+        owner,
+    }
+}
+
+async fn send_bridge_status(
     client: &reqwest::Client,
-    client_id: &str,
+    paths: Option<&[PathBuf]>,
     session_id: &str,
-    client_name: &str,
-    client_version: Option<&str>,
-) -> Result<(), String> {
-    let endpoint = heartbeat_descriptor()?;
+    announcement: Option<&BridgeAnnouncement>,
+) -> Result<Option<BridgeLifecycleHint>, String> {
+    let endpoint = heartbeat_descriptor_from_paths(paths.ok_or(OFFLINE_ADVICE)?, now_unix_ms())?;
     endpoint.prove_identity(client).await?;
+    let body = match announcement {
+        Some(row) => serde_json::json!({"rpc":"local.bridgeHeartbeat", "params":{
+            "client":row.client_id, "sessionId":session_id,
+            "clientName":row.client_name, "clientVersion":row.client_version,
+        }}),
+        // Before MCP initialize, read lifecycle without advertising a client.
+        None => serde_json::json!({"rpc":"local.bridgeLifecycle", "params":{}}),
+    };
     let response = client
         .post(endpoint.rpc_url)
         .bearer_auth(endpoint.bearer_token)
-        .json(&serde_json::json!({
-            "rpc": "local.bridgeHeartbeat",
-            "params": {
-                "client": client_id,
-                "sessionId": session_id,
-                "clientName": client_name,
-                "clientVersion": client_version,
-            }
-        }))
+        .timeout(Duration::from_secs(2))
+        .json(&body)
         .send()
         .await
         // Every arm names one distinguishable cause, because these strings are
@@ -663,7 +715,15 @@ async fn send_heartbeat(
         // information and is written immediately.
         .map_err(|error| format!("the loopback endpoint did not answer ({error})"))?;
     if response.status().is_success() {
-        Ok(())
+        // Older publishers have no hint. Do not turn absent/malformed optional
+        // metadata into either a heartbeat failure or a false shutdown.
+        let hint = qc_relay_client::bounded_response_json::<Value>(response)
+            .await
+            .ok()
+            .and_then(|body| {
+                serde_json::from_value(body["result"]["brokerLifecycle"].clone()).ok()
+            });
+        Ok(hint)
     } else {
         Err(format!(
             "QC Remote refused the announcement ({})",
@@ -2401,6 +2461,141 @@ fn finish_bridge_shutdown(
     }
 }
 
+/// A bridge follows one broker generation, not the lifetime of its AI host's
+/// stdin. Missing/stale metadata and inaccessible process identity are NOT
+/// proof of death. Disconnect leaves this generation alive and never stops MCP.
+struct BridgeLifecycle {
+    descriptor: PathBuf,
+    observed: Option<crate::device_broker_descriptor::DeviceBrokerDescriptor>,
+}
+
+impl BridgeLifecycle {
+    fn stopped(&mut self) -> bool {
+        if crate::user_quit_refusal(&self.descriptor).is_some() {
+            return true;
+        }
+        self.observe(
+            crate::device_broker_descriptor::read_descriptor(
+                &self.descriptor,
+                crate::device_broker_descriptor::unix_time_ms(),
+            ),
+            crate::broker_attach::published_broker_process_is_alive,
+        )
+    }
+
+    fn observe(
+        &mut self,
+        current: Option<crate::device_broker_descriptor::DeviceBrokerDescriptor>,
+        alive: impl Fn(&crate::device_broker_descriptor::DeviceBrokerDescriptor) -> bool,
+    ) -> bool {
+        if let Some(observed) = &self.observed {
+            return !alive(observed);
+        }
+        self.observed = current.filter(alive);
+        false
+    }
+}
+
+async fn wait_for_bridge_stop(
+    backend: &BridgeBackend,
+    client: &reqwest::Client,
+    session_id: &str,
+    mut announcement: watch::Receiver<Option<BridgeAnnouncement>>,
+) {
+    // An explicit state override is isolated to that directory, including in
+    // release builds which intentionally cannot host. Never consult another
+    // user's/store's Quit marker as a fallback.
+    let descriptor = backend
+        .settings
+        .as_ref()
+        .map(HeadlessHostSettings::device_broker_descriptor_path)
+        .or_else(|| {
+            backend
+                .paths
+                .as_ref()?
+                .first()?
+                .parent()
+                .map(crate::device_broker_descriptor::device_broker_descriptor_path)
+        });
+    let mut lifecycle = descriptor.map(|descriptor| BridgeLifecycle {
+        descriptor,
+        observed: None,
+    });
+    let mut publisher_authoritative = false;
+    let mut publisher_owner = None;
+    let mut next_heartbeat = std::time::Instant::now();
+    let started = std::time::Instant::now();
+    let mut report = HeartbeatReport::default();
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        if std::time::Instant::now() >= next_heartbeat {
+            let row = announcement.borrow_and_update().clone();
+            let outcome =
+                send_bridge_status(client, backend.paths.as_deref(), session_id, row.as_ref())
+                    .await;
+            if let Ok(Some(hint)) = &outcome {
+                // This authenticated publisher sees the broker's actual store,
+                // even when our launcher virtualizes LocalAppData. Do not let
+                // an unrelated old marker in our own view override it.
+                publisher_authoritative = true;
+                if hint.user_quit {
+                    return;
+                }
+                if publisher_owner.is_none() {
+                    publisher_owner = hint.owner.as_ref().filter(|owner| owner.valid()).cloned();
+                }
+            }
+            if let Some(row) = &row {
+                if let Some(line) = report.observe(
+                    Some(&row.client_id),
+                    outcome.map(|_| ()),
+                    started.elapsed().as_millis() as u64,
+                ) {
+                    eprintln!("{line}");
+                }
+            }
+            next_heartbeat = std::time::Instant::now() + HEARTBEAT_INTERVAL;
+        }
+        if publisher_owner.as_ref().is_some_and(|owner| {
+            qc_native_platform::owner_identity::native(
+                owner.process_id,
+                Some(owner.process_created_at),
+            ) == qc_native_platform::owner_identity::Assessment::GoneOrDifferent
+        }) {
+            return;
+        }
+        if !publisher_authoritative && lifecycle.as_mut().is_some_and(BridgeLifecycle::stopped) {
+            return;
+        }
+        tokio::select! {
+            _ = interval.tick() => {},
+            changed = announcement.changed() => {
+                if changed.is_err() { return; }
+                next_heartbeat = std::time::Instant::now();
+            },
+        }
+    }
+}
+
+async fn wait_for_bridge_service<T>(
+    waiting: impl std::future::Future<Output = Result<T, tokio::task::JoinError>>,
+    stopped: impl std::future::Future<Output = ()>,
+    cancel: impl FnOnce(),
+) -> Result<(), String> {
+    tokio::pin!(waiting);
+    let result = tokio::select! {
+        result = &mut waiting => result,
+        () = stopped => {
+            cancel();
+            // Await the actual service original through cancellation.
+            waiting.await
+        }
+    };
+    result
+        .map(|_| ())
+        .map_err(|error| format!("The MCP stdio connection failed: {error}"))
+}
+
 async fn serve_bridge(
     host: Option<HeadlessMcpHost>,
     settings: Option<HeadlessHostSettings>,
@@ -2422,11 +2617,23 @@ async fn serve_bridge(
         settings,
         host,
     ));
+    let (announcement_tx, announcement_rx) = watch::channel(None);
+    let stopped = wait_for_bridge_stop(&backend, &client, &session_id, announcement_rx);
+    tokio::pin!(stopped);
     let route = PrincipalRoute::new(LOCAL_PRINCIPAL, LOCAL_DEVICE);
-    let service = QcMcp::for_route(backend.clone() as Arc<dyn QcBackend>, route)
-        .serve(rmcp::transport::stdio())
-        .await
-        .map_err(|error| format!("Could not serve MCP over stdio: {error}"))?;
+    let mcp = QcMcp::for_route(backend.clone() as Arc<dyn QcBackend>, route);
+    let initializing = mcp.serve(rmcp::transport::stdio());
+    tokio::pin!(initializing);
+    let service = tokio::select! {
+        result = &mut initializing => match result {
+            Ok(service) => service,
+            Err(error) => return finish_bridge_shutdown(
+                Err(format!("Could not serve MCP over stdio: {error}")),
+                backend.stop_hosting().await,
+            ),
+        },
+        () = &mut stopped => return finish_bridge_shutdown(Ok(()), backend.stop_hosting().await),
+    };
     // Identity comes from the MCP initialize exchange, not from installation
     // detection. Each bridge has its own lease, even two chats in one host.
     let client_name = service
@@ -2458,40 +2665,14 @@ async fn serve_bridge(
             String::new()
         }
     };
-    let heartbeat = {
-        let heartbeat_client = client.clone();
-        let session_id = session_id.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-            let started = std::time::Instant::now();
-            let mut report = HeartbeatReport::default();
-            loop {
-                interval.tick().await;
-                let outcome = send_heartbeat(
-                    &heartbeat_client,
-                    &client_id,
-                    &session_id,
-                    &client_name,
-                    client_version.as_deref(),
-                )
-                .await;
-                if let Some(line) = report.observe(
-                    Some(&client_id),
-                    outcome,
-                    started.elapsed().as_millis() as u64,
-                ) {
-                    eprintln!("{line}");
-                }
-            }
-        })
-    };
-    let result = service
-        .waiting()
-        .await
-        .map(|_| ())
-        .map_err(|error| format!("The MCP stdio connection failed: {error}"));
-    heartbeat.abort();
-    let _ = heartbeat.await;
+    let _ = announcement_tx.send(Some(BridgeAnnouncement {
+        client_id,
+        client_name,
+        client_version,
+    }));
+    let cancellation = service.cancellation_token();
+    let result =
+        wait_for_bridge_service(service.waiting(), &mut stopped, || cancellation.cancel()).await;
     if let Ok(endpoint) = heartbeat_descriptor() {
         let close = async {
             endpoint.prove_identity(&client).await?;
@@ -2516,7 +2697,7 @@ pub fn run() -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|error| format!("Could not start the local MCP runtime: {error}"))?;
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         // A live descriptor means some other process (a GUI window, or
         // another bridge that got here first) already publishes, so this
         // bridge relays to it. Only when nothing is live does it try to
@@ -2528,7 +2709,21 @@ pub fn run() -> Result<(), String> {
         let settings = hosting_settings();
         let headless_host = startup_host(state_paths().ok(), settings.clone());
         serve_bridge(headless_host, settings).await
-    })
+    });
+    finish_bridge_runtime(runtime, result)
+}
+
+fn finish_bridge_runtime(
+    runtime: tokio::runtime::Runtime,
+    result: Result<(), String>,
+) -> Result<(), String> {
+    // Tokio stdin uses an uncancellable blocking read while the AI host keeps
+    // its input pipe open. The MCP service/listener have retired above; do not
+    // let Runtime::drop wait forever for that read on an explicit broker Quit.
+    // This is the bridge-only process entrypoint: returning closes its pipes
+    // and the OS retires that process's remaining stdin read, not another host.
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    result
 }
 
 /// Whether a bridge starting now hosts, and the host if it does: only when
@@ -2549,6 +2744,204 @@ fn startup_host(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "owned subprocess: bridge_quit_exits_with_ai_host_input_still_open"]
+    fn bridge_quit_open_stdin_child() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(serve_bridge(None, None));
+        finish_bridge_runtime(runtime, result).unwrap();
+        eprintln!("bridge-shutdown-completed");
+    }
+
+    #[test]
+    fn bridge_quit_exits_with_ai_host_input_still_open() {
+        use crate::tests::{ExitObservation, OwnedChild};
+        use std::io::Write;
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let (directory, guard) = exclusive_fixture_dir("bridge-open-stdin");
+            let stdout = directory.join("stdout");
+            let stderr = directory.join("stderr");
+            let slot: crate::tests::ChildSlot = Default::default();
+            crate::tests::arm_owned_child(
+                cleanup,
+                "bridge-open-stdin",
+                &slot,
+                None,
+                Duration::ZERO,
+            );
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "local_stdio::tests::bridge_quit_open_stdin_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env(STATE_OVERRIDE, directory.join(STATE_FILE))
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::fs::File::create(&stdout).unwrap())
+                .stderr(std::fs::File::create(&stderr).unwrap())
+                .spawn()
+                .unwrap();
+            let mut input = child.stdin.take().unwrap();
+            crate::tests::fill_slot(&slot, OwnedChild::new(child).with_resource(guard));
+            input.write_all(concat!(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"fixture\",\"version\":\"1\"}}}\n",
+                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
+            ).as_bytes()).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(8);
+            while !std::fs::read_to_string(&stdout)
+                .unwrap_or_default()
+                .contains("\"protocolVersion\"")
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "child did not initialize MCP: {}",
+                    std::fs::read_to_string(&stderr).unwrap_or_default()
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::fs::write(
+                crate::device_broker_descriptor::user_quit_path(
+                    &directory.join("device-broker.json"),
+                ),
+                r#"{"instanceId":"fixture-quit","source":"tray"}"#,
+            )
+            .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let observation = slot.lock().unwrap().as_mut().unwrap().observe();
+                if observation == ExitObservation::Exited {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "bridge must exit without the AI host closing stdin: {observation:?}"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(std::fs::read_to_string(&stderr)
+                .unwrap()
+                .contains("bridge-shutdown-completed"));
+            // Keep the host's input alive until AFTER the original child exited.
+            drop(input);
+        });
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert!(report.is_clean(), "{report}");
+    }
+
+    #[tokio::test]
+    async fn bridge_quit_cancels_the_actual_mcp_service_and_closes_its_transport() {
+        use tokio::io::AsyncReadExt;
+        let client = crate::loopback_http::loopback_client_builder()
+            .build()
+            .unwrap();
+        let backend = Arc::new(BridgeBackend::new(
+            DesktopBackend {
+                client,
+                session_id: None,
+            },
+            None,
+            None,
+            None,
+        ));
+        let (server, mut ai_host) = tokio::io::duplex(4096);
+        let service = rmcp::service::serve_directly(
+            QcMcp::for_route(
+                backend as Arc<dyn QcBackend>,
+                PrincipalRoute::new(LOCAL_PRINCIPAL, LOCAL_DEVICE),
+            ),
+            server,
+            None,
+        );
+        let cancellation = service.cancellation_token();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            wait_for_bridge_service(service.waiting(), std::future::ready(()), || {
+                cancellation.cancel()
+            }),
+        )
+        .await
+        .expect("the original service must retire")
+        .unwrap();
+        let mut output = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), ai_host.read_to_end(&mut output))
+            .await
+            .expect("AI host observes EOF without closing its own input")
+            .unwrap();
+    }
+
+    #[test]
+    fn bridge_lifecycle_keeps_missing_metadata_and_stops_only_a_proven_gone_generation() {
+        use crate::device_broker_descriptor::DeviceBrokerDescriptor;
+        let descriptor = DeviceBrokerDescriptor {
+            port: 1,
+            bearer_token: "fixture-only".into(),
+            instance_id: "original".into(),
+            process_id: 42,
+            process_created_at: Some(100),
+            published_at_unix_ms: 0,
+            gateway_api_version: None,
+        };
+        // Same policy in the ordinary user store and a packaged filesystem view.
+        for path in [
+            "user-store/device-broker.json",
+            "package-view/device-broker.json",
+        ] {
+            let mut lifecycle = BridgeLifecycle {
+                descriptor: PathBuf::from(path),
+                observed: None,
+            };
+            assert!(
+                !lifecycle.observe(None, |_| false),
+                "not running at startup is not a Quit"
+            );
+            assert!(!lifecycle.observe(Some(descriptor.clone()), |_| true));
+            assert!(
+                !lifecycle.observe(None, |_| true),
+                "stale/missing file is not process death"
+            );
+            let mut replacement = descriptor.clone();
+            replacement.instance_id = "replacement".into();
+            assert!(
+                lifecycle.observe(Some(replacement), |_| false),
+                "replacement cannot prolong the original session"
+            );
+        }
+    }
+
+    #[test]
+    fn bridge_lifecycle_observes_quit_only_in_its_own_store() {
+        let (root, _guard) = exclusive_fixture_dir("bridge-quit-stores");
+        let first = root.join("user-store");
+        let second = root.join("package-view");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let mut first = BridgeLifecycle {
+            descriptor: first.join("device-broker.json"),
+            observed: None,
+        };
+        let mut second = BridgeLifecycle {
+            descriptor: second.join("device-broker.json"),
+            observed: None,
+        };
+        std::fs::write(
+            crate::device_broker_descriptor::user_quit_path(&first.descriptor),
+            r#"{"instanceId":"fixture-generation","source":"tray"}"#,
+        )
+        .unwrap();
+        assert!(
+            first.stopped(),
+            "Quit ends bridges even without further tool calls"
+        );
+        assert!(
+            !second.stopped(),
+            "another filesystem view is not this bridge's broker"
+        );
+    }
+
     #[tokio::test]
     async fn guarded_local_relay_authenticates_the_real_listener_capability_probe() {
         type Captured = (Value, Option<qc_relay_client::BrokerTarget>);
@@ -2623,6 +3016,70 @@ mod tests {
             "send once, retaining the original guard"
         );
         assert!(listener.stop(), "the exact listener must retire");
+    }
+
+    #[test]
+    fn bridge_lifecycle_follows_authenticated_publisher_across_filesystem_views() {
+        struct NoDeviceCalls;
+        #[async_trait]
+        impl DeviceAdapter for NoDeviceCalls {
+            async fn ready(&self) -> bool {
+                panic!("lifecycle must stay passive");
+            }
+            async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> {
+                panic!("no device call is allowed");
+            }
+        }
+        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+            let root = fixture_dir("bridge-lifecycle-publisher-view");
+            let owned_root = root.clone();
+            cleanup.arm("directory", move |report| {
+                report.remove_dir_unless_blocked(&owned_root)
+            });
+            let publisher = root.join("installed");
+            let own = root.join("package-view");
+            std::fs::create_dir(&publisher).unwrap();
+            std::fs::create_dir(&own).unwrap();
+            let paths = vec![publisher.join(STATE_FILE)];
+            let settings = test_settings(&own, full_access());
+            record_user_quit(&settings, "unrelated-old-generation");
+            let listener: Arc<Mutex<Option<local_access::RunningLocalAccess>>> =
+                Arc::new(Mutex::new(None));
+            let owned_listener = listener.clone();
+            cleanup.arm("listener", move |report| {
+                if let Some(listener) = owned_listener.lock().unwrap().take() {
+                    if !listener.stop() {
+                        report.unacknowledged("publisher listener did not retire".into());
+                    }
+                }
+            });
+            let (_access, receiver) = watch::channel(AccessMode::ReadOnly);
+            *listener.lock().unwrap() = Some(
+                local_access::start_listener(paths.clone(), Arc::new(NoDeviceCalls), receiver)
+                    .unwrap_or_else(|e| panic!("{}", e.message)),
+            );
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let client = crate::loopback_http::loopback_client_builder().build().unwrap();
+                let backend = BridgeBackend::new(DesktopBackend { client:client.clone(), session_id:None }, Some(paths), Some(settings), None);
+                let (announce, receiver) = watch::channel(None);
+                let stopped = wait_for_bridge_stop(&backend, &client, "two-view-fixture", receiver);
+                tokio::pin!(stopped);
+                tokio::select! {
+                    () = &mut stopped => panic!("the unrelated Quit in our own view must not override the authenticated publisher"),
+                    () = tokio::time::sleep(Duration::from_millis(100)) => {},
+                }
+                std::fs::write(crate::device_broker_descriptor::user_quit_path(&publisher.join("device-broker.json")), r#"{"instanceId":"publisher-quit","source":"tray"}"#).unwrap();
+                announce.send(Some(BridgeAnnouncement {client_id:String::new(), client_name:"two-view-fixture".into(), client_version:None})).unwrap();
+                tokio::time::timeout(Duration::from_secs(4), &mut stopped).await.expect("publisher Quit must end the bridge despite its different filesystem view");
+                backend.stop_hosting().await.unwrap();
+            });
+        });
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert!(report.is_clean(), "{report}");
     }
 
     #[tokio::test]
@@ -6396,7 +6853,7 @@ mod tests {
     /// the static guide and knowledge resources never reach a backend, so
     /// they neither make a bridge host after Quit nor bring a hosting
     /// bridge's broker connection up through a relay. The heartbeat is
-    /// passive by construction: `send_heartbeat` only reads the descriptor
+    /// passive by construction: `send_bridge_status` only reads the descriptor
     /// and posts `local.bridgeHeartbeat`, which `local_rpc` answers from
     /// presence alone, and holds no `BridgeBackend`.
     #[test]
