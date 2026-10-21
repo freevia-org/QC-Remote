@@ -38,11 +38,15 @@ test("a superseded connect stops waiting for synchronized broker state", async (
   assert.equal(reads, 1);
 });
 
-test("device inventory suppresses a stale selected tab when the same device is re-enumerated", () => {
-  const old = { id: "linux:hidraw:old", name: "Quad Cortex", connected: false, phase: "disconnected" };
+test("a stalled runtime-status read is bounded by the synchronization deadline", async () => {
+  await assert.rejects(waitForSynchronizedQc(() => new Promise(() => undefined), () => true, { maxWaitMs: 20 }), /Timed out waiting for synchronized Quad Cortex status/);
+});
+
+test("device inventory distinguishes a stale selected row from a same-label re-enumerated device", () => {
+  const old = { id: "linux:hidraw:old", name: "Quad Cortex", connected: true, phase: "ready" };
   const replacement = { id: "linux:hidraw:new", name: "Quad Cortex", connected: true, phase: "ready" };
-  assert.deepEqual(qcReconcilePhysicalDevices([replacement], old.id, [old]), [replacement]);
-  assert.deepEqual(qcReconcilePhysicalDevices([], old.id, [old]), [old], "keep a placeholder while enumeration is empty");
+  assert.deepEqual(qcReconcilePhysicalDevices([replacement], old.id, [old]), [replacement, { ...old, name: "Quad Cortex (not detected)", connected: false, phase: "disconnected" }]);
+  assert.deepEqual(qcReconcilePhysicalDevices([], old.id, [old]), [{ ...old, connected: false, phase: "disconnected" }], "keep a disconnected placeholder while enumeration is empty");
   assert.deepEqual(qcReconcilePhysicalDevices([old], old.id, [old]), [old], "do not duplicate a selected row still present");
 });
 
