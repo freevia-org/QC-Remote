@@ -2585,22 +2585,22 @@ async fn wait_for_bridge_stop(
     let mut lifecycle = descriptor.map(BridgeLifecycle::new);
     let mut publisher_quit = BridgeQuitTracker::default();
     let mut publisher_owner: Option<BridgeOwner> = None;
+    let mut publisher_authoritative = false;
     let mut next_heartbeat = std::time::Instant::now();
     let started = std::time::Instant::now();
     let mut report = HeartbeatReport::default();
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     loop {
-        let mut publisher_authoritative = false;
         if std::time::Instant::now() >= next_heartbeat {
             let row = announcement.borrow_and_update().clone();
             let outcome =
                 send_bridge_status(client, backend.paths.as_deref(), session_id, row.as_ref())
                     .await;
+            publisher_authoritative = matches!(&outcome, Ok(Some(_)));
             if let Ok(Some(hint)) = &outcome {
                 // This authenticated publisher sees the broker's actual store,
                 // even when our launcher virtualizes LocalAppData. Do not let
                 // an unrelated old marker in our own view override it.
-                publisher_authoritative = true;
                 let evidence = if hint.quit_unknown {
                     BridgeQuitEvidence::Unknown
                 } else if hint.user_quit {
@@ -2647,7 +2647,13 @@ async fn wait_for_bridge_stop(
         }) {
             return;
         }
-        if !publisher_authoritative && lifecycle.as_mut().is_some_and(BridgeLifecycle::stopped) {
+        // Once bound to a verified publisher broker, never let another
+        // filesystem view's owner or Quit marker override that exact identity.
+        // Without a binding, failed/missing publisher evidence permits fallback.
+        if publisher_owner.is_none()
+            && !publisher_authoritative
+            && lifecycle.as_mut().is_some_and(BridgeLifecycle::stopped)
+        {
             return;
         }
         tokio::select! {
@@ -3189,57 +3195,66 @@ mod tests {
 
     #[test]
     fn bridge_lifecycle_follows_authenticated_publisher_across_filesystem_views() {
-        struct NoDeviceCalls;
-        #[async_trait]
-        impl DeviceAdapter for NoDeviceCalls {
-            async fn ready(&self) -> bool {
-                panic!("lifecycle must stay passive");
-            }
-            async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> {
-                panic!("no device call is allowed");
-            }
-        }
-        let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
-            let root = fixture_dir("bridge-lifecycle-publisher-view");
-            let owned_root = root.clone();
-            cleanup.arm("directory", move |report| {
-                report.remove_dir_unless_blocked(&owned_root)
-            });
-            let publisher = root.join("installed");
-            let own = root.join("package-view");
-            std::fs::create_dir(&publisher).unwrap();
-            std::fs::create_dir(&own).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                for directory in [&root, &publisher, &own] {
-                    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
-                        .unwrap();
+        for with_owner in [true, false] {
+            struct NoDeviceCalls;
+            #[async_trait]
+            impl DeviceAdapter for NoDeviceCalls {
+                async fn ready(&self) -> bool {
+                    panic!("lifecycle must stay passive");
+                }
+                async fn invoke(&self, _: &str, _: Value) -> Result<Value, DeviceError> {
+                    panic!("no device call is allowed");
                 }
             }
-            let paths = vec![publisher.join(STATE_FILE)];
-            let settings = test_settings(&own, full_access());
-            record_user_quit(&settings, "unrelated-old-generation");
-            let listener: Arc<Mutex<Option<local_access::RunningLocalAccess>>> =
-                Arc::new(Mutex::new(None));
-            let owned_listener = listener.clone();
-            cleanup.arm("listener", move |report| {
-                if let Some(listener) = owned_listener.lock().unwrap().take() {
-                    if !listener.stop() {
-                        report.unacknowledged("publisher listener did not retire".into());
+            let (outcome, report) = crate::tests::run_with_cleanup(|cleanup| {
+                let root = fixture_dir("bridge-lifecycle-publisher-view");
+                let owned_root = root.clone();
+                cleanup.arm("directory", move |report| {
+                    report.remove_dir_unless_blocked(&owned_root)
+                });
+                let publisher = root.join("installed");
+                let own = root.join("package-view");
+                std::fs::create_dir(&publisher).unwrap();
+                std::fs::create_dir(&own).unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    for directory in [&root, &publisher, &own] {
+                        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))
+                            .unwrap();
                     }
                 }
-            });
-            let (_access, receiver) = watch::channel(AccessMode::ReadOnly);
-            *listener.lock().unwrap() = Some(
-                local_access::start_listener(paths.clone(), Arc::new(NoDeviceCalls), receiver)
-                    .unwrap_or_else(|e| panic!("{}", e.message)),
-            );
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            runtime.block_on(async {
+                let paths = vec![publisher.join(STATE_FILE)];
+                let settings = test_settings(&own, full_access());
+                record_user_quit(&settings, "unrelated-old-generation");
+                if with_owner {
+                    std::fs::write(publisher.join("device-broker.json"), serde_json::json!({
+                "port":41001, "bearerToken":"fixture-only", "instanceId":"publisher-quit",
+                "processId":std::process::id(),
+                "processCreatedAt":qc_native_platform::process::os_process_created_at(std::process::id()).unwrap(),
+                "publishedAtUnixMs":now_unix_ms(),
+            }).to_string()).unwrap();
+                }
+                let listener: Arc<Mutex<Option<local_access::RunningLocalAccess>>> =
+                    Arc::new(Mutex::new(None));
+                let owned_listener = listener.clone();
+                cleanup.arm("listener", move |report| {
+                    if let Some(listener) = owned_listener.lock().unwrap().take() {
+                        if !listener.stop() {
+                            report.unacknowledged("publisher listener did not retire".into());
+                        }
+                    }
+                });
+                let (_access, receiver) = watch::channel(AccessMode::ReadOnly);
+                *listener.lock().unwrap() = Some(
+                    local_access::start_listener(paths.clone(), Arc::new(NoDeviceCalls), receiver)
+                        .unwrap_or_else(|e| panic!("{}", e.message)),
+                );
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime.block_on(async {
                 let client = crate::loopback_http::loopback_client_builder().build().unwrap();
                 let backend = BridgeBackend::new(DesktopBackend { client:client.clone(), session_id:None }, Some(paths), Some(settings), None);
                 let (announce, receiver) = watch::channel(None);
@@ -3249,14 +3264,25 @@ mod tests {
                     () = &mut stopped => panic!("the unrelated Quit in our own view must not override the authenticated publisher"),
                     () = tokio::time::sleep(Duration::from_millis(100)) => {},
                 }
-                std::fs::write(crate::device_broker_descriptor::user_quit_path(&publisher.join("device-broker.json")), r#"{"instanceId":"publisher-quit","source":"tray"}"#).unwrap();
+                if with_owner {
+                    std::fs::write(crate::device_broker_descriptor::user_quit_path(&own.join("device-broker.json")), r#"{"instanceId":"another-unrelated-quit","source":"tray"}"#).unwrap();
+                    tokio::select! {
+                        () = &mut stopped => panic!("an unrelated Quit between heartbeats must not override the verified publisher broker"),
+                        () = tokio::time::sleep(Duration::from_millis(1200)) => {},
+                    }
+                    std::fs::write(crate::device_broker_descriptor::user_quit_path(&publisher.join("device-broker.json")), r#"{"instanceId":"publisher-quit","source":"tray"}"#).unwrap();
+                } else {
+                    assert!(listener.lock().unwrap().take().unwrap().stop());
+                    std::fs::write(crate::device_broker_descriptor::user_quit_path(&own.join("device-broker.json")), r#"{"instanceId":"fallback-quit","source":"tray"}"#).unwrap();
+                }
                 announce.send(Some(BridgeAnnouncement {client_id:String::new(), client_name:"two-view-fixture".into(), client_version:None})).unwrap();
-                tokio::time::timeout(Duration::from_secs(4), &mut stopped).await.expect("publisher Quit must end the bridge despite its different filesystem view");
+                tokio::time::timeout(Duration::from_secs(4), &mut stopped).await.expect("a new explicit Quit from the authoritative publisher or an eligible fallback must end the bridge");
                 backend.stop_hosting().await.unwrap();
             });
-        });
-        assert!(outcome.is_ok(), "{outcome:?}");
-        assert!(report.is_clean(), "{report}");
+            });
+            assert!(outcome.is_ok(), "{outcome:?}");
+            assert!(report.is_clean(), "{report}");
+        }
     }
 
     #[tokio::test]
