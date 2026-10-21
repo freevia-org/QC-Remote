@@ -203,8 +203,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.build_linux_draft
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      LINUX_RELEASE_VERSION: "0.1.187"
     permissions:
       contents: write
       id-token: write
@@ -220,6 +218,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "$GITHUB_REF" != "refs/heads/master" ]; then
+            echo "::error::The Linux release package is built from refs/heads/master only (got $GITHUB_REF)."
+            exit 1
+          fi
           required=("Headless broker on native Linux" "Linux Tauri host and resident tray")
           runs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100"             --jq '.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "success") | .name')
           for name in "${required[@]}"; do
@@ -254,12 +256,13 @@ jobs:
             build-essential curl file libayatana-appindicator3-dev libdbus-1-dev \
             libgtk-3-dev libsecret-1-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev \
             libxdo-dev pkg-config python3
-      - name: Verify the source version agrees with this release
+      - name: Read the release version from the source and verify every manifest agrees
         run: |
           python3 - <<'PY'
-          import json, os, tomllib
+          import json, os, re, tomllib
           from pathlib import Path
-          expected = os.environ["LINUX_RELEASE_VERSION"]
+          expected = json.loads(Path("apps/windows/src-tauri/tauri.conf.json").read_text())["version"]
+          assert re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", expected), expected
           versions = {
               "Tauri config": json.loads(Path("apps/windows/src-tauri/tauri.conf.json").read_text())["version"],
               "Cargo manifest": tomllib.loads(Path("apps/windows/src-tauri/Cargo.toml").read_text())["package"]["version"],
@@ -268,6 +271,8 @@ jobs:
               "npm lock": json.loads(Path("package-lock.json").read_text())["packages"]["apps/windows"]["version"],
           }
           assert all(version == expected for version in versions.values()), versions
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+              env_file.write(f"LINUX_RELEASE_VERSION={expected}\n")
           PY
       - name: Install locked frontend dependencies
         run: npm ci
@@ -281,34 +286,39 @@ jobs:
           test "${#packages[@]}" -eq 1
           deb="qc-remote_${LINUX_RELEASE_VERSION}_amd64.deb"
           install -m 0644 "${packages[0]}" "$deb"
-          sha256sum "$deb" > SHA256SUMS
+          sha256sum "$deb" > "qc-remote-v${LINUX_RELEASE_VERSION}-linux-SHA256SUMS.txt"
       - name: Attest the freshly built Debian package and checksum manifest
         id: attest-package
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             qc-remote_${{ env.LINUX_RELEASE_VERSION }}_amd64.deb
-            SHA256SUMS
+            qc-remote-v${{ env.LINUX_RELEASE_VERSION }}-linux-SHA256SUMS.txt
       - name: Verify provenance and preserve the Sigstore bundle
         env:
           ATTESTATION_BUNDLE: ${{ steps.attest-package.outputs.bundle-path }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          install -m 0644 "$ATTESTATION_BUNDLE" linux-build-provenance.sigstore.json
-          for artifact in "qc-remote_${LINUX_RELEASE_VERSION}_amd64.deb" SHA256SUMS; do
+          bundle="qc-remote-v${LINUX_RELEASE_VERSION}-linux-provenance.sigstore.json"
+          install -m 0644 "$ATTESTATION_BUNDLE" "$bundle"
+          for artifact in "qc-remote_${LINUX_RELEASE_VERSION}_amd64.deb" "qc-remote-v${LINUX_RELEASE_VERSION}-linux-SHA256SUMS.txt"; do
             gh attestation verify "$artifact" --repo "$GITHUB_REPOSITORY" \
-              --bundle linux-build-provenance.sigstore.json \
+              --bundle "$bundle" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/linux-broker.yml" \
               --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" \
               --deny-self-hosted-runners
           done
-      - name: Create versioned GitHub draft prerelease and upload verified package
+      - name: Create the Linux-only GitHub draft prerelease and upload verified package
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          release_tag="v${LINUX_RELEASE_VERSION}"
+          # A separate v<version>-linux draft: the Windows/Android release for the
+          # same version, its manifest and "Latest" are never touched.
+          release_tag="v${LINUX_RELEASE_VERSION}-linux"
           gh release create "$release_tag" \
-            "qc-remote_${LINUX_RELEASE_VERSION}_amd64.deb" SHA256SUMS linux-build-provenance.sigstore.json \
+            "qc-remote_${LINUX_RELEASE_VERSION}_amd64.deb" \
+            "qc-remote-v${LINUX_RELEASE_VERSION}-linux-SHA256SUMS.txt" \
+            "qc-remote-v${LINUX_RELEASE_VERSION}-linux-provenance.sigstore.json" \
             --target "$GITHUB_SHA" --draft --prerelease \
             --title "QC Remote ${LINUX_RELEASE_VERSION} — Linux" \
             --notes "Ubuntu 24.04 x86_64 Linux package built from source commit $GITHUB_SHA. Fresh-login and physical QC acceptance are pending. This draft does not replace the stable Windows/Android release." \
