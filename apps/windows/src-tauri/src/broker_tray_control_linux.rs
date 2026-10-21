@@ -305,11 +305,12 @@ fn ensure_autostart_directory(path: &Path, uid: u32) -> Result<(), String> {
     }
     // Create one component at a time so a symlink or shared writable parent is
     // refused before any entry can be written through it.
+    let private_gid = qc_native_platform::paths::private_primary_group();
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component);
         match fs::symlink_metadata(&current) {
-            Ok(metadata) => validate_directory_component(&current, &metadata, uid)?,
+            Ok(metadata) => validate_directory_component(&current, &metadata, uid, private_gid)?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 match fs::DirBuilder::new().mode(0o700).create(&current) {
                     Ok(()) => {}
@@ -318,7 +319,7 @@ fn ensure_autostart_directory(path: &Path, uid: u32) -> Result<(), String> {
                 }
                 let metadata = fs::symlink_metadata(&current)
                     .map_err(|error| format!("Inspect {}: {error}", current.display()))?;
-                validate_directory_component(&current, &metadata, uid)?;
+                validate_directory_component(&current, &metadata, uid, private_gid)?;
             }
             Err(error) => return Err(format!("Inspect {}: {error}", current.display())),
         }
@@ -326,20 +327,20 @@ fn ensure_autostart_directory(path: &Path, uid: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Group-write is tolerated only on the user's own directories in their
+/// private primary group (stock Ubuntu makes `~/.config` 0775); everything
+/// else follows `qc_native_platform::paths::directory_component_is_safe`.
 fn validate_directory_component(
     path: &Path,
     metadata: &fs::Metadata,
     uid: u32,
+    private_gid: Option<u32>,
 ) -> Result<(), String> {
-    let sticky_root = metadata.uid() == 0 && metadata.mode() & 0o1000 != 0;
-    if !metadata.is_dir()
-        || metadata.file_type().is_symlink()
-        || (metadata.uid() != uid && metadata.uid() != 0)
-        || (metadata.mode() & 0o022 != 0 && !sticky_root)
-    {
+    if !qc_native_platform::paths::directory_component_is_safe(metadata, uid, private_gid) {
         return Err(format!(
-            "Unsafe XDG autostart directory component: {}",
-            path.display()
+            "Unsafe XDG autostart directory component: {} (mode {:04o}; group-write is accepted only on your own directories in your private group)",
+            path.display(),
+            metadata.mode() & 0o7777
         ));
     }
     Ok(())
@@ -693,5 +694,28 @@ mod tests {
                 let _ = self.launcher.wait();
             }
         }
+    }
+
+    #[test]
+    fn autostart_ancestor_group_write_needs_the_private_group() {
+        let root = TestDirectory::new("qc-linux-autostart-group");
+        let uid = fs::metadata(&root.0).unwrap().uid();
+        let gid = fs::metadata(&root.0).unwrap().gid();
+        let check = |mode: u32, uid: u32, private_gid: Option<u32>| {
+            fs::set_permissions(&root.0, fs::Permissions::from_mode(mode)).unwrap();
+            let metadata = fs::symlink_metadata(&root.0).unwrap();
+            validate_directory_component(&root.0, &metadata, uid, private_gid)
+        };
+        // Stock Ubuntu ~/.config: own directory, private group, 0775.
+        check(0o775, uid, Some(gid)).unwrap();
+        // Shared group, 0777 and a foreign owner stay refused.
+        let error = check(0o775, uid, None).unwrap_err();
+        assert!(error.contains("Unsafe XDG autostart directory component"));
+        assert!(check(0o777, uid, Some(gid)).is_err());
+        assert!(check(0o775, uid.wrapping_add(1), Some(gid)).is_err());
+
+        fs::set_permissions(&root.0, fs::Permissions::from_mode(0o775)).unwrap();
+        let directory = root.0.join("autostart");
+        ensure_autostart_directory(&directory, uid).unwrap();
     }
 }

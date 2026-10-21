@@ -2461,6 +2461,39 @@ fn resolve_descriptor_directory(
     })
 }
 
+/// A failed setup hook otherwise ends in an opaque Tauri panic. Say what
+/// went wrong on stderr and, when a desktop dialog tool exists, in a dialog.
+#[cfg(target_os = "linux")]
+fn report_startup_failure(error: &str) {
+    let message = format!("QC Remote could not start.\n\n{error}");
+    eprintln!("{message}");
+    let attempts: [(&str, Vec<&str>); 2] = [
+        (
+            "zenity",
+            vec![
+                "--error",
+                "--no-markup",
+                "--title=QC Remote",
+                "--text",
+                &message,
+            ],
+        ),
+        ("kdialog", vec!["--title", "QC Remote", "--error", &message]),
+    ];
+    for (program, arguments) in attempts {
+        if std::process::Command::new(program)
+            .args(arguments)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+        {
+            return;
+        }
+    }
+}
+
 fn app_descriptor_directory(
     app_local_data_dir: Result<PathBuf, impl std::fmt::Display>,
     bundle_identifier: &str,
@@ -6180,7 +6213,11 @@ pub fn run() {
             // of silently degrading to the other on a resolution error.
             let descriptor_directory =
                 app_descriptor_directory(app.path().app_local_data_dir(), &app.config().identifier)
-                    .map_err(std::io::Error::other)?;
+                    .map_err(|error| {
+                        #[cfg(target_os = "linux")]
+                        report_startup_failure(&error);
+                        std::io::Error::other(error)
+                    })?;
             set_device_broker_descriptor_directory(&descriptor_directory);
             // An actual app launch is a user action: this launch's one clear
             // point for a recorded Quit (`user_quit_refusal`), before the tray
