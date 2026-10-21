@@ -80,6 +80,10 @@ QC Remote keeps these items on the device it runs on:
 - **Relay pairing and access settings.** On Windows, the relay credential and
   the remote access level are stored in Windows Credential Manager. On Android,
   the relay credential is encrypted with a non-exportable Android Keystore key.
+  On macOS, cloud pairing secrets are stored in owner-only files under
+  `~/Library/Application Support/org.freevia.qcremote/credentials`, shared by
+  the app and broker, without using Keychain. Files have mode 0600 inside a
+  0700 directory; software running as your user can read them.
   Unpairing removes the stored credential.
 - **Local connection details (Windows).** The local MCP endpoint listens only on
   `127.0.0.1` and requires a locally generated access token. The details are
