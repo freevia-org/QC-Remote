@@ -26,39 +26,55 @@ export function runtimeHasSynchronizedQc(runtime?: RuntimeStatus): boolean {
 export async function waitForSynchronizedQc(
   readRuntime: () => Promise<RuntimeStatus>,
   isCurrent: () => boolean,
-  options: { attempts?: number; intervalMs?: number; delay?: (ms: number) => Promise<void> } = {}
+  options: { attempts?: number; intervalMs?: number; maxWaitMs?: number; now?: () => number; delay?: (ms: number) => Promise<void> } = {}
 ): Promise<RuntimeStatus | undefined> {
   const attempts = options.attempts ?? 61;
   const intervalMs = options.intervalMs ?? 250;
-  const delay = options.delay ?? ((ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms)));
+  const maxWaitMs = options.maxWaitMs ?? 15_000;
+  const now = options.now ?? (() => performance.now());
+  const delay = options.delay ?? ((ms: number) => new Promise<void>((resolve) => globalThis.setTimeout(resolve, ms)));
+  const deadline = now() + maxWaitMs;
   let latest: RuntimeStatus | undefined;
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (!isCurrent()) return undefined;
+    const remainingMs = deadline - now();
+    if (remainingMs <= 0) break;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      latest = await readRuntime();
+      latest = await Promise.race([
+        readRuntime(),
+        new Promise<never>((_, reject) => {
+          timeout = globalThis.setTimeout(() => reject(new Error("Timed out waiting for synchronized Quad Cortex status")), remainingMs);
+        })
+      ]);
       lastError = undefined;
     } catch (error) {
       lastError = error;
+    } finally {
+      if (timeout !== undefined) globalThis.clearTimeout(timeout);
     }
     if (!isCurrent()) return undefined;
     if (latest && runtimeHasSynchronizedQc(latest)) return latest;
-    if (attempt + 1 < attempts) await delay(intervalMs);
+    const nextDelayMs = deadline - now();
+    if (attempt + 1 >= attempts || nextDelayMs <= 0) break;
+    await delay(Math.min(intervalMs, nextDelayMs));
   }
   if (!latest && lastError) throw lastError;
   return latest;
 }
 
-/** Keep an old selected row only when enumeration has no same-label replacement. */
-export function qcReconcilePhysicalDevices<Row extends { id: string; name: string }>(
+/** Mark a stale selected row clearly when a newly enumerated device has the same generic label. */
+export function qcReconcilePhysicalDevices<Row extends { id: string; name: string; connected?: boolean; phase?: string }>(
   inventory: readonly Row[],
   selectedId: string | undefined,
   previous: readonly Row[]
 ): Row[] {
   if (!selectedId || inventory.some((device) => device.id === selectedId)) return [...inventory];
   const stale = previous.find((device) => device.id === selectedId);
-  if (!stale || inventory.some((device) => device.name === stale.name)) return [...inventory];
-  return [...inventory, stale];
+  if (!stale) return [...inventory];
+  const name = inventory.some((device) => device.name === stale.name) ? `${stale.name} (not detected)` : stale.name;
+  return [...inventory, { ...stale, name, connected: false, phase: "disconnected" }];
 }
 
 /** Ready is deliberately stricter than the broker connection phase. */
