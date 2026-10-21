@@ -24,7 +24,7 @@ export { CorOsDirectory } from ${JSON.stringify(fileURLToPath(new URL("../src/co
 export { ModesConfigurationScreen } from ${JSON.stringify(fileURLToPath(new URL("../src/modes-configuration-screen.tsx", import.meta.url)))};
 export { QcSegmentBarHit } from ${JSON.stringify(fileURLToPath(new URL("../src/qc-brightness-panel.tsx", import.meta.url)))};
 export { qcDeviceScreenContent } from ${JSON.stringify(fileURLToPath(new URL("../src/qc-device-screen-content.tsx", import.meta.url)))};
-export { QuadCortexSurface } from ${JSON.stringify(fileURLToPath(new URL("../src/quad-cortex-surface.tsx", import.meta.url)))};
+export { QuadCortexSurface, QcHardwareSwitch } from ${JSON.stringify(fileURLToPath(new URL("../src/quad-cortex-surface.tsx", import.meta.url)))};
 export { IDLE_PLACEHOLDER_SNAPSHOT } from ${JSON.stringify(fileURLToPath(new URL("../src/device-placeholder.ts", import.meta.url)))};
 export { formFactors, skins } from "@qc-remote/form-factors";`, resolveDir: fileURLToPath(new URL("../", import.meta.url)), loader: "tsx" },
   outfile, bundle: true, format: "esm", platform: "node", jsx: "automatic", logLevel: "error",
@@ -42,6 +42,92 @@ const { CorOsParameterEditor, PresetMidiOutEditor, usePresetMidiOutWorkflow, Cor
 test.after(() => rmSync(work, { recursive: true, force: true }));
 const { QcSegmentBarHit, ModesConfigurationScreen } = components;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+function hardwareSwitch(t: any, extra: object = {}) {
+  const previousWindow = globalThis.window;
+  (globalThis as any).window = globalThis;
+  const actions: any[] = [];
+  let renderer!: ReturnType<typeof create>;
+  act(() => { renderer = create(React.createElement(components.QcHardwareSwitch, {
+    role: "footswitch:B", label: "B", onAction: (action: unknown) => actions.push(action), ...extra,
+  })); });
+  t.after(() => { act(() => renderer.unmount()); (globalThis as any).window = previousWindow; });
+  return { actions, button: () => renderer.root.findByType("button") };
+}
+
+const switchTap = [
+  { kind: "switch", role: "footswitch:B", phase: "press" },
+  { kind: "switch", role: "footswitch:B", phase: "release" },
+];
+
+test("AT-SPI click without pointer/key events activates a hardware footswitch exactly once", (t) => {
+  const { actions, button } = hardwareSwitch(t);
+  act(() => button().props.onClick({ detail: 0, defaultPrevented: false }));
+  assert.deepEqual(actions, switchTap);
+  act(() => button().props.onClick({ detail: 0, defaultPrevented: true }));
+  assert.deepEqual(actions, switchTap, "an already consumed activation is not replayed");
+});
+
+function switchPointer(y = 100) {
+  return { pointerId: 1, pointerType: "mouse", clientY: y, clientX: 100,
+    currentTarget: { setPointerCapture() {}, hasPointerCapture: () => false } };
+}
+
+test("pointer taps activate once and pointer click echoes after taps, drags and cancellation do not activate", (t) => {
+  const { actions, button } = hardwareSwitch(t);
+  act(() => { button().props.onPointerDown(switchPointer()); button().props.onPointerUp(switchPointer()); });
+  act(() => button().props.onClick({ detail: 1 }));
+  assert.deepEqual(actions, switchTap);
+  actions.length = 0;
+  act(() => { button().props.onPointerDown(switchPointer()); button().props.onPointerMove(switchPointer(76)); button().props.onPointerUp(switchPointer(76)); });
+  act(() => button().props.onClick({ detail: 1 }));
+  assert.deepEqual(actions, [{ kind: "rotate", role: "footswitch:B", delta: 2 }]);
+  actions.length = 0;
+  act(() => { button().props.onPointerDown(switchPointer()); button().props.onPointerCancel(switchPointer()); });
+  act(() => button().props.onClick({ detail: 1 }));
+  assert.deepEqual(actions, []);
+});
+
+for (const key of ["Enter", " "]) {
+  test(`${JSON.stringify(key)} footswitch tap prevents native activation and ignores repeated keydowns`, (t) => {
+    const { actions, button } = hardwareSwitch(t);
+    const event = { key, repeat: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    act(() => button().props.onKeyDown(event));
+    assert.equal(event.defaultPrevented, true, "suppress the browser's key-generated click");
+    act(() => button().props.onClick({ detail: 0 }));
+    assert.deepEqual(actions, [], "activation cannot interrupt a held key");
+    act(() => button().props.onKeyDown({ ...event, repeat: true }));
+    const release = { ...event, defaultPrevented: false };
+    act(() => button().props.onKeyUp(release));
+    assert.equal(release.defaultPrevented, true);
+    assert.deepEqual(actions, switchTap);
+  });
+}
+
+test("pointer/key holds and accessibility activation retain their distinct tap and hold paths", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const holds: string[] = [];
+  const { actions, button } = hardwareSwitch(t, { onHold: () => holds.push("hold"), holdDelayMs: 20 });
+  act(() => button().props.onPointerDown(switchPointer()));
+  act(() => t.mock.timers.tick(20));
+  act(() => { button().props.onPointerUp(switchPointer()); button().props.onClick({ detail: 1 }); });
+  const key = { key: "Enter", repeat: false, preventDefault() {} };
+  act(() => button().props.onKeyDown(key));
+  act(() => t.mock.timers.tick(20));
+  act(() => button().props.onKeyUp(key));
+  assert.deepEqual(holds, ["hold", "hold"]);
+  assert.deepEqual(actions, [], "holds never become taps");
+  act(() => button().props.onClick({ detail: 0 }));
+  assert.deepEqual(actions, switchTap, "later AT-SPI activation is not swallowed by an old hold");
+});
+
+test("accessibility activation honors the hardware switch's custom tap action", (t) => {
+  const taps: string[] = [];
+  const { actions, button } = hardwareSwitch(t, { onTap: () => taps.push("tap") });
+  act(() => button().props.onClick({ detail: 0 }));
+  assert.deepEqual(taps, ["tap"]);
+  assert.deepEqual(actions, []);
+});
 
 test("brightness segment slider ignores keyboard clicks, accepts pointer coordinates and honors disabled handlers", (t) => {
   const changes: number[] = [];

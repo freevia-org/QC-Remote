@@ -287,6 +287,13 @@ function HardwareSwitchControl({ role, label, ariaLabel, active, assigned = fals
     title={`${accessibleLabel}: tap to press${onDoubleTap ? "; double-tap for its alternate action" : ""}${onHold ? "; hold for its hold action" : ""}; drag vertically, use the mouse wheel, or press arrow keys to rotate${assigned && active === undefined ? "; lamp state unavailable" : ""}`}
     onPointerDown={encoder.onPointerDown}
     onPointerMove={encoder.onPointerMove}
+    onClick={(event) => {
+      // AT-SPI activates the button with a zero-detail click, without pointer
+      // or key events. Pointer taps already finish on pointerup; keyboard
+      // handlers prevent the native click while preserving key holds.
+      if (event.detail !== 0 || event.defaultPrevented || keyboardPressed.current) return;
+      completeTap();
+    }}
     onPointerUp={encoder.onPointerUp} onPointerCancel={encoder.onPointerCancel} onKeyDown={keyboardDown} onKeyUp={keyboardUp} onBlur={() => { encoder.onBlur(); if (mounted.current && keyboardPressed.current) { keyboardHold.cancel(); keyboardPressed.current = false; setPressed(false); onContactChange?.(false); } }} onWheel={encoder.onWheel}
   >
     <span ref={led} className="switch-led" aria-hidden="true" />
