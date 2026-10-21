@@ -25,6 +25,7 @@ import { hardwareRotaryPixelsPerStep, useRotaryGesture } from "./use-rotary-gest
 import { CorOsDirectory } from "./coros-directory";
 import type { PresetDirectoryState } from "./directory-library-model";
 import { GRID_CONTEXT_MENU, gridBlocksByRow, mixAnchorX, openSplitPath, MODE_GLYPH_CENTRE, MODE_LABEL, modeGlyphInkRise, PRESET_BANK_BASELINE, PRESET_BANK_SIZE, PRESET_BANK_X, presetTitleLayout, presetTitlePresentation, RAIL_LABEL_FONT_SIZE, RAIL_LABEL_LINE_STEP, railLabelBaseline, rejoinSplitPath, routedPortIsPlugged, rowHasVisibleSignalRail, SCENE_BADGE, splitAnchorX, type CorOsContextAction } from "./coros-ui";
+import { gridAddHitOrigin } from "./grid-add-hit-geometry";
 // The Grid path never loads the screen fixtures, so the shared element library
 // is imported here too - and first, for the same reason it is imported first
 // there: it is the base the screen files refine, not a patch applied over them.
@@ -931,6 +932,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
       const isEmptyPresetTile = row === 0 && column === 0 && !screenBlocks.length;
       const hitX = isEmptyPresetTile ? 98 : columns[column];
       const hitY = isEmptyPresetTile ? 151 : rowY[row];
+      const hitOrigin = gridAddHitOrigin(hitX, hitY);
       // A tap on an empty cell adds a block, same as always. On an eligible
       // row the manual's own path to splitting it is a tap-and-hold on any
       // empty slot - not a dedicated on-screen marker, which is what
@@ -947,7 +949,7 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
           key={cellId}
           className="coros-vector-add-hit"
           data-drop-target={dropTarget || undefined}
-          style={{ left: `${hitX / 8}%`, top: `${hitY / 4.8}%` }}
+          style={{ left: `${hitOrigin.left}px`, top: `${hitOrigin.top}px` }}
           title={splitPlacementEligible ? `Add a block at row ${row + 1}, column ${column + 1}; tap and hold to split row ${row + 1} into a parallel path` : `Add a block at row ${row + 1}, column ${column + 1}`}
           aria-label={splitPlacementEligible ? `Add a block at row ${row + 1}, column ${column + 1}; tap and hold to split row ${row + 1} into a parallel path` : `Add a block at row ${row + 1}, column ${column + 1}`}
           onPointerDown={splitPlacementEligible ? (event) => beginSplitPlacementGesture(event, row, column) : undefined}

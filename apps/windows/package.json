@@ -8,7 +8,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
-    "test": "node --experimental-strip-types --test tests/demo-broker-lifecycle.test.ts tests/browser-pairing-session.test.ts tests/qc-readiness.test.ts tests/updater-relay-setting.test.ts tests/window-lifecycle.test.ts tests/macos-host.test.ts",
+    "test": "node --experimental-strip-types --test tests/demo-broker-lifecycle.test.ts tests/browser-pairing-session.test.ts tests/block-editor-keyboard.test.ts tests/qc-readiness.test.ts tests/updater-relay-setting.test.ts tests/window-lifecycle.test.ts tests/macos-host.test.ts",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:build:mac": "sh ../../scripts/build-macos-broker-menu.sh && tauri icon src-tauri/icons/icon.png --output src-tauri/icons/generated && tauri build --config src-tauri/tauri.macos.conf.json --features desktop-broker,custom-protocol"
