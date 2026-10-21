@@ -7,6 +7,17 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.192 / Android 0.3.42 — 21 October 2026
+
+Changes since Windows 0.1.191 / Android 0.3.41. This is a small maintenance
+release. The Windows app serves the active desktop demo through the guarded
+broker and MCP routes (#175) and shows safe pairing-poll failures in the desktop
+app (#185). The Android app exposes its demo and the guarded paired-host
+controls (#178), and the iOS app keeps its paired-host startup errors visible
+without retiring their refresh (#184). The Linux release workflow now builds the
+version in the source and drafts its own Linux-only release (#187). Everything
+else in 0.1.191 / 0.3.41 is unchanged.
+
 ## QC Remote Windows 0.1.191 / Android 0.3.41 — 20 October 2026
 
 Changes since Windows 0.1.190 / Android 0.3.40. This is a small maintenance
