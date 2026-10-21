@@ -7,6 +7,7 @@ use rmcp::ServiceExt;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::{
+    collections::HashSet,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -679,7 +680,9 @@ pub(crate) fn broker_lifecycle_hint(descriptor: &std::path::Path) -> BridgeLifec
     BridgeLifecycleHint {
         user_quit: matches!(quit, BridgeQuitEvidence::Recorded(_)),
         quit_instance_id: match &quit {
-            BridgeQuitEvidence::Recorded(instance) => Some(instance.clone()),
+            BridgeQuitEvidence::Recorded(instance) | BridgeQuitEvidence::Superseded(instance) => {
+                Some(instance.clone())
+            }
             _ => None,
         },
         quit_unknown: matches!(quit, BridgeQuitEvidence::Unknown),
@@ -2466,6 +2469,9 @@ fn finish_bridge_shutdown(
 enum BridgeQuitEvidence {
     Unknown,
     Clear,
+    // The record is still present, but a different live broker is attachable.
+    // Retain its identity without treating it as a current shutdown request.
+    Superseded(String),
     Recorded(String),
 }
 
@@ -2475,31 +2481,31 @@ fn bridge_quit_evidence(descriptor: &std::path::Path) -> BridgeQuitEvidence {
         Some(Ok(record)) if crate::user_quit_refusal(descriptor).is_some() => {
             BridgeQuitEvidence::Recorded(record.instance_id)
         }
+        Some(Ok(record)) => BridgeQuitEvidence::Superseded(record.instance_id),
         _ => BridgeQuitEvidence::Clear,
     }
 }
 
 #[derive(Default)]
 struct BridgeQuitTracker {
-    // None: no trustworthy snapshot yet. Some(None): no Quit recorded.
     // A pre-existing Quit is a baseline, not an instruction to kill a newly
-    // launched MCP server before it can explain how to reconnect.
-    observed: Option<Option<String>>,
+    // launched MCP server. Clear/Unknown must never forget a known record:
+    // an attachability change can expose the same on-disk Quit again.
+    initialized: bool,
+    seen: HashSet<String>,
 }
 
 impl BridgeQuitTracker {
     fn observe(&mut self, evidence: BridgeQuitEvidence) -> bool {
-        let current = match evidence {
+        let (instance, active) = match evidence {
             BridgeQuitEvidence::Unknown => return false,
-            BridgeQuitEvidence::Clear => None,
-            BridgeQuitEvidence::Recorded(instance) => Some(instance),
+            BridgeQuitEvidence::Clear => (None, false),
+            BridgeQuitEvidence::Superseded(instance) => (Some(instance), false),
+            BridgeQuitEvidence::Recorded(instance) => (Some(instance), true),
         };
-        let stopped = current.is_some()
-            && self
-                .observed
-                .as_ref()
-                .is_some_and(|previous| *previous != current);
-        self.observed = Some(current);
+        let newly_seen = instance.is_some_and(|instance| self.seen.insert(instance));
+        let stopped = self.initialized && active && newly_seen;
+        self.initialized = true;
         stopped
     }
 }
@@ -2525,7 +2531,10 @@ impl BridgeLifecycle {
 
     fn stopped(&mut self) -> bool {
         let evidence = bridge_quit_evidence(&self.descriptor);
-        let attachable = matches!(evidence, BridgeQuitEvidence::Clear);
+        let attachable = matches!(
+            evidence,
+            BridgeQuitEvidence::Clear | BridgeQuitEvidence::Superseded(_)
+        );
         if self.quit.observe(evidence) {
             return true;
         }
@@ -2609,6 +2618,8 @@ async fn wait_for_bridge_stop(
                             .clone()
                             .unwrap_or_else(|| "legacy-explicit-quit".into()),
                     )
+                } else if let Some(instance) = &hint.quit_instance_id {
+                    BridgeQuitEvidence::Superseded(instance.clone())
                 } else {
                     BridgeQuitEvidence::Clear
                 };
@@ -3080,6 +3091,55 @@ mod tests {
     }
 
     #[test]
+    fn bridge_lifecycle_never_replays_a_seen_quit_after_clear_or_supersession() {
+        let mut quit = BridgeQuitTracker::default();
+        assert!(!quit.observe(BridgeQuitEvidence::Recorded("baseline-a".into())));
+        assert!(!quit.observe(BridgeQuitEvidence::Clear));
+        assert!(!quit.observe(BridgeQuitEvidence::Unknown));
+        assert!(!quit.observe(BridgeQuitEvidence::Recorded("baseline-a".into())));
+        assert!(!quit.observe(BridgeQuitEvidence::Superseded("historical-b".into())));
+        assert!(!quit.observe(BridgeQuitEvidence::Clear));
+        assert!(!quit.observe(BridgeQuitEvidence::Recorded("historical-b".into())));
+        assert!(quit.observe(BridgeQuitEvidence::Recorded("new-c".into())));
+        // Even if the caller continues observing after a stop, neither a
+        // baseline nor any other already seen identity becomes a new Quit.
+        assert!(!quit.observe(BridgeQuitEvidence::Recorded("baseline-a".into())));
+        assert!(!quit.observe(BridgeQuitEvidence::Recorded("new-c".into())));
+    }
+
+    #[test]
+    fn bridge_lifecycle_retains_a_superseded_on_disk_quit_across_descriptor_loss() {
+        let (root, _guard) = exclusive_fixture_dir("bridge-quit-superseded");
+        let descriptor = root.join("device-broker.json");
+        std::fs::write(&descriptor, serde_json::json!({
+            "port":41001, "bearerToken":"fixture-only", "instanceId":"live-b",
+            "processId":std::process::id(),
+            "processCreatedAt":qc_native_platform::process::os_process_created_at(std::process::id()).unwrap(),
+            "publishedAtUnixMs":now_unix_ms(),
+        }).to_string()).unwrap();
+        let quit_path = crate::device_broker_descriptor::user_quit_path(&descriptor);
+        std::fs::write(&quit_path, r#"{"instanceId":"old-a","source":"tray"}"#).unwrap();
+        let hint = broker_lifecycle_hint(&descriptor);
+        assert!(
+            !hint.user_quit,
+            "a different live broker remains attachable"
+        );
+        assert_eq!(hint.quit_instance_id.as_deref(), Some("old-a"));
+        let mut lifecycle = BridgeLifecycle::new(descriptor.clone());
+        assert!(!lifecycle.stopped());
+        std::fs::remove_file(&descriptor).unwrap();
+        assert!(
+            !lifecycle.stopped(),
+            "descriptor loss must not replay old-a"
+        );
+        std::fs::write(&quit_path, r#"{"instanceId":"new-c","source":"tray"}"#).unwrap();
+        assert!(
+            lifecycle.stopped(),
+            "a genuinely new explicit Quit still stops"
+        );
+    }
+
+    #[test]
     fn bridge_lifecycle_observes_quit_only_in_its_own_store() {
         let (root, _guard) = exclusive_fixture_dir("bridge-quit-stores");
         let first = root.join("user-store");
@@ -3195,7 +3255,9 @@ mod tests {
 
     #[test]
     fn bridge_lifecycle_follows_authenticated_publisher_across_filesystem_views() {
-        for with_owner in [true, false] {
+        for (with_owner, starts_with_publisher_quit) in
+            [(true, false), (false, false), (false, true)]
+        {
             struct NoDeviceCalls;
             #[async_trait]
             impl DeviceAdapter for NoDeviceCalls {
@@ -3227,6 +3289,15 @@ mod tests {
                 let paths = vec![publisher.join(STATE_FILE)];
                 let settings = test_settings(&own, full_access());
                 record_user_quit(&settings, "unrelated-old-generation");
+                if starts_with_publisher_quit {
+                    std::fs::write(
+                        crate::device_broker_descriptor::user_quit_path(
+                            &publisher.join("device-broker.json"),
+                        ),
+                        r#"{"instanceId":"publisher-before-launch","source":"tray"}"#,
+                    )
+                    .unwrap();
+                }
                 if with_owner {
                     std::fs::write(publisher.join("device-broker.json"), serde_json::json!({
                 "port":41001, "bearerToken":"fixture-only", "instanceId":"publisher-quit",
@@ -3264,7 +3335,16 @@ mod tests {
                     () = &mut stopped => panic!("the unrelated Quit in our own view must not override the authenticated publisher"),
                     () = tokio::time::sleep(Duration::from_millis(100)) => {},
                 }
-                if with_owner {
+                if starts_with_publisher_quit {
+                    // Initial passive query must baseline the publisher's
+                    // old Quit, not the launcher's unrelated record.
+                    announce.send(Some(BridgeAnnouncement {client_id:String::new(), client_name:"post-quit-publisher".into(), client_version:None})).unwrap();
+                    tokio::select! {
+                        () = &mut stopped => panic!("a publisher-view Quit present at launch is not new"),
+                        () = tokio::time::sleep(Duration::from_millis(1200)) => {},
+                    }
+                    std::fs::write(crate::device_broker_descriptor::user_quit_path(&publisher.join("device-broker.json")), r#"{"instanceId":"publisher-after-launch","source":"tray"}"#).unwrap();
+                } else if with_owner {
                     std::fs::write(crate::device_broker_descriptor::user_quit_path(&own.join("device-broker.json")), r#"{"instanceId":"another-unrelated-quit","source":"tray"}"#).unwrap();
                     tokio::select! {
                         () = &mut stopped => panic!("an unrelated Quit between heartbeats must not override the verified publisher broker"),

@@ -226,6 +226,12 @@ even while a window or MCP client is attached. Ordinary requests cannot undo
 that explicit Disconnect; `connect` reopens the session. Automatic idle release
 is different: the next device request may reopen an idle-released session.
 
+Tray/control `connect` resumes the broker as a whole: after the primary opens
+successfully it clears manual holds for the other controllers too (they reopen
+lazily). The window's selected-device Connect and authenticated MCP
+`reconnect_device`/`reset_device_session` operate on only that selected controller;
+they do not resume other manually disconnected devices.
+
 `quit --confirm` releases USB and records the user's Quit. Existing MCP bridges
 observing that new Quit close their MCP transport and exit; an open app window
 stays open and disconnected until the user chooses Connect. A bridge launched

@@ -453,7 +453,11 @@ presses a footswitch.
   integration to create fresh bridges. A new chat launched after an earlier
   Quit can still show reconnect instructions. **Disconnect** releases USB only: the broker,
   window and MCP clients stay running. Ordinary client requests do not reconnect a device
-  you explicitly disconnected; choose **Connect** when you want it back. Remote clients are
+  you explicitly disconnected; choose **Connect** when you want it back.
+  Tray/control Connect resumes all controllers after the primary connects;
+  Connect in a selected-device panel or an MCP reconnect/reset action resumes
+  only that selected device. Other manually disconnected devices stay released.
+  Remote clients are
   marked "(remote)"; several sessions of one app share an entry that says how
   many it holds. Each entry opens the client's details (kind, version, when
   it connected and, for a remote client, the route and location the relay
