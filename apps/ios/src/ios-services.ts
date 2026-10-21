@@ -138,10 +138,13 @@ async function establishMcp(generation: number): Promise<void> {
   const nextTransport = new StreamableHTTPClientTransport(new URL(serverUrl), { authProvider: provider, fetch: (input, init) => remoteTraffic.fetch(input, init), reconnectionOptions: { initialReconnectionDelay: 5_000, maxReconnectionDelay: 300_000, reconnectionDelayGrowFactor: 2, maxRetries: 0 } });
   nextClient.onclose = () => {
     if (transport !== nextTransport) return;
+    const established = mcpConnected;
     retireMcpAttempt();
     client = undefined; transport = undefined;
     mcpConnected = false;
-    emit("qcConnection", { state: "disconnected" });
+    // A cold demand owns its failure feedback. Invalidating its native UI
+    // attempt here would discard that error before the refresh can show it.
+    if (established) emit("qcConnection", { state: "disconnected" });
     emit("relayState", { state: "reconnecting" });
   };
   client = nextClient; transport = nextTransport;
@@ -160,10 +163,9 @@ async function establishMcp(generation: number): Promise<void> {
   } catch (error) {
     if (client !== nextClient || transport !== nextTransport) return;
     mcpConnected = false;
-    if (error instanceof UnauthorizedError) { authPending = true; emit("qcConnection", { state: "disconnected" }); return; }
+    if (error instanceof UnauthorizedError) { authPending = true; return; }
     client = undefined; transport = undefined;
     await nextClient.close().catch(() => undefined);
-    emit("qcConnection", { state: "disconnected" });
     throw error;
   }
 }

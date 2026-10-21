@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
  * browser, simulator, saved profile, or installed application is accessed. */
 async function loadService(t: any) {
   const state = { calls: [] as string[], failConnect: true, client: undefined as any,
-    invocations: [] as any[],
+    invocations: [] as any[], browserOpens: 0,
+    connectError: undefined as "unauthorized" | undefined,
     connectGate: undefined as Promise<void> | undefined,
     connectStarted: undefined as (() => void) | undefined,
     secureReadGate: undefined as Promise<void> | undefined,
@@ -28,19 +29,23 @@ async function loadService(t: any) {
   replaceGlobal("document", { visibilityState: "visible", addEventListener: (key: string, callback: any) => state.documentEvents.set(key, callback) });
   const mocks: Record<string, string> = {
     "@capacitor/app": `export const App={addListener:async (name,fn)=>{globalThis.__qcIosTest.appEvents.set(name,fn);return {remove:async()=>{}}}};`,
-    "@capacitor/browser": `export const Browser={open:async()=>{},close:async()=>{}};`,
+    "@capacitor/browser": `export const Browser={open:async()=>{globalThis.__qcIosTest.browserOpens++;},close:async()=>{}};`,
     "@capacitor/core": `export const Capacitor={isNativePlatform:()=>true};export const registerPlugin=()=>({});`,
-    "@modelcontextprotocol/sdk/client/index.js": `export class Client { constructor(){globalThis.__qcIosTest.client=this;this.initialized=false;} async connect(){const s=globalThis.__qcIosTest;s.calls.push('initialize');s.connectStarted?.();if(s.connectGate)await s.connectGate;if(s.failConnect)throw Error('HTTP 503');this.initialized=true;}async callTool({name}){if(!this.initialized)throw Error("SDK not initialized");const s=globalThis.__qcIosTest;s.calls.push(name);return s.toolHook?s.toolHook(name):name==='get_current_preset'?{presetName:'fixture',blocks:[]}:s.runtimeStatus;}async close(){this.onclose?.();}}`,
+    "@modelcontextprotocol/sdk/client/index.js": `import {UnauthorizedError} from "@modelcontextprotocol/sdk/client/auth.js";export class Client { constructor(){globalThis.__qcIosTest.client=this;this.initialized=false;} async connect(){const s=globalThis.__qcIosTest;s.calls.push('initialize');s.connectStarted?.();if(s.connectGate)await s.connectGate;if(s.connectError==='unauthorized')throw new UnauthorizedError('Authorization required');if(s.failConnect)throw Error('HTTP 503');this.initialized=true;}async callTool({name}){if(!this.initialized)throw Error("SDK not initialized");const s=globalThis.__qcIosTest;s.calls.push(name);return s.toolHook?s.toolHook(name):name==='get_current_preset'?{presetName:'fixture',blocks:[]}:s.runtimeStatus;}async close(){this.onclose?.();}}`,
     "@modelcontextprotocol/sdk/client/streamableHttp.js": `export class StreamableHTTPClientTransport {constructor(url,options){if(options.reconnectionOptions.maxRetries!==0)throw Error('SDK reconnect must be disabled');}async finishAuth(){}}`,
     "@modelcontextprotocol/sdk/client/auth.js": `export class UnauthorizedError extends Error {} export const auth=async()=>"AUTHORIZED";`,
-    "@qc-remote/client": `export const selectedBrokerTarget=x=>x.targetReady===false?undefined:x.brokerTarget;export const brokerTargetKey=x=>x?JSON.stringify([x.source,x.sessionId,x.generation]):undefined;export const validateGatewayResult=(method,x)=>x;export const GATEWAY_CLIENT_METHODS={};export const withDeviceConnectionSource=x=>x;export const createGatewayClientTransport=fn=>({invoke:fn});`,
-    "@qc-remote/core": `export const parseControlAccessMode=()=>"read-only";export const controlAccessPermitsAction=()=>true;export const SHARED_QC_ACTIONS=[{rpc:"device.setMasterVolume",name:"set_master_volume",classification:"live-write"}];export const createQcGatewayTransport=x=>x;export const parseAppMcpResult=x=>x;export const invokeAppMcp=async(method,args,opts)=>{globalThis.__qcIosTest.invocations.push({method,target:opts.expectedBrokerTarget,supported:opts.brokerTargetGuardSupported});const result=await opts.callTool(method==='system.status'?'get_qc_status':'get_current_preset',args);if(method==='system.status')opts.onStatus?.(result);return result;};`,
+    "@qc-remote/client": `export {selectedBrokerTarget,brokerTargetKey} from "real-client";export const validateGatewayResult=(method,x)=>x;export const GATEWAY_CLIENT_METHODS={};export const withDeviceConnectionSource=x=>x;export const createGatewayClientTransport=fn=>({invoke:fn});`,
+    "@qc-remote/core": `export const parseControlAccessMode=()=>"read-only";export const controlAccessPermitsAction=()=>true;export const SHARED_QC_ACTIONS=[{rpc:"device.setMasterVolume",name:"set_master_volume",classification:"live-write"}];export const createQcGatewayTransport=x=>x;export {parseAppMcpResult} from "real-adapter";export const invokeAppMcp=async(method,args,opts)=>{globalThis.__qcIosTest.invocations.push({method,target:opts.expectedBrokerTarget,supported:opts.brokerTargetGuardSupported});const result=await opts.callTool(method==='system.status'?'get_qc_status':'get_current_preset',args);if(method==='system.status')opts.onStatus?.(result);return result;};`,
     "@qc-remote/theme": `export const QC_BRAND={publicRelayEndpoint:'https://example.test'};`,
     "../native-bridge": `export const QCIosNativeBridge={secureGet:async()=>{const s=globalThis.__qcIosTest;s.secureReads++;if(s.secureReadError)throw Error("Keychain temporarily unavailable");if(s.secureReadGate)await s.secureReadGate;return {value:s.saved};},secureSet:async({value})=>{globalThis.__qcIosTest.saved=value;},addListener:async()=>({remove:async()=>{}}),setScreenAwake:async()=>{},platformCapabilities:async()=>({deviceFamily:'iphone'})};`,
     "./workflow-confirmations": `export const confirmIosWorkflow=async()=>true;`,
   };
   const result = await build({ entryPoints: [fileURLToPath(new URL("../src/ios-services.ts", import.meta.url))], bundle: true, write: false, platform: "node", format: "esm", plugins: [{ name: "synthetic-native-and-sdk", setup(build) {
-    build.onResolve({ filter: /.*/ }, args => mocks[args.path] ? { path: args.path, namespace: "mock" } : undefined);
+    build.onResolve({ filter: /.*/ }, args => {
+      if (args.path === "real-client") return { path: fileURLToPath(new URL("../../../packages/typescript/qc-client/src/index.ts", import.meta.url)) };
+      if (args.path === "real-adapter") return { path: fileURLToPath(new URL("../../../packages/typescript/qc-core/src/app-mcp-adapter.ts", import.meta.url)) };
+      return mocks[args.path] ? { path: args.path, namespace: "mock" } : undefined;
+    });
     build.onLoad({ filter: /.*/, namespace: "mock" }, args => ({ contents: mocks[args.path], loader: "js" }));
   } }] });
   const service = await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString("base64")}#${Math.random()}`);
@@ -266,4 +271,118 @@ test("switching away from paired-host mode cannot reuse that host's USB diagnost
   assert.equal(diagnostics.connected, false);
   assert.match(diagnostics.detail, /No direct Quad Cortex USB session/);
   assert.equal(state.calls.length, before);
+});
+
+// The shared App invalidates its current connection attempt on this native
+// event. A demand failure must reach that attempt's catch before retirement.
+async function watchNativeAttempt(service: any) {
+  const events: string[] = [];
+  let current = true;
+  await service.QcUsbNative.addListener("qcConnection", ({ state }: { state: string }) => {
+    events.push(state); current = false;
+  });
+  return { events, current: () => current };
+}
+
+for (const scenario of [
+  { name: "first status tool error", result: { isError: true, content: [{ type: "text", text: "The paired host is unavailable." }] }, error: /paired host is unavailable/ },
+  { name: "invalid target identity", result: { targetReady: true, brokerTarget: { source: "physical", sessionId: "fixture", generation: 0 } }, error: /target identity is unsupported/ },
+  { name: "invalid target readiness", result: { targetReady: "ready" }, error: /target readiness is unsupported/ }
+]) {
+  test(`${scenario.name} reaches the initiating refresh without invalidating its UI attempt`, async t => {
+    const { state, service } = await loadService(t);
+    state.failConnect = false;
+    state.toolHook = () => scenario.result;
+    const attempt = await watchNativeAttempt(service), saved = state.saved;
+    await assert.rejects(service.refreshRemoteTargetObservation(), error => {
+      assert.equal(attempt.current(), true, "the App must still be able to display this failure");
+      return scenario.error.test(String(error));
+    });
+    assert.deepEqual(state.calls, ["initialize", "get_qc_status"]);
+    assert.deepEqual(attempt.events, []);
+    assert.equal(state.saved, saved); assert.equal(state.browserOpens, 0);
+    assert.equal(service.remoteObservation(), undefined);
+    assert.equal((await service.publicRelay.status()).paired, true);
+  });
+}
+
+test("unauthorized initialization preserves sign-in and lets the initiating refresh show the authorization error", async t => {
+  const { state, service } = await loadService(t);
+  state.failConnect = false; state.connectError = "unauthorized";
+  const attempt = await watchNativeAttempt(service), saved = state.saved;
+  await assert.rejects(service.refreshRemoteTargetObservation(), error => {
+    assert.equal(attempt.current(), true);
+    return /Finish QC Remote Cloud sign-in/.test(String(error));
+  });
+  assert.deepEqual(state.calls, ["initialize"]); assert.deepEqual(attempt.events, []);
+  assert.equal(state.saved, saved); assert.equal(state.browserOpens, 0);
+  assert.equal((await service.publicRelay.status()).paired, true);
+});
+
+test("a successful no-device status remains a finite unavailable observation on the connected MCP session", async t => {
+  const { state, service } = await loadService(t);
+  state.failConnect = false;
+  state.runtimeStatus = { targetReady: false, gatewayAvailable: false, usbDiagnostics: { connected: false } };
+  const attempt = await watchNativeAttempt(service), saved = state.saved;
+  const observation = await service.refreshRemoteTargetObservation();
+  assert.equal(observation.connection.phase, "disconnected"); assert.equal(observation.snapshot, undefined);
+  assert.match(observation.connection.detail, /no available device/);
+  assert.deepEqual(state.calls, ["initialize", "get_qc_status", "get_qc_status"]);
+  assert.equal((await service.publicRelay.status()).state, "connected");
+  assert.equal(attempt.current(), true); assert.equal(state.saved, saved);
+  assert.equal(service.remoteObservation(), undefined); assert.equal(state.browserOpens, 0);
+});
+
+for (const stage of ["initialize", "first status"] as const) {
+  test(`transport close during ${stage} rejects the demand without a synthetic native disconnect`, async t => {
+    const { state, service } = await loadService(t);
+    state.failConnect = false;
+    let release!: () => void, started!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const reached = new Promise<void>(resolve => { started = resolve; });
+    if (stage === "initialize") { state.connectGate = gate; state.connectStarted = started; }
+    else state.toolHook = async () => { started(); await gate; return state.runtimeStatus; };
+    const attempt = await watchNativeAttempt(service), saved = state.saved;
+    const pending = service.refreshRemoteTargetObservation();
+    const rejected = assert.rejects(pending, /connection changed before this request/);
+    await reached; state.client.onclose(); release(); await rejected;
+    assert.equal(attempt.current(), true); assert.deepEqual(attempt.events, []);
+    assert.equal(service.remoteObservation(), undefined); assert.equal(state.saved, saved);
+    assert.equal(state.browserOpens, 0);
+    assert.equal(state.calls.length, stage === "initialize" ? 1 : 2);
+  });
+}
+
+test("real transport close after an established session still retires the native UI attempt", async t => {
+  const { state, service } = await loadService(t);
+  state.failConnect = false;
+  await service.refreshRemoteTargetObservation();
+  const attempt = await watchNativeAttempt(service), calls = state.calls.length, saved = state.saved;
+  state.client.onclose();
+  assert.equal(attempt.current(), false); assert.deepEqual(attempt.events, ["disconnected"]);
+  assert.equal((await service.publicRelay.status()).state, "reconnecting");
+  assert.equal(state.calls.length, calls); assert.equal(state.saved, saved);
+});
+
+test("explicit disconnect cancels the old first status and a newer demand cannot be overwritten by its late result", async t => {
+  const { state, service } = await loadService(t);
+  state.failConnect = false;
+  const oldTarget = { source: "physical", sessionId: "old", generation: 1 };
+  const newTarget = { source: "physical", sessionId: "new", generation: 2 };
+  let release!: () => void, started!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const reached = new Promise<void>(resolve => { started = resolve; });
+  state.toolHook = async () => { started(); await gate; return { targetReady: true, brokerTarget: oldTarget }; };
+  const attempt = await watchNativeAttempt(service), saved = state.saved;
+  const pending = service.refreshRemoteTargetObservation();
+  const rejected = assert.rejects(pending, /connection changed before this request/);
+  await reached; await service.QcUsbNative.disconnect();
+  assert.equal(attempt.current(), false); assert.deepEqual(attempt.events, ["disconnected"]);
+  state.toolHook = undefined; state.runtimeStatus = { targetReady: true, brokerTarget: newTarget };
+  const fresh = await service.refreshRemoteTargetObservation();
+  fresh.accept(); const observed = service.remoteObservation(), calls = state.calls.length;
+  release(); await rejected;
+  assert.deepEqual(service.remoteConnection().brokerTarget, newTarget);
+  assert.equal(service.remoteObservation(), observed); assert.equal(state.calls.length, calls);
+  assert.equal(state.saved, saved); assert.equal(state.browserOpens, 0);
 });
