@@ -11145,16 +11145,39 @@ mod tcp_tests {
             &json!({"jsonrpc":"2.0","id":11,"method":"test.longOperation","params":{}}),
         )
         .unwrap();
-        write_response(
-            &mut client,
-            &json!({"jsonrpc":"2.0","id":12,"method":"system.status","params":{}}),
-        )
-        .unwrap();
-        let started = Instant::now();
-        let status = read_response_within(&mut client, Duration::from_secs(2))
-            .expect("system.status must answer while the long request runs");
-        assert!(started.elapsed() < Duration::from_secs(1), "{status}");
-        assert_eq!(status["id"], 12, "{status}");
+        // Suspension was reduced synchronously above. Status is deliberately
+        // nonblocking, though: try_cached_status omits usbDiagnostics while
+        // any cache lock is busy. That omission is not an unsuspended device.
+        // Wait only for an available snapshot, still requiring every reply
+        // promptly while the operation lock remains held. Never retry a
+        // reported false suspension or an RPC error into an eventual pass.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "system.status diagnostics stayed unavailable while the long request ran"
+            );
+            write_response(
+                &mut client,
+                &json!({"jsonrpc":"2.0","id":12,"method":"system.status","params":{}}),
+            )
+            .unwrap();
+            let started = Instant::now();
+            let status = read_response_within(&mut client, remaining.min(Duration::from_secs(1)))
+                .expect("system.status must answer while the long request runs");
+            assert!(started.elapsed() < Duration::from_secs(1), "{status}");
+            assert_eq!(status["id"], 12, "{status}");
+            assert!(status["result"].is_object(), "{status}");
+            if !status["result"]["usbDiagnostics"].is_null() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "system.status diagnostics stayed unavailable: {status}"
+            );
+            thread::sleep(Duration::from_millis(1));
+        };
         let diagnostics = &status["result"]["usbDiagnostics"];
         assert_eq!(diagnostics["deviceSuspended"], true, "{status}");
         assert_eq!(diagnostics["suspension"]["active"]["reason"], "BACKUP");
