@@ -47,18 +47,22 @@ test('Linux release draft version, package manifests and attestation stay aligne
   const cargoVersion = cargoManifest.match(/^version = "([^"]+)"$/m)?.[1];
   const lockedCargoVersion = cargoLock.match(/\[\[package\]\]\nname = "qc-remote"\nversion = "([^"]+)"/)?.[1];
 
-  // Every desktop version source must agree. The Linux workflow's pinned
-  // release version is the last Linux release (0.1.187); the source may move
-  // ahead of it with Windows releases, and the draft job itself refuses to run
-  // until the source and LINUX_RELEASE_VERSION are brought together.
+  // Every desktop version source must agree. The Linux workflow reads its
+  // release version from tauri.conf.json at build time and exports it as
+  // LINUX_RELEASE_VERSION after checking the other manifests agree with it.
   assert.match(appVersion, /^\d+\.\d+\.\d+$/);
   assert.equal(tauriVersion, appVersion);
   assert.equal(packageLock.packages['apps/windows'].version, appVersion);
   assert.equal(cargoVersion, appVersion);
   assert.equal(lockedCargoVersion, appVersion);
-  assert.match(workflow, /LINUX_RELEASE_VERSION: "0\.1\.187"/);
+  assert.doesNotMatch(workflow, /LINUX_RELEASE_VERSION: "/);
+  assert.match(workflow, /expected = json\.loads\(Path\("apps\/windows\/src-tauri\/tauri\.conf\.json"\)\.read_text\(\)\)\["version"\]/);
+  assert.match(workflow, /LINUX_RELEASE_VERSION=\{expected\}/);
   assert.match(workflow, /qc-remote_\$\{\{\s*env\.LINUX_RELEASE_VERSION\s*\}\}_amd64\.deb/);
-  assert.match(workflow, /release_tag="v\$\{LINUX_RELEASE_VERSION\}"/);
+  assert.match(workflow, /release_tag="v\$\{LINUX_RELEASE_VERSION\}-linux"/);
+  assert.match(workflow, /qc-remote-v\$\{LINUX_RELEASE_VERSION\}-linux-SHA256SUMS\.txt/);
+  assert.match(workflow, /qc-remote-v\$\{LINUX_RELEASE_VERSION\}-linux-provenance\.sigstore\.json/);
+  assert.match(workflow, /refs\/heads\/master/);
   assert.match(workflow, /--target "\$GITHUB_SHA" --draft --prerelease/);
   assert.match(workflow, /make_latest=false/);
   assert.match(workflow, /--source-ref "\$GITHUB_REF" --source-digest "\$GITHUB_SHA"/);
