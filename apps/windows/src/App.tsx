@@ -17,7 +17,7 @@ import { saveOpenedWorkspaceCopy } from "./workspace-copy";
 import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
 import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
-import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
+import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, waitForSynchronizedQc, qcReconcilePhysicalDevices, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
 import { DEFAULT_BROKER_TRAY_STATUS, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
 import appPackage from "../package.json";
@@ -257,12 +257,7 @@ export function App() {
         const inventory = await physicalDevices.list();
         if (disposed) return;
         observeDemoBrokerInstance(inventory.brokerInstanceId);
-        setPhysicalQcDevices((previous) => {
-          const selected = selectedPhysicalRef.current;
-          if (!selected || inventory.devices.some((device) => device.id === selected)) return inventory.devices;
-          const last = previous.find((device) => device.id === selected);
-          return [...inventory.devices, {id: selected, name: last?.name ?? "Quad Cortex", connected: false, phase: "disconnected"}];
-        });
+        setPhysicalQcDevices((previous) => qcReconcilePhysicalDevices(inventory.devices, selectedPhysicalRef.current, previous));
         if (!selectedPhysicalRef.current && inventory.selectedDeviceId) {
           selectedPhysicalRef.current = inventory.selectedDeviceId;
           setSelectedPhysicalId(inventory.selectedDeviceId);
@@ -1397,8 +1392,12 @@ export function App() {
           }
         }
         const synchronized = { ...current, masterVolume: synchronizedVolume };
-        const verifiedRuntime = await tauriTransport.runtimeStatus();
+        const verifiedRuntime = await waitForSynchronizedQc(
+          () => tauriTransport.runtimeStatus(),
+          attempt.current
+        );
         if (!attempt.current()) return;
+        if (!verifiedRuntime) throw new Error("The Quad Cortex connection attempt was superseded before synchronization");
         if (!runtimeHasSynchronizedQc(verifiedRuntime)) {
           throw new Error(verifiedRuntime.usbDiagnostics?.detail || "The Quad Cortex preset is not synchronized");
         }

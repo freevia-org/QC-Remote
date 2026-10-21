@@ -1,6 +1,50 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, QC_FOLLOW_RETRY_MAX_MS, QC_FOLLOW_RETRY_MIN_MS, QC_FOLLOW_STABLE_LIVE_MS, QC_ORPHANED_DISCOVERING_MS, QC_SESSION_LEFT_OPEN_NOTICE, qcAutomaticConnectHeld, qcBackgroundDeviceLive, qcConnectionDuringBrokerPhase, qcDisconnectClosedSession, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcFollowRetryDelay, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcShouldFollowDevicePhase, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, qcWatchConnectStall, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect } from "../src/qc-readiness.ts";
+import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, QC_FOLLOW_RETRY_MAX_MS, QC_FOLLOW_RETRY_MIN_MS, QC_FOLLOW_STABLE_LIVE_MS, QC_ORPHANED_DISCOVERING_MS, QC_SESSION_LEFT_OPEN_NOTICE, qcAutomaticConnectHeld, qcBackgroundDeviceLive, qcConnectionDuringBrokerPhase, qcDisconnectClosedSession, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcFollowRetryDelay, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcReconcilePhysicalDevices, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcShouldFollowDevicePhase, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, qcWatchConnectStall, waitForSynchronizedQc, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect } from "../src/qc-readiness.ts";
+
+test("connect waits for transient broker synchronization before falling back to demo", async () => {
+  const waiting = { gatewayAvailable: true, platform: "Linux", message: "", usbDiagnostics: { phase: "ready", connected: true, synchronized: false, detail: "Preset sync pending" } };
+  const ready = { ...waiting, usbDiagnostics: { ...waiting.usbDiagnostics, synchronized: true } };
+  const states = [waiting, waiting, ready];
+  let reads = 0;
+  const result = await waitForSynchronizedQc(async () => states[Math.min(reads++, states.length - 1)]!, () => true, {
+    intervalMs: 1,
+    delay: async () => undefined
+  });
+  assert.equal(reads, 3);
+  assert.equal(result, ready);
+});
+
+test("connect tolerates a transient runtime-status read failure during USB startup", async () => {
+  const ready = { gatewayAvailable: true, platform: "Linux", message: "", usbDiagnostics: { phase: "ready", connected: true, synchronized: true, detail: "" } };
+  let reads = 0;
+  const result = await waitForSynchronizedQc(async () => {
+    if (reads++ === 0) throw new Error("broker status is not ready yet");
+    return ready;
+  }, () => true, { attempts: 3, intervalMs: 1, delay: async () => undefined });
+  assert.equal(reads, 2);
+  assert.equal(result, ready);
+});
+
+test("a superseded connect stops waiting for synchronized broker state", async () => {
+  const waiting = { gatewayAvailable: true, platform: "Linux", message: "", usbDiagnostics: { phase: "ready", connected: true, synchronized: false, detail: "Preset sync pending" } };
+  let current = true;
+  let reads = 0;
+  const result = await waitForSynchronizedQc(async () => { reads += 1; current = false; return waiting; }, () => current, {
+    intervalMs: 1,
+    delay: async () => undefined
+  });
+  assert.equal(result, undefined);
+  assert.equal(reads, 1);
+});
+
+test("device inventory suppresses a stale selected tab when the same device is re-enumerated", () => {
+  const old = { id: "linux:hidraw:old", name: "Quad Cortex", connected: false, phase: "disconnected" };
+  const replacement = { id: "linux:hidraw:new", name: "Quad Cortex", connected: true, phase: "ready" };
+  assert.deepEqual(qcReconcilePhysicalDevices([replacement], old.id, [old]), [replacement]);
+  assert.deepEqual(qcReconcilePhysicalDevices([], old.id, [old]), [old], "keep a placeholder while enumeration is empty");
+  assert.deepEqual(qcReconcilePhysicalDevices([old], old.id, [old]), [old], "do not duplicate a selected row still present");
+});
 
 test("pushed detection cannot undo failed Disconnect; user Connect permits the selected QC again", () => {
   for (const phase of ["connecting", "handshaking", "syncing", "ready"]) {

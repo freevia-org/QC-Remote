@@ -16,6 +16,51 @@ export function runtimeHasSynchronizedQc(runtime?: RuntimeStatus): boolean {
     && usb.synchronized);
 }
 
+/**
+ * Wait briefly for the broker's readiness diagnostics to catch up after a
+ * reconnect. The reconnect reply can precede the published synchronized
+ * status, especially on Linux during USB startup. A superseded UI operation
+ * returns without making another status request or turning the old attempt
+ * into a failed connection.
+ */
+export async function waitForSynchronizedQc(
+  readRuntime: () => Promise<RuntimeStatus>,
+  isCurrent: () => boolean,
+  options: { attempts?: number; intervalMs?: number; delay?: (ms: number) => Promise<void> } = {}
+): Promise<RuntimeStatus | undefined> {
+  const attempts = options.attempts ?? 61;
+  const intervalMs = options.intervalMs ?? 250;
+  const delay = options.delay ?? ((ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms)));
+  let latest: RuntimeStatus | undefined;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!isCurrent()) return undefined;
+    try {
+      latest = await readRuntime();
+      lastError = undefined;
+    } catch (error) {
+      lastError = error;
+    }
+    if (!isCurrent()) return undefined;
+    if (latest && runtimeHasSynchronizedQc(latest)) return latest;
+    if (attempt + 1 < attempts) await delay(intervalMs);
+  }
+  if (!latest && lastError) throw lastError;
+  return latest;
+}
+
+/** Keep an old selected row only when enumeration has no same-label replacement. */
+export function qcReconcilePhysicalDevices<Row extends { id: string; name: string }>(
+  inventory: readonly Row[],
+  selectedId: string | undefined,
+  previous: readonly Row[]
+): Row[] {
+  if (!selectedId || inventory.some((device) => device.id === selectedId)) return [...inventory];
+  const stale = previous.find((device) => device.id === selectedId);
+  if (!stale || inventory.some((device) => device.name === stale.name)) return [...inventory];
+  return [...inventory, stale];
+}
+
 /** Ready is deliberately stricter than the broker connection phase. */
 export function qcConnectionIsVerified(
   connection: ConnectionState,
