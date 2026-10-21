@@ -2911,7 +2911,14 @@ mod tests {
                             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
                             .find(|value| value["id"] == 2);
                         if let Some(answer) = answer {
-                            assert!(answer.to_string().contains(POST_QUIT_ADVICE), "{answer}");
+                            assert_eq!(answer["result"]["isError"], true, "{answer}");
+                            let offline: Value = serde_json::from_str(
+                                answer["result"]["content"][0]["text"].as_str().unwrap(),
+                            )
+                            .unwrap();
+                            assert_eq!(offline["code"], "device_unavailable", "{offline}");
+                            assert_eq!(offline["retryable"], true, "{offline}");
+                            assert_eq!(offline["message"], OFFLINE_ADVICE, "{offline}");
                             break;
                         }
                         assert!(
