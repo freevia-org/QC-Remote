@@ -5478,6 +5478,54 @@ mod tests {
             }
         }
     }
+    fn unwrap_after_native_reap<T>(
+        mut resource: Arc<T>,
+        deadline: std::time::Instant,
+        mut reap: impl FnMut(),
+    ) -> Result<T, Arc<T>> {
+        loop {
+            // On Unix one observation can start, rather than complete, the
+            // exact original's join helper. Another fixture may also be
+            // reaping it. Only sole Arc ownership authorizes cleanup.
+            reap();
+            resource = match Arc::try_unwrap(resource) {
+                Ok(resource) => return Ok(resource),
+                Err(shared) => shared,
+            };
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(resource);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(1)));
+        }
+    }
+
+    #[test]
+    fn dependent_cleanup_waits_for_reaping_but_never_unwraps_a_retained_original() {
+        let value = Arc::new(42);
+        let mut retained = Some(value.clone());
+        let mut observations = 0;
+        let unwrapped = unwrap_after_native_reap(
+            value,
+            std::time::Instant::now() + Duration::from_secs(2),
+            || {
+                observations += 1;
+                if observations == 3 {
+                    drop(retained.take());
+                }
+            },
+        );
+        assert_eq!(unwrapped.unwrap(), 42);
+        assert_eq!(observations, 3, "one reap is not a retirement proof");
+
+        let value = Arc::new(24);
+        let retained = value.clone();
+        let still_shared = unwrap_after_native_reap(value, std::time::Instant::now(), || {})
+            .expect_err("an unresolved original must keep its resource");
+        assert_eq!(Arc::strong_count(&still_shared), 2);
+        assert!(Arc::ptr_eq(&still_shared, &retained));
+    }
+
     fn arm_mcp_exchange(
         cleanup: &mut crate::tests::CleanupStack,
         within: Duration,
@@ -5533,8 +5581,11 @@ mod tests {
         let owned = actors.clone();
         let retained_dependencies = dependencies.clone();
         cleanup.arm("MCP actor and dependent transaction", move |outer| {
+            let deadline = std::time::Instant::now() + within;
             if let Some(mut actor) = take(&owned) {
-                if let Err(error) = actor.stop_within(within) {
+                if let Err(error) = actor.stop_within(
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                ) {
                     outer.unacknowledged(error);
                 }
                 // Unknown Owned retains the same dependencies Arc in the
@@ -5543,9 +5594,12 @@ mod tests {
             }
             // Ready resource holders must be actually reaped before deciding
             // whether this callback is the sole dependency authority.
-            qc_native_platform::thread_owner::reap();
             let direct = if tokio::runtime::Handle::try_current().is_err() {
-                match Arc::try_unwrap(retained_dependencies) {
+                match unwrap_after_native_reap(
+                    retained_dependencies,
+                    deadline,
+                    qc_native_platform::thread_owner::reap,
+                ) {
                     Ok(mut dependencies) => dependencies.complete_on_outer(),
                     Err(shared) => { drop(shared); None }
                 }
