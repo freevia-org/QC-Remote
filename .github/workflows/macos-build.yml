@@ -97,7 +97,7 @@ jobs:
       - name: Build desktop frontend for native tests
         run: npm run build --workspace @qc-remote/windows
       - name: Test broker, HID and native platform crates
-        run: cargo test --locked --manifest-path Cargo.toml -p quadcortex -p quadcortex-hid -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --target ${{ matrix.target }} -- --test-threads=1
+        run: cargo test --locked --manifest-path Cargo.toml -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --target ${{ matrix.target }} -- --test-threads=1
       - name: Build the broker for desktop host tests
         run: cargo build --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.target }}
         working-directory: apps/windows

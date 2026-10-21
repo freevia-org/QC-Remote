@@ -7,3 +7,6 @@ description = "Shared length-prefixed framing for local broker transports"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
