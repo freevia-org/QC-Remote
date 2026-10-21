@@ -13,6 +13,7 @@ import { createWindowsQcTransport } from "./qc-transport";
 import { useWindowsDeviceFrames } from "./use-windows-device-frames";
 import { useWindowsPrompts } from "./use-windows-prompts";
 import { browserPairingPollFailureMessage, createBrowserPairingSession, startSequentialPairingPoll } from "./browser-pairing-session";
+import { shouldCloseBlockEditorOnEscape } from "./block-editor-keyboard";
 import { saveOpenedWorkspaceCopy } from "./workspace-copy";
 import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
@@ -1208,14 +1209,23 @@ export function App() {
       if (appPromptActive) return;
       if (event.defaultPrevented) return;
       const target = event.target as HTMLElement | null;
-      const textEntry = target?.matches("input, textarea, [contenteditable=true]");
-      if (textEntry) return;
-      if (target?.matches("button, select")) return;
       if (appMenuOpen || sceneWorkflow.command || sceneWorkflow.labelColorOpen || deviceSettingsWorkflow.open || presetDirectoryOpen || addDevicePickerOpen || tempoWorkflow.open) return;
       // The Grid destinations that fill the screen: their Grid and its
       // device shortcuts are not on screen. Gig View, Tuner and Looper keep
       // their single-key footswitch shortcuts.
       if (deviceScreenView === "modes" || deviceScreenView === "midi-out" || deviceScreenView === "cpu-monitor" || presetWorkflow.saveProps.open) return;
+      // Escape closes the block editor even when focus is on one of its
+      // controls. Nested menus/dialogs get first refusal through their own
+      // key handler (defaultPrevented) or their accessible scope.
+      if (shouldCloseBlockEditorOnEscape(event, Boolean(blockDetails))) {
+        event.preventDefault();
+        parameterWorkflow.cancel();
+        void gridWorkflow.closeOnDevice();
+        return;
+      }
+      const textEntry = target?.matches("input, textarea, [contenteditable=true]");
+      if (textEntry) return;
+      if (target?.matches("button, select")) return;
       if (blockDetails) {
         if (footswitchAssignmentPending && /^[1-8]$/.test(event.key)) {
           event.preventDefault();
@@ -1224,11 +1234,6 @@ export function App() {
           setFootswitchAssignmentPending(false);
           void applyFootswitchAssignment(assigned === index ? null : index);
           return;
-        }
-        if (event.key === "Escape") {
-          event.preventDefault();
-          parameterWorkflow.cancel();
-          void gridWorkflow.closeOnDevice();
         }
         return;
       }

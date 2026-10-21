@@ -578,7 +578,8 @@
 .vector-route-hit { z-index: 7; min-width: 24px; width: 6%; height: 18%; }
 .input-route-hit { left: 1%; }
 .output-route-hit { right: 1%; }
-.coros-vector-block-hit, .coros-vector-add-hit { width: 8.7%; height: 14.6%; transform: translate(-50%, -50%); border-radius: 12%; }
+.coros-vector-block-hit { width: 8.7%; height: 14.6%; transform: translate(-50%, -50%); border-radius: 12%; }
+.coros-vector-add-hit { width: 70px; height: 70px; border-radius: 12%; }
 .coros-vector-route-node-hit { z-index: 9; width: 5.2%; height: 8.7%; transform: translate(-50%, -50%); border-radius: 50%; }
 /* Empty Grid cells stay invisible so the screen matches the device, and reveal
    their insertion plus only while the user is pointing at or tabbed onto them. */
