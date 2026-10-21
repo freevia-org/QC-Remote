@@ -12,7 +12,7 @@ import { appWindows, brokerDevice, DEVICE_INFO_EVENTS, diagnosticsFiles, externa
 import { createWindowsQcTransport } from "./qc-transport";
 import { useWindowsDeviceFrames } from "./use-windows-device-frames";
 import { useWindowsPrompts } from "./use-windows-prompts";
-import { createBrowserPairingSession, startSequentialPairingPoll } from "./browser-pairing-session";
+import { browserPairingPollFailureMessage, createBrowserPairingSession, startSequentialPairingPoll } from "./browser-pairing-session";
 import { saveOpenedWorkspaceCopy } from "./workspace-copy";
 import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
@@ -966,7 +966,9 @@ export function App() {
       } catch (error) {
         if (!current()) return;
         setRelayBrowserPairing(undefined);
-        actionFailed(error);
+        const message = browserPairingPollFailureMessage(error);
+        setRelayPairingError(message);
+        actionFailed(new Error(message));
       }
     });
   }, [actionFailed, beginBrowserRelayPairing, refreshRelayConnectors, relayBrowserPairing]);

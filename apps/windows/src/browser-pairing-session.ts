@@ -37,3 +37,13 @@ export function startSequentialPairingPoll(
   void tick();
   return () => { active = false; if (timer !== undefined) cancel(timer); };
 }
+
+/** A failed poll must not leave the panel looking as if it is still creating a code.
+ * Keep backend details out of the pairing surface; the user can explicitly retry.
+ */
+export function browserPairingPollFailureMessage(error: unknown): string {
+  if (error instanceof Error && error.message === "The browser pairing session expired. Start it again from QC Remote.") {
+    return error.message;
+  }
+  return "Could not check the pairing session. Retry to create a new code.";
+}
