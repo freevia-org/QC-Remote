@@ -7,6 +7,18 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.193 / Android 0.3.43 — 21 October 2026
+
+Changes since Windows 0.1.192 / Android 0.3.42. This is a small maintenance
+release. The Windows app keeps Disconnect from stopping the resident broker and
+closes MCP bridges when the broker quits, keeps verified publisher broker
+authority between bridge heartbeats, remembers historical Quit identities across
+bridge status changes, and shows clearer readiness advice when no device host is
+reachable. Linux startup is more tolerant of private-group-writable ancestors
+and bounds its startup readiness wait. The TLS root bundles are updated for
+RUSTSEC-2026-0381, 0382 and 0383. Android behavior is unchanged. Everything
+else in 0.1.192 / 0.3.42 is unchanged.
+
 ## QC Remote Windows 0.1.192 / Android 0.3.42 — 21 October 2026
 
 Changes since Windows 0.1.191 / Android 0.3.41. This is a small maintenance
