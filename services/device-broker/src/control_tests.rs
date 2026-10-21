@@ -681,6 +681,9 @@ fn a_marker_without_a_visible_descriptor_is_neither_not_running_nor_started_over
     assert_eq!(outcome.report["running"], false);
     assert_eq!(outcome.report["sessionMarker"], true);
     assert_eq!(outcome.report["broker"], Value::Null);
+    let message = outcome.report["detail"].as_str().unwrap();
+    assert!(message.contains("QC Remote tray menu"), "{message}");
+    assert!(message.contains("same app context"), "{message}");
     let outcome = invoke(Command::Start, false, &env);
     assert_eq!(outcome.exit_code, exit::REFUSED, "{}", outcome.report);
     assert_eq!(outcome.report["outcome"], "residentNotVisible");

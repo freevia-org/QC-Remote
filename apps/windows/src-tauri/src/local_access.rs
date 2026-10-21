@@ -4527,7 +4527,18 @@ mod tests {
             assert!(!String::from_utf8_lossy(&bytes).contains("DO-NOT-RETURN-THIS-SECRET"));
             let body: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(body["result"]["brokerLifecycle"]["userQuit"], false);
+            let lifecycle = body["result"]["brokerLifecycle"].as_object().unwrap();
+            assert_eq!(
+                lifecycle.len(),
+                4,
+                "only owner and explicit Quit evidence may leave the publisher"
+            );
             let owner = &body["result"]["brokerLifecycle"]["owner"];
+            assert_eq!(
+                owner.as_object().unwrap().len(),
+                3,
+                "only processId, processCreatedAt and instanceId may leave the publisher"
+            );
             assert_eq!(owner["processId"], std::process::id());
             assert_eq!(owner["processCreatedAt"], created);
             assert_eq!(owner["instanceId"], "publisher-broker");

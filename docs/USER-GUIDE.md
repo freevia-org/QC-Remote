@@ -448,8 +448,11 @@ presses a footswitch.
   releases the unit and closes the tray icon, background MCP host and its MCP
   bridge processes. The broker does not restart until a user action, such as
   opening QC Remote or choosing Connect. An open window stays open, disconnected; choose
-  **Connect** to use the unit again. **Disconnect** releases USB only: the broker,
-  window and MCP clients stay running. Client requests do not reconnect a device
+  **Connect** to use the unit again. If the verified broker process exits after a
+  crash, restart or upgrade, its bridges also exit; restart your AI app's MCP
+  integration to create fresh bridges. A new chat launched after an earlier
+  Quit can still show reconnect instructions. **Disconnect** releases USB only: the broker,
+  window and MCP clients stay running. Ordinary client requests do not reconnect a device
   you explicitly disconnected; choose **Connect** when you want it back. Remote clients are
   marked "(remote)"; several sessions of one app share an entry that says how
   many it holds. Each entry opens the client's details (kind, version, when

@@ -226,9 +226,15 @@ even while a window or MCP client is attached. Ordinary requests cannot undo
 that explicit Disconnect; `connect` reopens the session. Automatic idle release
 is different: the next device request may reopen an idle-released session.
 
-`quit --confirm` releases USB and records the user's Quit. MCP bridges observing
-that broker generation close their MCP transport and exit; an open app window
-stays open and disconnected until the user chooses Connect.
+`quit --confirm` releases USB and records the user's Quit. Existing MCP bridges
+observing that new Quit close their MCP transport and exit; an open app window
+stays open and disconnected until the user chooses Connect. A bridge launched
+after the recorded Quit still serves MCP and reconnect instructions without
+starting a broker. Proven death of a previously verified broker process also
+ends its bridges (including crash, restart or upgrade); restart the AI host or
+its MCP integration to obtain fresh bridges. Unknown identity, a changed
+descriptor alone, Disconnect/Connect, and a publisher-only restart do not
+end bridges.
 SIGTERM and SIGINT perform bounded shared shutdown and release the descriptor,
 without recording a user Quit. A killed/crashed owner cannot clean up its files;
 the next election reclaims only a demonstrably dead, unlocked claim. It never

@@ -4531,6 +4531,13 @@ fn dispatch_broker_client_request(
     if shared.clients.lock_recover().shutting_down {
         return error(request.id, -32002, "Broker shutdown is already committed");
     }
+    if forced_disconnect && shared.clients.lock_recover().reopens_in_flight != 0 {
+        return error(
+            request.id,
+            -32002,
+            "The Quad Cortex is reopening; choose Disconnect again in a moment",
+        );
+    }
     if connection_id.is_some_and(|id| !shared.clients.lock_recover().connections.contains_key(&id))
     {
         return error(
@@ -4627,6 +4634,8 @@ fn dispatch_broker_client_request(
     let response = if forced_disconnect {
         let all = shared.all_controllers();
         let report = shared.disconnect_controllers_report(vec![Arc::clone(&controller)]);
+        let accepted = report.midi_retired && !report.queued.is_empty();
+        let pending = !report.close_unacknowledged.is_empty();
         if report.midi_retired && !report.queued.is_empty() {
             let mut clients = shared.clients.lock_recover();
             clients.record_release(report.queued, report.close_unacknowledged, true);
@@ -4634,9 +4643,14 @@ fn dispatch_broker_client_request(
                 .iter()
                 .all(|device| clients.idle_entry(device).is_some());
         }
-        if report.failures.is_empty() {
+        if report.failures.is_empty() || accepted {
+            let message = if pending {
+                "Disconnect requested; native close verification is pending. Choose Connect to wait for retirement and reconnect."
+            } else {
+                "Disconnected. Choose Connect to use the Quad Cortex again."
+            };
             json!({"jsonrpc":"2.0", "id":request.id,
-                "result":connection_state(&controller, "Disconnected. Choose Connect to use the Quad Cortex again.")})
+                "result":connection_state(&controller, message)})
         } else {
             error(request.id, -32002, &report.failures.join("; "))
         }
@@ -7557,6 +7571,13 @@ impl BrokerHandle {
                 let mut clients = self.0.clients.lock_recover();
                 clients.idle_released = false;
                 clients.forget_idle_release(&self.0.controller);
+                // Tray Disconnect applies to all controllers. A successful
+                // Connect lifts that manual hold for all of them; secondary
+                // devices reopen lazily, retaining their pending-close FIFO
+                // barriers rather than trusting stale readiness.
+                for entry in &mut clients.idle_released_devices {
+                    entry.manually_released = false;
+                }
             }
             self.0.update_observer_backstop();
         }
