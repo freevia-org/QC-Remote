@@ -528,6 +528,27 @@ mod tests {
         );
     }
 
+    /// Accepts on a nonblocking listener, retrying `WouldBlock` until `limit`.
+    /// A completed `connect` can be visible to the client before the listener's
+    /// accept queue shows it (observed on macOS), so one `accept` call is not
+    /// enough. Any other error, or the limit expiring, fails the test loudly.
+    fn accept_before_deadline(listener: &TcpListener, limit: Duration) -> TcpStream {
+        let deadline = Instant::now() + limit;
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => return stream,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "no pending connection within {limit:?} after connect completed"
+                    );
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("accept failed: {error}"),
+            }
+        }
+    }
+
     #[test]
     fn tcp_read_uses_one_deadline_across_partial_header_and_restores_timeout() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -536,7 +557,7 @@ mod tests {
         // not detach a thread blocked forever in accept().
         let mut client = TcpStream::connect_timeout(&address, Duration::from_secs(5)).unwrap();
         listener.set_nonblocking(true).unwrap();
-        let (mut stream, _) = listener.accept().unwrap();
+        let mut stream = accept_before_deadline(&listener, Duration::from_secs(5));
         stream.set_nonblocking(false).unwrap();
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
