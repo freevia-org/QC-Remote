@@ -41,8 +41,15 @@ const CLAUDE_EXTENSION_NAME: &str = "qc-remote";
 const CLAUDE_EXTENSION_AUTHOR: &str = "Freevia EOOD";
 const CLAUDE_EXTENSION_FILE: &str = "QC-Remote-Claude.mcpb";
 const LEGACY_CHATGPT_RUNNER_FILE: &str = "chatgpt-local-mcp.ps1";
+// The Windows build is distributed through the Microsoft Store, whose policy
+// 10.1.5 forbids promoting software acquired outside it. These download
+// destinations, and the commands that open them, exist on the other platforms
+// only.
+#[cfg(not(windows))]
 const ANTIGRAVITY_DOWNLOAD_URL: &str = "https://antigravity.google/download";
+#[cfg(not(windows))]
 const LM_STUDIO_DOWNLOAD_URL: &str = "https://lmstudio.ai/download";
+#[cfg(not(windows))]
 const JAN_DOWNLOAD_URL: &str = "https://jan.ai/download";
 const ANTIGRAVITY_MCP_PERMISSION: &str = "mcp(qc-remote/*)";
 const LOCAL_MCP_CLIENT_ENV: &str = "QC_REMOTE_LOCAL_MCP_CLIENT";
@@ -4786,6 +4793,7 @@ pub async fn install_claude_desktop_extension() -> Result<Value, String> {
         .map_err(|error| format!("Could not prepare the Claude Desktop integration: {error}"))?
 }
 
+#[cfg(not(windows))]
 #[tauri::command]
 pub fn open_claude_desktop_download() -> Result<(), String> {
     webbrowser::open("https://claude.ai/download")
@@ -5149,6 +5157,7 @@ pub async fn open_chatgpt_desktop() -> Result<(), String> {
         })?
 }
 
+#[cfg(not(windows))]
 #[tauri::command]
 pub fn open_chatgpt_desktop_download() -> Result<(), String> {
     #[cfg(target_os = "linux")]
@@ -5371,6 +5380,7 @@ pub async fn open_antigravity() -> Result<(), String> {
         .map_err(|error| format!("Could not launch Google Antigravity: {error}"))?
 }
 
+#[cfg(not(windows))]
 #[tauri::command]
 pub fn open_antigravity_download() -> Result<(), String> {
     webbrowser::open(ANTIGRAVITY_DOWNLOAD_URL)
@@ -5723,6 +5733,7 @@ pub async fn open_lm_studio() -> Result<(), String> {
     .map_err(|error| format!("Could not launch LM Studio: {error}"))?
 }
 
+#[cfg(not(windows))]
 #[tauri::command]
 pub fn open_lm_studio_download() -> Result<(), String> {
     webbrowser::open(LM_STUDIO_DOWNLOAD_URL)
@@ -5813,6 +5824,7 @@ pub async fn open_jan() -> Result<(), String> {
     .map_err(|error| format!("Could not launch Jan: {error}"))?
 }
 
+#[cfg(not(windows))]
 #[tauri::command]
 pub fn open_jan_download() -> Result<(), String> {
     webbrowser::open(JAN_DOWNLOAD_URL)

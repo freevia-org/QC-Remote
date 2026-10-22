@@ -329,7 +329,7 @@ We also do not collect:
   account sign-in and cloud services; firmware and changelog downloads may use
   its content delivery providers. See the next section.
 
-The apps open other websites, such as an AI app's download page, only when you
+The apps open other websites, such as a help or support page, only when you
 choose to.
 
 ### Quad Cortex internet requests through this computer or phone

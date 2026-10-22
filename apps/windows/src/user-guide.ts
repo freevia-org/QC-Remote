@@ -10,6 +10,7 @@
  * Every sentence describes what this source tree implements. Nothing about the
  * Quad Cortex beyond what QC Remote exposes belongs here.
  */
+import { offersThirdPartyAcquisition } from "./local-integration-presentation.ts";
 
 export type ShortcutRow = { keys: string; action: string };
 
@@ -241,7 +242,9 @@ export const USER_GUIDE: readonly GuideSection[] = [
         kind: "steps",
         items: [
           "Open the LOCAL panel and find the row for your application.",
-          "Press the row's button. Pair writes the connection into that application's own configuration, Update repairs one that has drifted, and an Install button named for the application opens its download page when it is missing.",
+          offersThirdPartyAcquisition()
+            ? "Press the row's button. Pair writes the connection into that application's own configuration, Update repairs one that has drifted, and an Install button named for the application opens its download page when it is missing."
+            : "Press Pair to write the connection into that application's configuration, or Update to repair one that has drifted. When a client is not detected or needs a newer version, QC Remote explains that state but does not link to third-party downloads.",
           "Set the access level on the panel header, or in Edit > Settings…, before you hand an assistant anything.",
           "Open the application and start a conversation. Once an application is paired and up to date, its row in the LOCAL panel has an Open button."
         ]
