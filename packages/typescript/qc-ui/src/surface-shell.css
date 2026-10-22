@@ -583,7 +583,8 @@
 .coros-vector-route-node-hit { z-index: 9; width: 5.2%; height: 8.7%; transform: translate(-50%, -50%); border-radius: 50%; }
 /* Empty Grid cells stay invisible so the screen matches the device, and reveal
    their insertion plus only while the user is pointing at or tabbed onto them. */
-.coros-vector-add-hit { z-index: 5; display: grid; place-items: center; }
+/* Clip descendants so WebKitGTK's native accessibility bounds stay within the cell. */
+.coros-vector-add-hit { z-index: 5; display: grid; place-items: center; overflow: hidden; }
 .coros-vector-add-hit > span { position: relative; width: 34%; height: 34%; opacity: 0; transition: opacity .12s ease; }
 .coros-vector-add-hit > span::before, .coros-vector-add-hit > span::after { position: absolute; background: var(--qc-palette-ffffff80); content: ""; }
 .coros-vector-add-hit > span::before { left: 0; right: 0; top: calc(50% - 1px); height: 2px; }
