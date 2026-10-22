@@ -111,6 +111,7 @@ export function CorOsAddDevicePicker({ picker, cellCenter }: { picker: CorOsAddD
   };
   const closeOnEscape = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== "Escape") return;
+    event.preventDefault();
     event.stopPropagation();
     onClose();
   };
