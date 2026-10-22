@@ -116,12 +116,17 @@ use client_packages::{
     install_chatgpt_local_integration, install_claude_desktop_extension,
     install_jan_local_integration, install_lm_studio_local_integration,
     jan_local_integration_status, lm_studio_local_integration_status, open_antigravity,
-    open_antigravity_download, open_chatgpt_configuration, open_chatgpt_desktop,
-    open_chatgpt_desktop_download, open_claude_desktop, open_claude_desktop_download, open_jan,
-    open_jan_download, open_lm_studio, open_lm_studio_download, other_mcp_stdio_setup,
-    refresh_managed_routes_on_start, remove_antigravity_local_integration,
-    remove_chatgpt_local_integration, remove_jan_local_integration,
-    remove_lm_studio_local_integration, save_local_client_package,
+    open_chatgpt_configuration, open_chatgpt_desktop, open_claude_desktop, open_jan,
+    open_lm_studio, other_mcp_stdio_setup, refresh_managed_routes_on_start,
+    remove_antigravity_local_integration, remove_chatgpt_local_integration,
+    remove_jan_local_integration, remove_lm_studio_local_integration, save_local_client_package,
+};
+// Microsoft Store policy 10.1.5: the Windows build never opens a third-party
+// download page, so these commands are compiled on the other platforms only.
+#[cfg(not(windows))]
+use client_packages::{
+    open_antigravity_download, open_chatgpt_desktop_download, open_claude_desktop_download,
+    open_jan_download, open_lm_studio_download,
 };
 
 #[tauri::command]
@@ -6382,27 +6387,32 @@ pub fn run() {
             claude_desktop_extension_status,
             install_claude_desktop_extension,
             open_claude_desktop,
+            #[cfg(not(windows))]
             open_claude_desktop_download,
             chatgpt_local_integration_status,
             install_chatgpt_local_integration,
             remove_chatgpt_local_integration,
             open_chatgpt_desktop,
+            #[cfg(not(windows))]
             open_chatgpt_desktop_download,
             open_chatgpt_configuration,
             antigravity_local_integration_status,
             install_antigravity_local_integration,
             remove_antigravity_local_integration,
             open_antigravity,
+            #[cfg(not(windows))]
             open_antigravity_download,
             lm_studio_local_integration_status,
             install_lm_studio_local_integration,
             remove_lm_studio_local_integration,
             open_lm_studio,
+            #[cfg(not(windows))]
             open_lm_studio_download,
             jan_local_integration_status,
             install_jan_local_integration,
             remove_jan_local_integration,
             open_jan,
+            #[cfg(not(windows))]
             open_jan_download,
             other_mcp_stdio_setup,
             save_local_client_package,

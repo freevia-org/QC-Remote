@@ -1,3 +1,4 @@
+import { desktopPlatform } from "./host-platform.ts";
 import type { AntigravityLocalIntegrationStatus, ChatGptLocalIntegrationStatus, ClaudeDesktopExtensionStatus, JanLocalIntegrationStatus, LmStudioLocalIntegrationStatus, LocalAccessStatus, LocalMcpTestResult, LocalRouteRefresh, ManagedJsonMcpIntegrationStatus, OtherMcpStdioSetup } from "./tauri-transport";
 
 /**
@@ -89,6 +90,20 @@ export const localRowPhaseClass = (phase: LocalProviderPhase): string => `local-
  * later rule can name, in a namespace only this panel owns.
  */
 export const localRowClassName = (phase: LocalProviderPhase): string => `local-provider-card ${localRowPhaseClass(phase)}`;
+
+/**
+ * Whether a row may send the user to acquire or update a third-party desktop
+ * application.
+ *
+ * The Windows build is distributed through the Microsoft Store, whose policy
+ * 10.1.5 (Software Distribution) forbids promoting software acquired outside
+ * it. So on Windows no row offers an Install or Update-the-client act and no
+ * sentence tells the user to go and get an application; the rows only describe
+ * what is detected. Every other platform keeps those acts unchanged.
+ *
+ * Defaults to the platform this webview reports. Tests pass it explicitly.
+ */
+export const offersThirdPartyAcquisition = (platform: string | undefined = desktopPlatform): boolean => platform !== "Windows";
 
 /**
  * What a row's primary button does, decided once per state.
@@ -216,9 +231,16 @@ export type LocalRowButton = { act: LocalRowAct; label: string; tone: "plain" | 
  * know which kind of row it is drawing, and none may decide it: a conditional
  * at a call site is how a button came to say one thing and do another.
  */
-export const localRowButtons = (presentation: LocalProviderPresentation, handlers: LocalProviderHandlers): LocalRowButton[] => {
+export const localRowButtons = (
+  presentation: LocalProviderPresentation,
+  handlers: LocalProviderHandlers,
+  platform?: string
+): LocalRowButton[] => {
   const buttons: LocalRowButton[] = [];
-  const primary = presentation.primary;
+  // Where acquiring a third-party application may not be offered, the install
+  // act has no button even if a handler for it is supplied.
+  const reachable = (action?: LocalPrimaryAction) => action && (action.act !== "install" || offersThirdPartyAcquisition(platform)) ? action : undefined;
+  const primary = reachable(presentation.primary);
   const run = primary ? handlers[primary.act] : undefined;
   if (primary && run) buttons.push({
     act: primary.act,
@@ -226,7 +248,7 @@ export const localRowButtons = (presentation: LocalProviderPresentation, handler
     tone: primary.act === "pair" || primary.act === "copy" ? "primary" : "plain",
     run
   });
-  const secondary = presentation.secondary;
+  const secondary = reachable(presentation.secondary);
   const runSecondary = secondary ? handlers[secondary.act] : undefined;
   if (secondary && runSecondary) buttons.push({ act: secondary.act, label: secondary.label, tone: "plain", run: runSecondary });
   if (presentation.canUnpair && handlers.unpair) buttons.push({ act: "unpair", label: "Unpair", tone: "danger", run: handlers.unpair });
@@ -541,8 +563,17 @@ const newerInstalledPresentation = (
 const appAbsentPresentation = (
   app: string,
   installLabel: string,
-  integrationInstalled: boolean
-): LocalProviderPresentation => integrationInstalled ? {
+  integrationInstalled: boolean,
+  platform?: string
+): LocalProviderPresentation => !offersThirdPartyAcquisition(platform) ? (integrationInstalled ? {
+  phase: "attention", status: "Connection left over", tone: "action-required",
+  detail: `${app} is not detected, but a QC Remote connection is still configured for it. Unpair to remove it.`,
+  canUnpair: true
+} : {
+  phase: "unavailable", status: "Not installed", tone: "neutral",
+  detail: `${app} is not detected. It will appear here when it is installed.`,
+  canUnpair: false
+}) : integrationInstalled ? {
   phase: "attention", status: "Connection left over", tone: "action-required",
   detail: `${app} is not installed, but a QC Remote connection is still configured for it. Unpair to remove it, or install ${app} to use it.`,
   canUnpair: true, primary: localPrimaryAction("install", installLabel)
@@ -556,7 +587,8 @@ export const claudeExtensionPresentation = (
   status?: ClaudeDesktopExtensionStatus,
   installPending = false,
   refreshFailed = false,
-  approvalLapsed = false
+  approvalLapsed = false,
+  platform?: string
 ): LocalProviderPresentation => {
   if (!status) return refreshFailed ? {
     phase: "attention", status: "Status unavailable", tone: "error",
@@ -568,7 +600,11 @@ export const claudeExtensionPresentation = (
     phase: "checking", status: "Checking…", tone: "checking",
     detail: "Checking Claude Desktop.", canUnpair: false
   };
-  if (!status.claudeInstalled) return {
+  if (!status.claudeInstalled) return !offersThirdPartyAcquisition(platform) ? {
+    phase: "unavailable", status: "Not installed", tone: "neutral",
+    detail: "Claude Desktop is not detected. It will appear here when it is installed.",
+    canUnpair: false
+  } : {
     phase: "unavailable", status: "Not installed", tone: "neutral",
     detail: "Install Claude Desktop to control QC Remote with AI",
     canUnpair: false, primary: localPrimaryAction("install", "Install Claude Desktop")
@@ -648,7 +684,8 @@ export const chatgptIntegrationPresentation = (
   status?: ChatGptLocalIntegrationStatus,
   restartRequired = false,
   refreshFailed = false,
-  removalRestartRequired = false
+  removalRestartRequired = false,
+  platform?: string
 ): LocalProviderPresentation => {
   if (!status) return refreshFailed ? {
     phase: "attention", status: "Status unavailable", tone: "error",
@@ -663,7 +700,7 @@ export const chatgptIntegrationPresentation = (
   // The QC Remote entry lives in the shared `config.toml` under the Windows
   // profile, which outlives any uninstall of ChatGPT Desktop, so this row had
   // to stop reporting a missing app as a missing pairing.
-  if (!status.chatgptInstalled) return appAbsentPresentation(hostAppName, `Install ${hostAppName}`, status.integrationInstalled);
+  if (!status.chatgptInstalled) return appAbsentPresentation(hostAppName, `Install ${hostAppName}`, status.integrationInstalled, platform);
   // `status-error` is the native layer reporting that it could not read or
   // parse config.toml, which is a failed status read like any other, so
   // Refresh stays the primary. The file is also one only the user can repair,
@@ -763,7 +800,8 @@ const installedSkillDetail = (status: Pick<ManagedJsonMcpIntegrationStatus, "ski
 
 export const antigravityIntegrationPresentation = (
   status?: AntigravityLocalIntegrationStatus,
-  refreshFailed = false
+  refreshFailed = false,
+  platform?: string
 ): LocalProviderPresentation => {
   if (!status) return refreshFailed ? {
     phase: "attention", status: "Status unavailable", tone: "error",
@@ -775,7 +813,7 @@ export const antigravityIntegrationPresentation = (
   };
   // Antigravity's route lives in its MCP configuration under the Windows
   // profile, on the same terms as ChatGPT's and the two managed clients'.
-  if (!status.antigravityInstalled) return appAbsentPresentation("Google Antigravity", "Install Antigravity", status.integrationInstalled);
+  if (!status.antigravityInstalled) return appAbsentPresentation("Google Antigravity", "Install Antigravity", status.integrationInstalled, platform);
   if (refreshFailed || status.state === "status-error") return {
     phase: "attention", status: "Needs attention", tone: "error",
     detail: status.state === "status-error"
@@ -904,7 +942,8 @@ export const managedMcpIntegrationPresentation = (
   status: ManagedJsonMcpIntegrationStatus | undefined,
   installed: boolean,
   settingsHint: string | undefined,
-  refreshFailed = false
+  refreshFailed = false,
+  platform?: string
 ): LocalProviderPresentation => {
   if (!status) return refreshFailed ? {
     phase: "attention", status: "Status unavailable", tone: "error",
@@ -916,10 +955,14 @@ export const managedMcpIntegrationPresentation = (
   };
   // This is where the leftover entry was first named, and it is now the shared
   // answer for every provider whose configuration file this app owns.
-  if (!installed) return appAbsentPresentation(name, `Install ${name}`, status.integrationInstalled);
+  if (!installed) return appAbsentPresentation(name, `Install ${name}`, status.integrationInstalled, platform);
   // The repair QC Remote has cannot make an old desktop client speak local MCP,
   // so this row names the act that can: updating the client itself.
-  if (status.state === "app-update-required") return {
+  if (status.state === "app-update-required") return !offersThirdPartyAcquisition(platform) ? {
+    phase: "attention", status: "App update required", tone: "action-required",
+    detail: `${name} ${status.appVersion ?? "is installed"} is too old to speak local MCP.`,
+    canUnpair: status.integrationInstalled
+  } : {
     phase: "attention", status: "App update required", tone: "action-required",
     detail: `${name} ${status.appVersion ?? "is installed"} is too old to speak local MCP. Update ${name} opens its download page.`,
     canUnpair: status.integrationInstalled,
