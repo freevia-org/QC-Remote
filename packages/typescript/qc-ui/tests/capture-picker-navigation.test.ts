@@ -11,7 +11,7 @@ import type { CorOsAddDevicePickerState } from "../src/add-device-picker.tsx";
 register("./support/react-singleton-loader.mjs", import.meta.url);
 const React = (await import("react")).default;
 
-test("the live capture sidebar returns from a nested folder to its parent and then root", async (t) => {
+async function loadPicker(t: { after(callback: () => void): void }) {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const work = mkdtempSync(join(tmpdir(), "qc-capture-picker-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
@@ -25,7 +25,11 @@ test("the live capture sidebar returns from a nested folder to its parent and th
       builder.onResolve({ filter: /^react(?:\/jsx(?:-dev)?-runtime)?$/ }, ({ path }) => ({ path: pathToFileURL(rendererRequire.resolve(path)).href, external: true }));
     } }]
   });
-  const { CorOsAddDevicePicker } = await import(pathToFileURL(outfile).href);
+  return (await import(pathToFileURL(outfile).href)).CorOsAddDevicePicker;
+}
+
+test("the live capture sidebar returns from a nested folder to its parent and then root", async (t) => {
+  const CorOsAddDevicePicker = await loadPicker(t);
   const picker = {
     row: 0, column: 0, models: [], captures: [], activeCategory: "Neural Capture", loading: false, pending: false,
     query: "", pinnedModelIds: [], onQueryChange() {}, onCategoryChange() {}, onSelect() {}, onTogglePinned() {}, onClose() {},
@@ -53,4 +57,56 @@ test("the live capture sidebar returns from a nested folder to its parent and th
   assert.ok(button("Parent"));
   assert.ok(button("Sibling"));
   assert.equal(button("Back"), undefined);
+});
+
+test("picker Escape blurs only its focused HTML descendant before closing", async (t) => {
+  const CorOsAddDevicePicker = await loadPicker(t);
+  const originalHTMLElement = Object.getOwnPropertyDescriptor(globalThis, "HTMLElement");
+  class HtmlElement {
+    private onBlur: () => void;
+    constructor(onBlur: () => void) { this.onBlur = onBlur; }
+    blur() { this.onBlur(); }
+  }
+  Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: HtmlElement });
+  t.after(() => {
+    if (originalHTMLElement) Object.defineProperty(globalThis, "HTMLElement", originalHTMLElement);
+    else Reflect.deleteProperty(globalThis, "HTMLElement");
+  });
+  for (const activeCategory of [undefined, "Neural Capture"]) {
+    const calls: string[] = [];
+    const inside = new HtmlElement(() => calls.push("blur-inside"));
+    const outside = new HtmlElement(() => calls.push("blur-outside"));
+    const nonHtml = { blur() { calls.push("blur-non-html"); } };
+    const picker = {
+      row: 0, column: 0, models: [], loading: false, pending: false, query: "keep query",
+      activeCategory, pinnedModelIds: [], onQueryChange() { calls.push("query-change"); },
+      onCategoryChange() {}, onSelect() {}, onTogglePinned() {}, onClose() { calls.push("close"); },
+    } as CorOsAddDevicePickerState;
+    let renderer!: ReturnType<typeof create>;
+    act(() => { renderer = create(React.createElement(CorOsAddDevicePicker, { picker, cellCenter: { x: 100, y: 100 } })); });
+    try {
+      const section = renderer.root.findAllByType("section").find((node) => node.props.onKeyDown)!;
+      const dispatch = (key: string, focused: unknown) => section.props.onKeyDown({ key,
+        currentTarget: { ownerDocument: { activeElement: focused }, contains: (node: unknown) => node === inside || node === nonHtml },
+        preventDefault() { calls.push("prevent-default"); },
+        stopPropagation() { calls.push("stop-propagation"); },
+      });
+      act(() => dispatch("Escape", inside));
+      assert.deepEqual(calls, ["blur-inside", "stop-propagation", "close"], "blur precedes the unmount callback");
+      for (const focused of [outside, nonHtml, null]) {
+        calls.length = 0;
+        act(() => dispatch("Escape", focused));
+        assert.deepEqual(calls, ["stop-propagation", "close"], "outside, non-HTML, or missing focus is not blurred");
+      }
+      calls.length = 0;
+      act(() => dispatch("ArrowDown", inside));
+      assert.deepEqual(calls, [], "non-Escape keys keep their focus and behavior");
+      const close = renderer.root.findAllByType("button").find((node) => node.props["aria-label"] === "Close device browser")!;
+      act(() => close.props.onClick());
+      assert.deepEqual(calls, ["close"], "explicit close behavior is unchanged");
+      assert.equal(picker.query, "keep query");
+    } finally {
+      act(() => renderer.unmount());
+    }
+  }
 });
