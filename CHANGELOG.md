@@ -7,6 +7,14 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.194 / Android 0.3.44 — 22 October 2026
+
+Changes since Windows 0.1.193 / Android 0.3.43. This is a small maintenance
+release. The Linux block editor now handles keyboard navigation and grid
+hit bounds correctly, hardware footswitches respond to accessibility
+activation, and macOS cloud pairing no longer shows Keychain prompts. Android
+behavior is unchanged. Everything else in 0.1.193 / 0.3.43 is unchanged.
+
 ## QC Remote Windows 0.1.193 / Android 0.3.43 — 21 October 2026
 
 Changes since Windows 0.1.192 / Android 0.3.42. This is a small maintenance
