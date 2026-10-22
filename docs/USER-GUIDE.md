@@ -575,9 +575,9 @@ QC Remote offers two routes. Both enforce the [access level](#access-levels).
    Codex, Google Antigravity, Bionic (shown as LM Studio on older builds), Jan,
    and an **Other MCP app** row.
 2. Press **Pair** to write the connection into that application's own
-   configuration, or **Update** to repair a pairing that has drifted. When an
-   application is not detected or needs a newer version, the row says so but
-   does not link to a third-party download.
+   configuration, or **Update** to repair a pairing that has drifted. On
+   Windows, when an application is not detected or needs a newer version, the
+   row says so but does not link to a third-party download.
 3. Set the access level in the panel header before you hand an assistant
    anything.
 4. Start a conversation in the assistant. Once paired and up to date, the row
