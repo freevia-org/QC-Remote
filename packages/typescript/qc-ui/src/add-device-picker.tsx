@@ -111,6 +111,12 @@ export function CorOsAddDevicePicker({ picker, cellCenter }: { picker: CorOsAddD
   };
   const closeOnEscape = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== "Escape") return;
+    // WebKitGTK can abort when a focused search entry unmounts in its keydown.
+    // Release only this picker's focus before closing; leave other surfaces alone.
+    const activeElement = event.currentTarget.ownerDocument.activeElement;
+    if (activeElement instanceof HTMLElement && event.currentTarget.contains(activeElement)) {
+      activeElement.blur();
+    }
     event.stopPropagation();
     onClose();
   };
