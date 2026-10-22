@@ -190,7 +190,7 @@ in 0.1.188 / 0.3.38 is unchanged.
   Settings > Connection data is not exposed by the gateway.
 
 A production fix for the framing deadline is the first follow-up.
-## QC Remote Windows 0.1.188 / Android 0.3.38 — prepared 17 October 2026
+## QC Remote Windows 0.1.188 / Android 0.3.38 — 19 October 2026
 
 Changes since Windows 0.1.182 / Android 0.3.36. Windows 0.1.183 to 0.1.187 were
 never released for Windows (0.1.184 to 0.1.187 are Linux releases that share the
