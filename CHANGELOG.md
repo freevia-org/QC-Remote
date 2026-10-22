@@ -7,6 +7,17 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.195 / Android 0.3.45 — 22 October 2026
+
+Changes since Windows 0.1.194 / Android 0.3.44. This is a small maintenance
+release. On Linux, writing a frame to a TCP peer is now bounded by one
+absolute deadline, so a slow peer that keeps making progress can no longer
+hold a write past its budget; the macOS output-deadline overshoot remains a
+known limit that this release does not fix, and Windows is neither confirmed
+nor cleared. Empty Grid targets in the block editor are now clipped to their
+native accessibility bounds. Android behavior is unchanged. Everything else in
+0.1.194 / 0.3.44 is unchanged.
+
 ## QC Remote Windows 0.1.194 / Android 0.3.44 — 22 October 2026
 
 Changes since Windows 0.1.193 / Android 0.3.43. This is a small maintenance
