@@ -1037,7 +1037,9 @@ impl Drop for FakeBrokerThreads {
         for wake in &self.wake {
             let _ = wake.send(());
         }
-        let deadline = Instant::now() + Duration::from_secs(6);
+        // Public CI run 39754114732 (hosted runner): "fake broker retirement unknown" after 6 s, then the
+        // test's own assertion failed. The wait is a bound against a hang, so it can be generous.
+        let deadline = Instant::now() + Duration::from_secs(30);
         for worker in self.workers.drain(..) {
             while !qc_native_platform::process::thread_signalled(&worker)
                 && Instant::now() < deadline

@@ -1423,7 +1423,9 @@ pub(crate) mod testing {
             }
         }
         pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-            let deadline = Instant::now() + Duration::from_secs(6);
+            // 0.1.195 Full lane #1: "owned lease fixture child did not exit" after 6 s while ~670 parallel
+            // tests shared the host. The bound exists to stop a hang, not to measure exit latency.
+            let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 if let Some(status) = self.child.as_mut().unwrap().try_wait()? {
                     return Ok(status);
