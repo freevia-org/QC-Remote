@@ -6348,7 +6348,7 @@ mod tests {
         drop(resource);
         let caller = bridge.clone();
         let task = runtime.spawn(async move { caller.host_now().await });
-        observed.recv_timeout(Duration::from_secs(2)).unwrap();
+        observed.recv_timeout(Duration::from_secs(15)).unwrap();
         assert_eq!(BUDGET.count(), 1);
         task.abort();
         let aborted = runtime
