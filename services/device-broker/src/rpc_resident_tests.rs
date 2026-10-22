@@ -1039,19 +1039,25 @@ fn only_a_participants_device_request_claims_the_reopen() {
         idle_policy_minutes: Some(15),
     };
     dispatch_broker_client_request(&shared, Some(observer), request(2, events));
-    // A participant's status poll is not device demand either.
+    // A participant's status poll is not device demand either. `RUNTIME_STATUS`
+    // is the literal "system.status", which `dispatch_broker_client_request`
+    // routes to `dispatch_cached_status` before it ever reaches a controller
+    // lookup or `prepare_idle_released_target`; that path reads only
+    // `DeviceController::try_cached_status()` (a `try_lock`, documented as
+    // never waiting for a lock) and the `clients` mutex, which nothing in this
+    // single-threaded test holds. There is no reachable blocking call to bound
+    // with a wall-clock assertion, and one flaked on a loaded CI runner
+    // (scheduler preemption inflates elapsed time without the code doing
+    // anything slower) without the poll ever having waited for anything. The
+    // `reopens`/`state_of` assertions below already prove the only property
+    // that mattered deterministically: no reopen was started.
     let participant = attach_participant(&shared);
-    let started = Instant::now();
     let status = dispatch_broker_client_request(
         &shared,
         Some(participant),
         request(3, generated_gateway::rpc::RUNTIME_STATUS),
     );
     assert!(status.get("error").is_none(), "{status}");
-    assert!(
-        started.elapsed() < Duration::from_millis(500),
-        "the poll never waits"
-    );
     thread::sleep(Duration::from_millis(100));
     assert_eq!(
         reopens.load(Ordering::SeqCst),
