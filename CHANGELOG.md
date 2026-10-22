@@ -7,6 +7,22 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.196 / Android 0.3.46 — 22 October 2026
+
+Changes since Windows 0.1.195 / Android 0.3.45. This is a small maintenance
+release. On Windows, the LOCAL panel no longer offers to download or update
+third-party AI applications: a missing AI client is described as not detected,
+without an Install button, and the Windows build contains no download links for
+those applications (Pair, Update, Open and Unpair remain for clients that are
+present). Linux and macOS behavior and text for the LOCAL panel are unchanged.
+On Linux, the add-device picker now releases keyboard focus before Escape
+closes it, a workaround for a WebKitGTK abort; the same shared picker code is
+used on every platform, and Android has no other behavior change. Three
+test-only timeouts were widened. The macOS output-deadline overshoot remains a
+known limit that this release does not fix (the TCP write deadline from 0.1.195
+applies to Linux only), and Windows is neither confirmed nor cleared.
+Everything else in 0.1.195 / 0.3.45 is unchanged.
+
 ## QC Remote Windows 0.1.195 / Android 0.3.45 — 22 October 2026
 
 Changes since Windows 0.1.194 / Android 0.3.44. This is a small maintenance
