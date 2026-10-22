@@ -101,8 +101,9 @@ The release page lists a SHA-256 checksum for each file. On Linux, verify a
 download with `sha256sum -c SHA256SUMS`; on Windows, run
 `Get-FileHash <file> -Algorithm SHA256` in PowerShell.
 
-The Microsoft Store listing is pending, and the Google Play listing is pending
-an internal-test upload, so its link may not open yet. Linux 0.1.187 for Ubuntu
+The Microsoft Store serves an earlier Windows build while newer versions are in
+review, and Google Play currently carries the Android internal-test build, so the
+Play link may not open for everyone yet. Linux 0.1.187 for Ubuntu
 24.04 x86_64 passed exact-package install/removal and installed desktop checks,
 including fresh-login resident/tray startup, GUI close/reopen with the same
 resident, local HTTP/stdio MCP, and access-policy behavior. With a physical Quad

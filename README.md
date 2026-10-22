@@ -7,7 +7,7 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 [Website](https://freevia.org/qcremote/) ·
 [User guide](docs/USER-GUIDE.md) ·
-[Latest release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.188) ·
+[Latest release](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.194) ·
 [Support & feedback](SUPPORT.md) ·
 [Privacy](PRIVACY.md)
 
@@ -22,9 +22,9 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 | Platform | Current release | Primary download | Other channel |
 | --- | --- | --- | --- |
-| Windows 10/11, x64 | 0.1.188 (GitHub); Microsoft Store 0.1.188 in review | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.188/QC-Remote-Windows-0.1.188-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5) (still serves an older build) |
+| Windows 10/11, x64 | 0.1.194 (GitHub); Microsoft Store serves 0.1.188, with 0.1.193 in review | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.194/QC-Remote-Windows-0.1.194-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5) |
 | Ubuntu 24.04, x86_64 | 0.1.187 | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.187/qc-remote_0.1.187_amd64.deb) | — |
-| Android 7.0+, USB host/OTG | 0.3.38 (GitHub APK and Google Play internal testing); public Google Play listing still serves 0.3.35 | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.188/qc-remote-0.3.38.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote) · [Invited tester opt-in](https://play.google.com/apps/internaltest/4701527491652130240) |
+| Android 7.0+, USB host/OTG | 0.3.44 (GitHub APK and Google Play internal testing); production review and rollout of newer builds are unverified | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v0.1.194/qc-remote-0.3.44.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote) · [Invited tester opt-in](https://play.google.com/apps/internaltest/4701527491652130240) |
 | iPhone and iPad | Development preview; not released | Build from [`apps/ios`](apps/ios/README.md) | — |
 
 The iPhone app provides one-way USB-MIDI controls only. Full direct USB control
@@ -32,8 +32,8 @@ is an experimental iPad DriverKit prototype for supported M-series iPads; it
 requires Apple-approved DriverKit entitlements and hardware validation. See
 [`apps/ios/README.md`](apps/ios/README.md) before building or using it.
 
-Windows 0.1.188 and Android 0.3.38 are available from
-[GitHub release v0.1.188](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.188). Windows 0.1.188 has been submitted to Microsoft Store and is in review; the Store currently serves an older build. Android 0.3.38 is on Google Play's internal testing track; the public Play listing still serves 0.3.35.
+Windows 0.1.194 and Android 0.3.44 are available from
+[GitHub release v0.1.194](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.194). Microsoft Store currently serves Windows 0.1.188; version 0.1.193 has been submitted and is in review. Android 0.3.44 is on Google Play's internal testing track; production review and rollout of newer builds are unverified, so check the Play listing for current availability.
 Linux 0.1.187 is for Ubuntu 24.04 x86_64 with signed GitHub build provenance. Exact-package testing passed for installation, native app/tray, MCP, and connected-device control and recovery on Ubuntu 24.04 WSL2/Xfce with a physical Quad Cortex over USB/IP. Bare-metal Linux has not been tested. See the [Linux 0.1.187 release notes](https://github.com/freevia-org/QC-Remote/releases/tag/v0.1.187), [Linux setup guide](docs/USER-GUIDE.md#linux), and [package verification instructions](docs/USER-GUIDE.md#verify-the-linux-download).
 
 QC Remote was developed and tested with Quad Cortex firmware (CorOS) 4.1.0. It
