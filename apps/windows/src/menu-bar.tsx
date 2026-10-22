@@ -25,7 +25,7 @@ export type AppMenu = { name: string; items: MenuItem[] };
 
 export const divider = (): MenuItem => ({ separator: true });
 
-export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress, busy, localIntegrationAction, controlAccessMode, onControlAccessModeChange, claudeApprovalLapsed, localStatusChecking, claudeStatusRefreshFailed, chatgptStatusRefreshFailed, antigravityStatusRefreshFailed, lmStudioStatusRefreshFailed, janStatusRefreshFailed, otherMcpStatusRefreshFailed, runtime, deviceName, physicalDevices, selectedDeviceId, onSelectDevice, presetLabel, events, relayStatus, relayPending, relayPairingStarting, relayPairingError, relayPairingQrCode, relayPairingUrl, claudeExtensionStatus, claudeInstallPending, chatgptIntegrationStatus, chatgptRestartRequired, chatgptRemovalRestartRequired, antigravityIntegrationStatus, lmStudioIntegrationStatus, janIntegrationStatus, otherMcpStatus, relayConnectors, relayConnectorsError, relayUnlinkingGrantId, relayConnectorAddress, onRelayPanelOpen, onRelayPairingOpen, onOpenRelayConnector, onShareRelayConnector, onRelayReconnect, onRelayPairingRefresh, onRelayPairingShare, onRelayUnpair, onRetryRelayWithdrawal, onRelayDeleteAccount, onRelayUnlinkConnector, onInstallClaude, onOpenClaude, onOpenClaudeExtensions, onOpenClaudeDownload, onInstallChatgpt, onRemoveChatgpt, onOpenChatgpt, onOpenChatgptDownload, onOpenChatgptConfiguration, onOpenAntigravityDownload, onInstallAntigravity, onRemoveAntigravity, onOpenAntigravity, onInstallLmStudio, onRemoveLmStudio, onOpenLmStudio, onOpenLmStudioDownload, onInstallJan, onRemoveJan, onOpenJan, onOpenJanDownload, onCopyOtherMcpSetup, onRefreshLocalIntegrations, onLocalPanelChange, onConnect, onDisconnect, demoPending, onStartDemo, onStopDemo, deviceHeldInBackground, onResumeDevice, onClearEvents, onOpenChange }: {
+export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress, busy, localIntegrationAction, controlAccessMode, onControlAccessModeChange, claudeApprovalLapsed, localStatusChecking, claudeStatusRefreshFailed, chatgptStatusRefreshFailed, antigravityStatusRefreshFailed, lmStudioStatusRefreshFailed, janStatusRefreshFailed, otherMcpStatusRefreshFailed, runtime, deviceName, physicalDevices, selectedDeviceId, onSelectDevice, presetLabel, events, relayStatus, relayPending, relayPairingStarting, relayPairingError, relayPairingQrCode, relayPairingUrl, claudeExtensionStatus, claudeInstallPending, chatgptIntegrationStatus, chatgptRestartRequired, chatgptRemovalRestartRequired, antigravityIntegrationStatus, lmStudioIntegrationStatus, janIntegrationStatus, otherMcpStatus, relayConnectors, relayConnectorsError, relayUnlinkingGrantId, relayConnectorAddress, onRelayPanelOpen, onRelayPairingOpen, onOpenRelayConnector, onShareRelayConnector, onRelayReconnect, onRelayPairingRefresh, onRelayPairingShare, onRelayUnpair, onRetryRelayWithdrawal, onRelayDeleteAccount, onRelayUnlinkConnector, onInstallClaude, onOpenClaude, onOpenClaudeExtensions, onInstallChatgpt, onRemoveChatgpt, onOpenChatgpt, onOpenChatgptConfiguration, onInstallAntigravity, onRemoveAntigravity, onOpenAntigravity, onInstallLmStudio, onRemoveLmStudio, onOpenLmStudio, onInstallJan, onRemoveJan, onOpenJan, onCopyOtherMcpSetup, onRefreshLocalIntegrations, onLocalPanelChange, onConnect, onDisconnect, demoPending, onStartDemo, onStopDemo, deviceHeldInBackground, onResumeDevice, onClearEvents, onOpenChange }: {
   menus: AppMenu[];
   onSelect: (item: MenuCommand) => void;
   connection: ConnectionState;
@@ -84,25 +84,20 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
   onOpenClaude: () => void;
   /** Opens Claude's own extension page with QC Remote selected; false when it could not be opened. */
   onOpenClaudeExtensions: () => Promise<boolean>;
-  onOpenClaudeDownload: () => void;
   onInstallChatgpt: () => void;
   onRemoveChatgpt: () => boolean | Promise<boolean>;
   onOpenChatgpt: () => void;
-  onOpenChatgptDownload: () => void;
   /** Opens the shared config.toml, offered only when QC Remote could not read it. */
   onOpenChatgptConfiguration: () => void;
-  onOpenAntigravityDownload: () => void;
   onInstallAntigravity: () => void;
   onRemoveAntigravity: () => boolean | Promise<boolean>;
   onOpenAntigravity: () => void;
   onInstallLmStudio: () => void;
   onRemoveLmStudio: () => boolean | Promise<boolean>;
   onOpenLmStudio: () => void;
-  onOpenLmStudioDownload: () => void;
   onInstallJan: () => void;
   onRemoveJan: () => boolean | Promise<boolean>;
   onOpenJan: () => void;
-  onOpenJanDownload: () => void;
   onCopyOtherMcpSetup: () => void;
   onRefreshLocalIntegrations: () => void;
   onLocalPanelChange: (open: boolean) => void;
@@ -455,7 +450,6 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
               open: onOpenClaude,
               repair: onInstallClaude,
               pair: onInstallClaude,
-              install: onOpenClaudeDownload,
               refresh: onRefreshLocalIntegrations,
               // Claude owns extension removal, so QC Remote cannot perform it.
               // What it can do is put the user in front of the control that
@@ -484,7 +478,6 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
               open: onOpenChatgpt,
               repair: onInstallChatgpt,
               pair: onInstallChatgpt,
-              install: onOpenChatgptDownload,
               refresh: onRefreshLocalIntegrations,
               configure: onOpenChatgptConfiguration,
               unpair: () => setLocalUnpair({ provider: "chatgpt", stage: "confirm" })
@@ -505,7 +498,6 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
               // native call as Pair and Update, which this row already offers.
               repair: onInstallAntigravity,
               pair: onInstallAntigravity,
-              install: onOpenAntigravityDownload,
               refresh: onRefreshLocalIntegrations,
               unpair: () => setLocalUnpair({ provider: "antigravity", stage: "confirm" })
             }}
@@ -520,7 +512,6 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
               open: onOpenLmStudio,
               repair: onInstallLmStudio,
               pair: onInstallLmStudio,
-              install: onOpenLmStudioDownload,
               refresh: onRefreshLocalIntegrations,
               unpair: () => setLocalUnpair({ provider: "lm-studio", stage: "confirm" })
             }}
@@ -535,7 +526,6 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
               open: onOpenJan,
               repair: onInstallJan,
               pair: onInstallJan,
-              install: onOpenJanDownload,
               refresh: onRefreshLocalIntegrations,
               unpair: () => setLocalUnpair({ provider: "jan", stage: "confirm" })
             }}

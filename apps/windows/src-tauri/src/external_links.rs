@@ -1,10 +1,9 @@
 //! Opens external URLs in the user's default browser through a small
 //! allowlist. Tauri 2's webview here has no opener plugin registered, so
 //! `<a target="_blank">` anchors in the Help dialogs do nothing on their own;
-//! every other outbound link in this app already routes through
-//! `webbrowser::open` behind a Rust command (see `open_claude_desktop_download`
-//! in `client_packages.rs`). This module generalizes that pattern instead of
-//! opening an arbitrary string the front end hands over.
+//! outbound publisher/support links in this app route through
+//! `webbrowser::open` behind a Rust command. This module validates those links
+//! instead of opening an arbitrary string the front end hands over.
 
 /// Hosts the Rust command is allowed to open. Kept intentionally small: every
 /// destination the webview can reach has to be added here explicitly.

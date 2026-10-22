@@ -114,7 +114,7 @@ export const localRowClassName = (phase: LocalProviderPhase): string => `local-p
  * primary: it is the second act on a row whose file could not be read, beside
  * Refresh, because the fix is an edit only the user can make.
  */
-export type LocalPrimaryAct = "open" | "repair" | "pair" | "install" | "refresh" | "copy" | "configure";
+export type LocalPrimaryAct = "open" | "repair" | "pair" | "refresh" | "copy" | "configure";
 export type LocalPrimaryAction = { act: LocalPrimaryAct; label: string };
 
 /**
@@ -141,8 +141,8 @@ export type LocalPrimaryChoice = LocalPrimaryAct | "none";
  * Every state QC Remote can act on reaches one of the first two, so the user is
  * never asked to tell a version mismatch from a rewritten configuration file -
  * both are one act through one handler. The remaining words name an act that is
- * not a repair at all: pairing for the first time, installing the desktop app,
- * re-reading a status that could not be read, and copying the STDIO setup.
+ * not a repair at all: pairing for the first time, re-reading a status that
+ * could not be read, and copying the STDIO setup.
  *
  * The label is a promise about behaviour. Wherever this returns `Open`, the
  * row's primary must launch that provider's app; wherever it returns `Update`,
@@ -151,12 +151,11 @@ export type LocalPrimaryChoice = LocalPrimaryAct | "none";
  * a promise this returns nothing at all, which is the only answer that cannot
  * be pressed and then fail to happen.
  *
- * `install` is the only act whose word names the app, because "Install" alone
- * does not say what.
+ * There is deliberately no act for acquiring another desktop application.
  */
-export function localPrimaryAction(act: LocalPrimaryAct, installLabel?: string): LocalPrimaryAction;
-export function localPrimaryAction(act: LocalPrimaryChoice, installLabel?: string): LocalPrimaryAction | undefined;
-export function localPrimaryAction(act: LocalPrimaryChoice, installLabel = "Install"): LocalPrimaryAction | undefined {
+export function localPrimaryAction(act: LocalPrimaryAct): LocalPrimaryAction;
+export function localPrimaryAction(act: LocalPrimaryChoice): LocalPrimaryAction | undefined;
+export function localPrimaryAction(act: LocalPrimaryChoice): LocalPrimaryAction | undefined {
   if (act === "none") return undefined;
   return {
     act,
@@ -170,9 +169,7 @@ export function localPrimaryAction(act: LocalPrimaryChoice, installLabel = "Inst
             ? "Refresh"
             : act === "copy"
               ? "Copy STDIO setup"
-              : act === "configure"
-                ? "Open config"
-                : installLabel
+              : "Open config"
   };
 }
 
@@ -540,16 +537,15 @@ const newerInstalledPresentation = (
  */
 const appAbsentPresentation = (
   app: string,
-  installLabel: string,
   integrationInstalled: boolean
 ): LocalProviderPresentation => integrationInstalled ? {
   phase: "attention", status: "Connection left over", tone: "action-required",
-  detail: `${app} is not installed, but a QC Remote connection is still configured for it. Unpair to remove it, or install ${app} to use it.`,
-  canUnpair: true, primary: localPrimaryAction("install", installLabel)
+  detail: `${app} is not detected, but a QC Remote connection is still configured for it. Unpair to remove it.`,
+  canUnpair: true
 } : {
   phase: "unavailable", status: "Not installed", tone: "neutral",
-  detail: `Install ${app} to control QC Remote with AI`,
-  canUnpair: false, primary: localPrimaryAction("install", installLabel)
+  detail: `${app} is not detected. QC Remote can pair with it when it is available on this computer.`,
+  canUnpair: false
 };
 
 export const claudeExtensionPresentation = (
@@ -570,8 +566,8 @@ export const claudeExtensionPresentation = (
   };
   if (!status.claudeInstalled) return {
     phase: "unavailable", status: "Not installed", tone: "neutral",
-    detail: "Install Claude Desktop to control QC Remote with AI",
-    canUnpair: false, primary: localPrimaryAction("install", "Install Claude Desktop")
+    detail: "Claude Desktop is not detected. QC Remote can pair with it when it is available on this computer.",
+    canUnpair: false
   };
   // Pressing Update on an out-of-date pairing sets this flag too, so the flag
   // says a new bundle is waiting for Claude's approval - never that the
@@ -663,7 +659,7 @@ export const chatgptIntegrationPresentation = (
   // The QC Remote entry lives in the shared `config.toml` under the Windows
   // profile, which outlives any uninstall of ChatGPT Desktop, so this row had
   // to stop reporting a missing app as a missing pairing.
-  if (!status.chatgptInstalled) return appAbsentPresentation(hostAppName, `Install ${hostAppName}`, status.integrationInstalled);
+  if (!status.chatgptInstalled) return appAbsentPresentation(hostAppName, status.integrationInstalled);
   // `status-error` is the native layer reporting that it could not read or
   // parse config.toml, which is a failed status read like any other, so
   // Refresh stays the primary. The file is also one only the user can repair,
@@ -775,7 +771,7 @@ export const antigravityIntegrationPresentation = (
   };
   // Antigravity's route lives in its MCP configuration under the Windows
   // profile, on the same terms as ChatGPT's and the two managed clients'.
-  if (!status.antigravityInstalled) return appAbsentPresentation("Google Antigravity", "Install Antigravity", status.integrationInstalled);
+  if (!status.antigravityInstalled) return appAbsentPresentation("Google Antigravity", status.integrationInstalled);
   if (refreshFailed || status.state === "status-error") return {
     phase: "attention", status: "Needs attention", tone: "error",
     detail: status.state === "status-error"
@@ -851,8 +847,6 @@ export const antigravityIntegrationPresentation = (
  *
  * Everything else is Bionic, deliberately:
  *
- * - nothing installed - the row's button is `Install Bionic`, and Bionic is
- *   what https://lmstudio.ai/download ships today;
  * - a version too strange to parse, which belongs to no series;
  * - a status that has not arrived yet, where there is nothing to read.
  *
@@ -916,14 +910,13 @@ export const managedMcpIntegrationPresentation = (
   };
   // This is where the leftover entry was first named, and it is now the shared
   // answer for every provider whose configuration file this app owns.
-  if (!installed) return appAbsentPresentation(name, `Install ${name}`, status.integrationInstalled);
-  // The repair QC Remote has cannot make an old desktop client speak local MCP,
-  // so this row names the act that can: updating the client itself.
+  if (!installed) return appAbsentPresentation(name, status.integrationInstalled);
+  // QC Remote cannot make an old desktop client speak local MCP. The Store
+  // build does not direct customers to acquire or update third-party software.
   if (status.state === "app-update-required") return {
     phase: "attention", status: "App update required", tone: "action-required",
-    detail: `${name} ${status.appVersion ?? "is installed"} is too old to speak local MCP. Update ${name} opens its download page.`,
-    canUnpair: status.integrationInstalled,
-    primary: localPrimaryAction("install", `Update ${name}`)
+    detail: `${name} ${status.appVersion ?? "is installed"} cannot use QC Remote's MCP connection. Pairing is available after the client is updated.`,
+    canUnpair: status.integrationInstalled
   };
   if (refreshFailed || status.state === "status-error") return {
     phase: "attention", status: "Needs attention", tone: "error",

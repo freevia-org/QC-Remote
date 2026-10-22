@@ -17,7 +17,7 @@ import { shouldCloseBlockEditorOnEscape } from "./block-editor-keyboard";
 import { saveOpenedWorkspaceCopy } from "./workspace-copy";
 import { captureGatewaySession } from "@qc-remote/ui";
 import { divider, MenuBar, type AppMenu, type ConnectionEvent, type MenuCommand, type MenuItem } from "./menu-bar";
-import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
+import { antigravityIntegrationPresentation, chatgptIntegrationPresentation, claudeExtensionPresentation, lmStudioAppName, lmStudioEnableSwitch, localAccessNotice, localActionFailure, localPairOutcome, managedMcpIntegrationPresentation, type LocalActionOutcome } from "./local-integration-presentation";
 import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, waitForSynchronizedQc, qcReconcilePhysicalDevices, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
 import { DEFAULT_BROKER_TRAY_STATUS, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
@@ -2812,15 +2812,6 @@ export function App() {
     }
   };
 
-  const openClaudeDesktopDownload = async () => {
-    try {
-      await localClientPackages.openClaudeDesktopDownload();
-      reportLocal({ tone: "action-required", message: "Claude Desktop's download page opened. Install it for this user account, then press Refresh here." });
-    } catch (error) {
-      failLocal("Claude Desktop", error, "Install Claude Desktop");
-    }
-  };
-
   const openClaudeDesktop = async () => {
     try {
       await localClientPackages.openClaudeDesktop();
@@ -2911,18 +2902,6 @@ export function App() {
     }
   };
 
-  const openChatgptDesktopDownload = async () => {
-    const hostName = chatgptIntegrationStatus?.clientName ?? "ChatGPT Desktop";
-    try {
-      await localClientPackages.openChatgptDownload();
-      reportLocal({ tone: "action-required", message: hostName === "Codex CLI"
-        ? "The official Codex CLI documentation opened. Install the CLI, then press Refresh here."
-        : "The official ChatGPT Desktop download page opened. Install it for this user account, then press Refresh here." });
-    } catch (error) {
-      failLocal(hostName, error, `Install ${hostName}`);
-    }
-  };
-
   const openChatgptConfiguration = async () => {
     const hostName = chatgptIntegrationStatus?.clientName ?? "ChatGPT";
     try {
@@ -2932,15 +2911,6 @@ export function App() {
         : "The shared ChatGPT and Codex MCP configuration is selected. Fix config.toml, then press Refresh here." });
     } catch (error) {
       failLocal(hostName, error);
-    }
-  };
-
-  const openAntigravityDownload = async () => {
-    try {
-      await localClientPackages.openAntigravityDownload();
-      reportLocal({ tone: "action-required", message: "The official Google Antigravity download page opened. Install it for this user account, then press Refresh here." });
-    } catch (error) {
-      failLocal("Google Antigravity", error, "Install Antigravity");
     }
   };
 
@@ -3053,25 +3023,6 @@ export function App() {
     }
   };
 
-  const openLmStudioDownload = async () => {
-    const retry = lmStudioRetryLabel();
-    try {
-      await localClientPackages.openLmStudioDownload();
-      // The URL is unchanged: lmstudio.ai is still the publisher's site and
-      // still the right place to get the app. What it ships from there is
-      // Bionic whatever this machine currently has, so this one sentence names
-      // Bionic outright rather than following the row - which is also how an
-      // owner of the old build learns that updating renames it.
-      reportLocal({ tone: "action-required", message: `The official ${BIONIC_APP_NAME} download page opened. Install it, then press Refresh here.` });
-    } catch (error) {
-      // The row's own word, because this handler is reached from "Install
-      // Bionic" on an empty machine and from "Update LM Studio" on a legacy
-      // one. A fixed "Install ..." named a button half of those rows do not
-      // render, which is the defect `retryPhrase` exists to prevent.
-      failLocal(lmStudioName, error, retry);
-    }
-  };
-
   const installJanLocalIntegration = async () => {
     if (localIntegrationAction) return;
     const retry = janRetryLabel();
@@ -3115,15 +3066,6 @@ export function App() {
       await refreshJanIntegrationStatus();
     } catch (error) {
       failLocal("Jan", error, "Open");
-    }
-  };
-
-  const openJanDownload = async () => {
-    try {
-      await localClientPackages.openJanDownload();
-      reportLocal({ tone: "action-required", message: "The official Jan download page opened. Install it, then press Refresh here." });
-    } catch (error) {
-      failLocal("Jan", error, "Install Jan");
     }
   };
 
@@ -3341,24 +3283,19 @@ export function App() {
       onInstallClaude={() => void installClaudeDesktopExtension()}
       onOpenClaude={() => void openClaudeDesktop()}
       onOpenClaudeExtensions={() => openClaudeExtensionsPage()}
-      onOpenClaudeDownload={() => void openClaudeDesktopDownload()}
       onInstallChatgpt={() => void installChatgptLocalIntegration()}
       onRemoveChatgpt={removeChatgptLocalIntegration}
       onOpenChatgpt={() => void openChatgptDesktop()}
-      onOpenChatgptDownload={() => void openChatgptDesktopDownload()}
       onOpenChatgptConfiguration={() => void openChatgptConfiguration()}
-      onOpenAntigravityDownload={() => void openAntigravityDownload()}
       onInstallAntigravity={() => void installAntigravityLocalIntegration()}
       onRemoveAntigravity={removeAntigravityLocalIntegration}
       onOpenAntigravity={() => void openAntigravity()}
       onInstallLmStudio={() => void installLmStudioLocalIntegration()}
       onRemoveLmStudio={removeLmStudioLocalIntegration}
       onOpenLmStudio={() => void openLmStudio()}
-      onOpenLmStudioDownload={() => void openLmStudioDownload()}
       onInstallJan={() => void installJanLocalIntegration()}
       onRemoveJan={removeJanLocalIntegration}
       onOpenJan={() => void openJan()}
-      onOpenJanDownload={() => void openJanDownload()}
       onCopyOtherMcpSetup={() => void copyOtherMcpSetup()}
       onRefreshLocalIntegrations={() => void refreshLocalIntegrations(true)}
       onLocalPanelChange={setLocalPanelOpen}

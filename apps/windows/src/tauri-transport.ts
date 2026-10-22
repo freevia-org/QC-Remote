@@ -1000,9 +1000,6 @@ export const localClientPackages = {
   openClaudeDesktop(): Promise<void> {
     return callTauri<void>("open_claude_desktop");
   },
-  openClaudeDesktopDownload(): Promise<void> {
-    return callTauri<void>("open_claude_desktop_download");
-  },
   chatgptStatus(): Promise<ChatGptLocalIntegrationStatus> {
     return callTauri<ChatGptLocalIntegrationStatus>("chatgpt_local_integration_status");
   },
@@ -1015,17 +1012,11 @@ export const localClientPackages = {
   openChatgpt(): Promise<void> {
     return callTauri<void>("open_chatgpt_desktop");
   },
-  openChatgptDownload(): Promise<void> {
-    return callTauri<void>("open_chatgpt_desktop_download");
-  },
   openChatgptConfiguration(): Promise<void> {
     return callTauri<void>("open_chatgpt_configuration");
   },
   antigravityStatus(): Promise<AntigravityLocalIntegrationStatus> {
     return callTauri<AntigravityLocalIntegrationStatus>("antigravity_local_integration_status");
-  },
-  openAntigravityDownload(): Promise<void> {
-    return callTauri<void>("open_antigravity_download");
   },
   installAntigravity(): Promise<AntigravityLocalInstallResult> {
     return callTauri<AntigravityLocalInstallResult>("install_antigravity_local_integration");
@@ -1048,9 +1039,6 @@ export const localClientPackages = {
   openLmStudio(): Promise<void> {
     return callTauri<void>("open_lm_studio");
   },
-  openLmStudioDownload(): Promise<void> {
-    return callTauri<void>("open_lm_studio_download");
-  },
   janStatus(): Promise<JanLocalIntegrationStatus> {
     return callTauri<JanLocalIntegrationStatus>("jan_local_integration_status");
   },
@@ -1062,9 +1050,6 @@ export const localClientPackages = {
   },
   openJan(): Promise<void> {
     return callTauri<void>("open_jan");
-  },
-  openJanDownload(): Promise<void> {
-    return callTauri<void>("open_jan_download");
   },
   otherMcpStdioSetup(): Promise<OtherMcpStdioSetup> {
     return callTauri<OtherMcpStdioSetup>("other_mcp_stdio_setup");

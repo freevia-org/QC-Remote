@@ -41,9 +41,6 @@ const CLAUDE_EXTENSION_NAME: &str = "qc-remote";
 const CLAUDE_EXTENSION_AUTHOR: &str = "Freevia EOOD";
 const CLAUDE_EXTENSION_FILE: &str = "QC-Remote-Claude.mcpb";
 const LEGACY_CHATGPT_RUNNER_FILE: &str = "chatgpt-local-mcp.ps1";
-const ANTIGRAVITY_DOWNLOAD_URL: &str = "https://antigravity.google/download";
-const LM_STUDIO_DOWNLOAD_URL: &str = "https://lmstudio.ai/download";
-const JAN_DOWNLOAD_URL: &str = "https://jan.ai/download";
 const ANTIGRAVITY_MCP_PERMISSION: &str = "mcp(qc-remote/*)";
 const LOCAL_MCP_CLIENT_ENV: &str = "QC_REMOTE_LOCAL_MCP_CLIENT";
 const ANTIGRAVITY_CLIENT_ID: &str = concat!("antigravity:", env!("CARGO_PKG_VERSION"));
@@ -2925,8 +2922,8 @@ fn bionic_config_path() -> Option<PathBuf> {
 /// drift.
 ///
 /// An install whose version this app cannot read belongs to no series, and is
-/// taken to be Bionic: that is what https://lmstudio.ai/download ships, and it
-/// is what `lmStudioAppName` already calls such an install, so the document
+/// taken to be Bionic, the current product line, and is what `lmStudioAppName`
+/// already calls such an install, so the document
 /// family and the label stay one reading in that case too.
 fn lm_studio_reads_bionic_document(version: Option<&str>) -> bool {
     version
@@ -4786,13 +4783,6 @@ pub async fn install_claude_desktop_extension() -> Result<Value, String> {
         .map_err(|error| format!("Could not prepare the Claude Desktop integration: {error}"))?
 }
 
-#[tauri::command]
-pub fn open_claude_desktop_download() -> Result<(), String> {
-    webbrowser::open("https://claude.ai/download")
-        .map(|_| ())
-        .map_err(|error| format!("Could not open the Claude Desktop download page: {error}"))
-}
-
 fn open_claude_desktop_blocking() -> Result<(), String> {
     if let Some(claude) = claude_desktop_installation()
         .and_then(|installation| installation.executable)
@@ -5150,17 +5140,6 @@ pub async fn open_chatgpt_desktop() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn open_chatgpt_desktop_download() -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    let url = "https://developers.openai.com/codex/cli";
-    #[cfg(not(target_os = "linux"))]
-    let url = "https://chatgpt.com/download/";
-    webbrowser::open(url)
-        .map(|_| ())
-        .map_err(|error| format!("Could not open the client download page: {error}"))
-}
-
-#[tauri::command]
 pub fn open_chatgpt_configuration() -> Result<(), String> {
     let config_path =
         codex_config_path().ok_or_else(|| "The user home directory is unavailable.".to_string())?;
@@ -5369,13 +5348,6 @@ pub async fn open_antigravity() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(open_antigravity_blocking)
         .await
         .map_err(|error| format!("Could not launch Google Antigravity: {error}"))?
-}
-
-#[tauri::command]
-pub fn open_antigravity_download() -> Result<(), String> {
-    webbrowser::open(ANTIGRAVITY_DOWNLOAD_URL)
-        .map(|_| ())
-        .map_err(|error| format!("Could not open the Google Antigravity download page: {error}"))
 }
 
 fn install_antigravity_local_integration_blocking() -> Result<Value, String> {
@@ -5723,13 +5695,6 @@ pub async fn open_lm_studio() -> Result<(), String> {
     .map_err(|error| format!("Could not launch LM Studio: {error}"))?
 }
 
-#[tauri::command]
-pub fn open_lm_studio_download() -> Result<(), String> {
-    webbrowser::open(LM_STUDIO_DOWNLOAD_URL)
-        .map(|_| ())
-        .map_err(|error| format!("Could not open the LM Studio download page: {error}"))
-}
-
 fn jan_status_blocking() -> Result<Value, String> {
     let installation = jan_installation();
     let executable = std::env::current_exe()
@@ -5811,13 +5776,6 @@ pub async fn open_jan() -> Result<(), String> {
     })
     .await
     .map_err(|error| format!("Could not launch Jan: {error}"))?
-}
-
-#[tauri::command]
-pub fn open_jan_download() -> Result<(), String> {
-    webbrowser::open(JAN_DOWNLOAD_URL)
-        .map(|_| ())
-        .map_err(|error| format!("Could not open the Jan download page: {error}"))
 }
 
 #[tauri::command]
