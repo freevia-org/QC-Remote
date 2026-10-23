@@ -88,6 +88,11 @@ impl TargetRegistry {
             .clone()
     }
 
+    /// Admission generation, including unavailable transitions.
+    pub fn generation(&self) -> u64 {
+        self.0.read().unwrap_or_else(|p| p.into_inner()).generation
+    }
+
     /// Capture exactly once before queuing work. A provider adapter must bind
     /// its callback/transport to this lease; it must never resolve a new target
     /// when a queued callback runs or retry a failed demo request on hardware.

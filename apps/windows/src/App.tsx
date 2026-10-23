@@ -21,9 +21,11 @@ import { antigravityIntegrationPresentation, BIONIC_APP_NAME, chatgptIntegration
 import { brokerPhaseDetectsDevice, isQcConnectionFailure, qcConnectionDuringBrokerPhase, qcAutomaticConnectHeld, qcConnectionIsVerified, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, qcBackgroundDeviceLive, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect, qcShouldDisconnectForDemo, qcShouldFollowDevicePhase, qcVirtualSessionIsReady, qcVisibleStatusNotice, qcWatchConnectStall, runtimeHasSynchronizedQc, waitForSynchronizedQc, qcReconcilePhysicalDevices, type QcConnectStall, syncProgressAt, syncProgressFinishMs } from "./qc-readiness";
 import { DEFAULT_BROKER_TRAY_STATUS, summarizeUpdaterRelay, type BrokerTrayStatus, type DeviceInfoState, type SettingsState, type WorkspaceState } from "./app-window-content";
 import { brokerTray, changeBrokerTray } from "./tauri-transport";
+import { callTauri } from "./tauri-invoke.ts";
 import appPackage from "../package.json";
 import QRCode from "qrcode";
 import { qcLiveSessionCanObserveState, qcStreamRestartClearsBulkOperation } from "@qc-remote/ui";
+import { qcDisconnectedConnection } from "./qc-readiness";
 
 const { enabled: corpusFixtureEnabled, screenView: fixtureScreenView, initialSnapshot: fixtureInitialSnapshot } =
   corosFixtureConfiguration(import.meta.env.DEV ? window.location.search : "", demoSnapshot);
@@ -54,7 +56,7 @@ export function App() {
   const deviceReady = qcConnectionIsVerified(connection, runtime, syncProgress) && !deviceSuspended && !deviceBulkBlocking;
   const virtualReady = qcVirtualSessionIsReady(connection);
   const sessionReady = deviceReady || virtualReady;
-  const qcController = useQcController(demoSnapshot);
+  const qcController = useQcController(corpusFixtureEnabled ? fixtureInitialSnapshot : IDLE_PLACEHOLDER_SNAPSHOT);
   const {
     snapshot, snapshotRef, setSnapshot,
     resetCommands, reconcileFrame
@@ -62,7 +64,8 @@ export function App() {
   useEffect(() => { if (corpusFixtureEnabled) setSnapshot(fixtureInitialSnapshot); }, [setSnapshot]);
   const [selectedBlockId, setSelectedBlockId] = useState("");
   const [formFactorId, setFormFactorId] = useState("quad-cortex-large");
-  const [notice, setNotice] = useState("Demo state loaded. Connect the device gateway to enable hardware commands.");
+  const [notice, setNotice] = useState("Disconnected. Select Connect to use a Quad Cortex, or explicitly select Demo.");
+  const [demoRestartNotice, setDemoRestartNotice] = useState<string | null>(null);
   const [gridRefreshPending, setGridRefreshPending] = useState(false);
   const { observe: observeWriteHealth } = useWriteHealth({
     enabled: Boolean(window.__TAURI_INTERNALS__) && !corpusFixtureEnabled,
@@ -234,6 +237,12 @@ export function App() {
   // in the same broker generation); a new generation alone never lifts it
   // (qcUserDisconnectAfter).
   const userDisconnected = useRef<QcUserDisconnect | null>(null);
+  // Provider loss retains this hold within its ACK-bound broker instance.
+  // The owner's restart policy ends Demo on a positively different instance.
+  const explicitDemoHeld = useRef(false);
+  const demoBrokerInstance = useRef<string | undefined>(undefined);
+  const demoSelectionObservationEpoch = useRef(0);
+  const demoSelectionChanges = useRef(0);
   // Only refs, so any render's copy (beginLiveRecovery keeps its first) is current.
   const recordLiveSessionLoss = (userAction = false) => {
     followState.current = qcRecordLiveSessionLoss(followState.current, userAction);
@@ -254,10 +263,15 @@ export function App() {
     let disposed = false;
     let timer: number | undefined;
     const refresh = async () => {
+      const observedSelectionEpoch = demoSelectionObservationEpoch.current;
       try {
         const inventory = await physicalDevices.list();
-        if (disposed) return;
+        if (disposed || observedSelectionEpoch !== demoSelectionObservationEpoch.current) return;
+        const demoEnded = await observeDemoBrokerEpoch(inventory.brokerInstanceId, observedSelectionEpoch);
+        const continuationEpoch = demoEnded ? demoEnded.selectionEpoch : observedSelectionEpoch;
+        if (disposed || continuationEpoch !== demoSelectionObservationEpoch.current) return;
         observeDemoBrokerInstance(inventory.brokerInstanceId);
+        observeHeldDemoSelection(inventory.demoSelectionHeld, continuationEpoch);
         setPhysicalQcDevices((previous) => qcReconcilePhysicalDevices(inventory.devices, selectedPhysicalRef.current, previous));
         if (!selectedPhysicalRef.current && inventory.selectedDeviceId) {
           selectedPhysicalRef.current = inventory.selectedDeviceId;
@@ -294,10 +308,11 @@ export function App() {
   // demo device. Real-hardware-only paths (connect, live frames, recovery,
   // backups, the broker heartbeat) keep calling tauriTransport directly.
   const demoDeviceSession = useMemo(() => createDemoDeviceSession(tauriTransport), []);
-  const demoBrokerCleanup = useRef<(() => void) | undefined>(undefined);
+  const demoBrokerCleanup = useRef<(() => Promise<void>) | undefined>(undefined);
   const demoBrokerTransport = useRef<typeof demoDeviceSession.virtual>(undefined);
   const demoBrokerReady = useRef(false);
-  useEffect(() => () => { demoBrokerCleanup.current?.(); }, []);
+  const demoBrokerRetirement = useRef<Promise<void>>(Promise.resolve());
+  useEffect(() => () => { void demoBrokerCleanup.current?.().catch(() => undefined); }, []);
   const activeGateway = demoDeviceSession.gateway;
   const captureDeviceOperation = () => {
     const attempt = connectionAttempts.capture();
@@ -306,10 +321,8 @@ export function App() {
     return captureGatewaySession(activeGateway, () => appOperationMounted.current && epoch === appOperationEpoch.current && attempt.current() && qcController.lifetime.currentSession(origin));
   };
   const [demoPending, setDemoPending] = useState(false);
-  // A demo opened because USB was absent is a fallback and yields as soon as
-  // the broker finds the QC. A demo selected by the user is intentional and
-  // remains active until they choose USB again.
-  const demoCanYieldToDevice = useRef(true);
+  // Demo is always an explicit choice; physical availability cannot take it over.
+  const demoCanYieldToDevice = useRef(false);
   // A phase can arrive while device.reconnect still owns the gateway. Keep
   // that edge rather than dropping it; if this attempt falls back to Demo,
   // the freshly opened fallback immediately follows the detected device.
@@ -330,15 +343,12 @@ export function App() {
   const backgroundDeviceLive = qcBackgroundDeviceLive(deviceHeldInBackground, connection.source === "virtual", brokerTruthView, runtime);
   const qcTransport = useMemo(() => createWindowsQcTransport(activeGateway, () => snapshotRef.current), [activeGateway]);
   connectionRef.current = connection;
-  // beginLiveRecovery is memoized far above returnToDemoDevice's own
+  // beginLiveRecovery is memoized far above showDisconnected's own
   // definition (and must stay stable - see its effect dependents), so it
-  // cannot close over returnToDemoDevice directly without freezing on the
+  // cannot close over showDisconnected directly without freezing on the
   // first render's copy, exactly the staleness connectOnDetection's ref
   // avoids for connect() below. Read through a ref for the same reason.
-  const returnToDemoDeviceRef = useRef<(reason: string) => void>(() => undefined);
-  const startDeferredDemoRef = useRef<(reason: string) => void>(() => undefined);
-  const deferredDemoRecovery = useRef<{ reason: string; current(): boolean } | undefined>(undefined);
-  useEffect(() => () => { deferredDemoRecovery.current = undefined; }, []);
+  const showDisconnectedRef = useRef<(reason: string) => void>(() => undefined);
   const beginLiveRecovery = useCallback((cause: string) => {
     const current = connectionRef.current;
     if (current.source !== "device" || current.demo || current.phase !== "ready") return;
@@ -350,21 +360,9 @@ export function App() {
     // heals before any poll sees it is not counted as live time.
     recordLiveSessionLoss();
     setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "live-health-failed", result: "failure", detail: cause }]);
-    // An unexpected hardware loss now returns to the demo device, exactly
-    // like a reconnect attempted from one that fails or comes back
-    // incomplete (returnToDemoDevice): the Grid stays fully editable instead
-    // of sitting in an inert "needs-attention" state the switchable gateway
-    // never actually routed to. Real hardware is followed again from the
-    // background by the broker-phase listener below when the broker pushes a
-    // phase (qcShouldConnectOnDetection allows it once the demo is the
-    // active, ready session), and by the inventory poll's follow
-    // when a broker that stays ready pushes nothing - the same mechanisms
-    // that already follow any other failed connect, rather than the tight
-    // no-full-reconnect polling loop this path used to lean on (see the
-    // live-sync effect's now-unreachable `recovering` branch, kept only
-    // because dropping it made no code simpler and nothing else still sets a
-    // "Live synchronization…" detail).
-    returnToDemoDeviceRef.current(`the live connection was lost: ${cause}`);
+    // Loss revokes hardware readiness, never selects a simulated target.
+    // The existing inventory follow can resume the broker's next live session.
+    showDisconnectedRef.current(`The live connection was lost: ${cause}`);
   }, [setConnection]);
   const actionFailed = useCallback((error: unknown) => {
     const detail = error instanceof Error ? error.message : String(error);
@@ -722,7 +720,9 @@ export function App() {
   const formFactor = useMemo(() => formFactors.find((item) => item.id === formFactorId) ?? formFactors[0], [formFactorId]);
   const skin = useMemo(() => skins.find((item) => item.id === formFactor.defaultSkinId) ?? skins[0], [formFactor]);
   const presetLabel = `${snapshot.presetLocation} · ${snapshot.presetName}`;
-  const visibleNotice = qcVisibleStatusNotice(notice, deviceReady, presetLabel);
+  const statusNotice = qcVisibleStatusNotice(notice, deviceReady, presetLabel);
+  const visibleNotice = demoRestartNotice && demoRestartNotice !== statusNotice
+    ? `${demoRestartNotice} ${statusNotice}` : statusNotice;
   // Not a property of any pairing, so it is no longer drawn over the provider
   // rows: a second copy of QC Remote serving the AI apps, local access switched
   // off, and a listener that never started are all facts about this app.
@@ -1271,46 +1271,94 @@ export function App() {
     return true;
   };
 
-  /**
-   * A reconnect attempted from a working demo session that does not reach a
-   * ready Quad Cortex goes back to the demo, rather than leaving the user with
-   * neither device. This is the one automatic return: a real session that was
-   * live and then dropped still never falls back to the demo by itself.
-   */
-  const returnToDemoDevice = (reason: string) => {
-    const returning = { phase: "discovering" as const, detail: "The Quad Cortex was not reached; returning to the demo device…", demo: true, source: "device" as const };
-    connectionRef.current = returning;
-    setConnection(returning);
-    setNotice(returning.detail);
-    setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-returning", result: "info", detail: reason }]);
-    // Failed native work still owns its admission until its promise settles.
-    // Do not replace the target or bypass the ordinary Demo opening guard.
-    if (commandPending || demoPending || awaitingDetection.current || qcController.lifetime.mutations.busy) {
-      const attempt = connectionAttempts.capture();
-      const epoch = appOperationEpoch.current;
-      deferredDemoRecovery.current = { reason, current: () => appOperationMounted.current && epoch === appOperationEpoch.current && attempt.current() };
-      return;
+  // A provider exists only while Demo is explicitly selected. Invalidate its
+  // dispatcher immediately and await native retirement before physical work.
+  const withdrawDemoProvider = async (clearSelection = false) => {
+    const cleanup = demoBrokerCleanup.current;
+    const heldSelection = explicitDemoHeld.current || Boolean(cleanup) || Boolean(demoBrokerTransport.current);
+    demoBrokerCleanup.current = undefined;
+    demoBrokerTransport.current = undefined;
+    demoBrokerReady.current = false;
+    const closing = cleanup?.();
+    const retirement = Promise.all([demoBrokerRetirement.current, closing]).then(() => undefined);
+    // Report this attempt's failure, but do not poison every future selection.
+    demoBrokerRetirement.current = retirement.catch(() => undefined);
+    await retirement;
+    if (clearSelection && heldSelection && window.__TAURI_INTERNALS__) {
+      demoSelectionObservationEpoch.current += 1;
+      demoSelectionChanges.current += 1;
+      try { await callTauri("clear_demo_selection"); }
+      finally { demoSelectionChanges.current -= 1; demoSelectionObservationEpoch.current += 1; }
     }
-    deferredDemoRecovery.current = undefined;
-    void startDemoDevice(reason);
   };
-  returnToDemoDeviceRef.current = returnToDemoDevice;
-  // The admission external-store subscription rerenders after settlement,
-  // giving this continuation a fresh pending state rather than the failed
-  // command's captured busy render. A newer connection owns its own recovery.
-  useEffect(() => {
-    const recovery = deferredDemoRecovery.current;
-    if (!recovery) return;
-    if (!recovery.current()) { deferredDemoRecovery.current = undefined; return; }
-    if (commandPending || demoPending || awaitingDetection.current || qcController.lifetime.mutations.busy) return;
-    deferredDemoRecovery.current = undefined;
-    startDeferredDemoRef.current(recovery.reason);
-  }, [commandPending, demoPending, connection.phase]);
+  const showDisconnected = (reason: string, keepExplicitDemo = false, providerAlreadyRetiring = false) => {
+    if (!keepExplicitDemo) demoDeviceSession.useDevice();
+    if (!keepExplicitDemo && !providerAlreadyRetiring) void withdrawDemoProvider().catch(error => setConnectionEvents(events => [...events, {
+      at: new Date().toISOString(), event: "demo-provider-withdraw-failed", result: "failure", detail: String(error)
+    }]));
+    nativeStateAvailable.current = false;
+    setDeviceHeldInBackground(false);
+    stopSyncProgressAnimation();
+    showSyncProgress(null);
+    resetCommands();
+    clearUndo();
+    presetWorkflow.resetCache();
+    setSelectedBlockId("");
+    setDeviceScreenView(null);
+    screenDestination.setPopup(null);
+    setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
+    const disconnected = qcDisconnectedConnection(reason);
+    connectionRef.current = disconnected;
+    setConnection(disconnected);
+    setNotice(disconnected.detail);
+  };
+  showDisconnectedRef.current = showDisconnected;
+
+  const observeDemoBrokerEpoch = async (instance: string | null | undefined, observedEpoch = demoSelectionObservationEpoch.current) => {
+    if (observedEpoch !== demoSelectionObservationEpoch.current || demoSelectionChanges.current !== 0
+        || !instance || !explicitDemoHeld.current || !demoBrokerInstance.current
+        || instance === demoBrokerInstance.current) return false;
+    // Compare a positive observation to the last registration ACK, never to
+    // an Unknown/absent poll. End the old attempt before retiring its listener,
+    // so delayed registration/status callbacks cannot reselect its Demo.
+    connectionAttempts.invalidate();
+    explicitDemoHeld.current = false;
+    demoBrokerInstance.current = undefined;
+    userDisconnected.current = null;
+    awaitingDetection.current = false;
+    waitingConnect.current = null;
+    reconnectAfterCurrentAttempt.current = false;
+    demoCanYieldToDevice.current = false;
+    demoSelectionObservationEpoch.current += 1;
+    const selectionEpoch = demoSelectionObservationEpoch.current;
+    const detail = "The broker restarted; Demo ended; the unit is available to your AI client.";
+    setDemoRestartNotice(detail);
+    showDisconnected(detail, false, true);
+    // Retire only the old provider. Never clear or take over the new broker's
+    // selection, start a broker, or open Demo as a result of this observation.
+    await withdrawDemoProvider();
+    setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-ended-broker-restart", result: "warning", detail }]);
+    return { selectionEpoch };
+  };
+
+  const observeHeldDemoSelection = (held: boolean | undefined, observedEpoch = demoSelectionObservationEpoch.current) => {
+    // Missing/failed observation is Unknown; even authoritative false does
+    // not undo a local user's hold. Only an acknowledged explicit choice can.
+    if (observedEpoch !== demoSelectionObservationEpoch.current || demoSelectionChanges.current !== 0 || held !== true || explicitDemoHeld.current) return;
+    explicitDemoHeld.current = true;
+    if (demoDeviceSession.source !== "virtual") {
+      showDisconnectedRef.current("Demo was selected by an editor. Select Demo to recover it or explicitly choose the Quad Cortex.");
+    }
+  };
 
   // `userAction` is set only for the user's own Connect, USB, device or menu click:
   // it supersedes a recorded Quit first. Mount and device detection leave it unset
   // and keep respecting the Quit.
   const connect = async (mode: "reconnect" | "reset" = "reconnect", physicalId?: string, userAction = false) => {
+    if (!userAction && explicitDemoHeld.current) {
+      showDisconnected("Demo remains selected. Choose Demo to recover it or explicitly select the Quad Cortex.");
+      return;
+    }
     if (physicalId && (commandPending || demoPending || awaitingDetection.current || connectionRef.current.phase === "syncing")) return;
     if (userAction) {
       userDisconnected.current = null;
@@ -1324,7 +1372,7 @@ export function App() {
     if (!fromDemo) demoDeviceSession.useDevice();
     if (fromDemo) setSnapshot(CONNECTING_PLACEHOLDER_SNAPSHOT);
     // A full handshake here always ends with source "device" one way or the
-    // other (ready, or a fallback back to the demo); either way a device
+    // other (ready or disconnected); either way a device
     // held in the background is no longer a distinct state from this attempt on.
     setDeviceHeldInBackground(false);
     resetCommands();
@@ -1346,6 +1394,9 @@ export function App() {
     setConnection(discovering);
     setNotice(discovering.detail);
     try {
+      await withdrawDemoProvider(userAction);
+      if (!attempt.current()) return;
+      if (userAction) explicitDemoHeld.current = false;
       if (userAction) await brokerDevice.acknowledgeUserConnect();
       if (!attempt.current()) return;
       if (physicalId && physicalId !== selectedPhysicalRef.current) {
@@ -1421,10 +1472,16 @@ export function App() {
         stopSyncProgressAnimation();
         showSyncProgress(null);
         setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "connection-incomplete", result: "warning", detail: next.detail }]);
-        if (fromDemo) { returnToDemoDevice(next.detail); return; }
-        connectionRef.current = next;
-        setConnection(next);
-        setNotice(next.detail);
+        if (next.phase === "disconnected" || next.phase === "searching") {
+          showDisconnected(next.detail);
+        } else {
+          // Preserve real fault and in-progress phases. Neither may restore
+          // Demo, and a failed device must not display the old Demo preset.
+          if (next.phase === "needs-attention" || next.phase === "degraded") setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
+          connectionRef.current = next;
+          setConnection(next);
+          setNotice(next.detail);
+        }
       }
     } catch (error) {
       if (!attempt.current()) return;
@@ -1433,11 +1490,7 @@ export function App() {
       stopSyncProgressAnimation();
       showSyncProgress(null);
       setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "connection-failed", result: "failure", detail }]);
-      if (fromDemo) { returnToDemoDevice(detail); return; }
-      const failed = { phase: "needs-attention" as const, detail, demo: true, source: "device" as const };
-      connectionRef.current = failed;
-      setConnection(failed);
-      setNotice(detail);
+      showDisconnected(detail);
     }
   };
 
@@ -1469,6 +1522,9 @@ export function App() {
       setNotice(disconnecting.detail);
       setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnect-started", result: "pending", detail: "Closing the live device and gateway session." }]);
       try {
+        await withdrawDemoProvider(true);
+        if (!attempt.current() || !operationCurrent()) return;
+        explicitDemoHeld.current = false;
         const next = await brokerDevice.disconnect();
         if (!attempt.current() || !operationCurrent()) return;
         nativeStateSequence.current = 0;
@@ -1487,6 +1543,7 @@ export function App() {
         setConnection(outcome.connection);
         setNotice(outcome.notice);
         if (outcome.closed) {
+          showDisconnected(outcome.notice);
           setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "disconnected", result: "success", detail: outcome.notice }]);
           return;
         }
@@ -1566,28 +1623,25 @@ export function App() {
    * Open the demo device against its last saved state and route every
    * command to it.
    *
-   * This used to be offered only by an explicit press while no real Quad
-   * Cortex was live. It remains the launch default and the fallback after an
-   * unexpected hardware loss (returnToDemoDevice, reached from
-   * beginLiveRecovery). The USB panel's explicit Disconnect instead leaves the
-   * broker and app offline. A person can still step away from an already-
+   * Only an explicit Demo selection opens this provider. A person can step
+   * away from an already-
    * connected, ready Quad Cortex without disconnecting it by selecting Demo -
    * see `keepDeviceInBackground`
    * below, and resumeDeviceSession for the way back that does not repeat the
    * handshake.
    */
-  const startDemoDevice = async (returningFrom?: string, automaticFallback = returningFrom !== undefined) => {
+  const startDemoDevice = async () => {
     // A connect() attempt still awaiting its answer owns the next step
     // itself - awaitingDetection.current stays true for the whole discovering
     // /handshaking/syncing window, not just its first phase - exactly like
     // commandPending/demoPending. A ready device does not any more (see the
     // doc comment above), so it is deliberately not part of this guard. Note
-    // this must read awaitingDetection rather than connectionRef.current's
-    // phase: returnToDemoDevice's own transitional "discovering" state (set
-    // right before it calls this function) is not a real handshake and must
-    // not block it.
+    // this must read awaitingDetection rather than a stale render's phase.
     if (commandPending || demoPending || awaitingDetection.current) return;
-    if (!automaticFallback) reconnectAfterCurrentAttempt.current = false;
+    explicitDemoHeld.current = true;
+    demoBrokerInstance.current = undefined; // A new explicit selection binds only its own ACK.
+    demoSelectionObservationEpoch.current += 1;
+    reconnectAfterCurrentAttempt.current = false;
     const attempt = connectionAttempts.begin();
     const demoOpen = ++demoOpenToken.current;
     // A ready, verified Quad Cortex is left attached in the background rather
@@ -1598,7 +1652,7 @@ export function App() {
     // in after startup. An explicit switch to Demo Mode may still close any
     // other incomplete real-device session.
     const keepDeviceInBackground = connectionRef.current.source === "device" && deviceReady;
-    const closeDeviceSession = qcShouldDisconnectForDemo(connectionRef.current, deviceReady, returningFrom !== undefined);
+    const closeDeviceSession = qcShouldDisconnectForDemo(connectionRef.current, deviceReady, false);
     setDemoPending(true);
     stopSyncProgressAnimation();
     showSyncProgress(null);
@@ -1610,27 +1664,51 @@ export function App() {
       const opened = await demoDeviceSession.start(virtualDeviceStorage, attempt.current);
       if (!opened || !attempt.current()) return;
       const { transport: demo, connection: state, snapshot: current } = opened;
-      // Reusing an already-served demo must not replace its registration or
-      // publish a fresh cloud identity on every UI fallback/reactivation.
-      if (demoBrokerTransport.current !== demo || !demoBrokerCleanup.current
-          || (!automaticFallback && !demoBrokerReady.current)) {
-        demoBrokerCleanup.current?.();
-        demoBrokerCleanup.current = undefined;
-        demoBrokerReady.current = false;
-        const cleanupDemoBroker = await exposeDesktopDemo(demo, (ready, message) => {
+      let published = false;
+      // Every explicit selection renews registration and binds its own ACK.
+      // The saved store may be reused, but an earlier attempt's callbacks and
+      // epoch must not own this new user selection.
+      {
+        await withdrawDemoProvider();
+        if (!attempt.current()) return;
+        const cleanupDemoBroker = await exposeDesktopDemo(demo, (ready, message, brokerInstanceId) => {
+          if (!attempt.current()) return;
+          if (ready && brokerInstanceId && brokerInstanceId !== demoBrokerInstance.current) {
+            demoBrokerInstance.current = brokerInstanceId;
+            demoSelectionObservationEpoch.current += 1; // Discard inventory started before this ACK.
+          }
           demoBrokerReady.current = ready;
+          if (ready && published && attempt.current() && explicitDemoHeld.current && demoDeviceSession.virtual === demo) {
+            void demo.currentSnapshot().then(refreshed => {
+              if (!attempt.current() || !demoBrokerReady.current || !explicitDemoHeld.current || demoDeviceSession.virtual !== demo) return;
+              connectionRef.current = state;
+              setConnection(state);
+              setSnapshot(refreshed);
+              setNotice("Demo recovered in this window and MCP. Nothing is sent to the Quad Cortex.");
+            }).catch(() => undefined);
+          }
           if (!ready && message && appOperationMounted.current) {
-            setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-mcp-unavailable", result: "info", detail: `The demo remains available in this editor. MCP access is unavailable: ${message}` }]);
+            setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-mcp-unavailable", result: "info", detail: `Demo access is unavailable: ${message}` }]);
+            if (published && demoDeviceSession.source === "virtual" && demoDeviceSession.virtual === demo) {
+              // The provider really ended: do not show a usable Demo without
+              // MCP, but never turn that failure into an implicit QC choice.
+              userDisconnected.current = qcLatchUserDisconnect(brokerTruth.current);
+              showDisconnected(message, true);
+            }
           }
         }, refreshed => {
           if (appOperationMounted.current && demoDeviceSession.source === "virtual" && demoDeviceSession.virtual === demo) {
             setSnapshot(refreshed);
           }
-        }).catch(error => {
-          if (appOperationMounted.current) setConnectionEvents(events => [...events, { at: new Date().toISOString(), event: "demo-mcp-unavailable", result: "info", detail: String(error) }]);
-          return undefined;
+        }, cleanup => {
+          if (attempt.current()) demoBrokerCleanup.current = cleanup;
+          else void cleanup().catch(() => undefined);
         });
-        if (!attempt.current()) { cleanupDemoBroker?.(); return; }
+        if (!attempt.current()) { await cleanupDemoBroker?.(); return; }
+        if (window.__TAURI_INTERNALS__ && !demoBrokerReady.current) {
+          await cleanupDemoBroker?.();
+          throw new Error("The Demo provider was lost before its selection completed");
+        }
         demoBrokerCleanup.current = cleanupDemoBroker;
         demoBrokerTransport.current = demo;
       }
@@ -1644,32 +1722,25 @@ export function App() {
       // The demo state first, then its content: the demo's preset is never on
       // screen under a device-sourced state, even between two updates.
       connectionRef.current = state;
-      demoCanYieldToDevice.current = automaticFallback;
+      published = true;
+      setDemoRestartNotice(null);
+      demoCanYieldToDevice.current = false;
       setConnection(state);
       setSnapshot(current);
       setSelectedBlockId("");
       setDeviceHeldInBackground(keepDeviceInBackground);
-      setNotice(returningFrom
-        ? `The Quad Cortex was not reached (${returningFrom}). Back on the demo device: ${current.presetLocation} · ${current.presetName}.`
-        : keepDeviceInBackground
+      setNotice(keepDeviceInBackground
           ? `${state.detail} ${current.presetLocation} · ${current.presetName} loaded from this computer. The Quad Cortex stays connected in the background; select its USB tab to return to it.`
           : `${state.detail} ${current.presetLocation} · ${current.presetName} loaded from this computer.`);
-      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: returningFrom ? "demo-device-restored" : "demo-device-started", result: "success", detail: keepDeviceInBackground ? "Demo device active. The Quad Cortex stays connected in the background; nothing is sent to it while the demo is active." : "Demo device active. Edits are saved on this computer; nothing is sent to a Quad Cortex." }]);
+      setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-started", result: "success", detail: keepDeviceInBackground ? "Demo device active in this window and MCP. The Quad Cortex stays connected in the background; nothing is sent to it while the demo is active." : "Demo device active in this window and MCP. Edits are saved on this computer; nothing is sent to a Quad Cortex." }]);
     } catch (error) {
       if (!attempt.current()) return;
       const detail = error instanceof Error ? error.message : String(error);
-      if (keepDeviceInBackground) {
-        // Nothing about the still-connected, still-ready Quad Cortex failed -
-        // only opening the demo did - so the switch is simply abandoned
-        // rather than replacing a healthy device state with a red error.
-        setNotice(`The demo device could not be opened: ${detail}`);
-        setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "demo-device-failed", result: "failure", detail }]);
-        return;
-      }
+      demoDeviceSession.useDevice();
+      await withdrawDemoProvider().catch(() => undefined);
+      if (!attempt.current()) return;
       const failed = { phase: "needs-attention" as const, detail: `The demo device could not be opened: ${detail}`, demo: true, source: "device" as const };
-      // Returning from a failed reconnect, the Grid still shows "Connecting to
-      // the Quad Cortex…"; that attempt is over, so it must not stay under the error.
-      if (returningFrom) setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
+      setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
       connectionRef.current = failed;
       setConnection(failed);
       setNotice(failed.detail);
@@ -1690,13 +1761,15 @@ export function App() {
   };
 
   /** "Stop the demo device": go fully idle - no demo, no hardware - keeping the demo's saved state. */
-  startDeferredDemoRef.current = (reason) => { void startDemoDevice(reason); };
   const stopDemoDevice = () => {
     if (commandPending) {
       setNotice("Wait for the current command to finish before stopping the demo device.");
       return;
     }
-    const stopOutcome = qcStopDemoOutcome(backgroundDeviceLive);
+    // A QC may have become ready after Demo was opened. Withdrawing Demo
+    // selects that broker target, so the window must follow it too, rather
+    // than latching an idle view while MCP serves the newly ready hardware.
+    const stopOutcome = qcStopDemoOutcome(brokerTruth.current.deviceReady);
     if (stopOutcome.resume) {
       // A Quad Cortex stayed connected behind the demo (see startDemoDevice's
       // keepDeviceInBackground): "stop" has nothing truthful to go idle to,
@@ -1707,18 +1780,16 @@ export function App() {
     }
     // A flag left from a device that is no longer live behind the demo.
     if (stopOutcome.clearHeld) setDeviceHeldInBackground(false);
-    connectionAttempts.begin();
+    const stopAttempt = connectionAttempts.begin();
     // Its "disconnected" is the user's idle choice, which a lifted Disconnect
     // latch must not turn into a follow (qcFollowBroker).
-    userDisconnected.current = null;
+    userDisconnected.current = qcLatchUserDisconnect(brokerTruth.current);
     // The demo's preset leaves the Grid with the demo itself, before the
     // device-sourced idle state is shown, so it is never paired with that
     // state or with the error of a later Connect that fails.
     if (suspendDemoDevice()) setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
-    demoBrokerCleanup.current?.();
-    demoBrokerCleanup.current = undefined;
-    demoBrokerTransport.current = undefined;
-    demoBrokerReady.current = false;
+    void withdrawDemoProvider(true).then(() => { if (stopAttempt.current()) explicitDemoHeld.current = false; })
+      .catch(error => setNotice(`Demo provider could not be withdrawn: ${String(error)}`));
     resetCommands();
     setDemoPending(false);
     const idle = { phase: "disconnected" as const, detail: "Demo device stopped. Its presets stay saved on this computer.", demo: true, source: "device" as const };
@@ -1742,10 +1813,18 @@ export function App() {
     const operationEpoch = appOperationEpoch.current;
     const operationCurrent = () => appOperationMounted.current && operationEpoch === appOperationEpoch.current && operationLease.current();
     try {
-      if (!deviceHeldInBackground || commandPending || demoPending || demoDeviceSession.source !== "virtual") return;
+      if ((!deviceHeldInBackground && !brokerTruth.current.deviceReady) || commandPending || demoPending || demoDeviceSession.source !== "virtual") return;
       const attempt = connectionAttempts.begin();
+      suspendDemoDevice();
+      setSnapshot(CONNECTING_PLACEHOLDER_SNAPSHOT);
+      const resuming = { phase: "syncing" as const, detail: "Reading the Quad Cortex that stayed connected in the background…", demo: true, source: "device" as const };
+      connectionRef.current = resuming;
+      setConnection(resuming);
       setNotice("Reading the Quad Cortex that stayed connected in the background…");
       try {
+        await withdrawDemoProvider(true);
+        if (!attempt.current() || !operationCurrent()) return;
+        explicitDemoHeld.current = false;
         const verifiedRuntime = await tauriTransport.runtimeStatus();
         if (!attempt.current() || !operationCurrent()) return;
         if (!runtimeHasSynchronizedQc(verifiedRuntime)) {
@@ -1769,12 +1848,11 @@ export function App() {
       } catch (error) {
         if (!attempt.current() || !operationCurrent()) return;
         const detail = error instanceof Error ? error.message : String(error);
-        // The background session did not actually survive: fall back exactly
-        // like a failed reconnect from the demo would, rather than leaving a
-        // USB tab on screen that cannot succeed.
+        // The background session did not survive. Show Disconnected, never
+        // silently reopen Demo after the user chose the physical device.
         setDeviceHeldInBackground(false);
         setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "device-resume-failed", result: "failure", detail }]);
-        returnToDemoDevice(detail);
+        showDisconnected(detail);
       }
     } finally { operationLease.release(); }
   };
@@ -2020,23 +2098,10 @@ export function App() {
   useEffect(() => {
     if (autoConnectStarted.current) return;
     autoConnectStarted.current = true;
-    // Demo Mode is the app's default: it is what the very first frame is
-    // usable against, not "Connect the Quad Cortex" placeholders. Starting it
-    // here, awaited before connect() runs, guarantees switchableGateway is
-    // already routed to it (source "virtual") by the time connect() makes its
-    // own `fromDemo = suspendDemoDevice()` check - so the very first connect
-    // attempt takes the same already-tested suspend-on-success /
-    // restore-on-failure path a later reconnect from the demo already uses,
-    // rather than a second, bespoke launch sequence. If the demo itself
-    // cannot be opened, connect() still runs against real hardware exactly as
-    // before.
-    let current = true;
-    const opening = startDemoDevice(undefined, true);
-    // startDemoDevice synchronously begins its connection attempt. Capture
-    // that ownership, not the pre-opening attempt it deliberately replaces.
-    const attempt = connectionAttempts.capture();
-    void opening.finally(() => { if (current && attempt.current()) void connect(); });
-    return () => { current = false; autoConnectStarted.current = false; };
+    // Startup follows real broker state. No simulated provider is registered
+    // until the user explicitly selects Demo.
+    void connect();
+    return () => { autoConnectStarted.current = false; };
   }, []);
 
   // The broker's own phase is the evidence a device is there. It is pushed,
@@ -2086,7 +2151,7 @@ export function App() {
       now: performance.now()
     });
     connectStall.current = step.stall;
-    if (step.abandon === "return-to-demo" || step.abandon === "needs-attention") {
+    if (step.abandon === "disconnected") {
       // Supersede it first, so its late answer is ignored whatever happens
       // next; drop a retry it collected; and record the loss, which the
       // follow (qcFollowBroker) answers only after the abandoned request has settled
@@ -2099,20 +2164,7 @@ export function App() {
       recordLiveSessionLoss();
       const detail = `the Quad Cortex did not answer within ${QC_CONNECT_STALL_MS / 1000} s`;
       setConnectionEvents((events) => [...events, { at: new Date().toISOString(), event: "connection-stalled", result: "failure", detail }]);
-      if (step.abandon === "return-to-demo") {
-        returnToDemoDevice(detail);
-      } else {
-        // As this connect's own failure would end: it did not start from the demo.
-        const failed = { phase: "needs-attention" as const, detail: `The Quad Cortex did not answer within ${QC_CONNECT_STALL_MS / 1000} s.`, demo: true, source: "device" as const };
-        connectionRef.current = failed;
-        setConnection(failed);
-        setNotice(failed.detail);
-      }
-    } else if (step.abandon === "retry-fallback") {
-      // The fallback this state announced, refused earlier by a command
-      // that has since finished. It opens the demo only; following the
-      // device from there is the follow's decision (qcFollowBroker).
-      returnToDemoDevice("the earlier return to the demo device did not start");
+      showDisconnected(detail);
     }
   };
   useEffect(() => {
@@ -2126,6 +2178,7 @@ export function App() {
     if (!qcSameBrokerTruth(brokerTruth.current, truth)) setBrokerTruthView(truth);
     brokerTruth.current = truth;
     userDisconnected.current = qcUserDisconnectAfter(userDisconnected.current, truth);
+    if (explicitDemoHeld.current) return;
     const step = qcFollowBroker({
       follow: followState.current,
       truth,

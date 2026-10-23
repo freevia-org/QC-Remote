@@ -72,6 +72,7 @@ fn shared_with_minute_at(
         observer_actions: background::Manager::default(),
         demo: crate::demo_provider::Hub::default(),
         targets: crate::target::TargetRegistry::default(),
+        target_transition: Mutex::new(()),
         observer_minute: minute,
     });
     (TrayFixture { shared, root }, rx)

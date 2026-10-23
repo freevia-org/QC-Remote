@@ -185,12 +185,16 @@ on other Linux distributions.
 5. Click the indicator and check that **Current preset** matches what the
    unit's own screen shows.
 
-QC Remote opens on a **DEMO** device that exists only on your computer, so the
-window is usable before a unit is found. Nothing you do on the demo device is
-sent to a Quad Cortex. Use the tabs at the top of the USB panel to switch
+On Windows, QC Remote follows the broker's real connection state. If the unit
+is absent, released or lost, the window shows **Disconnected**; it never
+switches to Demo automatically. To work without hardware, explicitly select
+the **DEMO** device, which exists only on your computer. Nothing you do on
+that device is sent to a Quad Cortex. The window and its MCP bridge use the
+same selected target. Use the tabs at the top of the USB panel to switch
 between **Quad Cortex** and **DEMO**. Switching to DEMO while a unit is
 connected leaves the unit connected in the background; **Switch to Quad
-Cortex** brings it back.
+Cortex** brings it back. Selecting the physical device withdraws Demo from MCP;
+if that connection fails, both remain disconnected instead of restoring Demo.
 
 ![The QC Remote window on the Demo device. The LOCAL, REMOTE and USB indicators are at the top right; the USB indicator reads DEMO.](images/01-main-window.png)
 

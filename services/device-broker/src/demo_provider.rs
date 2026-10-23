@@ -36,6 +36,9 @@ struct Pending {
 #[derive(Default)]
 struct State {
     owner: Option<(u64, String)>,
+    explicit_selection: bool,
+    selection_token: Option<String>,
+    selection_revision: u64,
     sequence: u64,
     pending: VecDeque<Pending>,
 }
@@ -61,20 +64,145 @@ impl Hub {
     }
 
     pub fn register(&self, connection: u64, session: String) -> Result<(), String> {
+        self.register_selection(connection, session, false)
+    }
+
+    pub fn register_selection(
+        &self,
+        connection: u64,
+        session: String,
+        explicit_selection: bool,
+    ) -> Result<(), String> {
         if session.trim().is_empty() || session.len() > 512 {
             return Err("Demo session id must contain 1..512 UTF-8 bytes".into());
         }
         let mut state = self.lock();
-        if state.owner.is_some() {
+        if state.owner.is_some() || state.explicit_selection {
             return Err("A live UI already owns the demo provider".into());
         }
+        if explicit_selection {
+            state.selection_revision = state
+                .selection_revision
+                .checked_add(1)
+                .ok_or("Demo selection revision exhausted")?;
+        }
         state.owner = Some((connection, session));
+        state.explicit_selection = explicit_selection;
         self.changed.notify_all();
         Ok(())
     }
 
     pub fn session(&self) -> Option<String> {
         self.lock().owner.as_ref().map(|(_, id)| id.clone())
+    }
+
+    pub fn explicit_session(&self) -> Option<String> {
+        let state = self.lock();
+        state
+            .owner
+            .as_ref()
+            .filter(|_| state.explicit_selection)
+            .map(|(_, id)| id.clone())
+    }
+
+    /// Public revision is not a capability. The bearer remains the trust boundary.
+    pub fn selection_revision(&self) -> u64 {
+        self.lock().selection_revision
+    }
+
+    pub fn selection_held(&self) -> bool {
+        self.lock().explicit_selection
+    }
+
+    pub fn select_explicit(
+        &self,
+        connection: u64,
+        session: String,
+        token: String,
+        previous_token: Option<&str>,
+        recover_revision: Option<u64>,
+    ) -> Result<(), String> {
+        let mut state = self.lock();
+        if state.owner.is_some() {
+            return Err("A live UI already owns the demo provider".into());
+        }
+        // A fresh explicit recovery first reads the revision, then compares it
+        // here. A delayed old action cannot overwrite a newer selection.
+        let recovery = recover_revision == Some(state.selection_revision);
+        let retained =
+            previous_token.is_some() && previous_token == state.selection_token.as_deref();
+        if !recovery && !retained {
+            return Err("Demo selection changed; select Demo again".into());
+        }
+        let revision = state
+            .selection_revision
+            .checked_add(1)
+            .ok_or("Demo selection revision exhausted")?;
+        state.selection_revision = revision;
+        state.selection_token = Some(token);
+        state.explicit_selection = true;
+        state.owner = Some((connection, session));
+        self.changed.notify_all();
+        Ok(())
+    }
+
+    pub fn clear_selection(&self, token: &str) -> bool {
+        let retired = {
+            let mut state = self.lock();
+            if state.selection_token.as_deref() != Some(token) {
+                return false;
+            }
+            if state.explicit_selection {
+                let Some(revision) = state.selection_revision.checked_add(1) else {
+                    return false;
+                };
+                state.selection_revision = revision;
+            }
+            state.owner = None;
+            state.explicit_selection = false;
+            state.selection_token = None;
+            std::mem::take(&mut state.pending)
+        };
+        drop(retired);
+        self.changed.notify_all();
+        true
+    }
+
+    /// Explicit local-bearer action for an acknowledgement/token lost in transit.
+    /// Increment even an empty intent so already-issued old registrations lose CAS.
+    pub fn clear_observed_selection(&self, expected_revision: u64) -> bool {
+        let retired = {
+            let mut state = self.lock();
+            if state.selection_revision != expected_revision {
+                return false;
+            }
+            let Some(next) = state.selection_revision.checked_add(1) else {
+                return false;
+            };
+            state.selection_revision = next;
+            state.owner = None;
+            state.explicit_selection = false;
+            state.selection_token = None;
+            std::mem::take(&mut state.pending)
+        };
+        drop(retired);
+        self.changed.notify_all();
+        true
+    }
+
+    /// Transport loss removes availability, NOT the person's selected target.
+    pub fn disconnected(&self, connection: u64) -> bool {
+        let retired = {
+            let mut state = self.lock();
+            if !Self::owner_matches(&state, connection) {
+                return false;
+            }
+            state.owner = None;
+            std::mem::take(&mut state.pending)
+        };
+        drop(retired);
+        self.changed.notify_all();
+        true
     }
 
     pub fn target_changed(&self) {
@@ -92,7 +220,15 @@ impl Hub {
             {
                 return false;
             }
+            if state.explicit_selection {
+                let Some(revision) = state.selection_revision.checked_add(1) else {
+                    return false;
+                };
+                state.selection_revision = revision;
+            }
             state.owner = None;
+            state.explicit_selection = false;
+            state.selection_token = None;
             std::mem::take(&mut state.pending)
         };
         // Dropping senders wakes all callers, outside the hub lock.
@@ -354,6 +490,83 @@ mod tests {
     use super::*;
     use crate::target::TargetRegistry;
     use std::sync::Arc;
+
+    #[test]
+    fn explicit_demo_loss_holds_intent_and_recovery_fences_stale_clear_and_disconnect() {
+        let hub = Hub::default();
+        hub.select_explicit(1, "demo-a".into(), "token-a".into(), None, Some(0))
+            .unwrap();
+        assert!(hub.disconnected(1));
+        assert!(hub.selection_held());
+        assert!(hub.explicit_session().is_none());
+        assert!(hub.register(2, "legacy".into()).is_err());
+        assert!(hub
+            .select_explicit(2, "stale".into(), "old".into(), None, Some(0))
+            .is_err());
+        hub.select_explicit(2, "demo-b".into(), "token-b".into(), Some("token-a"), None)
+            .unwrap();
+        assert!(!hub.disconnected(1));
+        assert!(!hub.clear_selection("token-a"));
+        assert!(!hub.withdraw(1));
+        assert_eq!(hub.explicit_session().as_deref(), Some("demo-b"));
+        assert!(hub.clear_selection("token-b"));
+        assert!(!hub.selection_held());
+        assert!(!hub.disconnected(2));
+        assert!(hub
+            .select_explicit(3, "late".into(), "late".into(), None, Some(2))
+            .is_err());
+    }
+
+    #[test]
+    fn explicit_lost_token_recovery_is_revision_checked_without_restarting_the_broker() {
+        let hub = Hub::default();
+        hub.select_explicit(1, "demo-a".into(), "token-a".into(), None, Some(0))
+            .unwrap();
+        hub.disconnected(1);
+        let observed = hub.selection_revision();
+        hub.select_explicit(2, "demo-b".into(), "token-b".into(), None, Some(observed))
+            .unwrap();
+        hub.disconnected(2);
+        assert!(hub
+            .select_explicit(3, "late".into(), "late".into(), None, Some(observed))
+            .is_err());
+        assert!(!hub.clear_selection("token-a"));
+        assert!(hub.selection_held());
+    }
+
+    #[test]
+    fn explicit_clear_after_lost_registration_ack_fences_delayed_register_and_old_tokens() {
+        let hub = Hub::default();
+        let stale_revision = hub.selection_revision();
+        hub.select_explicit(
+            1,
+            "unacknowledged".into(),
+            "unseen-token".into(),
+            None,
+            Some(stale_revision),
+        )
+        .unwrap();
+        hub.disconnected(1);
+        let revision = hub.selection_revision();
+        assert!(hub.clear_observed_selection(revision));
+        assert!(!hub.selection_held());
+        assert!(hub
+            .select_explicit(2, "late".into(), "late".into(), None, Some(stale_revision))
+            .is_err());
+        assert!(hub
+            .select_explicit(2, "late".into(), "late".into(), Some("unseen-token"), None)
+            .is_err());
+        hub.select_explicit(
+            3,
+            "newer".into(),
+            "newer-token".into(),
+            None,
+            Some(hub.selection_revision()),
+        )
+        .unwrap();
+        assert!(!hub.clear_observed_selection(revision));
+        assert_eq!(hub.explicit_session().as_deref(), Some("newer"));
+    }
 
     fn fixture() -> (Arc<Hub>, TargetRegistry) {
         let hub = Arc::new(Hub::default());

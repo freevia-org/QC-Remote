@@ -1,41 +1,60 @@
 import type { GatewayTransport, PresetSnapshot } from "@qc-remote/client";
 import { createDemoBrokerProvider, type DemoBrokerRequest } from "@qc-remote/ui";
 import { callTauri } from "./tauri-invoke.ts";
-import { createDemoBrokerLifecycle } from "./demo-broker-lifecycle.ts";
+import { createDemoBrokerInstanceObservation, createDemoBrokerRecovery, createDemoBrokerLifecycle, rebindDemoBrokerFromObservation, waitForDemoBrokerRegistration } from "./demo-broker-lifecycle.ts";
 
 const BROKER_INSTANCE_EVENT = "qc-demo-broker-instance";
-let observedBrokerInstance: string | undefined;
+const BROKER_INVENTORY_EVENT = "qc-demo-broker-inventory";
 
 /** Reuse the editor's existing local inventory observation; add no timer. */
-export function observeDemoBrokerInstance(instance: string | null | undefined): void {
-  const next = instance || undefined;
-  if (next === observedBrokerInstance) return;
-  observedBrokerInstance = next;
-  window.dispatchEvent(new CustomEvent(BROKER_INSTANCE_EVENT, { detail: next }));
+const observeInstance = createDemoBrokerInstanceObservation(instance => {
+  window.dispatchEvent(new CustomEvent(BROKER_INSTANCE_EVENT, { detail: instance }));
+});
+export function observeDemoBrokerInstance(instance: string | null | undefined) {
+  observeInstance(instance);
+  if (instance !== undefined) window.dispatchEvent(new CustomEvent(BROKER_INVENTORY_EVENT, { detail: instance }));
 }
 
 /** Expose this exact already-opened UI demo, without using its routing proxy. */
 export async function exposeDesktopDemo(
   virtual: GatewayTransport,
-  status: (ready: boolean, message?: string) => void,
-  changed: (snapshot: PresetSnapshot) => void
-): Promise<() => void> {
-  if (!window.__TAURI_INTERNALS__) return () => undefined;
+  status: (ready: boolean, message?: string, brokerInstanceId?: string) => void,
+  changed: (snapshot: PresetSnapshot) => void,
+  own: (cleanup: () => Promise<void>) => void
+): Promise<() => Promise<void>> {
+  if (!window.__TAURI_INTERNALS__) return async () => undefined;
   const { listen } = await import("@tauri-apps/api/event");
   let live = true;
   let selected = "";
   let dispatcher: ReturnType<typeof createDemoBrokerProvider> | undefined;
+  let registration: { id: string; observe(ready: boolean, message?: string): void } | undefined;
+  let userAction = true;
+  const recovery = createDemoBrokerRecovery(() => lifecycle.rebind(true));
   const lifecycle = createDemoBrokerLifecycle({
     newId: () => crypto.randomUUID(),
-    start: sessionId => callTauri<void>("start_demo_provider", { sessionId }),
+    start: sessionId => waitForDemoBrokerRegistration({
+      timeoutMs: 30_000, // Includes the explicit election/start budget, not device work.
+      start: () => {
+        const explicit = userAction;
+        userAction = false;
+        return callTauri<void>("start_demo_provider", { sessionId, userAction: explicit });
+      },
+      subscribe: observe => {
+        const current = { id: sessionId, observe };
+        registration = current;
+        return () => { if (registration === current) registration = undefined; };
+      }
+    }),
     stop: providerId => callTauri<void>("stop_demo_provider", { providerId }),
     invalidate: () => { selected = ""; dispatcher?.dispose(); },
-    failed: error => { if (live) status(false, error instanceof Error ? error.message : String(error)); }
+    failed: error => { if (live) { recovery.failed(); status(false, error instanceof Error ? error.message : String(error)); } }
   });
-  const stopStatus = await listen<{ providerId: string; ready: boolean; message?: string }>("qc-demo-provider-status", ({ payload }) => {
+  const stopStatus = await listen<{ providerId: string; ready: boolean; message?: string; brokerInstanceId?: string }>("qc-demo-provider-status", ({ payload }) => {
     if (!live || !lifecycle.isCurrent(payload.providerId)) return;
-    if (!payload.ready) { selected = ""; dispatcher?.dispose(); }
-    status(payload.ready, payload.message);
+    if (registration?.id === payload.providerId) registration.observe(payload.ready, payload.message);
+    if (!payload.ready) { selected = ""; dispatcher?.dispose(); recovery.failed(); }
+    else recovery.ready();
+    status(payload.ready, payload.message, payload.ready ? payload.brokerInstanceId : undefined);
   });
   const stopRequests = await listen<{ providerId: string; request: DemoBrokerRequest }>("qc-demo-provider-request", ({ payload }) => {
     if (!live || !lifecycle.isCurrent(payload.providerId)) return;
@@ -68,21 +87,33 @@ export async function exposeDesktopDemo(
     })().catch(error => { if (live && lifecycle.isCurrent(providerId)) status(false, error instanceof Error ? error.message : String(error)); });
   });
   const cleanup = () => {
-    if (!live) return;
+    if (!live) return lifecycle.dispose();
+    registration?.observe(false, "The Demo selection ended");
     live = false;
     selected = "";
     dispatcher?.dispose();
     stopRequests();
     stopStatus();
     window.removeEventListener(BROKER_INSTANCE_EVENT, brokerChanged);
-    lifecycle.dispose();
+    window.removeEventListener(BROKER_INVENTORY_EVENT, inventoryObserved);
+    return lifecycle.dispose();
   };
   const brokerChanged = (event: Event) => {
     const instance = (event as CustomEvent<string | undefined>).detail;
-    lifecycle.rebind(Boolean(instance));
+    if (!instance) status(false, "The broker is disconnected. Select Connect or Demo explicitly to resume.");
+    // Startup already authenticates the current descriptor. Do not replace its
+    // id while its registration acknowledgement is still outstanding.
+    rebindDemoBrokerFromObservation(recovery, instance, Boolean(registration), available => lifecycle.rebind(available));
+  };
+  const inventoryObserved = (event: Event) => {
+    if (live) recovery.observed((event as CustomEvent<string | null>).detail, Boolean(registration));
   };
   window.addEventListener(BROKER_INSTANCE_EVENT, brokerChanged);
+  window.addEventListener(BROKER_INVENTORY_EVENT, inventoryObserved);
+  // The caller owns retirement even while registration is still pending.
+  // A newer Connect must not leave a late Demo registration behind it.
+  own(cleanup);
   try { await lifecycle.start(); }
-  catch (error) { cleanup(); throw error; }
+  catch (error) { await cleanup(); throw error; }
   return cleanup;
 }
