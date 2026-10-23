@@ -3235,7 +3235,7 @@ fn configured_chatgpt_route(
     else {
         return Ok(ConfiguredChatgptRoute::default());
     };
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if server.contains_key("http_headers_helper") {
         if !codex_http_approval_policy_supported(server) {
             return Err("The custom Codex approval policy is invalid for the supported client. It was preserved; review it in Codex settings.".into());
@@ -3320,7 +3320,7 @@ fn configured_chatgpt_route(
     })
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn codex_http_approval_policy_supported(server: &dyn toml_edit::TableLike) -> bool {
     // Exact tested Codex0.163.0-alpha.11.2 AppToolApproval schema. Missing
     // values are valid defaults; unknown/malformed values remain diagnostic.
@@ -4564,12 +4564,27 @@ fn codex_route_table(executable_path: &Path, client_id: &str) -> Table {
     server
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn codex_http_route_table(
     executable_path: &Path,
     client_id: &str,
     port: crate::local_http_binding::StablePort,
 ) -> Result<Table, String> {
+    let helper = codex_http_helper_command(executable_path)?;
+    let mut server = Table::new();
+    server.insert("url", value(port.url()));
+    server.insert("http_headers_helper", value(helper));
+    server.insert("default_tools_approval_mode", value("approve"));
+    server.insert("startup_timeout_sec", value(15));
+    server.insert("tool_timeout_sec", value(300));
+    let mut headers = Table::new();
+    headers.insert(LOCAL_MCP_CLIENT_HEADER, value(client_id));
+    server.insert("http_headers", Item::Table(headers));
+    Ok(server)
+}
+
+#[cfg(windows)]
+fn codex_http_helper_command(executable_path: &Path) -> Result<String, String> {
     use base64::Engine as _;
     let executable = executable_path
         .to_str()
@@ -4601,16 +4616,22 @@ fn codex_http_route_table(
         .ok_or("The Windows system PowerShell path cannot be represented safely")?;
     let helper =
         format!("\"{shell}\" -NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}");
-    let mut server = Table::new();
-    server.insert("url", value(port.url()));
-    server.insert("http_headers_helper", value(helper));
-    server.insert("default_tools_approval_mode", value("approve"));
-    server.insert("startup_timeout_sec", value(15));
-    server.insert("tool_timeout_sec", value(300));
-    let mut headers = Table::new();
-    headers.insert(LOCAL_MCP_CLIENT_HEADER, value(client_id));
-    server.insert("http_headers", Item::Table(headers));
-    Ok(server)
+    Ok(helper)
+}
+
+#[cfg(target_os = "macos")]
+fn codex_http_helper_command(executable_path: &Path) -> Result<String, String> {
+    let executable = executable_path
+        .to_str()
+        .filter(|_| executable_path.is_absolute())
+        .filter(|path| !path.contains(['\n', '\r', '\0']))
+        .ok_or("The HTTP credential helper must be an absolute Unicode executable path")?;
+    // Codex executes the helper through the platform shell. Single-quote the
+    // path as data; apostrophes are escaped by closing/reopening the quote.
+    Ok(format!(
+        "'{}' --local-mcp-http-headers",
+        executable.replace('\'', "'\"'\"'")
+    ))
 }
 
 fn write_codex_config(
@@ -5213,7 +5234,7 @@ fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
         // successful native install into a misleading failure.
         let _ = fs::remove_file(&legacy_runner);
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let mut result = {
         let directory = crate::local_http_helper::directory()?;
         fs::create_dir_all(&directory)
@@ -5247,7 +5268,7 @@ fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
         result["transport"] = json!("streamable_http");
         result
     };
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let mut result = pair_chatgpt_route(&config_path, &executable_path, &skill_path, &backup_root)?;
     result["restartRequired"] = Value::Bool(chatgpt_restart_required(&config_path));
     Ok(result)
@@ -5258,7 +5279,7 @@ fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
 /// moving the user's own `qc-device-knowledge` aside - before the write that
 /// could still fail, and returned an `Err` the caller could only report as an
 /// outright failure, with the displaced skill nowhere in it.
-#[cfg(any(not(windows), test))]
+#[cfg(any(not(any(windows, target_os = "macos")), test))]
 fn pair_chatgpt_route(
     config_path: &Path,
     executable_path: &Path,

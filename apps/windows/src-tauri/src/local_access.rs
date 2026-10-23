@@ -177,10 +177,10 @@ const ANOTHER_COPY_IS_SERVING: &str = "Another copy of QC Remote is already serv
 const NATIVE_BRIDGE_ACTIVITY_WINDOW: Duration = Duration::from_secs(12);
 const ANTIGRAVITY_BRIDGE_CLIENT: &str = concat!("antigravity:", env!("CARGO_PKG_VERSION"));
 static LOCAL_CLIENT_LAST_SEEN: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 static DIRECT_CODEX_ACTIVITY: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn record_direct_activity(activity: &mut HashMap<String, u64>, id: &str, now: u64) {
     activity.retain(|_, seen| native_bridge_is_recent(*seen, now));
     let evicted = if !activity.contains_key(id) && activity.len() >= MAX_LOCAL_HTTP_CONNECTIONS {
@@ -197,13 +197,13 @@ fn record_direct_activity(activity: &mut HashMap<String, u64>, id: &str, now: u6
     activity.insert(id.to_owned(), now);
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 struct DirectCodexPresence {
     delegate: Arc<dyn qc_remote_mcp::ClientPresence>,
     id: String,
     initialized: AtomicBool,
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 impl DirectCodexPresence {
     fn new() -> Self {
         Self {
@@ -213,7 +213,7 @@ impl DirectCodexPresence {
         }
     }
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 impl qc_remote_mcp::ClientPresence for DirectCodexPresence {
     fn initialized(&self, client: &rmcp::model::Implementation) {
         self.delegate.initialized(client);
@@ -237,7 +237,7 @@ impl qc_remote_mcp::ClientPresence for DirectCodexPresence {
         }
     }
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 impl Drop for DirectCodexPresence {
     fn drop(&mut self) {
         if let Some(activity) = DIRECT_CODEX_ACTIVITY.get() {
@@ -252,9 +252,9 @@ fn local_client_activity_snapshot() -> HashMap<String, u64> {
         .get()
         .map(|map| lock_recover(map).clone())
         .unwrap_or_default();
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let mut clients = clients;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if let Some(activity) = DIRECT_CODEX_ACTIVITY.get() {
         let now = unix_time_ms();
         let mut activity = lock_recover(activity);
@@ -608,7 +608,7 @@ fn local_router_with_lifecycle(
 }
 
 /// A separate credential audience. Never mount legacy RPC/health here.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn direct_http_router(
     backend: Arc<dyn QcBackend>,
     token: Arc<str>,
@@ -646,7 +646,7 @@ pub(crate) fn direct_http_router(
     ))
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 async fn direct_envelope(
     State(rate): State<Arc<Mutex<(std::time::Instant, u32)>>>,
     request: Request<Body>,
@@ -1542,7 +1542,7 @@ pub(crate) fn start_listener(
     adapter: Arc<dyn DeviceAdapter>,
     access: watch::Receiver<AccessMode>,
 ) -> Result<RunningLocalAccess, LocalAccessFailure> {
-    #[cfg(all(windows, not(test)))]
+    #[cfg(all(any(windows, target_os = "macos"), not(test)))]
     let direct_directory = match crate::local_http_helper::directory() {
         Ok(directory) => Some(directory),
         Err(_) => {
@@ -1550,7 +1550,7 @@ pub(crate) fn start_listener(
             None
         }
     };
-    #[cfg(any(not(windows), test))]
+    #[cfg(any(not(any(windows, target_os = "macos")), test))]
     let direct_directory = None;
     start_listener_inner(
         state_files,
@@ -1634,7 +1634,7 @@ fn start_listener_inner(
         adapter: adapter.clone(),
         access,
     });
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let direct = _direct_directory.as_deref().map(|directory| {
         crate::local_http_listener::DirectHost::prepare(directory, backend.clone(), &instance_id)
     });
@@ -1730,7 +1730,7 @@ fn start_listener_inner(
                         }
                     }
                     () = async {
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "macos"))]
                         if let Some(direct) = direct {
                             if let Err(error) = direct.run().await {
                                 eprintln!("QC Remote shared HTTP listener refused: {error}");
@@ -4285,7 +4285,7 @@ mod tests {
         ready: AtomicBool,
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn local_http_managed_presence_requires_initialize_and_is_per_session_bounded_activity() {
         use qc_remote_mcp::ClientPresence as _;
@@ -4329,7 +4329,7 @@ mod tests {
         assert!(!lock_recover(DIRECT_CODEX_ACTIVITY.get().unwrap()).contains_key(&second_id));
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
     fn local_http_activity_metadata_is_capped_even_when_one_connection_initializes_many_sessions() {
         // Isolate the production insertion policy; flooding the global map
@@ -4355,7 +4355,7 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn local_http_late_pair_refusal_keeps_legacy_and_explicit_retry_rearms_only_direct() {
         static BUDGET: qc_native_platform::thread_owner::Budget =
@@ -4446,7 +4446,7 @@ mod tests {
             .exists());
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn local_http_startup_refusal_preserves_legacy_for_malformed_and_occupied_pairing() {
         static BUDGET: qc_native_platform::thread_owner::Budget =

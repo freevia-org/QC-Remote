@@ -8,6 +8,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::num::NonZeroU16;
+#[cfg(windows)]
 use std::os::windows::io::AsRawSocket;
 use std::path::Path;
 
@@ -118,25 +119,36 @@ impl StablePort {
 }
 
 fn bind_exclusive(port: u16) -> io::Result<TcpListener> {
-    use windows_sys::Win32::Networking::WinSock::{
-        setsockopt, WSAGetLastError, SOCKET_ERROR, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-    };
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
-    let enabled: i32 = 1;
-    // SAFETY: the fresh owned socket remains live; enabled is an aligned i32
-    // readable for the exact option length. Exclusivity is set BEFORE bind.
-    let result = unsafe {
-        setsockopt(
-            socket.as_raw_socket() as _,
-            SOL_SOCKET,
-            SO_EXCLUSIVEADDRUSE,
-            (&enabled as *const i32).cast(),
-            std::mem::size_of::<i32>() as i32,
-        )
-    };
-    if result == SOCKET_ERROR {
-        // SAFETY: WSAGetLastError takes no pointers and reads this thread's error.
-        return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Networking::WinSock::{
+            setsockopt, WSAGetLastError, SOCKET_ERROR, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+        };
+        let enabled: i32 = 1;
+        // SAFETY: the fresh owned socket remains live; enabled is an aligned i32
+        // readable for the exact option length. Exclusivity is set BEFORE bind.
+        let result = unsafe {
+            setsockopt(
+                socket.as_raw_socket() as _,
+                SOL_SOCKET,
+                SO_EXCLUSIVEADDRUSE,
+                (&enabled as *const i32).cast(),
+                std::mem::size_of::<i32>() as i32,
+            )
+        };
+        if result == SOCKET_ERROR {
+            // SAFETY: WSAGetLastError takes no pointers and reads this thread's error.
+            return Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+        }
+    }
+    // BSD REUSEADDR permits restart across retired TCP TIME_WAIT tuples.
+    // REUSEPORT stays off: a live exact-address listener cannot be shared.
+    // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setsockopt.2.html
+    #[cfg(target_os = "macos")]
+    {
+        socket.set_reuse_address(true)?;
+        socket.set_reuse_port(false)?;
     }
     socket.bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, port).into())?;
     socket.listen(128)?;
@@ -215,5 +227,40 @@ mod tests {
         let error = selected.bind().unwrap_err();
         assert!(error.contains("port was not changed"));
         assert_eq!(stranger.local_addr().unwrap(), address);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::*;
+    #[test]
+    fn live_listener_refuses_reuse_flags_and_restarts_after_active_tcp_close() {
+        use std::io::Read;
+        let owner = bind_exclusive(0).unwrap();
+        let address = owner.local_addr().unwrap();
+        for reuse_port in [false, true] {
+            let contender = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+            contender.set_reuse_address(true).unwrap();
+            contender.set_reuse_port(reuse_port).unwrap();
+            let admission = contender
+                .bind(&address.into())
+                .and_then(|()| contender.listen(1));
+            assert!(admission.is_err(), "a live listener cannot be shared");
+        }
+        let mut client = std::net::TcpStream::connect(address).unwrap();
+        owner.set_nonblocking(false).unwrap();
+        let (accepted, _) = owner.accept().unwrap();
+        // Server actively closes first, leaving its exact tuple in TIME_WAIT.
+        accepted.shutdown(std::net::Shutdown::Write).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        assert_eq!(client.read(&mut [0_u8; 1]).unwrap(), 0);
+        drop(client);
+        drop(accepted);
+        drop(owner);
+        let replacement =
+            bind_exclusive(address.port()).expect("restart must reuse a retired tuple");
+        assert_eq!(replacement.local_addr().unwrap(), address);
     }
 }

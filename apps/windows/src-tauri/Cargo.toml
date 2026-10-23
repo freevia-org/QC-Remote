@@ -92,11 +92,13 @@ zip = { version = "9.0", default-features = false }
 # `os_version.rs` reads the Windows version from the registry for a bug
 # report's Platform field. Already in the lock file as a transitive dependency
 # of reqwest (through hyper-util), so this adds no crate to the build.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+socket2 = { version = "=0.6.5", features = ["all"] }
+
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3.6", default-features = false, features = ["windows-native"] }
 windows-registry = "0.6"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Pipes", "Win32_Networking_WinSock"] }
-socket2 = "=0.6.5"
 qc-windows-midi = { path = "../../../packages/rust/qc-windows-midi" }
 # The broker owns the native tray through windows-sys. The GUI has no direct
 # tray-icon, muda or tao API dependency; Tauri owns its own window/menu graph.
@@ -118,7 +120,6 @@ plist = "1.10"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-socket2 = "=0.6.5"
 
 # No debuginfo for dependencies in debug builds.
 #

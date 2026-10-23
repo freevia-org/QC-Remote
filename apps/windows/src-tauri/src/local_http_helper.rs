@@ -24,6 +24,7 @@ pub(crate) struct DirectDescriptor {
     pub(crate) published_at_unix_ms: u64,
 }
 
+#[cfg(windows)]
 pub(crate) fn directory() -> Result<PathBuf, String> {
     // dirs 6 uses SHGetKnownFolderPath(FOLDERID_LocalAppData) on Windows.
     // No APPDATA mirror, QC_REMOTE_LOCAL_MCP_STATE, temp or environment fallback.
@@ -31,6 +32,16 @@ pub(crate) fn directory() -> Result<PathBuf, String> {
         .filter(|path| path.is_absolute())
         .map(|path| path.join(crate::broker_paths::APP_DIRECTORY))
         .ok_or_else(|| "The native LocalAppData directory is unavailable".into())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn directory() -> Result<PathBuf, String> {
+    #[cfg(feature = "macos-app-store")]
+    let directory = qc_native_platform::app_store::shared_directory()?;
+    #[cfg(not(feature = "macos-app-store"))]
+    let directory = qc_native_platform::paths_macos::default_directory();
+    qc_native_platform::paths_macos::prepare_directory(&directory)?;
+    Ok(directory)
 }
 
 fn parse_descriptor(bytes: &[u8], port: u16, now: u64) -> Result<DirectDescriptor, String> {

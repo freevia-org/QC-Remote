@@ -42,13 +42,13 @@ mod generated_broker_surface;
 mod host_presence;
 mod host_runtime_status;
 mod local_access;
-mod local_identity;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod local_http_binding;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod local_http_helper;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 mod local_http_listener;
+mod local_identity;
 mod local_stdio;
 mod loopback_http;
 mod os_version;
@@ -170,7 +170,7 @@ use workspace::{
 pub fn run_local_mcp_bridge() -> Result<(), String> {
     local_stdio::run()
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn run_local_mcp_http_headers() -> Result<(), String> {
     local_http_helper::run()
 }

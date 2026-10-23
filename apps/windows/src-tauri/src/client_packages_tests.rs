@@ -6279,7 +6279,7 @@ fn shared_http_pairing_encodes_shell_metacharacters_and_keeps_disabled_and_other
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 #[test]
 fn shared_http_partial_skill_failure_reports_committed_route_without_false_rollback() {
     let root = crate::tests::unique_fixture_directory("http-partial-skill");
@@ -6295,12 +6295,7 @@ fn shared_http_partial_skill_failure_reports_committed_route_without_false_rollb
         .unwrap();
     let report = pair_codex_route_and_skill(
         &config,
-        codex_http_route_table(
-            Path::new("C:\\QC Remote\\qc-remote.exe"),
-            CODEX_CLIENT_ID,
-            port,
-        )
-        .unwrap(),
+        codex_http_route_table(&std::env::current_exe().unwrap(), CODEX_CLIENT_ID, port).unwrap(),
         &skill,
         &backup,
     )
@@ -6323,7 +6318,7 @@ fn shared_http_partial_skill_failure_reports_committed_route_without_false_rollb
 
 /// Owned exact-Codex probe entry: emit the complete production route, never
 /// a user's config. All environment inputs exist ONLY in this ignored test.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 #[test]
 #[ignore]
 fn shared_http_generated_route_probe() {
@@ -6355,7 +6350,7 @@ fn shared_http_generated_route_probe() {
         .unwrap();
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 #[test]
 fn shared_http_approval_status_accepts_preserved_supported_modes_not_malformed_values() {
     for mode in ["auto", "prompt", "writes", "approve"] {
@@ -6372,5 +6367,39 @@ fn shared_http_approval_status_accepts_preserved_supported_modes_not_malformed_v
     ] {
         let document = policy.parse::<DocumentMut>().unwrap();
         assert!(!codex_http_approval_policy_supported(document.as_table()));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn shared_http_macos_helper_quotes_path_as_data_and_exits_without_a_proxy() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = crate::tests::unique_fixture_directory("http-macos-helper");
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(root.clone());
+    fs::create_dir_all(&root).unwrap();
+    let executable =
+        root.join("QC % & O'Brien’s $(touch injected) `id`.app/Contents/MacOS/qc-remote");
+    fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    fs::write(&executable, b"#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = --local-mcp-http-headers ] || exit 37\nprintf '{\"X-Fixture\":\"ok\"}\\n'\n").unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let selected =
+        crate::local_http_binding::StablePort::parse(br#"{"schemaVersion":1,"port":41012}"#)
+            .unwrap();
+    let route = codex_http_route_table(&executable, CODEX_CLIENT_ID, selected).unwrap();
+    assert!(route.get("command").is_none() && route.get("env").is_none());
+    let output = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(route["http_headers_helper"].as_str().unwrap())
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!({"X-Fixture":"ok"})
+    );
+    assert!(!root.join("injected").exists());
+    for bad in [Path::new("relative"), Path::new("/invalid\npath")] {
+        assert!(codex_http_helper_command(bad).is_err());
     }
 }

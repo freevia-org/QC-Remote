@@ -153,3 +153,36 @@ client checks the expected PID and process creation time before sending the
 existing broker credential on the original TCP connection. Missing or failed
 proofs fail closed; the proof channel carries no credential. The default direct
 build retains its existing listener ownership check.
+
+### Shared Codex HTTP sessions
+
+Explicit Codex Pair now uses one native HTTP audience in the existing host;
+logical sessions no longer require a persistent STDIO process per chat. Existing
+STDIO routes are preserved until explicit Pair. The credential helper is the
+native editor executable with `--local-mcp-http-headers`, returns bounded header
+JSON, and exits without starting a host. Its shell command quotes the absolute
+path as data. Direct builds use private Application Support files; Store builds
+use the existing Foundation App Group path. No Keychain storage is introduced.
+The independent broker's Unix connection witness remains unchanged.
+
+BSD admission keeps `SO_REUSEPORT` disabled. `SO_REUSEADDR` permits restarting
+across retired TCP tuples, while a live listener on the exact loopback address
+still refuses a second listener, including contenders using reuse flags.
+Windows retains its own `SO_EXCLUSIVEADDRUSE` implementation. Neither platform
+silently reassigns the saved port or kills a conflicting process.
+
+Validation on macOS: 14 focused HTTP tests and 122 pairing tests pass in both
+direct and Store feature builds; both Store native binaries compile. The shared
+MCP crate's 33 server tests and remaining integration suites pass. An isolated
+installed Codex 0.163.0-alpha.11.1 test uses the complete production route builder
+and a native mock helper under shell-metacharacter/Unicode paths. It verifies
+both headers, a completed mock write whose response is dropped, stale-session
+reinitialization without repeating that write, and a positive new write only
+after explicit status. All owned children retire; no model inference or physical
+hardware is involved. This does not qualify the installed/signed Store app's
+runtime lifecycle or authorize changing a live Codex profile.
+
+The plaintext HTTP cached-header port-takeover limitation in USER-GUIDE still
+applies on macOS. A helper proof protects new credential issuance, not every
+later connection made with cached credentials. Review that limitation before
+activating this transport; source adaptation does not migrate a live pairing.
