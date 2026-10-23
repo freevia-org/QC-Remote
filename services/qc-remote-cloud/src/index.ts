@@ -1,3 +1,5 @@
+import { APPLE_ACCOUNT_EPOCH_KEY, shouldApplyAppleEvent, type AppleAccountEpoch } from "./apple-account-events.ts";
+import { appleSignInButton, normalizeAppleCallback, readAppleNotification, type AppleOAuthEnv } from "./apple-auth.ts";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { requestInitializeClient, requestClientMetadata, observedClientName, mcpPresenceFrame, updateMcpPresence, forgetMcpGrant, publicMcpPresence, rememberedMcpPresence, nextPresenceExpiry, type McpObservation, type StoredMcpPresence, type McpClientPresence } from "./mcp-presence.ts";
 import OAuthProvider, { getOAuthApi, type OAuthProviderOptions } from "@cloudflare/workers-oauth-provider";
@@ -34,7 +36,7 @@ import { sharedTool } from "./shared-tool-shape.ts";
 import { adoptReplacement, admitPairingAttempt, resolvePairingAttempt, PAIRING_REFUSAL_MESSAGES, PAIRING_REFUSAL_RESPONSES, type PairingAdmission, type PairingResolution, DEVICE_PAIR_REPLACE_PATH, pairingPrevious, REPLACEMENT_ACK_PARAM, replacementAckFrame, completeDevicePairing, drainDirectoryCleanup, DEVICE_SWEEP_KEY, earliestDeadline, liveDeviceCount, redeemPairingOffer, refreshDeviceDirectory, sweepExpiredDevices, touchDeviceLastUse, type DirectoryKv, type AccountWriteDenial, type ConnectAdmission, type PendingReplacement, type RetentionTransaction } from "./device-retention.ts";
 import { backfillDeviceSessionIds, DEVICE_SESSION_LATE_RESULTS_KEY, initializeDeviceSessionState, inspectDeviceSessionIds, inspectDeviceSessionStorage, requestLegacyRetentionBackfill, type DeviceSessionInventory, type DeviceSessionRetentionBackfillResult } from "./device-session-inventory.ts";
 
-type SecretEnv = {
+type SecretEnv = AppleOAuthEnv & {
   QCRC_ADMIN_TOKEN?: string;
   OAUTH_PROVIDER: GoogleOAuthEnv["OAUTH_PROVIDER"];
   GOOGLE_CLIENT_ID: string;
@@ -63,11 +65,11 @@ type Json = Record<string, unknown>;
  * revocation closing them by device id. */
 type DeviceAttachment = { deviceId: string; deviceName: string; ready: boolean; usbConnected?: boolean; brokerTarget?: BrokerTarget; connectionId?: string; gatewayApiVersion?: number; mcpPresence?: boolean; credentialExpiresAt?: number | null; credentialHash?: string };
 type PairingOffer = { codeHash: string; expiresAt: number; redeemed: boolean };
-type PairingMetadata = { email: string; device: string; pairedAt: number };
+type PairingMetadata = { identityProvider?: "google" | "apple"; email: string; device: string; pairedAt: number };
 /** `lastUsedAt` is the last authenticated use, written at most once a day;
  * retention is measured from it (device-retention.ts). */
 /** `replaces` is a re-pair's pending predecessor (device-retention.ts). */
-type DeviceRecord = { credentialHash: string; name: string; pairedAt: number; expiresAt?: number | null; lastUsedAt?: number; identityProvider: "google"; pairing?: PairingMetadata; replaces?: PendingReplacement; replacedDeviceId?: string };
+type DeviceRecord = { credentialHash: string; name: string; pairedAt: number; expiresAt?: number | null; lastUsedAt?: number; identityProvider: "google" | "apple"; pairing?: PairingMetadata; replaces?: PendingReplacement; replacedDeviceId?: string };
 type PendingCommand = { socket: WebSocket; method: string; expectedBrokerTarget?: BrokerTarget; resolve: (value: Json) => void; reject: (reason: Error) => void; timeout: ReturnType<typeof setTimeout> };
 type PairingDirectory = { owner: string; expiresAt: number; pairing?: PairingMetadata };
 type DeviceDirectory = { owner: string };
@@ -79,7 +81,7 @@ type PairOfferResult = { pairingCode: string; codeHash: string; expiresAt: numbe
  * credential were proven: that record is deleted when the new credential first
  * connects, not now, so the host keeps the old credential until then. It is
  * false when a previous tuple was sent but not proven, and absent when none was. */
-type PairReceipt = { deviceId: string; deviceCredential: string; protocol: string; identityProvider: "google"; pairing?: PairingMetadata; previousDeviceReplacementPending?: boolean };
+type PairReceipt = { deviceId: string; deviceCredential: string; protocol: string; identityProvider: "google" | "apple"; pairing?: PairingMetadata; previousDeviceReplacementPending?: boolean };
 /** What a re-pairing host may send to have its previous record replaced once
  * the new credential connects. */
 type PreviousCredential = { deviceId: string; credential: string };
@@ -231,6 +233,8 @@ function session(env: Env, owner = OWNER): DurableObjectStub<DeviceSession> {
 }
 
 function rpcSession(env: Env, owner = OWNER): {
+  rememberAppleSignIn(subject: string, issuedAt: number): Promise<void>;
+  applyAppleNotification(subject: string, eventTime: number): Promise<void>;
   observeMcpClient(observation: McpObservation, generation?: number): Promise<void>;
   forgetMcpGrant(grantId: string): Promise<void>;
   mcpClientActivity(): Promise<McpClientPresence[]>;
@@ -283,6 +287,14 @@ function accountDeletionDeps(env: Env): AccountDeletionWebDeps {
 const baseHandler: ExportedHandler<Env> = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/auth/apple/notifications") {
+      try {
+        if (relayEnvironment(env.QCRC_ENVIRONMENT) !== "production") return new Response("Unavailable", { status: 404 });
+        const event = await readAppleNotification(request, env);
+        if (event) await rpcSession(env, ownerSessionKey(env.QCRC_ENVIRONMENT, event.subject)).applyAppleNotification(event.subject, event.eventTime);
+        return new Response(null, { status: 204 });
+      } catch (cause) { return clientFailure(cause, { status: 503, fallback: "Apple notification could not be processed.", context: "apple-notification" }); }
+    }
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ service: "qc-remote-cloud", environment: env.QCRC_ENVIRONMENT, status: "ok" });
     }
@@ -290,9 +302,9 @@ const baseHandler: ExportedHandler<Env> = {
     // Remote account deletion (account-deletion-web.ts). The apps open the
     // first page; nothing deletes without a Google sign-in confirmation and
     // the typed confirmation on the page after it.
-    if (request.method === "GET" && url.pathname === ACCOUNT_DELETION_WEB_PATH) return showAccountDeletionStart(accountDeletionDeps(env));
+    if (request.method === "GET" && url.pathname === ACCOUNT_DELETION_WEB_PATH) return showAccountDeletionStart(accountDeletionDeps(env), env);
     if (request.method === "POST" && url.pathname === `${ACCOUNT_DELETION_WEB_PATH}/sign-in`) return startAccountDeletionSignIn(request, env, accountDeletionDeps(env));
-    if (request.method === "GET" && url.pathname === "/auth/google/delete/callback") return showAccountDeletionConfirmation(request, env, accountDeletionDeps(env));
+    if (request.method === "GET" && /^\/auth\/(google|apple)\/delete\/callback$/.test(url.pathname)) return showAccountDeletionConfirmation(request, env, accountDeletionDeps(env));
     if (request.method === "POST" && url.pathname === `${ACCOUNT_DELETION_WEB_PATH}/confirm`) return confirmAccountDeletion(request, env, accountDeletionDeps(env));
     if (request.method === "GET" && url.pathname === `${ACCOUNT_DELETION_WEB_PATH}/status`) return showAccountDeletionStatus(request, env, accountDeletionDeps(env));
     if (request.method === "POST" && url.pathname === `${ACCOUNT_DELETION_WEB_PATH}/continue`) return continueAccountDeletion(request, env, accountDeletionDeps(env));
@@ -305,7 +317,7 @@ const baseHandler: ExportedHandler<Env> = {
       // account with no screen in between.
       const hostSession = url.searchParams.get("hostSession")?.trim();
       if (hostSession) return showPairingConfirmation(request, env, hostSession, pairingStyles());
-      return new Response(pairingWelcomePage(), { headers: pairingPageHeaders() });
+      return new Response(pairingWelcomePage(env), { headers: pairingPageHeaders() });
     }
     // Continue on the confirmation page, or the manual path with no session.
     // A session is taken only from the form body, and only alongside the
@@ -317,9 +329,13 @@ const baseHandler: ExportedHandler<Env> = {
     if (request.method === "POST" && url.pathname === "/pair/cancel") {
       return cancelPairing(request, env, pairingStyles());
     }
-    if (request.method === "GET" && url.pathname === "/auth/google/pair/callback") {
+    if (request.method === "GET" && /^\/auth\/(google|apple)\/pair\/callback$/.test(url.pathname)) {
       try {
         const owner = await completePairingSignIn(request, env);
+        if (owner.sub.startsWith("apple:")) {
+          if (owner.issuedAt === undefined || relayEnvironment(env.QCRC_ENVIRONMENT) !== "production") throw new Error("Apple account protection unavailable");
+          await rpcSession(env, ownerSessionKey(env.QCRC_ENVIRONMENT, owner.sub)).rememberAppleSignIn(owner.sub, owner.issuedAt);
+        }
         // A host session completes once. Checked before the offer is minted,
         // because minting replaces this account's pending offer.
         const open = owner.hostSession ? await openHostPairingSession(env, owner.hostSession) : undefined;
@@ -331,7 +347,7 @@ const baseHandler: ExportedHandler<Env> = {
           if (reason instanceof Error && reason.message === ACCOUNT_DELETION_PENDING_MESSAGE) return accountBeingDeletedPage();
           throw reason;
         }
-        const pairing: PairingMetadata = { email: owner.email, device: authenticatedDeviceLabel(request), pairedAt: Date.now() };
+        const pairing: PairingMetadata = { identityProvider: owner.sub.startsWith("apple:") ? "apple" : "google", email: owner.email, device: authenticatedDeviceLabel(request), pairedAt: Date.now() };
         await env.QCRC_OAUTH.put(`qcrc:pair:${offer.codeHash}`, JSON.stringify({ owner: ownerKey, expiresAt: offer.expiresAt, pairing } satisfies PairingDirectory), { expirationTtl: OFFER_TTL_MS / 1000 });
         // A deletion that began after the offer was minted has already deleted
         // the offer and may have missed this entry: remove it, and stop.
@@ -347,7 +363,7 @@ const baseHandler: ExportedHandler<Env> = {
         }
         return new Response(pairingPage(offer.pairingCode, offer.expiresAt, owner.email), { headers: pairingPageHeaders() });
       } catch (cause) {
-        return clientFailure(cause, { status: 403, fallback: "Google sign-in could not be completed. Open REMOTE in QC Remote and start again.", context: "pairing-callback" });
+        return clientFailure(cause, { status: 403, fallback: "Sign-in could not be completed. Open REMOTE in QC Remote and start again.", context: "pairing-callback" });
       }
     }
 
@@ -717,7 +733,7 @@ function mcpHandler(env: Env, props: PrincipalProps) {
 function grantFence(env: Env) {
   const account = (subject: string) => rpcSession(env, ownerSessionKey(env.QCRC_ENVIRONMENT, subject));
   return relayEnvironment(env.QCRC_ENVIRONMENT) === "production"
-    ? { admit: (subject: string, admissionId: string) => account(subject).admitGrant(admissionId), settle: (subject: string, admissionId: string, generation: number) => account(subject).settleGrant(admissionId, generation) }
+    ? { rememberAppleSignIn: (subject: string, issuedAt: number) => account(subject).rememberAppleSignIn(subject, issuedAt), admit: (subject: string, admissionId: string) => account(subject).admitGrant(admissionId), settle: (subject: string, admissionId: string, generation: number) => account(subject).settleGrant(admissionId, generation) }
     : undefined;
 }
 
@@ -746,7 +762,9 @@ const OAUTH_OPTIONS: OAuthProviderOptions<Env> = {
     // Admission records each authenticated client once; requests never renew it.
     return mcpHandler(env, props)(request, env, ctx);
   } },
-  defaultHandler: { async fetch(request, env, ctx) { return await handleGoogleAuthorization(request, env, grantFence(env)) ?? baseHandler.fetch!(request, env, ctx); } },
+  defaultHandler: { async fetch(request, env, ctx) {
+    try { request = await normalizeAppleCallback(request) as typeof request; } catch { return new Response("Invalid sign-in callback", { status: 400 }); }
+    return await handleGoogleAuthorization(request, env, grantFence(env)) ?? baseHandler.fetch!(request, env, ctx); } },
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
@@ -1066,6 +1084,34 @@ export class DeviceSession extends DurableObject<Env> {
     return publicDeletionStatus(await this.ctx.storage.transaction((transaction) => readAccountDeletion(transaction)));
   }
 
+  async rememberAppleSignIn(subject: string, issuedAt: number): Promise<void> {
+    if (!subject.startsWith("apple:") || !Number.isSafeInteger(issuedAt)) throw new Error("Invalid Apple sign-in");
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const deletion = await this.ctx.storage.transaction(tx => readAccountDeletion(tx));
+      if (deletion?.status === "pending") throw new Error(ACCOUNT_DELETION_PENDING_MESSAGE);
+      const epoch = await this.ctx.storage.get<AppleAccountEpoch>(APPLE_ACCOUNT_EPOCH_KEY);
+      if (issuedAt <= (epoch?.revokedAt ?? 0)) throw new Error("Sign in with Apple again after revoking access");
+      await this.ctx.storage.put(APPLE_ACCOUNT_EPOCH_KEY, { signedInAt: Math.max(issuedAt, epoch?.signedInAt ?? 0), revokedAt: epoch?.revokedAt ?? 0 });
+    });
+  }
+
+  async applyAppleNotification(subject: string, eventTime: number): Promise<void> {
+    if (!subject.startsWith("apple:")) throw new Error("Invalid Apple account event");
+    const apply = await this.ctx.blockConcurrencyWhile(async () => {
+      const epoch = await this.ctx.storage.get<AppleAccountEpoch>(APPLE_ACCOUNT_EPOCH_KEY);
+      if (!shouldApplyAppleEvent(epoch, eventTime)) return false;
+      // Establish the existing account-deletion fence before another sign-in
+      // can be admitted. Its alarm owns cleanup if this request is interrupted.
+      await beginAccountDeletion(this.ctx.storage, subject, Date.now());
+      await this.ctx.storage.put(APPLE_ACCOUNT_EPOCH_KEY, { signedInAt: epoch?.signedInAt ?? 0, revokedAt: eventTime });
+      return true;
+    });
+    if (apply) {
+      this.closeAllSockets();
+      await runAccountDeletion(this.ctx.storage, this.directoryKv(), this.grantRegistry(), this.providerKv(), Date.now());
+    }
+  }
+
   async admitGrant(admissionId: string) { return admitGrant(this.ctx.storage, admissionId, Date.now()); }
   async settleGrant(admissionId: string, generation: number) { return settleGrant(this.ctx.storage, admissionId, generation); }
   async admitMcpRequest(generation: unknown, observation?: McpObservation) {
@@ -1099,7 +1145,7 @@ export class DeviceSession extends DurableObject<Env> {
     if (!name) throw new Error("A device name is required");
     const credential = randomToken();
     const pairedAt = Date.now();
-    const record: DeviceRecord = { credentialHash: await hash(credential), name, pairedAt, expiresAt: relayProfile.credentialTtlDays === 0 ? null : pairedAt + relayProfile.credentialTtlDays * 24 * 60 * 60_000, lastUsedAt: pairedAt, identityProvider: "google", pairing };
+    const record: DeviceRecord = { credentialHash: await hash(credential), name, pairedAt, expiresAt: relayProfile.credentialTtlDays === 0 ? null : pairedAt + relayProfile.credentialTtlDays * 24 * 60 * 60_000, lastUsedAt: pairedAt, identityProvider: pairing?.identityProvider ?? "google", pairing };
     const previousDevice = previous ? { deviceId: previous.deviceId, credentialHash: await hash(previous.credential) } : undefined;
     // The offer is validated inside the transaction that consumes it, so the
     // crypto awaits above cannot let two requests redeem one code. A proven
@@ -1116,7 +1162,7 @@ export class DeviceSession extends DurableObject<Env> {
       }
       throw reason;
     }
-    return { deviceId, deviceCredential: credential, protocol: "qc-relay.v1", identityProvider: "google", pairing, ...(previous ? { previousDeviceReplacementPending: previousReplacementPending } : {}) };
+    return { deviceId, deviceCredential: credential, protocol: "qc-relay.v1", identityProvider: record.identityProvider, pairing, ...(previous ? { previousDeviceReplacementPending: previousReplacementPending } : {}) };
   }
 
   /** Admit one pair-route attempt before its KV directory entry is written:
@@ -1547,7 +1593,7 @@ export class DeviceSessionRetentionEntrypoint extends WorkerEntrypoint<Env> {
 }
 
 function accountBeingDeletedPage(): Response {
-  return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Account being deleted</title><style>${pairingStyles()}</style></head><body><main><h1>This remote account is being deleted</h1><p>A deletion of this Google account's QC Remote remote account is in progress, so nothing can be paired to it right now. Open <a href="${ACCOUNT_DELETION_WEB_PATH}/status">the deletion status</a> in the browser you started it from, or try again later.</p></main></body></html>`, { status: 409, headers: pairingPageHeaders() });
+  return new Response(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Account being deleted</title><style>${pairingStyles()}</style></head><body><main><h1>This remote account is being deleted</h1><p>A deletion of this QC Remote account is in progress, so nothing can be paired to it right now. Open <a href="${ACCOUNT_DELETION_WEB_PATH}/status">the deletion status</a> in the browser you started it from, or try again later.</p></main></body></html>`, { status: 409, headers: pairingPageHeaders() });
 }
 
 function landingPage(): string {
@@ -1569,8 +1615,8 @@ function pairingStyles(): string {
  * host-pairing.ts instead. What remains here is the person who typed the
  * address, who has no session to carry and is holding a pairing code from the
  * app instead. */
-function pairingWelcomePage(): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pair device</title><style>${pairingStyles()}</style></head><body><main><h1>Pair device</h1><p>Sign in with the Google account that will own this Quad Cortex.</p><form method="post" action="/pair/sign-in"><button class="button primary" type="submit">Continue with Google</button></form></main></body></html>`;
+function pairingWelcomePage(env: Env): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pair device</title><style>${pairingStyles()}</style></head><body><main><h1>Pair device</h1><p>Choose the account and sign-in method that will own this Quad Cortex.</p><form method="post" action="/pair/sign-in"><button class="button primary" type="submit">Continue with Google</button>${appleSignInButton(env)}</form></main></body></html>`;
 }
 
 function pairingPage(code: string, expiresAt: number, email: string): string {
@@ -1594,12 +1640,12 @@ function pairingPage(code: string, expiresAt: number, email: string): string {
 function hostPairingCompletePage(email: string, device: string, pairedAt: number): string {
   const serverUrl = "https://qcrc.freevia.org/mcp";
   const paired = new Date(pairedAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Device paired</title><style>${pairingStyles()}</style></head><body><main><h1>Device paired</h1><p>Your Quad Cortex now belongs to this Google account.</p><div class="account"><strong>${escapeHtml(email)}</strong><br>${escapeHtml(device)} · ${escapeHtml(paired)}</div><p class="help">Not the account you wanted? Open REMOTE in QC Remote, press Unpair, and scan the new code.</p><p>QC Remote reconnects while the app and Quad Cortex are available.</p><h2>Connect an AI app</h2>${providerSetupCards(serverUrl)}<small>Sign in to the connector with this same Google account. It grants the app access; it does not pair another device. Each provider controls its own connector, permissions, and availability.</small></main></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Device paired</title><style>${pairingStyles()}</style></head><body><main><h1>Device paired</h1><p>Your Quad Cortex is now paired to this account.</p><div class="account"><strong>${escapeHtml(email)}</strong><br>${escapeHtml(device)} · ${escapeHtml(paired)}</div><p class="help">Not the account you wanted? Open REMOTE in QC Remote, press Unpair, and scan the new code.</p><p>QC Remote reconnects while the app and Quad Cortex are available.</p><h2>Connect an AI app</h2>${providerSetupCards(serverUrl)}<small>Sign in to the connector with the same account and sign-in method. It grants the app access; it does not pair another device. Each provider controls its own connector, permissions, and availability.</small></main></body></html>`;
 }
 
 function mcpSetupPage(origin: string): string {
   const serverUrl = `${origin}/mcp`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Remote MCP Connector</title><style>${pairingStyles()}</style></head><body><main><h1>Connect an AI app</h1><p>This is the Remote MCP Connector for a Quad Cortex paired in QC Remote.</p><input class="server-address" value="${escapeHtml(serverUrl)}" readonly aria-label="Remote MCP Connector address" onfocus="this.select()"><p class="help">First open <b>REMOTE</b> in QC Remote and pair the Quad Cortex with your Google account. Then add this connector in one of the apps below and sign in with the same account.</p>${providerSetupCards(serverUrl)}<small>Each provider controls where custom connectors are available. If your app is not listed, use Other MCP App.</small></main></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Remote MCP Connector</title><style>${pairingStyles()}</style></head><body><main><h1>Connect an AI app</h1><p>This is the Remote MCP Connector for a Quad Cortex paired in QC Remote.</p><input class="server-address" value="${escapeHtml(serverUrl)}" readonly aria-label="Remote MCP Connector address" onfocus="this.select()"><p class="help">First open <b>REMOTE</b> in QC Remote and pair the Quad Cortex with your chosen sign-in method. Then add this connector in one of the apps below and sign in with the same account.</p>${providerSetupCards(serverUrl)}<small>Each provider controls where custom connectors are available. If your app is not listed, use Other MCP App.</small></main></body></html>`;
 }
 
 /** Provider cards document the true third-party setup surface. */

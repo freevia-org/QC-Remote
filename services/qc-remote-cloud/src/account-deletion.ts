@@ -1,3 +1,4 @@
+import { APPLE_ACCOUNT_EPOCH_KEY } from "./apple-account-events.ts";
 /** Deleting a whole remote account: every record the relay keeps for one
  * Google subject, not just one device.
  *
@@ -108,7 +109,7 @@ const DIRECTORY_CLEANUP_KEY = "device-directory-cleanup-v1";
 const DEVICE_SWEEP_KEY = "device-retention-sweep-at-v1";
 const DIRECTORY_CLEANUP_RETRY_MS = 60 * 60_000;
 const PAIRING_OFFER_KEY = "pairing-offer";
-const FENCE_KEYS = new Set([ACCOUNT_DELETION_KEY, ACCOUNT_GENERATION_KEY, PROVIDER_WRITES_KEY]);
+const FENCE_KEYS = new Set([ACCOUNT_DELETION_KEY, ACCOUNT_GENERATION_KEY, PROVIDER_WRITES_KEY, APPLE_ACCOUNT_EPOCH_KEY]);
 const GRANT_REVOCATION_PASSES = 20;
 
 export type DeletionStep = "provider-writes" | "grants" | "directory" | "legacy-reconciliation";

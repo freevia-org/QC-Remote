@@ -53,6 +53,7 @@ export function rateLimitedRoute(request: Request, url = new URL(request.url)): 
   // continue run the deletion (account-deletion-web.ts).
   if (request.method === "POST" && pathname === "/account/delete/sign-in") return { route: "account-delete-sign-in", binding: "QCRC_PAIRING_RATE_LIMIT" };
   if (request.method === "POST" && (pathname === "/account/delete/confirm" || pathname === "/account/delete/continue")) return { route: "account-delete-confirm", binding: "QCRC_PAIRING_RATE_LIMIT" };
+  if (request.method === "POST" && pathname === "/auth/apple/notifications") return { route: "oauth-authorize", binding: "QCRC_OAUTH_RATE_LIMIT" };
   if (request.method === "GET" && pathname === "/authorize") return { route: "oauth-authorize", binding: "QCRC_OAUTH_RATE_LIMIT" };
   if (request.method === "POST" && pathname === "/register") return { route: "oauth-register", binding: "QCRC_OAUTH_RATE_LIMIT" };
   return null;

@@ -392,11 +392,15 @@ pub struct Credentials {
 #[serde(rename_all = "kebab-case")]
 pub enum IdentityProvider {
     Google,
+    Apple,
 }
 
 impl Credentials {
     pub fn uses_current_identity_provider(&self) -> bool {
-        self.identity_provider == Some(IdentityProvider::Google)
+        matches!(
+            self.identity_provider,
+            Some(IdentityProvider::Google | IdentityProvider::Apple)
+        )
     }
 }
 
@@ -792,7 +796,10 @@ pub async fn pair_replacing(
             return Err("The public relay returned invalid pairing details".into());
         }
     }
-    if receipt.identity_provider != Some(IdentityProvider::Google) {
+    if !matches!(
+        receipt.identity_provider,
+        Some(IdentityProvider::Google | IdentityProvider::Apple)
+    ) {
         return Err("QC Remote Cloud returned an unsupported pairing identity".into());
     }
     Ok(Credentials {
@@ -2832,6 +2839,17 @@ mod tests {
         )
         .unwrap();
         assert!(current.uses_current_identity_provider());
+        let apple: Credentials = serde_json::from_str(
+            r#"{
+            "endpoint":"https://qcrc.freevia.org",
+            "deviceCredential":"apple-credential",
+            "deviceId":"apple-device",
+            "identityProvider":"apple"
+        }"#,
+        )
+        .unwrap();
+        assert!(apple.uses_current_identity_provider());
+        assert_eq!(apple.identity_provider, Some(IdentityProvider::Apple));
     }
 
     #[tokio::test(start_paused = true)]

@@ -1,3 +1,4 @@
+import { appleSignInButton, requestedIdentityProvider, type AppleOAuthEnv } from "./apple-auth.ts";
 /** Browser pairing of a host app: the session it creates, the page a person
  * confirms it on, and the single completion it may have.
  *
@@ -20,7 +21,7 @@ import { checkHostPairingSession, isHostSessionId, legacyVerificationDigits, typ
 import { cancelHostPairingState, claimHostPairingState, completeHostPairingState, pollHostPairingState, type HostPairingState } from "./host-pairing-state.ts";
 import { htmlPageHeaders } from "./http-security.ts";
 
-export type PairingMetadata = { email: string; device: string; pairedAt: number };
+export type PairingMetadata = { identityProvider?: "google" | "apple"; email: string; device: string; pairedAt: number };
 
 /** What the host said about itself when it created the session. Self-declared
  * and unverified, which the confirmation page says. */
@@ -178,14 +179,14 @@ function describeLocation(origin: RequestLocation | undefined): string {
 }
 
 /** The page a pairing link opens. Continue reaches Google; Cancel ends the session. */
-export function pairingConfirmationPage(sessionId: string, session: HostPairingSession, confirmation: string, styles: string, now = Date.now(), viewer: RequestLocation = {}): string {
+export function pairingConfirmationPage(sessionId: string, session: HostPairingSession, confirmation: string, styles: string, now = Date.now(), viewer: RequestLocation = {}, env: AppleOAuthEnv = {}): string {
   const label = session.host?.label ?? "QC Remote (this app version does not send a name)";
   const platform = session.host?.platform ?? "Not stated by this app version";
   const elsewhere = session.origin?.country && viewer.country && session.origin.country !== viewer.country
     ? `<p class="warn" role="alert">This request came from ${escapeHtml(session.origin.country)}, but you are opening it from ${escapeHtml(viewer.country)}. If you did not start pairing yourself, cancel.</p>`
     : "";
   const hidden = `<input type="hidden" name="hostSession" value="${escapeHtml(sessionId)}"><input type="hidden" name="confirmation" value="${escapeHtml(confirmation)}">`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link QC Remote to your account</title><style>${styles}.facts{display:grid;gap:.5rem;margin:1.25rem 0}.facts div{padding:.7rem 1rem;border:1px solid currentColor;border-radius:.55rem;overflow-wrap:anywhere}.facts dt{font-size:.78rem;opacity:.75}.facts dd{margin:.2rem 0 0;font-weight:700}.warn{font-weight:700}</style></head><body><main><div class="badge">QC Remote</div><h1>Link QC Remote to your Google account?</h1><p>You are linking the QC Remote app on <strong>${escapeHtml(label)}</strong> to your Google account. This is the computer or phone that displayed the QR code.</p><p>The phone or tablet you used to scan the code is only opening this sign-in page. The Quad Cortex is accessed through the computer or phone running QC Remote.</p><p>Continue only if you just started pairing in that QC Remote app. If someone sent you this link, cancel.</p><dl class="facts"><div><dt>Computer or phone running QC Remote (reported name)</dt><dd>${escapeHtml(label)}</dd></div><div><dt>Platform (as the app reported it)</dt><dd>${escapeHtml(platform)}</dd></div><div><dt>Requested</dt><dd>${escapeHtml(describeAge(session.createdAt, now))}</dd></div><div><dt>Requested from</dt><dd>${escapeHtml(describeLocation(session.origin))}</dd></div></dl>${elsewhere}<p>On the next screen, choose the Google account you want to use with QC Remote. Compatible AI apps you connect to that account can then access the Quad Cortex through this QC Remote host, subject to its access permissions.</p><div class="actions"><form method="post" action="/pair/sign-in">${hidden}<button class="button primary" type="submit">Choose Google account</button></form><form method="post" action="/pair/cancel">${hidden}<button class="button" type="submit">Cancel</button></form></div></main></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Link QC Remote to your account</title><style>${styles}.facts{display:grid;gap:.5rem;margin:1.25rem 0}.facts div{padding:.7rem 1rem;border:1px solid currentColor;border-radius:.55rem;overflow-wrap:anywhere}.facts dt{font-size:.78rem;opacity:.75}.facts dd{margin:.2rem 0 0;font-weight:700}.warn{font-weight:700}</style></head><body><main><div class="badge">QC Remote</div><h1>Link QC Remote to your account?</h1><p>You are linking the QC Remote app on <strong>${escapeHtml(label)}</strong> to your account. This is the computer or phone that displayed the QR code.</p><p>The phone or tablet you used to scan the code is only opening this sign-in page. The Quad Cortex is accessed through the computer or phone running QC Remote.</p><p>Continue only if you just started pairing in that QC Remote app. If someone sent you this link, cancel.</p><dl class="facts"><div><dt>Computer or phone running QC Remote (reported name)</dt><dd>${escapeHtml(label)}</dd></div><div><dt>Platform (as the app reported it)</dt><dd>${escapeHtml(platform)}</dd></div><div><dt>Requested</dt><dd>${escapeHtml(describeAge(session.createdAt, now))}</dd></div><div><dt>Requested from</dt><dd>${escapeHtml(describeLocation(session.origin))}</dd></div></dl>${elsewhere}<p>On the next screen, choose the account and sign-in method you want to use with QC Remote. Compatible AI apps you connect to that account can then access the Quad Cortex through this QC Remote host, subject to its access permissions.</p><div class="actions"><form method="post" action="/pair/sign-in">${hidden}<button class="button primary" type="submit">Continue with Google</button>${appleSignInButton(env)}</form><form method="post" action="/pair/cancel">${hidden}<button class="button" type="submit">Cancel</button></form></div></main></body></html>`;
 }
 
 /** `GET /pair?hostSession=...`: the confirmation page, never a redirect. */
@@ -200,7 +201,7 @@ export async function showPairingConfirmation(request: Request, env: HostPairing
   const confirmation = randomToken(24);
   const headers = new Headers(htmlPageHeaders());
   headers.append("set-cookie", `${CONFIRM_COOKIE}-${sessionId}=${confirmation}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${HOST_PAIRING_TTL_MS / 1000}`);
-  return new Response(pairingConfirmationPage(sessionId, session!, confirmation, styles, now, requestLocation(request)), { headers });
+  return new Response(pairingConfirmationPage(sessionId, session!, confirmation, styles, now, requestLocation(request), env), { headers });
 }
 
 /** The session named by a confirmation form, provided the form really came
@@ -230,10 +231,12 @@ async function confirmedSession(request: Request, env: HostPairingEnv, form: For
 export async function startPairingSignIn(request: Request, env: HostPairingEnv, styles: string, now = Date.now()): Promise<Response> {
   const form = await readBrowserForm(request);
   if (!form) return unavailable("Invalid pairing form.", 400, styles);
-  if (!String(form.get("hostSession") ?? "").trim()) return beginPairingSignIn(request, env);
+  let provider;
+  try { provider = requestedIdentityProvider(form.get("identity_provider"), env); } catch { return unavailable("Sign-in method unavailable.", 400, styles); }
+  if (!String(form.get("hostSession") ?? "").trim()) return beginPairingSignIn(request, env, undefined, provider);
   const confirmed = await confirmedSession(request, env, form, styles, now);
   if (confirmed instanceof Response) return confirmed;
-  return beginPairingSignIn(request, env, confirmed.sessionId);
+  return beginPairingSignIn(request, env, confirmed.sessionId, provider);
 }
 
 /** `POST /pair/cancel`: end the session so the link cannot be used later. */
