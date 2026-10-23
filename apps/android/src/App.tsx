@@ -37,7 +37,7 @@ function AppMark({ onClick }: { onClick: () => void }) {
   return <button type="button" className="app-mark" onClick={onClick} aria-label={`About ${QC_BRAND.appName}`}><img src={QC_VISUAL_ASSETS.appIcon.url} alt="" /></button>;
 }
 
-export function App() {
+export function App({ appVersion = appPackage.version }: { appVersion?: string } = {}) {
   const observationPolicy = useDeviceObservationPolicy();
   const [remoteRefreshPending, setRemoteRefreshPending] = useState(false);
   const native = Capacitor.isNativePlatform();
@@ -1169,12 +1169,12 @@ export function App() {
   };
 
   return <main className={`android-app${screenDimmed ? " screen-dimmed" : ""}`} onPointerDown={resetScreenDimmer} onKeyDown={resetScreenDimmer} onTouchStart={resetScreenDimmer}>
-    <header className={`mobile-header${observationPolicy.mode === "on-demand" ? " has-demand-observation" : ""}`}>
-    {observationPolicy.mode === "on-demand" && <aside className="remote-observation-status" aria-label="Remote observation status">
+    <header className={`mobile-header${observationPolicy.mode === "on-demand" && !demoActive ? " has-demand-observation" : ""}`}>
+    {observationPolicy.mode === "on-demand" && !demoActive && <aside className="remote-observation-status" aria-label="Remote observation status">
       <span>{observationPolicy.lastObservedAt ? `Last observed ${new Date(observationPolicy.lastObservedAt).toLocaleTimeString()}.` : "No remote snapshot observed yet."} Changes are not streamed; displayed state may be stale.</span>
       <button type="button" disabled={remoteRefreshPending || devicePending} onClick={() => void refreshRemoteObservation()}>Refresh host state</button>
     </aside>}
-      <div className="mobile-brand"><AppMark onClick={() => setWorkflowPanel("about")} /><span><strong>{QC_BRAND.appName}</strong><small>v{appPackage.version}</small></span></div>
+      <div className="mobile-brand"><AppMark onClick={() => setWorkflowPanel("about")} /><span><strong>{QC_BRAND.appName}</strong><small>v{appVersion}</small></span></div>
       <div className="connection-pills">
         <button className={`connection-pill phase-${remotePresentation.phase}`} onClick={() => void openRemoteStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "remote"} aria-label={`REMOTE ${remotePresentation.state}; open remote access details`}><i /> REMOTE</button>
         <button className={`connection-pill phase-${usbIndicatorPhase}`} onClick={() => void openUsbStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "usb"} aria-label={`${demoActive ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}; open device connection details`}><i /> {demoActive ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}</button>
@@ -1245,7 +1245,7 @@ export function App() {
             void openRemoteAccountDeletionPage().catch(() => setNotice("Could not open the account deletion page. Try again when a browser is available."));
           }} />
         </div>}
-        {workflowPanel === "about" && <><div className="dialog-kicker">ABOUT</div><h2 id="dialog-title">{QC_BRAND.appName} <small>{appPackage.version}</small></h2><p>An independent mobile companion for controlling a connected Quad Cortex.</p><p className="mobile-legal-note">{QC_LEGAL.independence}</p><p>{QC_LEGAL.copyright}</p><div className="mobile-legal-actions"><button onClick={() => setWorkflowPanel("display")}>Display</button><button onClick={() => setWorkflowPanel("privacy")}>Privacy</button><button onClick={() => setWorkflowPanel("legal")}>Legal</button><button onClick={() => setWorkflowPanel("notices")}>Notices</button></div></>}
+        {workflowPanel === "about" && <><div className="dialog-kicker">ABOUT</div><h2 id="dialog-title">{QC_BRAND.appName} <small>{appVersion}</small></h2><p>An independent mobile companion for controlling a connected Quad Cortex.</p><p className="mobile-legal-note">{QC_LEGAL.independence}</p><p>{QC_LEGAL.copyright}</p><div className="mobile-legal-actions"><button onClick={() => setWorkflowPanel("display")}>Display</button><button onClick={() => setWorkflowPanel("privacy")}>Privacy</button><button onClick={() => setWorkflowPanel("legal")}>Legal</button><button onClick={() => setWorkflowPanel("notices")}>Notices</button></div></>}
         {workflowPanel === "display" && <><div className="dialog-kicker">DISPLAY</div><h2 id="dialog-title">Display behavior</h2><p>Keep this screen on while QC Remote is in front and a Quad Cortex is connected. It automatically releases when you disconnect or leave the app.</p><label className="mobile-setting-toggle"><input type="checkbox" checked={keepScreenAwake} onChange={(event) => changeKeepScreenAwake(event.target.checked)} /> Keep screen awake while connected</label><label className="mobile-setting-toggle"><input type="checkbox" checked={followQcScreen} onChange={(event) => changeFollowQcScreen(event.target.checked)} /> Follow QC screen</label><p>When enabled, QC Remote checks the device screen adaptively while this app is visible. It pauses while hidden or disconnected.</p><div className="mobile-legal-actions"><button onClick={() => setWorkflowPanel("about")}>Back to About</button></div></>}
         {workflowPanel === "privacy" && <><div className="dialog-kicker">PRIVACY</div><h2 id="dialog-title">Privacy policy</h2><p>{QC_LEGAL.privacy.pointer}</p>{QC_BRAND.privacyPolicyUrl && <p><a href={QC_BRAND.privacyPolicyUrl} target="_blank" rel="noreferrer">Open the complete privacy policy</a></p>}<div className="mobile-legal-actions"><button onClick={() => setWorkflowPanel("about")}>Back to About</button></div></>}
         {workflowPanel === "legal" && <><div className="dialog-kicker">LEGAL</div><h2 id="dialog-title">Independent companion</h2><p>{QC_LEGAL.independence}</p><p>{QC_LEGAL.trademarks}</p><p>{QC_LEGAL.productSafety}</p><p>{QC_LEGAL.copyright}</p><p>{QC_LEGAL.license}</p>{QC_LEGAL.publisher.website && <p><a href={QC_LEGAL.publisher.website} target="_blank" rel="noreferrer">Publisher website</a></p>}{QC_BRAND.termsUrl && <p><a href={QC_BRAND.termsUrl} target="_blank" rel="noreferrer">Open the complete terms of use</a></p>}{QC_LEGAL.publisher.securityPolicyUrl && <p><a href={QC_LEGAL.publisher.securityPolicyUrl} target="_blank" rel="noreferrer">Open the security policy</a></p>}<div className="mobile-legal-actions"><button onClick={() => setWorkflowPanel("about")}>Back to About</button></div></>}

@@ -84,7 +84,8 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   assert.match(volumeControl, /onAction=\{handleSurfaceAction\}/);
   assert.match(volumeControl, /onInteractionStart=\{continuousControls\.beginMasterVolumeInteraction\}/);
   assert.match(volumeControl, /onInteractionEnd=\{continuousControls\.endMasterVolumeInteraction\}/);
-  assert.match(appSource, /<small>v\{appPackage\.version\}<\/small>/, "the compact header identifies the app version instead of duplicating the QC preset title");
+  assert.match(appSource, /<small>v\{appVersion\}<\/small>/, "the compact header identifies the app version instead of duplicating the QC preset title");
+  assert.match(appSource, /export function App\(\{ appVersion = appPackage\.version \}/, "Android keeps its package version unless a native shell supplies its own version");
   assert.match(appSource, /openUsbStatusPanel/, "USB status opens a live details panel rather than immediately reconnecting");
   assert.match(appSource, /openRemoteStatusPanel/, "Remote status opens a live details panel rather than immediately unpairing");
   assert.match(appSource, /DEVICE CONNECTION[\s\S]*mobile-device-tabs/);
