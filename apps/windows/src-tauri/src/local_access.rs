@@ -1573,7 +1573,7 @@ impl Drop for RunningLocalAccess {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 fn start_listener_with_budget(
     state_files: Vec<PathBuf>,
     adapter: Arc<dyn DeviceAdapter>,
