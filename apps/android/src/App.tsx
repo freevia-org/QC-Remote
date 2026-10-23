@@ -1169,8 +1169,8 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
   };
 
   return <main className={`android-app${screenDimmed ? " screen-dimmed" : ""}`} onPointerDown={resetScreenDimmer} onKeyDown={resetScreenDimmer} onTouchStart={resetScreenDimmer}>
-    <header className={`mobile-header${observationPolicy.mode === "on-demand" ? " has-demand-observation" : ""}`}>
-    {observationPolicy.mode === "on-demand" && <aside className="remote-observation-status" aria-label="Remote observation status">
+    <header className={`mobile-header${observationPolicy.mode === "on-demand" && !demoActive ? " has-demand-observation" : ""}`}>
+    {observationPolicy.mode === "on-demand" && !demoActive && <aside className="remote-observation-status" aria-label="Remote observation status">
       <span>{observationPolicy.lastObservedAt ? `Last observed ${new Date(observationPolicy.lastObservedAt).toLocaleTimeString()}.` : "No remote snapshot observed yet."} Changes are not streamed; displayed state may be stale.</span>
       <button type="button" disabled={remoteRefreshPending || devicePending} onClick={() => void refreshRemoteObservation()}>Refresh host state</button>
     </aside>}
