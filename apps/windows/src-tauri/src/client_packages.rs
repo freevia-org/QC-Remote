@@ -35,10 +35,9 @@ use std::os::windows::process::CommandExt;
 use std::process::Stdio;
 
 const CLAUDE_EXTENSION_NAME: &str = "qc-remote";
-// MCPB derives the installed extension id from author + name. These are
-// persistent identifiers, NOT release branding: changing either installs a
-// second server instead of updating local.mcpb.freevia-eood.qc-remote.
-const CLAUDE_EXTENSION_AUTHOR: &str = "Freevia EOOD";
+// MCPB derives the installed extension id from author + name. Before installing
+// the renamed publisher, require Claude's own uninstall flow for the old id.
+const CLAUDE_EXTENSION_AUTHOR: &str = "Freevia";
 const CLAUDE_EXTENSION_FILE: &str = "QC-Remote-Claude.mcpb";
 const LEGACY_CHATGPT_RUNNER_FILE: &str = "chatgpt-local-mcp.ps1";
 // The Windows build is distributed through the Microsoft Store, whose policy
@@ -5027,6 +5026,17 @@ pub async fn claude_desktop_extension_status() -> Result<Value, String> {
     .await
 }
 
+fn require_claude_publisher_migration(roots: &[PathBuf]) -> Result<(), String> {
+    for root in roots {
+        let manifest =
+            root.join("Claude Extensions/local.mcpb.freevia-eood.qc-remote/manifest.json");
+        if manifest.is_file() {
+            return Err("QC Remote's publisher is now Freevia. In Claude Desktop, uninstall the existing QC Remote extension published by Freevia EOOD, then choose Pair again. This replaces the old pairing without creating a duplicate; other extensions are unchanged.".into());
+        }
+    }
+    Ok(())
+}
+
 fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
     #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
     {
@@ -5035,6 +5045,7 @@ fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
             &home.join("Library/Application Support/Claude"),
         )?;
     }
+    require_claude_publisher_migration(&claude_user_data_roots())?;
     let claude = claude_desktop_installation()
         .and_then(|installation| installation.executable)
         .or_else(claude_msix_path);

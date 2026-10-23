@@ -1060,7 +1060,7 @@ fn claude_manifest_satisfies_the_mcpb_required_fields() {
     // Literal compatibility pins: a branding/version update must replace the
     // existing extension, not install another MCP under a new publisher id.
     assert_eq!(manifest["name"], "qc-remote");
-    assert_eq!(manifest["author"]["name"], "Freevia EOOD");
+    assert_eq!(manifest["author"]["name"], "Freevia");
     #[cfg(target_os = "macos")]
     assert_eq!(manifest["compatibility"]["platforms"], json!(["darwin"]));
     #[cfg(target_os = "linux")]
@@ -6441,4 +6441,24 @@ fn shared_http_stale_helper_is_an_explicit_repair_and_port_refusal_is_actionable
             "missing recovery instruction: {text}"
         );
     }
+}
+
+#[test]
+fn claude_publisher_rename_requires_old_pairing_removal_before_install() {
+    let directory = crate::tests::unique_fixture_directory("claude-publisher-migration");
+    let _guard = crate::tests::RemoveDirOnDrop::new(directory.clone());
+    let legacy = directory.join("Claude Extensions/local.mcpb.freevia-eood.qc-remote");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(legacy.join("manifest.json"), r#"{"name":"qc-remote"}"#).unwrap();
+    assert!(
+        require_claude_publisher_migration(std::slice::from_ref(&directory))
+            .unwrap_err()
+            .contains("uninstall")
+    );
+    fs::remove_dir_all(&legacy).unwrap();
+    let current = directory.join("Claude Extensions/local.mcpb.freevia.qc-remote");
+    fs::create_dir_all(&current).unwrap();
+    fs::write(current.join("manifest.json"), r#"{"name":"qc-remote"}"#).unwrap();
+    assert!(require_claude_publisher_migration(&[directory]).is_ok());
+    assert_eq!(CLAUDE_EXTENSION_AUTHOR, "Freevia");
 }
