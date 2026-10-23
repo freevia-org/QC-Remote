@@ -119,7 +119,7 @@ resource map with an empty array and uses explicit `macOS.files` destinations
 for helpers and legal resources, preventing retained direct-helper inputs. Both packaging scripts
 reject stale or wrong-flavor binary markers. The Store configuration sets macOS
 13 minimum and a separate monotonically increasing `bundleVersion` (currently
-196); increase it for each subsequent App Store upload. Helpers use that same
+197); increase it for each subsequent App Store upload. Helpers use that same
 build number.
 
 `package-macos-appstore.py` signs the editor and independent broker menu with
