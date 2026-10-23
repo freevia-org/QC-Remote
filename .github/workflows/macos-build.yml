@@ -75,15 +75,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
-      # Keep PR artifacts separate from the macOS 26 master cache.
-      # PR builds remain read-only and start cold in this cache namespace; only
-      # master builds save caches under the existing policy.
+      # PRs may read trusted master caches; only master writes them.
+      # Both event types now use the same macOS 26 images.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             .
             apps/windows/src-tauri
-          key: macos-${{ github.event_name == 'pull_request' && 'pr-' || '' }}${{ matrix.target }}
+          key: macos-${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Install desktop dependencies
         run: npm ci
@@ -125,11 +124,13 @@ jobs:
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}'
       - name: Build the macOS app and broker
-        run: npm run tauri:build:mac
+        run: npm run tauri:build:mac -- --target ${{ matrix.target }} --bundles app --verbose
         working-directory: apps/windows
+      - name: Package and verify the headless macOS installer
+        run: sh scripts/package-macos-ci.sh "apps/windows/src-tauri/target/${{ matrix.target }}/release/bundle/macos/QC Remote.app" "apps/windows/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/QC-Remote-${{ matrix.target }}.dmg"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qc-remote-macos-${{ matrix.target }}-dmg
-          path: apps/windows/src-tauri/target/release/bundle/dmg/*.dmg
+          path: apps/windows/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 14
