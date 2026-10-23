@@ -6122,3 +6122,255 @@ mod macos_application_tests {
         assert!(!scratch.0.join("outside").is_file());
     }
 }
+#[cfg(windows)]
+#[test]
+fn shared_http_pairing_encodes_shell_metacharacters_and_keeps_disabled_and_other_entries() {
+    use base64::Engine as _;
+    let port = crate::local_http_binding::StablePort::parse(br#"{"schemaVersion":1,"port":41012}"#)
+        .unwrap();
+    let executable = PathBuf::from("C:\\Users\\a%USERNAME% & O'Brien’s\\QC Remote\\qc-remote.exe");
+    let route = codex_http_route_table(&executable, CODEX_CLIENT_ID, port).unwrap();
+    assert_eq!(route["url"].as_str(), Some("http://127.0.0.1:41012/mcp"));
+    assert!(route.get("command").is_none());
+    assert!(
+        route.get("env").is_none(),
+        "Codex explicitly rejects env on streamable_http"
+    );
+    assert_eq!(
+        route["http_headers"][LOCAL_MCP_CLIENT_HEADER].as_str(),
+        Some(CODEX_CLIENT_ID)
+    );
+    let helper = route["http_headers_helper"].as_str().unwrap();
+    assert!(!helper.contains("%USERNAME%"));
+    let encoded = helper.split("-EncodedCommand ").nth(1).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .unwrap();
+    let units = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    let script = String::from_utf16(&units).unwrap();
+    let path64 = script
+        .split("FromBase64String('")
+        .nth(1)
+        .unwrap()
+        .split('\'')
+        .next()
+        .unwrap();
+    let path_bytes = base64::engine::general_purpose::STANDARD
+        .decode(path64)
+        .unwrap();
+    let path_units = path_bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        String::from_utf16(&path_units).unwrap(),
+        executable.to_str().unwrap()
+    );
+    assert!(!script.contains("O'Brien"));
+    assert!(script.contains("--local-mcp-http-headers"));
+    let root = std::env::temp_dir().join(format!(
+        "qc-http-pairing-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&root).unwrap();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let config = root.join("config.toml");
+    fs::write(&config, format!("[mcp_servers.qc-remote]\nenabled=false\ncommand='old'\ndefault_tools_approval_mode='prompt'\n[mcp_servers.qc-remote.env]\n{LOCAL_MCP_CLIENT_ENV}='{CODEX_CLIENT_ID}'\n[mcp_servers.qc-remote.tools.save_preset]\nenabled=false\napproval_mode='prompt'\n[mcp_servers.other]\ncommand='keep'\n")).unwrap();
+    write_codex_config_with_route(&config, route).unwrap();
+    let document = fs::read_to_string(&config)
+        .unwrap()
+        .parse::<DocumentMut>()
+        .unwrap();
+    assert_eq!(
+        document["mcp_servers"]["qc-remote"]["enabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        document["mcp_servers"]["other"]["command"].as_str(),
+        Some("keep")
+    );
+    assert!(document["mcp_servers"]["qc-remote"]
+        .get("command")
+        .is_none());
+    assert_eq!(
+        document["mcp_servers"]["qc-remote"]["default_tools_approval_mode"].as_str(),
+        Some("prompt")
+    );
+    assert_eq!(
+        document["mcp_servers"]["qc-remote"]["tools"]["save_preset"]["enabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        document["mcp_servers"]["qc-remote"]["tools"]["save_preset"]["approval_mode"].as_str(),
+        Some("prompt")
+    );
+    let inline = format!("[mcp_servers]\nqc-remote = {{command='old', enabled=false, default_tools_approval_mode='prompt', env={{ {LOCAL_MCP_CLIENT_ENV}='{CODEX_CLIENT_ID}' }}, tools={{ save_preset={{enabled=false}} }} }}\nother={{command='keep-inline'}}\n");
+    fs::write(&config, &inline).unwrap();
+    write_codex_config_with_route(
+        &config,
+        codex_http_route_table(&executable, CODEX_CLIENT_ID, port).unwrap(),
+    )
+    .unwrap();
+    let document = fs::read_to_string(&config)
+        .unwrap()
+        .parse::<DocumentMut>()
+        .unwrap();
+    assert_eq!(
+        document["mcp_servers"]["qc-remote"]["enabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        document["mcp_servers"]["qc-remote"]["tools"]["save_preset"]["enabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(
+        document["mcp_servers"]["other"]["command"].as_str(),
+        Some("keep-inline")
+    );
+    // Updating the already-HTTP managed entry accepts ONLY its non-secret
+    // identity header, never arbitrary static authentication headers.
+    write_codex_config_with_route(
+        &config,
+        codex_http_route_table(&executable, CODEX_CLIENT_ID, port).unwrap(),
+    )
+    .unwrap();
+    let owned = fs::read_to_string(&config).unwrap();
+    for (header, contents) in [
+        ("Authorization", "private-custom-fixture"),
+        ("authorization", "private-custom-fixture"),
+        ("x-qc-remote-client", CODEX_CLIENT_ID),
+        ("X-QC-REMOTE-CLIENT", CODEX_CLIENT_ID),
+        (LOCAL_MCP_CLIENT_HEADER, "codex:not-a-version"),
+    ] {
+        let mut custom = owned.parse::<DocumentMut>().unwrap();
+        custom["mcp_servers"]["qc-remote"]["http_headers"][header] = value(contents);
+        fs::write(&config, custom.to_string()).unwrap();
+        let before = fs::read(&config).unwrap();
+        assert!(
+            write_codex_config_with_route(
+                &config,
+                codex_http_route_table(&executable, CODEX_CLIENT_ID, port).unwrap()
+            )
+            .is_err(),
+            "custom/case-variant identity or authorization must refuse"
+        );
+        assert_eq!(
+            fs::read(&config).unwrap(),
+            before,
+            "refusal must preserve the entire file"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn shared_http_partial_skill_failure_reports_committed_route_without_false_rollback() {
+    let root = crate::tests::unique_fixture_directory("http-partial-skill");
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(root.clone());
+    fs::create_dir_all(&root).unwrap();
+    let config = root.join("config.toml");
+    let skill = root.join("skill");
+    fs::create_dir(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"), b"user skill").unwrap();
+    let backup = root.join("backup-blocker");
+    fs::write(&backup, b"not-directory").unwrap();
+    let port = crate::local_http_binding::StablePort::parse(br#"{"schemaVersion":1,"port":41012}"#)
+        .unwrap();
+    let report = pair_codex_route_and_skill(
+        &config,
+        codex_http_route_table(
+            Path::new("C:\\QC Remote\\qc-remote.exe"),
+            CODEX_CLIENT_ID,
+            port,
+        )
+        .unwrap(),
+        &skill,
+        &backup,
+    )
+    .unwrap();
+    assert_eq!(report["installed"], true);
+    assert_eq!(report["skillInstalled"], false);
+    assert!(report["skillError"]
+        .as_str()
+        .is_some_and(|text| !text.is_empty()));
+    let document = fs::read_to_string(&config)
+        .unwrap()
+        .parse::<DocumentMut>()
+        .unwrap();
+    assert_eq!(
+        document["mcp_servers"][CLAUDE_EXTENSION_NAME]["url"].as_str(),
+        Some("http://127.0.0.1:41012/mcp")
+    );
+    assert_eq!(fs::read(skill.join("SKILL.md")).unwrap(), b"user skill");
+}
+
+/// Owned exact-Codex probe entry: emit the complete production route, never
+/// a user's config. All environment inputs exist ONLY in this ignored test.
+#[cfg(windows)]
+#[test]
+#[ignore]
+fn shared_http_generated_route_probe() {
+    let executable = PathBuf::from(
+        std::env::var_os("QC_HTTP_ROUTE_FIXTURE_EXE").expect("owned fixture executable"),
+    );
+    let output = PathBuf::from(
+        std::env::var_os("QC_HTTP_ROUTE_FIXTURE_OUTPUT").expect("owned fixture output"),
+    );
+    let port = std::env::var("QC_HTTP_ROUTE_FIXTURE_PORT")
+        .unwrap()
+        .parse::<u16>()
+        .unwrap();
+    assert!(output.is_absolute() && executable.is_absolute());
+    let selected = crate::local_http_binding::StablePort::parse(
+        serde_json::to_vec(&json!({"schemaVersion":1,"port":port}))
+            .unwrap()
+            .as_slice(),
+    )
+    .unwrap();
+    let route = codex_http_route_table(&executable, CODEX_CLIENT_ID, selected).unwrap();
+    let bytes = serde_json::to_vec(&toml_item_as_json(&Item::Table(route))).unwrap();
+    fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&output)
+        .unwrap()
+        .write_all(&bytes)
+        .unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn shared_http_approval_status_accepts_preserved_supported_modes_not_malformed_values() {
+    for mode in ["auto", "prompt", "writes", "approve"] {
+        let document=format!("default_tools_approval_mode='{mode}'\n[tools.save_preset]\nenabled=false\napproval_mode='{mode}'\n").parse::<DocumentMut>().unwrap();
+        assert!(codex_http_approval_policy_supported(document.as_table()));
+    }
+    assert!(codex_http_approval_policy_supported(&Table::new()));
+    for policy in [
+        "default_tools_approval_mode='APPROVE'",
+        "default_tools_approval_mode=true",
+        "default_tools_approval_mode='unknown'",
+        "[tools.save_preset]\napproval_mode='unknown'",
+        "[tools.save_preset]\nenabled='false'",
+    ] {
+        let document = policy.parse::<DocumentMut>().unwrap();
+        assert!(!codex_http_approval_policy_supported(document.as_table()));
+    }
+}

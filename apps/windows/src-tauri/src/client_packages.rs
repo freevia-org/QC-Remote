@@ -53,6 +53,8 @@ const LM_STUDIO_DOWNLOAD_URL: &str = "https://lmstudio.ai/download";
 const JAN_DOWNLOAD_URL: &str = "https://jan.ai/download";
 const ANTIGRAVITY_MCP_PERMISSION: &str = "mcp(qc-remote/*)";
 const LOCAL_MCP_CLIENT_ENV: &str = "QC_REMOTE_LOCAL_MCP_CLIENT";
+// Public managed-route metadata, never a credential or authorization input.
+const LOCAL_MCP_CLIENT_HEADER: &str = "X-QC-Remote-Client";
 const ANTIGRAVITY_CLIENT_ID: &str = concat!("antigravity:", env!("CARGO_PKG_VERSION"));
 /// The shared ChatGPT Desktop / Codex route used to carry no client identity at
 /// all, so its "Connected" light was really "some client touched /rpc": a
@@ -3229,10 +3231,44 @@ fn configured_chatgpt_route(
         .get("mcp_servers")
         .and_then(Item::as_table)
         .and_then(|servers| servers.get(CLAUDE_EXTENSION_NAME))
-        .and_then(Item::as_table)
+        .and_then(Item::as_table_like)
     else {
         return Ok(ConfiguredChatgptRoute::default());
     };
+    #[cfg(windows)]
+    if server.contains_key("http_headers_helper") {
+        if !codex_http_approval_policy_supported(server) {
+            return Err("The custom Codex approval policy is invalid for the supported client. It was preserved; review it in Codex settings.".into());
+        }
+        let current = crate::local_http_helper::directory()
+            .and_then(|directory| {
+                crate::local_http_binding::StablePort::read(
+                    &directory.join(crate::local_http_helper::PORT_FILE),
+                )
+            })
+            .and_then(|port| codex_http_route_table(expected_executable, CODEX_CLIENT_ID, port))
+            .is_ok_and(|expected| {
+                ["url", "http_headers_helper"].into_iter().all(|key| {
+                    server.get(key).and_then(Item::as_str)
+                        == expected.get(key).and_then(Item::as_str)
+                })
+            });
+        let identity = server
+            .get("http_headers")
+            .and_then(Item::as_table_like)
+            .and_then(|headers| headers.get(LOCAL_MCP_CLIENT_HEADER))
+            .and_then(Item::as_str);
+        return Ok(ConfiguredChatgptRoute {
+            configured: true,
+            launcher_current: current && identity == Some(CODEX_CLIENT_ID),
+            // Valid owner's restrictive policy is current, not an invitation
+            // to force approve. This flag never authorizes an MCP operation.
+            approval_mode_current: true,
+            managed_version: identity
+                .and_then(|id| id.strip_prefix("codex:"))
+                .map(str::to_owned),
+        });
+    }
     let command_matches = server
         .get("command")
         .and_then(Item::as_value)
@@ -3281,6 +3317,36 @@ fn configured_chatgpt_route(
             && client_identity == CODEX_CLIENT_ID,
         approval_mode_current,
         managed_version,
+    })
+}
+
+#[cfg(windows)]
+fn codex_http_approval_policy_supported(server: &dyn toml_edit::TableLike) -> bool {
+    // Exact tested Codex0.163.0-alpha.11.2 AppToolApproval schema. Missing
+    // values are valid defaults; unknown/malformed values remain diagnostic.
+    let valid = |mode: Option<&Item>| {
+        mode.is_none_or(|mode| {
+            matches!(
+                mode.as_str(),
+                Some("auto" | "prompt" | "writes" | "approve")
+            )
+        })
+    };
+    if !valid(server.get("default_tools_approval_mode")) {
+        return false;
+    }
+    let Some(tools) = server.get("tools") else {
+        return true;
+    };
+    tools.as_table_like().is_some_and(|tools| {
+        tools.iter().all(|(_, tool)| {
+            tool.as_table_like().is_some_and(|tool| {
+                valid(tool.get("approval_mode"))
+                    && tool
+                        .get("enabled")
+                        .is_none_or(|enabled| enabled.as_bool().is_some())
+            })
+        })
     })
 }
 
@@ -4498,11 +4564,78 @@ fn codex_route_table(executable_path: &Path, client_id: &str) -> Table {
     server
 }
 
+#[cfg(windows)]
+fn codex_http_route_table(
+    executable_path: &Path,
+    client_id: &str,
+    port: crate::local_http_binding::StablePort,
+) -> Result<Table, String> {
+    use base64::Engine as _;
+    let executable = executable_path
+        .to_str()
+        .filter(|_| executable_path.is_absolute())
+        .ok_or("The HTTP credential helper must be an absolute Unicode executable path")?;
+    // Codex runs this STRING through cmd.exe. Never put a profile path into
+    // that command language: % expansion happens even inside double quotes.
+    // Encode a data-decoding PowerShell command invoking the absolute native
+    // helper. No path literal, profile, PATH lookup, token or resident proxy.
+    let path = base64::engine::general_purpose::STANDARD.encode(
+        executable
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    );
+    // Smart quotes are PowerShell delimiters too. Decode the path as DATA;
+    // no path characters are ever interpolated into command syntax.
+    let script = format!("$ErrorActionPreference='Stop'; $p=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{path}')); & $p --local-mcp-http-headers; exit $LASTEXITCODE");
+    let encoded = base64::engine::general_purpose::STANDARD.encode(
+        script
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    );
+    let shell = crate::system_tools::powershell_exe();
+    let shell = shell
+        .to_str()
+        .filter(|path| !path.contains(['%', '"', '\r', '\n']))
+        .ok_or("The Windows system PowerShell path cannot be represented safely")?;
+    let helper =
+        format!("\"{shell}\" -NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}");
+    let mut server = Table::new();
+    server.insert("url", value(port.url()));
+    server.insert("http_headers_helper", value(helper));
+    server.insert("default_tools_approval_mode", value("approve"));
+    server.insert("startup_timeout_sec", value(15));
+    server.insert("tool_timeout_sec", value(300));
+    let mut headers = Table::new();
+    headers.insert(LOCAL_MCP_CLIENT_HEADER, value(client_id));
+    server.insert("http_headers", Item::Table(headers));
+    Ok(server)
+}
+
 fn write_codex_config(
     config_path: &Path,
     executable_path: &Path,
     client_id: &str,
 ) -> Result<(), String> {
+    write_codex_config_with_route(config_path, codex_route_table(executable_path, client_id))
+}
+
+const CODEX_TRANSPORT_FIELDS: &[&str] = &[
+    "command",
+    "args",
+    "env",
+    "cwd",
+    "url",
+    "http_headers_helper",
+    "http_headers",
+    "env_http_headers",
+    "bearer_token_env_var",
+    "startup_timeout_sec",
+    "tool_timeout_sec",
+];
+
+fn write_codex_config_with_route(config_path: &Path, mut route: Table) -> Result<(), String> {
     let _config_write = config_write_lock();
     let existing = if config_path.is_file() {
         read_client_document_text(config_path)
@@ -4523,10 +4656,42 @@ fn write_codex_config(
     let servers = document["mcp_servers"]
         .as_table_mut()
         .ok_or_else(|| "ChatGPT's MCP server configuration is not a table.".to_string())?;
-    servers.insert(
-        CLAUDE_EXTENSION_NAME,
-        Item::Table(codex_route_table(executable_path, client_id)),
-    );
+    if let Some(present_item) = servers.get(CLAUDE_EXTENSION_NAME) {
+        let present = present_item
+            .as_table_like()
+            .ok_or("The existing QC Remote entry is not a table; no configuration was changed")?;
+        if route.contains_key("http_headers_helper") {
+            let identity =
+                route_client_identity(&toml_item_as_json(present_item)).map(str::to_owned);
+            if !identity
+                .as_deref()
+                .and_then(|id| id.strip_prefix("codex:"))
+                .is_some_and(|version| !version.is_empty() && version_numbers(version).is_some())
+                || ["env_http_headers", "bearer_token_env_var"]
+                    .iter()
+                    .any(|key| present.contains_key(key))
+                || present.get("http_headers").is_some_and(|headers| {
+                    !headers.as_table_like().is_some_and(|headers| {
+                        headers.len() == 1
+                            && headers.get(LOCAL_MCP_CLIENT_HEADER).and_then(Item::as_str)
+                                == identity.as_deref()
+                    })
+                })
+            {
+                return Err("The existing QC Remote entry has custom ownership or authentication. Review it explicitly before pairing shared HTTP; no configuration was changed.".into());
+            }
+        }
+        // Replace transport ONLY. Preserve every policy/unknown non-transport
+        // field, including enabled, per-tool restrictions and approval modes.
+        // A future client policy must not silently become permissive here.
+        for (key, item) in present
+            .iter()
+            .filter(|(key, _)| !CODEX_TRANSPORT_FIELDS.contains(key))
+        {
+            route.insert(key, item.clone());
+        }
+    }
+    servers.insert(CLAUDE_EXTENSION_NAME, Item::Table(route));
 
     let parent = config_path
         .parent()
@@ -5048,6 +5213,41 @@ fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
         // successful native install into a misleading failure.
         let _ = fs::remove_file(&legacy_runner);
     }
+    #[cfg(windows)]
+    let mut result = {
+        let directory = crate::local_http_helper::directory()?;
+        fs::create_dir_all(&directory)
+            .map_err(|_| "Could not prepare the local HTTP pairing directory")?;
+        let port_file = directory.join(crate::local_http_helper::PORT_FILE);
+        let _pairing =
+            crate::local_access::acquire_document_lease(&port_file, "pairing", Duration::ZERO)?;
+        let port = crate::local_http_binding::StablePort::select_for_pairing(&port_file)?;
+        // The already-running native host adopts the selected port. This
+        // action never starts/enables a device or respawns a user-quit host.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| "Could not verify the native shared HTTP host")?;
+        runtime.block_on(async {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if crate::local_http_helper::verified_headers(&directory).await.is_ok() { return Ok::<(),String>(()); }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err("The shared HTTP host is unavailable. Open QC Remote and enable Local access, then Pair again. The Codex configuration was not changed.".into());
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })?;
+        let mut result = pair_codex_route_and_skill(
+            &config_path,
+            codex_http_route_table(&executable_path, CODEX_CLIENT_ID, port)?,
+            &skill_path,
+            &backup_root,
+        )?;
+        result["transport"] = json!("streamable_http");
+        result
+    };
+    #[cfg(not(windows))]
     let mut result = pair_chatgpt_route(&config_path, &executable_path, &skill_path, &backup_root)?;
     result["restartRequired"] = Value::Bool(chatgpt_restart_required(&config_path));
     Ok(result)
@@ -5058,13 +5258,28 @@ fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
 /// moving the user's own `qc-device-knowledge` aside - before the write that
 /// could still fail, and returned an `Err` the caller could only report as an
 /// outright failure, with the displaced skill nowhere in it.
+#[cfg(any(not(windows), test))]
 fn pair_chatgpt_route(
     config_path: &Path,
     executable_path: &Path,
     skill_path: &Path,
     skill_backup_root: &Path,
 ) -> Result<Value, String> {
-    write_codex_config(config_path, executable_path, CODEX_CLIENT_ID)?;
+    pair_codex_route_and_skill(
+        config_path,
+        codex_route_table(executable_path, CODEX_CLIENT_ID),
+        skill_path,
+        skill_backup_root,
+    )
+}
+
+fn pair_codex_route_and_skill(
+    config_path: &Path,
+    route: Table,
+    skill_path: &Path,
+    skill_backup_root: &Path,
+) -> Result<Value, String> {
+    write_codex_config_with_route(config_path, route)?;
     let skill = install_device_knowledge_skill_at(skill_path, skill_backup_root);
     let mut result = json!({
         "installed": true,
@@ -6124,6 +6339,12 @@ fn toml_item_as_json(item: &Item) -> Value {
 /// clients do not pass it through to the bridge process, so the argument
 /// channel is kept for runtime identification but is not required here.
 fn route_client_identity(server: &Value) -> Option<&str> {
+    if server.get("http_headers_helper").is_some() {
+        return server
+            .get("http_headers")
+            .and_then(|headers| headers.get(LOCAL_MCP_CLIENT_HEADER))
+            .and_then(Value::as_str);
+    }
     // Bionic nests the whole connection - transport, command, arguments and
     // environment - one level below the entry, so the identity is looked for
     // there as well. The map-shaped hosts carry no `connection` key at all, so
@@ -6171,6 +6392,11 @@ fn classify_route_refresh(
     let Some(present) = present else {
         return RouteRefreshDecision::NotPaired;
     };
+    // Direct HTTP pairing is explicit. Do not turn an existing HTTP route
+    // back into stdio (or migrate a legacy route) as a startup side effect.
+    if present.get("http_headers_helper").is_some() {
+        return RouteRefreshDecision::Customised;
+    }
     let Some(identity) = route_client_identity(present) else {
         return RouteRefreshDecision::Customised;
     };
@@ -6364,10 +6590,21 @@ impl ManagedRouteTarget {
     /// format ignores it, as their writers do.
     fn expected_route(&self, client_id: &str, present: Option<&Value>) -> Value {
         match self.format {
-            ManagedRouteFormat::Toml => toml_item_as_json(&Item::Table(codex_route_table(
-                &self.executable_path,
-                client_id,
-            ))),
+            ManagedRouteFormat::Toml => {
+                let mut route = toml_item_as_json(&Item::Table(codex_route_table(
+                    &self.executable_path,
+                    client_id,
+                )));
+                if let Some(policies) = present.and_then(Value::as_object) {
+                    for (key, policy) in policies
+                        .iter()
+                        .filter(|(key, _)| !CODEX_TRANSPORT_FIELDS.contains(&key.as_str()))
+                    {
+                        route[key] = policy.clone();
+                    }
+                }
+                route
+            }
             ManagedRouteFormat::Antigravity => {
                 antigravity_route_server(&self.executable_path, client_id)
             }

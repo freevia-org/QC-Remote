@@ -11,6 +11,15 @@ fn main() {
     if qc_native_platform::process::creation_probe::dispatch_helper_mode() {
         return;
     }
+    #[cfg(windows)]
+    if std::env::args().any(|argument| argument == "--local-mcp-http-headers") {
+        if qc_remote_lib::run_local_mcp_http_headers().is_err() {
+            // Never echo a descriptor, credential, command or HTTP response.
+            eprintln!("QC Remote could not verify its local HTTP host. Open QC Remote and explicitly Connect or repair the pairing.");
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::env::args().any(|argument| argument == "--local-mcp-bridge") {
         if let Err(error) = qc_remote_lib::run_local_mcp_bridge() {
             eprintln!("QC Remote local MCP bridge failed: {error}");

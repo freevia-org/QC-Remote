@@ -43,6 +43,12 @@ mod host_presence;
 mod host_runtime_status;
 mod local_access;
 mod local_identity;
+#[cfg(windows)]
+mod local_http_binding;
+#[cfg(windows)]
+mod local_http_helper;
+#[cfg(windows)]
+mod local_http_listener;
 mod local_stdio;
 mod loopback_http;
 mod os_version;
@@ -163,6 +169,10 @@ use workspace::{
 
 pub fn run_local_mcp_bridge() -> Result<(), String> {
     local_stdio::run()
+}
+#[cfg(windows)]
+pub fn run_local_mcp_http_headers() -> Result<(), String> {
+    local_http_helper::run()
 }
 pub use background_host::BackgroundMcpHost;
 pub use local_stdio::{BrokerDeviceReadiness, BrokerReadinessProbe};

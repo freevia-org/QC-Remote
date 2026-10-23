@@ -68,7 +68,7 @@ const MAX_LOCAL_HTTP_CONNECTIONS: usize = 128;
 /// Serve `router` on `listener` like `axum::serve`, but with a request-head
 /// deadline and the same graceful shutdown: once `shutdown` completes no new
 /// connection is accepted and the open ones are asked to finish.
-async fn serve_loopback(
+pub(crate) async fn serve_loopback(
     listener: tokio::net::TcpListener,
     router: Router,
     header_read_timeout: Duration,
@@ -177,6 +177,97 @@ const ANOTHER_COPY_IS_SERVING: &str = "Another copy of QC Remote is already serv
 const NATIVE_BRIDGE_ACTIVITY_WINDOW: Duration = Duration::from_secs(12);
 const ANTIGRAVITY_BRIDGE_CLIENT: &str = concat!("antigravity:", env!("CARGO_PKG_VERSION"));
 static LOCAL_CLIENT_LAST_SEEN: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+#[cfg(windows)]
+static DIRECT_CODEX_ACTIVITY: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+
+#[cfg(windows)]
+fn record_direct_activity(activity: &mut HashMap<String, u64>, id: &str, now: u64) {
+    activity.retain(|_, seen| native_bridge_is_recent(*seen, now));
+    let evicted = if !activity.contains_key(id) && activity.len() >= MAX_LOCAL_HTTP_CONNECTIONS {
+        activity
+            .iter()
+            .min_by_key(|(_, seen)| **seen)
+            .map(|(id, _)| id.clone())
+    } else {
+        None
+    };
+    if let Some(oldest) = evicted {
+        activity.remove(&oldest);
+    }
+    activity.insert(id.to_owned(), now);
+}
+
+#[cfg(windows)]
+struct DirectCodexPresence {
+    delegate: Arc<dyn qc_remote_mcp::ClientPresence>,
+    id: String,
+    initialized: AtomicBool,
+}
+#[cfg(windows)]
+impl DirectCodexPresence {
+    fn new() -> Self {
+        Self {
+            delegate: crate::host_presence::http_session(),
+            id: format!("direct-{:032x}", rand::random::<u128>()),
+            initialized: AtomicBool::new(false),
+        }
+    }
+}
+#[cfg(windows)]
+impl qc_remote_mcp::ClientPresence for DirectCodexPresence {
+    fn initialized(&self, client: &rmcp::model::Implementation) {
+        self.delegate.initialized(client);
+        if !self.initialized.swap(true, Ordering::AcqRel) {
+            // Managed route observation, NOT proof of Codex binary identity.
+            // Never used for authorization, policy or approval decisions.
+            record_local_client_attach(
+                concat!("codex:", env!("CARGO_PKG_VERSION")),
+                unix_time_ms(),
+            );
+        }
+        self.active();
+    }
+    fn active(&self) {
+        self.delegate.active();
+        if self.initialized.load(Ordering::Acquire) {
+            let now = unix_time_ms();
+            let mut activity = lock_recover(DIRECT_CODEX_ACTIVITY.get_or_init(Default::default));
+            // Presentation evidence only, never authorization/session eviction.
+            record_direct_activity(&mut activity, &self.id, now);
+        }
+    }
+}
+#[cfg(windows)]
+impl Drop for DirectCodexPresence {
+    fn drop(&mut self) {
+        if let Some(activity) = DIRECT_CODEX_ACTIVITY.get() {
+            lock_recover(activity).remove(&self.id);
+        }
+        // Dropping the delegate removes ONLY this logical HTTP presence row.
+    }
+}
+
+fn local_client_activity_snapshot() -> HashMap<String, u64> {
+    let clients = LOCAL_CLIENT_LAST_SEEN
+        .get()
+        .map(|map| lock_recover(map).clone())
+        .unwrap_or_default();
+    #[cfg(windows)]
+    let mut clients = clients;
+    #[cfg(windows)]
+    if let Some(activity) = DIRECT_CODEX_ACTIVITY.get() {
+        let now = unix_time_ms();
+        let mut activity = lock_recover(activity);
+        activity.retain(|_, seen| native_bridge_is_recent(*seen, now));
+        if let Some(seen) = activity.values().copied().max() {
+            clients
+                .entry(concat!("codex:", env!("CARGO_PKG_VERSION")).into())
+                .and_modify(|old| *old = (*old).max(seen))
+                .or_insert(seen);
+        }
+    }
+    clients
+}
 /// When this process began accepting heartbeats, or 0 before it did.
 ///
 /// [`LOCAL_CLIENT_LAST_SEEN`] is per-process by design - a heartbeat is a
@@ -514,6 +605,81 @@ fn local_router_with_lifecycle(
         crate::local_identity::IDENTITY_PATH,
         post(local_identity).with_state(identity),
     )
+}
+
+/// A separate credential audience. Never mount legacy RPC/health here.
+#[cfg(windows)]
+pub(crate) fn direct_http_router(
+    backend: Arc<dyn QcBackend>,
+    token: Arc<str>,
+    instance_id: Arc<str>,
+    port: u16,
+) -> Router {
+    let hosts = vec![format!("127.0.0.1:{port}")];
+    let auth = LocalAuth {
+        token: token.clone(),
+        allowed_hosts: hosts.clone().into(),
+        body_timeout: Duration::from_secs(15),
+    };
+    let identity = LocalIdentity {
+        token,
+        instance_id,
+        allowed_hosts: hosts.clone().into(),
+        body_timeout: Duration::from_secs(3),
+    };
+    qc_remote_mcp::mcp_router_with_allowed_hosts(
+        move || {
+            Ok(QcMcp::new(backend.clone())
+                .with_session_target_guard()
+                .with_client_presence(Arc::new(DirectCodexPresence::new())))
+        },
+        hosts,
+    )
+    .route_layer(middleware::from_fn_with_state(auth, authenticate_local))
+    .route(
+        crate::local_identity::IDENTITY_PATH,
+        post(local_identity).with_state(identity),
+    )
+    .layer(middleware::from_fn_with_state(
+        Arc::new(Mutex::new((std::time::Instant::now(), 0_u32))),
+        direct_envelope,
+    ))
+}
+
+#[cfg(windows)]
+async fn direct_envelope(
+    State(rate): State<Arc<Mutex<(std::time::Instant, u32)>>>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if request.version() != axum::http::Version::HTTP_11
+        || request.uri().scheme().is_some()
+        || request.uri().authority().is_some()
+    {
+        return local_error(
+            StatusCode::BAD_REQUEST,
+            "LOCAL_INVALID_REQUEST",
+            "origin_form_http11_required",
+        );
+    }
+    if request.uri().path() == crate::local_identity::IDENTITY_PATH {
+        let limited = {
+            let mut window = lock_recover(&rate);
+            if window.0.elapsed() >= Duration::from_secs(1) {
+                *window = (std::time::Instant::now(), 0);
+            }
+            window.1 = window.1.saturating_add(1);
+            window.1 > 32
+        };
+        if limited {
+            return local_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "LOCAL_IDENTITY_LIMIT",
+                "identity_rate_limited",
+            );
+        }
+    }
+    next.run(request).await
 }
 
 #[derive(Clone)]
@@ -877,10 +1043,7 @@ pub(crate) fn host_status_document(endpoint: Option<String>, instance_id: Option
     let mut result = serde_json::to_value(presence).unwrap_or_default();
     result["instanceId"] = serde_json::json!(instance_id);
     result["remoteState"] = serde_json::json!(crate::host_presence::remote_state());
-    result["bridgeClients"] = serde_json::json!(LOCAL_CLIENT_LAST_SEEN
-        .get()
-        .and_then(|map| map.lock().ok().map(|map| map.clone()))
-        .unwrap_or_default());
+    result["bridgeClients"] = serde_json::json!(local_client_activity_snapshot());
     result["observedSince"] =
         serde_json::json!(LOCAL_CLIENT_OBSERVATION_SINCE.load(Ordering::Acquire));
     result
@@ -1379,7 +1542,23 @@ pub(crate) fn start_listener(
     adapter: Arc<dyn DeviceAdapter>,
     access: watch::Receiver<AccessMode>,
 ) -> Result<RunningLocalAccess, LocalAccessFailure> {
-    start_listener_with_budget(state_files, adapter, access, &LISTENER_THREADS)
+    #[cfg(all(windows, not(test)))]
+    let direct_directory = match crate::local_http_helper::directory() {
+        Ok(directory) => Some(directory),
+        Err(_) => {
+            eprintln!("Shared HTTP LocalAppData is unavailable; compatibility remains enabled, direct HTTP refused");
+            None
+        }
+    };
+    #[cfg(any(not(windows), test))]
+    let direct_directory = None;
+    start_listener_inner(
+        state_files,
+        adapter,
+        access,
+        &LISTENER_THREADS,
+        direct_directory,
+    )
 }
 
 impl Drop for RunningLocalAccess {
@@ -1394,11 +1573,22 @@ impl Drop for RunningLocalAccess {
     }
 }
 
+#[cfg(test)]
 fn start_listener_with_budget(
     state_files: Vec<PathBuf>,
     adapter: Arc<dyn DeviceAdapter>,
     access: watch::Receiver<AccessMode>,
     budget: &'static qc_native_platform::thread_owner::Budget,
+) -> Result<RunningLocalAccess, LocalAccessFailure> {
+    start_listener_inner(state_files, adapter, access, budget, None)
+}
+
+fn start_listener_inner(
+    state_files: Vec<PathBuf>,
+    adapter: Arc<dyn DeviceAdapter>,
+    access: watch::Receiver<AccessMode>,
+    budget: &'static qc_native_platform::thread_owner::Budget,
+    _direct_directory: Option<PathBuf>,
 ) -> Result<RunningLocalAccess, LocalAccessFailure> {
     // Admission precedes lease creation, bind, token minting, and publication.
     let permit = budget.reserve().map_err(LocalAccessFailure::other)?;
@@ -1443,6 +1633,10 @@ fn start_listener_with_budget(
     let backend: Arc<dyn QcBackend> = Arc::new(LocalBackend {
         adapter: adapter.clone(),
         access,
+    });
+    #[cfg(windows)]
+    let direct = _direct_directory.as_deref().map(|directory| {
+        crate::local_http_listener::DirectHost::prepare(directory, backend.clone(), &instance_id)
     });
     let router = local_router_with_lifecycle(
         backend,
@@ -1535,6 +1729,19 @@ fn start_listener_with_budget(
                             eprintln!("QC Remote local MCP listener failed: {error}");
                         }
                     }
+                    () = async {
+                        #[cfg(windows)]
+                        if let Some(direct) = direct {
+                            if let Err(error) = direct.run().await {
+                                eprintln!("QC Remote shared HTTP listener refused: {error}");
+                            }
+                            // Late Pair/refresh failure must not tear down the
+                            // healthy compatibility audience. This actor is
+                            // terminal until the native host is restarted;
+                            // Pair's identity proof reports the refusal.
+                        }
+                        std::future::pending::<()>().await;
+                    } => {}
                     () = async move {
                         wait_for_shutdown(&mut forced_rx).await;
                         tokio::time::sleep(LISTENER_SHUTDOWN_GRACE).await;
@@ -2334,10 +2541,9 @@ pub fn local_client_evidence(client: &str) -> LocalClientEvidence {
             unix_time_ms(),
         );
     }
-    let last_seen = LOCAL_CLIENT_LAST_SEEN
-        .get()
-        .and_then(|clients| clients.lock().ok())
-        .and_then(|clients| clients.get(client).copied())
+    let last_seen = local_client_activity_snapshot()
+        .get(client)
+        .copied()
         .unwrap_or_default();
     local_client_evidence_at(
         last_seen,
@@ -2835,7 +3041,11 @@ const REPLACE_ATTEMPTS: u32 = 10;
 /// Persistent sidecars must never be unlinked: replacing a lock inode while a
 /// contender holds/waits on it would split ownership between two publishers.
 /// The OS releases these locks on process death; no PID guessing or reaping.
-fn acquire_document_lease(path: &Path, role: &str, timeout: Duration) -> Result<fs::File, String> {
+pub(crate) fn acquire_document_lease(
+    path: &Path,
+    role: &str,
+    timeout: Duration,
+) -> Result<fs::File, String> {
     let parent = path
         .parent()
         .ok_or("The local MCP state path has no parent")?;
@@ -4073,6 +4283,219 @@ mod tests {
 
     struct FakeAdapter {
         ready: AtomicBool,
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_http_managed_presence_requires_initialize_and_is_per_session_bounded_activity() {
+        use qc_remote_mcp::ClientPresence as _;
+        let first = DirectCodexPresence::new();
+        let second = DirectCodexPresence::new();
+        first.active();
+        assert!(!DIRECT_CODEX_ACTIVITY
+            .get()
+            .is_some_and(|rows| lock_recover(rows).contains_key(&first.id)));
+        let first_id = first.id.clone();
+        let second_id = second.id.clone();
+        first.initialized(&rmcp::model::Implementation::new(
+            "managed-route-fixture-a",
+            "0",
+        ));
+        second.initialized(&rmcp::model::Implementation::new(
+            "managed-route-fixture-b",
+            "0",
+        ));
+        assert!(lock_recover(DIRECT_CODEX_ACTIVITY.get().unwrap()).contains_key(&first_id));
+        drop(first);
+        let rows = lock_recover(DIRECT_CODEX_ACTIVITY.get().unwrap());
+        assert!(!rows.contains_key(&first_id));
+        assert!(rows.contains_key(&second_id));
+        drop(rows);
+        *lock_recover(DIRECT_CODEX_ACTIVITY.get().unwrap())
+            .get_mut(&second_id)
+            .unwrap() = unix_time_ms().saturating_sub(13_000);
+        local_client_activity_snapshot();
+        assert!(
+            !lock_recover(DIRECT_CODEX_ACTIVITY.get().unwrap()).contains_key(&second_id),
+            "idle HTTP is not a fabricated persistent heartbeat"
+        );
+        assert!(
+            local_client_attached_before(concat!("codex:", env!("CARGO_PKG_VERSION"))),
+            "history survives session expiry"
+        );
+        second.active();
+        assert!(lock_recover(DIRECT_CODEX_ACTIVITY.get().unwrap()).contains_key(&second_id));
+        drop(second);
+        assert!(!lock_recover(DIRECT_CODEX_ACTIVITY.get().unwrap()).contains_key(&second_id));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_http_activity_metadata_is_capped_even_when_one_connection_initializes_many_sessions() {
+        // Isolate the production insertion policy; flooding the global map
+        // could evict concurrently-running lifecycle fixture rows.
+        let mut rows = HashMap::new();
+        for index in 0..MAX_LOCAL_HTTP_CONNECTIONS + 1 {
+            record_direct_activity(&mut rows, &format!("fixture:{index}"), 1000 + index as u64);
+            assert!(rows.len() <= MAX_LOCAL_HTTP_CONNECTIONS);
+        }
+        assert!(!rows.contains_key("fixture:0"));
+        assert_eq!(rows.len(), MAX_LOCAL_HTTP_CONNECTIONS);
+        record_direct_activity(&mut rows, "fixture:1", 2000);
+        assert_eq!(
+            rows.len(),
+            MAX_LOCAL_HTTP_CONNECTIONS,
+            "existing activity updates don't evict another session"
+        );
+        record_direct_activity(&mut rows, "fresh", 20_000);
+        assert_eq!(
+            rows.len(),
+            1,
+            "expired metadata pruned, without affecting MCP/session state"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_http_late_pair_refusal_keeps_legacy_and_explicit_retry_rearms_only_direct() {
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        let directory = scratch_directory("direct-late-pair");
+        let _directory = OwnedTestDirectory(directory.clone());
+        let paths = vec![directory.join(STATE_FILE_NAME)];
+        let running = super::start_listener_inner(
+            paths.clone(),
+            Arc::new(FakeAdapter {
+                ready: AtomicBool::new(false),
+            }),
+            full_access(),
+            &BUDGET,
+            Some(directory.clone()),
+        )
+        .unwrap();
+        let endpoint = crate::local_stdio::descriptor_from_paths(&paths).unwrap();
+        let stranger = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let port = stranger.local_addr().unwrap().port();
+        let record = directory.join(crate::local_http_helper::PORT_FILE);
+        qc_owner_only_file::publish_atomically(
+            &record,
+            serde_json::to_vec(
+                &serde_json::json!({"schemaVersion":1,"port":port,"pairingRevision":1}),
+            )
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let client = crate::loopback_http::loopback_client_builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        endpoint
+            .prove_identity(&client)
+            .await
+            .expect("late Pair failure did not stop legacy audience");
+        assert!(crate::local_http_helper::verified_headers(&directory)
+            .await
+            .is_err());
+        drop(stranger);
+        // No timer retry after failure: a new explicit Pair is required.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!directory
+            .join(crate::local_http_helper::DESCRIPTOR_FILE)
+            .exists());
+        crate::local_http_binding::StablePort::select_for_pairing(&record).unwrap();
+        let direct_headers = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(headers) = crate::local_http_helper::verified_headers(&directory).await {
+                    break headers;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let direct_token = direct_headers["Authorization"].as_str().unwrap();
+        let refused = client
+            .get(&endpoint.health_url)
+            .header(AUTHORIZATION, direct_token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            refused.status(),
+            StatusCode::UNAUTHORIZED,
+            "new token cannot authenticate to legacy audience"
+        );
+        let refused = client
+            .post(format!("http://127.0.0.1:{port}/mcp"))
+            .bearer_auth(&endpoint.bearer_token)
+            .body("{}")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            refused.status(),
+            StatusCode::UNAUTHORIZED,
+            "legacy token cannot authenticate to new audience"
+        );
+        endpoint.prove_identity(&client).await.unwrap();
+        assert!(running.stop());
+        assert!(!directory
+            .join(crate::local_http_helper::DESCRIPTOR_FILE)
+            .exists());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_http_startup_refusal_preserves_legacy_for_malformed_and_occupied_pairing() {
+        static BUDGET: qc_native_platform::thread_owner::Budget =
+            qc_native_platform::thread_owner::Budget::new(1);
+        for malformed in [true, false] {
+            let directory = scratch_directory("direct-startup-refusal");
+            let _directory = OwnedTestDirectory(directory.clone());
+            let stranger = StdTcpListener::bind("127.0.0.1:0").unwrap();
+            let address = stranger.local_addr().unwrap();
+            let bytes = if malformed {
+                b"not valid port metadata".to_vec()
+            } else {
+                serde_json::to_vec(&serde_json::json!({"schemaVersion":1,"port":address.port(),"pairingRevision":1})).unwrap()
+            };
+            qc_owner_only_file::publish_atomically(
+                &directory.join(crate::local_http_helper::PORT_FILE),
+                &bytes,
+            )
+            .unwrap();
+            let paths = vec![directory.join(STATE_FILE_NAME)];
+            let running = super::start_listener_inner(
+                paths.clone(),
+                Arc::new(FakeAdapter {
+                    ready: AtomicBool::new(false),
+                }),
+                full_access(),
+                &BUDGET,
+                Some(directory.clone()),
+            )
+            .expect("compatibility host still starts");
+            let endpoint = crate::local_stdio::descriptor_from_paths(&paths).unwrap();
+            let client = crate::loopback_http::loopback_client_builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap();
+            endpoint
+                .prove_identity(&client)
+                .await
+                .expect("legacy authentication remains healthy");
+            assert!(!directory
+                .join(crate::local_http_helper::DESCRIPTOR_FILE)
+                .exists());
+            assert_eq!(
+                stranger.local_addr().unwrap(),
+                address,
+                "foreign listener never displaced"
+            );
+            assert!(running.stop());
+        }
     }
 
     #[async_trait]
