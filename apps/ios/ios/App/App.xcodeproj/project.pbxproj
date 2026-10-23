@@ -246,7 +246,7 @@
 		A30000000000000000000004 /* Embed DriverKit Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
-			dstPath = "";
+			dstPath = "$(SYSTEM_EXTENSIONS_FOLDER_PATH)";
 			dstSubfolderSpec = 16;
 			files = (
 				A10000000000000000000005 /* QCRemoteUSBDriver.dext in Embed DriverKit Extensions */,
