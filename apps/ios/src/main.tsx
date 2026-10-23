@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import * as React from "react";
 import { createRoot } from "react-dom/client";
 import { Capacitor } from "@capacitor/core";
+import { App as NativeApp } from "@capacitor/app";
 import { StatusBar, Style } from "@capacitor/status-bar";
 import { QC_BRAND, QC_COLORS, QC_NATIVE_THEME } from "@qc-remote/theme";
 import { App } from "@qc-remote/android-src/App";
@@ -18,6 +19,10 @@ document.title = QC_BRAND.appName;
 if (Capacitor.isNativePlatform()) void StatusBar.setStyle({ style: Style.Dark });
 
 function ObservedApp({ remote }: { remote: boolean }) {
+  const [appVersion, setAppVersion] = React.useState("1.0");
+  React.useEffect(() => {
+    if (Capacitor.isNativePlatform()) void NativeApp.getInfo().then(info => setAppVersion(info.version)).catch(() => {});
+  }, []);
   const [lastObservedAt, setLastObservedAt] = React.useState(remoteObservation);
   React.useEffect(() => {
     let disposed = false;
@@ -26,7 +31,7 @@ function ObservedApp({ remote }: { remote: boolean }) {
   }, []);
   return <DeviceObservationProvider value={remote
     ? { mode: "on-demand", lastObservedAt, refresh: refreshRemoteObservation, readTarget: refreshRemoteTargetObservation, connection: remoteConnection, clearTarget: clearRemoteTarget }
-    : { mode: "live" }}><App /></DeviceObservationProvider>;
+    : { mode: "live" }}><App appVersion={appVersion} /></DeviceObservationProvider>;
 }
 
 function IosApp() {
