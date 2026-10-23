@@ -9,6 +9,9 @@ license = "MIT OR Apache-2.0"
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 qc-windows-process = { path = "../qc-windows-process" }
 
+[features]
+macos-app-store = []
+
 [dependencies]
 qc-owner-only-file = { path = "../qc-owner-only-file" }
 

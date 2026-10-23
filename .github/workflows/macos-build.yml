@@ -109,6 +109,18 @@ jobs:
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}'
           QC_GATEWAY_EXECUTABLE: ${{ github.workspace }}/apps/windows/src-tauri/target/${{ matrix.target }}/debug/qc-device-broker
+      - name: Check the isolated Mac App Store runtime
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop-broker,custom-protocol,macos-app-store --lib --bins --target ${{ matrix.target }}
+        working-directory: apps/windows
+        env:
+          TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}'
+      - name: Test Mac App Store LOCAL integrations
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop-broker,custom-protocol,macos-app-store --lib client_packages::tests:: --target ${{ matrix.target }} -- --test-threads=1
+        working-directory: apps/windows
+        env:
+          TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}'
+      - name: Test Mac App Store native services
+        run: cargo test --locked --manifest-path Cargo.toml -p qc-native-platform --features macos-app-store --target ${{ matrix.target }} -- --test-threads=1
       - name: Build and stage the macOS broker sidecar
         run: |
           cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.target }}

@@ -931,7 +931,14 @@ fn claude_bundle_contains_current_manifest_and_bridge() {
         .expect("bridge entry")
         .read_to_string(&mut bridge)
         .expect("bridge text");
+    #[cfg(not(all(target_os = "macos", feature = "macos-app-store")))]
     assert!(bridge.contains("local-mcp.json"));
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    {
+        assert!(bridge.contains("--local-mcp-bridge"));
+        assert!(bridge.contains("process.argv.slice(2)"));
+        assert!(!bridge.contains("local-mcp.json"));
+    }
     assert!(bridge.contains(env!("CARGO_PKG_VERSION")));
     assert!(!bridge.contains(VERSION_SLOT));
 }

@@ -268,6 +268,13 @@ fn reap_children(children: Arc<Mutex<Vec<Child>>>) {
     }
 }
 
+#[cfg(feature = "macos-app-store")]
+pub(super) fn set_run_entry(executable: &Path, _directory: &Path) -> Result<(), String> {
+    validate_run_entry_location(executable)?;
+    qc_native_platform::app_store::set_login_enabled(true)
+}
+
+#[cfg(not(feature = "macos-app-store"))]
 pub(super) fn set_run_entry(executable: &Path, directory: &Path) -> Result<(), String> {
     // Keep sidecar lookup and foreground use available from any valid bundle;
     // only the persistent RunAtLoad entry requires a stable install location.
@@ -394,6 +401,12 @@ fn register_launch_agent(
     Ok(())
 }
 
+#[cfg(feature = "macos-app-store")]
+pub(super) fn remove_run_entry() -> Result<(), String> {
+    qc_native_platform::app_store::set_login_enabled(false)
+}
+
+#[cfg(not(feature = "macos-app-store"))]
 pub(super) fn remove_run_entry() -> Result<(), String> {
     let path = launch_agent_path()?;
     let metadata = match fs::symlink_metadata(&path) {
@@ -485,10 +498,11 @@ fn launch_agent(executable: &Path, directory: &Path) -> Result<String, String> {
 }
 
 fn menu_app(executable: &Path) -> Option<PathBuf> {
-    let app = executable
-        .parent()?
-        .parent()?
-        .join("Resources/QC Device Broker.app");
+    #[cfg(feature = "macos-app-store")]
+    let location = "Helpers/QC Device Broker.app";
+    #[cfg(not(feature = "macos-app-store"))]
+    let location = "Resources/QC Device Broker.app";
+    let app = executable.parent()?.parent()?.join(location);
     app.join("Contents/MacOS/QCDeviceBroker")
         .is_file()
         .then_some(app)

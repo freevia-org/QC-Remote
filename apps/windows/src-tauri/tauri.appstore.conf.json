@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "features": [
+      "macos-app-store",
+      "desktop-broker"
+    ]
+  },
+  "bundle": {
+    "targets": [
+      "app"
+    ],
+    "icon": [
+      "icons/generated/icon.icns"
+    ],
+    "resources": [],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "entitlements": "macos/store-app.entitlements",
+      "signingIdentity": "-",
+      "files": {
+        "Library/LoginItems/QC Remote Login.app": "../../../.artifacts/builds/store/QC Remote Login.app",
+        "Helpers/QC Device Broker.app": "../../../.artifacts/builds/store/QC Device Broker.app",
+        "Resources/legal/THIRD_PARTY-NOTICES.md": "../../../THIRD_PARTY-NOTICES.md",
+        "Resources/legal/THIRD_PARTY-LICENSE-INVENTORY.json": "../../../legal/THIRD_PARTY-LICENSE-INVENTORY.json",
+        "Resources/legal/THIRD_PARTY-LICENSE-TEXTS.txt": "../../../legal/THIRD_PARTY-LICENSE-TEXTS.txt",
+        "Resources/legal/THIRD_PARTY-SOURCE-OFFER.md": "../../../legal/THIRD_PARTY-SOURCE-OFFER.md",
+        "Resources/legal/COMMUNITY-PROTOCOL-LICENSE.txt": "../../../legal/COMMUNITY-PROTOCOL-LICENSE.txt",
+        "Resources/legal/LICENSE.md": "../../../LICENSE",
+        "Resources/legal/LicenseRef-QC-Remote-Reference.txt": "../../../LICENSES/LicenseRef-QC-Remote-Reference.txt",
+        "Resources/legal/LICENSE-MIT.txt": "../../../LICENSE-MIT",
+        "Resources/legal/LICENSE-APACHE.txt": "../../../LICENSE-APACHE"
+      },
+      "bundleVersion": "196"
+    },
+    "longDescription": "Independent, unofficial macOS controller for compatible Quad Cortex hardware, with a standalone device broker and optional remote access. Not affiliated with or endorsed by Neural DSP Technologies Oy."
+  }
+}

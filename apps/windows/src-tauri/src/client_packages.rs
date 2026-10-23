@@ -346,6 +346,25 @@ fn claude_manifest() -> Result<Vec<u8>, String> {
 
 /// Stamps the running app's tool contract digest into the bridge so an installed
 /// client can warn when it is talking to a QC Remote built from a different one.
+#[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+fn bridge_source() -> Result<Vec<u8>, String> {
+    // Claude's Node runtime is not an App Group member. Delegate STDIO to our
+    // signed native bridge instead of asking Node to read protected group state.
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("Could not locate the signed MCP bridge: {error}"))?;
+    let executable = serde_json::to_string(&executable)
+        .map_err(|error| format!("Could not encode the MCP bridge path: {error}"))?;
+    Ok(format!(r#"// QC Remote {version}; tool contract {contract}
+"use strict";
+const {{ spawn }} = require("node:child_process");
+const child = spawn({executable}, ["--local-mcp-bridge", ...process.argv.slice(2)], {{ stdio: "inherit", windowsHide: true }});
+child.on("error", (error) => {{ console.error("QC Remote native bridge:", error.message); process.exitCode = 1; }});
+child.on("exit", (code, signal) => {{ process.exitCode = code ?? (128 + (require("node:os").constants.signals[signal] ?? 0)); }});
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
+"#, version = env!("CARGO_PKG_VERSION"), contract = crate::local_access::tool_contract_sha256()).into_bytes())
+}
+
+#[cfg(not(all(target_os = "macos", feature = "macos-app-store")))]
 fn bridge_source() -> Result<Vec<u8>, String> {
     let source = std::str::from_utf8(BRIDGE)
         .map_err(|error| format!("The local MCP bridge is not valid UTF-8: {error}"))?;
@@ -2831,13 +2850,72 @@ async fn antigravity_runtime_connected_until(deadline: Instant) -> bool {
 }
 
 fn user_home_directory() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    let variable = "USERPROFILE";
-    #[cfg(not(target_os = "windows"))]
-    let variable = "HOME";
-    std::env::var_os(variable)
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute())
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    {
+        qc_native_platform::app_store::user_home()
+    }
+    #[cfg(not(all(target_os = "macos", feature = "macos-app-store")))]
+    {
+        #[cfg(target_os = "windows")]
+        let variable = "USERPROFILE";
+        #[cfg(not(target_os = "windows"))]
+        let variable = "HOME";
+        std::env::var_os(variable)
+            .map(PathBuf::from)
+            .filter(|home| home.is_absolute())
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+fn local_client_folder(client: &str) -> Result<PathBuf, String> {
+    let home = user_home_directory().ok_or("The user home directory is unavailable")?;
+    let folder = match client {
+        "claude" => Some(home.join("Library/Application Support/Claude")),
+        "codex" => codex_config_path().and_then(|p| p.parent().map(Path::to_path_buf)),
+        "antigravity" => Some(home.join(".gemini")),
+        "lm-studio" => Some(home.join(".lmstudio")),
+        "jan" => Some(home.join("Library/Application Support/Jan")),
+        _ => None,
+    }
+    .ok_or("The client's configuration folder is unavailable")?;
+    Ok(folder)
+}
+
+#[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+fn annotate_folder_access(status: &mut Value, client: &str) {
+    let key = match client {
+        "claude" => "claudeInstalled",
+        "codex" => "chatgptInstalled",
+        "antigravity" => "antigravityInstalled",
+        "lm-studio" => "lmStudioInstalled",
+        "jan" => "janInstalled",
+        _ => return,
+    };
+    if status[key] != true || status["state"] == "app-update-required" {
+        return;
+    }
+    let Ok(folder) = local_client_folder(client) else {
+        return;
+    };
+    let mut needed = !qc_native_platform::app_store::has_folder_access(&folder);
+    if !needed && client == "jan" {
+        if let Some(data) = jan_data_directory() {
+            needed = !qc_native_platform::app_store::has_folder_access(&data);
+        }
+    }
+    status["folderAccessRequired"] = Value::Bool(needed);
+}
+
+#[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+fn authorize_local_client_folder(client: &str) -> Result<(), String> {
+    let folder = local_client_folder(client)?;
+    qc_native_platform::app_store::authorize_folder(&folder)?;
+    if client == "jan" {
+        if let Some(data) = jan_data_directory().filter(|p| !p.starts_with(&folder)) {
+            qc_native_platform::app_store::authorize_folder(&data)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -3047,7 +3125,16 @@ fn canonical_integration_directory() -> Result<PathBuf, String> {
             .map(|directory| directory.join("QC Remote").join("integrations"))
             .ok_or_else(|| "Windows local application data is unavailable.".to_string())
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    {
+        let state = crate::broker_paths::app_local_data_dir();
+        qc_native_platform::paths_macos::prepare_directory(&state)?;
+        Ok(state.join("integrations"))
+    }
+    #[cfg(not(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "macos-app-store")
+    )))]
     {
         xdg_data_home()
             .map(|directory| directory.join("QC Remote").join("integrations"))
@@ -3063,7 +3150,16 @@ fn durable_antigravity_integration_directory() -> Result<PathBuf, String> {
             .map(|directory| directory.join(WINDOWS_APP_IDENTIFIER).join("integrations"))
             .ok_or_else(|| "Windows local application data is unavailable.".to_string())
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    {
+        let state = crate::broker_paths::app_local_data_dir();
+        qc_native_platform::paths_macos::prepare_directory(&state)?;
+        Ok(state.join("integrations"))
+    }
+    #[cfg(not(any(
+        target_os = "windows",
+        all(target_os = "macos", feature = "macos-app-store")
+    )))]
     {
         xdg_data_home()
             .map(|directory| directory.join(WINDOWS_APP_IDENTIFIER).join("integrations"))
@@ -4731,6 +4827,8 @@ fn claude_desktop_extension_status_blocking(
     if let Some(error) = status_error {
         status["statusError"] = Value::String(error);
     }
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    annotate_folder_access(&mut status, "claude");
     Ok(status)
 }
 
@@ -4744,6 +4842,13 @@ pub async fn claude_desktop_extension_status() -> Result<Value, String> {
 }
 
 fn install_claude_desktop_extension_blocking() -> Result<Value, String> {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    {
+        let home = user_home_directory().ok_or("The user home directory is unavailable")?;
+        qc_native_platform::app_store::authorize_folder(
+            &home.join("Library/Application Support/Claude"),
+        )?;
+    }
     let claude = claude_desktop_installation()
         .and_then(|installation| installation.executable)
         .or_else(claude_msix_path);
@@ -4898,6 +5003,8 @@ fn chatgpt_local_integration_status_blocking(
     });
     apply_chatgpt_device_knowledge_skill_status(&mut status, &skill_status);
     status["routeRefresh"] = route_refresh_report(CHATGPT_ROUTE);
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    annotate_folder_access(&mut status, "codex");
     Ok(status)
 }
 
@@ -4917,6 +5024,8 @@ pub async fn chatgpt_local_integration_status() -> Result<Value, String> {
 }
 
 fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    authorize_local_client_folder("codex")?;
     if !chatgpt_desktop_installed() {
         #[cfg(target_os = "linux")]
         let message = "Codex CLI is not installed for this Linux user.";
@@ -5036,6 +5145,8 @@ pub async fn install_chatgpt_local_integration() -> Result<Value, String> {
 }
 
 fn remove_chatgpt_local_integration_blocking() -> Result<Value, String> {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    authorize_local_client_folder("codex")?;
     let config_path =
         codex_config_path().ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let skill_path = codex_device_knowledge_skill_path()
@@ -5341,6 +5452,8 @@ fn antigravity_local_integration_status_blocking(
         status["appVersion"] = Value::String(version);
     }
     status["routeRefresh"] = route_refresh_report(ANTIGRAVITY_ROUTE);
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    annotate_folder_access(&mut status, "antigravity");
     Ok(status)
 }
 
@@ -5389,6 +5502,8 @@ pub fn open_antigravity_download() -> Result<(), String> {
 }
 
 fn install_antigravity_local_integration_blocking() -> Result<Value, String> {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    authorize_local_client_folder("antigravity")?;
     if antigravity_installation().is_none() {
         return Err("Google Antigravity is not installed for this user account.".to_string());
     }
@@ -5438,6 +5553,8 @@ async fn ensure_and_refresh_antigravity_local_integration() -> Result<Value, Str
 }
 
 fn remove_antigravity_local_integration_blocking() -> Result<Value, String> {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    authorize_local_client_folder("antigravity")?;
     let config_path = antigravity_config_path()
         .ok_or_else(|| "The user home directory is unavailable.".to_string())?;
     let settings_path = antigravity_settings_path()
@@ -5635,6 +5752,8 @@ fn lm_studio_status_blocking() -> Result<Value, String> {
                 })
             }),
     );
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    annotate_folder_access(&mut status, "lm-studio");
     Ok(status)
 }
 
@@ -5648,6 +5767,8 @@ pub async fn lm_studio_local_integration_status() -> Result<Value, String> {
 }
 
 fn install_lm_studio_local_integration_blocking() -> Result<Value, String> {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    authorize_local_client_folder("lm-studio")?;
     let Some(installation) = lm_studio_installation() else {
         return Err("LM Studio is not installed for this user account.".to_string());
     };
@@ -5677,6 +5798,8 @@ pub async fn install_lm_studio_local_integration() -> Result<Value, String> {
 #[tauri::command]
 pub async fn remove_lm_studio_local_integration() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
+        #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+        authorize_local_client_folder("lm-studio")?;
         // Both documents, because unpairing is "take this app's entry out",
         // and this app's entry can be in either: the rename moved the file a
         // pairing is written to, so a machine upgraded from LM Studio to
@@ -5757,6 +5880,8 @@ fn jan_status_blocking() -> Result<Value, String> {
         JAN_SUPPORTED_VERSIONS,
     );
     status["routeRefresh"] = route_refresh_report(JAN_ROUTE);
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    annotate_folder_access(&mut status, "jan");
     Ok(status)
 }
 
@@ -5770,6 +5895,8 @@ pub async fn jan_local_integration_status() -> Result<Value, String> {
 }
 
 fn install_jan_local_integration_blocking() -> Result<Value, String> {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    authorize_local_client_folder("jan")?;
     if jan_installation().is_none() {
         return Err(if cfg!(target_os = "linux") {
             "Jan pairing is unavailable on Linux; use the generic MCP configuration instead."
@@ -5796,6 +5923,8 @@ pub async fn install_jan_local_integration() -> Result<Value, String> {
 #[tauri::command]
 pub async fn remove_jan_local_integration() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(|| {
+        #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+        authorize_local_client_folder("jan")?;
         let config =
             jan_config_path().ok_or_else(|| "Jan's data directory is unavailable.".to_string())?;
         Ok(json!({ "removed": remove_json_mcp_route(&config, "Jan")? }))

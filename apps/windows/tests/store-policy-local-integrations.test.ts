@@ -183,3 +183,20 @@ test("the native download commands and their registrations are compiled out of W
   const ungated = lib.slice(lib.indexOf("use client_packages::{"), lib.indexOf("};", lib.indexOf("use client_packages::{")));
   for (const command of commands) assert.equal(ungated.includes(command), false, `${command} must not be in the ungated import`);
 });
+
+test("sandbox folder consent keeps Pair available instead of misreporting a broken configuration", () => {
+  const common = { folderAccessRequired: true, state: "status-error", statusError: "Permission denied", integrationInstalled: false };
+  const rows = [
+    claudeExtensionPresentation({ ...common, claudeInstalled: true, extensionInstalled: false } as never),
+    chatgptIntegrationPresentation({ ...common, chatgptInstalled: true } as never),
+    antigravityIntegrationPresentation({ ...common, antigravityInstalled: true } as never),
+    managedMcpIntegrationPresentation("Bionic", common as never, true, undefined),
+    managedMcpIntegrationPresentation("Jan", common as never, true, undefined),
+  ];
+  for (const row of rows) {
+    assert.equal(row.status, "Folder access needed");
+    assert.equal(row.primary?.act, "pair");
+    assert.equal(row.canUnpair, false);
+    assert.match(row.detail, /existing pairing cannot be checked/);
+  }
+});

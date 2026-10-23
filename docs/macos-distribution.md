@@ -64,7 +64,7 @@ implementation and acceptance before creating a submission candidate:
 - Resolve editor/standalone-broker sandbox identities and shared state. Current
   broker descriptors, credentials, settings, and workspace paths assume the
   direct-download user's Application Support directory. A Store build needs
-  an explicitly provisioned shared-container design and a deliberate migration
+  a signed and entitled shared-container design and a deliberate migration
   policy that preserves pairing, access levels, and the credential boundary.
 - Replace direct LaunchAgent/background registration with a supported sandbox
   and login-item design. Test broker-only launch, editor close, explicit Quit,
@@ -88,3 +88,68 @@ References:
 - https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution
 - https://developer.apple.com/help/account/certificates/create-developer-id-certificates/
 - https://v2.tauri.app/distribute/app-store/
+
+### App Store port in progress
+
+The opt-in `macos-app-store` Cargo feature now resolves the GUI/broker state
+directory through Foundation's App Group container API. Its macOS-only group is
+`8C782Q826S.org.freevia.qcremote`; all participating executables must be signed
+by that team and carry the matching application-groups entitlement. State lives
+in a private `state` leaf. A missing group container is a startup error rather
+than a silent fallback to separate app-private broker state. The direct build
+retains its existing storage path and does not enable this feature.
+
+The Store runtime and packaging are implemented behind this feature, with a
+separately signed development candidate. Initial signed sandbox probes verify
+shared-container writes, denied writes outside the container, and native MCP
+initialization/tool discovery. Full GUI, login lifecycle, LOCAL pairing,
+USB/network/file acceptance and review metadata remain gates to submission.
+The installed direct-download app and its credentials are not migrated by this
+work. Unit tests and these focused probes alone are not full E2E acceptance.
+
+### Store candidate build and signing
+
+Run `scripts/build-macos-appstore.sh` on the target Mac after installing the
+normal build prerequisites. It builds both native binaries with the Store
+feature, builds the helpers, and bundles the Store resources. The independent
+menu is nested in `Contents/Helpers`; the login launcher is nested in
+`Contents/Library/LoginItems`, following Apple's code-content locations. Tauri merges the
+platform configuration automatically. The Store configuration replaces the
+resource map with an empty array and uses explicit `macOS.files` destinations
+for helpers and legal resources, preventing retained direct-helper inputs. Both packaging scripts
+reject stale or wrong-flavor binary markers. The Store configuration sets macOS
+13 minimum and a separate monotonically increasing `bundleVersion` (currently
+196); increase it for each subsequent App Store upload. Helpers use that same
+build number.
+
+`package-macos-appstore.py` signs the editor and independent broker menu with
+App Sandbox and the shared group. Broker child executables receive only sandbox
+inheritance; the short-lived login launcher receives its own sandbox. It opens
+the separate menu app and exits successfully, so unregistering the login item
+does not terminate the long-lived broker. No LaunchAgents files are written in
+the Store path.
+
+Use `--development --identity 'Developer ID Application: ...'` to produce a
+locally executable sandbox test candidate. Production signing uses
+`--identity 'Apple Distribution: ...' --profile /path/to/store.provisionprofile
+--installer-identity '3rd Party Mac Developer Installer: ...'`. The production
+profile is embedded only in submission mode. A Store production profile is not
+a local development execution entitlement; validate runtime behavior using the
+development candidate before uploading the production package.
+
+LOCAL Pair/Unpair requests an exact host configuration folder through the
+standard macOS folder picker. Security-scoped bookmarks restore that access
+without showing a dialog from polling or automatic status reads. Claude's Store
+extension delegates STDIO to the installed, signed native bridge; its Node
+process never reads protected App Group state. Generated packages and displaced
+skill backups use the shared private state directory. Runtime acceptance of
+these paths, not compilation alone, is required before App Store submission.
+
+The Store broker verifies local TCP ownership without inspecting another
+process's file descriptors, which App Sandbox prohibits. A private App Group
+Unix socket supplies a kernel-authenticated peer PID and asks that process to
+confirm its own established TCP connection's exact loopback port pair. The
+client checks the expected PID and process creation time before sending the
+existing broker credential on the original TCP connection. Missing or failed
+proofs fail closed; the proof channel carries no credential. The default direct
+build retains its existing listener ownership check.

@@ -642,9 +642,13 @@ impl Session {
             .map_err(|error| io_failure(error, "connecting to the broker"))?;
         let _ = stream.set_nodelay(true);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let owner_check = |port, pid| {
-            verify_listener_owner(port, pid, crate::platform::process::loopback_listener_owner)
-        };
+        let ownership = crate::platform::process::loopback_connection_owner(
+            &stream,
+            descriptor.process_id,
+            timeouts.authenticate,
+        );
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let owner_check = move |port, pid| verify_listener_owner(port, pid, |_| ownership);
         // Windows keeps its existing listener-verification behavior.
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let owner_check = |_, _| Ok(());

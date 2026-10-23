@@ -1,6 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    std::hint::black_box(concat!(
+        "qc-remote-macos-app-store-build:v1:",
+        env!("CARGO_PKG_VERSION"),
+        ":end"
+    ));
     #[cfg(windows)]
     if qc_native_platform::process::creation_probe::dispatch_helper_mode() {
         return;

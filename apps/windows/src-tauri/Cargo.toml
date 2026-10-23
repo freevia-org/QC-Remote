@@ -32,6 +32,7 @@ license = "(MIT OR Apache-2.0) AND LicenseRef-QC-Remote-Reference"
 # the broker crate is linked only with it, so the app itself builds exactly as
 # before.
 [features]
+macos-app-store = ["qc-native-platform/macos-app-store"]
 tray-sidecar = ["desktop-broker", "qc-device-broker/linux-tray"]
 desktop-broker = ["dep:qc-device-broker"]
 custom-protocol = ["tauri/custom-protocol"]

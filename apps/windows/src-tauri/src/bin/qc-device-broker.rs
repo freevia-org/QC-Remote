@@ -22,11 +22,20 @@ use std::time::Duration;
 /// broker-only build (which would treat `--self-check` as a live device probe)
 /// is never executed. `#[used]` keeps it in the image; `--self-check` reports
 /// it as well.
+#[cfg(not(all(target_os = "macos", feature = "macos-app-store")))]
 #[used]
 static RESIDENT_HOST_BUILD_MARKER: &str = concat!(
     "qc-remote-resident-host-build:v1:",
     env!("CARGO_PKG_VERSION"),
     ":end"
+);
+
+#[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+#[used]
+static RESIDENT_HOST_BUILD_MARKER: &str = concat!(
+    "qc-remote-resident-host-build:v1:",
+    env!("CARGO_PKG_VERSION"),
+    ":end:macos-app-store"
 );
 
 struct McpHost;
@@ -132,6 +141,19 @@ fn host_readiness(
 }
 
 fn main() {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    let _identity_witness =
+        if std::env::args().any(|arg| matches!(arg.as_str(), "--resident" | "--broker-serve")) {
+            match qc_native_platform::sandbox_peer::start_witness() {
+                Ok(witness) => Some(witness),
+                Err(error) => {
+                    eprintln!("QC Remote broker identity witness: {error}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            None
+        };
     // This process is the broker. Nothing in it may ever spawn another one:
     // the host's gateway attaches to the descriptor this process publishes.
     qc_remote_lib::forbid_broker_spawn();
