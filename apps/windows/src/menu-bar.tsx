@@ -111,8 +111,8 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
   /** The demo device is being opened. */
   demoPending: boolean;
   /**
-   * "Work with a demo device": Demo Mode is the app's default, so this is now
-   * offered even while a real Quad Cortex is ready - it leaves that session
+   * Explicitly select the Demo device, even while a real Quad Cortex is ready.
+   * It leaves that session
    * connected in the background (see `deviceHeldInBackground`) rather than
    * requiring a disconnect first.
    */

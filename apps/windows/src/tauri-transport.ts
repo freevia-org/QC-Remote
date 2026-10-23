@@ -11,7 +11,7 @@ export { publicRelay, publicRelayBrowserPairing } from "./public-relay-transport
 export interface PhysicalQcDevice { id: string; name: string; connected?: boolean; phase?: string }
 export const physicalDevices = {
   /** `brokerInstanceId` names the broker generation that answered; an older host omits it. */
-  list(): Promise<{devices: PhysicalQcDevice[]; selectedDeviceId: string | null; brokerInstanceId?: string | null}> {
+  list(): Promise<{devices: PhysicalQcDevice[]; selectedDeviceId: string | null; brokerInstanceId?: string | null; demoSelectionHeld?: boolean}> {
     return callTauri("broker_devices");
   },
   select(deviceId: string): Promise<{selectedDeviceId: string}> {

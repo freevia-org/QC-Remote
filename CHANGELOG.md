@@ -7,6 +7,34 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.197 / Android 0.3.47 — 23 October 2026
+
+Changes since Windows 0.1.196 / Android 0.3.46. A disconnected Quad Cortex
+now stays Disconnected in the window and in the MCP: Demo opens only after you
+select it explicitly, and a broker acknowledges that selection, so the window
+and the MCP share one target and an automatic Demo can no longer take the place
+of a missing device. Selecting Demo starts a missing broker through the
+supported start path. A Demo target that loses its provider stays unavailable
+until you select Demo again, and hotplug or stale replies from an old broker
+instance cannot override it. Android behavior is unchanged.
+
+Known limits of this release. Demo does not survive a broker restart: when a
+different broker instance is observed the window ends Demo, shows "The broker
+restarted; Demo ended; the unit is available to your AI client.", and follows
+the new broker, which defaults to hardware. In addition: (a) a restart while
+Demo is selected explicitly ends Demo (the window follows the broker, with a
+notice; no durable marker is stored); (b) a window that adopts another editor's
+held Demo selection does not bind it to the broker instance, so after a restart
+it can stay Disconnected while the new broker serves hardware; (c) a failed
+explicit Demo start can leave the window's hold set until you select Connect,
+Disconnect or Demo again; (d) after a failed automatic recovery Demo stays
+unavailable until you click Demo; (e) a broker that does not support the
+demoProvider role may need a restart from the tray. Further stuck-window cases
+are planned for 0.1.198. The macOS output-deadline overshoot remains a known
+limit that this release does not fix (the TCP write deadline from 0.1.195 and the
+WebKitGTK workaround from 0.1.196 apply to Linux only), and Windows is neither
+confirmed nor cleared. Everything else in 0.1.196 / 0.3.46 is unchanged.
+
 ## QC Remote Windows 0.1.196 / Android 0.3.46 — 22 October 2026
 
 Changes since Windows 0.1.195 / Android 0.3.45. This is a small maintenance

@@ -23,6 +23,11 @@ developers and maintainers.
 - a **REMOTE** indicator for QR pairing, outbound relay status, reconnect/unpair actions, and relay-reported client/platform activity;
 - a **USB** indicator for the physical device session.
 
+Disconnected hardware stays **Disconnected**, including at startup, after
+broker Disconnect/Quit or USB loss, and after a failed Connect. Demo opens only
+on an explicit user selection. Its provider is withdrawn when leaving Demo;
+MCP and the window share that explicit target selection and the same demo store.
+
 Every pairing but Claude Desktop runs the installed QC Remote executable itself with `--local-mcp-bridge`, so none of them needs Node. Every managed route also names its host twice -- `--local-mcp-client <client id>` on the command line and `QC_REMOTE_LOCAL_MCP_CLIENT` in `env` -- because a host that keeps the configured environment to itself leaves the bridge announcing no client, and LOCAL then cannot report a working pairing as connected:
 
 | Pairing | What it writes | Where |
