@@ -85,8 +85,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.platform.target }}
-      # GitHub isolates PR caches from master. Retain each lane
-      # after failures too, so a packaging retry can reuse compiled dependencies.
+      # Pull requests restore the cache master saved for the same lane and
+      # target (a pull request may read its base branch's caches) and never save
+      # their own: a pull request's cache is readable only by that pull request,
+      # and these are 0.4 to 0.6 GB per lane, enough to evict master's caches
+      # from the repository's 10 GB budget (the #220 pull request runs found no
+      # master cache at all and compiled from scratch). Saving also cost each
+      # pull request job about two minutes. Master retains each lane after
+      # failures too, so a later run can reuse compiled dependencies.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
@@ -94,6 +100,7 @@ jobs:
             apps/windows/src-tauri -> ../../../target
           key: macos-${{ matrix.platform.target }}-${{ matrix.lane }}
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Test installer error recovery
         if: matrix.lane == 'package'
         run: node --test scripts/package-macos-ci.test.mjs

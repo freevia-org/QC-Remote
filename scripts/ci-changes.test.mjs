@@ -149,7 +149,7 @@ test('ios and macOS builds drop only the qc-ui source globs from their path filt
   }
 });
 
-test('macOS builds do not trigger on legal records and the Intel runner is not built on pull requests', () => {
+test('macOS builds do not trigger on legal records and only the Intel runner is built on pull requests', () => {
   const text = workflow('macos-build.yml');
   for (const entry of ['THIRD_PARTY-NOTICES.md', 'legal/**', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'LICENSES/**']) {
     assert.equal(
@@ -158,10 +158,28 @@ test('macOS builds do not trigger on legal records and the Intel runner is not b
       `macos-build.yml still lists ${entry}`,
     );
   }
-  const matrix = text.match(/^      matrix: \$\{\{ fromJSON\(github\.event_name == 'pull_request' && '(.*?)' \|\| '(.*?)'\) \}\}$/m);
-  assert.ok(matrix, 'the matrix must depend on the event');
-  assert.deepEqual(JSON.parse(matrix[1]).include.map((entry) => entry.target), ['aarch64-apple-darwin']);
-  assert.deepEqual(JSON.parse(matrix[2]).include.map((entry) => entry.target), ['aarch64-apple-darwin', 'x86_64-apple-darwin']);
+  // Pull requests validate on the Intel pool (ARM64 hosted runners failed
+  // allocation, see #220); master and manual builds keep both architectures.
+  const matrix = text.match(/^ {8}platform: \$\{\{ fromJSON\(github\.event_name == 'pull_request' && '(.*?)' \|\| '(.*?)'\) \}\}$/m);
+  assert.ok(matrix, 'the platform matrix must depend on the event');
+  assert.deepEqual(JSON.parse(matrix[1]).map((entry) => entry.target), ['x86_64-apple-darwin']);
+  assert.deepEqual(JSON.parse(matrix[2]).map((entry) => entry.target), ['aarch64-apple-darwin', 'x86_64-apple-darwin']);
+});
+
+test('macOS, iOS and Linux broker build caches are saved from master only', () => {
+  // Pull requests restore master's cache. A pull request cache can only be
+  // read back by that same pull request, and these are 0.3 to 0.9 GB each,
+  // so saving them per pull request evicts master's caches from the
+  // repository's 10 GB budget.
+  for (const name of ['macos-build.yml', 'ios.yml', 'linux-broker.yml']) {
+    const text = workflow(name);
+    const caches = text.split(/^ {6}- /m).filter((step) => /^ *(- )?uses: Swatinem\/rust-cache@/m.test(step));
+    assert.ok(caches.length > 0, `${name} has no Rust cache`);
+    for (const step of caches) {
+      if (/key: linux-deb-release$/m.test(step)) continue; // dispatch-from-master release job
+      assert.match(step, /^ {10}save-if: \$\{\{ github\.ref == 'refs\/heads\/master' \}\}$/m, `${name}: ${step.split('\n')[0]}`);
+    }
+  }
 });
 
 test('the Linux release job verifies the push CI result instead of repeating it, and caches cargo', () => {

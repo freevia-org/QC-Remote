@@ -61,13 +61,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy, rustfmt
+      # Cheapest checks first, so a formatting or lint mistake fails in seconds
+      # instead of after the multi-minute test step. Same four commands as before.
+      - run: cargo fmt --all -- --check
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo fmt --all -- --check
 
   # packages/rust/quadcortex declares `rust-version = "1.87"`. Everything above
   # runs on stable, which would not notice a newer-than-1.87 language or std
@@ -105,17 +107,20 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          # apps/windows/src-tauri/rust-toolchain.toml pins profile = "minimal",
+          # which carries neither clippy nor rustfmt of its own.
+          components: clippy, rustfmt
+      # Formatting needs no build cache: run it first so it fails in seconds.
+      - run: cargo fmt --check
+        working-directory: apps/windows/src-tauri
       - name: Test Windows native runner command planning and failure cleanup
         run: node --test scripts/test-windows-native.test.mjs
       - name: Test Claude built-in Node and direct bridge startup
         run: node --test scripts/claude-mcp-startup.test.mjs
       - name: Test owned Gradle failure, interruption and launcher-termination cleanup
         run: node --test scripts/run-owned-gradle.test.mjs
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          # apps/windows/src-tauri/rust-toolchain.toml pins profile = "minimal",
-          # which carries neither clippy nor rustfmt of its own.
-          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/windows/src-tauri
@@ -125,8 +130,6 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType File -Force binaries/qc-device-broker-x86_64-pc-windows-msvc.exe | Out-Null
-      - run: cargo fmt --check
-        working-directory: apps/windows/src-tauri
       # The app on its own, without the broker crate linked in.
       - run: cargo check --locked
         working-directory: apps/windows/src-tauri
@@ -225,6 +228,15 @@ jobs:
           # Only the root workspace: apps/windows/src-tauri pins a Windows-only
           # toolchain in rust-toolchain.toml, which rustup refuses on Linux.
           workspaces: .
+          # This job runs on pull requests only, so a cache it saved could only
+          # ever be read back by the same pull request, while every pull request
+          # added another copy to the repository's 10 GB cache budget and pushed
+          # master's build caches out. It reads `cargo metadata` (registry index
+          # and crate sources), which the master-saved cache of the Linux
+          # `quadcortex-linux` job already holds for the same root workspace,
+          # toolchain and runner image: restore that one and never save.
+          shared-key: quadcortex-linux
+          save-if: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -314,6 +326,12 @@ jobs:
       # enforcement.
       - name: DCO checker and workflow safety tests
         run: node --test scripts/verify-dco.test.mjs scripts/verify-workflows.test.mjs
+      # The change classifier that decides which jobs run, and the workflow
+      # wiring it relies on (path filters, gates, matrices, cache saving). It
+      # needs no install, so this ~10 second job is where a broken filter or a
+      # workflow edit that drifts from it fails first.
+      - name: CI change filter and workflow wiring tests
+        run: node --test scripts/ci-changes.test.mjs
 
   cloud-relay:
     name: Cloud relay (dry-run deploy)
