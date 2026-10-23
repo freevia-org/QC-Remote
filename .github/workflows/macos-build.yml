@@ -9,6 +9,8 @@ on:
   pull_request:
     paths:
       - .github/workflows/macos-build.yml
+      - scripts/package-macos-ci*
+      - scripts/build-macos-broker-menu.sh
       - apps/windows/**
       - contracts/**
       - packages/rust/**
@@ -28,6 +30,8 @@ on:
       - master
     paths:
       - .github/workflows/macos-build.yml
+      - scripts/package-macos-ci*
+      - scripts/build-macos-broker-menu.sh
       - apps/windows/**
       - contracts/**
       - packages/rust/**
@@ -54,17 +58,23 @@ concurrency:
 
 jobs:
   build:
+    name: macOS ${{ matrix.lane }} (${{ matrix.platform.target }})
     env:
       # src-tauri pins MSVC for local Windows builds; CI uses the installed
       # stable host toolchain on both macOS architectures.
       RUSTUP_TOOLCHAIN: stable
+      # Reuse matching dependencies across the root and Tauri workspaces.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     strategy:
       fail-fast: false
+      # Tests and release packaging are independent: run them concurrently.
       # ARM64 hosted runners currently fail allocation before any step runs.
       # Validate PRs on Intel; master and manual builds retain both architectures.
-      matrix: ${{ fromJSON(github.event_name == 'pull_request' && '{"include":[{"runner":"macos-26-intel","target":"x86_64-apple-darwin"}]}' || '{"include":[{"runner":"macos-26","target":"aarch64-apple-darwin"},{"runner":"macos-26-intel","target":"x86_64-apple-darwin"}]}') }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+      matrix:
+        lane: [tests, package]
+        platform: ${{ fromJSON(github.event_name == 'pull_request' && '[{"runner":"macos-26-intel","target":"x86_64-apple-darwin"}]' || '[{"runner":"macos-26","target":"aarch64-apple-darwin"},{"runner":"macos-26-intel","target":"x86_64-apple-darwin"}]') }}
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -74,63 +84,86 @@ jobs:
           cache-dependency-path: package-lock.json
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          targets: ${{ matrix.target }}
-      # PRs may read trusted master caches; only master writes them.
-      # Both event types now use the same macOS 26 images.
+          targets: ${{ matrix.platform.target }}
+      # GitHub isolates PR caches from master. Retain each lane
+      # after failures too, so a packaging retry can reuse compiled dependencies.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
-            .
-            apps/windows/src-tauri
-          key: macos-${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+            . -> target
+            apps/windows/src-tauri -> ../../../target
+          key: macos-${{ matrix.platform.target }}-${{ matrix.lane }}
+          cache-on-failure: true
+      - name: Test installer error recovery
+        if: matrix.lane == 'package'
+        run: node --test scripts/package-macos-ci.test.mjs
       - name: Install desktop dependencies
         run: npm ci
       - name: Build desktop frontend for native tests
         run: npm run build --workspace @qc-remote/windows
       - name: Test broker, HID and native platform crates
-        run: cargo test --locked --manifest-path Cargo.toml -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --target ${{ matrix.target }} -- --test-threads=1
+        if: matrix.lane == 'tests'
+        timeout-minutes: 20
+        run: cargo test --locked --manifest-path Cargo.toml -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --target ${{ matrix.platform.target }} -- --test-threads=1
       - name: Build the broker for desktop host tests
-        run: cargo build --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.target }}
+        if: matrix.lane == 'tests'
+        timeout-minutes: 15
+        run: cargo build --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.platform.target }}
         working-directory: apps/windows
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}'
       - name: Test the Tauri desktop host
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop-broker,custom-protocol --lib --target ${{ matrix.target }} -- --test-threads=1
+        if: matrix.lane == 'tests'
+        timeout-minutes: 15
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop-broker,custom-protocol --lib --target ${{ matrix.platform.target }} -- --test-threads=1
         working-directory: apps/windows
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}'
-          QC_GATEWAY_EXECUTABLE: ${{ github.workspace }}/apps/windows/src-tauri/target/${{ matrix.target }}/debug/qc-device-broker
+          QC_GATEWAY_EXECUTABLE: ${{ github.workspace }}/target/${{ matrix.platform.target }}/debug/qc-device-broker
       - name: Check the isolated Mac App Store runtime
-        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop-broker,custom-protocol,macos-app-store --lib --bins --target ${{ matrix.target }}
+        if: matrix.lane == 'tests'
+        timeout-minutes: 15
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features desktop-broker,custom-protocol,macos-app-store --lib --bins --target ${{ matrix.platform.target }}
         working-directory: apps/windows
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}'
       - name: Test Mac App Store LOCAL integrations
+        if: matrix.lane == 'tests'
+        timeout-minutes: 15
         run: |
-          cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop-broker,custom-protocol,macos-app-store --lib client_packages::tests:: --target ${{ matrix.target }} -- --test-threads=1
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --features desktop-broker,custom-protocol,macos-app-store --lib client_packages::tests:: --target ${{ matrix.platform.target }} -- --test-threads=1
         working-directory: apps/windows
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}'
       - name: Test Mac App Store native services
-        run: cargo test --locked --manifest-path Cargo.toml -p qc-native-platform --features macos-app-store --target ${{ matrix.target }} -- --test-threads=1
+        if: matrix.lane == 'tests'
+        timeout-minutes: 15
+        run: cargo test --locked --manifest-path Cargo.toml -p qc-native-platform --features macos-app-store --target ${{ matrix.platform.target }} -- --test-threads=1
       - name: Build and stage the macOS broker sidecar
+        if: matrix.lane == 'package'
+        timeout-minutes: 20
         run: |
-          cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.target }}
-          src-tauri/target/${{ matrix.target }}/release/qc-device-broker --self-check
+          cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.platform.target }}
+          "$CARGO_TARGET_DIR"/${{ matrix.platform.target }}/release/qc-device-broker --self-check
           mkdir -p src-tauri/binaries
-          cp src-tauri/target/${{ matrix.target }}/release/qc-device-broker src-tauri/binaries/qc-device-broker-${{ matrix.target }}
+          cp "$CARGO_TARGET_DIR"/${{ matrix.platform.target }}/release/qc-device-broker src-tauri/binaries/qc-device-broker-${{ matrix.platform.target }}
         working-directory: apps/windows
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}'
       - name: Build the macOS app and broker
-        run: npm run tauri:build:mac -- --target ${{ matrix.target }} --bundles app --verbose
+        if: matrix.lane == 'package'
+        timeout-minutes: 20
+        run: npm run tauri:build:mac -- --target ${{ matrix.platform.target }} --bundles app --verbose
         working-directory: apps/windows
       - name: Package and verify the headless macOS installer
-        run: sh scripts/package-macos-ci.sh "apps/windows/src-tauri/target/${{ matrix.target }}/release/bundle/macos/QC Remote.app" "apps/windows/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/QC-Remote-${{ matrix.target }}.dmg"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.lane == 'package'
+        timeout-minutes: 3
+        run: sh scripts/package-macos-ci.sh "target/${{ matrix.platform.target }}/release/bundle/macos/QC Remote.app" "target/${{ matrix.platform.target }}/release/bundle/dmg/QC-Remote-${{ matrix.platform.target }}.dmg"
+      - if: matrix.lane == 'package'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qc-remote-macos-${{ matrix.target }}-dmg
-          path: apps/windows/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          name: qc-remote-macos-${{ matrix.platform.target }}-dmg
+          path: target/${{ matrix.platform.target }}/release/bundle/dmg/*.dmg
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14
