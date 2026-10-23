@@ -6369,6 +6369,7 @@ pub fn run() {
             demo_provider::admit_demo_provider_request,
             demo_provider::complete_demo_provider_request,
             demo_provider::stop_demo_provider,
+            demo_provider::clear_demo_selection,
             acknowledge_user_connect,
             disconnect_broker_device,
             broker_devices,

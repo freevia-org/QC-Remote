@@ -20,6 +20,9 @@ pub(super) struct Request {
     pub(super) origin: Option<String>,
     #[serde(default, rename = "physicalOnly")]
     pub(super) physical_only: bool,
+    /// Internal admission evidence, never accepted from a wire caller.
+    #[serde(skip)]
+    pub(super) captured_target_generation: Option<(u64, u64)>,
     #[serde(
         default,
         rename = "expectedBrokerTarget",

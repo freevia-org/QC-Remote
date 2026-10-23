@@ -239,6 +239,7 @@ fn history_rpc_preserves_caller_identity_through_native_admission() {
                 params: json!({"expectedPresetIdentity": "previous-session"}),
                 origin: None,
                 physical_only: false,
+                captured_target_generation: None,
                 expected_broker_target: None,
             },
         );
@@ -1412,6 +1413,7 @@ fn call(controller: &DeviceController, method: &str, params: Value) -> Value {
             params,
             origin: None,
             physical_only: false,
+            captured_target_generation: None,
             expected_broker_target: None,
         },
     )
@@ -1636,6 +1638,7 @@ fn request_envelope_rejects_unknown_fields_and_nonpositive_ids() {
             params: json!({}),
             origin: None,
             physical_only: false,
+            captured_target_generation: None,
             expected_broker_target: None,
         },
     );
@@ -1858,6 +1861,7 @@ fn system_status_identifies_the_rust_gateway_contract() {
             params: json!({}),
             origin: None,
             physical_only: false,
+            captured_target_generation: None,
             expected_broker_target: None,
         },
     );
@@ -1928,6 +1932,7 @@ fn quarantine_blocks_mutations_but_keeps_reads_available() {
             }),
             origin: None,
             physical_only: false,
+            captured_target_generation: None,
             expected_broker_target: None,
         },
     );
@@ -1944,6 +1949,7 @@ fn quarantine_blocks_mutations_but_keeps_reads_available() {
             params: json!({}),
             origin: None,
             physical_only: false,
+            captured_target_generation: None,
             expected_broker_target: None,
         },
     );
@@ -2239,6 +2245,7 @@ fn hello_provider_budget_preserves_previous_identity_and_counts_utf8_bytes() {
                 params: json!({"provider":provider}),
                 origin: None,
                 physical_only: false,
+                captured_target_generation: None,
                 expected_broker_target: None,
             },
         )
