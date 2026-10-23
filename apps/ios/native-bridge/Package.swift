@@ -16,7 +16,8 @@ let package = Package(
         .target(
             name: "QCIosNativeBridgePlugin",
             dependencies: [.product(name: "Capacitor", package: "capacitor-swift-pm"), "QCIosDriverKitClient"],
-            path: "ios/Sources/QCIosNativeBridgePlugin"
+            path: "ios/Sources/QCIosNativeBridgePlugin",
+            resources: [.process("PrivacyInfo.xcprivacy")]
         )
     ]
 )

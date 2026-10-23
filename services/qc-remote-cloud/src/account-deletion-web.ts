@@ -1,3 +1,4 @@
+import { appleSignInButton, requestedIdentityProvider, sealAppleDeletionToken, openAppleDeletionToken, revokeAppleAccess } from "./apple-auth.ts";
 import { QC_COLORS } from "@qc-remote/theme/server";
 
 /** The web path for deleting a remote account: the one place a person can
@@ -63,7 +64,7 @@ export const DELETION_STATUS_TOKEN_MS = 7 * 24 * 60 * 60_000;
 const START_TTL_SECONDS = 10 * 60;
 export const DELETE_CONFIRMATION_WORD = "DELETE";
 
-type Intent = { s: string; e: string; f: DeletionFreshness; v: number; n: string; x: number };
+type Intent = { apple?: string; s: string; e: string; f: DeletionFreshness; v: number; n: string; x: number };
 type StatusToken = { s: string; o: string; x: number };
 
 function base64url(bytes: Uint8Array): string {
@@ -116,7 +117,7 @@ const WHAT_IS_DELETED = `<ul class="list">
 <li>Recent AI-app activity, including connecting IP address and approximate city and country</li>
 <li>The daily remote command count and any pending pairing code</li>
 </ul>`;
-const WHAT_IS_NOT = `<p class="help">Not affected: your Google account itself, and anything on your Quad Cortex or in the QC Remote apps on your devices. Cloudflare, which hosts the relay, keeps a sample of about 1% of request logs under its own terms, for a period Freevia has not yet confirmed; the relay cannot delete those. After deletion the relay keeps a deletion receipt (an operation number and its times) for 31 days so the deletion can be confirmed, and a counter with no personal details so that nothing issued before the deletion can ever work again. While cleanup is still in progress it also keeps the Google account identifier it needs to finish. A pairing you started but did not finish expires on its own within 10 minutes.</p>`;
+const WHAT_IS_NOT = `<p class="help">Not affected: your Apple or Google account itself, and anything on your Quad Cortex or in the QC Remote apps on your devices. Cloudflare, which hosts the relay, keeps a sample of about 1% of request logs under its own terms, for a period Freevia has not yet confirmed; the relay cannot delete those. After deletion the relay keeps a deletion receipt (an operation number and its times) for 31 days so the deletion can be confirmed, and a counter with no personal details so that nothing issued before the deletion can ever work again. While cleanup is still in progress it also keeps the account identifier it needs to finish. A pairing you started but did not finish expires on its own within 10 minutes.</p>`;
 
 function unavailable(styles: string): Response {
   return page("Not available", `<h1>Not available</h1><p>Remote account deletion is not available on this relay.</p>`, styles, 404);
@@ -128,13 +129,13 @@ function failurePage(cause: unknown, deps: AccountDeletionWebDeps, context: stri
 }
 
 /** `GET /account/delete`. */
-export function showAccountDeletionStart(deps: AccountDeletionWebDeps): Response {
+export function showAccountDeletionStart(deps: AccountDeletionWebDeps, env?: GoogleOAuthEnv): Response {
   if (!deps.enabled) return unavailable(deps.styles);
   const nonce = randomToken();
   return page("Delete remote account", `<h1>Delete your QC Remote remote account</h1>
-<p>This deletes everything the QC Remote relay (operated by Freevia) keeps for the Google account you choose next:</p>${WHAT_IS_DELETED}${WHAT_IS_NOT}
-<p>Next, Google confirms which account you are signed in to (it may not ask for your password if you are already signed in). Then you confirm on the next page. Nothing is deleted until you confirm.</p>
-<form method="post" action="/account/delete/sign-in"><input type="hidden" name="nonce" value="${escapeHtml(nonce)}"><button class="button primary" type="submit">Continue with Google</button></form>
+<p>This deletes everything the QC Remote relay (operated by Freevia) keeps for the account you choose next:</p>${WHAT_IS_DELETED}${WHAT_IS_NOT}
+<p>Next, your sign-in provider confirms which account you are signed in to (it may not ask for your password if you are already signed in). Then you confirm on the next page. Nothing is deleted until you confirm.</p>
+<form method="post" action="/account/delete/sign-in"><input type="hidden" name="nonce" value="${escapeHtml(nonce)}"><button class="button primary" type="submit">Continue with Google</button>${env ? appleSignInButton(env) : ""}</form>
 <p class="help">You can also ask by email: privacy@freevia.org.</p>`, deps.styles, 200,
   [`${START_COOKIE}-${nonce}=${nonce}; HttpOnly; Secure; Path=/; SameSite=Strict; Max-Age=${START_TTL_SECONDS}`]);
 }
@@ -147,7 +148,9 @@ export async function startAccountDeletionSignIn(request: Request, env: GoogleOA
   if (!nonce || !same(cookie(request, `${START_COOKIE}-${nonce}`), nonce)) {
     return page("Start again", `<h1>Start again</h1><p>This request did not come from the deletion page in this browser.</p><form method="get" action="/account/delete"><button class="button" type="submit">Open the deletion page</button></form>`, deps.styles, 400);
   }
-  return beginAccountDeletionSignIn(request, env, (deps.now ?? Date.now)());
+  let provider;
+  try { provider = requestedIdentityProvider(form?.get("identity_provider"), env); } catch { return page("Sign-in unavailable", "<p>Choose an available sign-in method.</p>", deps.styles, 400); }
+  return beginAccountDeletionSignIn(request, env, (deps.now ?? Date.now)(), provider);
 }
 
 /** `GET /auth/google/delete/callback`: the destructive confirmation. */
@@ -157,17 +160,17 @@ export async function showAccountDeletionConfirmation(request: Request, env: Goo
   let signedIn: Awaited<ReturnType<typeof completeAccountDeletionSignIn>>;
   try { signedIn = await completeAccountDeletionSignIn(request, env, now); }
   catch (cause) { return failurePage(cause, deps, "account-deletion-callback"); }
-  return confirmationPage(signedIn.sub, signedIn.email, signedIn.freshness, signedIn.verifiedAt, env, deps, now);
+  return confirmationPage(signedIn.sub, signedIn.email, signedIn.freshness, signedIn.verifiedAt, env, deps, now, "", signedIn.appleAccessToken ? await sealAppleDeletionToken(signedIn.appleAccessToken, signedIn.sub, env.COOKIE_ENCRYPTION_KEY) : undefined);
 }
 
-async function confirmationPage(sub: string, email: string, freshness: Intent["f"], verifiedAt: number, env: GoogleOAuthEnv, deps: AccountDeletionWebDeps, now: number, notice = ""): Promise<Response> {
+async function confirmationPage(sub: string, email: string, freshness: Intent["f"], verifiedAt: number, env: GoogleOAuthEnv, deps: AccountDeletionWebDeps, now: number, notice = "", apple?: string): Promise<Response> {
   const nonce = randomToken();
-  const intent: Intent = { s: sub, e: email, f: freshness, v: verifiedAt, n: nonce, x: verifiedAt * 1000 + DELETION_CONFIRM_WINDOW_MS };
+  const intent: Intent = { apple, s: sub, e: email, f: freshness, v: verifiedAt, n: nonce, x: verifiedAt * 1000 + DELETION_CONFIRM_WINDOW_MS };
   const token = await sign("qcrc-delete-intent-v1", intent, env.COOKIE_ENCRYPTION_KEY);
   const maxAge = Math.max(1, Math.floor((intent.x - now) / 1000));
   return page("Confirm deletion", `<h1>Delete this remote account?</h1>${notice}
-<div class="account"><strong>${escapeHtml(email)}</strong><br><small>${freshness === "fresh-authentication" ? "Google confirmed you signed in again just now." : "Google confirmed this account is signed in, in this browser, just now."}</small></div>
-<p>This permanently deletes, for this Google account:</p>${WHAT_IS_DELETED}
+<div class="account"><strong>${escapeHtml(email)}</strong><br><small>${freshness === "fresh-authentication" ? "Your sign-in provider confirmed you signed in again just now." : "Your sign-in provider confirmed this account is signed in, in this browser, just now."}</small></div>
+<p>This permanently deletes, for this account:</p>${WHAT_IS_DELETED}
 <p class="warn" role="alert">This cannot be undone. Every paired device stops working with remote access immediately and has to be paired again to use it.</p>
 <form method="post" action="/account/delete/confirm"><input type="hidden" name="intent" value="${escapeHtml(token)}">
 <label for="confirm">Type ${DELETE_CONFIRMATION_WORD} to confirm</label><input class="server-address" id="confirm" name="confirm" autocomplete="off" required>
@@ -196,12 +199,18 @@ export async function confirmAccountDeletion(request: Request, env: GoogleOAuthE
   const refuse = (message: string) => page("Deletion not started", `<h1>Nothing was deleted</h1><p>${escapeHtml(message)}</p><form method="get" action="/account/delete"><button class="button" type="submit">Start again</button></form>`, deps.styles, 400);
   if (!intent || typeof intent.s !== "string" || !intent.s || typeof intent.n !== "string") return refuse("This confirmation is not valid. Start again.");
   if (!same(cookie(request, INTENT_COOKIE), intent.n)) return refuse("This confirmation was not made on the deletion page in this browser.");
-  if (!Number.isFinite(intent.x) || now > intent.x || now - intent.v * 1000 > DELETION_CONFIRM_WINDOW_MS) return refuse(`The Google sign-in is older than ${DELETION_CONFIRM_WINDOW_MS / 60_000} minutes. Sign in again to confirm.`);
+  if (!Number.isFinite(intent.x) || now > intent.x || now - intent.v * 1000 > DELETION_CONFIRM_WINDOW_MS) return refuse(`The sign-in is older than ${DELETION_CONFIRM_WINDOW_MS / 60_000} minutes. Sign in again to confirm.`);
   if (form?.get("confirm") !== DELETE_CONFIRMATION_WORD) {
-    return confirmationPage(intent.s, intent.e, intent.f, intent.v, env, deps, now, `<p class="warn" role="alert">Type ${DELETE_CONFIRMATION_WORD} in capitals to confirm. Nothing was deleted.</p>`);
+    return confirmationPage(intent.s, intent.e, intent.f, intent.v, env, deps, now, `<p class="warn" role="alert">Type ${DELETE_CONFIRMATION_WORD} in capitals to confirm. Nothing was deleted.</p>`, intent.apple);
   }
   let outcome: AccountDeletionOutcome | null = null;
-  try { outcome = await deps.authorityFor(intent.s).requestAccountDeletion(); }
+  try {
+    if (intent.s.startsWith("apple:")) {
+      if (!intent.apple) return refuse("Sign in with Apple again before deleting this account.");
+      await revokeAppleAccess(env, await openAppleDeletionToken(intent.apple, intent.s, env.COOKIE_ENCRYPTION_KEY));
+    }
+    outcome = await deps.authorityFor(intent.s).requestAccountDeletion();
+  }
   catch (cause) {
     describeClientFailure(cause, { status: 503, fallback: "", context: "account-deletion-start", log: deps.log });
     // The mutation may already have revoked access before the RPC failed.
@@ -276,7 +285,7 @@ export async function showAccountDeletionStatus(request: Request, env: GoogleOAu
   if (wantsJson) return new Response(JSON.stringify(status), { status: status.status === "pending" ? 202 : 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
   const reference = `<p class="help">Operation ${escapeHtml(token.o)}</p>`;
   if (status.status === "deleted") {
-    return page("Remote account deleted", `<h1>Remote account deleted</h1><p>Cleanup is complete: everything the relay kept for this Google account has been deleted (${escapeHtml(new Date(status.deletedAt!).toISOString())}). Paired devices no longer have remote access. In each QC Remote app, open REMOTE and press Unpair to remove the stored pairing from that device.</p>${reference}`, deps.styles);
+    return page("Remote account deleted", `<h1>Remote account deleted</h1><p>Cleanup is complete: everything the relay kept for this account has been deleted (${escapeHtml(new Date(status.deletedAt!).toISOString())}). Paired devices no longer have remote access. In each QC Remote app, open REMOTE and press Unpair to remove the stored pairing from that device.</p>${reference}`, deps.styles);
   }
   if (status.status === "pending") {
     const why = status.step === "provider-writes"

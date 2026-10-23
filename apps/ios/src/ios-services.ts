@@ -44,13 +44,12 @@ const iosConnectionModeKey = "qc.remote.ios.connection-mode-v1";
 export type IosConnectionMode = "midi" | "auto" | "remote";
 
 export function getIosConnectionMode(): IosConnectionMode | undefined {
-  const value = localStorage.getItem(iosConnectionModeKey);
-  return value === "midi" || value === "auto" || value === "remote" ? value : undefined;
+  // This App Store release supports paired hosts only. Ignore legacy direct
+  // route preferences without changing credentials or the stored preference.
+  return "remote";
 }
 
-function prefersRemoteHost(): boolean {
-  return getIosConnectionMode() === "remote";
-}
+function prefersRemoteHost(): boolean { return true; }
 
 async function load(): Promise<void> {
   if (loaded) return;
@@ -390,6 +389,7 @@ export const publicRelay: PublicRelayPort = {
 
 /** Switch the iOS UI's connection route after closing any current USB or cloud session. */
 export async function setIosConnectionMode(mode: IosConnectionMode): Promise<void> {
+  if (mode !== "remote") throw new Error("This release supports paired-host control only.");
   const previousMode = localStorage.getItem(iosConnectionModeKey);
   localStorage.setItem(iosConnectionModeKey, mode);
   try {

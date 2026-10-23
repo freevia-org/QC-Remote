@@ -126,6 +126,6 @@ export async function fetchIdentityJson(
   const deadline = AbortSignal.timeout(timeoutMs);
   const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
   const response = await fetcher(url, { ...init, signal });
-  if (!response.ok) throw new PublicError("QC Remote could not complete Google sign-in. Please try again later.");
+  if (!response.ok) throw new PublicError("QC Remote could not complete sign-in. Please try again later.");
   return response.json();
 }

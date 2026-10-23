@@ -536,7 +536,24 @@ mod tests {
         // not detach a thread blocked forever in accept().
         let mut client = TcpStream::connect_timeout(&address, Duration::from_secs(5)).unwrap();
         listener.set_nonblocking(true).unwrap();
-        let (mut stream, _) = listener.accept().unwrap();
+        // A completed connect() does not guarantee that the nonblocking
+        // listener's accept queue is already visible on every platform.
+        // Bound fixture setup independently from the deadline under test.
+        let accept_deadline = Instant::now() + Duration::from_secs(5);
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(pair) => break pair,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) && Instant::now() < accept_deadline =>
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("fixture accept failed before test started: {error}"),
+            }
+        };
         stream.set_nonblocking(false).unwrap();
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))

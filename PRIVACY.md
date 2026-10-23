@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated 17 October 2026
+Last updated 23 October 2026
 
 QC Remote is an independent controller for the Neural DSP Quad Cortex. This
 policy explains what data the software handles, what stays on your device,
@@ -28,12 +28,14 @@ Privacy questions and requests: **privacy@freevia.org**. Security reports:
 
 - the QC Remote app for Windows;
 - the QC Remote app for Android;
+- the QC Remote app for iPhone and iPad, which controls a paired host over the relay;
+- QC Remote hosts for macOS and Linux;
 - the local MCP connection that the Windows app offers to AI apps installed on
   the same computer;
 - the optional remote relay that Freevia operates at `qcrc.freevia.org`, built
   on Cloudflare Workers.
 
-It does not cover the AI apps you connect, Google, Cloudflare, GitHub or Neural
+It does not cover the AI apps you connect, Apple, Google, Cloudflare, GitHub or Neural
 DSP. Each has its own policy. QC Remote is not affiliated with Neural DSP. The
 app forwards internet requests made by the Quad Cortex, including account
 sign-in, authenticated cloud requests and CorOS updates. A background component
@@ -45,8 +47,8 @@ requests through this computer or phone".
 
 - Using the apps with a Quad Cortex over USB sends nothing to Freevia.
 - The relay is off until you pair a computer or phone with it by signing in with
-  Google. Only then does any data reach Freevia's relay, and it sends only what
-  is described below, to Google and to the relay Freevia operates.
+  Google or Apple. Only then does any data reach Freevia's relay. Mobile paired-host
+  control uses the same relay and identity service, as described below.
 - The relay passes commands and device responses through in memory and does not
   store their contents.
 - The apps and the relay contain no advertising, analytics or crash reporting.
@@ -60,7 +62,7 @@ requests through this computer or phone".
   the Quad Cortex" (Windows) or "Allow the Quad Cortex to use this device's
   Internet connection" (Android).
 - You can unpair a device, unlink an AI app, or ask by email for everything the
-  relay holds for your Google account to be deleted.
+  relay holds for your account to be deleted.
 
 ## Data that stays on your computer or phone
 
@@ -84,7 +86,11 @@ QC Remote keeps these items on the device it runs on:
   `~/Library/Application Support/org.freevia.qcremote/credentials`, shared by
   the app and broker, without using Keychain. Files have mode 0600 inside a
   0700 directory; software running as your user can read them.
-  Unpairing removes the stored credential.
+  On iPhone and iPad, OAuth access and refresh credentials are stored in the
+  iOS Keychain. The mobile app connects to a paired host through the relay; it
+  does not forward the Quad Cortex's internet requests or use direct USB in this
+  release. Signing out removes the controller's saved credentials.
+  Unpairing removes the stored host credential.
 - **Local connection details (Windows).** The local MCP endpoint listens only on
   `127.0.0.1` and requires a locally generated access token. The details are
   kept in a file in your local application data folder that is restricted to
@@ -137,12 +143,12 @@ and device state, to its own provider under its own policy.
 ## What the relay handles
 
 The relay is optional and is used only after you pair a computer or phone with
-it. The paired Windows or Android app keeps the USB connection to the Quad
+it. The paired Windows, macOS, Linux or Android host keeps the USB connection to the Quad
 Cortex and opens an outbound secure WebSocket (TLS) to `qcrc.freevia.org`; the
-relay never speaks USB. AI apps you connect (such as Claude or ChatGPT) reach
-your unit through the relay.
+relay never speaks USB. The iPhone/iPad controller and AI apps you connect
+(such as Claude or ChatGPT) reach your unit through the relay.
 
-**Who receives it.** Google provides the identity service you sign in with.
+**Who receives it.** Google or Apple provides the identity service you choose.
 Freevia operates the relay at `qcrc.freevia.org`, using Cloudflare Workers,
 Durable Objects and KV storage. Cloudflare processes relay traffic and stores
 sampled operational logs for Freevia as its infrastructure provider.
@@ -154,7 +160,7 @@ sampled operational logs for Freevia as its infrastructure provider.
 | A one-time pairing code | Proves the computer and the account belong together, once, at pairing time |
 | A generic label naming the app host (`QC Remote on Windows` or `QC Remote on Android`) | Lets you tell paired devices apart in the device list |
 | A relay credential | Authenticates the paired computer to the relay on every reconnect. Stored at the relay only as a SHA-256 hash, so the relay cannot recover the credential from what it stores |
-| Your Google account subject ID, verified email and profile name | Identifies which account owns which paired devices and AI app authorizations, so remote access is scoped to you |
+| Your identity provider's account subject ID, verified email and available profile name | Identifies which account owns which paired devices and AI app authorizations, so remote access is scoped to you |
 | An OAuth bearer token, if you connect an AI app | Lets that app reach your paired device through the relay, scoped to the permissions you approved |
 | Device commands and device-state responses | This is the remote control itself: what you asked the device to do, and what it reported back. Persistent hardware identifiers are stripped before this leaves the relay; full device-backup payloads are never forwarded through this path |
 | A daily count of remote commands | Shown back to you in the app, and used to watch for abuse of the relay |
@@ -181,6 +187,24 @@ Pairing records expire after about ten minutes. The approximate location is used
 to show you where a pairing request came from, and the pairing page warns you if
 the request and your browser are in different countries.
 
+### Sign in with Apple
+
+When configured, Apple sign-in is an alternative to Google for host pairing and
+mobile or AI-app authorization. Apple may provide a private relay email address.
+The relay uses Apple's verified account identifier and email address for account
+isolation and access authorization; it never receives your Apple password. Apple
+and Google accounts are separate and are never linked by a matching email address.
+Use the same account and sign-in method on your host and controller.
+
+Ordinary Apple sign-in does not retain Apple's access or refresh tokens. When you
+request deletion, a new Apple sign-in obtains an access token for revocation. That
+token is encrypted inside a short-lived, signed deletion confirmation; it is not
+shown in plaintext or retained after the confirmation expires. Revocation happens
+only after you type DELETE and submit the confirmation. Verified Apple account
+revocation or deletion notifications also revoke QC Remote account access and
+start relay account cleanup. Non-identifying event and sign-in timestamps remain
+as a replay fence so a delayed notification cannot delete a recreated account.
+
 ### Your Google account
 
 Signing in to pair or to connect an AI app is done at Google. The relay asks
@@ -193,7 +217,7 @@ relay keeps each account's data in storage named for it.
 ### Paired computers and phones
 
 For each paired device the relay keeps: the device label, the time it was
-paired, your Google account subject ID and verified email address, the browser
+paired, your identity provider's account subject ID and verified email address, the browser
 label from pairing, and its credential **as a SHA-256 hash only**; the
 credential itself exists only on your device. A directory entry maps the device
 to your account. Credentials and their records persist until you unpair the
@@ -207,7 +231,7 @@ restored. Unmigrated historical records are removed after their former
 When you allow an AI app, the relay keeps an authorization record with: the
 app's name as it declares it, the access you granted (`qc:read` to read your
 unit, `qc:control` to change it, `offline_access` to stay connected), your
-Google subject, email address and name, the time, a label of your browser and
+identity-provider subject, email address and available name, the time, a label of your browser and
 system (such as "Windows Chrome" with the browser version), your IP address,
 and the approximate city and country of the authorization. This lets the AI app
 reach your unit and lets you recognise and remove it. An access token lasts one
