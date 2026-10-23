@@ -356,14 +356,11 @@ fn bridge_source() -> Result<Vec<u8>, String> {
         .map_err(|error| format!("Could not locate the signed MCP bridge: {error}"))?;
     let executable = serde_json::to_string(&executable)
         .map_err(|error| format!("Could not encode the MCP bridge path: {error}"))?;
-    Ok(format!(r#"// QC Remote {version}; tool contract {contract}
-"use strict";
-const {{ spawn }} = require("node:child_process");
-const child = spawn({executable}, ["--local-mcp-bridge", ...process.argv.slice(2)], {{ stdio: "inherit", windowsHide: true }});
-child.on("error", (error) => {{ console.error("QC Remote native bridge:", error.message); process.exitCode = 1; }});
-child.on("exit", (code, signal) => {{ process.exitCode = code ?? (128 + (require("node:os").constants.signals[signal] ?? 0)); }});
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
-"#, version = env!("CARGO_PKG_VERSION"), contract = crate::local_access::tool_contract_sha256()).into_bytes())
+    Ok(include_str!("../local-clients/native-bridge.cjs")
+        .replace("__QC_REMOTE_NATIVE_EXECUTABLE_JSON__", &executable)
+        .replace(VERSION_SLOT, env!("CARGO_PKG_VERSION"))
+        .replace(CONTRACT_SLOT, &crate::local_access::tool_contract_sha256())
+        .into_bytes())
 }
 
 #[cfg(not(all(target_os = "macos", feature = "macos-app-store")))]

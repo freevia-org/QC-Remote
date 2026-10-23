@@ -217,3 +217,58 @@ test("sandbox folder consent keeps Pair available instead of misreporting a brok
     assert.match(row.detail, /existing pairing cannot be checked/);
   }
 });
+
+test("the Mac Store launcher forwards Claude's virtual streams to its native child", { timeout: 10000 }, async (t) => {
+  const { spawn } = await import("node:child_process");
+  const { PassThrough } = await import("node:stream");
+  const { EventEmitter } = await import("node:events");
+  const { runInNewContext } = await import("node:vm");
+  const awaitReadline = await import("node:readline");
+  const source = await readFile(new URL("../src-tauri/local-clients/native-bridge.cjs", import.meta.url), "utf8");
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const errors = new PassThrough();
+  let response = "";
+  let diagnostic = "";
+  output.on("data", (chunk) => { response += chunk.toString(); });
+  errors.on("data", (chunk) => { diagnostic += chunk.toString(); });
+  const hosted = Object.assign(new EventEmitter(), {
+    stdin: input, stdout: output, stderr: errors, argv: ["node", "extension.cjs"], exitCode: undefined as number | undefined,
+  });
+  let child: ReturnType<typeof spawn> | undefined;
+  t.after(() => { input.destroy(); output.destroy(); errors.destroy(); child?.kill(); });
+  let closed: Promise<void> | undefined;
+  runInNewContext(source.replace("__QC_REMOTE_NATIVE_EXECUTABLE_JSON__", JSON.stringify("signed-native-fixture")), {
+    process: hosted,
+    console,
+    require(name: string) {
+      if (name === "node:readline") return awaitReadline;
+      if (name === "node:os") return { constants: { signals: {} } };
+      assert.equal(name, "node:child_process");
+      return { spawn(executable: string, args: string[], options: object) {
+        assert.equal(executable, "signed-native-fixture");
+        assert.equal(args[0], "--local-mcp-bridge");
+        child = spawn(process.execPath, ["-e", `
+          let data = '';
+          process.stdin.on('data', chunk => { data += chunk; });
+          process.stdin.on('end', () => {
+            const request = JSON.parse(data);
+            process.stdout.write(JSON.stringify({jsonrpc:'2.0', id:request.id, result:{protocolVersion:request.params.protocolVersion}})+'\\n');
+            process.stderr.write('native fixture finished');
+            process.exitCode = 7;
+          });
+        `], { ...options, env: { ...process.env, NODE_OPTIONS: "" } });
+        closed = new Promise((resolve, reject) => { child!.once("error", reject); child!.once("close", () => resolve()); });
+        return child;
+      } };
+    },
+  });
+  input.write(JSON.stringify({ jsonrpc: "2.0", id: 41, method: "server/discover" }) + "\n");
+  input.end(JSON.stringify({ jsonrpc: "2.0", id: 42, method: "initialize", params: { protocolVersion: "2025-03-26" } }) + "\n");
+  await closed;
+  const responses = response.trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(responses[0], { jsonrpc: "2.0", id: 41, error: { code: -32601, message: "Method not found" } });
+  assert.deepEqual(responses[1], { jsonrpc: "2.0", id: 42, result: { protocolVersion: "2025-03-26" } });
+  assert.equal(diagnostic, "native fixture finished");
+  assert.equal(hosted.exitCode, 7);
+});
