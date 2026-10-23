@@ -119,6 +119,8 @@ tauri = { version = "2", default-features = false, features = ["tray-icon", "ima
 plist = "1.10"
 
 [dev-dependencies]
+# Cross-platform TCP backpressure fixtures also run on Linux.
+socket2 = "=0.6.5"
 tower = { version = "0.5", features = ["util"] }
 
 # No debuginfo for dependencies in debug builds.
