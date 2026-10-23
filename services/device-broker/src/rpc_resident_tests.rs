@@ -131,6 +131,7 @@ fn resident_shared_with_controller(
         observer_actions: background::Manager::default(),
         demo: crate::demo_provider::Hub::default(),
         targets: crate::target::TargetRegistry::default(),
+        target_transition: Mutex::new(()),
     });
     TEST_GRACE
         .lock_recover()
@@ -728,6 +729,7 @@ fn request(id: u64, method: &str) -> Request {
         params: json!({}),
         origin: None,
         physical_only: false,
+        captured_target_generation: None,
         expected_broker_target: None,
     }
 }
@@ -2407,6 +2409,7 @@ fn device_readiness_answers_from_the_cached_session_without_device_demand() {
         observer_actions: background::Manager::default(),
         demo: crate::demo_provider::Hub::default(),
         targets: crate::target::TargetRegistry::default(),
+        target_transition: Mutex::new(()),
     });
     let (reconnects, _reconnect, _wait) = counting_reopen(&controller);
     let handle = BrokerHandle(Arc::clone(&shared));
@@ -2479,6 +2482,7 @@ fn readiness_shared(controller: &Arc<DeviceController>) -> Arc<BrokerShared> {
         observer_actions: background::Manager::default(),
         demo: crate::demo_provider::Hub::default(),
         targets: crate::target::TargetRegistry::default(),
+        target_transition: Mutex::new(()),
     })
 }
 

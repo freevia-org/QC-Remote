@@ -2,21 +2,80 @@
 
 The desktop editor exposes its already-opened demo through an authenticated
 reverse broker connection. MCP and the editor share one virtual store and its
-transient runtime. A usable physical QC takes precedence; unplugging returns
-to that same demo with a fresh target generation. This draft integration has
+transient runtime. Demo is selected only by an explicit user action; startup,
+failed Connect, broker release, Quit and USB loss show **Disconnected**, not
+Demo. An active, explicitly selected provider takes precedence over background
+physical availability so MCP and the window serve the same target. This integration has
 fixture coverage; live desktop UI/MCP and physical hot-plug acceptance are
 separate release gates. Installed applications are unchanged by this branch.
 
 A headless broker without a live editor provider does not invent demo availability.
+
+## Explicit selection and recovery
+
+Selecting Demo explicitly may start the shared broker through the supported
+election path. Inventory polling and provider re-registration never start it,
+clear a recorded Quit, or kill a broker that another client adopted. After a
+Quit, select Demo again to start the broker and recover the saved Demo store;
+no manual broker restart is required.
+
+Selection intent is separate from provider availability within one broker epoch:
+
+| Observation or action | Shared target |
+| --- | --- |
+| Explicit Demo registration acknowledged | That live Demo session |
+| Failed inventory read, including a missing optional generation on an older host | Unchanged; unknown is not loss |
+| Provider connection lost | Unavailable Demo intent; never physical fallback |
+| Positively different broker instance | Demo ends; window follows the new broker, and MCP may address hardware |
+| Same editor recovers its retained lease | Fresh Demo session; old requests remain fenced |
+| Explicit Demo recovery after a lost acknowledgement/token | Revision-checked replacement, not an unconditional reset |
+| Explicit physical selection or Stop Demo | Clear acknowledged first, then physical reads/work |
+
+The editor reuses its existing inventory cadence to recover a failed provider.
+While unavailable, its controls cannot address hardware and ordinary MCP calls
+are rejected. Failed, queued or uncertain commands are never replayed after
+recovery. The saved Demo document is retained.
+
+**Demo does not survive a broker restart.** This is a deliberate runtime-mode
+policy: a new broker has no Demo selection and defaults to its physical target.
+MCP can therefore address the real unit before the window observes the restart.
+On a positively different instance, compared with the last Demo registration
+acknowledgement, the window ends Demo, clears that Demo's hold/disconnect latch,
+and follows the new broker. It displays: "The broker restarted; Demo ended; the
+unit is available to your AI client." The notice survives routine status
+refreshes and clears after a successful explicit Demo selection. No marker is
+persisted, and this observation never starts a broker or opens Demo.
+
+This restart exception does not apply to a failed/Unknown inventory read,
+confirmed temporary absence, or a lost provider on the same broker instance.
+Those keep the existing Demo intent unavailable until its retained same-epoch
+registration is acknowledged; they never authorize a physical fallback.
+
+Broker-issued selection tokens stay in native memory, outside worker lifetimes;
+they are not emitted to webview events, status, logs or cloud metadata. Revision
+numbers are not secrets or GUI identity. Dedicated provider connections use the
+existing trusted local bearer model. A holder of that bearer can deliberately
+invoke selection/recovery operations; a role label or `physicalOnly` flag is not
+proof of GUI identity. Ordinary MCP/device calls never invoke those operations.
+An explicit token-loss recovery reads the current revision and compares it on
+commit; old clear/disconnect events cannot erase a replacement selection.
+
+Selection leases are scoped to a broker epoch. A verified replacement broker
+cannot accept an old token. Missing or unreadable metadata alone does not prove
+the old broker ended and never authorizes clearing its intent. Explicit Demo
+starts/attaches safely; a blocked or older incompatible broker fails closed with
+an actionable error instead of substituting hardware.
 
 ## Admission contract
 
 `qc_device_broker::target::TargetRegistry` is the source of broker target
 selection. Adapters publish usable physical and live demo provider **session**
 IDs through `update`; duplicate availability events do not advance generation.
-Physical wins whenever usable, independently of an editor deliberately viewing
-the demo. Losing physical returns to the same demo provider with a new broker
-generation. Closing that provider must publish its absence; reopening it must
+The registered Demo provider represents the editor's explicit selection and
+stays selected when background physical availability changes. Selecting a
+physical target withdraws the provider before physical work. Subsequent USB
+loss leaves no target, rather than restoring Demo. Closing that provider must
+publish its absence; reopening it must
 use a new session ID, even if the persisted demo document is unchanged.
 
 Admit a request exactly once with `admit(expected_identity)`. Resolve and retain
@@ -40,25 +99,37 @@ Target session IDs are opaque and contain no hardware serials or USB paths.
 
 A dedicated authenticated `demoProvider` connection owns registration. It is
 not a participant, observer or control connection, does not renew USB demand,
-and may call only the internal `broker.demoRegister`, `broker.demoNext`,
+and may call only the internal `broker.demoSelection`, `broker.demoClearSelection`,
+`broker.demoRegister`, `broker.demoNext`,
 `broker.demoAdmit`, `broker.demoReply` and `broker.demoWithdraw` methods.
 These are not MCP tools or remotely exposed methods.
 
-Registration receives a fresh broker-issued provider session id. `Next` is a
+Registration receives a fresh broker-issued provider session id.
+Desktop registration opts into `explicitSelection: true`; the broker validates
+the boolean and gives that provider selection precedence. Omitted/false keeps
+legacy physical-first routing, including older editors' background providers.
+An older broker rejects the new field; the desktop then reports registration
+failure instead of displaying a Demo target that MCP cannot share. `Next` is a
 bounded local long poll (20 seconds when quiet), not cloud polling. At most
 eight calls may remain pending, and each keeps its original 20-second deadline.
 Admit revalidates the delivered target and sequence; repeated checks are
 idempotent. Stale admission/reply is acknowledged as false without terminating
-the live provider. Connection death withdraws it and retires pending work.
+the live provider. Connection death retires pending work and live availability,
+but retains explicit selection intent as unavailable. Non-opt-in legacy
+providers keep their previous physical-first routing.
 
 Hosts negotiate `expectedBrokerTarget` and `physicalTargetOrigin` before sending
 the corresponding envelope guard or `physicalOnly` constraint. A physical-only
 app request never falls back to demo. Rejected capabilities must not cause a
 mutation to be replayed without its guard.
+`physicalOnly` is a routing constraint, not consent to override explicit Demo:
+device work is refused while that intent is held. Passive status/inventory
+remain available, and an explicit physical choice clears the selection first.
 
 ## Physical selection and lifecycle acknowledgments
 
-MCP selects the usable default QC, otherwise the single known ready QC. It
+When no Demo provider is selected, MCP selects the usable default QC,
+otherwise the single known ready QC. It
 binds the participant, native method route and target identity to that same
 controller before queueing. An explicit noncanonical MCP selection is refused;
 the physical-only app keeps its own selected controller. Multiple unresolved
@@ -106,7 +177,9 @@ uses try-only cached reads and never waits for the retained device tree.
 The in-process `DeviceReadiness` probe likewise returns `Unknown` on short
 readiness/inventory lock contention, rather than reporting a disconnect. A
 publication adapter may skip that sample; ordinary availability checks must
-remain fail-closed. Shutdown and canonical ambiguity remain `Unavailable`.
+remain fail-closed. Shutdown remains `Unavailable`. Physical contention or
+canonical ambiguity cannot override an explicitly selected Demo provider;
+without that provider they still refuse unverified physical readiness.
 No publication cache grants authority to execute a device request.
 
 Native and shared-store fixtures cover selection generations, stale leases,
@@ -133,8 +206,9 @@ Per-invocation admission does not interfere with intentional editor edits.
 
 The desktop native worker uses bounded original-thread ownership and exact
 socket shutdown. Broker instance observations trigger re-registration through
-the existing local inventory events; no cloud timer is added. Returning to an
-already-served demo does not re-register it just because the UI changed views.
+the existing local inventory events; no cloud timer is added. Leaving Demo
+withdraws its registration but preserves its saved store. Explicitly selecting
+it again gets a new registration, never a stale physical session's fallback.
 
 The Tauri relay, local MCP backend and local HTTP bridge preserve a captured
 `expectedBrokerTarget` separately from generated RPC parameters. Unsupported

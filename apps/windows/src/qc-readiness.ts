@@ -101,6 +101,11 @@ export function qcVirtualSessionIsReady(connection: ConnectionState): boolean {
   return connection.source === "virtual" && connection.phase === "ready" && !connection.demo;
 }
 
+/** No missing physical session is permission to select a Demo provider. */
+export function qcDisconnectedConnection(reason: string): ConnectionState {
+  return { phase: "disconnected", detail: `Disconnected. ${reason}`, demo: true, source: "device" };
+}
+
 /**
  * Human-readable device state must be derived from the same live predicate as
  * the badge. `connection.detail` and the last diagnostics payload can briefly
@@ -193,19 +198,13 @@ export function qcConnectionDuringBrokerPhase(
  * start a connection of its own. A connection already under way, a live or
  * recovering session, and a deliberate disconnect each own the next step.
  *
- * A demo session is the one exception to "ready owns the next step itself":
- * Demo Mode is the app's default, so a Quad Cortex detected while a ready
- * demo is the active view is always worth following - the same "plugged in
- * after a connect had already given up" case this function exists for,
- * except nothing else is watching for one while the demo is on screen. A
- * demo session is otherwise never in any other phase (startDemoDevice,
- * suspendDemoDevice and stopDemoDevice all route `source` back to "device"
- * the moment it stops being the active view), so there is nothing else to
- * special-case here.
+ * Desktop Demo is an explicit choice and passes demoCanYield=false. A
+ * disconnected physical view can follow a newly ready broker; the caller's
+ * user-Disconnect latch is checked separately and continues to hold it.
  */
 export function qcShouldConnectOnDetection(connection: ConnectionState, demoCanYield = true): boolean {
   if (connection.source === "virtual") return demoCanYield;
-  if (["ready", "disconnected", "discovering", "opening", "handshaking", "syncing"].includes(connection.phase)) return false;
+  if (["ready", "discovering", "opening", "handshaking", "syncing"].includes(connection.phase)) return false;
   return !connection.detail.startsWith("Live synchronization");
 }
 
@@ -593,13 +592,10 @@ export interface QcConnectStall {
   attempt: number | null;
 }
 /**
- * What the caller does when the watchdog gives up. A stalled connect that
- * started from the demo returns to it, as that connect's own failure would;
- * any other stalled connect ends in "needs-attention" with the stall's detail,
- * as its own failure would. An orphaned "discovering" repeats the demo
- * fallback it announced.
+ * A stalled or orphaned connect ends Disconnected, regardless of its origin.
+ * A timeout is never an implicit choice to open Demo.
  */
-export type QcConnectStallAction = "return-to-demo" | "needs-attention" | "retry-fallback";
+export type QcConnectStallAction = "disconnected";
 
 /**
  * One watchdog tick over the window's connection. It never connects: on
@@ -637,8 +633,7 @@ export function qcWatchConnectStall(state: {
   const since = state.stall?.kind === kind && state.stall.attempt === attempt ? state.stall.since : now;
   const limit = kind === "connect" ? QC_CONNECT_STALL_MS : QC_ORPHANED_DISCOVERING_MS;
   if (now - since < limit) return { stall: { kind, since, attempt }, abandon: null };
-  const abandon: QcConnectStallAction = !connect ? "retry-fallback" : connect.fromDemo ? "return-to-demo" : "needs-attention";
-  return { stall: null, abandon };
+  return { stall: null, abandon: "disconnected" };
 }
 
 /**

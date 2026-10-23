@@ -1,10 +1,11 @@
 //! A dedicated authenticated reverse connection. It never holds the app's
-//! Gateway mutex, claims USB, starts a broker, or retries an operation.
+//! Gateway mutex or claims USB. Only an explicit Demo click may start a broker;
+//! provider recovery never replays a device operation.
 use crate::{broker_attach, device_broker_descriptor, DEVICE_BROKER_DESCRIPTOR_PATH};
 use serde_json::{json, Value};
 use std::net::{Shutdown, TcpStream};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc, Arc, Mutex,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,6 +16,18 @@ const REQUEST_EVENT: &str = "qc-demo-provider-request";
 const STATUS_EVENT: &str = "qc-demo-provider-status";
 static PROVIDER_THREADS: qc_native_platform::thread_owner::Budget =
     qc_native_platform::thread_owner::Budget::new(8);
+
+fn explicit_demo_registration(registration: &Value) -> bool {
+    registration
+        .get("explicitSelection")
+        .and_then(Value::as_bool)
+        == Some(true)
+        && registration
+            .get("target")
+            .and_then(|target| target.get("source"))
+            .and_then(Value::as_str)
+            == Some("demo")
+}
 
 enum Command {
     Admit {
@@ -52,21 +65,121 @@ impl Drop for Worker {
     }
 }
 
+#[derive(Clone)]
+struct SelectionLease {
+    instance: String,
+    token: String,
+    operation: u64,
+    descriptor: device_broker_descriptor::DeviceBrokerDescriptor,
+    acknowledged: bool,
+}
+
+#[allow(
+    deprecated,
+    reason = "Keep compatibility with stable toolchains predating Atomic::try_update"
+)]
+fn next_operation(generation: &AtomicU64) -> Result<u64, String> {
+    generation
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            value.checked_add(1)
+        })
+        .map(|value| value + 1)
+        .map_err(|_| "Demo operation generation exhausted".into())
+}
+
+fn prepare_demo_start(
+    user_action: bool,
+    current: impl Fn() -> bool,
+    start: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if !current() {
+        return Err("Demo selection superseded".into());
+    }
+    if user_action {
+        start()?;
+    }
+    if !current() {
+        return Err("Demo selection superseded".into());
+    }
+    Ok(())
+}
+
+fn record_selection_ack(
+    selection: &Mutex<Option<SelectionLease>>,
+    lease: SelectionLease,
+    current: impl FnOnce() -> bool,
+) -> bool {
+    let mut held = selection.lock().unwrap_or_else(|p| p.into_inner());
+    if held
+        .as_ref()
+        .is_some_and(|held| held.operation > lease.operation)
+    {
+        return false;
+    }
+    let current = current();
+    *held = Some(lease);
+    current
+}
+
+fn take_matching_provider(
+    workers: &Mutex<Option<Worker>>,
+    expected: Option<&str>,
+) -> Option<Worker> {
+    let mut current = workers.lock().unwrap_or_else(|p| p.into_inner());
+    if current.as_ref().map(|worker| worker.provider_id.as_str()) == expected {
+        current.take()
+    } else {
+        None
+    }
+}
+
 #[derive(Default)]
-pub(crate) struct DemoProviderBridge(Mutex<Option<Worker>>);
+pub(crate) struct DemoProviderBridge(
+    Arc<Mutex<Option<Worker>>>,
+    Arc<Mutex<Option<SelectionLease>>>,
+    Arc<AtomicU64>,
+    Mutex<()>,
+);
 
 impl DemoProviderBridge {
-    fn replace(&self, create: impl FnOnce() -> Result<Worker, String>) -> Result<(), String> {
+    fn replace(
+        &self,
+        operation: u64,
+        create: impl FnOnce() -> Result<Worker, String>,
+    ) -> Result<(), String> {
         // Reserve the slot before retiring/spawning. A concurrent start/stop
         // cannot create a worker that is absent from the ownership table.
         let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        slot.take();
-        *slot = Some(create()?);
+        if self.2.load(Ordering::Acquire) != operation {
+            return Err("Demo selection superseded".into());
+        }
+        let old = slot.take();
+        drop(slot);
+        drop(old);
+        // Serialize only the local spawn factory, never a join or network call.
+        let creating = self.3.lock().unwrap_or_else(|p| p.into_inner());
+        if self.2.load(Ordering::Acquire) != operation {
+            return Err("Demo selection superseded".into());
+        }
+        let worker = create()?;
+        drop(creating);
+        let mut slot = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if self.2.load(Ordering::Acquire) != operation {
+            drop(slot);
+            drop(worker);
+            return Err("Demo selection superseded".into());
+        }
+        *slot = Some(worker);
         Ok(())
     }
 
     pub(crate) fn stop(&self) {
-        self.0.lock().unwrap_or_else(|p| p.into_inner()).take();
+        {
+            let _selection = self.1.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = next_operation(&self.2);
+        }
+        let old = self.0.lock().unwrap_or_else(|p| p.into_inner()).take();
+        drop(old);
     }
 }
 
@@ -81,6 +194,50 @@ fn main_window(window: &WebviewWindow) -> Result<(), String> {
 struct Connection {
     stream: TcpStream,
     next_id: u64,
+}
+
+fn clear_observed_demo(
+    connection: &mut Connection,
+    current: impl Fn() -> bool,
+    allow_legacy: bool,
+) -> Result<(), String> {
+    if !current() {
+        return Err("Device selection superseded".into());
+    }
+    let observed = connection.call("broker.demoSelection", json!({}), Duration::from_secs(3));
+    if !current() {
+        return Err("Device selection superseded".into());
+    }
+    let observed = match observed {
+        // This exact authenticated protocol rejection is the pre-selection
+        // provider surface; network/authentication/parse failures stay errors.
+        Err(message)
+            if allow_legacy
+                && message == "This method is not available to a demoProvider connection" =>
+        {
+            return Ok(())
+        }
+        other => other?,
+    };
+    let revision = observed
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or("Missing Demo selection revision")?;
+    if !current() {
+        return Err("Device selection superseded".into());
+    }
+    let result = connection.call(
+        "broker.demoClearSelection",
+        json!({"expectedRevision":revision}),
+        Duration::from_secs(3),
+    )?;
+    if !current() {
+        return Err("Device selection superseded".into());
+    }
+    if result.get("cleared").and_then(Value::as_bool) != Some(true) {
+        return Err("Demo selection changed; select the device again".into());
+    }
+    Ok(())
 }
 
 impl Connection {
@@ -125,6 +282,41 @@ impl Connection {
     }
 }
 
+struct ProviderStart<'a> {
+    selection: &'a Mutex<Option<SelectionLease>>,
+    user_action: bool,
+    operation: u64,
+    generation: &'a AtomicU64,
+}
+
+fn registration_params(
+    provider_id: &str,
+    user_action: bool,
+    previous: Option<&SelectionLease>,
+    instance: &str,
+    revision: u64,
+) -> Result<Value, String> {
+    let mut params = json!({"sessionId":provider_id,"explicitSelection":true});
+    if user_action {
+        params["recoverRevision"] = json!(revision);
+    } else {
+        let previous = previous
+            .filter(|lease| lease.acknowledged && lease.instance == instance)
+            .ok_or("Select Demo explicitly to recover its broker selection")?;
+        params["selectionToken"] = json!(previous.token);
+    }
+    Ok(params)
+}
+
+fn retire_local_selection(selection: &Mutex<Option<SelectionLease>>, lease: &SelectionLease) {
+    let mut current = selection.lock().unwrap_or_else(|p| p.into_inner());
+    if current.as_ref().is_some_and(|v| {
+        v.operation == lease.operation && v.token == lease.token && v.instance == lease.instance
+    }) {
+        current.take();
+    }
+}
+
 fn run(
     app: &AppHandle,
     provider_id: &str,
@@ -132,10 +324,29 @@ fn run(
     socket: &Mutex<Option<TcpStream>>,
     pending: &Mutex<Option<(Value, u64)>>,
     commands: mpsc::Receiver<Command>,
+    start: ProviderStart<'_>,
 ) -> Result<(), String> {
+    let ProviderStart {
+        selection,
+        user_action,
+        operation,
+        generation,
+    } = start;
     let path = DEVICE_BROKER_DESCRIPTOR_PATH
         .get()
         .ok_or("The shared broker directory is unavailable")?;
+    prepare_demo_start(
+        user_action,
+        || !stop.load(Ordering::Acquire) && generation.load(Ordering::Acquire) == operation,
+        || {
+            // Election/ownership cleanup is the same supported path as Connect.
+            // Dropping this temporary attachment never kills an adopted broker.
+            crate::acknowledge_user_connect_in(path)?;
+            let attachment = crate::attach_or_host_device_broker(path, false)?;
+            drop(attachment);
+            Ok(())
+        },
+    )?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -151,13 +362,42 @@ fn run(
         return Err("The demo provider stopped".into());
     }
     let mut connection = Connection { stream, next_id: 1 };
+    let previous = selection.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let selection_state =
+        connection.call("broker.demoSelection", json!({}), Duration::from_secs(3))?;
+    let revision = selection_state
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or("The broker does not support recoverable Demo selection; update the broker")?;
+    let mut registration_params = registration_params(
+        provider_id,
+        user_action,
+        previous.as_ref(),
+        &descriptor.instance_id,
+        revision,
+    )?;
+    // Record the attempted broker BEFORE any registration can commit. A lost
+    // acknowledgement must not look like "nothing was selected" to Connect.
+    {
+        let mut held = selection.lock().unwrap_or_else(|p| p.into_inner());
+        if stop.load(Ordering::Acquire) || generation.load(Ordering::Acquire) != operation {
+            return Err("Demo selection superseded".into());
+        }
+        *held = Some(SelectionLease {
+            instance: descriptor.instance_id.clone(),
+            descriptor: descriptor.clone(),
+            token: String::new(),
+            operation,
+            acknowledged: false,
+        });
+    }
     // Closing the old socket and joining its native client does not mean the
     // broker's reader has already retired its ownership row. Retry ONLY this
     // lifecycle registration, within one finite local deadline; never replay
     // a device request and never replace another live owner's registration.
     let registration_deadline = Instant::now() + Duration::from_secs(3);
     let registration = loop {
-        if stop.load(Ordering::Acquire) {
+        if stop.load(Ordering::Acquire) || generation.load(Ordering::Acquire) != operation {
             return Err("The demo provider stopped".into());
         }
         let remaining = registration_deadline.saturating_duration_since(Instant::now());
@@ -166,20 +406,62 @@ fn run(
         }
         match connection.call(
             "broker.demoRegister",
-            json!({"sessionId":provider_id}),
+            // Older brokers reject this additive field rather than silently
+            // serving physical MCP while the editor displays Demo.
+            registration_params.clone(),
             remaining,
         ) {
             Ok(value) => break value,
             Err(message) if message == "A live UI already owns the demo provider" => {
                 std::thread::sleep(Duration::from_millis(20).min(remaining));
             }
+            Err(message)
+                if message == "Demo selection changed; select Demo again"
+                    && generation.load(Ordering::Acquire) == operation =>
+            {
+                let held = selection.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                if let Some(held) = held.filter(|held| {
+                    held.instance == descriptor.instance_id && held.operation < operation
+                }) {
+                    registration_params
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("recoverRevision");
+                    registration_params["selectionToken"] = json!(held.token);
+                } else {
+                    return Err(message);
+                }
+            }
             Err(message) => return Err(message),
         }
     };
+    if !explicit_demo_registration(&registration) {
+        return Err("The broker did not acknowledge the editor's explicit Demo selection".into());
+    }
+    let token = registration
+        .get("selectionToken")
+        .and_then(Value::as_str)
+        .ok_or("The broker did not return a Demo selection lease")?
+        .to_owned();
+    // Even a late ack records its exact lease for causal physical cleanup,
+    // but never clears intent or overwrites a newer acknowledged operation.
+    if !record_selection_ack(
+        selection,
+        SelectionLease {
+            instance: descriptor.instance_id.clone(),
+            token,
+            operation,
+            descriptor: descriptor.clone(),
+            acknowledged: true,
+        },
+        || !stop.load(Ordering::Acquire) && generation.load(Ordering::Acquire) == operation,
+    ) {
+        return Err("The demo selection was cancelled".into());
+    }
     app.emit_to(
         "main",
         STATUS_EVENT,
-        json!({"providerId":provider_id,"ready":true,"registration":registration}),
+        json!({"providerId":provider_id,"ready":true,"brokerInstanceId":descriptor.instance_id}),
     )
     .map_err(|e| e.to_string())?;
     while !stop.load(Ordering::Acquire) {
@@ -262,7 +544,8 @@ fn run(
             Duration::from_secs(5),
         )?;
     }
-    let _ = connection.call("broker.demoWithdraw", json!({}), Duration::from_secs(2));
+    // A stopped/replaced transport does NOT release selection intent. Only the
+    // explicit clear command below may do so with its exact lease.
     Ok(())
 }
 
@@ -272,12 +555,17 @@ pub(crate) fn start_demo_provider(
     window: WebviewWindow,
     bridge: State<'_, DemoProviderBridge>,
     session_id: String,
+    user_action: Option<bool>,
 ) -> Result<(), String> {
     main_window(&window)?;
     if session_id.is_empty() || session_id.len() > 128 {
         return Err("Invalid demo provider session".into());
     }
-    bridge.replace(|| {
+    let operation = {
+        let _selection = bridge.1.lock().unwrap_or_else(|p| p.into_inner());
+        next_operation(&bridge.2)?
+    };
+    bridge.replace(operation, || {
         let stop = Arc::new(AtomicBool::new(false));
         let socket = Arc::new(Mutex::new(None));
         let pending = Arc::new(Mutex::new(None));
@@ -286,12 +574,27 @@ pub(crate) fn start_demo_provider(
         let worker_stop = stop.clone();
         let worker_socket = socket.clone();
         let worker_pending = pending.clone();
+        let selection = bridge.1.clone();
+        let generation = bridge.2.clone();
         let original = qc_native_platform::thread_owner::Owned::spawn(
             "qc-demo-provider",
             &PROVIDER_THREADS,
             (stop.clone(), socket.clone(), pending.clone()),
             move || {
-                let result = run(&app, &session_id, &stop, &socket, &pending, receive);
+                let result = run(
+                    &app,
+                    &session_id,
+                    &stop,
+                    &socket,
+                    &pending,
+                    receive,
+                    ProviderStart {
+                        selection: &selection,
+                        user_action: user_action.unwrap_or(false),
+                        operation,
+                        generation: &generation,
+                    },
+                );
                 pending.lock().unwrap_or_else(|p| p.into_inner()).take();
                 socket.lock().unwrap_or_else(|p| p.into_inner()).take();
                 let _ = app.emit_to(
@@ -383,6 +686,120 @@ pub(crate) fn complete_demo_provider_request(
 }
 
 #[tauri::command]
+pub(crate) async fn clear_demo_selection(
+    window: WebviewWindow,
+    bridge: State<'_, DemoProviderBridge>,
+) -> Result<(), String> {
+    main_window(&window)?;
+    let selection = bridge.1.clone();
+    let workers = bridge.0.clone();
+    let (lease, expected_worker, clear_operation) = {
+        let held = selection.lock().unwrap_or_else(|p| p.into_inner());
+        let current = workers.lock().unwrap_or_else(|p| p.into_inner());
+        (
+            held.clone(),
+            current.as_ref().map(|worker| worker.provider_id.clone()),
+            next_operation(&bridge.2)?,
+        )
+    };
+    let generation = bridge.2.clone();
+    // Retire the provider first; late replies cannot mutate the chosen target.
+    tauri::async_runtime::spawn_blocking(move || {
+        let old = take_matching_provider(&workers, expected_worker.as_deref());
+        if let Some(mut old) = old {
+            old.stop.store(true, Ordering::Release);
+            if let Some(socket) = old.socket.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                let _ = socket.shutdown(Shutdown::Both);
+            }
+            if let Some(original) = old.original.as_mut() {
+                if !original.wait_within(Duration::from_secs(3)) {
+                    return Err("Demo startup is still retiring; choose Connect again".into());
+                }
+            }
+            drop(old);
+        }
+        if generation.load(Ordering::Acquire) != clear_operation {
+            return Err("Device selection superseded".into());
+        }
+        let latest = {
+            selection
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .filter(|lease| lease.operation < clear_operation)
+        };
+        let lease = latest.or(lease);
+        let path = DEVICE_BROKER_DESCRIPTOR_PATH
+            .get()
+            .ok_or("The shared broker directory is unavailable")?;
+        let Some(lease) = lease else {
+            if let Some(descriptor) = device_broker_descriptor::read_descriptor(
+                path,
+                device_broker_descriptor::unix_time_ms(),
+            ) {
+                let stream = broker_attach::attach_demo_provider(&descriptor)
+                    .map_err(|_| "Could not authenticate shared selection recovery")?;
+                let mut connection = Connection { stream, next_id: 1 };
+                clear_observed_demo(
+                    &mut connection,
+                    || generation.load(Ordering::Acquire) == clear_operation,
+                    true,
+                )?;
+            }
+            return Ok(());
+        };
+        let descriptor = device_broker_descriptor::read_descriptor(
+            path,
+            device_broker_descriptor::unix_time_ms(),
+        );
+        if let Some(descriptor) = descriptor {
+            let stream = broker_attach::attach_demo_provider(&descriptor)
+                .map_err(|_| "Could not authenticate Demo selection withdrawal")?;
+            if descriptor.instance_id == lease.instance {
+                let mut connection = Connection { stream, next_id: 1 };
+                if !lease.acknowledged {
+                    clear_observed_demo(
+                        &mut connection,
+                        || generation.load(Ordering::Acquire) == clear_operation,
+                        false,
+                    )?;
+                } else {
+                    let params = json!({"selectionToken":lease.token});
+                    if generation.load(Ordering::Acquire) != clear_operation {
+                        return Err("Device selection superseded".into());
+                    }
+                    let result = connection.call(
+                        "broker.demoClearSelection",
+                        params,
+                        Duration::from_secs(3),
+                    )?;
+                    if result.get("cleared").and_then(Value::as_bool) != Some(true) {
+                        return Err("Demo selection changed; select the device again".into());
+                    }
+                }
+            } else {
+                let mut connection = Connection { stream, next_id: 1 };
+                clear_observed_demo(
+                    &mut connection,
+                    || generation.load(Ordering::Acquire) == clear_operation,
+                    true,
+                )?;
+            }
+        } else if broker_attach::published_broker_process_is_alive(&lease.descriptor) {
+            // Missing/stale/unreadable metadata does not prove the old epoch
+            // ended. Do not erase Quit or start a broker just to clear a token.
+            return Err(
+                "The selected Demo broker is temporarily unreachable; retry the selection".into(),
+            );
+        }
+        retire_local_selection(&selection, &lease);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub(crate) fn stop_demo_provider(
     window: WebviewWindow,
     bridge: State<'_, DemoProviderBridge>,
@@ -390,12 +807,16 @@ pub(crate) fn stop_demo_provider(
 ) -> Result<(), String> {
     main_window(&window)?;
     let mut current = bridge.0.lock().unwrap_or_else(|p| p.into_inner());
-    if current
+    let old = if current
         .as_ref()
         .is_some_and(|worker| worker.provider_id == provider_id)
     {
-        current.take();
-    }
+        current.take()
+    } else {
+        None
+    };
+    drop(current);
+    drop(old);
     Ok(())
 }
 
@@ -405,8 +826,231 @@ mod tests {
     use std::io::Read;
     use std::net::TcpListener;
 
+    fn selection_fixture(operation: u64) -> SelectionLease {
+        SelectionLease {
+            instance: "test-broker".into(),
+            token: format!("test-only-lease-{operation}"),
+            operation,
+            acknowledged: true,
+            descriptor: device_broker_descriptor::DeviceBrokerDescriptor {
+                port: 1,
+                bearer_token: "test-only-bearer".into(),
+                instance_id: "test-broker".into(),
+                process_id: 0,
+                process_created_at: None,
+                published_at_unix_ms: 0,
+                gateway_api_version: None,
+            },
+        }
+    }
+
     #[test]
-    fn concurrent_start_reserves_ownership_before_spawning_and_retires_the_previous_worker() {
+    fn automatic_recovery_requires_an_acknowledged_same_epoch_lease() {
+        let old = selection_fixture(1);
+        assert!(registration_params("demo", false, Some(&old), "replacement-broker", 4).is_err());
+        let retained = registration_params("demo", false, Some(&old), "test-broker", 4).unwrap();
+        assert_eq!(retained["selectionToken"], old.token);
+        assert!(retained.get("recoverRevision").is_none());
+        let explicit =
+            registration_params("demo", true, Some(&old), "replacement-broker", 4).unwrap();
+        assert_eq!(explicit["recoverRevision"], 4);
+        assert!(explicit.get("selectionToken").is_none());
+        let mut pending = old;
+        pending.acknowledged = false;
+        assert!(registration_params("demo", false, Some(&pending), "test-broker", 4).is_err());
+    }
+
+    #[test]
+    fn stale_pending_clear_cannot_erase_a_newer_empty_token_lease() {
+        let mut old = selection_fixture(1);
+        old.token.clear();
+        old.acknowledged = false;
+        let mut newer = old.clone();
+        newer.operation = 2;
+        let held = Mutex::new(Some(newer));
+        retire_local_selection(&held, &old);
+        assert_eq!(held.lock().unwrap().as_ref().unwrap().operation, 2);
+    }
+
+    #[test]
+    fn explicit_demo_starts_a_missing_broker_but_rebind_and_cancel_never_start_one() {
+        use std::cell::Cell;
+        let starts = Cell::new(0);
+        for (explicit, current) in [(false, true), (true, false)] {
+            let result = prepare_demo_start(
+                explicit,
+                || current,
+                || {
+                    starts.set(starts.get() + 1);
+                    Ok(())
+                },
+            );
+            assert_eq!(result.is_ok(), current);
+        }
+        assert_eq!(starts.get(), 0);
+        prepare_demo_start(
+            true,
+            || true,
+            || {
+                starts.set(starts.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(starts.get(), 1);
+        // A user cancels while the supported start returns. The shared broker
+        // is left alive; only this selection is refused, never an adopted host killed.
+        let current = Cell::new(true);
+        assert!(prepare_demo_start(
+            true,
+            || current.get(),
+            || {
+                current.set(false);
+                starts.set(starts.get() + 1);
+                Ok(())
+            }
+        )
+        .is_err());
+        assert_eq!(starts.get(), 2);
+    }
+
+    #[test]
+    fn delayed_registration_ack_preserves_unavailable_intent_without_overwriting_newer_demo() {
+        let held = Mutex::new(None);
+        assert!(!record_selection_ack(&held, selection_fixture(1), || false));
+        assert_eq!(held.lock().unwrap().as_ref().unwrap().operation, 1);
+        assert!(record_selection_ack(&held, selection_fixture(2), || true));
+        assert!(!record_selection_ack(&held, selection_fixture(1), || false));
+        assert_eq!(held.lock().unwrap().as_ref().unwrap().operation, 2);
+    }
+
+    #[test]
+    fn stale_clear_never_retires_a_replacement_provider() {
+        let (commands, _) = mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let workers = Mutex::new(Some(Worker {
+            provider_id: "new-provider".into(),
+            stop: stop.clone(),
+            socket: Arc::new(Mutex::new(None)),
+            pending: Arc::new(Mutex::new(None)),
+            commands,
+            original: None,
+        }));
+        assert!(take_matching_provider(&workers, Some("old-provider")).is_none());
+        assert!(!stop.load(Ordering::Acquire));
+        assert_eq!(
+            workers.lock().unwrap().as_ref().unwrap().provider_id,
+            "new-provider"
+        );
+        drop(take_matching_provider(&workers, Some("new-provider")));
+        assert!(stop.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn fresh_window_clears_retained_intent_by_observed_revision_without_a_local_token() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let query: Value = serde_json::from_slice(
+                &qc_broker_framing::read_frame(&mut socket, MAX_FRAME)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(query["method"], "broker.demoSelection");
+            qc_broker_framing::write_frame(
+                &mut socket,
+                &serde_json::to_vec(
+                    &json!({"jsonrpc":"2.0","id":query["id"],"result":{"revision":7}}),
+                )
+                .unwrap(),
+                MAX_FRAME,
+            )
+            .unwrap();
+            let clear: Value = serde_json::from_slice(
+                &qc_broker_framing::read_frame(&mut socket, MAX_FRAME)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(clear["method"], "broker.demoClearSelection");
+            assert_eq!(clear["params"], json!({"expectedRevision":7}));
+            qc_broker_framing::write_frame(
+                &mut socket,
+                &serde_json::to_vec(
+                    &json!({"jsonrpc":"2.0","id":clear["id"],"result":{"cleared":true}}),
+                )
+                .unwrap(),
+                MAX_FRAME,
+            )
+            .unwrap();
+        });
+        let mut connection = Connection { stream, next_id: 1 };
+        let result = clear_observed_demo(&mut connection, || true, true);
+        drop(connection);
+        peer.join().unwrap();
+        result.unwrap();
+    }
+
+    #[test]
+    fn fresh_window_legacy_clear_allows_only_the_exact_unsupported_protocol_reply() {
+        for (message, legacy, allowed) in [
+            (
+                "This method is not available to a demoProvider connection",
+                true,
+                true,
+            ),
+            (
+                "This method is not available to a demoProvider connection",
+                false,
+                false,
+            ),
+            ("Authentication failed", true, false),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let peer = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let query: Value = serde_json::from_slice(
+                    &qc_broker_framing::read_frame(&mut socket, MAX_FRAME)
+                        .unwrap()
+                        .unwrap(),
+                )
+                .unwrap();
+                qc_broker_framing::write_frame(&mut socket, &serde_json::to_vec(&json!({"jsonrpc":"2.0","id":query["id"],"error":{"code":-32002,"message":message}})).unwrap(), MAX_FRAME).unwrap();
+            });
+            let mut connection = Connection { stream, next_id: 1 };
+            let result = clear_observed_demo(&mut connection, || true, legacy);
+            drop(connection);
+            peer.join().unwrap();
+            assert_eq!(result.is_ok(), allowed);
+        }
+    }
+
+    #[test]
+    fn explicit_demo_requires_broker_selection_acknowledgement_not_only_registration() {
+        assert!(explicit_demo_registration(
+            &json!({"explicitSelection":true,"target":{"source":"demo"}})
+        ));
+        for response in [
+            json!({"target":{"source":"demo"}}),
+            json!({"explicitSelection":false,"target":{"source":"demo"}}),
+            json!({"explicitSelection":true,"target":{"source":"physical"}}),
+            json!({"explicitSelection":true,"target":null}),
+        ] {
+            assert!(!explicit_demo_registration(&response));
+        }
+    }
+
+    #[test]
+    fn concurrent_start_fences_the_superseded_spawn_and_retires_its_exact_worker() {
         fn worker(id: &str, stop: Arc<AtomicBool>) -> Worker {
             let (commands, _receive) = mpsc::sync_channel(8);
             Worker {
@@ -419,6 +1063,7 @@ mod tests {
             }
         }
         let bridge = Arc::new(DemoProviderBridge::default());
+        bridge.2.store(1, Ordering::Release);
         let first_stop = Arc::new(AtomicBool::new(false));
         let second_stop = Arc::new(AtomicBool::new(false));
         let second_entered = Arc::new(AtomicBool::new(false));
@@ -428,13 +1073,11 @@ mod tests {
             let bridge = bridge.clone();
             let stop = first_stop.clone();
             std::thread::spawn(move || {
-                bridge
-                    .replace(|| {
-                        first_inside.send(()).unwrap();
-                        wait.recv().unwrap();
-                        Ok(worker("first", stop))
-                    })
-                    .unwrap()
+                bridge.replace(1, || {
+                    first_inside.send(()).unwrap();
+                    wait.recv().unwrap();
+                    Ok(worker("first", stop))
+                })
             })
         };
         inside.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -444,9 +1087,10 @@ mod tests {
             let stop = second_stop.clone();
             let entered = second_entered.clone();
             std::thread::spawn(move || {
+                bridge.2.store(2, Ordering::Release);
                 attempting.send(()).unwrap();
                 bridge
-                    .replace(|| {
+                    .replace(2, || {
                         entered.store(true, Ordering::Release);
                         Ok(worker("second", stop))
                     })
@@ -456,7 +1100,7 @@ mod tests {
         attempted.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(!second_entered.load(Ordering::Acquire));
         release.send(()).unwrap();
-        first.join().unwrap();
+        assert!(first.join().unwrap().is_err());
         second.join().unwrap();
         assert!(first_stop.load(Ordering::Acquire));
         assert!(!second_stop.load(Ordering::Acquire));
@@ -499,14 +1143,15 @@ mod tests {
         let (commands, _receive) = mpsc::sync_channel(8);
         let target = json!({"source":"demo","sessionId":"broker-1:demo-1","generation":1});
         let pending = Arc::new(Mutex::new(Some((target.clone(), 1))));
-        let bridge = DemoProviderBridge(Mutex::new(Some(Worker {
+        let bridge = DemoProviderBridge::default();
+        *bridge.0.lock().unwrap() = Some(Worker {
             provider_id: "ui-1".into(),
             stop: Arc::new(AtomicBool::new(false)),
             socket: Arc::new(Mutex::new(Some(stream))),
             pending: pending.clone(),
             commands,
             original: None,
-        })));
+        });
         assert!(sender(&bridge, "foreign-ui", &target, 1).is_err());
         assert!(sender(&bridge, "ui-1", &target, 2).is_err());
         assert!(sender(&bridge, "ui-1", &target, 1).is_ok());

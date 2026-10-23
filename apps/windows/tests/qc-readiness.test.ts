@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { qcDisconnectedConnection } from "../src/qc-readiness.ts";
+
+test("USB loss and failed Connect expose Disconnected, never a ready Demo session", () => {
+  for (const reason of ["USB was lost", "The broker was released", "The QC could not be reached"]) {
+    const connection = qcDisconnectedConnection(reason);
+    assert.equal(connection.phase, "disconnected");
+    assert.equal(connection.source, "device");
+    assert.equal(connection.demo, true, "unverified hardware, not a usable virtual session");
+    assert.equal(connection.detail, `Disconnected. ${reason}`);
+  }
+});
 import { brokerPhaseDetectsDevice, normalizeBrokerConnection, QC_BROKER_TRUTH_UNKNOWN, QC_CONNECT_STALL_MS, QC_FOLLOW_DEMO_ATTEMPTS, QC_FOLLOW_INITIAL, QC_FOLLOW_RETRY_MAX_MS, QC_FOLLOW_RETRY_MIN_MS, QC_FOLLOW_STABLE_LIVE_MS, QC_ORPHANED_DISCOVERING_MS, QC_SESSION_LEFT_OPEN_NOTICE, qcAutomaticConnectHeld, qcBackgroundDeviceLive, qcConnectionDuringBrokerPhase, qcDisconnectClosedSession, qcDisconnectOutcome, qcFollowAfterUserConnect, qcFollowBroker, qcFollowRetryDelay, qcInventoryDeviceReady, qcInventoryWhenUnreachable, qcLatchUserDisconnect, qcObserveBroker, qcPhaseListenerMayFollow, qcReconcilePhysicalDevices, qcRecordLiveSessionLoss, qcSameBrokerTruth, qcShouldFollowDevicePhase, qcStopDemoOutcome, qcUserDisconnectAfter, qcUserDisconnectHolds, qcWatchConnectStall, waitForSynchronizedQc, type QcBrokerObservation, type QcBrokerTruth, type QcFollowState, type QcUserDisconnect } from "../src/qc-readiness.ts";
 
-test("connect waits for transient broker synchronization before falling back to demo", async () => {
+test("connect waits for transient broker synchronization before reporting its physical result", async () => {
   const waiting = { gatewayAvailable: true, platform: "Linux", message: "", usbDiagnostics: { phase: "ready", connected: true, synchronized: false, detail: "Preset sync pending" } };
   const ready = { ...waiting, usbDiagnostics: { ...waiting.usbDiagnostics, synchronized: true } };
   const states = [waiting, waiting, ready];
@@ -208,8 +219,8 @@ function windowPolls(start: Connection = demoFallback, attemptPolls = 0) {
     },
     goLive() { connection = liveDevice; },
     failConnect(fallback: Connection = demoFallback) { connection = fallback; },
-    /** beginLiveRecovery: the health check lost the session; back on the demo. */
-    loseLive() { follow = qcRecordLiveSessionLoss(follow); connection = demoFallback; },
+    /** beginLiveRecovery revokes readiness without opening Demo. */
+    loseLive() { follow = qcRecordLiveSessionLoss(follow); connection = qcDisconnectedConnection("USB was lost"); },
     disconnect(outcome: Connection = userDisconnected) { latch = qcLatchUserDisconnect(truth); connection = outcome; },
     userConnect() { latch = null; follow = qcFollowAfterUserConnect(follow); },
     setConnection(next: Connection) { connection = next; }
@@ -317,7 +328,8 @@ test("broker quits (tray Quit or release) and restarts without a Disconnect: the
     // poll for the released generation for as long as it is away.
     app.loseLive();
     assert.equal(app.for(5 * 60_000, () => app.refused()), 0, `cycle ${cycle}: away`);
-    assert.equal(app.connection.source, "virtual", "on the demo meanwhile");
+    assert.equal(app.connection.source, "device", "no automatic Demo while the broker is away");
+    assert.equal(app.connection.phase, "disconnected");
     // A new generation answers; its device takes a moment, then reads ready.
     assert.equal(app.notReady(after), false, `cycle ${cycle}: starting`);
     assert.equal(app.ready(after), true, `cycle ${cycle}: followed`);
@@ -485,6 +497,7 @@ test("a deliberate Demo choice or a stopped demo is never overridden", () => {
   chosen.demoCanYield = false;
   assert.equal(chosen.for(5 * 60_000, () => chosen.ready()), 0);
   const stopped = windowPolls({ phase: "disconnected", detail: "Demo device stopped. Its presets stay saved on this computer.", demo: true, source: "device" });
+  stopped.disconnect(stopped.connection);
   assert.equal(stopped.for(5 * 60_000, () => stopped.ready()), 0);
 });
 
@@ -566,7 +579,7 @@ test("only the Disconnect's own state is followed once lifted: a stopped demo or
     qcFollowBroker({ follow: QC_FOLLOW_INITIAL, truth, now: 0, userDisconnect, connectHeld: false, connection, demoCanYield }).connect;
   assert.equal(decide(userDisconnected), true);
   assert.equal(decide({ phase: "disconnected", detail: "Demo device stopped.", demo: true, source: "device" }), true, "App drops the latch on Stop demo, so this state never meets a lifted one");
-  assert.equal(decide(userDisconnected, null), false, "no latch: a disconnected window stays idle");
+  assert.equal(decide(userDisconnected, null), true, "an unlatched disconnected window follows the broker's ready session");
   assert.equal(decide(demoFallback, lifted, false), false, "the user's Demo choice");
   assert.equal(qcUserDisconnectHolds({ ...lifted, lifted: false }), true);
   assert.equal(qcUserDisconnectHolds(lifted), false);
@@ -690,13 +703,13 @@ test("a connect still waiting is given up after the stall interval, not before",
   assert.ok(QC_CONNECT_STALL_MS > 30_000 + 11_000, "longer than a full handshake plus the boot read");
 });
 
-test("a stalled connect returns to the demo only if it started from the demo", () => {
+test("a stalled connect becomes disconnected even when it started from an explicit demo", () => {
   const fromDemo = watchdog({ connection: discovering, connect: fromDemoConnect, otherWorkPending: false });
   for (let tick = 1; tick < STALL_TICKS; tick += 1) fromDemo.tick();
-  assert.equal(fromDemo.tick(), "return-to-demo");
+  assert.equal(fromDemo.tick(), "disconnected");
   const fromIdle = watchdog({ connection: discovering, connect: fromIdleConnect, otherWorkPending: false });
   for (let tick = 1; tick < STALL_TICKS; tick += 1) fromIdle.tick();
-  assert.equal(fromIdle.tick(), "needs-attention");
+  assert.equal(fromIdle.tick(), "disconnected");
 });
 
 test("a connect the phase listener moved on to handshaking is still the same stall", () => {
@@ -731,7 +744,7 @@ test("a connect the user superseded (Stop demo, Disconnect) is never the watchdo
   }
 });
 
-test("an orphaned discovering state repeats its fallback once nothing owns it", () => {
+test("an orphaned discovering state becomes disconnected without selecting demo", () => {
   // returnToDemoDevice showed it, and startDemoDevice refused while a command ran.
   const dog = watchdog({ connection: returning, connect: null, otherWorkPending: true });
   for (let tick = 0; tick < 100; tick += 1) assert.equal(dog.tick(), null, `pending ${tick}`);
@@ -742,7 +755,7 @@ test("an orphaned discovering state repeats its fallback once nothing owns it", 
   let abandon: ReturnType<typeof dog.tick> = null;
   while (!abandon) { tick += 1; abandon = dog.tick(); }
   assert.equal(tick, QC_ORPHANED_DISCOVERING_MS / POLL_MS + 1);
-  assert.equal(abandon, "retry-fallback");
+  assert.equal(abandon, "disconnected");
 });
 
 test("a fallback after a long connect gets its own interval, not the connect's", () => {
