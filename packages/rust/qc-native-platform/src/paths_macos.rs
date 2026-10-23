@@ -1,8 +1,16 @@
 //! Persistent macOS state shared by the GUI and broker.
 use std::path::{Path, PathBuf};
 
+#[cfg(not(feature = "macos-app-store"))]
 const APP_DIRECTORY: &str = "org.freevia.qcremote";
 
+#[cfg(feature = "macos-app-store")]
+pub fn default_directory() -> PathBuf {
+    crate::app_store::shared_directory()
+        .expect("Mac App Store shared broker storage is unavailable")
+}
+
+#[cfg(not(feature = "macos-app-store"))]
 pub fn default_directory() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)

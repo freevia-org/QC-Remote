@@ -18,7 +18,7 @@ use rmcp::{
     },
 };
 use serde_json::{Map, Value, json};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const DEVICE_KNOWLEDGE_GUIDE: &str = include_str!("../../../skills/qc-device-knowledge/SKILL.md");
 const DEVICE_KNOWLEDGE_CATALOG: &str =
@@ -36,6 +36,21 @@ const SERVER_NAME: &str = "QC Remote";
 const BACKEND_RESOURCES: &[&str] = &["qc://status", "qc://current-preset", "qc://models"];
 
 const TARGET_GUARD: &str = "expectedBrokerTarget";
+const SESSION_STATUS_TOOL: &str = "get_qc_status";
+
+#[derive(Default)]
+struct SessionTarget {
+    observation: u64,
+    target: Option<crate::BrokerTarget>,
+}
+
+fn session_status_tool() -> Tool {
+    Tool::new(
+        SESSION_STATUS_TOOL,
+        "Read current QC readiness and bind this chat's write target. Call before any mutation and again after a target change. This does not authorize a write or override the configured access level.",
+        Arc::new(serde_json::from_value(json!({"type":"object","properties":{},"additionalProperties":false})).expect("fixed status schema")),
+    ).with_annotations(ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false))
+}
 
 fn target_guard_schema() -> Value {
     json!({
@@ -142,6 +157,7 @@ pub struct QcMcp {
     backend: Arc<dyn QcBackend>,
     fixed_route: Option<PrincipalRoute>,
     presence: Option<Arc<dyn ClientPresence>>,
+    session_target: Option<Arc<Mutex<SessionTarget>>>,
 }
 
 /// A transport-owned observation of a successfully initialized MCP session.
@@ -179,6 +195,7 @@ impl QcMcp {
             backend,
             fixed_route: None,
             presence: None,
+            session_target: None,
         }
     }
 
@@ -193,12 +210,60 @@ impl QcMcp {
             backend,
             fixed_route: Some(route),
             presence: None,
+            session_target: None,
         }
     }
 
     pub fn with_client_presence(mut self, presence: Arc<dyn ClientPresence>) -> Self {
         self.presence = Some(presence);
         self
+    }
+
+    /// Only the direct local HTTP host opts in. Each handler owns one binding;
+    /// initialize/list/resources never bind it, including after a client 404 retry.
+    pub fn with_session_target_guard(mut self) -> Self {
+        self.session_target = Some(Arc::new(Mutex::new(SessionTarget::default())));
+        self
+    }
+
+    async fn observe_session_target(&self, route: &PrincipalRoute) -> Result<Value, String> {
+        let binding = self
+            .session_target
+            .as_ref()
+            .ok_or("Session target guard is unavailable")?;
+        let observation = {
+            let mut held = binding
+                .lock()
+                .map_err(|_| "Session target state is unavailable")?;
+            held.target = None;
+            held.observation = held
+                .observation
+                .checked_add(1)
+                .ok_or("Session observation exhausted")?;
+            held.observation
+        };
+        let result = self
+            .backend
+            .request(route, "system.status", Map::new())
+            .await
+            .map_err(|error| error.message)?;
+        let mut args = Map::new();
+        if let Some(target) = result.get("brokerTarget") {
+            args.insert(TARGET_GUARD.into(), target.clone());
+        }
+        let target = take_target_guard(&mut args)?;
+        let mut held = binding
+            .lock()
+            .map_err(|_| "Session target state is unavailable")?;
+        if held.observation == observation
+            && result.get("targetReady").and_then(Value::as_bool) == Some(true)
+        {
+            held.target = target;
+        }
+        Ok(sanitize_model_result(stamp_target_guard_capability(
+            "system.status",
+            result,
+        )))
     }
 
     fn principal_route(
@@ -216,6 +281,7 @@ impl QcMcp {
             .iter()
             .map(target_guarded_tool)
             .chain(std::iter::once(device_knowledge_search_tool()))
+            .chain(self.session_target.as_ref().map(|_| session_status_tool()))
             .collect()
     }
 
@@ -225,17 +291,38 @@ impl QcMcp {
         name: &str,
         arguments: Option<Map<String, Value>>,
     ) -> Result<Value, String> {
+        if name == SESSION_STATUS_TOOL && self.session_target.is_some() {
+            if arguments.as_ref().is_some_and(|args| !args.is_empty()) {
+                return Err("get_qc_status takes no arguments".into());
+            }
+            return self.observe_session_target(route).await;
+        }
         let spec = ACTIONS
             .iter()
             .find(|a| a.name == name)
             .ok_or_else(|| format!("unknown tool: {name}"))?;
         let mut args = arguments.unwrap_or_default();
-        let expected_broker_target = take_target_guard(&mut args)?;
+        let mut expected_broker_target = take_target_guard(&mut args)?;
         restore_stringified_nulls(spec, &mut args);
         validate(spec, &args)?;
         let model_query =
             (spec.name == "list_models").then(|| normalized_model_query(args.get("query")));
         apply_confirmation_gate(spec, &mut args)?;
+        if spec.classification != Classification::Read
+            && let Some(binding) = &self.session_target
+        {
+            let captured = binding.lock().map_err(|_| "Session target state is unavailable")?
+                    .target.clone().ok_or("Call get_qc_status before changing the QC; this chat has no verified ready target")?;
+            if expected_broker_target
+                .as_ref()
+                .is_some_and(|expected| expected != &captured)
+            {
+                return Err("Target changed or conflicts with this chat; re-read get_qc_status before changing the QC".into());
+            }
+            // Capture before backend queue admission; later status reads must
+            // not redirect this already-admitted request to another target.
+            expected_broker_target = Some(captured);
+        }
         let params = gateway_params(spec, args);
         let result = self
             .backend
@@ -422,7 +509,11 @@ impl ServerHandler for QcMcp {
                 .build(),
         )
         .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
-        .with_instructions(MCP_INSTRUCTIONS)
+        .with_instructions(if self.session_target.is_some() {
+            format!("{MCP_INSTRUCTIONS}\nThis direct HTTP session additionally exposes get_qc_status. Call get_qc_status explicitly to observe and bind a ready brokerTarget before ANY mutation. After reconnect or a target-changed error, read it again; never replay an uncertain mutation automatically.")
+        } else {
+            MCP_INSTRUCTIONS.to_owned()
+        })
     }
 
     async fn list_tools(
@@ -435,6 +526,9 @@ impl ServerHandler for QcMcp {
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
+        if name == SESSION_STATUS_TOOL && self.session_target.is_some() {
+            return Some(session_status_tool());
+        }
         if name == DEVICE_KNOWLEDGE_SEARCH_TOOL {
             return Some(device_knowledge_search_tool());
         }
@@ -974,6 +1068,244 @@ fn gateway_params(spec: &ActionSpec, args: Map<String, Value>) -> Map<String, Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SessionFenceBackend {
+        status: Mutex<Value>,
+        effects: Mutex<Vec<crate::BrokerTarget>>,
+    }
+
+    #[async_trait::async_trait]
+    impl QcBackend for SessionFenceBackend {
+        async fn request(
+            &self,
+            _: &PrincipalRoute,
+            rpc: &'static str,
+            _: Map<String, Value>,
+        ) -> Result<Value, BackendError> {
+            assert_eq!(rpc, "system.status");
+            Ok(self.status.lock().unwrap().clone())
+        }
+        async fn request_targeted(
+            &self,
+            _: &PrincipalRoute,
+            _: &'static str,
+            _: Map<String, Value>,
+            target: Option<crate::BrokerTarget>,
+        ) -> Result<Value, BackendError> {
+            let current: crate::BrokerTarget =
+                serde_json::from_value(self.status.lock().unwrap()["brokerTarget"].clone())
+                    .unwrap();
+            if target.as_ref() != Some(&current) {
+                return Err(BackendError::unavailable(
+                    "Target changed; re-read get_qc_status",
+                ));
+            }
+            self.effects.lock().unwrap().push(current);
+            Ok(
+                json!({"accepted":true,"verified":false,"verification":"accepted_unverified","detail":"Mock effect only"}),
+            )
+        }
+    }
+
+    fn session_tempo_arguments() -> Map<String, Value> {
+        json!({"bpm":120,"expected_tempo":110,"expected_preset_name":"Fixture","expected_preset_identity":"fixture:1"}).as_object().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn parallel_status_cannot_restore_an_old_binding_or_redirect_an_admitted_write() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Interleaved {
+            sequence: AtomicUsize,
+            old_started: tokio::sync::Notify,
+            release_old: tokio::sync::Notify,
+            write_started: tokio::sync::Notify,
+            release_write: tokio::sync::Notify,
+            captured: Mutex<Option<crate::BrokerTarget>>,
+        }
+        let target = |epoch: usize| {
+            serde_json::from_value::<crate::BrokerTarget>(json!({"source":"demo","sessionId":format!("fixture:{epoch}:demo"),"generation":epoch+1})).unwrap()
+        };
+        #[async_trait::async_trait]
+        impl QcBackend for Interleaved {
+            async fn request(
+                &self,
+                _: &PrincipalRoute,
+                rpc: &'static str,
+                _: Map<String, Value>,
+            ) -> Result<Value, BackendError> {
+                assert_eq!(rpc, "system.status");
+                let index = self.sequence.fetch_add(1, Ordering::SeqCst);
+                if index == 0 {
+                    self.old_started.notify_one();
+                    self.release_old.notified().await;
+                }
+                Ok(
+                    json!({"targetReady":true,"brokerTarget":{"source":"demo","sessionId":format!("fixture:{index}:demo"),"generation":index+1}}),
+                )
+            }
+            async fn request_targeted(
+                &self,
+                _: &PrincipalRoute,
+                _: &'static str,
+                _: Map<String, Value>,
+                captured: Option<crate::BrokerTarget>,
+            ) -> Result<Value, BackendError> {
+                *self.captured.lock().unwrap() = captured;
+                self.write_started.notify_one();
+                self.release_write.notified().await;
+                Ok(
+                    json!({"accepted":true,"verified":false,"verification":"accepted_unverified","detail":"Mock effect only"}),
+                )
+            }
+        }
+        let backend = Arc::new(Interleaved {
+            sequence: AtomicUsize::new(0),
+            old_started: tokio::sync::Notify::new(),
+            release_old: tokio::sync::Notify::new(),
+            write_started: tokio::sync::Notify::new(),
+            release_write: tokio::sync::Notify::new(),
+            captured: Mutex::new(None),
+        });
+        let server = QcMcp::new(backend.clone()).with_session_target_guard();
+        let route = PrincipalRoute::new("fixture", "none");
+        // Both branches are children of THIS future. Timeout/unwind drops
+        // them, rather than detaching mock tasks or leaving an orphan waiter.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let (old, ()) =
+                tokio::join!(server.execute(&route, SESSION_STATUS_TOOL, None), async {
+                    backend.old_started.notified().await;
+                    server
+                        .execute(&route, SESSION_STATUS_TOOL, None)
+                        .await
+                        .unwrap();
+                    let (write, ()) = tokio::join!(
+                        server.execute(&route, "set_tempo", Some(session_tempo_arguments())),
+                        async {
+                            backend.write_started.notified().await;
+                            server
+                                .execute(&route, SESSION_STATUS_TOOL, None)
+                                .await
+                                .unwrap();
+                            backend.release_write.notify_one();
+                        }
+                    );
+                    write.unwrap();
+                    assert_eq!(*backend.captured.lock().unwrap(), Some(target(1)));
+                    backend.release_old.notify_one();
+                });
+            old.unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            server
+                .session_target
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .target,
+            Some(target(2))
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_http_session_requires_explicit_status_and_reinitialized_retry_has_no_effect() {
+        let backend = Arc::new(SessionFenceBackend {
+            status: Mutex::new(
+                json!({"targetReady":true,"brokerTarget":{"source":"demo","sessionId":"epoch-a:demo","generation":1}}),
+            ),
+            effects: Mutex::new(Vec::new()),
+        });
+        let first = QcMcp::new(backend.clone()).with_session_target_guard();
+        let second = QcMcp::new(backend.clone()).with_session_target_guard();
+        let route = PrincipalRoute::new("fixture", "fixture");
+        assert!(
+            first
+                .execute(&route, "set_tempo", Some(session_tempo_arguments()))
+                .await
+                .unwrap_err()
+                .contains("get_qc_status")
+        );
+        assert!(backend.effects.lock().unwrap().is_empty());
+        first
+            .execute(&route, SESSION_STATUS_TOOL, None)
+            .await
+            .unwrap();
+        first
+            .execute(&route, "set_tempo", Some(session_tempo_arguments()))
+            .await
+            .unwrap();
+        // Model a lost successful response followed by a fresh handler after
+        // session expiry. This unit test is NOT the exact Codex transport probe.
+        assert!(
+            second
+                .execute(&route, "set_tempo", Some(session_tempo_arguments()))
+                .await
+                .unwrap_err()
+                .contains("get_qc_status")
+        );
+        assert_eq!(backend.effects.lock().unwrap().len(), 1);
+        *backend.status.lock().unwrap() = json!({"targetReady":true,"brokerTarget":{"source":"physical","sessionId":"epoch-b:device","generation":2}});
+        assert!(
+            first
+                .execute(&route, "set_tempo", Some(session_tempo_arguments()))
+                .await
+                .unwrap_err()
+                .contains("Target changed")
+        );
+        assert_eq!(backend.effects.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn direct_http_session_unavailable_status_and_conflicting_guard_never_bind_a_write() {
+        let backend = Arc::new(SessionFenceBackend {
+            status: Mutex::new(
+                json!({"targetReady":false,"brokerTarget":{"source":"demo","sessionId":"epoch:demo","generation":1}}),
+            ),
+            effects: Mutex::new(Vec::new()),
+        });
+        let server = QcMcp::new(backend.clone()).with_session_target_guard();
+        let route = PrincipalRoute::new("fixture", "fixture");
+        for status in [
+            json!({"targetReady":false,"brokerTarget":{"source":"demo","sessionId":"epoch:demo","generation":1}}),
+            json!({"targetReady":true}),
+            json!({"targetReady":true,"brokerTarget":{"source":"physical","sessionId":" ","generation":1}}),
+        ] {
+            *backend.status.lock().unwrap() = status;
+            let _ = server.execute(&route, SESSION_STATUS_TOOL, None).await;
+            assert!(
+                server
+                    .execute(&route, "set_tempo", Some(session_tempo_arguments()))
+                    .await
+                    .is_err()
+            );
+        }
+        *backend.status.lock().unwrap() = json!({"targetReady":true,"brokerTarget":{"source":"demo","sessionId":"epoch:demo","generation":1}});
+        server
+            .execute(&route, SESSION_STATUS_TOOL, None)
+            .await
+            .unwrap();
+        let mut args = session_tempo_arguments();
+        args.insert(
+            TARGET_GUARD.into(),
+            json!({"source":"physical","sessionId":"epoch:device","generation":1}),
+        );
+        assert!(
+            server
+                .execute(&route, "set_tempo", Some(args))
+                .await
+                .unwrap_err()
+                .contains("conflicts")
+        );
+        assert!(backend.effects.lock().unwrap().is_empty());
+        assert!(
+            QcMcp::new(backend)
+                .tools()
+                .iter()
+                .all(|tool| tool.name != SESSION_STATUS_TOOL)
+        );
+    }
 
     #[test]
     fn target_guard_is_optional_tool_metadata_without_mutating_generated_actions() {

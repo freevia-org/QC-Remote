@@ -666,6 +666,8 @@ export const MANAGED_JSON_MCP_STATES = [
 export type ManagedJsonMcpIntegrationState = (typeof MANAGED_JSON_MCP_STATES)[number];
 
 export interface ClaudeDesktopExtensionStatus {
+  /** The sandbox awaits an explicit host-folder selection; polling never prompts. */
+  folderAccessRequired?: boolean;
   claudeInstalled: boolean;
   appVersion?: string;
   extensionInstalled: boolean;
@@ -752,6 +754,10 @@ export interface LocalRouteRefresh {
 }
 
 export interface ChatGptLocalIntegrationStatus {
+  /** Explicit repair of a direct-HTTP helper after moving/updating the app. */
+  httpRouteRepairRequired?: boolean;
+  /** The sandbox awaits an explicit host-folder selection; polling never prompts. */
+  folderAccessRequired?: boolean;
   chatgptInstalled: boolean;
   /** Native host shown by this row on the current OS (Linux Codex CLI, otherwise ChatGPT). */
   clientName?: string;
@@ -800,6 +806,8 @@ export interface ChatGptLocalRemoveResult {
 }
 
 export interface AntigravityLocalIntegrationStatus {
+  /** The sandbox awaits an explicit host-folder selection; polling never prompts. */
+  folderAccessRequired?: boolean;
   antigravityInstalled: boolean;
   appVersion?: string;
   integrationInstalled: boolean;
@@ -840,6 +848,8 @@ export interface AntigravityLocalRemoveResult {
 }
 
 export interface ManagedJsonMcpIntegrationStatus {
+  /** The sandbox awaits an explicit host-folder selection; polling never prompts. */
+  folderAccessRequired?: boolean;
   appVersion?: string;
   /**
    * Which of the provider's numbering series `appVersion` belongs to, named

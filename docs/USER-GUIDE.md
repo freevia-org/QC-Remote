@@ -607,6 +607,40 @@ opens Claude's extension page with QC Remote selected, and you remove it there.
 The connection stays on your computer, although the assistant itself sends
 what it receives to its own provider under its own policy.
 
+### Direct local HTTP: security trade-off
+
+On Windows and macOS, explicit **Pair** for managed Codex uses one native host with
+separate logical HTTP sessions, rather than one persistent native bridge per
+chat. QC Remote must already be running with Local access enabled. Pairing
+does not enable a disabled Codex entry or change its tool restrictions and
+approval settings. Existing stdio configurations stay available for compatibility
+and are not silently migrated at startup. This route requires a Codex version
+that supports `http_headers_helper`; reconnect behavior is tested with
+0.163.0-alpha.11.2 on Windows. Linux pairing remains on the compatibility route.
+On macOS the helper is the signed native app executable; credentials stay in
+private filesystem storage (App Group storage in the App Store build), without
+Keychain. Existing pairings are preserved until explicit Pair.
+
+Each new direct HTTP session must explicitly call `get_qc_status` before a
+mutation. A ready status binds the shared target to that session; reconnecting
+or changing target requires another status read. A refused or uncertain write
+must not be blindly replayed. Disconnect leaves the broker resident; Quit
+stops its existing bridges. A new direct HTTP login does not start a quit host.
+
+For a direct local HTTP connection, the credential helper verifies QC Remote
+before issuing a new login header. It never starts the host, and a recorded
+**Quit** blocks new credential issuance. Exclusive port binding prevents another
+listener sharing the port while QC Remote owns it. These protections do not
+authenticate every later request made with a header the AI client has cached.
+
+The accepted residual risk is: whenever QC Remote's listener is gone (even after a deliberate Quit) and Codex still holds its saved login header, ANY program that grabs the same port, from another account or from your own account, would see Codex's next requests and could send fake answers (which could trick an AI agent into running commands as you). The helper and exclusive port only stop NEW logins and port-sharing. Not limited to other accounts, not limited to crashes.
+
+Rotating the host token and instance prevents an old credential authenticating
+to a new legitimate host; it does not prevent disclosure or forged answers from
+a program that takes over the port. This is not equivalent to HTTPS server
+authentication. HTTPS remains a possible future hardening step, not a property
+of the local HTTP connection.
+
 ### From anywhere (Windows or Android)
 
 1. Open the **REMOTE** indicator. On Windows, scan the QR code or open the link

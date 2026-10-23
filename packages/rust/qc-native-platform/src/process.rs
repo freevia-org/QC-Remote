@@ -483,3 +483,21 @@ mod linux {
 
 #[cfg(target_os = "linux")]
 pub use linux::*;
+
+/// Prove ownership before a broker bearer token is written. Sandboxed macOS
+/// uses a kernel-identified App Group witness for this exact TCP connection;
+/// other builds retain their existing OS listener inspection.
+pub fn loopback_connection_owner(
+    stream: &std::net::TcpStream,
+    _expected_pid: u32,
+    _within: std::time::Duration,
+) -> Result<Option<u32>, String> {
+    #[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+    {
+        crate::sandbox_peer::owner_of_connection(stream, _expected_pid, _within)
+    }
+    #[cfg(not(all(target_os = "macos", feature = "macos-app-store")))]
+    {
+        loopback_listener_owner(stream.peer_addr().map_err(|e| e.to_string())?.port())
+    }
+}

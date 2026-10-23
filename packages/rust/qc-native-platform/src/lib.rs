@@ -11,3 +11,9 @@ pub mod process;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod resident_marker;
 pub mod thread_owner;
+
+#[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+pub mod app_store;
+
+#[cfg(all(target_os = "macos", feature = "macos-app-store"))]
+pub mod sandbox_peer;

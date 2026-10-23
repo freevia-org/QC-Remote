@@ -290,6 +290,12 @@ export type LocalIntegrationSummaryOptions = {
   other?: OtherMcpStdioSetup;
 };
 
+const folderAccessPresentation = (name: string): LocalProviderPresentation => ({
+  phase: "available", status: "Folder access needed", tone: "action-required",
+  detail: `Pair asks you to select ${name}'s configuration folder. Its existing pairing cannot be checked until access is allowed.`,
+  canUnpair: false, primary: localPrimaryAction("pair")
+});
+
 const availableStatus = (version?: string) => version ? `Available · ${version}` : "Available";
 
 /**
@@ -609,6 +615,7 @@ export const claudeExtensionPresentation = (
     detail: "Install Claude Desktop to control QC Remote with AI",
     canUnpair: false, primary: localPrimaryAction("install", "Install Claude Desktop")
   };
+  if (status.folderAccessRequired) return folderAccessPresentation("Claude Desktop");
   // Pressing Update on an out-of-date pairing sets this flag too, so the flag
   // says a new bundle is waiting for Claude's approval - never that the
   // registry is empty. The extension the row would remove is the one already
@@ -710,6 +717,7 @@ export const chatgptIntegrationPresentation = (
   // withheld while the file cannot be parsed: removing the entry means
   // rewriting that same file, so it could only fail, and the row keeps to its
   // two buttons.
+  if (status.folderAccessRequired) return folderAccessPresentation("ChatGPT / Codex");
   if (refreshFailed || status.state === "status-error") return {
     phase: "attention", status: "Needs attention", tone: "error",
     detail: status.state === "status-error"
@@ -728,6 +736,13 @@ export const chatgptIntegrationPresentation = (
     phase: "available", status: "Unpaired", tone: "available",
     detail: "QC Remote's connection is removed. A chat already running in ChatGPT keeps it until that chat ends. Pair adds it back.",
     canUnpair: false, primary: localPrimaryAction("pair")
+  };
+  // A stale helper path is a connection repair, even when a skill update is
+  // also available. Never hide this behind the skill's routine update text.
+  if (status.httpRouteRepairRequired) return {
+    phase: "attention", status: "Repair pairing", tone: "action-required",
+    detail: "The saved Codex connection no longer matches this QC Remote app. Repair pairing updates the helper and keeps your existing permissions and other servers. Start a new Codex chat afterwards.",
+    canUnpair: true, primary: { ...localPrimaryAction("repair"), label: "Repair pairing" }
   };
   if (status.state === "newer-installed" && !status.connectionActive && !status.bridgeAttached) {
     // This app writes the QC Remote entry in the shared config.toml itself,
@@ -814,6 +829,7 @@ export const antigravityIntegrationPresentation = (
   // Antigravity's route lives in its MCP configuration under the Windows
   // profile, on the same terms as ChatGPT's and the two managed clients'.
   if (!status.antigravityInstalled) return appAbsentPresentation("Google Antigravity", "Install Antigravity", status.integrationInstalled, platform);
+  if (status.folderAccessRequired) return folderAccessPresentation("Google Antigravity");
   if (refreshFailed || status.state === "status-error") return {
     phase: "attention", status: "Needs attention", tone: "error",
     detail: status.state === "status-error"
@@ -968,6 +984,7 @@ export const managedMcpIntegrationPresentation = (
     canUnpair: status.integrationInstalled,
     primary: localPrimaryAction("install", `Update ${name}`)
   };
+  if (status.folderAccessRequired) return folderAccessPresentation(name);
   if (refreshFailed || status.state === "status-error") return {
     phase: "attention", status: "Needs attention", tone: "error",
     detail: status.state === "status-error"

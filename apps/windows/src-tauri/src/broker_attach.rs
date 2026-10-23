@@ -254,7 +254,11 @@ fn attach_to_device_broker_as(
     // that squatter the token.
     if let Some(refusal) = listener_refusal(
         descriptor,
-        qc_native_platform::process::loopback_listener_owner(descriptor.port),
+        qc_native_platform::process::loopback_connection_owner(
+            &stream,
+            descriptor.process_id,
+            DEVICE_BROKER_HANDSHAKE_TIMEOUT,
+        ),
         published_broker_process_is_alive(descriptor),
     ) {
         return Err(ambiguous(refusal));
