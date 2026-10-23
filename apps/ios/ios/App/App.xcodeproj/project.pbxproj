@@ -139,12 +139,10 @@
 				504EC3001FED79650016851F /* Sources */,
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
-				A30000000000000000000004 /* Embed DriverKit Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				A40000000000000000000002 /* PBXTargetDependency */,
 			);
 			name = App;
 			packageProductDependencies = (

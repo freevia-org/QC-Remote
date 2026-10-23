@@ -116,7 +116,7 @@ test("a failed OAuth exchange is reported once and never retried by duplicate UR
   assert.equal((await service.publicRelay.status()).paired, true);
 });
 
-test("switching to the direct iPad driver clears only the MCP connection flag", async t => {
+test("legacy iPad USB preference retains the saved paired-host connection", async t => {
   const { state, service, storage } = await loadService(t);
   state.failConnect = false;
   await service.publicRelay.start();
@@ -124,6 +124,6 @@ test("switching to the direct iPad driver clears only the MCP connection flag", 
   state.deviceFamily = "ipad";
   storage.set("qc.remote.ios.connection-mode-v1", "auto");
   await service.QcUsbNative.connect();
-  assert.notEqual((await service.publicRelay.status()).state, "connected");
+  assert.equal((await service.publicRelay.status()).state, "connected");
   assert.equal((await service.publicRelay.status()).paired, true);
 });

@@ -1,5 +1,22 @@
 # QC Remote for iOS
 
+## First App Store release
+
+The store app uses **paired-host control on both iPhone and iPad**. Connect the
+Quad Cortex by USB to a compatible Windows, macOS, or Linux QC Remote host.
+The mobile app controls that host over MCP. Both ends must use the same account
+and sign-in method. Existing Google sign-ins remain valid; Apple sign-in is
+available only after its cloud configuration is deployed. Apple accounts require
+a host build that accepts Apple pairing receipts.
+
+This release does not expose direct USB or USB-MIDI controls, does not embed the
+experimental USB DriverKit extension, and requests no DriverKit entitlement.
+Legacy direct-route preferences are ignored without clearing saved credentials.
+The native USB sources below remain prototypes for a future separately validated
+release; they describe implementation work, not features in the store build.
+
+## Direct USB prototypes (excluded from the store build)
+
 QC Remote targets two direct USB modes on Apple mobile devices:
 
 - **iPhone: USB-MIDI control.** Core MIDI discovers the QC's USB MIDI endpoint and sends documented preset, scene, footswitch, expression pedal, mode, tap-tempo, tuner, Gig View, Looper X, and duplicate-PC setting commands. The MIDI input channel is configurable and remembered on the device. The connection is one-way; it does not provide live state, full preset editing, backups, or CorOS updates. The iPhone interface displays this limitation before connection.

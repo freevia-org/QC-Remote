@@ -181,6 +181,24 @@ Pairing records expire after about ten minutes. The approximate location is used
 to show you where a pairing request came from, and the pairing page warns you if
 the request and your browser are in different countries.
 
+### Sign in with Apple
+
+When configured, Apple sign-in is an alternative to Google for host pairing and
+mobile or AI-app authorization. Apple may provide a private relay email address.
+The relay uses Apple's verified account identifier and email address for account
+isolation and access authorization; it never receives your Apple password. Apple
+and Google accounts are separate and are never linked by a matching email address.
+Use the same account and sign-in method on your host and controller.
+
+Ordinary Apple sign-in does not retain Apple's access or refresh tokens. When you
+request deletion, a new Apple sign-in obtains an access token for revocation. That
+token is encrypted inside a short-lived, signed deletion confirmation; it is not
+shown in plaintext or retained after the confirmation expires. Revocation happens
+only after you type DELETE and submit the confirmation. Verified Apple account
+revocation or deletion notifications also revoke QC Remote account access and
+start relay account cleanup. Non-identifying event and sign-in timestamps remain
+as a replay fence so a delayed notification cannot delete a recreated account.
+
 ### Your Google account
 
 Signing in to pair or to connect an AI app is done at Google. The relay asks

@@ -260,7 +260,7 @@ test("background retirement cancels an old cold demand while a later explicit de
 });
 
 
-test("switching away from paired-host mode cannot reuse that host's USB diagnostics", async t => {
+test("legacy direct preference cannot enable an iPad USB route in the store release", async t => {
   const { state, service, storage } = await loadService(t);
   state.failConnect = false;
   await service.refreshRemoteTargetObservation();
@@ -268,8 +268,9 @@ test("switching away from paired-host mode cannot reuse that host's USB diagnost
   storage.set("qc.remote.ios.connection-mode-v1", "auto");
   const before = state.calls.length;
   const diagnostics = await service.androidUsbRuntimeDiagnostics();
-  assert.equal(diagnostics.connected, false);
-  assert.match(diagnostics.detail, /No direct Quad Cortex USB session/);
+  assert.equal(diagnostics.connected, true);
+  assert.equal(service.getIosConnectionMode(), "remote");
+  await assert.rejects(service.setIosConnectionMode("auto"), /paired-host control only/);
   assert.equal(state.calls.length, before);
 });
 

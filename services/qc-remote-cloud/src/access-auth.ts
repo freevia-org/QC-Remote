@@ -1,3 +1,4 @@
+import { appleAuthorizationUrl, appleSignInButton, exchangeAppleCode, requestedIdentityProvider, type AppleOAuthEnv, type IdentityProvider } from "./apple-auth.ts";
 import { observedClientName, requestClientMetadata } from "./mcp-presence.ts";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { QC_COLORS, QC_TYPOGRAPHY } from "@qc-remote/theme/server";
@@ -7,8 +8,8 @@ import { grantIdFromRedirect } from "./account-deletion.ts";
 import { clientIdMetadataOrigin, recogniseRedirect, type RedirectRecognition } from "./client-recognition.ts";
 import { clientFailureText, PublicError, readBrowserForm, fetchIdentityJson } from "./http-security.ts";
 
-/** Google is the product identity provider. Cloudflare only hosts the relay. */
-export interface GoogleOAuthEnv {
+/** Existing Google bindings plus optional Apple sign-in. Cloudflare hosts the relay. */
+export interface GoogleOAuthEnv extends AppleOAuthEnv {
   QCRC_OAUTH: KVNamespace;
   OAUTH_PROVIDER: OAuthHelpers;
   GOOGLE_CLIENT_ID: string;
@@ -17,13 +18,13 @@ export interface GoogleOAuthEnv {
 }
 
 type PendingApproval = { request: AuthRequest };
-type PendingAuthorization = { request: AuthRequest; browserHash: string };
-type PendingDirectPairing = { hostSession?: string; browserHash: string };
+type PendingAuthorization = { request: AuthRequest; browserHash: string; identityProvider?: IdentityProvider };
+type PendingDirectPairing = { hostSession?: string; browserHash: string; identityProvider?: IdentityProvider };
 type GoogleIdentity = { sub: string; email: string; name: string; authTime?: number; issuedAt?: number };
-type PendingAccountDeletion = { browserHash: string; startedAt: number };
+type PendingAccountDeletion = { browserHash: string; startedAt: number; identityProvider?: IdentityProvider };
 
 const STATE_TTL_SECONDS = 10 * 60;
-const ACCOUNT_BEING_DELETED = "This Google account's QC Remote remote account is being deleted, or was deleted while you were signing in. Wait for the deletion to finish, then connect again.";
+const ACCOUNT_BEING_DELETED = "This QC Remote account is being deleted, or was deleted while you were signing in. Wait for the deletion to finish, then connect again.";
 // The consent screen used to render one fixed sentence whatever was requested,
 // so a client asking for full control and a client asking to read the tempo
 // produced identical pages. This is the only point in the whole system where a
@@ -69,7 +70,7 @@ async function verifyState(state: string | null, secret: string): Promise<string
 function response(html: string, csrf?: string): Response {
   // Chromium checks form-action against the POST's redirect as well as its
   // same-origin target. Allow only our configured Google authorization origin.
-  const headers = new Headers({ "content-type": "text/html; charset=utf-8", "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${new URL(GOOGLE_AUTHORIZATION_URL).origin}; frame-ancestors 'none'`, "x-frame-options": "DENY", "cache-control": "no-store" });
+  const headers = new Headers({ "content-type": "text/html; charset=utf-8", "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${new URL(GOOGLE_AUTHORIZATION_URL).origin} https://appleid.apple.com; frame-ancestors 'none'`, "x-frame-options": "DENY", "cache-control": "no-store" });
   if (csrf) headers.append("set-cookie", `__Host-qcrc-csrf-${csrf}=${csrf}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${STATE_TTL_SECONDS}`);
   return new Response(html, { headers });
 }
@@ -106,14 +107,14 @@ function destinationPanel(clientName: string, redirect: RedirectRecognition, met
   return `<div class="scope destination"><div class="row"><span>Access will be sent to</span><strong>${escape(redirect.host)}</strong></div>${published}${verdict}</div>`;
 }
 
-function approvalPage(clientName: string, nonce: string, scopes: readonly string[], redirect: RedirectRecognition, metadataOrigin?: string): string {
+function approvalPage(clientName: string, nonce: string, scopes: readonly string[], redirect: RedirectRecognition, metadataOrigin?: string, env?: GoogleOAuthEnv): string {
   const granted = scopes.map((scope) => `<li><code>${escape(scope)}</code> &mdash; ${escape(SCOPE_DESCRIPTIONS[scope as QcScope] ?? "")}</li>`).join("");
   const control = scopes.includes("qc:control");
   // Only deletions ask, exactly as the Quad Cortex
   // itself asks before deleting a preset or a setlist. This sentence must say
   // that and nothing more; the paired hosts are what keep it true.
-  const approvals = control ? `<p class="warn">Your AI app must confirm a preset or setlist deletion before sending it. Your paired device checks access and the exact target; it does not ask a second time. A deletion cannot be undone.</p>` : "";
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect ${escape(clientName)}</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:${QC_COLORS.app.canvas};color:${QC_COLORS.app.text};font:16px ${QC_TYPOGRAPHY.app};display:grid;min-height:100vh;place-items:center}main{width:min(38rem,100%);padding:2rem}h1{margin:.4rem 0 .75rem;font-size:2rem;line-height:1.15}p{color:${QC_COLORS.app.textMuted};line-height:1.55}.badge{color:${QC_COLORS.app.success};font-weight:700;font-size:.78rem;letter-spacing:.1em}.scope{margin:1.25rem 0;padding:1rem;border:1px solid ${QC_COLORS.app.border};border-radius:.65rem;background:${QC_COLORS.app.panelRaised}}.scope strong{display:block;margin-bottom:.35rem}.scope ul{margin:.5rem 0 0;padding-left:1.1rem}.scope li{margin:.35rem 0;color:${QC_COLORS.app.text};line-height:1.45}.scope code{color:${QC_COLORS.app.info};font:.85rem ${QC_TYPOGRAPHY.mono}}.row{margin:0 0 .6rem}.row span{display:block;color:${QC_COLORS.app.textMuted};font-size:.82rem}.row strong{font:700 1.05rem ${QC_TYPOGRAPHY.mono};color:${QC_COLORS.app.text};overflow-wrap:anywhere}.ok{margin:.6rem 0 0;color:${QC_COLORS.app.success};line-height:1.45}.warn{margin:.9rem 0 0;color:${QC_COLORS.app.warning};line-height:1.45}.button{display:block;width:100%;padding:.78rem 1rem;border:1px solid ${QC_COLORS.app.success};border-radius:.55rem;background:${QC_COLORS.app.success};color:${QC_COLORS.app.canvas};font:700 .95rem ${QC_TYPOGRAPHY.app};text-align:center;cursor:pointer}</style></head><body><main><div class="badge">QC Remote</div><h1>Connect ${escape(clientName)}</h1>${destinationPanel(clientName, redirect, metadataOrigin)}<p>Sign in with the same Google account you used in QC Remote. ${escape(clientName)} will reach the Quad Cortex already paired to it.</p><div class="scope"><strong>What this allows</strong><ul>${granted}</ul>${approvals}</div><p class="help">This does not pair a new device and does not create a second account. You can remove this connector later in ${escape(clientName)}.</p><form method="post" action="/authorize"><input type="hidden" name="nonce" value="${escape(nonce)}"><button class="button" type="submit">Allow</button></form></main></body></html>`;
+  const approvals = control ? `<p class="warn">The connected app must confirm a preset or setlist deletion before sending it. Your paired device checks access and the exact target; it does not ask a second time. A deletion cannot be undone.</p>` : "";
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect ${escape(clientName)}</title><style>:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:${QC_COLORS.app.canvas};color:${QC_COLORS.app.text};font:16px ${QC_TYPOGRAPHY.app};display:grid;min-height:100vh;place-items:center}main{width:min(38rem,100%);padding:2rem}h1{margin:.4rem 0 .75rem;font-size:2rem;line-height:1.15}p{color:${QC_COLORS.app.textMuted};line-height:1.55}.badge{color:${QC_COLORS.app.success};font-weight:700;font-size:.78rem;letter-spacing:.1em}.scope{margin:1.25rem 0;padding:1rem;border:1px solid ${QC_COLORS.app.border};border-radius:.65rem;background:${QC_COLORS.app.panelRaised}}.scope strong{display:block;margin-bottom:.35rem}.scope ul{margin:.5rem 0 0;padding-left:1.1rem}.scope li{margin:.35rem 0;color:${QC_COLORS.app.text};line-height:1.45}.scope code{color:${QC_COLORS.app.info};font:.85rem ${QC_TYPOGRAPHY.mono}}.row{margin:0 0 .6rem}.row span{display:block;color:${QC_COLORS.app.textMuted};font-size:.82rem}.row strong{font:700 1.05rem ${QC_TYPOGRAPHY.mono};color:${QC_COLORS.app.text};overflow-wrap:anywhere}.ok{margin:.6rem 0 0;color:${QC_COLORS.app.success};line-height:1.45}.warn{margin:.9rem 0 0;color:${QC_COLORS.app.warning};line-height:1.45}.button{display:block;width:100%;padding:.78rem 1rem;border:1px solid ${QC_COLORS.app.success};border-radius:.55rem;background:${QC_COLORS.app.success};color:${QC_COLORS.app.canvas};font:700 .95rem ${QC_TYPOGRAPHY.app};text-align:center;cursor:pointer}</style></head><body><main><div class="badge">QC Remote</div><h1>Connect ${escape(clientName)}</h1>${destinationPanel(clientName, redirect, metadataOrigin)}<p>Sign in with the same account and sign-in method you used to pair your host in QC Remote. ${escape(clientName)} will reach the Quad Cortex already paired to it.</p><div class="scope"><strong>What this allows</strong><ul>${granted}</ul>${approvals}</div><p class="help">This does not pair a new device and does not create a second account. You can remove this connector later in ${escape(clientName)}.</p><form method="post" action="/authorize"><input type="hidden" name="nonce" value="${escape(nonce)}"><button class="button" type="submit">Continue with Google</button>${env ? appleSignInButton(env) : ""}</form></main></body></html>`;
 }
 
 function bytes(encoded: string): Uint8Array {
@@ -158,9 +159,9 @@ async function identity(env: GoogleOAuthEnv, idToken: string): Promise<GoogleIde
 // Each flow has its own short-lived cookie so concurrent tabs cannot overwrite it.
 const FLOW_COOKIE = "__Host-qcrc-flow";
 
-function flowRedirect(location: string, token: string, nonce: string): Response {
+function flowRedirect(location: string, token: string, nonce: string, identityProvider: IdentityProvider = "google"): Response {
   const headers = new Headers({ location, "cache-control": "no-store" });
-  headers.append("set-cookie", `${FLOW_COOKIE}-${nonce}=${token}; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=${STATE_TTL_SECONDS}`);
+  headers.append("set-cookie", `${FLOW_COOKIE}-${nonce}=${token}; HttpOnly; Secure; Path=/; SameSite=${identityProvider === "apple" ? "None" : "Lax"}; Max-Age=${STATE_TTL_SECONDS}`);
   return new Response(null, { status: 302, headers });
 }
 
@@ -174,6 +175,24 @@ function googleAuthorizationUrl(env: GoogleOAuthEnv, redirectUri: string, state:
   const upstream = new URL(GOOGLE_AUTHORIZATION_URL);
   upstream.search = new URLSearchParams({ client_id: env.GOOGLE_CLIENT_ID, redirect_uri: redirectUri, response_type: "code", scope: "openid email profile", prompt: "select_account", state, ...extra }).toString();
   return upstream.toString();
+}
+
+function callbackProvider(request: Request): IdentityProvider {
+  return new URL(request.url).pathname.startsWith("/auth/apple/") ? "apple" : "google";
+}
+function callbackUri(request: Request, provider: IdentityProvider, flow: string): string {
+  return new URL(`/auth/${provider}/${flow}/callback`, request.url).toString();
+}
+function upstreamAuthorization(env: GoogleOAuthEnv, request: Request, provider: IdentityProvider, flow: string, state: string, nonce: string): string {
+  return provider === "apple" ? appleAuthorizationUrl(env, callbackUri(request, provider, flow), state, nonce)
+    : googleAuthorizationUrl(env, callbackUri(request, provider, flow), state, flow === "delete" ? accountDeletionAuthorizationParams() : {});
+}
+async function exchangeIdentity(env: GoogleOAuthEnv, request: Request, provider: IdentityProvider, flow: string, code: string, nonce: string) {
+  if (provider === "apple") {
+    const user = await exchangeAppleCode(env, code, callbackUri(request, provider, flow), nonce);
+    return { sub: user.sub, email: user.email, name: user.name, issuedAt: user.issuedAt, authTime: undefined, appleAccessToken: user.accessToken };
+  }
+  return { ...await exchangeGoogleCode(env, code, callbackUri(request, provider, flow)), appleAccessToken: undefined };
 }
 
 /** What the Google sign-in before a remote account deletion proves.
@@ -200,11 +219,10 @@ export const ACCOUNT_DELETION_REQUEST_AUTH_TIME = false;
 export const ACCOUNT_DELETION_SIGN_IN_WINDOW_SECONDS = 5 * 60;
 /** Clock skew tolerated between Google and the relay. */
 const AUTH_TIME_SKEW_SECONDS = 60;
-const ACCOUNT_DELETION_CALLBACK = "/auth/google/delete/callback";
 const AUTH_TIME_CLAIMS = JSON.stringify({ id_token: { auth_time: { essential: true } } });
 
 export type DeletionFreshness = "recent-sign-in" | "fresh-authentication";
-export type DeletionSignIn = { sub: string; email: string; freshness: DeletionFreshness; verifiedAt: number };
+export type DeletionSignIn = { sub: string; email: string; freshness: DeletionFreshness; verifiedAt: number; appleAccessToken?: string };
 
 /** The extra authorization parameters for the deletion sign-in. */
 export function accountDeletionAuthorizationParams(requestAuthTime = ACCOUNT_DELETION_REQUEST_AUTH_TIME): Record<string, string> {
@@ -214,12 +232,12 @@ export function accountDeletionAuthorizationParams(requestAuthTime = ACCOUNT_DEL
 /** Start the Google sign-in that must precede a remote account deletion. The
  * caller has checked the page's CSRF token. The flow cookie is SameSite=Lax
  * (flowRedirect) because Google's callback is a cross-site top-level GET. */
-export async function beginAccountDeletionSignIn(request: Request, env: GoogleOAuthEnv, now = Date.now()): Promise<Response> {
+export async function beginAccountDeletionSignIn(request: Request, env: GoogleOAuthEnv, now = Date.now(), identityProvider: IdentityProvider = "google"): Promise<Response> {
   const nonce = randomToken(24);
   const browser = randomToken(24);
-  await env.QCRC_OAUTH.put(`qcrc:delete-sign-in:${nonce}`, JSON.stringify({ browserHash: await hmac(browser, env.COOKIE_ENCRYPTION_KEY), startedAt: now } satisfies PendingAccountDeletion), { expirationTtl: STATE_TTL_SECONDS });
+  await env.QCRC_OAUTH.put(`qcrc:delete-sign-in:${nonce}`, JSON.stringify({ browserHash: await hmac(browser, env.COOKIE_ENCRYPTION_KEY), startedAt: now, identityProvider } satisfies PendingAccountDeletion), { expirationTtl: STATE_TTL_SECONDS });
   const state = `${nonce}.${await hmac(nonce, env.COOKIE_ENCRYPTION_KEY)}`;
-  return flowRedirect(googleAuthorizationUrl(env, new URL(ACCOUNT_DELETION_CALLBACK, request.url).toString(), state, accountDeletionAuthorizationParams()), browser, nonce);
+  return flowRedirect(upstreamAuthorization(env, request, identityProvider, "delete", state, nonce), browser, nonce, identityProvider);
 }
 
 /** Complete it: the verified identity and what its freshness rests on. */
@@ -232,14 +250,16 @@ export async function completeAccountDeletionSignIn(request: Request, env: Googl
   await env.QCRC_OAUTH.delete(`qcrc:delete-sign-in:${nonce}`);
   if (!stored) throw new PublicError("This sign-in expired. Start the deletion again.");
   if (!await browserMatchesFlow(request, env, stored.browserHash, nonce)) throw new PublicError("This sign-in was started in a different browser. Start the deletion again in this browser.");
-  const user = await exchangeGoogleCode(env, code, new URL(ACCOUNT_DELETION_CALLBACK, request.url).toString());
+  const provider = callbackProvider(request);
+  if ((stored.identityProvider ?? "google") !== provider) throw new PublicError("Sign-in provider mismatch.");
+  const user = await exchangeIdentity(env, request, provider, "delete", code, nonce);
   const freshness = deletionFreshness(user, stored.startedAt, now);
   if (!freshness) {
     throw new PublicError(user.authTime !== undefined && ACCOUNT_DELETION_REQUEST_AUTH_TIME
       ? "Google reused an earlier sign-in. Sign out of Google in this browser, then start the deletion again."
       : "This sign-in took too long. Start the deletion again.");
   }
-  return { sub: user.sub, email: user.email, ...freshness };
+  return { sub: user.sub, email: user.email, ...freshness, appleAccessToken: user.appleAccessToken };
 }
 
 /** The freshness a completed deletion sign-in rests on, or null. Times in
@@ -261,7 +281,7 @@ async function exchangeGoogleCode(env: GoogleOAuthEnv, code: string, redirectUri
 }
 
 /** Start the real Google sign-in used by the pairing page. */
-export async function beginPairingSignIn(request: Request, env: GoogleOAuthEnv, verifiedHostSession?: string): Promise<Response> {
+export async function beginPairingSignIn(request: Request, env: GoogleOAuthEnv, verifiedHostSession?: string, identityProvider: IdentityProvider = "google"): Promise<Response> {
   // The caller has already checked the session is live and unused and that
   // this browser confirmed it on the pairing page (host-pairing.ts). Nothing
   // here re-reads the query string, so a session id cannot arrive unverified.
@@ -271,9 +291,9 @@ export async function beginPairingSignIn(request: Request, env: GoogleOAuthEnv, 
   }
   const nonce = randomToken(24);
   const browser = randomToken(24);
-  await env.QCRC_OAUTH.put(`qcrc:direct-pair:${nonce}`, JSON.stringify({ hostSession: hostSession || undefined, browserHash: await hmac(browser, env.COOKIE_ENCRYPTION_KEY) } satisfies PendingDirectPairing), { expirationTtl: STATE_TTL_SECONDS });
+  await env.QCRC_OAUTH.put(`qcrc:direct-pair:${nonce}`, JSON.stringify({ hostSession: hostSession || undefined, browserHash: await hmac(browser, env.COOKIE_ENCRYPTION_KEY), identityProvider } satisfies PendingDirectPairing), { expirationTtl: STATE_TTL_SECONDS });
   const state = `${nonce}.${await hmac(nonce, env.COOKIE_ENCRYPTION_KEY)}`;
-  return flowRedirect(googleAuthorizationUrl(env, new URL("/auth/google/pair/callback", request.url).toString(), state), browser, nonce);
+  return flowRedirect(upstreamAuthorization(env, request, identityProvider, "pair", state, nonce), browser, nonce, identityProvider);
 }
 
 /** Complete the pairing-page Google sign-in and return the verified owner. */
@@ -288,23 +308,27 @@ export async function completePairingSignIn(request: Request, env: GoogleOAuthEn
   if (!await browserMatchesFlow(request, env, stored.browserHash, nonce)) {
     throw new PublicError("This sign-in was started in a different browser. Open REMOTE in QC Remote and start a new pairing code.");
   }
-  return { ...await exchangeGoogleCode(env, code, new URL("/auth/google/pair/callback", request.url).toString()), hostSession: stored.hostSession };
+  const provider = callbackProvider(request);
+  if ((stored.identityProvider ?? "google") !== provider) throw new PublicError("Sign-in provider mismatch.");
+  const user = await exchangeIdentity(env, request, provider, "pair", code, nonce);
+  return { sub: user.sub, email: user.email, name: user.name, issuedAt: user.issuedAt, hostSession: stored.hostSession };
 }
 
-async function continueAuthorization(request: Request, env: GoogleOAuthEnv, nonce: string): Promise<Response> {
+async function continueAuthorization(request: Request, env: GoogleOAuthEnv, nonce: string, identityProvider: IdentityProvider = "google"): Promise<Response> {
   const stored = await env.QCRC_OAUTH.get<PendingApproval>(`qcrc:approval:${nonce}`, "json");
   await env.QCRC_OAUTH.delete(`qcrc:approval:${nonce}`);
   if (!stored) return new Response("Authorization approval expired. Please return to Claude and try again.", { status: 400 });
   const stateNonce = randomToken(24);
   const browser = randomToken(24);
-  await env.QCRC_OAUTH.put(`qcrc:access:${stateNonce}`, JSON.stringify({ request: stored.request, browserHash: await hmac(browser, env.COOKIE_ENCRYPTION_KEY) } satisfies PendingAuthorization), { expirationTtl: STATE_TTL_SECONDS });
+  await env.QCRC_OAUTH.put(`qcrc:access:${stateNonce}`, JSON.stringify({ request: stored.request, browserHash: await hmac(browser, env.COOKIE_ENCRYPTION_KEY), identityProvider } satisfies PendingAuthorization), { expirationTtl: STATE_TTL_SECONDS });
   const state = `${stateNonce}.${await hmac(stateNonce, env.COOKIE_ENCRYPTION_KEY)}`;
-  return flowRedirect(googleAuthorizationUrl(env, new URL("/auth/google/mcp/callback", request.url).toString(), state), browser, stateNonce);
+  return flowRedirect(upstreamAuthorization(env, request, identityProvider, "mcp", state, stateNonce), browser, stateNonce, identityProvider);
 }
 
 /** The account fence an AI-app grant passes through (account-deletion.ts):
  * admitted before the provider writes the grant, settled after. */
 export type GrantFence = {
+  rememberAppleSignIn?(subject: string, issuedAt: number): Promise<void>;
   admit(subject: string, admissionId: string): Promise<{ admitted: true; generation: number } | { admitted: false }>;
   settle(subject: string, admissionId: string, generation: number): Promise<boolean>;
 };
@@ -319,7 +343,7 @@ export async function handleGoogleAuthorization(request: Request, env: GoogleOAu
     const nonce = randomToken(24);
     await env.QCRC_OAUTH.put(`qcrc:approval:${nonce}`, JSON.stringify({ request: authorization } satisfies PendingApproval), { expirationTtl: STATE_TTL_SECONDS });
     const requested = (authorization.scope ?? []).filter((scope) => ALLOWED_SCOPES.has(scope));
-    return response(approvalPage(client.clientName || "this MCP client", nonce, requested.length > 0 ? requested : ["qc:read"], recogniseRedirect(authorization.redirectUri), clientIdMetadataOrigin(authorization.clientId)), nonce);
+    return response(approvalPage(client.clientName || "this MCP client", nonce, requested.length > 0 ? requested : ["qc:read"], recogniseRedirect(authorization.redirectUri), clientIdMetadataOrigin(authorization.clientId), env), nonce);
   }
   // There is deliberately no GET twin of the route below. The consent step
   // used to be a link, and the link survived the conversion to a CSRF-protected
@@ -331,9 +355,11 @@ export async function handleGoogleAuthorization(request: Request, env: GoogleOAu
     if (!form) return new Response("Invalid authorization form", { status: 400 });
     const nonce = typeof form.get("nonce") === "string" ? form.get("nonce") as string : "";
     if (!same(cookie(request, `__Host-qcrc-csrf-${nonce}`), nonce)) return new Response("Authorization approval expired. Please try again.", { status: 400 });
-    return continueAuthorization(request, env, nonce);
+    let provider: IdentityProvider;
+    try { provider = requestedIdentityProvider(form.get("identity_provider"), env); } catch { return new Response("Sign-in method unavailable", { status: 400 }); }
+    return continueAuthorization(request, env, nonce, provider);
   }
-  if (url.pathname === "/auth/google/mcp/callback" && request.method === "GET") {
+  if (/^\/auth\/(google|apple)\/mcp\/callback$/.test(url.pathname) && request.method === "GET") {
     const nonce = await verifyState(url.searchParams.get("state"), env.COOKIE_ENCRYPTION_KEY);
     const code = url.searchParams.get("code");
     if (!nonce || !code) return new Response("Invalid or expired sign-in request", { status: 400 });
@@ -344,7 +370,13 @@ export async function handleGoogleAuthorization(request: Request, env: GoogleOAu
       return new Response("This sign-in was started in a different browser. Return to your MCP client and connect again.", { status: 400 });
     }
     try {
-      const user = await exchangeGoogleCode(env, code, new URL("/auth/google/mcp/callback", request.url).toString());
+      const provider = callbackProvider(request);
+      if ((stored.identityProvider ?? "google") !== provider) throw new PublicError("Sign-in provider mismatch.");
+      const user = await exchangeIdentity(env, request, provider, "mcp", code, nonce);
+      if (provider === "apple") {
+        if (!fence?.rememberAppleSignIn || user.issuedAt === undefined) throw new PublicError("Apple account protection is unavailable.");
+        await fence.rememberAppleSignIn(user.sub, user.issuedAt);
+      }
       const requestedScopes = stored.request.scope.filter((scope) => ALLOWED_SCOPES.has(scope));
       // Some remote-MCP clients discover the resource first but omit `scope`
       // on their initial authorization request. Give those clients the least
@@ -376,7 +408,7 @@ export async function handleGoogleAuthorization(request: Request, env: GoogleOAu
     } catch (cause) {
       // The cause may be a JWKS fetch failure, a KV error or a claims check; none
       // of that is the browser's business. It is logged against the reference.
-      return clientFailureText(cause, { status: 403, fallback: "Google sign-in could not be verified. Return to your MCP client and connect again.", context: "mcp-oauth-callback" });
+      return clientFailureText(cause, { status: 403, fallback: "Sign-in could not be verified. Return to your MCP client and connect again.", context: "mcp-oauth-callback" });
     }
   }
   return null;
