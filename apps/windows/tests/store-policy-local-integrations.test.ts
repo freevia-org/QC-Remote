@@ -21,6 +21,23 @@ import {
 // navigator (Node reports win32 on Windows).
 const NON_WINDOWS = ["Linux", "macOS", "unknown"] as const;
 
+test("a stale HTTP helper offers explicit pairing repair before routine skill updates", () => {
+  const row = chatgptIntegrationPresentation({
+    chatgptInstalled: true, integrationInstalled: true, state: "update-available",
+    httpRouteRepairRequired: true, skillState: "update-available"
+  } as never, false, false, false, "Windows");
+  assert.equal(row.status, "Repair pairing");
+  assert.equal(row.primary?.act, "repair");
+  assert.equal(row.primary?.label, "Repair pairing");
+  assert.match(row.detail, /keeps your existing permissions and other servers/);
+  assert.match(row.detail, /new Codex chat/);
+  const unavailable = chatgptIntegrationPresentation({
+    chatgptInstalled: true, integrationInstalled: true, state: "status-error",
+    httpRouteRepairRequired: true
+  } as never);
+  assert.equal(unavailable.primary?.act, "refresh", "a failed read must not invite rewriting");
+});
+
 type Row = { name: string; presentation: (platform: string | undefined) => LocalProviderPresentation };
 
 const absentRows = (integrationInstalled: boolean): Row[] => [

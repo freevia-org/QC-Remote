@@ -8169,12 +8169,11 @@
     {
       "ecosystem": "npm",
       "name": "@tauri-apps/api",
-      "version": "2.12.4",
+      "version": "2.11.1",
       "license": "Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/tauri-apps/tauri",
       "licenseTextHashes": [
         "4bf96504d6e83ce5c6fc7167f1795d9ceaa68e70ab86bc5d08ab93184262bbbe",
-        "7c667b0cf9860e6a1e3f221a84c0162f35268665acf88dce521ed665ed1e7b93",
         "89ff9689dcf9dd53968785d05a26f7898bb169dbfcada8d032b3e68cf0d55607"
       ]
     },
@@ -9828,7 +9827,7 @@
         "gradle:androidx.core:core@1.17.0",
         "gradle:androidx.profileinstaller:profileinstaller@1.4.0",
         "gradle:androidx.webkit:webkit@1.14.0",
-        "npm:@tauri-apps/api@2.12.4"
+        "npm:@tauri-apps/api@2.11.1"
       ]
     },
     {
@@ -10404,15 +10403,6 @@
       ]
     },
     {
-      "sha256": "7c667b0cf9860e6a1e3f221a84c0162f35268665acf88dce521ed665ed1e7b93",
-      "names": [
-        "LICENSE.spdx"
-      ],
-      "components": [
-        "npm:@tauri-apps/api@2.12.4"
-      ]
-    },
-    {
       "sha256": "7dc2f64024477c92b147ae4a93bbcef90031b33ba0de6a84bd570d59e6c0688b",
       "names": [
         "LICENSE-MIT"
@@ -10698,7 +10688,7 @@
         "cargo:tauri-runtime@2.11.3",
         "cargo:tauri-utils@2.10.1",
         "cargo:tauri@2.11.5",
-        "npm:@tauri-apps/api@2.12.4"
+        "npm:@tauri-apps/api@2.11.1"
       ]
     },
     {

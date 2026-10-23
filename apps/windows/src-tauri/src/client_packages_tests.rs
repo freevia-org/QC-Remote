@@ -1696,6 +1696,7 @@ fn chatgpt_install_preserves_unrelated_codex_configuration() {
         configured_chatgpt_route(&config, &executable).expect("read managed route"),
         ConfiguredChatgptRoute {
             configured: true,
+            http_route: false,
             launcher_current: true,
             approval_mode_current: true,
             managed_version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -6401,5 +6402,43 @@ fn shared_http_macos_helper_quotes_path_as_data_and_exits_without_a_proxy() {
     assert!(!root.join("injected").exists());
     for bad in [Path::new("relative"), Path::new("/invalid\npath")] {
         assert!(codex_http_helper_command(bad).is_err());
+    }
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn shared_http_stale_helper_is_an_explicit_repair_and_port_refusal_is_actionable() {
+    let root = crate::tests::unique_fixture_directory("http-stale-helper");
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(root.clone());
+    fs::create_dir_all(&root).unwrap();
+    let config = root.join("config.toml");
+    let port = crate::local_http_binding::StablePort::parse(br#"{"schemaVersion":1,"port":41012}"#)
+        .unwrap();
+    write_codex_config_with_route(
+        &config,
+        codex_http_route_table(&root.join("old/QC Remote"), CODEX_CLIENT_ID, port).unwrap(),
+    )
+    .unwrap();
+    let before = fs::read(&config).unwrap();
+    let route = configured_chatgpt_route(&config, &root.join("new/QC Remote")).unwrap();
+    assert!(route.configured && route.http_route && !route.launcher_current);
+    assert_eq!(
+        fs::read(&config).unwrap(),
+        before,
+        "status never silently repairs"
+    );
+    let message = shared_http_pairing_unavailable(port);
+    for text in [
+        "127.0.0.1:41012",
+        "close that listener",
+        "Pair again",
+        "saved port was not changed",
+        "no other process was stopped",
+        "configuration was not changed",
+    ] {
+        assert!(
+            message.contains(text),
+            "missing recovery instruction: {text}"
+        );
     }
 }

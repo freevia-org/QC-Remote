@@ -171,7 +171,7 @@ still refuses a second listener, including contenders using reuse flags.
 Windows retains its own `SO_EXCLUSIVEADDRUSE` implementation. Neither platform
 silently reassigns the saved port or kills a conflicting process.
 
-Validation on macOS: 14 focused HTTP tests and 122 pairing tests pass in both
+Validation on macOS: 14 focused HTTP tests and 123 pairing tests pass in both
 direct and Store feature builds; both Store native binaries compile. The shared
 MCP crate's 33 server tests and remaining integration suites pass. An isolated
 installed Codex 0.163.0-alpha.11.1 test uses the complete production route builder

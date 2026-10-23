@@ -3188,6 +3188,7 @@ fn antigravity_bridge_path() -> Result<PathBuf, String> {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ConfiguredChatgptRoute {
     configured: bool,
+    http_route: bool,
     launcher_current: bool,
     approval_mode_current: bool,
     /// The app version the configured managed route was written by, read from
@@ -3260,6 +3261,7 @@ fn configured_chatgpt_route(
             .and_then(Item::as_str);
         return Ok(ConfiguredChatgptRoute {
             configured: true,
+            http_route: true,
             launcher_current: current && identity == Some(CODEX_CLIENT_ID),
             // Valid owner's restrictive policy is current, not an invitation
             // to force approve. This flag never authorizes an MCP operation.
@@ -3310,6 +3312,7 @@ fn configured_chatgpt_route(
         .filter(|version| !version.is_empty() && version_numbers(version).is_some())
         .map(str::to_owned);
     Ok(ConfiguredChatgptRoute {
+        http_route: false,
         configured: true,
         launcher_current: command_matches
             && bridge_mode
@@ -5177,6 +5180,8 @@ fn chatgpt_local_integration_status_blocking(
             ),
         evidence,
     );
+    // Explicit repair, never a background rewrite of a saved helper path.
+    status["httpRouteRepairRequired"] = json!(route.http_route && !route.launcher_current);
     if let Some(version) = desktop.and_then(|installation| installation.version) {
         status["appVersion"] = Value::String(version);
     }
@@ -5252,9 +5257,14 @@ fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
         runtime.block_on(async {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
             loop {
-                if crate::local_http_helper::verified_headers(&directory).await.is_ok() { return Ok::<(),String>(()); }
+                if crate::local_http_helper::verified_headers(&directory)
+                    .await
+                    .is_ok()
+                {
+                    return Ok::<(), String>(());
+                }
                 if tokio::time::Instant::now() >= deadline {
-                    return Err("The shared HTTP host is unavailable. Open QC Remote and enable Local access, then Pair again. The Codex configuration was not changed.".into());
+                    return Err(shared_http_pairing_unavailable(port));
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
@@ -5272,6 +5282,11 @@ fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
     let mut result = pair_chatgpt_route(&config_path, &executable_path, &skill_path, &backup_root)?;
     result["restartRequired"] = Value::Bool(chatgpt_restart_required(&config_path));
     Ok(result)
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+fn shared_http_pairing_unavailable(port: crate::local_http_binding::StablePort) -> String {
+    format!("Could not verify QC Remote's shared HTTP host on 127.0.0.1:{}. Open QC Remote and enable Local access. If another app is using this port, close that listener, then choose Pair again. The saved port was not changed, no other process was stopped, and the Codex configuration was not changed.", port.port())
 }
 
 /// The MCP entry is written first and the skill installed second, and the

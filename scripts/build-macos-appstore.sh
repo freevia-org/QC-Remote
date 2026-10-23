@@ -11,6 +11,8 @@ build_target="${CARGO_TARGET_DIR:-$PWD/apps/windows/src-tauri/target}"
 build_target="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$build_target")"
 export CARGO_TARGET_DIR="$build_target"
 npm run build --workspace @qc-remote/windows
+# Build real native inputs before any bundle resources/sidecars exist.
+TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}' \
 cargo build --release --locked --manifest-path apps/windows/src-tauri/Cargo.toml \
   --features macos-app-store,desktop-broker,custom-protocol --bins
 python3 scripts/build-macos-store-helpers.py --arch "$arch" --broker "$build_target/release/qc-device-broker"

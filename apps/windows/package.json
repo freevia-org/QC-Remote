@@ -19,7 +19,7 @@
     "@qc-remote/form-factors": "0.1.0",
     "@qc-remote/theme": "0.1.0",
     "@qc-remote/ui": "0.1.0",
-    "@tauri-apps/api": "^2.12.3",
+    "@tauri-apps/api": "2.11.1",
     "qrcode": "^1.5.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

@@ -754,6 +754,8 @@ export interface LocalRouteRefresh {
 }
 
 export interface ChatGptLocalIntegrationStatus {
+  /** Explicit repair of a direct-HTTP helper after moving/updating the app. */
+  httpRouteRepairRequired?: boolean;
   /** The sandbox awaits an explicit host-folder selection; polling never prompts. */
   folderAccessRequired?: boolean;
   chatgptInstalled: boolean;

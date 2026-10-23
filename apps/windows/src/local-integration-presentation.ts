@@ -737,6 +737,13 @@ export const chatgptIntegrationPresentation = (
     detail: "QC Remote's connection is removed. A chat already running in ChatGPT keeps it until that chat ends. Pair adds it back.",
     canUnpair: false, primary: localPrimaryAction("pair")
   };
+  // A stale helper path is a connection repair, even when a skill update is
+  // also available. Never hide this behind the skill's routine update text.
+  if (status.httpRouteRepairRequired) return {
+    phase: "attention", status: "Repair pairing", tone: "action-required",
+    detail: "The saved Codex connection no longer matches this QC Remote app. Repair pairing updates the helper and keeps your existing permissions and other servers. Start a new Codex chat afterwards.",
+    canUnpair: true, primary: { ...localPrimaryAction("repair"), label: "Repair pairing" }
+  };
   if (status.state === "newer-installed" && !status.connectionActive && !status.bridgeAttached) {
     // This app writes the QC Remote entry in the shared config.toml itself,
     // and that write is not conditional on the version already there, so the
