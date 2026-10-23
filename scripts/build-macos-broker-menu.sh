@@ -12,7 +12,7 @@ fi
 bundle="$PWD/.artifacts/builds/QC Device Broker.app"
 mkdir -p "$bundle/Contents/MacOS"
 mkdir -p .artifacts/toolchains "$bundle/Contents/Resources/BrokerLED"
-"${HOME}/.cargo/bin/rustc" --edition 2021 apps/windows/macos-broker/export-icons.rs \
+rustc --edition 2021 apps/windows/macos-broker/export-icons.rs \
   -o .artifacts/toolchains/export-broker-icons
 .artifacts/toolchains/export-broker-icons "$bundle/Contents/Resources/BrokerLED"
 cp apps/windows/macos-broker/Info.plist "$bundle/Contents/Info.plist"
