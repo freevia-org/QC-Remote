@@ -28,7 +28,14 @@ broker Disconnect/Quit or USB loss, and after a failed Connect. Demo opens only
 on an explicit user selection. Its provider is withdrawn when leaving Demo;
 MCP and the window share that explicit target selection and the same demo store.
 
-Every pairing but Claude Desktop runs the installed QC Remote executable itself with `--local-mcp-bridge`, so none of them needs Node. Every managed route also names its host twice -- `--local-mcp-client <client id>` on the command line and `QC_REMOTE_LOCAL_MCP_CLIENT` in `env` -- because a host that keeps the configured environment to itself leaves the bridge announcing no client, and LOCAL then cannot report a working pairing as connected:
+Explicit Codex Pair on Windows, Linux and macOS uses the existing native host's
+shared HTTP audience and a short-lived `--local-mcp-http-headers` helper; each
+logical session has its own target binding. Existing Codex stdio pairings are not
+silently migrated. Other native pairings run the installed executable with
+`--local-mcp-bridge`, so they need no Node. These stdio managed routes name their
+host both with `--local-mcp-client <client id>` and `QC_REMOTE_LOCAL_MCP_CLIENT`
+in `env`. See the [HTTP security trade-off](../../docs/USER-GUIDE.md#direct-local-http-security-trade-off),
+including the cached-header port-takeover limitation.
 
 | Pairing | What it writes | Where |
 | --- | --- | --- |

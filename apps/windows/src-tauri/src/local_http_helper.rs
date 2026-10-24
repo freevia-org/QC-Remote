@@ -44,6 +44,32 @@ pub(crate) fn directory() -> Result<PathBuf, String> {
     Ok(directory)
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn directory() -> Result<PathBuf, String> {
+    // Use the same canonical state root as the broker. In particular, do not
+    // accept the legacy stdio descriptor override as a credential authority.
+    let directory = qc_native_platform::paths::default_directory();
+    qc_native_platform::paths::prepare_directory(&directory)?;
+    Ok(directory)
+}
+
+fn verify_process_identity(descriptor: &DirectDescriptor) -> Result<(), String> {
+    if qc_native_platform::process::os_process_created_at(descriptor.process_id)
+        != Some(descriptor.process_created_at)
+    {
+        return Err("The HTTP host's exact OS identity is unavailable or changed".into());
+    }
+    // Linux procfs identifies the listening inode, uid and unique live owner.
+    // A live but unrelated PID in a copied descriptor is not sufficient.
+    #[cfg(target_os = "linux")]
+    if qc_native_platform::process::loopback_listener_owner(descriptor.port)?
+        != Some(descriptor.process_id)
+    {
+        return Err("The HTTP listener does not belong to the recorded owner".into());
+    }
+    Ok(())
+}
+
 fn parse_descriptor(bytes: &[u8], port: u16, now: u64) -> Result<DirectDescriptor, String> {
     if bytes.len() > DESCRIPTOR_BYTES {
         return Err("Shared HTTP descriptor exceeds its byte budget".into());
@@ -89,11 +115,7 @@ pub(crate) async fn verified_headers(directory: &Path) -> Result<serde_json::Val
     refuse_quit(directory)?;
     let port = StablePort::read(&directory.join(PORT_FILE))?;
     let descriptor = read_descriptor(&directory.join(DESCRIPTOR_FILE), port.port())?;
-    if qc_native_platform::process::os_process_created_at(descriptor.process_id)
-        != Some(descriptor.process_created_at)
-    {
-        return Err("The HTTP host's exact OS identity is unavailable or changed".into());
-    }
+    verify_process_identity(&descriptor)?;
     let client = crate::loopback_http::loopback_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(3))
@@ -118,6 +140,8 @@ pub(crate) async fn verified_headers(directory: &Path) -> Result<serde_json::Val
     {
         return Err("The local HTTP host changed during credential verification".into());
     }
+    #[cfg(target_os = "linux")]
+    verify_process_identity(&after)?;
     Ok(serde_json::json!({"Authorization":format!("Bearer {}", descriptor.bearer_token)}))
 }
 
@@ -159,5 +183,28 @@ mod tests {
         assert!(parse_descriptor(&serde_json::to_vec(&value).unwrap(), 41002, 1000).is_err());
         assert!(parse_descriptor(&serde_json::to_vec(&value).unwrap(), 41001, 151001).is_err());
         assert!(parse_descriptor(&serde_json::to_vec(&value).unwrap(), 41001, 999).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_credentials_require_the_exact_live_kernel_listener_owner() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut descriptor: DirectDescriptor = serde_json::from_value(fixture()).unwrap();
+        descriptor.port = listener.local_addr().unwrap().port();
+        descriptor.process_id = std::process::id();
+        descriptor.process_created_at =
+            qc_native_platform::process::os_process_created_at(descriptor.process_id).unwrap();
+        verify_process_identity(&descriptor).expect("our unique same-uid listener");
+        descriptor.process_created_at ^= 1;
+        assert!(
+            verify_process_identity(&descriptor).is_err(),
+            "PID reuse refused"
+        );
+        descriptor.process_created_at ^= 1;
+        drop(listener);
+        assert!(
+            verify_process_identity(&descriptor).is_err(),
+            "a live PID alone is not a listener proof"
+        );
     }
 }
