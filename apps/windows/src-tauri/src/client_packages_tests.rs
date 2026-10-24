@@ -6283,7 +6283,7 @@ fn shared_http_pairing_encodes_shell_metacharacters_and_keeps_disabled_and_other
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[test]
 fn shared_http_partial_skill_failure_reports_committed_route_without_false_rollback() {
     let root = crate::tests::unique_fixture_directory("http-partial-skill");
@@ -6320,9 +6320,45 @@ fn shared_http_partial_skill_failure_reports_committed_route_without_false_rollb
     assert_eq!(fs::read(skill.join("SKILL.md")).unwrap(), b"user skill");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn shared_http_linux_pairing_preserves_disabled_policy_and_other_servers() {
+    let root = crate::tests::unique_fixture_directory("linux-http-policy");
+    let _cleanup = crate::tests::RemoveDirOnDrop::new(root.clone());
+    fs::create_dir_all(&root).unwrap();
+    let config = root.join("config.toml");
+    fs::write(&config, "[mcp_servers.other]\ncommand = '/user/other'\n\n[mcp_servers.qc-remote]\nenabled = false\ncommand = '/old/qc-remote'\nargs = ['--local-mcp-bridge']\ndefault_tools_approval_mode = 'prompt'\n[mcp_servers.qc-remote.env]\nQC_REMOTE_LOCAL_MCP_CLIENT = 'codex:0.1.197'\n[mcp_servers.qc-remote.tools.set_tempo]\napproval_mode = 'writes'\n").unwrap();
+    let port = crate::local_http_binding::StablePort::parse(br#"{"schemaVersion":1,"port":41012}"#)
+        .unwrap();
+    write_codex_config_with_route(
+        &config,
+        codex_http_route_table(Path::new("/opt/QC Remote/qc-remote"), CODEX_CLIENT_ID, port)
+            .unwrap(),
+    )
+    .unwrap();
+    let text = fs::read_to_string(&config).unwrap();
+    let document = text.parse::<DocumentMut>().unwrap();
+    let server = &document["mcp_servers"]["qc-remote"];
+    assert_eq!(server["enabled"].as_bool(), Some(false));
+    assert_eq!(
+        server["default_tools_approval_mode"].as_str(),
+        Some("prompt")
+    );
+    assert_eq!(
+        server["tools"]["set_tempo"]["approval_mode"].as_str(),
+        Some("writes")
+    );
+    assert_eq!(server["url"].as_str(), Some("http://127.0.0.1:41012/mcp"));
+    assert!(server.get("command").is_none() && server.get("args").is_none());
+    assert_eq!(
+        document["mcp_servers"]["other"]["command"].as_str(),
+        Some("/user/other")
+    );
+}
+
 /// Owned exact-Codex probe entry: emit the complete production route, never
 /// a user's config. All environment inputs exist ONLY in this ignored test.
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[test]
 #[ignore]
 fn shared_http_generated_route_probe() {
@@ -6354,7 +6390,7 @@ fn shared_http_generated_route_probe() {
         .unwrap();
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[test]
 fn shared_http_approval_status_accepts_preserved_supported_modes_not_malformed_values() {
     for mode in ["auto", "prompt", "writes", "approve"] {
@@ -6374,9 +6410,9 @@ fn shared_http_approval_status_accepts_preserved_supported_modes_not_malformed_v
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
-fn shared_http_macos_helper_quotes_path_as_data_and_exits_without_a_proxy() {
+fn shared_http_unix_helper_quotes_path_as_data_and_exits_without_a_proxy() {
     use std::os::unix::fs::PermissionsExt;
     let root = crate::tests::unique_fixture_directory("http-macos-helper");
     let _cleanup = crate::tests::RemoveDirOnDrop::new(root.clone());
@@ -6408,7 +6444,7 @@ fn shared_http_macos_helper_quotes_path_as_data_and_exits_without_a_proxy() {
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 #[test]
 fn shared_http_stale_helper_is_an_explicit_repair_and_port_refusal_is_actionable() {
     let root = crate::tests::unique_fixture_directory("http-stale-helper");
