@@ -8169,7 +8169,7 @@
     {
       "ecosystem": "npm",
       "name": "@tauri-apps/api",
-      "version": "2.11.1",
+      "version": "2.12.4",
       "license": "Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/tauri-apps/tauri",
       "licenseTextHashes": [
@@ -8370,7 +8370,7 @@
     {
       "ecosystem": "npm",
       "name": "react-dom",
-      "version": "19.3.0",
+      "version": "19.3.1",
       "license": "MIT",
       "sourceUrl": "https://github.com/react/react",
       "licenseTextHashes": [
@@ -8380,7 +8380,7 @@
     {
       "ecosystem": "npm",
       "name": "react",
-      "version": "19.3.0",
+      "version": "19.3.1",
       "license": "MIT",
       "sourceUrl": "https://github.com/react/react",
       "licenseTextHashes": [
@@ -9827,7 +9827,7 @@
         "gradle:androidx.core:core@1.17.0",
         "gradle:androidx.profileinstaller:profileinstaller@1.4.0",
         "gradle:androidx.webkit:webkit@1.14.0",
-        "npm:@tauri-apps/api@2.11.1"
+        "npm:@tauri-apps/api@2.12.4"
       ]
     },
     {
@@ -10688,7 +10688,7 @@
         "cargo:tauri-runtime@2.11.3",
         "cargo:tauri-utils@2.10.1",
         "cargo:tauri@2.11.5",
-        "npm:@tauri-apps/api@2.11.1"
+        "npm:@tauri-apps/api@2.12.4"
       ]
     },
     {
@@ -11749,8 +11749,8 @@
         "LICENSE"
       ],
       "components": [
-        "npm:react-dom@19.3.0",
-        "npm:react@19.3.0",
+        "npm:react-dom@19.3.1",
+        "npm:react@19.3.1",
         "npm:scheduler@0.28.0"
       ]
     },
