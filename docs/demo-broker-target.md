@@ -191,6 +191,16 @@ do not replace live GUI/MCP, broker restart or hardware hot-plug acceptance.
 
 ## Shared TypeScript provider
 
+An editor that adopts an existing Demo hold also records the broker instance
+that reported it. A positive observation of a different instance ends that
+hold under the restart policy; a failed poll or an absent instance never does.
+If a new explicit Demo start fails before registration was attempted, the
+editor restores its previous hold state. Native workers report that proof only
+after ending, and mark registration attempted before sending its first request.
+A timeout, lost acknowledgement, older worker without this proof, or a failed
+provider after registration keeps Demo unavailable until an explicit choice.
+None of these failure paths selects or replays a command on physical hardware.
+
 `createDemoBrokerProvider` accepts the already-opened, immutable virtual
 transport, a registration identity and a synchronous current-selection check.
 It maps generated gateway RPC names back to the existing transport methods,

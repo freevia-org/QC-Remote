@@ -1,3 +1,28 @@
+export class DemoRegistrationError extends Error {
+  readonly registrationAttempted?: boolean;
+  constructor(message: string, registrationAttempted?: boolean) {
+    super(message);
+    this.registrationAttempted = registrationAttempted;
+  }
+}
+
+/** Unknown/lost replies cannot prove that the broker never selected Demo. */
+export function demoRegistrationNeverAttempted(error: unknown) {
+  return error instanceof DemoRegistrationError && error.registrationAttempted === false;
+}
+
+/** Adopted holds carry the same broker identity as acknowledged local holds. */
+export function observeDemoSelectionHold(
+  current: { held: boolean; instance?: string },
+  observed: { held?: boolean; instance?: string | null }
+): { kind: "restart" | "adopt" | "keep"; instance?: string } {
+  if (current.held && current.instance && observed.instance && current.instance !== observed.instance) {
+    return { kind: "restart", instance: observed.instance };
+  }
+  if (observed.held === true && !current.held) return { kind: "adopt", instance: observed.instance || undefined };
+  return { kind: "keep", instance: current.instance };
+}
+
 /** Undefined is a failed inventory read, not evidence that its broker vanished. */
 export function createDemoBrokerInstanceObservation(changed: (instance: string | undefined) => void) {
   let observed: string | undefined;
@@ -60,20 +85,20 @@ export function rebindDemoBrokerFromObservation(
 /** Native worker creation is not proof that the broker accepted its provider. */
 export async function waitForDemoBrokerRegistration(options: {
   start(): Promise<void>;
-  subscribe(observe: (ready: boolean, message?: string) => void): () => void;
+  subscribe(observe: (ready: boolean, message?: string, registrationAttempted?: boolean) => void): () => void;
   timeoutMs?: number;
 }): Promise<void> {
   let stop: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let failure: Error | undefined;
   const ready = new Promise<void>((resolve, reject) => {
-    const refuse = (message: string) => {
-      failure ??= new Error(message);
+    const refuse = (message: string, registrationAttempted?: boolean) => {
+      failure ??= new DemoRegistrationError(message, registrationAttempted);
       reject(failure);
     };
     timer = setTimeout(() => refuse("The broker did not acknowledge Demo registration"), options.timeoutMs ?? 10_000);
-    stop = options.subscribe((ready, message) => {
-      if (!ready) refuse(message || "The Demo provider is unavailable");
+    stop = options.subscribe((ready, message, registrationAttempted) => {
+      if (!ready) refuse(message || "The Demo provider is unavailable", registrationAttempted);
       else if (!failure) resolve();
     });
   });

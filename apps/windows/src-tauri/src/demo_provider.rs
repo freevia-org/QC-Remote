@@ -286,6 +286,7 @@ struct ProviderStart<'a> {
     selection: &'a Mutex<Option<SelectionLease>>,
     user_action: bool,
     operation: u64,
+    registration_attempted: &'a mut bool,
     generation: &'a AtomicU64,
 }
 
@@ -330,6 +331,7 @@ fn run(
         selection,
         user_action,
         operation,
+        registration_attempted,
         generation,
     } = start;
     let path = DEVICE_BROKER_DESCRIPTOR_PATH
@@ -404,6 +406,8 @@ fn run(
         if remaining.is_zero() {
             return Err("A live UI already owns the demo provider".into());
         }
+        // Set before sending: a lost reply is not proof of no selection.
+        *registration_attempted = true;
         match connection.call(
             "broker.demoRegister",
             // Older brokers reject this additive field rather than silently
@@ -581,6 +585,7 @@ pub(crate) fn start_demo_provider(
             &PROVIDER_THREADS,
             (stop.clone(), socket.clone(), pending.clone()),
             move || {
+                let mut registration_attempted = false;
                 let result = run(
                     &app,
                     &session_id,
@@ -592,6 +597,7 @@ pub(crate) fn start_demo_provider(
                         selection: &selection,
                         user_action: user_action.unwrap_or(false),
                         operation,
+                        registration_attempted: &mut registration_attempted,
                         generation: &generation,
                     },
                 );
@@ -600,7 +606,7 @@ pub(crate) fn start_demo_provider(
                 let _ = app.emit_to(
                     "main",
                     STATUS_EVENT,
-                    json!({"providerId":session_id,"ready":false,"message":result.err()}),
+                    json!({"providerId":session_id,"ready":false,"message":result.err(),"registrationAttempted":registration_attempted}),
                 );
             },
         )?;
