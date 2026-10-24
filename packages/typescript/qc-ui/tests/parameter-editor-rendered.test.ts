@@ -228,6 +228,120 @@ test("UNKNOWN mode renders an honest Grid without a fabricated known mode glyph"
   assert.equal(renderer.root.findAllByType("svg").filter((node) => String(node.props.className).startsWith("qc-mode-glyph")).length, 0);
 });
 
+type GridFontLoad = { spec: string; text: string; resolve: () => void };
+async function withGridFonts(run: (h: {
+  loads: GridFontLoad[]; measured: Array<{ spec: string; text: string }>;
+  show: (name?: string, dirty?: boolean) => Promise<void>;
+  title: () => any; renderer: () => ReturnType<typeof create>;
+}) => Promise<void>, failure?: "throw" | "reject") {
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const loads: GridFontLoad[] = [];
+  const measured: Array<{ spec: string; text: string }> = [];
+  const loaded = new Set<string>();
+  const key = (spec: string, text: string) => `${spec}\n${text}`;
+  let renderer: ReturnType<typeof create> | undefined;
+  const formFactor = formFactors[0], skin = skins.find((item: { id: string }) => item.id === formFactor.defaultSkinId);
+  Object.defineProperty(globalThis, "document", { configurable: true, value: {
+    fonts: { load(spec: string, text: string) {
+      let resolve!: () => void;
+      const promise = new Promise<unknown[]>((done) => { resolve = () => { loaded.add(key(spec, text)); done([{}]); }; });
+      loads.push({ spec, text, resolve });
+      if (failure === "throw") throw new Error("font load unavailable");
+      if (failure === "reject") return Promise.reject(new Error("font fetch failed"));
+      return promise;
+    } },
+    createElement(tag: string) {
+      assert.equal(tag, "canvas");
+      const context = { font: "", measureText(text: string) {
+        measured.push({ spec: this.font, text });
+        const ready = loaded.has(key(this.font, text));
+        return { width: text === "32H" ? (ready ? 120 : 80) : (ready ? 400 : 600) };
+      } };
+      return { getContext: () => context };
+    }
+  } });
+  const show = async (name = "PUBLIC TITLE", dirty = false) => {
+    const view = React.createElement(QuadCortexSurface, { formFactor, skin,
+      snapshot: { ...IDLE_PLACEHOLDER_SNAPSHOT, presetLocation: "32H", presetName: name, dirty, mode: "PRESET" },
+      presentation: "display", canUndo: false,
+      onAction() {}, onOpenPreset() {}, onUndo() {}, onSave() {}, onOpenRouting() {}, onRefresh() {} });
+    await act(async () => { if (renderer) renderer.update(view); else renderer = create(view); });
+  };
+  try {
+    await run({ loads, measured, show, renderer: () => renderer!, title: () => renderer!.root.findAllByType("text")
+      .find((node) => String(node.props.className).split(" ").includes("preset-title"))! });
+  } finally {
+    if (renderer) await act(async () => renderer!.unmount());
+    if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
+    else delete (globalThis as any).document;
+  }
+}
+
+test("Grid keeps its fallback header visible and refits after each exact measured face becomes ready", async () => {
+  await withGridFonts(async (h) => {
+    await h.show();
+    assert.deepEqual(h.loads.map(({ spec, text }) => [spec, text]), h.measured.map(({ spec, text }) => [spec, text]),
+      "the effect waits on the same bank/title specs and normalized strings that Canvas measures");
+    assert.ok(h.loads.every(({ spec }) => spec.startsWith("800 70px ")));
+    assert.deepEqual(h.title().children, ["PUBLIC TITLE"]);
+    assert.deepEqual([h.title().props.x, h.title().props.fontSize], [107, 50], "fallback layout stays rendered");
+    await act(async () => h.loads[0].resolve());
+    assert.deepEqual([h.title().props.x, h.title().props.fontSize], [147, 50], "bank readiness repositions using its real advance");
+    await act(async () => h.loads[1].resolve());
+    assert.deepEqual([h.title().props.x, h.title().props.fontSize], [147, 70], "title readiness re-enters the existing size ladder");
+    assert.equal(h.loads.length, 2, "readiness rerenders do not restart font loads");
+  });
+});
+
+test("Grid re-arms the exact displayed title when dirty style or normalized text changes", async () => {
+  await withGridFonts(async (h) => {
+    await h.show("PUBLIC TITLE");
+    await act(async () => { h.loads[0].resolve(); h.loads[1].resolve(); });
+    await h.show("PUBLIC TITLE", true);
+    assert.equal(h.loads.length, 3, "unchanged bank does not reload");
+    assert.match(h.loads[2].spec, /^italic 800 70px /);
+    assert.equal(h.loads[2].text, "PUBLIC TITLE*", "load covers the displayed dirty marker");
+    assert.deepEqual(h.title().children, ["PUBLIC TITLE*"]);
+    assert.equal(h.title().props.fontSize, 50, "new style uses visible fallback until its own load");
+    await act(async () => h.loads[2].resolve());
+    assert.equal(h.title().props.fontSize, 70);
+    await h.show("RECALLED TITLE");
+    assert.equal(h.loads.length, 4);
+    assert.match(h.loads[3].spec, /^800 70px /);
+    assert.equal(h.loads[3].text, "RECALLED TITLE");
+    await act(async () => h.loads[3].resolve());
+    assert.equal(h.title().props.fontSize, 70, "later text can also trigger refitting after readiness was already true");
+  });
+});
+
+test("a superseded Grid title load cannot remeasure or replace the newly displayed title", async () => {
+  await withGridFonts(async (h) => {
+    await h.show("OLD TITLE");
+    await act(async () => h.loads[0].resolve());
+    await h.show("CURRENT TITLE");
+    const measuredBefore = h.measured.length;
+    await act(async () => h.loads[1].resolve());
+    assert.equal(h.measured.length, measuredBefore, "obsolete title readiness cannot schedule a new measurement");
+    assert.deepEqual(h.title().children, ["CURRENT TITLE"]);
+    assert.equal(h.title().props.fontSize, 50);
+    await act(async () => h.loads[2].resolve());
+    assert.equal(h.title().props.fontSize, 70);
+  });
+});
+
+for (const failure of ["throw", "reject"] as const) {
+  test(`Grid font load ${failure} retains a usable visible header without an effect error or retry loop`, async () => {
+    await withGridFonts(async (h) => {
+      await h.show();
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      assert.deepEqual(h.title().children, ["PUBLIC TITLE"]);
+      assert.deepEqual([h.title().props.x, h.title().props.fontSize], [107, 50]);
+      assert.equal(h.loads.length, 2);
+      assert.equal(h.measured.length, 2, "failed readiness leaves the current nonzero fallback measurement intact");
+    }, failure);
+  });
+}
+
 test("StrictMode effect replay still permits a current Save modal", async (t) => {
   const saved: string[] = [];
   const props = { ...propsFor("Amp", []), onSaveDevicePreset(name: string) { saved.push(name); } };

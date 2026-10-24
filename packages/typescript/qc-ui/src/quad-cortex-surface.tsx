@@ -5,6 +5,7 @@ import type { FormFactorManifest, HardwareControl, SkinManifest } from "@qc-remo
 import { QC_BRAND, QC_COLORS, QC_SCREEN_ICON_VECTORS, QC_TYPOGRAPHY } from "@qc-remote/theme";
 import { officialBlockVisual } from "./block-visuals";
 import { useMenuButton } from "./use-menu-button";
+import { useFontFaceReady } from "./use-font-face-ready";
 import { masterVolumeAngleDegrees } from "./master-volume-angle";
 import { CorOsParameterEditor, type CorOsParameterEditorProps } from "./parameter-editor";
 import { CorOsAddDevicePicker, type CorOsAddDevicePickerState } from "./add-device-picker";
@@ -480,7 +481,6 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   const sceneMenu = useMenuButton({ open: sceneMenuOpen, setOpen: setSceneMenuOpen });
   const modeMenu = useMenuButton({ open: modeMenuOpen, setOpen: setModeMenuOpen });
   const gridMenu = useMenuButton({ open: screenMenuOpen, setOpen: setScreenMenuOpen });
-  const [, setDeviceFontReady] = useState(false);
   const actionsLayer = useRef<HTMLDivElement>(null);
   const blockGesture = useRef<GridBlockGesture | null>(null);
   const railGesture = useRef<RailPortGesture | null>(null);
@@ -518,15 +518,6 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
       tapMachine.current.cancel();
     };
   }, []);
-  useEffect(() => {
-    let active = true;
-    if (typeof document === "undefined" || !document.fonts) return undefined;
-    void Promise.all([
-      document.fonts.load(`800 68px ${QC_TYPOGRAPHY.devicePlain}`, snapshot.presetLocation),
-      document.fonts.load(`800 68px ${QC_TYPOGRAPHY.devicePlain}`, snapshot.presetName)
-    ]).then(() => { if (active) setDeviceFontReady(true); });
-    return () => { active = false; };
-  }, [snapshot.presetLocation, snapshot.presetName]);
   const routingPickerIsPort = routingPicker?.side === "input" || routingPicker?.side === "output";
   const routePickerGroups = routingPicker && routingPickerIsPort ? (routingPicker.side === "input" ? ["MONO", "STEREO", ""] : ["STEREO", "MONO", "OTHER"]).map((name) => ({
     name,
@@ -656,19 +647,25 @@ function CorOsGrid({ snapshot, presetSlotAccent, selectedBlockId, gridActions, c
   const presetLocation = `${presetBank}${presetSlot}`;
   const titlePresentation = presetTitlePresentation(snapshot.presetName, snapshot.dirty);
   const presetTitle = titlePresentation.text;
-  const measureHeaderText = (text: string, italic = false) => {
+  const bankFontSpec = `800 ${PRESET_BANK_SIZE}px ${QC_TYPOGRAPHY.devicePlain}`;
+  const titleFontSpec = `${titlePresentation.italic ? "italic " : ""}${bankFontSpec}`;
+  // Keep fallback measurements visible while each exact face/text loads, then
+  // remeasure on readiness. The shared hook also contains failed/stale loads.
+  useFontFaceReady(bankFontSpec, presetLocation);
+  useFontFaceReady(titleFontSpec, presetTitle);
+  const measureHeaderText = (text: string, fontSpec: string) => {
     if (typeof document === "undefined") return text.length * 40;
     const context = document.createElement("canvas").getContext("2d");
     if (!context) return text.length * 40;
-    context.font = `${italic ? "italic " : ""}800 ${PRESET_BANK_SIZE}px ${QC_TYPOGRAPHY.devicePlain}`;
+    context.font = fontSpec;
     return context.measureText(text).width;
   };
   // The block's rendered advance: the font's own, as the unit sets it untracked.
-  const presetLocationWidth = measureHeaderText(presetLocation);
+  const presetLocationWidth = measureHeaderText(presetLocation, bankFontSpec);
   // The official header reserves a clear gutter before Undo. Derive the title
   // width from its actual start so multi-digit banks cannot push it underneath
   // the icon while retaining the QC's natural inline bank/slot/name flow.
-  const presetTitleWidthAtFullSize = measureHeaderText(titlePresentation.text, titlePresentation.italic);
+  const presetTitleWidthAtFullSize = measureHeaderText(presetTitle, titleFontSpec);
   const {
     start: presetTitleStart,
     maxWidth: presetTitleMaxWidth,
