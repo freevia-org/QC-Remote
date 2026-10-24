@@ -145,7 +145,10 @@ fn bind_exclusive(port: u16) -> io::Result<TcpListener> {
     // BSD REUSEADDR permits restart across retired TCP TIME_WAIT tuples.
     // REUSEPORT stays off: a live exact-address listener cannot be shared.
     // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setsockopt.2.html
-    #[cfg(target_os = "macos")]
+    // Linux also needs REUSEADDR on both generations for an active-close
+    // restart. REUSEPORT must remain disabled, including on Linux: this is
+    // one exact-address publisher, never a socket shared across processes.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         socket.set_reuse_address(true)?;
         socket.set_reuse_port(false)?;
@@ -230,8 +233,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
-mod macos_tests {
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod unix_tests {
     use super::*;
     #[test]
     fn live_listener_refuses_reuse_flags_and_restarts_after_active_tcp_close() {

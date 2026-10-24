@@ -92,7 +92,7 @@ zip = { version = "9.0", default-features = false }
 # `os_version.rs` reads the Windows version from the registry for a bug
 # report's Platform field. Already in the lock file as a transitive dependency
 # of reqwest (through hyper-util), so this adds no crate to the build.
-[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+[target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dependencies]
 socket2 = { version = "=0.6.5", features = ["all"] }
 
 [target.'cfg(windows)'.dependencies]

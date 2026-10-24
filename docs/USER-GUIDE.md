@@ -609,17 +609,27 @@ what it receives to its own provider under its own policy.
 
 ### Direct local HTTP: security trade-off
 
-On Windows and macOS, explicit **Pair** for managed Codex uses one native host with
+On Windows, Linux and macOS, explicit **Pair** for managed Codex uses one native host with
 separate logical HTTP sessions, rather than one persistent native bridge per
 chat. QC Remote must already be running with Local access enabled. Pairing
 does not enable a disabled Codex entry or change its tool restrictions and
 approval settings. Existing stdio configurations stay available for compatibility
 and are not silently migrated at startup. This route requires a Codex version
 that supports `http_headers_helper`; reconnect behavior is tested with
-0.163.0-alpha.11.2 on Windows. Linux pairing remains on the compatibility route.
+0.163.0-alpha.11.2 on Windows. Linux uses the same HTTP transport and session
+guards; the installed Linux Codex client's reconnect behavior requires separate
+qualification rather than being inferred from the Windows test.
 On macOS the helper is the signed native app executable; credentials stay in
 private filesystem storage (App Group storage in the App Store build), without
 Keychain. Existing pairings are preserved until explicit Pair.
+
+On Linux, the short-lived native helper uses the broker's private state directory
+(`$XDG_STATE_HOME/org.freevia.qcremote`, or the standard per-user fallback), refuses
+unsafe directory ownership/permissions and symlinks, and checks the listener's
+unique same-user kernel PID and boot-bound process identity before issuing headers.
+It does not use the compatibility descriptor override to select a credential
+source. No extra long-lived process is started for each HTTP session. These checks
+do not remove the cached-header takeover risk described below.
 
 Each new direct HTTP session must explicitly call `get_qc_status` before a
 mutation. A ready status binds the shared target to that session; reconnecting

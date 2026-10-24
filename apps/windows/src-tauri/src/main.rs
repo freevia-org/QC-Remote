@@ -11,7 +11,7 @@ fn main() {
     if qc_native_platform::process::creation_probe::dispatch_helper_mode() {
         return;
     }
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     if std::env::args().any(|argument| argument == "--local-mcp-http-headers") {
         if qc_remote_lib::run_local_mcp_http_headers().is_err() {
             // Never echo a descriptor, credential, command or HTTP response.

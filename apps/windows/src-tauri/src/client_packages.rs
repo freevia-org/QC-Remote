@@ -3232,7 +3232,7 @@ fn configured_chatgpt_route(
     else {
         return Ok(ConfiguredChatgptRoute::default());
     };
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     if server.contains_key("http_headers_helper") {
         if !codex_http_approval_policy_supported(server) {
             return Err("The custom Codex approval policy is invalid for the supported client. It was preserved; review it in Codex settings.".into());
@@ -3319,7 +3319,7 @@ fn configured_chatgpt_route(
     })
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn codex_http_approval_policy_supported(server: &dyn toml_edit::TableLike) -> bool {
     // Exact tested Codex0.163.0-alpha.11.2 AppToolApproval schema. Missing
     // values are valid defaults; unknown/malformed values remain diagnostic.
@@ -4563,7 +4563,7 @@ fn codex_route_table(executable_path: &Path, client_id: &str) -> Table {
     server
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn codex_http_route_table(
     executable_path: &Path,
     client_id: &str,
@@ -4618,7 +4618,7 @@ fn codex_http_helper_command(executable_path: &Path) -> Result<String, String> {
     Ok(helper)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn codex_http_helper_command(executable_path: &Path) -> Result<String, String> {
     let executable = executable_path
         .to_str()
@@ -5247,7 +5247,7 @@ fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
         // successful native install into a misleading failure.
         let _ = fs::remove_file(&legacy_runner);
     }
-    #[cfg(any(windows, target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     let mut result = {
         let directory = crate::local_http_helper::directory()?;
         fs::create_dir_all(&directory)
@@ -5286,13 +5286,13 @@ fn install_chatgpt_local_integration_blocking() -> Result<Value, String> {
         result["transport"] = json!("streamable_http");
         result
     };
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     let mut result = pair_chatgpt_route(&config_path, &executable_path, &skill_path, &backup_root)?;
     result["restartRequired"] = Value::Bool(chatgpt_restart_required(&config_path));
     Ok(result)
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn shared_http_pairing_unavailable(port: crate::local_http_binding::StablePort) -> String {
     format!("Could not verify QC Remote's shared HTTP host on 127.0.0.1:{}. Open QC Remote and enable Local access. If another app is using this port, close that listener, then choose Pair again. The saved port was not changed, no other process was stopped, and the Codex configuration was not changed.", port.port())
 }
@@ -5302,7 +5302,7 @@ fn shared_http_pairing_unavailable(port: crate::local_http_binding::StablePort) 
 /// moving the user's own `qc-device-knowledge` aside - before the write that
 /// could still fail, and returned an `Err` the caller could only report as an
 /// outright failure, with the displaced skill nowhere in it.
-#[cfg(any(not(any(windows, target_os = "macos")), test))]
+#[cfg(any(not(any(windows, target_os = "linux", target_os = "macos")), test))]
 fn pair_chatgpt_route(
     config_path: &Path,
     executable_path: &Path,
