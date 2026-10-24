@@ -1,4 +1,5 @@
 import { PublicError, fetchIdentityJson } from "./http-security.ts";
+import { QC_COLORS } from "@qc-remote/theme/server";
 
 export type IdentityProvider = "google" | "apple";
 export interface AppleOAuthEnv {
@@ -16,7 +17,7 @@ export function requestedIdentityProvider(value: unknown, env: AppleOAuthEnv): I
   throw new PublicError("This sign-in method is not available. Choose another method.");
 }
 export function appleSignInButton(env: AppleOAuthEnv): string {
-  return appleSignInEnabled(env) ? '<button class="button" style="background:#fff;color:#000;border-color:#000;margin-top:.75rem" type="submit" name="identity_provider" value="apple">Sign in with Apple</button>' : "";
+  return appleSignInEnabled(env) ? `<button class="button" style="background:${QC_COLORS.screenUi.textPrimary};color:${QC_COLORS.screenUi.background};border-color:${QC_COLORS.screenUi.background};margin-top:.75rem" type="submit" name="identity_provider" value="apple">Sign in with Apple</button>` : "";
 }
 function encoded(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
