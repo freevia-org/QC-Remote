@@ -127,7 +127,12 @@ jobs:
       - name: Build the broker for desktop host tests
         if: matrix.lane == 'tests'
         timeout-minutes: 15
-        run: cargo build --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.target }}
+        # The self-check also warms Rosetta 2's translation cache for x86_64:
+        # translating the debug broker on first launch exceeded the desktop
+        # host tests' 3 second broker publication deadline.
+        run: |
+          cargo build --locked --manifest-path src-tauri/Cargo.toml --bin qc-device-broker --features desktop-broker --target ${{ matrix.target }}
+          "$CARGO_TARGET_DIR"/${{ matrix.target }}/debug/qc-device-broker --self-check
         working-directory: apps/windows
         env:
           TAURI_CONFIG: '{"bundle":{"externalBin":[],"resources":[]},"build":{"frontendDist":"../dist"}}'
