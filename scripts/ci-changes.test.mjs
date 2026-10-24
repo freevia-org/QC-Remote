@@ -149,7 +149,7 @@ test('ios and macOS builds drop only the qc-ui source globs from their path filt
   }
 });
 
-test('macOS builds do not trigger on legal records and only the Intel runner is built on pull requests', () => {
+test('macOS builds do not trigger on legal records and run every lane on the Apple Silicon pool', () => {
   const text = workflow('macos-build.yml');
   for (const entry of ['THIRD_PARTY-NOTICES.md', 'legal/**', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'LICENSES/**']) {
     assert.equal(
@@ -158,12 +158,33 @@ test('macOS builds do not trigger on legal records and only the Intel runner is 
       `macos-build.yml still lists ${entry}`,
     );
   }
-  // Pull requests validate on the Intel pool (ARM64 hosted runners failed
-  // allocation, see #220); master and manual builds keep both architectures.
-  const matrix = text.match(/^ {8}platform: \$\{\{ fromJSON\(github\.event_name == 'pull_request' && '(.*?)' \|\| '(.*?)'\) \}\}$/m);
-  assert.ok(matrix, 'the platform matrix must depend on the event');
-  assert.deepEqual(JSON.parse(matrix[1]).map((entry) => entry.target), ['x86_64-apple-darwin']);
-  assert.deepEqual(JSON.parse(matrix[2]).map((entry) => entry.target), ['aarch64-apple-darwin', 'x86_64-apple-darwin']);
+  // x86_64 is cross-built on macos-26 and its binaries run under Rosetta 2;
+  // the macos-26-intel pool was about five times slower and queued for up to
+  // an hour. Pull requests run native ARM64 tests and the x86_64 package;
+  // master and manual builds run both lanes for both architectures.
+  assert.match(text, /^ {4}runs-on: macos-26$/m);
+  assert.doesNotMatch(text, /macos-\d+-intel/);
+  const matrix = text.match(/^ {8}include: \$\{\{ fromJSON\(github\.event_name == 'pull_request' && '(.*?)' \|\| '(.*?)'\) \}\}$/m);
+  assert.ok(matrix, 'the lane matrix must depend on the event');
+  const lanes = (json) => JSON.parse(json).map((entry) => `${entry.lane} ${entry.target}`).sort();
+  assert.deepEqual(lanes(matrix[1]), ['package x86_64-apple-darwin', 'tests aarch64-apple-darwin']);
+  assert.deepEqual(lanes(matrix[2]), [
+    'package aarch64-apple-darwin',
+    'package x86_64-apple-darwin',
+    'tests aarch64-apple-darwin',
+    'tests x86_64-apple-darwin',
+  ]);
+  // Rosetta must be present rather than silently skipping x86_64 execution,
+  // and the bundle must be checked for the target architecture.
+  assert.match(text, /arch -x86_64 \/usr\/bin\/true/);
+  assert.match(text, /QC_MACOS_TARGET: \$\{\{ matrix\.target \}\}/);
+  assert.match(text, /lipo -archs/);
+});
+
+test('macOS build caches are only saved by successful runs', () => {
+  // rust-cache never re-saves a key that restored as a full match, so a cache
+  // saved by a failed run stays incomplete until Cargo.lock changes.
+  assert.doesNotMatch(workflow('macos-build.yml'), /cache-on-failure/);
 });
 
 test('macOS, iOS and Linux broker build caches are saved from master only', () => {
