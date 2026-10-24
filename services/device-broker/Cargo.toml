@@ -70,7 +70,7 @@ windows-sys = { workspace = true, features = [
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
-ksni = { version = "=0.3.6", optional = true, default-features = false, features = ["async-io", "blocking"] }
+ksni = { version = "=0.3.7", optional = true, default-features = false, features = ["async-io", "blocking"] }
 zbus = { version = "=5.19.0", optional = true, default-features = false, features = ["async-io", "blocking-api"] }
 
 [target.'cfg(unix)'.dependencies]
