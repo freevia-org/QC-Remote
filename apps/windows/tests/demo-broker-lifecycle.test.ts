@@ -1,6 +1,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDemoBrokerInstanceObservation, createDemoBrokerRecovery, createDemoBrokerLifecycle, rebindDemoBrokerFromObservation, waitForDemoBrokerRegistration } from "../src/demo-broker-lifecycle.ts";
+import { createDemoBrokerInstanceObservation, createDemoBrokerRecovery, createDemoBrokerLifecycle, demoRegistrationNeverAttempted, observeDemoSelectionHold, rebindDemoBrokerFromObservation, waitForDemoBrokerRegistration } from "../src/demo-broker-lifecycle.ts";
+
+test("an adopted Demo hold binds its broker and only a confirmed replacement ends it", () => {
+  const adopted = observeDemoSelectionHold({ held: false }, { held: true, instance: "broker-A" });
+  assert.deepEqual(adopted, { kind: "adopt", instance: "broker-A" });
+  const current = { held: true, instance: adopted.instance };
+  for (const observation of [{}, { held: false }, { held: false, instance: null }, { instance: "broker-A" }]) {
+    assert.equal(observeDemoSelectionHold(current, observation).kind, "keep");
+  }
+  assert.deepEqual(observeDemoSelectionHold(current, { held: false, instance: "broker-B" }), { kind: "restart", instance: "broker-B" });
+  // Explicit choice remains required: physical/default inventory cannot adopt Demo.
+  assert.equal(observeDemoSelectionHold({ held: false }, { held: false, instance: "broker-A" }).kind, "keep");
+});
+
+for (const attempted of [false, true, undefined]) test(`failed Demo startup only proves no registration when native attempted=${attempted}`, async () => {
+  let observe!: (ready: boolean, message?: string, registrationAttempted?: boolean) => void;
+  const pending = waitForDemoBrokerRegistration({
+    start: async () => undefined,
+    subscribe: listener => { observe = listener; return () => undefined; }
+  });
+  const rejected = assert.rejects(pending, error => {
+    assert.equal(demoRegistrationNeverAttempted(error), attempted === false);
+    return true;
+  });
+  observe(false, "startup ended", attempted);
+  await rejected;
+  assert.equal(demoRegistrationNeverAttempted(new Error("reply lost")), false);
+});
 
 for (const admission of ["inventory", "instance-change"] as const) test(`failed automatic ${admission} registration is terminal across inventory ticks until explicit reset`, async () => {
   let serial = 0;

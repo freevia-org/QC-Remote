@@ -27,7 +27,7 @@ export async function exposeDesktopDemo(
   let live = true;
   let selected = "";
   let dispatcher: ReturnType<typeof createDemoBrokerProvider> | undefined;
-  let registration: { id: string; observe(ready: boolean, message?: string): void } | undefined;
+  let registration: { id: string; observe(ready: boolean, message?: string, registrationAttempted?: boolean): void } | undefined;
   let userAction = true;
   const recovery = createDemoBrokerRecovery(() => lifecycle.rebind(true));
   const lifecycle = createDemoBrokerLifecycle({
@@ -49,9 +49,9 @@ export async function exposeDesktopDemo(
     invalidate: () => { selected = ""; dispatcher?.dispose(); },
     failed: error => { if (live) { recovery.failed(); status(false, error instanceof Error ? error.message : String(error)); } }
   });
-  const stopStatus = await listen<{ providerId: string; ready: boolean; message?: string; brokerInstanceId?: string }>("qc-demo-provider-status", ({ payload }) => {
+  const stopStatus = await listen<{ providerId: string; ready: boolean; message?: string; brokerInstanceId?: string; registrationAttempted?: boolean }>("qc-demo-provider-status", ({ payload }) => {
     if (!live || !lifecycle.isCurrent(payload.providerId)) return;
-    if (registration?.id === payload.providerId) registration.observe(payload.ready, payload.message);
+    if (registration?.id === payload.providerId) registration.observe(payload.ready, payload.message, payload.registrationAttempted);
     if (!payload.ready) { selected = ""; dispatcher?.dispose(); recovery.failed(); }
     else recovery.ready();
     status(payload.ready, payload.message, payload.ready ? payload.brokerInstanceId : undefined);

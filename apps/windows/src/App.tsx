@@ -1,5 +1,6 @@
 import { applicationModifier, shortcutLabel } from "./host-platform.ts";
 import { exposeDesktopDemo, observeDemoBrokerInstance } from "./demo-broker.ts";
+import { demoRegistrationNeverAttempted, observeDemoSelectionHold } from "./demo-broker-lifecycle.ts";
 import relayProfile from "../../../contracts/public/qc-relay-profile.v1.json";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { type ConnectionState, type DeviceActionResult, type DiagnosticsReport, type PresetSnapshot, type RuntimeStatus, type WorkspaceDocument } from "@qc-remote/client";
@@ -271,7 +272,7 @@ export function App() {
         const continuationEpoch = demoEnded ? demoEnded.selectionEpoch : observedSelectionEpoch;
         if (disposed || continuationEpoch !== demoSelectionObservationEpoch.current) return;
         observeDemoBrokerInstance(inventory.brokerInstanceId);
-        observeHeldDemoSelection(inventory.demoSelectionHeld, continuationEpoch);
+        observeHeldDemoSelection(inventory.demoSelectionHeld, inventory.brokerInstanceId, continuationEpoch);
         setPhysicalQcDevices((previous) => qcReconcilePhysicalDevices(inventory.devices, selectedPhysicalRef.current, previous));
         if (!selectedPhysicalRef.current && inventory.selectedDeviceId) {
           selectedPhysicalRef.current = inventory.selectedDeviceId;
@@ -1316,8 +1317,7 @@ export function App() {
 
   const observeDemoBrokerEpoch = async (instance: string | null | undefined, observedEpoch = demoSelectionObservationEpoch.current) => {
     if (observedEpoch !== demoSelectionObservationEpoch.current || demoSelectionChanges.current !== 0
-        || !instance || !explicitDemoHeld.current || !demoBrokerInstance.current
-        || instance === demoBrokerInstance.current) return false;
+        || observeDemoSelectionHold({ held: explicitDemoHeld.current, instance: demoBrokerInstance.current }, { instance }).kind !== "restart") return false;
     // Compare a positive observation to the last registration ACK, never to
     // an Unknown/absent poll. End the old attempt before retiring its listener,
     // so delayed registration/status callbacks cannot reselect its Demo.
@@ -1341,11 +1341,14 @@ export function App() {
     return { selectionEpoch };
   };
 
-  const observeHeldDemoSelection = (held: boolean | undefined, observedEpoch = demoSelectionObservationEpoch.current) => {
+  const observeHeldDemoSelection = (held: boolean | undefined, instance: string | null | undefined, observedEpoch = demoSelectionObservationEpoch.current) => {
     // Missing/failed observation is Unknown; even authoritative false does
     // not undo a local user's hold. Only an acknowledged explicit choice can.
-    if (observedEpoch !== demoSelectionObservationEpoch.current || demoSelectionChanges.current !== 0 || held !== true || explicitDemoHeld.current) return;
+    if (observedEpoch !== demoSelectionObservationEpoch.current || demoSelectionChanges.current !== 0) return;
+    const observation = observeDemoSelectionHold({ held: explicitDemoHeld.current, instance: demoBrokerInstance.current }, { held, instance });
+    if (observation.kind !== "adopt") return;
     explicitDemoHeld.current = true;
+    demoBrokerInstance.current = observation.instance;
     if (demoDeviceSession.source !== "virtual") {
       showDisconnectedRef.current("Demo was selected by an editor. Select Demo to recover it or explicitly choose the Quad Cortex.");
     }
@@ -1638,6 +1641,8 @@ export function App() {
     // doc comment above), so it is deliberately not part of this guard. Note
     // this must read awaitingDetection rather than a stale render's phase.
     if (commandPending || demoPending || awaitingDetection.current) return;
+    const previousDemoHold = { held: explicitDemoHeld.current, instance: demoBrokerInstance.current };
+    let registrationStarted = false;
     explicitDemoHeld.current = true;
     demoBrokerInstance.current = undefined; // A new explicit selection binds only its own ACK.
     demoSelectionObservationEpoch.current += 1;
@@ -1671,6 +1676,7 @@ export function App() {
       {
         await withdrawDemoProvider();
         if (!attempt.current()) return;
+        registrationStarted = true;
         const cleanupDemoBroker = await exposeDesktopDemo(demo, (ready, message, brokerInstanceId) => {
           if (!attempt.current()) return;
           if (ready && brokerInstanceId && brokerInstanceId !== demoBrokerInstance.current) {
@@ -1739,6 +1745,13 @@ export function App() {
       demoDeviceSession.useDevice();
       await withdrawDemoProvider().catch(() => undefined);
       if (!attempt.current()) return;
+      // A worker records its attempted registration before sending it. Only
+      // its explicit no-attempt proof (or a failure before exposing it) can
+      // undo this new hold. Preserve an older selection and all lost ACKs.
+      if (!registrationStarted || demoRegistrationNeverAttempted(error)) {
+        explicitDemoHeld.current = previousDemoHold.held;
+        demoBrokerInstance.current = previousDemoHold.instance;
+      }
       const failed = { phase: "needs-attention" as const, detail: `The demo device could not be opened: ${detail}`, demo: true, source: "device" as const };
       setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT);
       connectionRef.current = failed;

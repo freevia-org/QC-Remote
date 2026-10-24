@@ -604,6 +604,14 @@ QC Remote from keeping a route there. Details of what is written where are in
 **Unpair** removes only QC Remote's own entry. For Claude Desktop, QC Remote
 opens Claude's extension page with QC Remote selected, and you remove it there.
 
+The Claude extension's publisher is **Freevia**. If your installed copy shows
+**Freevia EOOD**, this publisher rename requires a one-time reinstall: remove
+that old QC Remote extension in Claude's **Settings → Extensions**, then use
+QC Remote's **LOCAL → Claude Desktop → Pair** to install the Freevia copy.
+Do not leave both copies enabled. Review Claude's permissions again; QC Remote
+does not automatically remove the old extension or carry over its permissions.
+The legal company name and application signing identity are unchanged.
+
 The connection stays on your computer, although the assistant itself sends
 what it receives to its own provider under its own policy.
 

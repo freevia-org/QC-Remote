@@ -319,7 +319,7 @@ fn claude_manifest() -> Result<Vec<u8>, String> {
         "display_name": "QC Remote",
         "version": env!("CARGO_PKG_VERSION"),
         "description": "Control a Quad Cortex through the running QC Remote app.",
-        "long_description": "A local-only bridge between Claude and QC Remote. QC Remote remains the sole owner of the Quad Cortex USB session and enforces its selected control access level. Claude manages tool approvals; choose Always allow after installation if you want uninterrupted control.",
+        "long_description": "A local-only bridge between Claude and QC Remote. QC Remote remains the sole owner of the Quad Cortex USB session and enforces its selected control access level. Claude manages tool approvals; choose Always allow after installation if you want uninterrupted control. Upgrading from publisher Freevia EOOD: first remove the old QC Remote extension in Claude Settings > Extensions, then install this Freevia extension. Do not keep both copies enabled; review permissions when reinstalling.",
         "author": { "name": CLAUDE_EXTENSION_AUTHOR },
         "server": {
             "type": "node",
