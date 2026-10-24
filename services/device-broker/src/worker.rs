@@ -460,6 +460,11 @@ const CONNECTED_IO_POLL_MS: i32 = 5;
 /// moment the last listing of a burst becomes readable. Anything waiting for
 /// the session's directory publication re-checks the cache at least this often.
 const PRESET_PUBLICATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// How long a target readiness probe waits out a status writer before it
+/// reports readiness as unknown. Writers hold the status lock only for a
+/// field update; this covers one being descheduled mid-update on a loaded
+/// host without letting a stuck writer stall target selection.
+pub(crate) const TARGET_READINESS_CONTENTION_BOUND: Duration = Duration::from_millis(50);
 /// Scoped operations cannot spend a second retry window reserving an ID.
 fn reserve_request_id_before(
     commands: &mpsc::SyncSender<Command>,
@@ -1416,11 +1421,26 @@ impl DeviceController {
     /// Target projection must not acquire the retained device/session tree.
     /// A busy status writer leaves the previous projection intact; it must
     /// never turn an unknown physical fact into permission to select demo.
+    ///
+    /// Status writers hold this lock only for a field update, and the worker
+    /// takes it on every loop pass (even idle and disconnected, to read its
+    /// epoch). A single `try_lock` therefore reported "unknown" whenever a
+    /// request's admission or result fence happened to land inside such an
+    /// update, and the fence turned that into a non-retryable
+    /// BROKER_TARGET_SUPERSEDED for a target that never changed. Retry for a
+    /// short bound instead: the wait stays bounded, and contention that
+    /// outlasts it is still reported as unknown.
     pub(crate) fn try_target_readiness(&self) -> Option<(bool, bool, u64)> {
-        let state = match self.state.try_lock() {
-            Ok(state) => state,
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return None,
+        let deadline = Instant::now() + TARGET_READINESS_CONTENTION_BOUND;
+        let state = loop {
+            match self.state.try_lock() {
+                Ok(state) => break state,
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_micros(100));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => return None,
+            }
         };
         Some((state.connected, state.synchronized, state.session_epoch))
     }
