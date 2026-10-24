@@ -321,13 +321,8 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
           ["Last synchronized", lastSynchronized]
         ]
       };
-  // Never "pairing in progress": this panel keeps a code live the whole time
-  // it is open, so reading that as a pairing under way reported every paired
-  // host as mid-sign-in the moment its owner looked at it, and took the
-  // Reconnect button away with it, because a sign-in under way offers no
-  // action. Nor is there an honest waiting state to put back: the code is
-  // redeemed in a browser this host cannot see, and the first this host
-  // hears of it is the credential arriving.
+  // A pending additional pairing must not hide an established host's
+  // connected/reconnect status. Opening status alone creates no new offer.
   const remotePresentation = qcRelayPresentation(relayStatus, false, relayPairingError);
   // Reported from the rendered state rather than from the click that
   // caused it: REMOTE is also closed by Escape, by a click outside it, and
@@ -556,13 +551,17 @@ export function MenuBar({ menus, onSelect, connection, deviceReady, syncProgress
       {statusPanelOpen === "relay" && <section className="connection-panel relay-status-panel remote-access-panel" role="dialog" aria-modal="false" aria-label="Remote access" tabIndex={-1} ref={(node) => { if (node) statusPanelRefs.current.set("relay", node); }}>
         {relayPairingError
           ? <RemotePairingFailureState error={relayPairingError} onRetry={onRelayPairingRefresh} />
-          : <RemotePairingState
+          : relayPairingStarting || relayPairingUrl ? <RemotePairingState
               qrCode={relayPairingQrCode}
               pairUrl={relayPairingUrl}
               starting={relayPairingStarting || !relayStatus}
               onOpenLink={onRelayPairingOpen}
               onShare={onRelayPairingShare}
-            />}
+            /> : <div className="remote-access-card">
+              <button type="button" disabled={!relayStatus || relayPending} onClick={onRelayPairingRefresh}>
+                {relayStatus?.paired ? "Pair another device" : "Pair device"}
+              </button>
+            </div>}
         {relayStatus?.paired && relayStatus.pairing && <RemoteAccessCard
           pairing={relayStatus.pairing}
           phase={remotePresentation.phase}

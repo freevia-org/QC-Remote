@@ -13,7 +13,7 @@ import { appWindows, brokerDevice, DEVICE_INFO_EVENTS, diagnosticsFiles, externa
 import { createWindowsQcTransport } from "./qc-transport";
 import { useWindowsDeviceFrames } from "./use-windows-device-frames";
 import { useWindowsPrompts } from "./use-windows-prompts";
-import { browserPairingPollFailureMessage, createBrowserPairingSession, startSequentialPairingPoll } from "./browser-pairing-session";
+import { BROWSER_PAIRING_EXPIRED, beginBrowserPairingOnPanelOpen, browserPairingPollFailureMessage, createBrowserPairingSession, startBrowserPairingLifecycle } from "./browser-pairing-session";
 import { shouldCloseBlockEditorOnEscape } from "./block-editor-keyboard";
 import { saveOpenedWorkspaceCopy } from "./workspace-copy";
 import { captureGatewaySession } from "@qc-remote/ui";
@@ -107,10 +107,8 @@ export function App() {
       relayConnectorRead.current += 1;
     };
   }, []);
-  // Whether REMOTE is on screen. A pairing code is created when it opens
-  // and withdrawn when it closes, so one never outlives the panel that
-  // displays it, and a pairing that completes while it is open is followed
-  // by a fresh code rather than by an empty space.
+  // Only an unpaired host starts pairing on REMOTE open. A paired host's
+  // status panel remains idle until an explicit new-pairing action.
   const relayPanelOpen = useRef(false);
   const relayPairingRestartRequested = useRef(false);
   const relayPairingSession = useMemo(() => createBrowserPairingSession({ begin: () => publicRelay.browserPairing!.begin(), cancel: () => publicRelay.browserPairing!.cancel!() }), []);
@@ -889,9 +887,13 @@ export function App() {
     relayPairingStartInFlight.current = true;
     setRelayPairingStarting(true);
     setRelayPairingError(undefined);
+    setRelayBrowserPairing(undefined);
+    // begin advances the generation synchronously. Catch must observe that
+    // new intent, not the previous offer's checkpoint.
+    const pending = relayPairingSession.begin();
     const current = relayPairingSession.checkpoint();
     try {
-      const operation = await relayPairingSession.begin();
+      const operation = await pending;
       if (!operation.current() || !relayPanelOpen.current) return;
       const { offer } = operation;
       if (!offer.pairUrl) throw new Error("The desktop relay did not return a pairing URL.");
@@ -929,46 +931,36 @@ export function App() {
     }
   }, []);
 
-  // A pairing code lasts ten minutes; a panel left open outlives that easily.
-  // Reporting the expiry made the person press Refresh to get back exactly
-  // where they were, so the code is replaced in place instead and the panel
-  // never shows a dead QR. Closing REMOTE still withdraws it, so this only
-  // ever renews something already on screen.
-  useEffect(() => {
-    if (!relayBrowserPairing) return;
-    const delay = Math.max(0, relayBrowserPairing.expiresAt - Date.now());
-    const timer = window.setTimeout(() => {
-      if (!relayPanelOpen.current) return;
-      void beginBrowserRelayPairing();
-    }, delay);
-    return () => window.clearTimeout(timer);
-  }, [beginBrowserRelayPairing, relayBrowserPairing]);
+  const expireBrowserRelayPairing = useCallback(() => {
+    relayPairingRestartRequested.current = false;
+    void relayPairingSession.cancel().catch(() => undefined);
+    setRelayBrowserPairing(undefined);
+    setRelayPairingError(BROWSER_PAIRING_EXPIRED);
+  }, [relayPairingSession]);
 
+  // Never renew an offer automatically. One lifecycle owns polling and expiry
+  // and stops both before applying a terminal result or effect cleanup.
   useEffect(() => {
     if (!relayBrowserPairing) return;
-    return startSequentialPairingPoll(async (current) => {
-      try {
-        const result = await publicRelay.browserPairing!.poll();
-        if (!current()) return;
-        if (result.state === "paired") {
-          setRelayBrowserPairing(undefined);
-          setNotice("Remote access is connected.");
-          void refreshRelayConnectors();
-          // Pairing used to end the panel's pairing surface outright, so a
-          // second device meant unpairing the first. The code comes back while
-          // the panel is open, and the device just added is the top row of the
-          // list under it.
-          if (relayPanelOpen.current) void beginBrowserRelayPairing();
-        }
-      } catch (error) {
-        if (!current()) return;
+    const sessionCurrent = relayPairingSession.checkpoint();
+    return startBrowserPairingLifecycle({
+      expiresAt: relayBrowserPairing.expiresAt,
+      isCurrent: () => relayPanelOpen.current && sessionCurrent() && !relayPairingStartInFlight.current,
+      poll: () => publicRelay.browserPairing!.poll(),
+      onPaired: () => {
+        setRelayBrowserPairing(undefined);
+        setNotice("Remote access is connected.");
+        void refreshRelayConnectors();
+      },
+      onExpired: expireBrowserRelayPairing,
+      onFailure: (error) => {
         setRelayBrowserPairing(undefined);
         const message = browserPairingPollFailureMessage(error);
         setRelayPairingError(message);
         actionFailed(new Error(message));
       }
     });
-  }, [actionFailed, beginBrowserRelayPairing, refreshRelayConnectors, relayBrowserPairing]);
+  }, [actionFailed, expireBrowserRelayPairing, refreshRelayConnectors, relayBrowserPairing, relayPairingSession]);
 
   const shareRelayPairing = useCallback(async () => {
     const pairUrl = relayBrowserPairing?.pairUrl;
@@ -1011,9 +1003,6 @@ export function App() {
       setRelayPairingError(undefined);
       setRelayConnectors([]);
       setNotice(status?.detail ?? "Remote access was disconnected and unpaired.");
-      // Unpairing this computer leaves the panel with nothing paired, which is
-      // the state a live code belongs in most.
-      if (relayPanelOpen.current) void beginBrowserRelayPairing();
     } catch (error) {
       if (current()) actionFailed(error);
     } finally {
@@ -1123,25 +1112,21 @@ export function App() {
     }
   };
 
-  /** REMOTE opened or closed.
-   *
-   * Opening creates the pairing code, paired or not: the code is the panel's
-   * constant, and requiring a button press to reveal it was a step that told
-   * nobody anything. Closing withdraws it, so a code is never live against a
-   * screen nobody is looking at. */
+  /** Paired status is idle. First-time REMOTE open may start one offer;
+   * later pairing/refresh actions must be explicit. Closing withdraws it. */
   const setRemotePanelOpen = useCallback((open: boolean) => {
     if (relayPanelOpen.current === open) return;
     relayPanelOpen.current = open;
     if (open) {
       void refreshRelayConnectors();
-      if (relayPairingStartInFlight.current) relayPairingRestartRequested.current = true;
-      if (!relayBrowserPairing && !relayPairingStarting) void beginBrowserRelayPairing();
+      if (relayStatus?.paired === false && relayPairingStartInFlight.current) relayPairingRestartRequested.current = true;
+      beginBrowserPairingOnPanelOpen(relayStatus?.paired, !!relayBrowserPairing, relayPairingStarting, () => void beginBrowserRelayPairing());
       return;
     }
     relayPairingRestartRequested.current = false;
     void relayPairingSession.cancel().catch(() => undefined);
     setRelayBrowserPairing(undefined);
-  }, [beginBrowserRelayPairing, refreshRelayConnectors, relayBrowserPairing, relayPairingSession, relayPairingStarting]);
+  }, [beginBrowserRelayPairing, refreshRelayConnectors, relayBrowserPairing, relayPairingSession, relayPairingStarting, relayStatus?.paired]);
 
   useEffect(() => () => {
     relayPanelOpen.current = false;
