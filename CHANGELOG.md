@@ -7,6 +7,22 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.199 / Android 0.3.49 — 25 October 2026
+
+The shared Windows, macOS and Linux desktop pairing UI stops polling after
+success, expiry, failure or close. Opening an already paired host's status
+panel, or a panel whose pairing status is not yet known, creates no new offer.
+Expired codes require explicit Retry, and paired hosts expose an explicit
+Pair another device action. Begin/refresh generations prevent late replies
+from clearing a newer offer before UI cleanup.
+
+Explicit active pairing still polls until completion or expiry; this is not a
+claim of zero cloud activity universally. Android advances to 0.3.49 (code 54)
+for release alignment only; no Android behavior change is claimed. The live
+Worker, emergency cloud guard and previously documented known limits remain
+unchanged. This entry does not claim new consumer end-to-end, physical-device
+or Store acceptance.
+
 ## QC Remote Windows 0.1.198 / Android 0.3.48 — 24 October 2026
 
 This integrates the changes since 0.1.197 before a new build and installed-app
