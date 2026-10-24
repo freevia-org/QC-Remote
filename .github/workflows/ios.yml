@@ -63,6 +63,17 @@ jobs:
         with:
           targets: aarch64-apple-ios
 
+      # The FFI test step compiled every dependency from source on each run.
+      # This caches its target directory and ~/.cargo/registry (which the Xcode
+      # build phase's own cargo build, targeting DerivedData, also reads).
+      # Saved by the master push run, restored by pull requests.
+      - name: Cache the iOS Rust bridge build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: apps/ios/native-bridge/rust -> target
+          key: ios-native-bridge
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
       - name: Install npm dependencies
         run: npm ci
 

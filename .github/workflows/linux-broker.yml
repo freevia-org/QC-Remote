@@ -86,9 +86,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy, rustfmt
+      # Saved by the master push run and restored by pull requests, which do not
+      # write their own copy (a pull request cache is readable only by that pull
+      # request and would push master's caches out of the 10 GB budget).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: linux-broker
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
       - name: Build the standalone Linux broker
@@ -167,6 +171,8 @@ jobs:
         with:
           workspaces: apps/windows/src-tauri -> target
           key: linux-tauri-host
+          # Master only, as for the headless broker job above.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       # Cargo validates Rust host code only; packaging needs a verified,
       # target-suffixed external broker. Avoid a placeholder that could be
       # mistaken for a shippable sidecar.
