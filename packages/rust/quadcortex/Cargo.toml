@@ -39,7 +39,7 @@ include = [
 [dependencies]
 aes = { version = "0.8", optional = true }
 base64.workspace = true
-ctr = { version = "0.9", optional = true }
+ctr = { version = "0.10", optional = true }
 flate2 = "1"
 prost.workspace = true
 quick-xml = "0.42"
