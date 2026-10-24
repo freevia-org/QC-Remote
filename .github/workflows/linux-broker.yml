@@ -89,7 +89,7 @@ jobs:
       # Saved by the master push run and restored by pull requests, which do not
       # write their own copy (a pull request cache is readable only by that pull
       # request and would push master's caches out of the 10 GB budget).
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: linux-broker
           save-if: ${{ github.ref == 'refs/heads/master' }}
@@ -167,7 +167,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: apps/windows/src-tauri -> target
           key: linux-tauri-host
@@ -251,7 +251,7 @@ jobs:
       # The release package build used to start from an empty target directory
       # (about 7 minutes in package-linux-deb.py). It writes the app's release
       # profile under apps/windows/src-tauri/target/<triple>/release.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: apps/windows/src-tauri -> target
           key: linux-deb-release
