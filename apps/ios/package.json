@@ -30,7 +30,7 @@
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@capacitor/cli": "8.5.3",
+    "@capacitor/cli": "8.4.3",
     "esbuild": "0.28.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

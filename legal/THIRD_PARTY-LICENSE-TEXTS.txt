@@ -5375,7 +5375,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
 ================================================================================
 SHA-256: 4bf96504d6e83ce5c6fc7167f1795d9ceaa68e70ab86bc5d08ab93184262bbbe
 Source file names: LICENSE, LICENSE-APACHE, LICENSE-APACHE-2.0, LICENSE-APACHE.md, LICENSE-Apache, LICENSE_APACHE-2.0, activity-1.11.0.aar!/META-INF/androidx/activity/activity/LICENSE.txt, coordinatorlayout-1.3.0.aar!/META-INF/androidx/coordinatorlayout/coordinatorlayout/LICENSE.txt, core-1.17.0.aar!/META-INF/androidx/core/core/LICENSE.txt, core-ktx-1.17.0.aar!/META-INF/androidx/core/core-ktx/LICENSE.txt, core-splashscreen-1.2.0.aar!/META-INF/androidx/core/core-splashscreen/LICENSE.txt, core-viewtree-1.0.0.aar!/META-INF/androidx/core/core-viewtree/LICENSE.txt, profileinstaller-1.4.0.aar!/META-INF/androidx/profileinstaller/profileinstaller/LICENSE.txt, webkit-1.14.0.aar!/META-INF/androidx/webkit/webkit/LICENSE.txt
-Applies to: cargo:fdeflate@0.3.7, cargo:field-offset@0.3.6, cargo:image@0.25.10, cargo:miniz_oxide@0.8.9, cargo:miniz_oxide@0.9.1, cargo:num-conv@0.2.2, cargo:pin-project-lite@0.2.17, cargo:raw-window-handle@0.6.2, cargo:simdutf8@0.1.5, cargo:sync_wrapper@1.0.2, cargo:tauri-build@2.6.3, cargo:tauri-codegen@2.6.3, cargo:tauri-macros@2.6.3, cargo:tauri-plugin-single-instance@2.4.5, cargo:tauri-runtime-wry@2.11.4, cargo:tauri-runtime@2.11.3, cargo:tauri-utils@2.10.1, cargo:tauri@2.11.5, cargo:time-core@0.1.9, cargo:time-macros@0.2.32, cargo:time@0.3.55, gradle:androidx.activity:activity@1.11.0, gradle:androidx.coordinatorlayout:coordinatorlayout@1.3.0, gradle:androidx.core:core-ktx@1.17.0, gradle:androidx.core:core-splashscreen@1.2.0, gradle:androidx.core:core-viewtree@1.0.0, gradle:androidx.core:core@1.17.0, gradle:androidx.profileinstaller:profileinstaller@1.4.0, gradle:androidx.webkit:webkit@1.14.0, npm:@tauri-apps/api@2.11.1
+Applies to: cargo:fdeflate@0.3.7, cargo:field-offset@0.3.6, cargo:image@0.25.10, cargo:miniz_oxide@0.8.9, cargo:miniz_oxide@0.9.1, cargo:num-conv@0.2.2, cargo:pin-project-lite@0.2.17, cargo:raw-window-handle@0.6.2, cargo:simdutf8@0.1.5, cargo:sync_wrapper@1.0.2, cargo:tauri-build@2.6.3, cargo:tauri-codegen@2.6.3, cargo:tauri-macros@2.6.3, cargo:tauri-plugin-single-instance@2.4.5, cargo:tauri-runtime-wry@2.11.4, cargo:tauri-runtime@2.11.3, cargo:tauri-utils@2.10.1, cargo:tauri@2.11.5, cargo:time-core@0.1.9, cargo:time-macros@0.2.32, cargo:time@0.3.55, gradle:androidx.activity:activity@1.11.0, gradle:androidx.coordinatorlayout:coordinatorlayout@1.3.0, gradle:androidx.core:core-ktx@1.17.0, gradle:androidx.core:core-splashscreen@1.2.0, gradle:androidx.core:core-viewtree@1.0.0, gradle:androidx.core:core@1.17.0, gradle:androidx.profileinstaller:profileinstaller@1.4.0, gradle:androidx.webkit:webkit@1.14.0, npm:@tauri-apps/api@2.12.4
 --------------------------------------------------------------------------------
 Apache License
                            Version 2.0, January 2004
@@ -10250,7 +10250,7 @@ SOFTWARE.
 ================================================================================
 SHA-256: 89ff9689dcf9dd53968785d05a26f7898bb169dbfcada8d032b3e68cf0d55607
 Source file names: LICENSE-MIT, LICENSE_MIT
-Applies to: cargo:tauri-build@2.6.3, cargo:tauri-codegen@2.6.3, cargo:tauri-macros@2.6.3, cargo:tauri-runtime-wry@2.11.4, cargo:tauri-runtime@2.11.3, cargo:tauri-utils@2.10.1, cargo:tauri@2.11.5, npm:@tauri-apps/api@2.11.1
+Applies to: cargo:tauri-build@2.6.3, cargo:tauri-codegen@2.6.3, cargo:tauri-macros@2.6.3, cargo:tauri-runtime-wry@2.11.4, cargo:tauri-runtime@2.11.3, cargo:tauri-utils@2.10.1, cargo:tauri@2.11.5, npm:@tauri-apps/api@2.12.4
 --------------------------------------------------------------------------------
 MIT License
 
@@ -15191,7 +15191,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA-256: cf9b17822d1fcd4ff32ccbe14183386fb3adf6f2ff92dc184130823f7fc28173
 Source file names: LICENSE
-Applies to: npm:react-dom@19.3.0, npm:react@19.3.0, npm:scheduler@0.28.0
+Applies to: npm:react-dom@19.3.1, npm:react@19.3.1, npm:scheduler@0.28.0
 --------------------------------------------------------------------------------
 MIT License
 
