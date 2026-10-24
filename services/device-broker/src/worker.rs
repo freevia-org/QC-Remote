@@ -531,6 +531,11 @@ pub struct DeviceController {
     /// The `qc-native-usb` thread and how far its shutdown has got, so
     /// shutdown can wait for it exactly once. See [`WorkerSlot`].
     worker: WorkerThread,
+    /// Test-only: how many times a target readiness probe found the status
+    /// lock held, so a test can release its writer exactly once a probe has
+    /// met it rather than after a guessed delay.
+    #[cfg(test)]
+    readiness_contended: std::sync::atomic::AtomicUsize,
 }
 
 /// Where the USB worker thread is in its life, shared with every
@@ -1172,6 +1177,8 @@ impl DeviceController {
             commands,
             updater_relay,
             touch_guard: Arc::new(Mutex::new(TouchGuard::default())),
+            #[cfg(test)]
+            readiness_contended: std::sync::atomic::AtomicUsize::new(0),
             connect_interrupt,
         })
     }
@@ -1206,6 +1213,13 @@ impl DeviceController {
 
     /// Test-only: hold the worker's status lock, as a worker thread updating
     /// the status would, until the guard drops.
+    /// Test-only: how many times a target readiness probe has found the
+    /// status lock held.
+    #[cfg(test)]
+    pub(crate) fn readiness_contended_for_test(&self) -> usize {
+        self.readiness_contended.load(Ordering::SeqCst)
+    }
+
     #[cfg(test)]
     pub(crate) fn hold_status_lock_for_test(&self) -> std::sync::MutexGuard<'_, BrokerStatus> {
         self.state.lock_recover()
@@ -1416,11 +1430,17 @@ impl DeviceController {
     /// Target projection must not acquire the retained device/session tree.
     /// A busy status writer leaves the previous projection intact; it must
     /// never turn an unknown physical fact into permission to select demo.
+    /// It never waits: request paths that need a settled answer retry it
+    /// themselves (see `BrokerShared::settle_target_selection`).
     pub(crate) fn try_target_readiness(&self) -> Option<(bool, bool, u64)> {
         let state = match self.state.try_lock() {
             Ok(state) => state,
             Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return None,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                #[cfg(test)]
+                self.readiness_contended.fetch_add(1, Ordering::SeqCst);
+                return None;
+            }
         };
         Some((state.connected, state.synchronized, state.session_epoch))
     }

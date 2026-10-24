@@ -2789,6 +2789,78 @@ fn a_tool_read_or_an_unknown_origin_still_reopens_an_idle_released_device() {
     shared.clients.lock_recover().shutting_down = true;
 }
 
+/// Holds the controller's status lock on another thread, as a worker pass
+/// updating its status does, and returns once it is held. The writer lets go
+/// as soon as a target readiness probe has found the lock busy, so the probe
+/// is known to have met the contention, with no guessed delay; a probe that
+/// never comes releases it after five seconds.
+fn busy_status_writer(shared: &BrokerShared) -> thread::JoinHandle<bool> {
+    let controller = Arc::clone(&shared.controller);
+    let (held_tx, held) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        let _status = controller.hold_status_lock_for_test();
+        let before = controller.readiness_contended_for_test();
+        held_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while controller.readiness_contended_for_test() == before {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::yield_now();
+        }
+        true
+    });
+    held.recv().unwrap();
+    writer
+}
+
+/// The worker takes its status lock on every pass, even idle and
+/// disconnected. A request admitted while that writer is mid-update is device
+/// demand like any other: it waits the writer out and reopens the device,
+/// rather than being refused as "readiness temporarily unavailable".
+#[test]
+fn a_briefly_busy_status_writer_does_not_refuse_a_reopening_request() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let participant = attach_participant(&shared);
+    let (reopens, _reconnect, _wait) = count_reopens(&shared);
+    release_for_idleness(&shared);
+    let writer = busy_status_writer(&shared);
+    let response = dispatch_broker_client_request(
+        &shared,
+        Some(participant),
+        request(1, generated_gateway::rpc::CURRENT_STATE_EVENTS),
+    );
+    assert!(writer.join().unwrap(), "the request met the busy writer");
+    assert!(response.get("error").is_none(), "served: {response}");
+    assert_eq!(reopens.load(Ordering::SeqCst), 1, "{response}");
+    assert_eq!(state_of(&shared, &shared.controller), None, "reopened");
+    shared.clients.lock_recover().shutting_down = true;
+}
+
+/// The result fence of an unchanged target must not discard a completed
+/// result as BROKER_TARGET_SUPERSEDED just because a status writer was
+/// mid-update when it looked.
+#[test]
+fn a_briefly_busy_status_writer_does_not_supersede_a_completed_result() {
+    let (shared, _shutdown) = resident_shared(Duration::from_secs(60));
+    let completed = json!({"jsonrpc":"2.0","id":2,"result":{"value":42}});
+    let writer = busy_status_writer(&shared);
+    let fenced = shared.fence_request_result(None, None, false, completed.clone());
+    assert!(writer.join().unwrap(), "the fence met the busy writer");
+    assert_eq!(fenced, completed);
+    // A writer that outlasts the bound still leaves readiness unknown, and
+    // the fence still fails closed.
+    let status = shared.controller.hold_status_lock_for_test();
+    assert!(shared.controller.try_target_readiness().is_none());
+    let fenced = shared.fence_request_result(None, None, false, completed);
+    drop(status);
+    assert_eq!(
+        fenced["error"]["data"]["code"], "BROKER_TARGET_SUPERSEDED",
+        "{fenced}"
+    );
+    shared.clients.lock_recover().shutting_down = true;
+}
+
 /// The envelope field is optional, and the envelope still
 /// rejects any other unknown field.
 #[test]
