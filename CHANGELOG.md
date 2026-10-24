@@ -7,6 +7,38 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 0.1.198 / Android 0.3.48 — 24 October 2026
+
+This integrates the changes since 0.1.197 before a new build and installed-app
+acceptance. Explicit Codex Pair on Windows, macOS and Linux can use one running
+native host with separate HTTP sessions instead of one resident bridge per
+chat. Existing stdio pairings remain until explicit Pair; disabled entries,
+tool restrictions and approval settings are preserved. Each new HTTP session
+must read `get_qc_status` before a mutation. The documented plain-loopback
+cached-header takeover risk remains; see the USER-GUIDE security trade-off.
+
+An editor adopting an existing Demo hold now records its broker instance, so a
+confirmed restart ends that hold with the existing visible notice. A failed
+explicit start restores its previous hold only when registration was never
+attempted. Lost acknowledgements, timeouts and provider loss after registration
+keep Demo unavailable until an explicit choice; they never replay a command on
+the physical device. Demo still does not survive a broker restart: a new
+instance defaults to hardware, and the window follows it with a notice.
+
+The Claude extension publisher is Freevia. Replacing a Freevia EOOD extension
+requires its removal in Claude before Pair; the app refuses a duplicate install
+and the bundle and guide explain the one-time reinstall. The source also
+includes the iOS paired-host/Apple sign-in work, dependency security fixes and
+CI packaging/cache corrections merged since 0.1.197. This entry does not claim
+a new iOS Store approval, notarization, physical-device test or Worker deployment.
+
+Known limits remain: the macOS TCP output deadline can overshoot its budget,
+Windows output timing is neither confirmed nor cleared, and incomplete legacy
+Demo inventory stays conservative. Linux installed Codex reconnect and UI Pair
+need qualification on the final package. The Type-61 relay remains unbounded:
+every request is attempted, none is promised served, and no resource bound
+exists. The emergency cloud guard is unchanged.
+
 ## QC Remote Windows 0.1.197 / Android 0.3.47 — 23 October 2026
 
 Changes since Windows 0.1.196 / Android 0.3.46. A disconnected Quad Cortex
