@@ -214,3 +214,93 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
+
+  # The x86_64 package above is cross-built on Apple Silicon and only ever run
+  # under Rosetta 2. This job launches that same package natively on an Intel
+  # Mac. It rebuilds nothing: it downloads the installer the package lane
+  # uploaded. Intel runners are several times slower and often queued for a
+  # long time, so it runs only for master pushes and manual dispatches (never
+  # on pull requests) and continue-on-error keeps a slow, queued or failing
+  # Intel run from failing the workflow. No required check depends on it.
+  intel-native-smoke:
+    name: macOS x86_64 native smoke
+    needs: build
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    runs-on: macos-26-intel
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: qc-remote-macos-x86_64-apple-darwin-dmg
+          path: ${{ runner.temp }}/dmg
+      - name: Require native Intel without Rosetta 2
+        run: |
+          machine=$(uname -m)
+          translated=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo absent)
+          cpu=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)
+          echo "uname -m: $machine; sysctl.proc_translated: $translated; CPU: $cpu"
+          if [ "$machine" != x86_64 ]; then
+            echo "::error::Expected an x86_64 machine, found '$machine'"
+            exit 1
+          fi
+          if [ "$translated" != 0 ] && [ "$translated" != absent ]; then
+            echo "::error::This shell runs under Rosetta 2 (sysctl.proc_translated=$translated)"
+            exit 1
+          fi
+      - name: Install the app from the x86_64 installer
+        run: |
+          image=$(find "$RUNNER_TEMP/dmg" -name '*.dmg' -type f)
+          test "$(printf '%s\n' "$image" | wc -l)" -eq 1
+          mount="$RUNNER_TEMP/mount"
+          mkdir -p "$mount"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$image"
+          ditto "$mount/QC Remote.app" "$RUNNER_TEMP/install/QC Remote.app"
+          ditto "$mount/QC Device Broker.app" "$RUNNER_TEMP/install/QC Device Broker.app"
+          hdiutil detach "$mount"
+      - name: Verify every executable is x86_64 only
+        run: |
+          install="$RUNNER_TEMP/install"
+          app="$install/QC Remote.app"
+          found=0
+          while IFS= read -r -d '' exe; do
+            archs=$(lipo -archs "$exe")
+            echo "$archs  ${exe#"$install"/}"
+            if [ "$archs" != x86_64 ]; then
+              echo "::error::${exe#"$install"/} is built for '$archs', expected 'x86_64'"
+              exit 1
+            fi
+            found=$((found + 1))
+          done < <(find "$app/Contents/MacOS" "$app/Contents/Resources/QC Device Broker.app/Contents/MacOS" "$install/QC Device Broker.app/Contents/MacOS" -type f -perm -u+x -print0)
+          test "$found" -ge 4
+      - name: Run the broker self-check natively
+        timeout-minutes: 3
+        run: |
+          install="$RUNNER_TEMP/install"
+          found=0
+          while IFS= read -r -d '' broker; do
+            echo "${broker#"$install"/} --self-check"
+            "$broker" --self-check
+            found=$((found + 1))
+          done < <(find "$install" -type f -perm -u+x -name 'qc-device-broker*' -path '*/Contents/MacOS/*' -print0)
+          test "$found" -ge 3
+      # The app has no self-check mode. --local-mcp-http-headers loads the full
+      # app binary (Tauri, WebKit and every linked framework) and runs its
+      # main without opening a window; with no paired local host it exits 1
+      # with a fixed message within its 6 second bound. Any other outcome,
+      # such as a dyld failure or a crash, fails the step. HOME is a fresh
+      # directory so the run reads and creates nothing in the runner's home.
+      - name: Launch the app binary natively
+        timeout-minutes: 2
+        run: |
+          app="$RUNNER_TEMP/install/QC Remote.app"
+          exe=$(plutil -extract CFBundleExecutable raw "$app/Contents/Info.plist")
+          home="$RUNNER_TEMP/home"
+          mkdir -p "$home"
+          status=0
+          HOME="$home" "$app/Contents/MacOS/$exe" --local-mcp-http-headers >"$RUNNER_TEMP/app.out" 2>"$RUNNER_TEMP/app.err" || status=$?
+          cat "$RUNNER_TEMP/app.err"
+          if [ "$status" -ne 1 ] || ! grep -q 'QC Remote could not verify its local HTTP host' "$RUNNER_TEMP/app.err"; then
+            echo "::error::The app binary exited with status $status instead of the expected unpaired-host error"
+            exit 1
+          fi

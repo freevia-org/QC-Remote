@@ -161,9 +161,12 @@ test('macOS builds do not trigger on legal records and run every lane on the App
   // x86_64 is cross-built on macos-26 and its binaries run under Rosetta 2;
   // the macos-26-intel pool was about five times slower and queued for up to
   // an hour. Pull requests run native ARM64 tests and the x86_64 package;
-  // master and manual builds run both lanes for both architectures.
-  assert.match(text, /^ {4}runs-on: macos-26$/m);
-  assert.doesNotMatch(text, /macos-\d+-intel/);
+  // master and manual builds run both lanes for both architectures. Only the
+  // non-blocking native smoke job below may use the Intel pool.
+  const jobs = macosJobs(text);
+  assert.deepEqual(Object.keys(jobs), ['build', 'intel-native-smoke']);
+  assert.match(jobs.build, /^ {4}runs-on: macos-26$/m);
+  assert.doesNotMatch(jobs.build, /macos-\d+-intel/);
   const matrix = text.match(/^ {8}include: \$\{\{ fromJSON\(github\.event_name == 'pull_request' && '(.*?)' \|\| '(.*?)'\) \}\}$/m);
   assert.ok(matrix, 'the lane matrix must depend on the event');
   const lanes = (json) => JSON.parse(json).map((entry) => `${entry.lane} ${entry.target}`).sort();
@@ -179,6 +182,39 @@ test('macOS builds do not trigger on legal records and run every lane on the App
   assert.match(text, /arch -x86_64 \/usr\/bin\/true/);
   assert.match(text, /QC_MACOS_TARGET: \$\{\{ matrix\.target \}\}/);
   assert.match(text, /lipo -archs/);
+});
+
+// Each top-level job of a workflow keyed by id, with its full text.
+function macosJobs(text) {
+  const jobsText = text.slice(text.indexOf('\njobs:\n') + 7);
+  const starts = [...jobsText.matchAll(/^ {2}([a-z][a-z0-9-]*):\s*$/gm)];
+  return Object.fromEntries(
+    starts.map((match, index) => [match[1], jobsText.slice(match.index, starts[index + 1]?.index ?? jobsText.length)]),
+  );
+}
+
+test('the x86_64 package runs natively on Intel only after master pushes and manual dispatches, without blocking', () => {
+  const smoke = macosJobs(workflow('macos-build.yml'))['intel-native-smoke'];
+  assert.match(smoke, /^ {4}name: macOS x86_64 native smoke$/m);
+  assert.match(smoke, /^ {4}needs: build$/m);
+  assert.match(smoke, /^ {4}runs-on: macos-26-intel$/m);
+  assert.match(smoke, /^ {4}continue-on-error: true$/m);
+  assert.match(smoke, /^ {4}timeout-minutes: 20$/m);
+  // Never on pull requests: dispatch, or a push to master.
+  assert.match(
+    smoke,
+    /^ {4}if: github\.event_name == 'workflow_dispatch' \|\| \(github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'\)$/m,
+  );
+  assert.doesNotMatch(smoke, /pull_request/);
+  // It tests the package the x86_64 lane uploaded and rebuilds nothing.
+  assert.match(smoke, /name: qc-remote-macos-x86_64-apple-darwin-dmg$/m);
+  assert.doesNotMatch(smoke, /\b(cargo|npm|npx|rustup)\b|actions\/checkout|setup-node|rust-toolchain/);
+  // Native Intel, not Rosetta 2, and the same checks the package lane runs.
+  assert.match(smoke, /uname -m/);
+  assert.match(smoke, /sysctl -n sysctl\.proc_translated/);
+  assert.match(smoke, /lipo -archs/);
+  assert.match(smoke, /"\$broker" --self-check/);
+  assert.match(smoke, /--local-mcp-http-headers/);
 });
 
 test('macOS build caches are only saved by successful runs', () => {
