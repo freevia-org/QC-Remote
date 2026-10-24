@@ -4316,7 +4316,7 @@ fn dispatch_broker_client_request(
     }
     // Demo calls remain pinned to the UI provider; physical-only GUI calls
     // never enter this route, including during physical discovery.
-    let canonical = match shared.selected_target() {
+    let canonical = match shared.settle_target_selection(|| shared.selected_target()) {
         Ok(controller) => controller,
         Err(message)
             if !request.physical_only
@@ -6207,6 +6207,13 @@ struct DisconnectDevicesReport {
     failures: Vec<String>,
 }
 
+/// How long a request's admission or result fence waits out a status writer
+/// or inventory update before it treats target readiness as unknown. Writers
+/// hold those locks only for a field update, but one descheduled mid-update
+/// on a loaded host (CI's shared macOS runners stall threads well past 50 ms)
+/// keeps it longer. The bound stops a stuck writer from stalling requests.
+const TARGET_READINESS_CONTENTION_BOUND: Duration = Duration::from_millis(250);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TargetSelectionError {
     ReadinessBusy,
@@ -6297,9 +6304,36 @@ impl BrokerShared {
         changed
     }
 
+    /// Runs one target selection, waiting out a status writer or inventory
+    /// update that is only mid-way through (bounded by
+    /// `TARGET_READINESS_CONTENTION_BOUND`). The worker takes its status lock
+    /// on every loop pass, so a single try reported "unknown" whenever a
+    /// request's admission or result fence landed inside such an update: the
+    /// request was refused, or its completed result discarded as a
+    /// non-retryable BROKER_TARGET_SUPERSEDED, for a target that never
+    /// changed. Contention that outlasts the bound is still unknown, so every
+    /// fence still fails closed. For request admission and fences only:
+    /// `system.status` and readiness probes answer from one try and never wait.
+    fn settle_target_selection<T>(
+        &self,
+        mut select: impl FnMut() -> Result<T, TargetSelectionError>,
+    ) -> Result<T, TargetSelectionError> {
+        let deadline = Instant::now() + TARGET_READINESS_CONTENTION_BOUND;
+        loop {
+            match select() {
+                Err(reason) if reason.is_unknown() && Instant::now() < deadline => {
+                    thread::sleep(Duration::from_micros(100));
+                }
+                selected => return selected,
+            }
+        }
+    }
+
     fn target_matches(&self, expected: Option<&crate::target::TargetIdentity>) -> bool {
         (expected.is_none() && !self.demo.selection_held())
-            || (self.selected_target().is_ok()
+            || (self
+                .settle_target_selection(|| self.selected_target())
+                .is_ok()
                 && expected
                     .is_none_or(|expected| self.targets.identity().as_ref() == Some(expected)))
     }
@@ -6310,8 +6344,8 @@ impl BrokerShared {
         generation: Option<(u64, u64)>,
         physical_only: bool,
     ) -> bool {
-        let _transition = self.target_transition.lock_recover();
         if physical_only {
+            let _transition = self.target_transition.lock_recover();
             // The GUI already chose its controller. Canonical MCP ambiguity or
             // a busy readiness lock cannot invalidate an actual physical result.
             // Only the explicit Demo intent revision fences this routing path.
@@ -6319,8 +6353,21 @@ impl BrokerShared {
                 && generation
                     .is_none_or(|(_, revision)| self.demo.selection_revision() == revision);
         }
-        self.selected_target_locked().is_ok()
-            && (!physical_only || !self.demo.selection_held())
+        // Each attempt holds the transition lock, so the comparison below is
+        // made against the projection that attempt refreshed.
+        let deadline = Instant::now() + TARGET_READINESS_CONTENTION_BOUND;
+        let _transition = loop {
+            let transition = self.target_transition.lock_recover();
+            match self.selected_target_locked() {
+                Err(reason) if reason.is_unknown() && Instant::now() < deadline => {
+                    drop(transition);
+                    thread::sleep(Duration::from_micros(100));
+                }
+                Err(_) => return false,
+                Ok(_) => break transition,
+            }
+        };
+        (!physical_only || !self.demo.selection_held())
             && generation.is_none_or(|generation| {
                 (self.targets.generation(), self.demo.selection_revision()) == generation
             })

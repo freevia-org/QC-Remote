@@ -938,6 +938,7 @@ pub(super) fn refresh_controller() -> (DeviceController, mpsc::Receiver<Command>
             commands,
             updater_relay: Arc::new(UpdaterRelay::new()),
             touch_guard: Default::default(),
+            readiness_contended: Default::default(),
             connect_interrupt: ConnectInterrupt::default(),
             worker: Default::default(),
         },

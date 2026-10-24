@@ -460,11 +460,6 @@ const CONNECTED_IO_POLL_MS: i32 = 5;
 /// moment the last listing of a burst becomes readable. Anything waiting for
 /// the session's directory publication re-checks the cache at least this often.
 const PRESET_PUBLICATION_POLL_INTERVAL: Duration = Duration::from_millis(25);
-/// How long a target readiness probe waits out a status writer before it
-/// reports readiness as unknown. Writers hold the status lock only for a
-/// field update; this covers one being descheduled mid-update on a loaded
-/// host without letting a stuck writer stall target selection.
-pub(crate) const TARGET_READINESS_CONTENTION_BOUND: Duration = Duration::from_millis(50);
 /// Scoped operations cannot spend a second retry window reserving an ID.
 fn reserve_request_id_before(
     commands: &mpsc::SyncSender<Command>,
@@ -536,6 +531,11 @@ pub struct DeviceController {
     /// The `qc-native-usb` thread and how far its shutdown has got, so
     /// shutdown can wait for it exactly once. See [`WorkerSlot`].
     worker: WorkerThread,
+    /// Test-only: how many times a target readiness probe found the status
+    /// lock held, so a test can release its writer exactly once a probe has
+    /// met it rather than after a guessed delay.
+    #[cfg(test)]
+    readiness_contended: std::sync::atomic::AtomicUsize,
 }
 
 /// Where the USB worker thread is in its life, shared with every
@@ -1177,6 +1177,8 @@ impl DeviceController {
             commands,
             updater_relay,
             touch_guard: Arc::new(Mutex::new(TouchGuard::default())),
+            #[cfg(test)]
+            readiness_contended: std::sync::atomic::AtomicUsize::new(0),
             connect_interrupt,
         })
     }
@@ -1211,6 +1213,13 @@ impl DeviceController {
 
     /// Test-only: hold the worker's status lock, as a worker thread updating
     /// the status would, until the guard drops.
+    /// Test-only: how many times a target readiness probe has found the
+    /// status lock held.
+    #[cfg(test)]
+    pub(crate) fn readiness_contended_for_test(&self) -> usize {
+        self.readiness_contended.load(Ordering::SeqCst)
+    }
+
     #[cfg(test)]
     pub(crate) fn hold_status_lock_for_test(&self) -> std::sync::MutexGuard<'_, BrokerStatus> {
         self.state.lock_recover()
@@ -1421,25 +1430,16 @@ impl DeviceController {
     /// Target projection must not acquire the retained device/session tree.
     /// A busy status writer leaves the previous projection intact; it must
     /// never turn an unknown physical fact into permission to select demo.
-    ///
-    /// Status writers hold this lock only for a field update, and the worker
-    /// takes it on every loop pass (even idle and disconnected, to read its
-    /// epoch). A single `try_lock` therefore reported "unknown" whenever a
-    /// request's admission or result fence happened to land inside such an
-    /// update, and the fence turned that into a non-retryable
-    /// BROKER_TARGET_SUPERSEDED for a target that never changed. Retry for a
-    /// short bound instead: the wait stays bounded, and contention that
-    /// outlasts it is still reported as unknown.
+    /// It never waits: request paths that need a settled answer retry it
+    /// themselves (see `BrokerShared::settle_target_selection`).
     pub(crate) fn try_target_readiness(&self) -> Option<(bool, bool, u64)> {
-        let deadline = Instant::now() + TARGET_READINESS_CONTENTION_BOUND;
-        let state = loop {
-            match self.state.try_lock() {
-                Ok(state) => break state,
-                Err(std::sync::TryLockError::Poisoned(poisoned)) => break poisoned.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
-                    thread::sleep(Duration::from_micros(100));
-                }
-                Err(std::sync::TryLockError::WouldBlock) => return None,
+        let state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                #[cfg(test)]
+                self.readiness_contended.fetch_add(1, Ordering::SeqCst);
+                return None;
             }
         };
         Some((state.connected, state.synchronized, state.session_epoch))
