@@ -1,19 +1,62 @@
 apply plugin: 'com.android.application'
 
-// Locate the JVM trust-manager component paired with the Cargo-pinned verifier.
+// The 0.2 JVM component moved from a Cargo-bundled Maven directory to the
+// upstream archive. Pin the archive commit and keep the JVM version synchronized
+// with Cargo; this repository serves only this exact module.
+def rustlsVerifierPin = new groovy.json.JsonSlurper().parse(
+    new File(rootProject.projectDir.parentFile.parentFile.parentFile,
+        'contracts/public/android-tls-verifier.v1.json'))
+if (rustlsVerifierPin.schemaVersion != 1
+        || rustlsVerifierPin.cargoPackage != 'rustls-platform-verifier-android'
+        || rustlsVerifierPin.repository != 'https://github.com/rustls/rustls-platform-verifier'
+        || !(rustlsVerifierPin.archiveCommit ==~ /[0-9a-f]{40}/)
+        || !(rustlsVerifierPin.aarSha256 ==~ /[0-9a-f]{64}/)
+        || rustlsVerifierPin.group != 'org.rustls'
+        || rustlsVerifierPin.artifact != 'rustls-platform-verifier') {
+    throw new GradleException('Android TLS verifier archive pin is invalid.')
+}
 def rustlsVerifierMetadata = providers.exec {
     workingDir rootProject.projectDir.parentFile.parentFile.parentFile
     commandLine 'cargo', 'metadata', '--format-version', '1', '--locked',
         '--filter-platform', 'aarch64-linux-android', '--manifest-path',
         'packages/rust/quadcortex-android/Cargo.toml'
 }.standardOutput.asText
-def rustlsVerifierMaven = rustlsVerifierMetadata.map { text ->
+def rustlsVerifierVersion = rustlsVerifierMetadata.map { text ->
     def metadata = new groovy.json.JsonSlurper().parseText(text)
-    def manifest = metadata.packages.find { it.name == 'rustls-platform-verifier-android' }?.manifest_path
-    if (manifest == null) throw new GradleException('Android TLS platform verifier is missing from Cargo metadata.')
-    new File(new File(manifest).parentFile, 'maven').absolutePath
+    def matches = metadata.packages.findAll { it.name == rustlsVerifierPin.cargoPackage }
+    if (matches.size() != 1 || matches[0].version != rustlsVerifierPin.version) {
+        throw new GradleException('Android TLS verifier archive does not match the locked Cargo component.')
+    }
+    matches[0].version
 }
-repositories { maven { url = uri(rustlsVerifierMaven.get()) } }
+repositories {
+    exclusiveContent {
+        forRepository {
+            maven {
+                url = uri("https://raw.githubusercontent.com/rustls/rustls-platform-verifier/${rustlsVerifierPin.archiveCommit}/android-release-support/maven/")
+            }
+        }
+        filter { includeModule('org.rustls', 'rustls-platform-verifier') }
+    }
+}
+
+// Check the exact AAR bytes before any Android compilation/packages consume it.
+// The component filter avoids resolving artifacts from local Android projects.
+def verifyRustlsVerifierArchive = tasks.register('verifyRustlsVerifierArchive') {
+    doLast {
+        def artifacts = configurations.getByName('releaseRuntimeClasspath').incoming.artifactView {
+            componentFilter { id ->
+                id instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                    && id.group == 'org.rustls' && id.module == 'rustls-platform-verifier'
+            }
+        }.files.files
+        if (artifacts.size() != 1) throw new GradleException('Android TLS verifier AAR is missing or ambiguous.')
+        def actual = java.security.MessageDigest.getInstance('SHA-256')
+            .digest(artifacts.first().bytes).encodeHex().toString()
+        if (actual != rustlsVerifierPin.aarSha256) throw new GradleException('Android TLS verifier AAR checksum mismatch.')
+    }
+}
+tasks.named('preBuild').configure { dependsOn verifyRustlsVerifierArchive }
 
 def qcSigningValues = [
     store: System.getenv('QC_ANDROID_KEYSTORE'),
@@ -85,7 +128,7 @@ dependencyLocking {
 }
 
 dependencies {
-    implementation 'rustls:rustls-platform-verifier:0.1.1'
+    implementation "org.rustls:rustls-platform-verifier:${rustlsVerifierVersion.get()}"
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"

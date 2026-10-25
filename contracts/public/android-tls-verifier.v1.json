@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "cargoPackage": "rustls-platform-verifier-android",
+  "version": "0.2.0",
+  "group": "org.rustls",
+  "artifact": "rustls-platform-verifier",
+  "repository": "https://github.com/rustls/rustls-platform-verifier",
+  "sourceCommit": "252e25161a91af476cbea620e29d277592d27ec7",
+  "archiveCommit": "1aa691352a5e0c215210dfc9a3c2f2078639dc91",
+  "pomSha256": "78dcb69a1a20e91e72017de9a67104bba1874a7ecc8e6dcdfb2fe1a85de6b362",
+  "aarSha256": "aa021794230fbc2f0be355999e2cf67398dd563de066a2e17001ffbd0b69101b",
+  "selectedLicense": "Apache-2.0",
+  "licenseTextSha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+}

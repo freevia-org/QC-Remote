@@ -70,6 +70,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "arc-swap",
+      "version": "1.9.3",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/vorner/arc-swap",
+      "licenseTextHashes": [
+        "0f1d575cfca3c627f4678f5730c3904c164f5ef8ef551697b5aa12beba8a0f77",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "ashpd",
       "version": "0.11.1",
       "license": "MIT",
@@ -845,6 +856,17 @@
         "5a7d13c6710cdec29e74eb3172b80712049c34099ab7259661ada051fc90777b",
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
         "d10fa7c720bcb4daad01d60873373dc82a099cb71dde5d143e8d7f6b99325e2e"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "crossbeam-queue",
+      "version": "0.3.14",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/crossbeam-rs/crossbeam",
+      "licenseTextHashes": [
+        "5a7d13c6710cdec29e74eb3172b80712049c34099ab7259661ada051fc90777b",
+        "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76"
       ]
     },
     {
@@ -2519,7 +2541,7 @@
     {
       "ecosystem": "cargo",
       "name": "ksni",
-      "version": "0.3.6",
+      "version": "0.3.7",
       "license": "Unlicense",
       "sourceUrl": "https://github.com/iovxw/ksni",
       "licenseTextHashes": [
@@ -2551,18 +2573,7 @@
     {
       "ecosystem": "cargo",
       "name": "libc",
-      "version": "0.2.189",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/rust-lang/libc",
-      "licenseTextHashes": [
-        "85ad950cce8752f716dbf49be95b2639172cb49f291336d57f1fdc9989e38179",
-        "c96302294382bf166f3963bdbce0760aa2b9f0abaa2a7bdb296de7a1c7b51867"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "libc",
-      "version": "0.2.190",
+      "version": "0.2.191",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rust-lang/libc",
       "licenseTextHashes": [
@@ -3868,7 +3879,7 @@
     {
       "ecosystem": "cargo",
       "name": "rmcp-macros",
-      "version": "3.5.0",
+      "version": "3.7.0",
       "license": "Apache-2.0",
       "sourceUrl": "https://github.com/modelcontextprotocol/rust-sdk/",
       "licenseTextHashes": [
@@ -3878,7 +3889,7 @@
     {
       "ecosystem": "cargo",
       "name": "rmcp",
-      "version": "3.4.1",
+      "version": "3.6.0",
       "license": "Apache-2.0",
       "sourceUrl": "https://github.com/modelcontextprotocol/rust-sdk/",
       "licenseTextHashes": [
@@ -3960,30 +3971,35 @@
     {
       "ecosystem": "cargo",
       "name": "rustls-platform-verifier-android",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
       "licenseTextEvidence": {
-        "kind": "cargo-bundled-maven",
+        "kind": "pinned-upstream-maven",
         "cargoPackage": {
           "name": "rustls-platform-verifier-android",
-          "version": "0.1.1",
+          "version": "0.2.0",
           "license": "MIT OR Apache-2.0",
           "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
-          "manifestSha256": "34de6835ef5df615acadc4071bb9d38565b23fbe5a9087a7cf30cc7ccfe02a20"
-        },
-        "artifactPom": {
-          "group": "rustls",
-          "name": "rustls-platform-verifier",
-          "version": "0.1.1",
-          "sha256": "5468629ab3793f4768c0527b8ecca25219a00b5d9503d1ad657cc664c87e9081"
-        },
-        "artifactAar": {
-          "name": "rustls-platform-verifier-0.1.1.aar",
-          "sha256": "667292cadd8fa589229dd0f716541236a761f29b774930868d218175633830fd"
+          "manifestSha256": "f90c3a720b42da0c59e4b2e52bb6281ea304e000585ed2ed61731a9b5f68f23c",
+          "sourceCommit": "252e25161a91af476cbea620e29d277592d27ec7"
         },
         "selectedLicense": "Apache-2.0",
-        "canonicalTextSha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+        "canonicalTextSha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "upstreamArchive": {
+          "repository": "https://github.com/rustls/rustls-platform-verifier",
+          "commit": "1aa691352a5e0c215210dfc9a3c2f2078639dc91"
+        },
+        "artifactPom": {
+          "group": "org.rustls",
+          "name": "rustls-platform-verifier",
+          "version": "0.2.0",
+          "sha256": "78dcb69a1a20e91e72017de9a67104bba1874a7ecc8e6dcdfb2fe1a85de6b362"
+        },
+        "artifactAar": {
+          "name": "rustls-platform-verifier-0.2.0.aar",
+          "sha256": "aa021794230fbc2f0be355999e2cf67398dd563de066a2e17001ffbd0b69101b"
+        }
       },
       "selectedLicense": "Apache-2.0",
       "licenseTextHashes": [
@@ -3993,7 +4009,7 @@
     {
       "ecosystem": "cargo",
       "name": "rustls-platform-verifier",
-      "version": "0.7.0",
+      "version": "0.7.1",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
       "licenseTextHashes": [
@@ -8104,33 +8120,38 @@
     },
     {
       "ecosystem": "gradle",
-      "name": "rustls:rustls-platform-verifier",
-      "version": "0.1.1",
+      "name": "org.rustls:rustls-platform-verifier",
+      "version": "0.2.0",
       "license": "MIT OR Apache-2.0",
       "selectedLicense": "Apache-2.0",
       "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
-      "licenseSource": "locked Cargo package manifest (bundled Maven artifact)",
+      "licenseSource": "locked Cargo source and hash-pinned upstream Maven archive",
       "licenseTextEvidence": {
-        "kind": "cargo-bundled-maven",
+        "kind": "pinned-upstream-maven",
         "cargoPackage": {
           "name": "rustls-platform-verifier-android",
-          "version": "0.1.1",
+          "version": "0.2.0",
           "license": "MIT OR Apache-2.0",
           "sourceUrl": "https://github.com/rustls/rustls-platform-verifier",
-          "manifestSha256": "34de6835ef5df615acadc4071bb9d38565b23fbe5a9087a7cf30cc7ccfe02a20"
-        },
-        "artifactPom": {
-          "group": "rustls",
-          "name": "rustls-platform-verifier",
-          "version": "0.1.1",
-          "sha256": "5468629ab3793f4768c0527b8ecca25219a00b5d9503d1ad657cc664c87e9081"
-        },
-        "artifactAar": {
-          "name": "rustls-platform-verifier-0.1.1.aar",
-          "sha256": "667292cadd8fa589229dd0f716541236a761f29b774930868d218175633830fd"
+          "manifestSha256": "f90c3a720b42da0c59e4b2e52bb6281ea304e000585ed2ed61731a9b5f68f23c",
+          "sourceCommit": "252e25161a91af476cbea620e29d277592d27ec7"
         },
         "selectedLicense": "Apache-2.0",
-        "canonicalTextSha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
+        "canonicalTextSha256": "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b",
+        "upstreamArchive": {
+          "repository": "https://github.com/rustls/rustls-platform-verifier",
+          "commit": "1aa691352a5e0c215210dfc9a3c2f2078639dc91"
+        },
+        "artifactPom": {
+          "group": "org.rustls",
+          "name": "rustls-platform-verifier",
+          "version": "0.2.0",
+          "sha256": "78dcb69a1a20e91e72017de9a67104bba1874a7ecc8e6dcdfb2fe1a85de6b362"
+        },
+        "artifactAar": {
+          "name": "rustls-platform-verifier-0.2.0.aar",
+          "sha256": "aa021794230fbc2f0be355999e2cf67398dd563de066a2e17001ffbd0b69101b"
+        }
       },
       "licenseTextHashes": [
         "283ea6cc2997a1a70da0049e09adf9317bb60ca1b51279b65196b83a69e1996b"
@@ -8638,6 +8659,15 @@
       ]
     },
     {
+      "sha256": "0f1d575cfca3c627f4678f5730c3904c164f5ef8ef551697b5aa12beba8a0f77",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:arc-swap@1.9.3"
+      ]
+    },
+    {
       "sha256": "1038b7737a0a04bd9268bbb8d17ee4e13c9bb3cf36f39da46c3a1818c798aa20",
       "names": [
         "LICENSE-MIT"
@@ -9061,7 +9091,7 @@
       "names": [
         "Apache License 2.0 (canonical; declared by Cargo package jni-macros@0.22.4, manifest SHA-256 c473e169667d41adddd70480939538b814cbd45006f942ba33e2c83558402719)",
         "Apache License 2.0 (canonical; declared by Cargo package jni@0.22.4, manifest SHA-256 c49920826559d3b55b635c743ca9b2a463db421541782c6896aad28d43599640)",
-        "Apache License 2.0 (canonical; declared by Cargo package rustls-platform-verifier-android@0.1.1, manifest SHA-256 34de6835ef5df615acadc4071bb9d38565b23fbe5a9087a7cf30cc7ccfe02a20; bundled AAR SHA-256 667292cadd8fa589229dd0f716541236a761f29b774930868d218175633830fd)",
+        "Apache License 2.0 (canonical; declared by Cargo package rustls-platform-verifier-android@0.2.0, manifest SHA-256 f90c3a720b42da0c59e4b2e52bb6281ea304e000585ed2ed61731a9b5f68f23c; bundled AAR SHA-256 aa021794230fbc2f0be355999e2cf67398dd563de066a2e17001ffbd0b69101b)",
         "Apache License 2.0 (canonical; declared by Maven POM androidx.annotation:annotation-experimental@1.4.1, SHA-256 fe57b228417f4d7c677903dc61fb4a7cf993d603499de26d8d8113e477cc4f1b)",
         "Apache License 2.0 (canonical; declared by Maven POM androidx.annotation:annotation-jvm@1.8.1, SHA-256 d49203733aa6fae046c3a3de4e796eed347595755486a64273989844759750b4)",
         "Apache License 2.0 (canonical; declared by Maven POM androidx.annotation:annotation@1.8.1, SHA-256 b71225974ec087eb96c25ef6819f55b1c22f530e85ca446ba735fb66ed04ff5c)",
@@ -9130,8 +9160,8 @@
         "cargo:quinn-udp@0.5.15",
         "cargo:quinn@0.11.11",
         "cargo:quinn@0.11.12",
-        "cargo:rustls-platform-verifier-android@0.1.1",
-        "cargo:rustls-platform-verifier@0.7.0",
+        "cargo:rustls-platform-verifier-android@0.2.0",
+        "cargo:rustls-platform-verifier@0.7.1",
         "cargo:serialize-to-javascript-impl@0.1.2",
         "cargo:serialize-to-javascript@0.1.2",
         "cargo:sse-stream@0.2.6",
@@ -9189,7 +9219,7 @@
         "gradle:org.jetbrains.kotlinx:kotlinx-coroutines-core@1.8.1",
         "gradle:org.jetbrains:annotations@23.0.0",
         "gradle:org.jspecify:jspecify@1.0.0",
-        "gradle:rustls:rustls-platform-verifier@0.1.1"
+        "gradle:org.rustls:rustls-platform-verifier@0.2.0"
       ]
     },
     {
@@ -9925,6 +9955,7 @@
       ],
       "components": [
         "cargo:crossbeam-channel@0.5.16",
+        "cargo:crossbeam-queue@0.3.14",
         "cargo:crossbeam-utils@0.8.22"
       ]
     },
@@ -10008,7 +10039,7 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:rustls-platform-verifier@0.7.0"
+        "cargo:rustls-platform-verifier@0.7.1"
       ]
     },
     {
@@ -10589,8 +10620,7 @@
         "cargo:dyn-clone@1.0.20",
         "cargo:erased-serde@0.4.10",
         "cargo:itoa@1.0.18",
-        "cargo:libc@0.2.189",
-        "cargo:libc@0.2.190",
+        "cargo:libc@0.2.191",
         "cargo:pastey@0.2.3",
         "cargo:prettyplease@0.2.37",
         "cargo:proc-macro2@1.0.107",
@@ -10806,6 +10836,7 @@
         "https://github.com/tauri-apps/libappindicator-rs/blob/eafd1e3682a1247f595410266091e9684021cb6f/LICENSE-APACHE (SHA-256 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76)"
       ],
       "components": [
+        "cargo:arc-swap@1.9.3",
         "cargo:async-channel@2.5.0",
         "cargo:async-executor@1.14.0",
         "cargo:async-fs@2.2.0",
@@ -10840,6 +10871,7 @@
         "cargo:core-graphics@0.25.0",
         "cargo:core_detect@1.0.0",
         "cargo:crossbeam-channel@0.5.16",
+        "cargo:crossbeam-queue@0.3.14",
         "cargo:crossbeam-utils@0.8.22",
         "cargo:dbus-secret-service@4.1.0",
         "cargo:displaydoc@0.2.7",
@@ -11618,8 +11650,7 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:libc@0.2.189",
-        "cargo:libc@0.2.190"
+        "cargo:libc@0.2.191"
       ]
     },
     {
@@ -11656,10 +11687,10 @@
     {
       "sha256": "ca2abdf695884c77ea4b4a5b64ca7b732d9d9dbade4eebc1c2e76c53e9e3bc83",
       "names": [
-        "https://github.com/iovxw/ksni/blob/4e31ee48d91b0babb472d05936b9b68bca736b06/UNLICENSE (SHA-256 7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c)"
+        "https://github.com/iovxw/ksni/blob/2397cc2ce535ba4e7ed77fecd94731c5239923e7/UNLICENSE (SHA-256 7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c)"
       ],
       "components": [
-        "cargo:ksni@0.3.6"
+        "cargo:ksni@0.3.7"
       ]
     },
     {
@@ -12145,12 +12176,11 @@
     {
       "sha256": "f5854c00454b526e423bde71d45f2ae4d60678833360eac1327b900a79396ea6",
       "names": [
-        "https://github.com/modelcontextprotocol/rust-sdk/blob/0cde3c5cf3e6aff0cc852ce6045f107e95991f48/LICENSE (SHA-256 f5854c00454b526e423bde71d45f2ae4d60678833360eac1327b900a79396ea6)",
-        "https://github.com/modelcontextprotocol/rust-sdk/blob/9427a929959e665e0d12e9395f674026baf4bd48/LICENSE (SHA-256 f5854c00454b526e423bde71d45f2ae4d60678833360eac1327b900a79396ea6)"
+        "LICENSE"
       ],
       "components": [
-        "cargo:rmcp-macros@3.5.0",
-        "cargo:rmcp@3.4.1"
+        "cargo:rmcp-macros@3.7.0",
+        "cargo:rmcp@3.6.0"
       ]
     },
     {
