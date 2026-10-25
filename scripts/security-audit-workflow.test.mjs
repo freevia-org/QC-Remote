@@ -1,24 +1,23 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workflow = readFileSync(resolve(root, ".github/workflows/security-audit.yml"), "utf8");
 
-function discoverFiles(directory, found = []) {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "target" || entry.name === "build") continue;
-    const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) discoverFiles(path, found);
-    else found.push(relative(root, path).replaceAll("\\", "/"));
-  }
-  return found;
+// Tracked files only: ignored local output (target/, .artifacts/ probes) is not
+// public and must not change the audit coverage this test expects.
+function discoverFiles() {
+  return execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+    .split("\0")
+    .filter(Boolean);
 }
 
 test("public dependency audit names every public Cargo and Gradle lock and cloud workspace", () => {
-  const files = discoverFiles(root);
+  const files = discoverFiles();
   const cargoLocks = files.filter((path) => path === "Cargo.lock" || path.endsWith("/Cargo.lock"));
   const expectedRustDirectories = cargoLocks.map((path) => path === "Cargo.lock" ? "." : path.slice(0, -"/Cargo.lock".length)).sort();
   const matrix = /rustsec:[\s\S]*?directory:\s*\r?\n((?:\s*-\s+\S+\s*\r?\n)+)/.exec(workflow)?.[1];

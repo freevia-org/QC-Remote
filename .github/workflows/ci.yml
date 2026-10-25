@@ -62,13 +62,14 @@ jobs:
         with:
           components: clippy, rustfmt
       # Cheapest checks first, so a formatting or lint mistake fails in seconds
-      # instead of after the multi-minute test step. Same four commands as before.
+      # instead of after the multi-minute test step. No separate `cargo build`:
+      # `cargo test` builds and links every lib, bin and test target, and clippy
+      # --all-targets has already checked the rest.
       - run: cargo fmt --all -- --check
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo build --workspace --locked
       - run: cargo test --workspace --locked
 
   # packages/rust/quadcortex declares `rust-version = "1.87"`. Everything above
@@ -121,6 +122,9 @@ jobs:
         run: node --test scripts/claude-mcp-startup.test.mjs
       - name: Test owned Gradle failure, interruption and launcher-termination cleanup
         run: node --test scripts/run-owned-gradle.test.mjs
+      # Windows-only (it skips elsewhere); no other job ran it.
+      - name: Test owned Windows producer admission, interruption and cleanup
+        run: node --test scripts/windows-owned-producer.test.mjs
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: apps/windows/src-tauri
@@ -349,7 +353,10 @@ jobs:
     # all-zero DRY-RUN PLACEHOLDER id in wrangler.check.jsonc and says so in the
     # log. That is enough for `wrangler types --check`, `tsc` and
     # `wrangler deploy --dry-run`. This job never deploys; the real
-    # `npm run deploy` path refuses the placeholder, and `npm test` pins that.
+    # `npm run deploy` path refuses the placeholder, and the workspace's
+    # `npm test` pins that. That test runs in the TypeScript job's root
+    # `npm test`, which runs whenever this job does: a change that skips
+    # TypeScript (markdown only) is always inside the set that skips this job.
     env:
       QCRC_OAUTH_KV_NAMESPACE_ID: ${{ secrets.QCRC_OAUTH_KV_NAMESPACE_ID }}
     steps:
@@ -359,8 +366,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Placeholder and deploy-guard tests
-        run: npm test --workspace @qc-remote/cloud
       - name: Types, tsc and dry-run deploy (secret id when set, placeholder otherwise)
         run: npm run check --workspace @qc-remote/cloud
 

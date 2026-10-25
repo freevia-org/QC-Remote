@@ -746,3 +746,15 @@ test('CI gates native jobs on the change filter and rebuilds them on master to k
   assert.match(changes, /node scripts\/ci-changes\.mjs/);
   assert.doesNotMatch(bodyOf('public-history'), /^    if: github\.event_name == 'pull_request'$/m);
 });
+
+test('every scripts/*.test.mjs runs in a workflow or a root package script', () => {
+  const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
+  const runners = [
+    ...readdirSync(workflowsDir).filter((name) => /\.ya?ml$/.test(name)).map((name) => readFileSync(path.join(workflowsDir, name), 'utf8')),
+    readFileSync(path.join(scriptsDir, '..', 'package.json'), 'utf8'),
+  ].join('\n');
+  const unrun = readdirSync(scriptsDir)
+    .filter((name) => name.endsWith('.test.mjs'))
+    .filter((name) => !runners.includes(`scripts/${name}`));
+  assert.deepEqual(unrun, [], 'a script test that no workflow runs never gates anything');
+});
