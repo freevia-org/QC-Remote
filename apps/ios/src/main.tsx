@@ -3,6 +3,7 @@ import * as React from "react";
 import { createRoot } from "react-dom/client";
 import { Capacitor } from "@capacitor/core";
 import { App as NativeApp } from "@capacitor/app";
+import appPackage from "../package.json";
 import { StatusBar, Style } from "@capacitor/status-bar";
 import { QC_BRAND, QC_COLORS, QC_NATIVE_THEME } from "@qc-remote/theme";
 import { App } from "@qc-remote/android-src/App";
@@ -19,7 +20,7 @@ document.title = QC_BRAND.appName;
 if (Capacitor.isNativePlatform()) void StatusBar.setStyle({ style: Style.Dark });
 
 function ObservedApp({ remote }: { remote: boolean }) {
-  const [appVersion, setAppVersion] = React.useState("1.0");
+  const [appVersion, setAppVersion] = React.useState(appPackage.version);
   React.useEffect(() => {
     if (Capacitor.isNativePlatform()) void NativeApp.getInfo().then(info => setAppVersion(info.version)).catch(() => {});
   }, []);

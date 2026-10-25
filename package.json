@@ -19,7 +19,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run versions:check && npm run versions:test && npm run test --workspaces --if-present",
     "build:windows": "npm run build --workspace @qc-remote/windows",
     "build:android:web": "npm run build --workspace @qc-remote/android",
     "build:ios:web": "npm run build --workspace @qc-remote/ios",
@@ -29,7 +29,9 @@
     "legal:notices": "node scripts/verify-third-party-notices.mjs --write",
     "legal:notices:check": "node scripts/verify-third-party-notices.mjs",
     "legal:carveout:check": "node scripts/verify-license-carveout.mjs",
-    "audit:public-history": "node --test scripts/verify-public-history.test.mjs && node scripts/verify-public-history.mjs"
+    "audit:public-history": "node --test scripts/verify-public-history.test.mjs && node scripts/verify-public-history.mjs",
+    "versions:check": "node scripts/app-version.mjs --check",
+    "versions:test": "node --test scripts/app-version.test.mjs"
   },
   "overrides": {
     "@modelcontextprotocol/sdk": "1.32.1",

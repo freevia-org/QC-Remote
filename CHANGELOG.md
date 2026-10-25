@@ -7,6 +7,18 @@ versioned independently (`apps/windows/package.json`,
 `apps/android/package.json`); the library and service crates stay at 0.1.0
 and are not published to a registry.
 
+## QC Remote Windows 1.0.1 / Android 1.0.1 — Unreleased
+
+All applications now share public version 1.0.1: Windows, macOS, Linux,
+Android, and iOS. Android retains its increasing versionCode (55); the iOS
+App target advances to build 3. Library/protocol versions and the excluded
+DriverKit prototype are unchanged. Existing published releases and the iOS
+1.0 (2) submission remain unchanged until a new release is built and approved.
+
+A single all-platform version command updates the manifests and locks; CI and
+release preflight reject divergent public application versions. The iOS web
+fallback reads its own package version instead of a separate hardcoded label.
+
 ## QC Remote Windows 0.1.199 / Android 0.3.49 â€” 25 October 2026
 
 The shared Windows, macOS and Linux desktop pairing UI stops polling after
