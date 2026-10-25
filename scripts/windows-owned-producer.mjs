@@ -142,7 +142,11 @@ export async function runOwnedWindowsCommand({
       const parentInfo = await lstat(creationParent);
       if (!parentInfo.isDirectory() || parentInfo.isSymbolicLink()) throw new Error("Owned producer creation namespace must be a plain directory.");
     }
-    owner.directory = join(creationParent ?? tmpdir(), `qc-owned-producer-${randomUUID()}`);
+    // TEMP may be an 8.3 short path (C:\Users\RUNNER~1\...). The admission
+    // checker requires its file path to equal [IO.Path]::GetFullPath of
+    // itself, which expands short names, so derive the default from the
+    // long (native real) path.
+    owner.directory = join(creationParent ?? realpathSync.native(tmpdir()), `qc-owned-producer-${randomUUID()}`);
     const childEnvironment = { ...environment };
     // An inherited path is not deletion authority. This producer derives its
     // state exclusively beneath the SAME original owner's admitted directory.
