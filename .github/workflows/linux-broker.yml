@@ -83,9 +83,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes apparmor-utils bubblewrap dbus-daemon gir1.2-glib-2.0 python3-gi
+      # No rustfmt: formatting is platform independent, and ci.yml's `Rust
+      # workspace` job checks it under the same change filter.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          components: clippy, rustfmt
+          components: clippy
       # Saved by the master push run and restored by pull requests, which do not
       # write their own copy (a pull request cache is readable only by that pull
       # request and would push master's caches out of the 10 GB budget).
@@ -93,15 +95,15 @@ jobs:
         with:
           key: linux-broker
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - name: Check Rust formatting
-        run: cargo fmt --all -- --check
       - name: Build the standalone Linux broker
         run: cargo build --locked -p qc-device-broker --bin qc-device-broker --features linux-tray
       # These real subprocess tests start disconnected; authentication/status,
       # election, filesystem modes, crash recovery and shutdown need no QC.
       # --probe, --verify-live and --auto-connect are deliberately absent.
+      # quadcortex's own Linux tests and doctests run in ci.yml's `Quad Cortex
+      # crate docs and Linux tests` job; it is still linted below.
       - name: Test shared engines and Linux native boundaries
-        run: cargo test --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --features qc-device-broker/linux-tray
+        run: cargo test --locked -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --features qc-device-broker/linux-tray
       - name: Lint Linux broker and adapters
         run: cargo clippy --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --all-targets --features qc-device-broker/linux-tray -- -D warnings
       - name: Check non-hardware executable entry point
@@ -166,7 +168,7 @@ jobs:
       # MSVC. Explicit +stable selects this Linux runner's host toolchain.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
-          components: clippy, rustfmt
+          components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: apps/windows/src-tauri -> target
@@ -175,19 +177,13 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       # Cargo validates Rust host code only; packaging needs a verified,
       # target-suffixed external broker. Avoid a placeholder that could be
-      # mistaken for a shippable sidecar.
-      - name: Format the Linux GUI workspace
+      # mistaken for a shippable sidecar. There is no separate fmt or check pass:
+      # ci.yml's Windows app static checks format this workspace under the same
+      # change filter, and the clippy step below type-checks every target with
+      # these features.
+      - name: Link the native Linux desktop executable, resident broker and MCP host
         working-directory: apps/windows/src-tauri
-        run: cargo +stable fmt --all -- --check
-      - name: Check the GUI and Linux tray sidecar
-        working-directory: apps/windows/src-tauri
-        run: cargo +stable check --locked --all-targets --features tray-sidecar,custom-protocol
-      - name: Link the native Linux desktop executable
-        working-directory: apps/windows/src-tauri
-        run: cargo +stable build --locked --features tray-sidecar,custom-protocol --bin qc-remote
-      - name: Link the resident broker and MCP host
-        working-directory: apps/windows/src-tauri
-        run: cargo +stable build --locked --features tray-sidecar,custom-protocol --bin qc-device-broker
+        run: cargo +stable build --locked --features tray-sidecar,custom-protocol --bin qc-remote --bin qc-device-broker
       - name: Capture the exact GUI library test executable
         working-directory: apps/windows/src-tauri
         run: |
@@ -246,8 +242,6 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          components: clippy, rustfmt
       # The release package build used to start from an empty target directory
       # (about 7 minutes in package-linux-deb.py). It writes the app's release
       # profile under apps/windows/src-tauri/target/<triple>/release.
