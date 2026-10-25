@@ -95,6 +95,9 @@ jobs:
           key: msrv-1.87
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo +1.87 test -p quadcortex --locked
+      # Optional encrypted forwarding uses a separate cipher dependency graph.
+      # Default-feature tests do not verify that graph against the Rust minimum.
+      - run: cargo +1.87 test -p quadcortex --features cloud-forward --locked
 
   # The Windows app used to be one 13 to 15 minute job. Its static checks and its
   # native tests share nothing at run time, so they are two jobs that run side by

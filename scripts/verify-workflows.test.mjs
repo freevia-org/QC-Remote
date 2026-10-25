@@ -770,3 +770,14 @@ test('Linux broker executes quadcortex cloud-forward unit tests, not only its de
   assert.equal(executesFeatureTests(linuxWorkflow), true, 'select quadcortex with the broker to execute cloud-forward unit tests');
   assert.equal(executesFeatureTests(linuxWorkflow.replaceAll('-p quadcortex ', '')), false, 'a dependency build or clippy invocation must not satisfy unit-test coverage');
 });
+
+test('the declared Rust minimum tests the optional encrypted-forwarding graph', () => {
+  const ci = readFileSync(path.join(workflowsDir, 'ci.yml'), 'utf8');
+  const msrv = ci.match(/^  rust-msrv:\n([\s\S]*?)(?=^  [a-z][a-z0-9-]*:|(?![\s\S]))/m)?.[1];
+  assert.ok(msrv, 'the minimum-toolchain job must exist');
+  const testsEncryptedGraph = (body) => runBlocks(readLines(body)).some(({ text }) =>
+    /\bcargo\s+\+1\.87\s+test\s+-p\s+quadcortex\s+--features\s+cloud-forward\s+--locked\b/.test(text));
+  assert.equal(testsEncryptedGraph(msrv), true, 'default-feature tests do not cover AES/CTR');
+  assert.equal(testsEncryptedGraph(msrv.replace('--features cloud-forward ', '')), false,
+    'removing the optional feature must remove encrypted-graph coverage');
+});

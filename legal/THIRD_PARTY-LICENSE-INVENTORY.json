@@ -38,12 +38,12 @@
     {
       "ecosystem": "cargo",
       "name": "aes",
-      "version": "0.8.4",
+      "version": "0.9.2",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/RustCrypto/block-ciphers",
       "licenseTextHashes": [
-        "33e996382660b2bac31ae8ec48e5dc8ddf44e52ddce0612457301404c9a29111",
-        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4",
+        "fc794e17e5ea939c06f1fd8b390a080d28cf5161abfc21926608649a288c8674"
       ]
     },
     {
@@ -437,6 +437,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "block-buffer",
+      "version": "0.12.1",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/utils",
+      "licenseTextHashes": [
+        "775a3e20a9af7160992745230472e424f6a82c1ea17801107e5375bebd431db6",
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "block2",
       "version": "0.6.2",
       "license": "MIT",
@@ -684,11 +695,11 @@
     {
       "ecosystem": "cargo",
       "name": "cipher",
-      "version": "0.4.4",
+      "version": "0.5.2",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/RustCrypto/traits",
       "licenseTextHashes": [
-        "92f01fc7ca904e16f13e27d4897e507b5446e42516bb7efacc4c5ed189008c31",
+        "28afb21f14a032a5639ae9995094d1946e7c5b593eb5d1e935f0c5af5eb03e69",
         "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
       ]
     },
@@ -804,6 +815,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "cpubits",
+      "version": "0.1.1",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/utils",
+      "licenseTextHashes": [
+        "34a493355890ad703595a715cc2dde4524fcf11c2df8b2f28dbe6ee7ffde8826",
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "cpufeatures",
       "version": "0.2.17",
       "license": "MIT OR Apache-2.0",
@@ -893,6 +915,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "crypto-common",
+      "version": "0.2.2",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/traits",
+      "licenseTextHashes": [
+        "dec912e37f888cf7a524f9f132c5bbb07dc13e90b026e0eab25697e74a08ddbb",
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "cssparser-macros",
       "version": "0.7.1",
       "license": "MPL-2.0",
@@ -949,7 +982,7 @@
     {
       "ecosystem": "cargo",
       "name": "ctr",
-      "version": "0.9.2",
+      "version": "0.10.1",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/RustCrypto/block-modes",
       "licenseTextHashes": [
@@ -2045,6 +2078,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "hybrid-array",
+      "version": "0.4.15",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/hybrid-array",
+      "licenseTextHashes": [
+        "a1aa15c3898d79b739990fd6bdc2c0acb73410f8eea62de02d693633bf664193",
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "hyper-rustls",
       "version": "0.27.10",
       "license": "Apache-2.0 OR ISC OR MIT",
@@ -2255,11 +2299,11 @@
     {
       "ecosystem": "cargo",
       "name": "inout",
-      "version": "0.1.4",
+      "version": "0.2.5",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/RustCrypto/utils",
       "licenseTextHashes": [
-        "71366a4092ad07b6fc29c4aa94ceeac8b892f7a24fcdedf8df7cba8112cdc15b",
+        "13ec53eb1d4da14c52f193cbd1263d856ff39a7755e6d782ad2ab30e4d1154de",
         "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
       ]
     },
@@ -8725,6 +8769,15 @@
       ]
     },
     {
+      "sha256": "13ec53eb1d4da14c52f193cbd1263d856ff39a7755e6d782ad2ab30e4d1154de",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:inout@0.2.5"
+      ]
+    },
+    {
       "sha256": "14435fbcd271e2783f721b57b7bf4f6502c1379249a4300e0e5bb774686c2d90",
       "names": [
         "LICENSE-MIT"
@@ -9232,6 +9285,15 @@
       ]
     },
     {
+      "sha256": "28afb21f14a032a5639ae9995094d1946e7c5b593eb5d1e935f0c5af5eb03e69",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:cipher@0.5.2"
+      ]
+    },
+    {
       "sha256": "28f22dc50ebc112e7ca38753ed797b71a90747230fcebebd339a5cc6c695961e",
       "names": [
         "LICENSE"
@@ -9481,15 +9543,6 @@
       ]
     },
     {
-      "sha256": "33e996382660b2bac31ae8ec48e5dc8ddf44e52ddce0612457301404c9a29111",
-      "names": [
-        "LICENSE-MIT"
-      ],
-      "components": [
-        "cargo:aes@0.8.4"
-      ]
-    },
-    {
       "sha256": "33ed9a8ecf556f161ec5d7e8761712f404d082bf9eeb8f6085d43517b5938be4",
       "names": [
         "LICENSE-MIT"
@@ -9505,6 +9558,15 @@
       ],
       "components": [
         "cargo:iana-time-zone@0.1.65"
+      ]
+    },
+    {
+      "sha256": "34a493355890ad703595a715cc2dde4524fcf11c2df8b2f28dbe6ee7ffde8826",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:cpubits@0.1.1"
       ]
     },
     {
@@ -10244,15 +10306,6 @@
       ]
     },
     {
-      "sha256": "71366a4092ad07b6fc29c4aa94ceeac8b892f7a24fcdedf8df7cba8112cdc15b",
-      "names": [
-        "LICENSE-MIT"
-      ],
-      "components": [
-        "cargo:inout@0.1.4"
-      ]
-    },
-    {
       "sha256": "7357445bac398c76c0aef75a587009fe406d40de6a79789eb5b7ecbbad317ef2",
       "names": [
         "LICENSE"
@@ -10325,6 +10378,15 @@
       ],
       "components": [
         "cargo:utf8_iter@1.0.4"
+      ]
+    },
+    {
+      "sha256": "775a3e20a9af7160992745230472e424f6a82c1ea17801107e5375bebd431db6",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:block-buffer@0.12.1"
       ]
     },
     {
@@ -10799,15 +10861,6 @@
       ]
     },
     {
-      "sha256": "92f01fc7ca904e16f13e27d4897e507b5446e42516bb7efacc4c5ed189008c31",
-      "names": [
-        "LICENSE-MIT"
-      ],
-      "components": [
-        "cargo:cipher@0.4.4"
-      ]
-    },
-    {
       "sha256": "943f36fd309fb5ea67a82f577433f4ed3bc877e5b00f9b874e2f8b7f72bf0bdc",
       "names": [
         "LICENSE-ZLIB",
@@ -11107,6 +11160,15 @@
         "cargo:zbus_names@4.3.4",
         "cargo:zvariant@5.15.0",
         "cargo:zvariant_derive@5.15.0"
+      ]
+    },
+    {
+      "sha256": "a1aa15c3898d79b739990fd6bdc2c0acb73410f8eea62de02d693633bf664193",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:hybrid-array@0.4.15"
       ]
     },
     {
@@ -11901,6 +11963,15 @@
       ]
     },
     {
+      "sha256": "dec912e37f888cf7a524f9f132c5bbb07dc13e90b026e0eab25697e74a08ddbb",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:crypto-common@0.2.2"
+      ]
+    },
+    {
       "sha256": "dfa7fbad0178fda1a1294a35f2d7b04b054341a7811b00b0ff638d5a1f01c07f",
       "names": [
         "LICENSE-MIT"
@@ -11980,16 +12051,20 @@
         "LICENSE-APACHE"
       ],
       "components": [
-        "cargo:aes@0.8.4",
+        "cargo:aes@0.9.2",
         "cargo:block-buffer@0.10.4",
+        "cargo:block-buffer@0.12.1",
         "cargo:chacha20@0.10.2",
-        "cargo:cipher@0.4.4",
+        "cargo:cipher@0.5.2",
+        "cargo:cpubits@0.1.1",
         "cargo:cpufeatures@0.2.17",
         "cargo:cpufeatures@0.3.1",
         "cargo:crypto-common@0.1.7",
-        "cargo:ctr@0.9.2",
+        "cargo:crypto-common@0.2.2",
+        "cargo:ctr@0.10.1",
         "cargo:digest@0.10.7",
-        "cargo:inout@0.1.4",
+        "cargo:hybrid-array@0.4.15",
+        "cargo:inout@0.2.5",
         "cargo:sha1@0.10.7",
         "cargo:sha2@0.10.9"
       ]
@@ -12143,7 +12218,7 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:ctr@0.9.2"
+        "cargo:ctr@0.10.1"
       ]
     },
     {
@@ -12235,6 +12310,15 @@
       ],
       "components": [
         "cargo:option-ext@0.2.0"
+      ]
+    },
+    {
+      "sha256": "fc794e17e5ea939c06f1fd8b390a080d28cf5161abfc21926608649a288c8674",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:aes@0.9.2"
       ]
     },
     {
