@@ -15,7 +15,7 @@
     "test:workers:kv-proxy": "tsc --noEmit -p tsconfig.workers-tests.json && vitest run --config vitest.kv-proxy.config.ts"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261021.1",
+    "@cloudflare/workers-types": "^5.20261022.1",
     "@cloudflare/vitest-plugin": "^1.4.6",
     "@msw/cloudflare": "^0.2.0",
     "msw": "^3.0.3",
