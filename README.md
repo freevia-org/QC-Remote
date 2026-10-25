@@ -22,12 +22,12 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 | Platform | Current release | Primary download | Other channel |
 | --- | --- | --- | --- |
-| Windows 10/11, x64 | 1.0.2 | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2/QC-Remote-Windows-1.0.2-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5); Store availability of this version is not verified |
+| Windows 10/11, x64 | 1.0.2 | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2/QC-Remote-Windows-1.0.2-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5); 1.0.2 submitted for certification, public Store availability not yet confirmed |
 | Ubuntu 24.04, x86_64 | 1.0.2 Linux preview | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2-linux/qc-remote_1.0.2_amd64.deb) | CI build provenance included |
-| Android 7.0+, USB host/OTG | 1.0.2 | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2/qc-remote-1.0.2.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote) · [Invited tester opt-in](https://play.google.com/apps/internaltest/4701527491652130240); build 56 submitted for review |
+| Android 7.0+, USB host/OTG | 1.0.2 | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2/qc-remote-1.0.2.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote) · [Invited tester opt-in](https://play.google.com/apps/internaltest/4701527491652130240); build 56 available in production |
 | macOS, Apple Silicon | 1.0.2 | [Signed and notarized ZIP](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2/QC-Remote-macOS-1.0.2-arm64.zip) | — |
 | macOS, Intel | 1.0.2 developer preview | [Unsigned CI DMG](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2/QC-Remote-macOS-1.0.2-intel-unsigned.dmg) | Not notarized |
-| iPhone and iPad | 1.0.2 build 4 uploaded; not publicly available | Build from [`apps/ios`](apps/ios/README.md) | The existing 1.0.1 build 3 review has not been replaced; 1.0.2 is not submitted for review |
+| iPhone and iPad | 1.0.2 build 4 ready to submit; not publicly available | Build from [`apps/ios`](apps/ios/README.md) | The existing 1.0.1 build 3 review has not been replaced; 1.0.2 is not submitted for review |
 
 The iPhone app provides one-way USB-MIDI controls only. Full direct USB control
 is an experimental iPad DriverKit prototype for supported M-series iPads; it
@@ -36,8 +36,8 @@ requires Apple-approved DriverKit entitlements and hardware validation. See
 
 All platform release sources now share marketing version **1.0.2**. Windows, Android and macOS
 artifacts are available from [GitHub release v1.0.2](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.2).
-Google Play build 56 has been submitted for review; availability in Play and the
-Microsoft Store may lag the direct downloads. The GitHub Android APK uses the
+Google Play build 56 is available in production. Windows 1.0.2 is submitted for
+Microsoft Store certification; its Store availability is not yet confirmed. The GitHub Android APK uses the
 upload signing key and cannot replace a Play-installed app in place; use Play
 for an update that preserves that installation.
 
