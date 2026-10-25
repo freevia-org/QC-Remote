@@ -38,7 +38,7 @@ test("public dependency audit names every public Cargo and Gradle lock and cloud
   assert.match(workflow, /npm audit --workspace @qc-remote\/cloud --audit-level=high/);
   assert.match(workflow, /cache-dependency-path:\s*package-lock\.json/);
   assert.match(workflow, /actions\/checkout@[0-9a-f]{40}/);
-  assert.match(workflow, /osv-scanner-reusable\.yml@a345acffa64b0eaede81a3d9aae6141214d9c8fc/);
+  assert.match(workflow, /osv-scanner-reusable\.yml@b1d267aea5211fa648d9d442fa64b90dbdcbdd36/);
   assert.match(workflow, /upload-sarif: false/, "fork PR scans must not require a write-scoped SARIF upload");
   assert.match(workflow, /--lockfile=apps\/android\/android\/app\/gradle\.lockfile/);
   assert.match(workflow, /rustsec\/audit-check@[0-9a-f]{40}/);
