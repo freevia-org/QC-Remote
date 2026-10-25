@@ -68,7 +68,7 @@ impl ZencryptionState {
         }
         let (key, iv) = evp_bytes_to_key_sha1_count_10(&self.secret);
         let mut output = bytes.to_vec();
-        let mut cipher = Aes128Ctr::new(key.as_ref().into(), iv.as_ref().into());
+        let mut cipher = Aes128Ctr::new((&*key).into(), (&*iv).into());
         cipher.apply_keystream(&mut output);
         Ok(output)
     }
@@ -162,9 +162,7 @@ mod tests {
     fn hex(value: &str) -> Vec<u8> {
         value
             .as_bytes()
-            .as_chunks::<2>()
-            .0
-            .iter()
+            .chunks_exact(2)
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect()
     }
