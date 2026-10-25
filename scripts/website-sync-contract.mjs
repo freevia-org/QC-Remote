@@ -30,7 +30,7 @@ export function validateWebsiteSync(readme, page) {
   }
 
   const releaseUrls = [...readme.matchAll(
-    /https:\/\/github\.com\/freevia-org\/QC-Remote\/releases\/tag\/v[\d.]+/g,
+    /https:\/\/github\.com\/freevia-org\/QC-Remote\/releases\/tag\/v[\d.]+(?:-[A-Za-z0-9.-]+)?/g,
   )].map((match) => match[0]);
   const uniqueReleaseUrls = [...new Set(releaseUrls)];
   if (uniqueReleaseUrls.length < 2 || uniqueReleaseUrls.some((url) => !page.includes(url))) {
