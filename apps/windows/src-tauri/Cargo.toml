@@ -17,7 +17,7 @@
 [package]
 name = "qc-remote"
 default-run = "qc-remote"
-version = "0.1.199"
+version = "1.0.1"
 publish = false
 description = "Unofficial modular desktop controller for Quad Cortex"
 edition = "2021"
