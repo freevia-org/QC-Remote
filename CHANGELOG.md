@@ -1,23 +1,47 @@
 # Changelog
 
 Notable changes across QC Remote app versions. A version entry records project
-history and does not by itself mean that a build was publicly distributed. The
-desktop and Android apps are
-versioned independently (`apps/windows/package.json`,
-`apps/android/package.json`); the library and service crates stay at 0.1.0
-and are not published to a registry.
+history and does not by itself mean that a build was publicly distributed.
+Since 1.0.1, Windows, macOS, Linux, Android and iOS share one public application
+version. Android and iOS retain their separate increasing build counters;
+internal library and service versions are independent.
 
-## QC Remote Windows 1.0.1 / Android 1.0.1 — Unreleased
+## QC Remote 1.0.2 - 25 October 2026
 
-All applications now share public version 1.0.1: Windows, macOS, Linux,
-Android, and iOS. Android retains its increasing versionCode (55); the iOS
-App target advances to build 3. Library/protocol versions and the excluded
-DriverKit prototype are unchanged. Existing published releases and the iOS
-1.0 (2) submission remain unchanged until a new release is built and approved.
+Update the native MCP SDK, platform verifier, Linux tray and libc dependencies
+across the affected Cargo graphs. Keep proptest at 1.11.0 so the Quad Cortex
+library's declared Rust 1.87 test gate remains supported.
 
-A single all-platform version command updates the manifests and locks; CI and
+Android's TLS verifier 0.2.0 uses the upstream org.rustls Maven artifact. Its
+repository is restricted to that module at an exact archive commit; its version
+must match locked Cargo metadata, and the AAR checksum is verified before the
+Android build consumes it. Legal records bind the resolved POM/AAR bytes to the
+reviewed Cargo source and license evidence. This is not a reproducible-build
+attestation for the upstream AAR. Authentication credentials and access-control
+policies are retained.
+
+All applications use version 1.0.2; Android advances to versionCode 56 and the iOS
+App target to build 4. The excluded DriverKit prototype is unchanged. This source
+entry does not claim publication, new Store approval or physical-device testing.
+The macOS output-deadline gap, unvalidated Windows output bound, separate broker
+output-lock issue and unbounded Type-61 relay remain known limitations. The live
+Worker's emergency guard remains active.
+
+## QC Remote 1.0.1 - 25 October 2026
+
+All applications adopted public version 1.0.1: Windows, macOS, Linux, Android and
+iOS. Android advanced to versionCode 55 and the iOS App target to build 3;
+internal protocol versions and the excluded DriverKit prototype were retained.
+
+A single all-platform version command updates the manifests and locks. CI and
 release preflight reject divergent public application versions. The iOS web
 fallback reads its own package version instead of a separate hardcoded label.
+
+Direct Windows, Android and signed/notarized Apple Silicon macOS downloads were
+published, with separate Linux and unsigned Intel macOS previews. Android build
+55 was submitted to Google Play review. With the owner's approval, iOS 1.0.1
+build 3 replaced the pending 1.0 build 2 submission and was submitted to Apple
+review. These submission records do not claim Store approval.
 
 ## QC Remote Windows 0.1.199 / Android 0.3.49 â€” 25 October 2026
 
