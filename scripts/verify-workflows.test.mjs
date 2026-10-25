@@ -758,3 +758,15 @@ test('every scripts/*.test.mjs runs in a workflow or a root package script', () 
     .filter((name) => !runners.includes(`scripts/${name}`));
   assert.deepEqual(unrun, [], 'a script test that no workflow runs never gates anything');
 });
+
+test('Linux broker executes quadcortex cloud-forward unit tests, not only its dependency build', () => {
+  const linuxWorkflow = readFileSync(path.join(workflowsDir, 'linux-broker.yml'), 'utf8');
+  const brokerManifest = readFileSync(path.join(workflowsDir, '..', '..', 'services', 'device-broker', 'Cargo.toml'), 'utf8');
+  assert.match(brokerManifest, /^quadcortex\s*=.*features\s*=\s*\["cloud-forward"\]/m);
+  const executesFeatureTests = (workflow) => runBlocks(readLines(workflow)).some(({ text }) =>
+    /\bcargo\s+test\b/.test(text)
+    && /(?:^|\s)-p\s+quadcortex(?:\s|$)/.test(text)
+    && /(?:^|\s)-p\s+qc-device-broker(?:\s|$)/.test(text));
+  assert.equal(executesFeatureTests(linuxWorkflow), true, 'select quadcortex with the broker to execute cloud-forward unit tests');
+  assert.equal(executesFeatureTests(linuxWorkflow.replaceAll('-p quadcortex ', '')), false, 'a dependency build or clippy invocation must not satisfy unit-test coverage');
+});
