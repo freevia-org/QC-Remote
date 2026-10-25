@@ -113,6 +113,12 @@ fn start_at(path: PathBuf) -> Result<IdentityWitness, String> {
         while !stopped.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((mut stream, _)) => {
+                    // This accepted witness socket has one owner and no clones.
+                    // Configure its mode before any peer can finish a response;
+                    // Darwin rejects later timeout sockopts on a closed peer.
+                    if stream.set_nonblocking(true).is_err() {
+                        continue;
+                    }
                     let deadline = Instant::now() + Duration::from_millis(250);
                     let mut request = [0_u8; 8];
                     if peer(&stream).is_err()
@@ -199,11 +205,14 @@ fn read_until(
     deadline: Instant,
 ) -> std::io::Result<()> {
     while !bytes.is_empty() {
-        stream.set_read_timeout(Some(remaining(deadline)?))?;
+        remaining(deadline)?;
         match stream.read(bytes) {
             Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
             Ok(n) => bytes = &mut bytes[n..],
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_until(stream, libc::POLLIN, deadline)?;
+            }
             Err(e) => return Err(e),
         }
     }
@@ -215,15 +224,50 @@ fn write_until(
     deadline: Instant,
 ) -> std::io::Result<()> {
     while !bytes.is_empty() {
-        stream.set_write_timeout(Some(remaining(deadline)?))?;
+        remaining(deadline)?;
         match stream.write(bytes) {
             Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
             Ok(n) => bytes = &bytes[n..],
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                wait_until(stream, libc::POLLOUT, deadline)?;
+            }
             Err(e) => return Err(e),
         }
     }
     Ok(())
+}
+
+// Callers own nonblocking witness sockets exclusively. A completed response may
+// already be buffered when its peer closes: read that response, without trying
+// to change SO_RCVTIMEO on the now-disconnected socket. Every retry keeps the
+// original deadline; partial progress and interrupted polls cannot extend it.
+fn wait_until(stream: &UnixStream, events: i16, deadline: Instant) -> std::io::Result<()> {
+    loop {
+        let mut ready = libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events,
+            revents: 0,
+        };
+        let millis = remaining(deadline)?
+            .as_millis()
+            .saturating_add(1)
+            .min(i32::MAX as u128) as i32;
+        // SAFETY: ready names one live FD borrowed from stream, and poll cannot
+        // outlive this call or replace the exclusively owned socket.
+        match unsafe { libc::poll(&mut ready, 1, millis) } {
+            0 => return Err(std::io::ErrorKind::TimedOut.into()),
+            -1 if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted => {}
+            -1 => return Err(std::io::Error::last_os_error()),
+            _ if ready.revents & libc::POLLNVAL != 0 => {
+                return Err(std::io::Error::from_raw_os_error(libc::EBADF));
+            }
+            // HUP can accompany buffered response bytes. Let the next read
+            // consume them or report EOF; it must still produce all five bytes.
+            _ if ready.revents & (events | libc::POLLERR | libc::POLLHUP) != 0 => return Ok(()),
+            _ => {}
+        }
+    }
 }
 
 // std's UnixStream::connect has no timeout. Use a nonblocking socket plus poll
@@ -312,9 +356,9 @@ fn connect_until(path: &Path, deadline: Instant) -> std::io::Result<UnixStream> 
                 break;
             }
         }
-        let stream = UnixStream::from(fd);
-        stream.set_nonblocking(false)?;
-        Ok(stream)
+        // Retain O_NONBLOCK for the entire private witness exchange. No timeout
+        // sockopts are changed after the server can send its response and close.
+        Ok(UnixStream::from(fd))
     }
 }
 
@@ -511,11 +555,14 @@ mod tests {
         let mut malformed =
             connect_until(&fixture.socket(), Instant::now() + Duration::from_secs(1)).unwrap();
         assert_eq!(peer(&malformed).unwrap(), std::process::id());
-        malformed.write_all(b"BAD!\0\0\0\0").unwrap();
-        malformed
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        assert_eq!(malformed.read(&mut [0]).unwrap(), 0);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        write_until(&mut malformed, b"BAD!\0\0\0\0", deadline).unwrap();
+        assert_eq!(
+            read_until(&mut malformed, &mut [0], deadline)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
         let (client, _server) = connection();
         assert_eq!(
             verify_at(
@@ -526,6 +573,59 @@ mod tests {
             )
             .unwrap(),
             Some(std::process::id())
+        );
+    }
+
+    #[test]
+    fn a_complete_witness_reply_is_read_after_the_peer_has_closed() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client.set_nonblocking(true).unwrap();
+        server.write_all(b"QCR1\x01").unwrap();
+        server.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(server);
+        let mut response = [0; 5];
+        read_until(
+            &mut client,
+            &mut response,
+            Instant::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(&response, b"QCR1\x01");
+    }
+
+    #[test]
+    fn a_truncated_witness_reply_is_rejected_after_the_peer_has_closed() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client.set_nonblocking(true).unwrap();
+        server.write_all(b"QCR1").unwrap();
+        server.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(server);
+        let mut response = [0; 5];
+        assert_eq!(
+            read_until(
+                &mut client,
+                &mut response,
+                Instant::now() + Duration::from_secs(1)
+            )
+            .unwrap_err()
+            .kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn a_live_silent_witness_reaches_the_original_read_deadline() {
+        let (mut client, _server) = UnixStream::pair().unwrap();
+        client.set_nonblocking(true).unwrap();
+        assert_eq!(
+            read_until(
+                &mut client,
+                &mut [0; 5],
+                Instant::now() + Duration::from_millis(25)
+            )
+            .unwrap_err()
+            .kind(),
+            std::io::ErrorKind::TimedOut
         );
     }
 }
