@@ -100,10 +100,11 @@ jobs:
       # These real subprocess tests start disconnected; authentication/status,
       # election, filesystem modes, crash recovery and shutdown need no QC.
       # --probe, --verify-live and --auto-connect are deliberately absent.
-      # quadcortex's own Linux tests and doctests run in ci.yml's `Quad Cortex
-      # crate docs and Linux tests` job; it is still linted below.
+      # Keep quadcortex selected here: qc-device-broker enables cloud-forward,
+      # so this executes feature-gated unit tests not covered by ci.yml's
+      # default-feature Quad Cortex job. Building it as a dependency is not enough.
       - name: Test shared engines and Linux native boundaries
-        run: cargo test --locked -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --features qc-device-broker/linux-tray
+        run: cargo test --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --features qc-device-broker/linux-tray
       - name: Lint Linux broker and adapters
         run: cargo clippy --locked -p quadcortex -p quadcortex-hid -p qc-broker-framing -p qc-owner-only-file -p qc-native-platform -p qc-device-broker --all-targets --features qc-device-broker/linux-tray -- -D warnings
       - name: Check non-hardware executable entry point
