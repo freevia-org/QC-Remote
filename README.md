@@ -7,7 +7,7 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 [Website](https://freevia.org/qcremote/) ·
 [User guide](docs/USER-GUIDE.md) ·
-[Latest release](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.1) ·
+[Latest release](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.2) ·
 [Support & feedback](SUPPORT.md) ·
 [Privacy](PRIVACY.md)
 
@@ -22,30 +22,32 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 | Platform | Current release | Primary download | Other channel |
 | --- | --- | --- | --- |
-| Windows 10/11, x64 | 1.0.1 | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.1/QC-Remote-Windows-1.0.1-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5); Store submission status is not verified |
-| Ubuntu 24.04, x86_64 | 1.0.1 Linux preview | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.1-linux/qc-remote_1.0.1_amd64.deb) | CI build provenance included |
-| Android 7.0+, USB host/OTG | 1.0.1 | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.1/qc-remote-1.0.1.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote) · [Invited tester opt-in](https://play.google.com/apps/internaltest/4701527491652130240); build 55 submitted for review |
-| macOS, Apple Silicon | 1.0.1 | [Signed and notarized ZIP](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.1/QC-Remote-macOS-1.0.1-arm64.zip) | — |
-| macOS, Intel | 1.0.1 developer preview | [Unsigned CI DMG](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.1/QC-Remote-macOS-1.0.1-intel-unsigned.dmg) | Not notarized |
-| iPhone and iPad | 1.0.1 build 3 uploaded; not publicly available | Build from [`apps/ios`](apps/ios/README.md) | Apple submission is being updated; approval is pending |
+| Windows 10/11, x64 | 1.0.2 | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2/QC-Remote-Windows-1.0.2-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5); Store availability of this version is not verified |
+| Ubuntu 24.04, x86_64 | 1.0.2 Linux preview | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2-linux/qc-remote_1.0.2_amd64.deb) | CI build provenance included |
+| Android 7.0+, USB host/OTG | 1.0.2 | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2/qc-remote-1.0.2.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote) · [Invited tester opt-in](https://play.google.com/apps/internaltest/4701527491652130240); build 56 submitted for review |
+| macOS, Apple Silicon | 1.0.2 | [Signed and notarized ZIP](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2/QC-Remote-macOS-1.0.2-arm64.zip) | — |
+| macOS, Intel | 1.0.2 developer preview | [Unsigned CI DMG](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.2/QC-Remote-macOS-1.0.2-intel-unsigned.dmg) | Not notarized |
+| iPhone and iPad | 1.0.2 build 4 uploaded; not publicly available | Build from [`apps/ios`](apps/ios/README.md) | The existing 1.0.1 build 3 review has not been replaced; 1.0.2 is not submitted for review |
 
 The iPhone app provides one-way USB-MIDI controls only. Full direct USB control
 is an experimental iPad DriverKit prototype for supported M-series iPads; it
 requires Apple-approved DriverKit entitlements and hardware validation. See
 [`apps/ios/README.md`](apps/ios/README.md) before building or using it.
 
-All platforms now share marketing version **1.0.1**. Windows, Android and macOS
-artifacts are available from [GitHub release v1.0.1](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.1).
-Google Play build 55 has been submitted for review; availability in Play and the
+All platform release sources now share marketing version **1.0.2**. Windows, Android and macOS
+artifacts are available from [GitHub release v1.0.2](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.2).
+Google Play build 56 has been submitted for review; availability in Play and the
 Microsoft Store may lag the direct downloads. The GitHub Android APK uses the
 upload signing key and cannot replace a Play-installed app in place; use Play
 for an update that preserves that installation.
 
-The [Linux 1.0.1 preview](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.1-linux)
-includes a Debian package and signed GitHub build provenance. Physical-device
+The [Linux 1.0.2 preview](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.2-linux)
+includes a Debian package and signed GitHub build provenance. A focused isolated-VM
+installation, startup and unpaired-offer close test passed for this package;
+authenticated pairing and physical-device acceptance remain unverified. Physical-device
 control and recovery were tested on the earlier 0.1.187 package under Ubuntu
 24.04 WSL2/Xfce over USB/IP; that evidence does not establish hardware acceptance
-for the 1.0.1 package or bare-metal Linux. See the
+for the 1.0.2 package or bare-metal Linux. See the
 [Linux setup guide](docs/USER-GUIDE.md#linux) and
 [package verification instructions](docs/USER-GUIDE.md#verify-the-linux-download).
 
