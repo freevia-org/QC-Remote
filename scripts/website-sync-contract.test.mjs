@@ -86,3 +86,15 @@ test('website sync rejects losing either existing stable platform link', () => {
     /Website is missing README download/,
   );
 });
+
+// Unified versions still have distinct stable and Linux-preview tags.
+test('website sync checks the complete Linux suffix when versions are unified', () => {
+  const unifiedReadme = readme.replaceAll('v0.1.182', 'v1.0.1').replaceAll('v0.1.186', 'v1.0.1-linux');
+  const unifiedPage = page.replaceAll('v0.1.182', 'v1.0.1').replaceAll('v0.1.186', 'v1.0.1-linux');
+  const contract = validateWebsiteSync(unifiedReadme, unifiedPage);
+  assert.deepEqual(contract.releaseUrls, [
+    'https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.1',
+    'https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.1-linux',
+  ]);
+  assert.throws(() => validateWebsiteSync(unifiedReadme, unifiedPage.replace(releaseUrls[1].replace('v0.1.186', 'v1.0.1-linux'), '')), /stable release and Linux preview notes/);
+});
