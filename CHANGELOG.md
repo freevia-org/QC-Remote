@@ -6,6 +6,24 @@ Since 1.0.1, Windows, macOS, Linux, Android and iOS share one public application
 version. Android and iOS retain their separate increasing build counters;
 internal library and service versions are independent.
 
+## QC Remote 1.0.3 - 25 October 2026
+
+Update signal-hook consistently in the broker's root and desktop Cargo graphs.
+Update AES and CTR together for encrypted forwarding, retaining the library's
+Rust 1.87 minimum with AES 0.9.2. The cipher constructor keeps the same key and
+IV bytes, and the existing fixed ciphertext and session-lifecycle tests remain
+unchanged. CI now exercises encrypted forwarding on the declared Rust minimum
+in addition to the default-feature tests. Third-party license records follow
+the resolved dependency graphs.
+
+All applications use version 1.0.3; Android advances to versionCode 57 and the
+iOS App target to build 5. The excluded DriverKit prototype is unchanged. This
+entry does not claim publication, Store approval or physical-device testing.
+Authentication credentials, authorization policies and the live Worker's
+emergency guard are retained. The macOS output-deadline gap, unvalidated Windows
+output bound, separate broker output-lock issue and unbounded Type-61 relay
+remain known limitations.
+
 ## QC Remote 1.0.2 - 25 October 2026
 
 Update the native MCP SDK, platform verifier, Linux tray and libc dependencies
