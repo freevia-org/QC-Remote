@@ -4443,8 +4443,8 @@
     {
       "ecosystem": "cargo",
       "name": "signal-hook",
-      "version": "0.3.18",
-      "license": "Apache-2.0/MIT",
+      "version": "0.4.5",
+      "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/vorner/signal-hook",
       "licenseTextHashes": [
         "954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76",
@@ -10950,7 +10950,7 @@
         "cargo:serde_with_macros@3.22.0",
         "cargo:servo_arc@0.4.3",
         "cargo:signal-hook-registry@1.4.8",
-        "cargo:signal-hook@0.3.18",
+        "cargo:signal-hook@0.4.5",
         "cargo:simd_cesu8@1.2.0",
         "cargo:smallvec@1.15.2",
         "cargo:smallvec@1.16.1",
@@ -11226,7 +11226,7 @@
       ],
       "components": [
         "cargo:signal-hook-registry@1.4.8",
-        "cargo:signal-hook@0.3.18"
+        "cargo:signal-hook@0.4.5"
       ]
     },
     {
