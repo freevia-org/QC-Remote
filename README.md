@@ -24,7 +24,7 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 | --- | --- | --- | --- |
 | Windows 10/11, x64 | 1.0.3 | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3/QC-Remote-Windows-1.0.3-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5); 1.0.2 remains in review; 1.0.3 has not been submitted |
 | Ubuntu 24.04, x86_64 | 1.0.3 Linux preview | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3-linux/qc-remote_1.0.3_amd64.deb) | CI build provenance included |
-| Android 7.0+, USB host/OTG | 1.0.3 | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3/qc-remote-1.0.3.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote) · [Invited tester opt-in](https://play.google.com/apps/internaltest/4701527491652130240); build 57 submitted; production approval unverified |
+| Android 7.0+, USB host/OTG | 1.0.3 | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3/qc-remote-1.0.3.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote) · [Invited tester opt-in](https://play.google.com/apps/internaltest/4701527491652130240); build 57 live in production at 100% rollout across 178 countries |
 | macOS, Apple Silicon | 1.0.3 | [Signed and notarized ZIP](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3/QC-Remote-macOS-1.0.3-arm64.zip) | — |
 | macOS, Intel | 1.0.3 developer preview | [Unsigned CI DMG](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3-macos-preview.1/QC-Remote-macOS-1.0.3-intel-unsigned.dmg) | Not notarized |
 | iPhone and iPad | 1.0.3 build 5 waiting for review; not publicly available | Build from [`apps/ios`](apps/ios/README.md) | Submitted to Apple; replaces the earlier 1.0.1 build 3 submission |
@@ -36,8 +36,8 @@ requires Apple-approved DriverKit entitlements and hardware validation. See
 
 All platform release sources now share marketing version **1.0.3**. Windows, Android and Apple Silicon macOS
 artifacts are available from [GitHub release v1.0.3](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.3).
-Google Play build 57 is submitted to the internal and production tracks; approval is
-not yet verified, and build 56 was the last confirmed public version. Windows 1.0.2 remains in
+Google Play build 57 is live in production at 100% rollout across all 178 supported
+countries and regions. Windows 1.0.2 remains in
 Microsoft Store review; 1.0.3 has not been submitted there. The GitHub Android APK uses the
 upload signing key and cannot replace a Play-installed app in place; use Play
 for an update that preserves that installation.
