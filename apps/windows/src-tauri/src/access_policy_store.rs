@@ -705,6 +705,23 @@ mod tests {
         })
     }
 
+    // The store intentionally bounds lock admission and can reject a contending
+    // writer after LOCK_WAIT. This fixture verifies all eight writes eventually
+    // publish distinct records, so retry only that pre-write rejection within a
+    // separate finite test budget. Any other error remains a test failure.
+    fn write_after_test_contention(path: &Path, mode: AccessMode) -> Result<Record, String> {
+        const CONTENTION: &str = "Another relay policy update is still in progress";
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match write(path, mode) {
+                Err(error) if error == CONTENTION && Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                result => return result,
+            }
+        }
+    }
+
     struct Scratch(PathBuf);
     impl Scratch {
         fn new(label: &str) -> Self {
@@ -877,7 +894,7 @@ mod tests {
             AccessMode::Performance,
             AccessMode::ReadOnly,
         ];
-        let records = concurrent_records(&scratch.0, modes, write);
+        let records = concurrent_records(&scratch.0, modes, write_after_test_contention);
         let revisions: std::collections::BTreeSet<_> = records
             .iter()
             .map(|record| record.revision.clone())
