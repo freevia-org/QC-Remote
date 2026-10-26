@@ -3145,7 +3145,9 @@ fn fixture_allocation_rejects_reparse_ancestor() {
     );
     let bytes = fs::read(&path).expect("read owned manifest");
     let expected = std::env::var("QC_ISOLATION_REPARSE_SHA256").expect("manifest digest required");
-    assert_eq!(format!("{:X}", Sha256::digest(&bytes)), expected);
+    let digest = Sha256::digest(&bytes);
+    let digest_hex: String = digest.iter().map(|byte| format!("{byte:02X}")).collect();
+    assert_eq!(digest_hex, expected);
     let manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(manifest["schema"], "owned-reparse-control/1");
     assert_eq!(manifest["token"].as_str().unwrap().len(), 32);

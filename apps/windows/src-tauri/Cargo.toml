@@ -80,7 +80,7 @@ semver = "=1.0.28"
 # key at every depth sorted alphabetically, which is a total diff of a file QC
 # Remote was only asked to add one entry to.
 serde_json = { version = "1", features = ["preserve_order"] }
-sha2 = "0.10"
+sha2 = "0.11"
 subtle = "2"
 tauri = { version = "2", default-features = false, features = ["wry"] }
 tauri-plugin-single-instance = "=2.4.5"
