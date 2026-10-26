@@ -15,6 +15,56 @@ import org.json.JSONObject;
 
 /** Chooses an app-private destination for legacy Android backup exports. */
 final class QcBackupStorage {
+    static final class PreparedBackupDocument {
+        final byte[] bytes;
+        private PreparedBackupDocument(byte[] bytes) { this.bytes = bytes; }
+    }
+
+    interface DocumentWriter { JSONObject save(PreparedBackupDocument document) throws Exception; }
+    interface ChecksumInspector { JSONObject inspect(byte[] bytes) throws Exception; }
+
+    static PreparedBackupDocument prepareDocument(JSONObject document) throws Exception {
+        byte[] bytes = document.toString().getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > QcUsbProfile.BACKUP_MAXIMUM_DOCUMENT_BYTES)
+            throw new Exception("The native backup exceeds the 32 MiB safety limit.");
+        return new PreparedBackupDocument(bytes);
+    }
+
+    /** Record persistence before optional reporting, so reporting cannot hide a saved file. */
+    static JSONObject saveWithReport(PreparedBackupDocument document, DocumentWriter writer,
+        java.util.function.Consumer<JSONObject> recordSaved, ChecksumInspector inspector) throws Exception {
+        JSONObject saved = writer.save(document);
+        recordSaved.accept(saved);
+        return attachChecksumReport(saved, document.bytes, inspector);
+    }
+
+    /** Only canonical content-free reports cross the saved-result boundary. */
+    static JSONObject attachChecksumReport(JSONObject saved, byte[] bytes, ChecksumInspector inspector) {
+        try {
+            JSONObject canonical = new JSONObject(GeneratedBackupChecksum.UNAVAILABLE_JSON);
+            try {
+                JSONObject supplied = inspector.inspect(bytes);
+                if (supplied != null && supplied.optInt("schemaVersion", -1) == 1) {
+                    JSONObject candidate = new JSONObject(GeneratedBackupChecksum.jsonForReason(
+                        supplied.optString("reason", "internal_unavailable")));
+                    boolean same = supplied.length() == candidate.length();
+                    java.util.Iterator<String> keys = candidate.keys();
+                    while (same && keys.hasNext()) {
+                        String key = keys.next();
+                        same = supplied.has(key) && candidate.get(key).equals(supplied.opt(key));
+                    }
+                    if (same) canonical = candidate;
+                }
+            } catch (Exception | UnsatisfiedLinkError unavailable) {
+                // Expected optional bridge/report failure. Native save and recovery remain valid.
+            }
+            saved.put("backupChecksum", canonical);
+        } catch (org.json.JSONException unavailable) {
+            // Absence is the backwards-compatible result; never erase the saved location.
+        }
+        return saved;
+    }
+
     static File legacyRoot(File externalDownloads, File internalFiles, String folderName) throws IOException {
         File base = externalDownloads != null ? externalDownloads : internalFiles;
         if (base == null) throw new IOException("Android could not access private storage for the backup.");
@@ -26,12 +76,14 @@ final class QcBackupStorage {
     }
 
     static JSONObject saveDocument(Context context, JSONObject document, String requestedName) throws Exception {
+        return savePreparedDocument(context, prepareDocument(document), requestedName);
+    }
+
+    static JSONObject savePreparedDocument(Context context, PreparedBackupDocument document, String requestedName) throws Exception {
         String safeName = requestedName.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_").trim();
         if (safeName.isEmpty()) safeName = "QC Device Backup";
         String fileName = safeName.endsWith(".json") ? safeName : safeName + ".json";
-        byte[] bytes = document.toString().getBytes(StandardCharsets.UTF_8);
-        if (bytes.length > QcUsbProfile.BACKUP_MAXIMUM_DOCUMENT_BYTES)
-            throw new Exception("The native backup exceeds the 32 MiB safety limit.");
+        byte[] bytes = document.bytes;
 
         String path;
         String exportedName = fileName;

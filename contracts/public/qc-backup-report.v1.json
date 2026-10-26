@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:freevia:qcremote:backup-checksum-report:v1",
+  "title": "Advisory native backup checksum report",
+  "description": "Supplied-checksum consistency only; never authentication or restore compatibility. All statuses permit existing save admission.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "algorithm", "status", "checkedLayout", "reason", "message", "authenticityVerified", "stampIntegrityVerified", "metadataIntegrityVerified", "restoreCompatibilityVerified"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "algorithm": { "const": "sha256" },
+    "status": { "enum": ["verified", "mismatch", "unknown_layout"] },
+    "checkedLayout": { "enum": ["local_stamp_873_21", null] },
+    "reason": { "enum": ["local_match", "local_mismatch", "unsupported_envelope", "missing_fields", "invalid_hash", "invalid_base64", "too_short", "inspection_limit", "alternate_whole_payload", "internal_unavailable"] },
+    "message": { "enum": ["Archive checksum matches the supplied checksum under the observed local layout.", "Archive checksum does not match the observed local layout; formatting differences or damaged data are possible.", "Checksum assessment is unavailable for this backup layout."] },
+    "authenticityVerified": { "const": false },
+    "stampIntegrityVerified": { "const": false },
+    "metadataIntegrityVerified": { "const": false },
+    "restoreCompatibilityVerified": { "const": false }
+  },
+  "allOf": [
+    { "if": { "properties": { "status": { "const": "verified" } } }, "then": { "properties": { "checkedLayout": { "const": "local_stamp_873_21" }, "reason": { "const": "local_match" }, "message": { "const": "Archive checksum matches the supplied checksum under the observed local layout." } } } },
+    { "if": { "properties": { "status": { "const": "mismatch" } } }, "then": { "properties": { "checkedLayout": { "const": "local_stamp_873_21" }, "reason": { "const": "local_mismatch" }, "message": { "const": "Archive checksum does not match the observed local layout; formatting differences or damaged data are possible." } } } },
+    { "if": { "properties": { "status": { "const": "unknown_layout" } } }, "then": { "properties": { "checkedLayout": { "const": null }, "reason": { "enum": ["unsupported_envelope", "missing_fields", "invalid_hash", "invalid_base64", "too_short", "inspection_limit", "alternate_whole_payload", "internal_unavailable"] }, "message": { "const": "Checksum assessment is unavailable for this backup layout." } } } }
+  ],
+  "x-inspection-limits": {
+    "maximumJsonBytes": 33554432,
+    "maximumEncodedPayloadBytes": 33554432,
+    "maximumDecodedPayloadBytes": 25165824,
+    "encodedChunkBytes": 32768,
+    "prefixBytes": 873,
+    "stampBytes": 21
+  }
+}

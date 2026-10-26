@@ -7,3 +7,9 @@
 //! properties of the protocol, not of any one host.
 
 pub use crate::device::backup::*;
+
+mod generated_integrity;
+/// Advisory, bounded checksum inspection without changing native backup documents.
+pub mod integrity;
+pub use generated_integrity::MAXIMUM_JSON_BYTES as MAXIMUM_CHECKSUM_JSON_BYTES;
+pub use generated_integrity::{BackupChecksumReason, BackupChecksumReportV1, BackupChecksumStatus};

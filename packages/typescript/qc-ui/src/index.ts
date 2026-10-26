@@ -139,3 +139,4 @@ export { captureGatewaySession } from "./gateway-session";
 export { DeviceObservationProvider, useDeviceObservationPolicy, type DeviceObservationPolicy } from "./device-observation-policy.ts";
 export { createDemoBrokerProvider, DemoBrokerProviderError } from "./demo-broker-provider";
 export type { DemoBrokerTarget, DemoBrokerRequest } from "./demo-broker-provider";
+export { formatNativeBackupSaveNotice } from "./backup-checksum.ts";
