@@ -4497,6 +4497,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "sha2",
+      "version": "0.11.1",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/hashes",
+      "licenseTextHashes": [
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4",
+        "535a6aa345e8622e7a5cfd384e0c812d67f9c8f8f49f8b8369565fcb98c547fe"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "shlex",
       "version": "2.0.1",
       "license": "MIT OR Apache-2.0",
@@ -9998,7 +10009,8 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:sha1@0.11.0"
+        "cargo:sha1@0.11.0",
+        "cargo:sha2@0.11.1"
       ]
     },
     {
@@ -12107,7 +12119,8 @@
         "cargo:inout@0.2.5",
         "cargo:sha1@0.10.7",
         "cargo:sha1@0.11.0",
-        "cargo:sha2@0.10.9"
+        "cargo:sha2@0.10.9",
+        "cargo:sha2@0.11.1"
       ]
     },
     {
