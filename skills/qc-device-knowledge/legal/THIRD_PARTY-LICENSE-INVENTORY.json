@@ -1175,8 +1175,8 @@
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/RustCrypto/traits",
       "licenseTextHashes": [
-        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4",
-        "c8d7f4fd612a2da8e6688d4f93aa4cf298d6423fd86df22d9db03935e56abcd6"
+        "c8d7f4fd612a2da8e6688d4f93aa4cf298d6423fd86df22d9db03935e56abcd6",
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
       ]
     },
     {
@@ -4480,8 +4480,8 @@
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/RustCrypto/hashes",
       "licenseTextHashes": [
-        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4",
-        "535a6aa345e8622e7a5cfd384e0c812d67f9c8f8f49f8b8369565fcb98c547fe"
+        "535a6aa345e8622e7a5cfd384e0c812d67f9c8f8f49f8b8369565fcb98c547fe",
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
       ]
     },
     {
@@ -4502,8 +4502,8 @@
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/RustCrypto/hashes",
       "licenseTextHashes": [
-        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4",
-        "535a6aa345e8622e7a5cfd384e0c812d67f9c8f8f49f8b8369565fcb98c547fe"
+        "535a6aa345e8622e7a5cfd384e0c812d67f9c8f8f49f8b8369565fcb98c547fe",
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
       ]
     },
     {
