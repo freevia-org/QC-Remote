@@ -768,7 +768,6 @@ const OAUTH_OPTIONS: OAuthProviderOptions<Env> = {
   authorizeEndpoint: "/authorize",
   tokenEndpoint: "/token",
   clientRegistrationEndpoint: "/register",
-  allowPlainPKCE: false,
   // Exactly the scopes something enforces, and exactly the scopes the
   // protected-resource metadata below advertises: both read one list.
   scopesSupported: [...QC_SCOPES],
