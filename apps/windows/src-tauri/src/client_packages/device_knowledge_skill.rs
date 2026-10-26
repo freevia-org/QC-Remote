@@ -72,7 +72,18 @@ pub(super) fn escaped_bridge_path() -> String {
 }
 
 fn sha256_hex(contents: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(contents))
+    digest_hex(Sha256::digest(contents))
+}
+
+fn digest_hex(digest: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let bytes = digest.as_ref();
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 // Software inspection budgets, not firmware or user-library format maxima.
@@ -195,7 +206,7 @@ fn streamed_skill_hash_with_inspection(
         bytes += read as u64;
         hash.update(&buffer[..read]);
     }
-    Ok((format!("{:x}", hash.finalize()), bytes))
+    Ok((digest_hex(hash.finalize()), bytes))
 }
 
 fn bundled_device_knowledge_skill_hashes() -> serde_json::Map<String, Value> {
