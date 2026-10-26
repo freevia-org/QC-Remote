@@ -5210,7 +5210,7 @@
     {
       "ecosystem": "cargo",
       "name": "tokio",
-      "version": "1.53.3",
+      "version": "1.54.1",
       "license": "MIT",
       "sourceUrl": "https://github.com/tokio-rs/tokio",
       "licenseTextHashes": [
@@ -5577,7 +5577,7 @@
     {
       "ecosystem": "cargo",
       "name": "uuid",
-      "version": "1.28.0",
+      "version": "1.29.0",
       "license": "Apache-2.0 OR MIT",
       "sourceUrl": "https://github.com/uuid-rs/uuid",
       "licenseTextHashes": [
@@ -8759,7 +8759,7 @@
       ],
       "components": [
         "cargo:uuid@1.26.0",
-        "cargo:uuid@1.28.0"
+        "cargo:uuid@1.29.0"
       ]
     },
     {
@@ -9703,7 +9703,7 @@
         "cargo:tokio-stream@0.1.19",
         "cargo:tokio-util@0.7.19",
         "cargo:tokio@1.53.1",
-        "cargo:tokio@1.53.3"
+        "cargo:tokio@1.54.1"
       ]
     },
     {
@@ -11052,7 +11052,7 @@
         "cargo:unicode-segmentation@1.13.3",
         "cargo:url@2.5.8",
         "cargo:uuid@1.26.0",
-        "cargo:uuid@1.28.0",
+        "cargo:uuid@1.29.0",
         "cargo:version_check@0.9.5",
         "cargo:web_atoms@0.2.6",
         "cargo:window-vibrancy@0.6.0",
