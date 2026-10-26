@@ -3136,7 +3136,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ================================================================================
 SHA-256: 30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652
 Source file names: LICENSE, LICENSE-MIT
-Applies to: cargo:adler2@2.0.1, cargo:anyhow@1.0.104, cargo:async-channel@2.5.0, cargo:async-executor@1.14.0, cargo:async-fs@2.2.0, cargo:async-io@2.6.0, cargo:async-lock@3.4.2, cargo:async-net@2.0.0, cargo:async-process@2.5.0, cargo:async-recursion@1.1.1, cargo:async-signal@0.2.14, cargo:async-task@4.7.1, cargo:async-trait@0.1.92, cargo:atomic-waker@1.1.2, cargo:blocking@1.7.0, cargo:camino@1.2.5, cargo:cargo-platform@0.1.9, cargo:cargo_metadata@0.19.2, cargo:concurrent-queue@2.5.0, cargo:displaydoc@0.2.7, cargo:dtoa@1.0.11, cargo:dyn-clone@1.0.20, cargo:endi@1.1.1, cargo:erased-serde@0.4.10, cargo:event-listener-strategy@0.5.4, cargo:event-listener@5.4.2, cargo:fastrand@2.5.0, cargo:futures-lite@2.6.1, cargo:itoa@1.0.18, cargo:linux-raw-sys@0.12.1, cargo:once_cell@1.21.4, cargo:ordered-stream@0.2.0, cargo:parking@2.2.1, cargo:pastey@0.2.3, cargo:pin-project-lite@0.2.17, cargo:piper@0.2.5, cargo:polling@3.11.0, cargo:prettyplease@0.2.37, cargo:proc-macro-crate@1.3.1, cargo:proc-macro-crate@2.0.2, cargo:proc-macro-crate@3.5.0, cargo:proc-macro2@1.0.107, cargo:quote@1.0.47, cargo:ref-cast-impl@1.0.27, cargo:ref-cast@1.0.27, cargo:rustc-hash@2.1.3, cargo:rustix@1.1.4, cargo:rustix@1.1.5, cargo:rustversion@1.0.23, cargo:semver@1.0.28, cargo:serde-untagged@0.1.9, cargo:serde@1.0.229, cargo:serde_core@1.0.229, cargo:serde_derive@1.0.229, cargo:serde_derive_internals@0.29.1, cargo:serde_derive_internals@0.30.0, cargo:serde_json@1.0.151, cargo:serde_json@1.0.154, cargo:serde_path_to_error@0.1.20, cargo:serde_repr@0.1.21, cargo:servo_arc@0.4.3, cargo:simd_cesu8@1.2.0, cargo:syn@1.0.109, cargo:syn@2.0.119, cargo:syn@3.0.4, cargo:syn@3.0.6, cargo:system-deps@6.2.2, cargo:thiserror-impl@1.0.69, cargo:thiserror-impl@2.0.20, cargo:thiserror-impl@2.0.21, cargo:thiserror@1.0.69, cargo:thiserror@2.0.20, cargo:thiserror@2.0.21, cargo:typed-path@0.12.3, cargo:typeid@1.0.3, cargo:unicode-ident@1.0.24, cargo:unicode-ident@1.0.26, cargo:utf-8@0.7.6, cargo:zmij@1.0.23, cargo:zvariant_utils@4.2.0
+Applies to: cargo:adler2@2.0.1, cargo:anyhow@1.0.104, cargo:async-channel@2.5.0, cargo:async-executor@1.14.0, cargo:async-fs@2.2.0, cargo:async-io@2.6.0, cargo:async-lock@3.4.2, cargo:async-net@2.0.0, cargo:async-process@2.5.0, cargo:async-recursion@1.1.1, cargo:async-signal@0.2.14, cargo:async-task@4.7.1, cargo:async-trait@0.1.92, cargo:atomic-waker@1.1.2, cargo:blocking@1.7.0, cargo:camino@1.2.5, cargo:cargo-platform@0.1.9, cargo:cargo_metadata@0.19.2, cargo:concurrent-queue@2.5.0, cargo:displaydoc@0.2.7, cargo:dtoa@1.0.11, cargo:dyn-clone@1.0.20, cargo:endi@1.1.1, cargo:erased-serde@0.4.10, cargo:event-listener-strategy@0.5.4, cargo:event-listener@5.4.2, cargo:fastrand@2.5.0, cargo:futures-lite@2.6.1, cargo:itoa@1.0.18, cargo:linux-raw-sys@0.12.1, cargo:once_cell@1.21.4, cargo:ordered-stream@0.2.0, cargo:parking@2.2.1, cargo:pastey@0.2.3, cargo:pin-project-lite@0.2.17, cargo:piper@0.2.5, cargo:polling@3.11.0, cargo:prettyplease@0.2.37, cargo:proc-macro-crate@1.3.1, cargo:proc-macro-crate@2.0.2, cargo:proc-macro-crate@3.5.0, cargo:proc-macro2@1.0.107, cargo:quote@1.0.47, cargo:ref-cast-impl@1.0.27, cargo:ref-cast@1.0.27, cargo:rustc-hash@2.1.3, cargo:rustix@1.1.4, cargo:rustix@1.1.5, cargo:rustversion@1.0.23, cargo:semver@1.0.28, cargo:serde-untagged@0.1.9, cargo:serde@1.0.229, cargo:serde_core@1.0.229, cargo:serde_derive@1.0.229, cargo:serde_derive_internals@0.29.1, cargo:serde_derive_internals@0.30.0, cargo:serde_json@1.0.151, cargo:serde_json@1.0.154, cargo:serde_path_to_error@0.1.20, cargo:serde_repr@0.1.21, cargo:servo_arc@0.4.3, cargo:simd_cesu8@1.2.0, cargo:syn@1.0.109, cargo:syn@2.0.119, cargo:syn@3.0.4, cargo:syn@3.0.6, cargo:system-deps@6.2.2, cargo:thiserror-impl@1.0.69, cargo:thiserror-impl@2.0.20, cargo:thiserror-impl@2.0.21, cargo:thiserror@1.0.69, cargo:thiserror@2.0.20, cargo:thiserror@2.0.21, cargo:typed-path@0.12.3, cargo:typeid@1.0.3, cargo:unicode-ident@1.0.24, cargo:unicode-ident@1.0.26, cargo:zmij@1.0.23, cargo:zvariant_utils@4.2.0
 --------------------------------------------------------------------------------
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
@@ -5946,7 +5946,7 @@ SOFTWARE.
 ================================================================================
 SHA-256: 5c07409e7457212808b3bc8775a3aa15599017f283cb7fd317687e47e639d983
 Source file names: LICENSE
-Applies to: cargo:tokio-tungstenite@0.28.0
+Applies to: cargo:tokio-tungstenite@0.30.0
 --------------------------------------------------------------------------------
 Copyright (c) 2017 Daniel Abramov
 Copyright (c) 2017 Alexey Galakhov
@@ -9849,7 +9849,7 @@ SOFTWARE.
 ================================================================================
 SHA-256: 85ad950cce8752f716dbf49be95b2639172cb49f291336d57f1fdc9989e38179
 Source file names: LICENSE-APACHE
-Applies to: cargo:anyhow@1.0.104, cargo:async-trait@0.1.92, cargo:dtoa@1.0.11, cargo:dyn-clone@1.0.20, cargo:erased-serde@0.4.10, cargo:itoa@1.0.18, cargo:libc@0.2.191, cargo:pastey@0.2.3, cargo:prettyplease@0.2.37, cargo:proc-macro2@1.0.107, cargo:quote@1.0.47, cargo:ref-cast-impl@1.0.27, cargo:ref-cast@1.0.27, cargo:rustc-hash@2.1.3, cargo:rustversion@1.0.23, cargo:ryu@1.0.23, cargo:semver@1.0.28, cargo:serde-untagged@0.1.9, cargo:serde@1.0.229, cargo:serde_core@1.0.229, cargo:serde_derive@1.0.229, cargo:serde_derive_internals@0.29.1, cargo:serde_derive_internals@0.30.0, cargo:serde_json@1.0.151, cargo:serde_json@1.0.154, cargo:serde_path_to_error@0.1.20, cargo:serde_repr@0.1.21, cargo:serde_urlencoded@0.7.1, cargo:syn@2.0.119, cargo:syn@3.0.4, cargo:syn@3.0.6, cargo:thiserror-impl@1.0.69, cargo:thiserror-impl@2.0.20, cargo:thiserror-impl@2.0.21, cargo:thiserror@1.0.69, cargo:thiserror@2.0.20, cargo:thiserror@2.0.21, cargo:typed-path@0.12.3, cargo:typeid@1.0.3, cargo:unicode-ident@1.0.24, cargo:unicode-ident@1.0.26, cargo:utf-8@0.7.6
+Applies to: cargo:anyhow@1.0.104, cargo:async-trait@0.1.92, cargo:dtoa@1.0.11, cargo:dyn-clone@1.0.20, cargo:erased-serde@0.4.10, cargo:itoa@1.0.18, cargo:libc@0.2.191, cargo:pastey@0.2.3, cargo:prettyplease@0.2.37, cargo:proc-macro2@1.0.107, cargo:quote@1.0.47, cargo:ref-cast-impl@1.0.27, cargo:ref-cast@1.0.27, cargo:rustc-hash@2.1.3, cargo:rustversion@1.0.23, cargo:ryu@1.0.23, cargo:semver@1.0.28, cargo:serde-untagged@0.1.9, cargo:serde@1.0.229, cargo:serde_core@1.0.229, cargo:serde_derive@1.0.229, cargo:serde_derive_internals@0.29.1, cargo:serde_derive_internals@0.30.0, cargo:serde_json@1.0.151, cargo:serde_json@1.0.154, cargo:serde_path_to_error@0.1.20, cargo:serde_repr@0.1.21, cargo:serde_urlencoded@0.7.1, cargo:syn@2.0.119, cargo:syn@3.0.4, cargo:syn@3.0.6, cargo:thiserror-impl@1.0.69, cargo:thiserror-impl@2.0.20, cargo:thiserror-impl@2.0.21, cargo:thiserror@1.0.69, cargo:thiserror@2.0.20, cargo:thiserror@2.0.21, cargo:typed-path@0.12.3, cargo:typeid@1.0.3, cargo:unicode-ident@1.0.24, cargo:unicode-ident@1.0.26
 --------------------------------------------------------------------------------
 Apache License
                         Version 2.0, January 2004
@@ -10827,7 +10827,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA-256: 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76
 Source file names: LICENSE, LICENSE-APACHE, https://github.com/tauri-apps/libappindicator-rs/blob/eafd1e3682a1247f595410266091e9684021cb6f/LICENSE-APACHE (SHA-256 954f335b8baf5e1a5748b3a1bf6eeb2ec0b28ae19813f02063d64be005765a76)
-Applies to: cargo:arc-swap@1.9.3, cargo:async-channel@2.5.0, cargo:async-executor@1.14.0, cargo:async-fs@2.2.0, cargo:async-io@2.6.0, cargo:async-lock@3.4.2, cargo:async-net@2.0.0, cargo:async-process@2.5.0, cargo:async-recursion@1.1.1, cargo:async-signal@0.2.14, cargo:async-task@4.7.1, cargo:atomic-waker@1.1.2, cargo:autocfg@1.5.1, cargo:base64@0.21.7, cargo:base64@0.22.1, cargo:base64@0.23.1, cargo:bitflags@1.3.2, cargo:bitflags@2.13.1, cargo:bitflags@2.13.2, cargo:blocking@1.7.0, cargo:bs58@0.5.1, cargo:camino@1.2.5, cargo:cc@1.4.4, cargo:cc@1.4.7, cargo:cfg-if@1.0.4, cargo:cfg-if@1.0.5, cargo:cmake@0.1.58, cargo:concurrent-queue@2.5.0, cargo:core-foundation-sys@0.8.7, cargo:core-foundation@0.10.1, cargo:core-foundation@0.9.4, cargo:core-graphics-types@0.2.0, cargo:core-graphics@0.25.0, cargo:core_detect@1.0.0, cargo:crossbeam-channel@0.5.16, cargo:crossbeam-queue@0.3.14, cargo:crossbeam-utils@0.8.22, cargo:dbus-secret-service@4.1.0, cargo:displaydoc@0.2.7, cargo:either@1.18.0, cargo:equivalent@1.0.2, cargo:errno@0.3.14, cargo:event-listener-strategy@0.5.4, cargo:event-listener@5.4.2, cargo:fastrand@2.5.0, cargo:find-msvc-tools@0.1.11, cargo:find-msvc-tools@0.1.13, cargo:fixedbitset@0.5.7, cargo:flate2@1.1.10, cargo:fnv@1.0.7, cargo:form_urlencoded@1.2.2, cargo:futures-lite@2.6.1, cargo:glob@0.3.4, cargo:hashbrown@0.12.3, cargo:hashbrown@0.15.5, cargo:hashbrown@0.17.1, cargo:heck@0.4.1, cargo:heck@0.5.0, cargo:html5ever@0.39.0, cargo:httparse@1.10.1, cargo:hyper-rustls@0.27.10, cargo:idna@1.1.0, cargo:idna_adapter@1.2.2, cargo:indexmap@1.9.3, cargo:indexmap@2.14.1, cargo:indexmap@2.14.2, cargo:itertools@0.14.0, cargo:jni@0.21.1, cargo:jobserver@0.1.35, cargo:keyboard-types@0.7.0, cargo:libappindicator-sys@0.9.0, cargo:libappindicator@0.9.0, cargo:linux-raw-sys@0.12.1, cargo:lock_api@0.4.14, cargo:log@0.4.34, cargo:markup5ever@0.39.0, cargo:mime@0.3.17, cargo:muda@0.19.3, cargo:multimap@0.10.1, cargo:num-traits@0.2.19, cargo:once_cell@1.21.4, cargo:openssl-probe@0.2.1, cargo:ordered-stream@0.2.0, cargo:parking@2.2.1, cargo:parking_lot@0.12.5, cargo:parking_lot_core@0.9.12, cargo:percent-encoding@2.3.2, cargo:petgraph@0.8.3, cargo:piper@0.2.5, cargo:pkg-config@0.3.34, cargo:png@0.17.16, cargo:png@0.18.1, cargo:polling@3.11.0, cargo:pollster@0.4.0, cargo:prost-build@0.14.4, cargo:prost-derive@0.14.4, cargo:prost-types@0.14.4, cargo:prost@0.14.4, cargo:regex-automata@0.4.18, cargo:regex-syntax@0.8.11, cargo:regex@1.13.1, cargo:rustc_version@0.4.1, cargo:rustix@1.1.4, cargo:rustix@1.1.5, cargo:rustls-native-certs@0.8.4, cargo:rustls@0.23.46, cargo:scoped-tls@1.0.1, cargo:scopeguard@1.2.0, cargo:security-framework-sys@2.17.0, cargo:security-framework@3.7.0, cargo:serde_with@3.22.0, cargo:serde_with_macros@3.22.0, cargo:servo_arc@0.4.3, cargo:signal-hook-registry@1.4.8, cargo:signal-hook@0.4.5, cargo:simd_cesu8@1.2.0, cargo:smallvec@1.15.2, cargo:smallvec@1.16.1, cargo:socket2@0.6.5, cargo:stable_deref_trait@1.2.1, cargo:string_cache@0.9.0, cargo:string_cache_codegen@0.6.1, cargo:syn@1.0.109, cargo:system-configuration-sys@0.6.0, cargo:system-configuration@0.7.0, cargo:system-deps@6.2.2, cargo:tempfile@3.27.0, cargo:tendril@0.5.1, cargo:toml_datetime@0.6.3, cargo:tray-icon@0.24.2, cargo:tungstenite@0.28.0, cargo:unicode-segmentation@1.13.3, cargo:url@2.5.8, cargo:uuid@1.26.0, cargo:uuid@1.28.0, cargo:version_check@0.9.5, cargo:web_atoms@0.2.6, cargo:window-vibrancy@0.6.0, cargo:wry@0.55.1
+Applies to: cargo:arc-swap@1.9.3, cargo:async-channel@2.5.0, cargo:async-executor@1.14.0, cargo:async-fs@2.2.0, cargo:async-io@2.6.0, cargo:async-lock@3.4.2, cargo:async-net@2.0.0, cargo:async-process@2.5.0, cargo:async-recursion@1.1.1, cargo:async-signal@0.2.14, cargo:async-task@4.7.1, cargo:atomic-waker@1.1.2, cargo:autocfg@1.5.1, cargo:base64@0.21.7, cargo:base64@0.22.1, cargo:base64@0.23.1, cargo:bitflags@1.3.2, cargo:bitflags@2.13.1, cargo:bitflags@2.13.2, cargo:blocking@1.7.0, cargo:bs58@0.5.1, cargo:camino@1.2.5, cargo:cc@1.4.4, cargo:cc@1.4.7, cargo:cfg-if@1.0.4, cargo:cfg-if@1.0.5, cargo:cmake@0.1.58, cargo:concurrent-queue@2.5.0, cargo:core-foundation-sys@0.8.7, cargo:core-foundation@0.10.1, cargo:core-foundation@0.9.4, cargo:core-graphics-types@0.2.0, cargo:core-graphics@0.25.0, cargo:core_detect@1.0.0, cargo:crossbeam-channel@0.5.16, cargo:crossbeam-queue@0.3.14, cargo:crossbeam-utils@0.8.22, cargo:dbus-secret-service@4.1.0, cargo:displaydoc@0.2.7, cargo:either@1.18.0, cargo:equivalent@1.0.2, cargo:errno@0.3.14, cargo:event-listener-strategy@0.5.4, cargo:event-listener@5.4.2, cargo:fastrand@2.5.0, cargo:find-msvc-tools@0.1.11, cargo:find-msvc-tools@0.1.13, cargo:fixedbitset@0.5.7, cargo:flate2@1.1.10, cargo:fnv@1.0.7, cargo:form_urlencoded@1.2.2, cargo:futures-lite@2.6.1, cargo:glob@0.3.4, cargo:hashbrown@0.12.3, cargo:hashbrown@0.15.5, cargo:hashbrown@0.17.1, cargo:heck@0.4.1, cargo:heck@0.5.0, cargo:html5ever@0.39.0, cargo:httparse@1.10.1, cargo:hyper-rustls@0.27.10, cargo:idna@1.1.0, cargo:idna_adapter@1.2.2, cargo:indexmap@1.9.3, cargo:indexmap@2.14.1, cargo:indexmap@2.14.2, cargo:itertools@0.14.0, cargo:jni@0.21.1, cargo:jobserver@0.1.35, cargo:keyboard-types@0.7.0, cargo:libappindicator-sys@0.9.0, cargo:libappindicator@0.9.0, cargo:linux-raw-sys@0.12.1, cargo:lock_api@0.4.14, cargo:log@0.4.34, cargo:markup5ever@0.39.0, cargo:mime@0.3.17, cargo:muda@0.19.3, cargo:multimap@0.10.1, cargo:num-traits@0.2.19, cargo:once_cell@1.21.4, cargo:openssl-probe@0.2.1, cargo:ordered-stream@0.2.0, cargo:parking@2.2.1, cargo:parking_lot@0.12.5, cargo:parking_lot_core@0.9.12, cargo:percent-encoding@2.3.2, cargo:petgraph@0.8.3, cargo:piper@0.2.5, cargo:pkg-config@0.3.34, cargo:png@0.17.16, cargo:png@0.18.1, cargo:polling@3.11.0, cargo:pollster@0.4.0, cargo:prost-build@0.14.4, cargo:prost-derive@0.14.4, cargo:prost-types@0.14.4, cargo:prost@0.14.4, cargo:regex-automata@0.4.18, cargo:regex-syntax@0.8.11, cargo:regex@1.13.1, cargo:rustc_version@0.4.1, cargo:rustix@1.1.4, cargo:rustix@1.1.5, cargo:rustls-native-certs@0.8.4, cargo:rustls@0.23.46, cargo:scoped-tls@1.0.1, cargo:scopeguard@1.2.0, cargo:security-framework-sys@2.17.0, cargo:security-framework@3.7.0, cargo:serde_with@3.22.0, cargo:serde_with_macros@3.22.0, cargo:servo_arc@0.4.3, cargo:signal-hook-registry@1.4.8, cargo:signal-hook@0.4.5, cargo:simd_cesu8@1.2.0, cargo:smallvec@1.15.2, cargo:smallvec@1.16.1, cargo:socket2@0.6.5, cargo:stable_deref_trait@1.2.1, cargo:string_cache@0.9.0, cargo:string_cache_codegen@0.6.1, cargo:syn@1.0.109, cargo:system-configuration-sys@0.6.0, cargo:system-configuration@0.7.0, cargo:system-deps@6.2.2, cargo:tempfile@3.27.0, cargo:tendril@0.5.1, cargo:toml_datetime@0.6.3, cargo:tray-icon@0.24.2, cargo:tungstenite@0.30.0, cargo:unicode-segmentation@1.13.3, cargo:url@2.5.8, cargo:uuid@1.26.0, cargo:uuid@1.28.0, cargo:version_check@0.9.5, cargo:web_atoms@0.2.6, cargo:window-vibrancy@0.6.0, cargo:wry@0.55.1
 --------------------------------------------------------------------------------
 Apache License
                         Version 2.0, January 2004
@@ -12318,7 +12318,7 @@ DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA-256: a69edb2155ca65cd0d352e7fc1a71a53b94f222b8772cb4e06b3d7f6aaa3fe64
 Source file names: LICENSE-MIT
-Applies to: cargo:tungstenite@0.28.0
+Applies to: cargo:tungstenite@0.30.0
 --------------------------------------------------------------------------------
 Copyright (c) 2017 Alexey Galakhov
 Copyright (c) 2016 Jason Housley
@@ -16751,7 +16751,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ================================================================================
 SHA-256: e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4
 Source file names: LICENSE-APACHE
-Applies to: cargo:aes@0.9.2, cargo:block-buffer@0.10.4, cargo:block-buffer@0.12.1, cargo:chacha20@0.10.2, cargo:cipher@0.5.2, cargo:cpubits@0.1.1, cargo:cpufeatures@0.2.17, cargo:cpufeatures@0.3.1, cargo:crypto-common@0.1.7, cargo:crypto-common@0.2.2, cargo:ctr@0.10.1, cargo:digest@0.10.7, cargo:hybrid-array@0.4.15, cargo:inout@0.2.5, cargo:sha1@0.10.7, cargo:sha2@0.10.9
+Applies to: cargo:aes@0.9.2, cargo:block-buffer@0.10.4, cargo:block-buffer@0.12.1, cargo:chacha20@0.10.2, cargo:cipher@0.5.2, cargo:const-oid@0.10.2, cargo:cpubits@0.1.1, cargo:cpufeatures@0.2.17, cargo:cpufeatures@0.3.1, cargo:crypto-common@0.1.7, cargo:crypto-common@0.2.2, cargo:ctr@0.10.1, cargo:digest@0.10.7, cargo:digest@0.11.3, cargo:hybrid-array@0.4.15, cargo:inout@0.2.5, cargo:sha1@0.10.7, cargo:sha1@0.11.0, cargo:sha2@0.10.9
 --------------------------------------------------------------------------------
 Apache License
                         Version 2.0, January 2004
@@ -19436,3 +19436,67 @@ MIT License
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE
+================================================================================
+SHA-256: c8d7f4fd612a2da8e6688d4f93aa4cf298d6423fd86df22d9db03935e56abcd6
+Source file names: LICENSE-MIT
+Applies to: cargo:digest@0.11.3
+--------------------------------------------------------------------------------
+Copyright (c) 2017-2025 RustCrypto Developers
+Copyright (c) 2017 Artyom Pavlov
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+================================================================================
+SHA-256: 535a6aa345e8622e7a5cfd384e0c812d67f9c8f8f49f8b8369565fcb98c547fe
+Source file names: LICENSE-MIT
+Applies to: cargo:sha1@0.11.0
+--------------------------------------------------------------------------------
+Copyright (c) 2016-2026 The RustCrypto Project Developers
+Copyright (c) 2016 Artyom Pavlov
+Copyright (c) 2009-2013 Mozilla Foundation
+Copyright (c) 2006-2009 Graydon Hoare
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
