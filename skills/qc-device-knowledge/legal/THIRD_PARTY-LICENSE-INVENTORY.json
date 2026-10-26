@@ -737,6 +737,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "const-oid",
+      "version": "0.10.2",
+      "license": "Apache-2.0 OR MIT",
+      "sourceUrl": "https://github.com/RustCrypto/formats",
+      "licenseTextHashes": [
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4",
+        "ea753cf1e3ec3e02b9f8fdb7876d2a82e881209eb54fdb0df52997e3a14e40d7"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "cookie",
       "version": "0.18.2",
       "license": "MIT OR Apache-2.0",
@@ -1155,6 +1166,17 @@
       "licenseTextHashes": [
         "9c5127ab88e8f55b26f7846eefbe1f582b9c2c596c65bfbb9a622b0c6f678d13",
         "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
+      "name": "digest",
+      "version": "0.11.3",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/traits",
+      "licenseTextHashes": [
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4",
+        "c8d7f4fd612a2da8e6688d4f93aa4cf298d6423fd86df22d9db03935e56abcd6"
       ]
     },
     {
@@ -4453,6 +4475,17 @@
     },
     {
       "ecosystem": "cargo",
+      "name": "sha1",
+      "version": "0.11.0",
+      "license": "MIT OR Apache-2.0",
+      "sourceUrl": "https://github.com/RustCrypto/hashes",
+      "licenseTextHashes": [
+        "e8541ea93f027a6c2cf077362f74492bdf0bb8354f63029962d84f1c130937a4",
+        "535a6aa345e8622e7a5cfd384e0c812d67f9c8f8f49f8b8369565fcb98c547fe"
+      ]
+    },
+    {
+      "ecosystem": "cargo",
       "name": "sha2",
       "version": "0.10.9",
       "license": "MIT OR Apache-2.0",
@@ -5147,7 +5180,7 @@
     {
       "ecosystem": "cargo",
       "name": "tokio-tungstenite",
-      "version": "0.28.0",
+      "version": "0.30.0",
       "license": "MIT",
       "sourceUrl": "https://github.com/snapview/tokio-tungstenite",
       "licenseTextHashes": [
@@ -5400,7 +5433,7 @@
     {
       "ecosystem": "cargo",
       "name": "tungstenite",
-      "version": "0.28.0",
+      "version": "0.30.0",
       "license": "MIT OR Apache-2.0",
       "sourceUrl": "https://github.com/snapview/tungstenite-rs",
       "licenseTextHashes": [
@@ -5516,17 +5549,6 @@
       "sourceUrl": "https://github.com/denoland/rust-urlpattern",
       "licenseTextHashes": [
         "f2459c4b106b4bee2204dde164c673160c9292d4177a5f92e0b116213c72a3b7"
-      ]
-    },
-    {
-      "ecosystem": "cargo",
-      "name": "utf-8",
-      "version": "0.7.6",
-      "license": "MIT OR Apache-2.0",
-      "sourceUrl": "https://github.com/SimonSapin/rust-utf8",
-      "licenseTextHashes": [
-        "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
-        "85ad950cce8752f716dbf49be95b2639172cb49f291336d57f1fdc9989e38179"
       ]
     },
     {
@@ -9501,7 +9523,6 @@
         "cargo:typeid@1.0.3",
         "cargo:unicode-ident@1.0.24",
         "cargo:unicode-ident@1.0.26",
-        "cargo:utf-8@0.7.6",
         "cargo:zmij@1.0.23",
         "cargo:zvariant_utils@4.2.0"
       ]
@@ -9972,6 +9993,15 @@
       ]
     },
     {
+      "sha256": "535a6aa345e8622e7a5cfd384e0c812d67f9c8f8f49f8b8369565fcb98c547fe",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:sha1@0.11.0"
+      ]
+    },
+    {
       "sha256": "537db907352420cef04106e138b6b9a62c23c0acdb5909319deb6d4183b339d0",
       "names": [
         "COPYRIGHT"
@@ -10036,7 +10066,7 @@
         "LICENSE"
       ],
       "components": [
-        "cargo:tokio-tungstenite@0.28.0"
+        "cargo:tokio-tungstenite@0.30.0"
       ]
     },
     {
@@ -10716,8 +10746,7 @@
         "cargo:typed-path@0.12.3",
         "cargo:typeid@1.0.3",
         "cargo:unicode-ident@1.0.24",
-        "cargo:unicode-ident@1.0.26",
-        "cargo:utf-8@0.7.6"
+        "cargo:unicode-ident@1.0.26"
       ]
     },
     {
@@ -11019,7 +11048,7 @@
         "cargo:tendril@0.5.1",
         "cargo:toml_datetime@0.6.3",
         "cargo:tray-icon@0.24.2",
-        "cargo:tungstenite@0.28.0",
+        "cargo:tungstenite@0.30.0",
         "cargo:unicode-segmentation@1.13.3",
         "cargo:url@2.5.8",
         "cargo:uuid@1.26.0",
@@ -11233,7 +11262,7 @@
         "LICENSE-MIT"
       ],
       "components": [
-        "cargo:tungstenite@0.28.0"
+        "cargo:tungstenite@0.30.0"
       ]
     },
     {
@@ -11677,6 +11706,15 @@
       ]
     },
     {
+      "sha256": "c8d7f4fd612a2da8e6688d4f93aa4cf298d6423fd86df22d9db03935e56abcd6",
+      "names": [
+        "LICENSE-MIT"
+      ],
+      "components": [
+        "cargo:digest@0.11.3"
+      ]
+    },
+    {
       "sha256": "c9027c55c9307b0cc5252b75c7bb74bb8fbf7270c881fa3a0a745ef742568156",
       "names": [
         "COPYRIGHT"
@@ -12056,6 +12094,7 @@
         "cargo:block-buffer@0.12.1",
         "cargo:chacha20@0.10.2",
         "cargo:cipher@0.5.2",
+        "cargo:const-oid@0.10.2",
         "cargo:cpubits@0.1.1",
         "cargo:cpufeatures@0.2.17",
         "cargo:cpufeatures@0.3.1",
@@ -12063,9 +12102,11 @@
         "cargo:crypto-common@0.2.2",
         "cargo:ctr@0.10.1",
         "cargo:digest@0.10.7",
+        "cargo:digest@0.11.3",
         "cargo:hybrid-array@0.4.15",
         "cargo:inout@0.2.5",
         "cargo:sha1@0.10.7",
+        "cargo:sha1@0.11.0",
         "cargo:sha2@0.10.9"
       ]
     },
@@ -12093,6 +12134,7 @@
         "LICENSE-MIT"
       ],
       "components": [
+        "cargo:const-oid@0.10.2",
         "cargo:cpufeatures@0.3.1"
       ]
     },
