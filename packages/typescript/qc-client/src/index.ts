@@ -2,6 +2,8 @@ import type { BlockDetails, DeviceActionResult, GeneralSettings, GlobalEqSetting
 export * from "./generated-domain.ts";
 export * from "./generated-gateway-methods.ts";
 export * from "./generated-payloads.ts";
+export * from "./generated-backup-checksum.ts";
+import type { BackupChecksumReportV1 } from "./generated-backup-checksum.ts";
 
 import { QC_CONNECTION_PHASES, QC_BROKER_CONNECTION_PHASE_ALIASES, type ConnectionPhase } from "./generated-domain.ts";
 
@@ -349,6 +351,8 @@ export interface WorkspaceFileResult {
   path?: string;
   name?: string;
   document?: WorkspaceDocument;
+  /** Advisory checksum consistency; never authentication or restore compatibility. */
+  backupChecksum?: BackupChecksumReportV1;
 }
 
 export interface DiagnosticsReport {

@@ -1,3 +1,4 @@
+import { formatNativeBackupSaveNotice } from "@qc-remote/ui";
 import { applicationModifier, shortcutLabel } from "./host-platform.ts";
 import { exposeDesktopDemo, observeDemoBrokerInstance } from "./demo-broker.ts";
 import { demoRegistrationNeverAttempted, observeDemoSelectionHold } from "./demo-broker-lifecycle.ts";
@@ -2342,7 +2343,7 @@ export function App() {
       try {
         const result = await tauriTransport.createDeviceBackup(name);
         operation.assertCurrent();
-        setNotice(result.cancelled ? "Device backup cancelled." : `Native Quad Cortex backup saved as ${result.name}.`);
+        setNotice(formatNativeBackupSaveNotice(result));
       } catch (error) {
         if (operation.current()) actionFailed(error);
       }

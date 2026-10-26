@@ -2115,6 +2115,38 @@ pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeVali
 }
 
 #[no_mangle]
+pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeInspectBackupChecksum(
+    mut env: JNIEnv,
+    _class: JClass,
+    document: JByteArray,
+) -> jstring {
+    or_throw(
+        catch_panic(|| {
+            let result = (|| {
+                let length = env
+                    .get_array_length(&document)
+                    .map_err(|_| "Checksum inspection unavailable")?;
+                let report = if length as usize > quadcortex::backup::MAXIMUM_CHECKSUM_JSON_BYTES {
+                    quadcortex::backup::BackupChecksumReportV1::from_reason(
+                        quadcortex::backup::BackupChecksumReason::InspectionLimit,
+                    )
+                } else {
+                    let bytes = env
+                        .convert_byte_array(document)
+                        .map_err(|_| "Checksum inspection unavailable")?;
+                    quadcortex::backup::integrity::inspect_local_backup_checksum_json(&bytes)
+                };
+                serde_json::to_string(&report)
+                    .map_err(|_| "Checksum inspection unavailable".to_string())
+            })();
+            json_result(&mut env, result)
+        }),
+        &mut env,
+        ptr::null_mut(),
+    )
+}
+
+#[no_mangle]
 pub extern "system" fn Java_org_freevia_qcremote_QcNativeStateDecoder_nativeConsumeBackupChunk(
     mut env: JNIEnv,
     _class: JClass,

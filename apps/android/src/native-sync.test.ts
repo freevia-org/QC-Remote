@@ -527,7 +527,29 @@ test("Android keeps exact local gateway parity while its remote surface honors e
 test("Android persists backups and requires a fresh synchronized USB session before completion", () => {
   assert.match(backupStorageSource, /MediaStore\.Downloads\.EXTERNAL_CONTENT_URI/);
   assert.match(backupStorageSource, /R\.string\.download_folder/);
-  assert.match(javaSource, /backupFileIo\.execute\(\(\) -> \{[\s\S]*saveBackupDocument/);
+  const dispatchStart = javaSource.indexOf("private void dispatchGatewayResponse(");
+  const backupEnd = javaSource.indexOf("for (QcPendingOperations.Entry<PendingGatewayRead> entry", dispatchStart);
+  assert.ok(dispatchStart >= 0 && backupEnd > dispatchStart, "the completed-backup dispatch must exist");
+  const backupDispatch = javaSource.slice(dispatchStart, backupEnd);
+  assert.match(backupDispatch, /pending != null && !pending\.operation\.recoveryStarted/);
+  assert.match(backupDispatch, /if \(update\.getBoolean\("complete", false\) && pendingBackup == pending\) \{\s*pending\.operation\.recoveryStarted = true;[\s\S]*backupFileIo\.execute/);
+  const fileWorker = backupDispatch.match(/backupFileIo\.execute\(\(\) -> \{\s*try \{([\s\S]*?)\}\s*catch \(Exception error\) \{\s*failPendingBackupRecovery\(pending, error\);\s*\}\s*\}\);/)?.[1];
+  assert.ok(fileWorker, "backup storage and reporting must run on the file executor with failure recovery");
+  assert.match(fileWorker, /QcBackupStorage\.PreparedBackupDocument prepared = QcBackupStorage\.prepareDocument\(document\);\s*QcBackupStorage\.saveWithReport\(prepared,\s*value -> QcBackupStorage\.savePreparedDocument\(getContext\(\), value, pending\.operation\.name\),\s*saved -> pending\.operation\.savedResult = saved,\s*QcNativeStateDecoder::inspectBackupChecksum\);\s*recoverSessionAfterBackup\(pending\);/);
+  for (const call of [
+    /backupFileIo\.execute\(/g, /QcBackupStorage\.prepareDocument\(/g,
+    /QcBackupStorage\.saveWithReport\(/g, /QcBackupStorage\.savePreparedDocument\(/g,
+    /pending\.operation\.savedResult = saved/g, /QcNativeStateDecoder::inspectBackupChecksum/g,
+    /recoverSessionAfterBackup\(pending\)/g,
+  ]) assert.equal([...backupDispatch.matchAll(call)].length, 1, `completed-backup wiring must occur once: ${call}`);
+  const saveStart = backupStorageSource.indexOf("static JSONObject saveWithReport(");
+  const saveEnd = backupStorageSource.indexOf("static JSONObject attachChecksumReport(", saveStart);
+  assert.ok(saveStart >= 0 && saveEnd > saveStart, "the save/report composition must exist");
+  const saveWithReport = backupStorageSource.slice(saveStart, saveEnd);
+  assert.match(saveWithReport, /JSONObject saved = writer\.save\(document\);\s*recordSaved\.accept\(saved\);\s*return attachChecksumReport\(saved, document\.bytes, inspector\);/);
+  for (const call of [/writer\.save\(/g, /recordSaved\.accept\(/g, /attachChecksumReport\(/g]) {
+    assert.equal([...saveWithReport.matchAll(call)].length, 1, `persistence, saved-result recording and inspection must each occur once: ${call}`);
+  }
   assert.match(backupStorageSource, /QcUsbProfile\.BACKUP_MAXIMUM_DOCUMENT_BYTES/);
   assert.match(usbProfileSource, /BACKUP_MAXIMUM_DOCUMENT_BYTES = 33554432/);
   assert.doesNotMatch(javaSource, /pending\.result\.complete\(JSObject\.fromJSONObject\(\(org\.json\.JSONObject\) update\.get\("backup"\)\)\)/);

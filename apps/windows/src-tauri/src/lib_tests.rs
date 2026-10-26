@@ -816,6 +816,39 @@ fn native_backup_validation_requires_the_qc_container_fields() {
 }
 
 #[test]
+fn bound_dialog_backup_saves_with_advisory_report_without_changing_native_document() {
+    let directory = unique_fixture_directory("backup-report-dialog");
+    let _directory_guard = RemoveDirOnDrop::new(directory.clone());
+    let path = directory.join("Public fixture.json");
+    let document = json!({"type":"backup", "creator":"quad", "payload":"AQID", "payload_hash":"a".repeat(64), "future":true});
+    let before = serde_json::to_vec(&document).unwrap();
+    let mut calls = Vec::new();
+    let result = create_device_backup_with(
+        "Public fixture",
+        |method, params| {
+            calls.push(method.to_string());
+            match method {
+                "broker.backupTarget" => Ok(json!({"publicFence":"fixture"})),
+                "broker.createDeviceBackupBound" => {
+                    assert_eq!(params["context"], json!({"publicFence":"fixture"}));
+                    Ok(document.clone())
+                }
+                _ => panic!("unexpected request"),
+            }
+        },
+        |_| Some(path.clone()),
+    )
+    .unwrap();
+    assert_eq!(
+        calls,
+        ["broker.backupTarget", "broker.createDeviceBackupBound"]
+    );
+    assert_eq!(result["backupChecksum"]["status"], "unknown_layout");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(document.get("backupChecksum").is_none());
+}
+
+#[test]
 fn a_backup_name_is_held_to_the_shared_rule_before_the_transfer_runs() {
     // `safe_backup_name` truncated at 80 while the shared boundary
     // (`finalize_device_backup` -> `validate_visible_text`) hard-rejects over

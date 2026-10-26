@@ -2972,7 +2972,11 @@ public class QcUsbPlugin extends Plugin {
                         org.json.JSONObject document = (org.json.JSONObject) update.get("backup");
                         backupFileIo.execute(() -> {
                             try {
-                                pending.operation.savedResult = saveBackupDocument(document, pending.operation.name);
+                                QcBackupStorage.PreparedBackupDocument prepared = QcBackupStorage.prepareDocument(document);
+                                QcBackupStorage.saveWithReport(prepared,
+                                    value -> QcBackupStorage.savePreparedDocument(getContext(), value, pending.operation.name),
+                                    saved -> pending.operation.savedResult = saved,
+                                    QcNativeStateDecoder::inspectBackupChecksum);
                                 recoverSessionAfterBackup(pending);
                             } catch (Exception error) {
                                 failPendingBackupRecovery(pending, error);

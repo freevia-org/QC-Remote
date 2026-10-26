@@ -190,3 +190,29 @@ test("the UI phase vocabulary and native aliases come from the public domain con
   assert.ok(domain.connectionPhases.length >= 9);
   for (const phase of Object.values(domain.brokerConnectionPhaseAliases)) assert.ok(domain.connectionPhases.includes(phase));
 });
+
+test("backup checksum reports keep every assurance false and reject noncanonical host metadata", async () => {
+  const contract = json("contracts/public/qc-backup-report.v1.json");
+  const { isBackupChecksumReportV1, BACKUP_CHECKSUM_MESSAGES } = await load("packages/typescript/qc-client/src/generated-backup-checksum.ts");
+  assert.equal(contract.additionalProperties, false);
+  assert.equal(contract.required.length, 10);
+  const statuses = { local_match: "verified", local_mismatch: "mismatch" };
+  for (const reason of contract.properties.reason.enum) {
+    const status = statuses[reason] ?? "unknown_layout";
+    const report = { schemaVersion: 1, algorithm: "sha256", status,
+      checkedLayout: status === "unknown_layout" ? null : "local_stamp_873_21", reason,
+      message: BACKUP_CHECKSUM_MESSAGES[status], authenticityVerified: false,
+      stampIntegrityVerified: false, metadataIntegrityVerified: false, restoreCompatibilityVerified: false };
+    assert.equal(isBackupChecksumReportV1(report), true, reason);
+    for (const field of ["authenticityVerified", "stampIntegrityVerified", "metadataIntegrityVerified", "restoreCompatibilityVerified"]) {
+      assert.equal(contract.properties[field].const, false);
+      assert.equal(isBackupChecksumReportV1({ ...report, [field]: true }), false, field);
+    }
+    assert.equal(isBackupChecksumReportV1({ ...report, extra: "untrusted" }), false);
+    assert.equal(isBackupChecksumReportV1({ ...report, message: "untrusted replacement" }), false);
+    const missing = { ...report };
+    delete missing.checkedLayout;
+    assert.equal(isBackupChecksumReportV1(missing), false);
+  }
+  assert.equal(isBackupChecksumReportV1({ reason: "__proto__" }), false);
+});

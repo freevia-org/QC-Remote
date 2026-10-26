@@ -107,6 +107,7 @@ pub(crate) fn save_backup_in(
             "path": path.to_string_lossy(),
             "name": file_name,
             "size": bytes.len(),
+            "backupChecksum": quadcortex::backup::integrity::inspect_local_backup_checksum(document),
         }));
     }
     Err("Too many backups already use this name; choose another name".into())
@@ -166,7 +167,12 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(keys, ["path", "name", "size"], "nothing but the location");
+        assert_eq!(
+            keys,
+            ["path", "name", "size", "backupChecksum"],
+            "only location and advisory metadata"
+        );
+        assert_eq!(result["backupChecksum"]["status"], "unknown_layout");
         assert!(!result.to_string().contains("AQID"), "the payload leaked");
         assert_eq!(result["name"], "Tour_ 2026_10.json");
         let path = PathBuf::from(result["path"].as_str().unwrap());
@@ -239,6 +245,42 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result, json!({"echo": {"anything": 1}}));
+    }
+
+    #[test]
+    fn checksum_status_does_not_block_or_rewrite_native_exports() {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        }
+        let archive = vec![0x36; 1_000];
+        let payload = [&archive[..873], &[0x53; 21], &archive[873..]].concat();
+        let base = json!({"type":"backup", "creator":"quad",
+            "payload":base64::engine::general_purpose::STANDARD.encode(payload),
+            "payload_hash":sha256_hex(&archive), "future":true});
+        let (_scratch, directory) = scratch("checksum");
+        for (status, digest) in [
+            ("verified", base["payload_hash"].clone()),
+            ("mismatch", json!("a".repeat(64))),
+            (
+                "unknown_layout",
+                json!(sha256_hex(
+                    [&archive[..873], &[0x53; 21], &archive[873..]].concat()
+                )),
+            ),
+        ] {
+            let mut document = base.clone();
+            document["payload_hash"] = digest;
+            let result = save_backup_in(&directory, &document, status).unwrap();
+            assert_eq!(result["backupChecksum"]["status"], status);
+            let written = fs::read(result["path"].as_str().unwrap()).unwrap();
+            assert_eq!(written, serde_json::to_vec(&document).unwrap());
+            assert!(document.get("backupChecksum").is_none());
+        }
     }
 
     #[test]

@@ -401,6 +401,13 @@ final class QcNativeStateDecoder implements AutoCloseable {
 
     static String validateBackupName(String name) { return nativeValidateBackupName(name); }
 
+    /** Pure bounded inspection; called by backupFileIo after the file has been saved. */
+    static JSONObject inspectBackupChecksum(byte[] utf8) throws Exception {
+        if (utf8.length > GeneratedBackupChecksum.MAXIMUM_JSON_BYTES)
+            return new JSONObject(GeneratedBackupChecksum.jsonForReason("inspection_limit"));
+        return new JSONObject(nativeInspectBackupChecksum(utf8));
+    }
+
     List<EncodedMessage> disconnectCommands() throws Exception {
         return commands("disconnect", new JSObject());
     }
@@ -777,6 +784,7 @@ final class QcNativeStateDecoder implements AutoCloseable {
 
     private static native long nativeCreate();
     private static native String nativeValidateBackupName(String name);
+    private static native String nativeInspectBackupChecksum(byte[] utf8);
     private static native String nativeMergeExpectedState(String paramsJson, String expectedJson);
     private static native int nativeReportSize();
     private static native int nativeOutboundReportId();

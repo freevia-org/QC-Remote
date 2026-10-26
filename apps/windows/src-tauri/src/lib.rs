@@ -5781,7 +5781,8 @@ fn create_device_backup_with(
     Ok(json!({
         "cancelled": false,
         "path": path.to_string_lossy(),
-        "name": path.file_name().and_then(|value| value.to_str()).unwrap_or("QC Device Backup.json")
+        "name": path.file_name().and_then(|value| value.to_str()).unwrap_or("QC Device Backup.json"),
+        "backupChecksum": quadcortex::backup::integrity::inspect_local_backup_checksum(&document)
     }))
 }
 

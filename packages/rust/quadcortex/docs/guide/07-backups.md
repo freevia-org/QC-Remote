@@ -167,7 +167,19 @@ checks the name with [`validate_backup_name`](crate::device::request::validate_b
 truncating it), checks that the document is a JSON object with `type` `"backup"`,
 `creator` `"quad"`, a non-empty Base64 `payload` and a 64-hex-digit
 `payload_hash`, and returns it with its `name` set. The hash is checked for shape
-only. **It is not recomputed**; integrity beyond that is not checked here.
+only. **It is not recomputed by the finalizer**; integrity beyond that is not
+checked by admission.
+
+Hosts may separately call
+[`backup::integrity::inspect_local_backup_checksum`](crate::backup::integrity::inspect_local_backup_checksum)
+after saving. This bounded, advisory inspection reports `verified`, `mismatch`
+or `unknown_layout` beside the saved-file result, never inside the vendor
+document. It compares SHA-256 with the untrusted supplied digest under one
+observed local layout, excluding a 21-byte stamp at decoded offset 873.
+Stamp and metadata changes are not authenticated. A match establishes neither
+authenticity, archive validity nor restore compatibility; a mismatch may also
+indicate an unfamiliar layout. Every status retains existing save admission.
+An absent report from an older host likewise does not change the save result.
 
 Validate the name **before** you start the transfer. The doc on
 `BACKUP_NAME_MAX_CHARACTERS` records why: a host that truncated at a different

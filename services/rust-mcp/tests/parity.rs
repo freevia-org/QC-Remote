@@ -735,6 +735,93 @@ async fn backend_results_reject_contradictory_action_outcomes() {
 }
 
 #[tokio::test]
+async fn backup_reports_survive_mcp_validation_and_identifier_sanitization() {
+    struct SavedBackupBackend(Value);
+    #[async_trait]
+    impl QcBackend for SavedBackupBackend {
+        async fn request(
+            &self,
+            _: &PrincipalRoute,
+            method: &'static str,
+            params: Map<String, Value>,
+        ) -> Result<Value, BackendError> {
+            assert_eq!(method, "device.createBackup");
+            assert_eq!(
+                params,
+                json!({"name":"fixture"}).as_object().unwrap().clone()
+            );
+            // An invented identifier proves the real model sanitizer runs too.
+            let mut response = self.0.clone();
+            response["deviceSerial"] = json!("fixture-identifier");
+            Ok(response)
+        }
+    }
+    for (status, reason, message) in [
+        (
+            "verified",
+            "local_match",
+            "Archive checksum matches the supplied checksum under the observed local layout.",
+        ),
+        (
+            "mismatch",
+            "local_mismatch",
+            "Archive checksum does not match the observed local layout; formatting differences or damaged data are possible.",
+        ),
+        (
+            "unknown_layout",
+            "internal_unavailable",
+            "Checksum assessment is unavailable for this backup layout.",
+        ),
+        ("legacy", "", ""),
+    ] {
+        let mut expected = json!({"path":"fixture/backup.json","name":"backup.json","size":123});
+        if status != "legacy" {
+            expected["backupChecksum"] = json!({
+                "schemaVersion":1,"algorithm":"sha256","status":status,
+                "checkedLayout":if status == "unknown_layout" { Value::Null } else { json!("local_stamp_873_21") },
+                "reason":reason,"message":message,
+                "authenticityVerified":false,"stampIntegrityVerified":false,
+                "metadataIntegrityVerified":false,"restoreCompatibilityVerified":false
+            });
+        }
+        let server = QcMcp::new(Arc::new(SavedBackupBackend(expected.clone())));
+        let actual = server
+            .execute(
+                &route(),
+                "create_device_backup",
+                Some(
+                    json!({"name":"fixture","confirm_persistent_write":true})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            actual, expected,
+            "complete saved result changed for {status}"
+        );
+        if status != "legacy" {
+            for key in [
+                "authenticityVerified",
+                "stampIntegrityVerified",
+                "metadataIntegrityVerified",
+                "restoreCompatibilityVerified",
+            ] {
+                assert_eq!(
+                    actual["backupChecksum"][key],
+                    json!(false),
+                    "{status}: {key}"
+                );
+            }
+        }
+        assert!(actual.get("payload").is_none());
+        assert!(actual.get("document").is_none());
+    }
+}
+
+#[tokio::test]
 async fn add_block_plugin_readback_reaches_the_tool_result_intact() {
     const NOTE: &str = "The Quad Cortex added this plugin block bypassed. QC Remote cannot read plugin ownership; if the plugin is not licensed on this unit, the device shows it locked.";
     struct PluginBackend;
