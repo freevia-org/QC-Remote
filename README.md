@@ -7,7 +7,7 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 [Website](https://freevia.org/qcremote/) ·
 [User guide](docs/USER-GUIDE.md) ·
-[Latest release](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.3) ·
+[Latest release](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.4) ·
 [Support & feedback](SUPPORT.md) ·
 [Privacy](PRIVACY.md)
 
@@ -22,33 +22,39 @@ guarded MCP tools. QC Remote is free, open-source software from Freevia.
 
 | Platform | Current release | Primary download | Other channel |
 | --- | --- | --- | --- |
-| Windows 10/11, x64 | 1.0.3 | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3/QC-Remote-Windows-1.0.3-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5); 1.0.2 remains in review; 1.0.3 has not been submitted |
-| Ubuntu 24.04, x86_64 | 1.0.3 Linux preview | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3-linux/qc-remote_1.0.3_amd64.deb) | CI build provenance included |
-| Android 7.0+, USB host/OTG | 1.0.3 | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3/qc-remote-1.0.3.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote) · [Invited tester opt-in](https://play.google.com/apps/internaltest/4701527491652130240); build 57 live in production at 100% rollout across 178 countries |
-| macOS, Apple Silicon | 1.0.3 | [Signed and notarized ZIP](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3/QC-Remote-macOS-1.0.3-arm64.zip) | — |
-| macOS, Intel | 1.0.3 developer preview | [Unsigned CI DMG](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3-macos-preview.1/QC-Remote-macOS-1.0.3-intel-unsigned.dmg) | Not notarized |
-| iPhone and iPad | 1.0.3 build 5 waiting for review; not publicly available | Build from [`apps/ios`](apps/ios/README.md) | Submitted to Apple; replaces the earlier 1.0.1 build 3 submission |
+| Windows 10/11, x64 | 1.0.4 | [Signed GitHub installer](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.4/QC-Remote-Windows-1.0.4-x64-setup.exe) | [Microsoft Store](https://apps.microsoft.com/store/detail/XPFP2G7DPVK1C5); 1.0.4 update is not yet available there |
+| Ubuntu 24.04, x86_64 | 1.0.4 Linux preview | [Debian package](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.4-linux/qc-remote_1.0.4_amd64.deb) | CI build provenance included |
+| Android 7.0+, USB host/OTG | 1.0.4 | [Signed GitHub APK](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.4/QC-Remote-Android-1.0.4-release.apk) | [Google Play](https://play.google.com/store/apps/details?id=org.freevia.qcremote); versionCode 58 is in production at 100% rollout |
+| macOS, Apple Silicon | 1.0.3 signed release | [Signed and notarized ZIP](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.3/QC-Remote-macOS-1.0.3-arm64.zip) | The 1.0.4 release has no signed Apple Silicon package |
+| macOS, Intel | 1.0.4 developer preview | [Unsigned CI DMG](https://github.com/freevia-org/QC-Remote/releases/download/v1.0.4-macos-preview.1/QC-Remote-x86_64-apple-darwin.dmg) | Not notarized |
+| iPhone and iPad | 1.0.4 source; no public App Store release | Build from [`apps/ios`](apps/ios/README.md) | Last submitted version, 1.0.3 build 5, was rejected; 1.0.4 has not been submitted |
 
-The iPhone app provides one-way USB-MIDI controls only. Full direct USB control
-is an experimental iPad DriverKit prototype for supported M-series iPads; it
-requires Apple-approved DriverKit entitlements and hardware validation. See
-[`apps/ios/README.md`](apps/ios/README.md) before building or using it.
+The iOS App Store source uses paired-host control on both iPhone and iPad: the
+Quad Cortex connects by USB to a compatible desktop QC Remote host, and the
+mobile app controls that host over MCP. The store build does not provide direct
+USB or USB-MIDI control and does not include the experimental iPad DriverKit
+prototype. See [`apps/ios/README.md`](apps/ios/README.md) for the distinction.
 
-All platform release sources now share marketing version **1.0.3**. Windows, Android and Apple Silicon macOS
-artifacts are available from [GitHub release v1.0.3](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.3).
-Google Play build 57 is live in production at 100% rollout across all 178 supported
-countries and regions. Windows 1.0.2 remains in
-Microsoft Store review; 1.0.3 has not been submitted there. The GitHub Android APK uses the
+The Windows, Linux, Android, macOS and iOS source manifests now share marketing
+version **1.0.4**. The stable [GitHub release v1.0.4](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.4)
+contains the Windows installer and Android APK/AAB. Google Play version 1.0.4
+(versionCode 58) is in production at 100% rollout. The [Linux 1.0.4 preview](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.4-linux)
+and [unsigned Intel macOS 1.0.4 preview](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.4-macos-preview.1)
+are separate prereleases. The signed Apple Silicon macOS download remains 1.0.3.
+The Microsoft Store 1.0.4 update is not yet available there; Partner Center still
+shows package validation as incomplete. iOS 1.0.4 has not been submitted to Apple;
+the submitted 1.0.3 build 5 was rejected and is not publicly available. The GitHub Android APK uses the
 upload signing key and cannot replace a Play-installed app in place; use Play
 for an update that preserves that installation.
 
-The [Linux 1.0.3 preview](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.3-linux)
-includes a Debian package and signed GitHub build provenance. A focused isolated-VM
-installation, startup, Demo readiness and 71-second idle observation passed for this package;
-authenticated pairing and physical-device acceptance remain unverified. Physical-device
-control and recovery were tested on the earlier 0.1.187 package under Ubuntu
-24.04 WSL2/Xfce over USB/IP; that evidence does not establish hardware acceptance
-for the 1.0.3 package or bare-metal Linux. See the
+The [Linux 1.0.4 preview](https://github.com/freevia-org/QC-Remote/releases/tag/v1.0.4-linux)
+includes a Debian package and signed GitHub build provenance. The focused
+isolated-VM installation, startup, Demo readiness and 71-second idle observation
+was run on the earlier 1.0.3 preview, not 1.0.4; authenticated pairing and
+physical-device acceptance for 1.0.4 remain unverified. Physical-device control
+and recovery were tested on the earlier 0.1.187 package under Ubuntu 24.04
+WSL2/Xfce over USB/IP; that evidence does not establish hardware acceptance for
+the 1.0.4 package or bare-metal Linux. See the
 [Linux setup guide](docs/USER-GUIDE.md#linux) and
 [package verification instructions](docs/USER-GUIDE.md#verify-the-linux-download).
 

@@ -6,6 +6,25 @@ Since 1.0.1, Windows, macOS, Linux, Android and iOS share one public application
 version. Android and iOS retain their separate increasing build counters;
 internal library and service versions are independent.
 
+## QC Remote 1.0.4 - 27 October 2026
+
+Update the Cloudflare OAuth provider while retaining S256 PKCE, refresh the
+WebSocket, npm and Rust dependencies with their third-party notices, and add
+advisory checksum reports to native backup results. Grid header measurement now
+waits for its exact font to load.
+
+All application manifests use marketing version 1.0.4; Android advances to
+versionCode 58 and the iOS App target to build 6. The excluded DriverKit
+prototype remains unchanged. This entry records source and release history; it
+does not imply Store approval. The v1.0.4 GitHub release publishes the Windows
+installer and Android artifacts, with separate Linux and unsigned Intel macOS
+preview releases. At the time of publication, Google Play was at 100% rollout;
+the Microsoft Store update and iOS App Store release were not publicly available.
+
+The emergency cloud request guard and authentication credentials remain in
+place. The macOS output-deadline gap, unvalidated Windows output bound, separate
+broker output-lock issue and unbounded Type-61 relay remain known limitations.
+
 ## QC Remote 1.0.3 - 25 October 2026
 
 Update signal-hook consistently in the broker's root and desktop Cargo graphs.
