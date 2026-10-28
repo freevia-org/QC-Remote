@@ -65,6 +65,7 @@ public final class QcAutomaticReconnectTest {
     @Test public void deliberateDisconnectCancelsAlreadyQueuedRecovery() throws Exception { scenario("queuedDisconnect"); }
     @Test public void failedOldOpenCannotRearmAfterDisconnect() throws Exception { scenario("failedOpenAfterDisconnect"); }
     @Test public void currentRecoveryKeepsRetryingWhileDeviceIsAbsent() throws Exception { scenario("absentDeviceRetry"); }
+    @Test public void openTransportWithoutSemanticSeedKeepsRetrying() throws Exception { scenario("unsynchronizedTransportRetry"); }
     @Test public void terminalReaderRecoveryCannotOverrideDisconnect() throws Exception { scenario("readerDisconnectRace"); }
     @Test public void replacementIntentAndTerminalOwnerRetireOldTimers() throws Exception { scenario("replacementAndShutdown"); }
     @Test public void currentSuspensionResyncReopensOnce() throws Exception { scenario("currentSuspensionResync"); }
@@ -90,11 +91,12 @@ public final class ReconnectHarness {
  final AtomicLong automaticReconnectGeneration = new AtomicLong();
  final Decoder stateDecoder = new Decoder(); final Guard relayAdmissionGuard = new Guard();
  final Scheduler keepalive = new Scheduler(); final Manager manager = new Manager();
- Flight flight; boolean connecting, present = true, reading = true; int opens, closes; String lastError;
+ Flight flight; boolean connecting, present = true, reading = true, ready, synchronizedSession; int opens, closes; String lastError;
+ Object currentSetlist;
  final AtomicLong connectionGeneration = new AtomicLong(1); UsbDeviceConnection connection = new UsbDeviceConnection();
  CompletableFuture<Object> openResult;
  static long monotonicMillis() { return 100; }
- boolean isReady() { return false; }
+ boolean isReady() { return ready; }
  UsbDevice findQuadCortex() { return present ? new UsbDevice() : null; }
  CompletableFuture<Object> relayReconnect(String detail, String origin, Long generation) {
   if (generation != automaticReconnectGeneration.get()) throw new AssertionError("stale open");
@@ -158,6 +160,14 @@ public final class ReconnectHarness {
   check(stateDecoder.arms == 2 && keepalive.tasks.size() == 1 && opens == 0, "valid recovery stopped before attachment");
   present = true; keepalive.next(); check(opens == 1 && keepalive.tasks.isEmpty(), "valid retry not opened after attachment");
  }
+  public void unsynchronizedTransportRetry() {
+   ready = true; scheduleAutomaticReconnect("semantic seed missing"); keepalive.next();
+   check(opens == 1, "open transport incorrectly stopped semantic recovery");
+   openResult.completeExceptionally(new Exception("ready wait timed out"));
+   check(keepalive.tasks.size() == 1, "failed semantic recovery did not rearm");
+   synchronizedSession = true; currentSetlist = new Object(); keepalive.next();
+   check(opens == 1 && keepalive.tasks.isEmpty(), "fully synchronized session did not stop retrying");
+  }
  public void replacementAndShutdown() {
   scheduleAutomaticReconnect("lost"); automaticReconnectGeneration.incrementAndGet(); keepalive.next();
   check(stateDecoder.arms == 1 && opens == 0, "old timer borrowed replacement intent");
@@ -197,7 +207,7 @@ public final class ReconnectHarness {
   relayAdmissionGuard.terminal = true; keepalive.next();
   check(opens == 0 && keepalive.tasks.isEmpty(), "queued resync reopened terminal owner");
  }
- static final class Decoder { int arms; boolean due; String resync; CountDownLatch entered, release; String takeSuspensionResync() { String value = resync; resync = null; return value; } boolean sessionTerminalReadFailed() { if (entered != null) { entered.countDown(); try { if (!release.await(2, TimeUnit.SECONDS)) throw new AssertionError("terminal fixture timeout"); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); } } return true; } long sessionScheduleReconnect(long now) { arms++; due = true; return 750; } boolean sessionReconnectDue(long now) { return due; } void sessionReconnectAttempted(long now) {} }
+ final class Decoder { int arms; boolean due; String resync; CountDownLatch entered, release; boolean sessionSynchronized() { return synchronizedSession; } String takeSuspensionResync() { String value = resync; resync = null; return value; } boolean sessionTerminalReadFailed() { if (entered != null) { entered.countDown(); try { if (!release.await(2, TimeUnit.SECONDS)) throw new AssertionError("terminal fixture timeout"); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); } } return true; } long sessionScheduleReconnect(long now) { arms++; due = true; return 750; } boolean sessionReconnectDue(long now) { return due; } void sessionReconnectAttempted(long now) {} }
  static final class Guard { boolean terminal; boolean isTerminal() { return terminal; } boolean publish(long epoch, Runnable action) { if (terminal || epoch != 1) return false; action.run(); return true; } }
  static final class Scheduler { final ArrayDeque<Runnable> tasks = new ArrayDeque<>(); void schedule(Runnable task, long delay, TimeUnit unit) { tasks.add(task); } void execute(Runnable task) { tasks.add(task); } void next() { tasks.removeFirst().run(); } }
  static final class Manager { boolean hasPermission(UsbDevice device) { return true; } }
