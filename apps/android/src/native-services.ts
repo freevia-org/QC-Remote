@@ -37,6 +37,8 @@ export type AndroidUsbDiagnostics = {
   deviceSuspended?: boolean; suspension?: QcDeviceSuspension;
   flightRecorder?: { version: number; entries: Array<{ atUnixMs: number; processId: number; event: string; messageType?: number; reportCount?: number }> };
   lastError?: string;
+  lastStartupFailure?: string;
+  lastStartupFailureSessionEpoch?: number;
 };
 
 interface QcUsbNativePlugin {
@@ -54,6 +56,7 @@ interface QcUsbNativePlugin {
   addListener(eventName: "qcStateBatch", listener: (frame: NativeStateFrame<QcStateUpdate>) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "qcConnection", listener: (status: { state: "available" | "disconnected"; name?: string }) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "qcConnectionProgress", listener: (progress: AndroidUsbConnectionProgress) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: "qcStartupFailure", listener: (failure: { sessionEpoch: number; detail: string }) => void): Promise<PluginListenerHandle>;
 }
 
 export interface AndroidDemoRequest {

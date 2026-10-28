@@ -9,6 +9,17 @@ import java.util.Map;
  * they are sampled independently by the plugin and are not part of this atomic group.
  */
 final class QcUsbDiagnostics {
+    /** Last failed startup only; retained across retries, without device content. */
+    static final class StartupFailure {
+        final long sessionEpoch;
+        final String detail;
+
+        private StartupFailure(long sessionEpoch, String detail) {
+            this.sessionEpoch = sessionEpoch;
+            this.detail = detail;
+        }
+    }
+
     static final class Snapshot {
         final long sessionEpoch;
         final long messagesReceived;
@@ -16,16 +27,19 @@ final class QcUsbDiagnostics {
         final long rawReportsReceived;
         final long messagesSent;
         final Map<Integer, Long> messagesSentByType;
+        final StartupFailure startupFailure;
 
         private Snapshot(long sessionEpoch, long messagesReceived,
                 Map<Integer, Long> messagesReceivedByType, long rawReportsReceived,
-                long messagesSent, Map<Integer, Long> messagesSentByType) {
+                long messagesSent, Map<Integer, Long> messagesSentByType,
+                StartupFailure startupFailure) {
             this.sessionEpoch = sessionEpoch;
             this.messagesReceived = messagesReceived;
             this.messagesReceivedByType = Collections.unmodifiableMap(messagesReceivedByType);
             this.rawReportsReceived = rawReportsReceived;
             this.messagesSent = messagesSent;
             this.messagesSentByType = Collections.unmodifiableMap(messagesSentByType);
+            this.startupFailure = startupFailure;
         }
     }
 
@@ -35,6 +49,7 @@ final class QcUsbDiagnostics {
     private long rawReportsReceived;
     private long messagesSent;
     private final Map<Integer, Long> messagesSentByType = new HashMap<>();
+    private StartupFailure startupFailure;
 
     synchronized long beginSession() {
         sessionEpoch++;
@@ -47,6 +62,12 @@ final class QcUsbDiagnostics {
     }
 
     synchronized boolean isCurrentSession(long epoch) { return epoch == sessionEpoch; }
+
+    synchronized StartupFailure startupFailed(long epoch, String detail) {
+        if (epoch != sessionEpoch || (startupFailure != null && startupFailure.sessionEpoch == epoch)) return null;
+        startupFailure = new StartupFailure(epoch, detail);
+        return startupFailure;
+    }
 
     synchronized void rawReportReceived(long epoch) {
         if (epoch == sessionEpoch) rawReportsReceived++;
@@ -67,6 +88,6 @@ final class QcUsbDiagnostics {
     synchronized Snapshot snapshot() {
         return new Snapshot(sessionEpoch, messagesReceived,
             new HashMap<>(messagesReceivedByType), rawReportsReceived,
-            messagesSent, new HashMap<>(messagesSentByType));
+            messagesSent, new HashMap<>(messagesSentByType), startupFailure);
     }
 }

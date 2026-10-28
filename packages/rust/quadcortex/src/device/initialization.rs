@@ -117,6 +117,54 @@ impl DeviceStartupError {
     }
 }
 
+/// Content-free reason a type-35 startup reply was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleStatisticsFailureKind {
+    /// The protobuf envelope could not be decoded.
+    DecodeFailure,
+    /// The decoded action was not UPDATE.
+    NonUpdateAction,
+    /// All four decoded statistics collections were empty.
+    EmptyStatistics,
+}
+
+/// Bounded metadata about a rejected module-statistics reply. Payload bytes,
+/// protobuf error strings and collection contents are deliberately not retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModuleStatisticsFailure {
+    /// Which existing validation gate rejected the reply.
+    pub kind: ModuleStatisticsFailureKind,
+    /// Number of bytes submitted to the protobuf decoder.
+    pub payload_bytes: usize,
+    /// Decoded numeric action, absent when decoding failed.
+    pub action: Option<i32>,
+    /// Counts of stats, core_stats, size_relations and valid_id, in that order.
+    /// Absent when decoding failed.
+    pub collection_counts: Option<[usize; 4]>,
+}
+
+impl std::fmt::Display for ModuleStatisticsFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self.kind {
+            ModuleStatisticsFailureKind::DecodeFailure => "decode-failure",
+            ModuleStatisticsFailureKind::NonUpdateAction => "non-update-action",
+            ModuleStatisticsFailureKind::EmptyStatistics => "empty-statistics",
+        };
+        write!(
+            formatter,
+            "type 35 {reason}; payloadBytes={}",
+            self.payload_bytes
+        )?;
+        if let Some(action) = self.action {
+            write!(formatter, "; action={action}")?;
+        }
+        if let Some([stats, core_stats, size_relations, valid_id]) = self.collection_counts {
+            write!(formatter, "; stats={stats}, coreStats={core_stats}, sizeRelations={size_relations}, validId={valid_id}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Instruction returned by [`DeviceStartupRuntime`] telling the host what to do next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceStartupAction {
@@ -154,6 +202,8 @@ pub struct DeviceStartupRuntime {
     deadline_ms: u64,
     options: DeviceStartupOptions,
     error: Option<DeviceStartupError>,
+    failure_phase: Option<DeviceStartupPhase>,
+    module_statistics_failure: Option<ModuleStatisticsFailure>,
     seed_evidence: SeedEvidence,
     /// Device-announced rebuilds since the session was last `Connected` (or
     /// since it started). Bounded by [`MAX_STARTUP_REBUILDS`].
@@ -207,6 +257,8 @@ impl DeviceStartupRuntime {
                 deadline_ms: now_ms.saturating_add(profile::READY_WAIT_TIMEOUT_MS),
                 options,
                 error: None,
+                failure_phase: None,
+                module_statistics_failure: None,
                 seed_evidence: SeedEvidence::default(),
                 startup_rebuilds: 0,
             },
@@ -222,6 +274,16 @@ impl DeviceStartupRuntime {
     /// Returns the error that ended startup, or `None` while no failure has occurred.
     pub fn error(&self) -> Option<DeviceStartupError> {
         self.error
+    }
+
+    /// Startup phase at the first rejection, before it became Failed or Invalid.
+    pub fn failure_phase(&self) -> Option<DeviceStartupPhase> {
+        self.failure_phase
+    }
+
+    /// Content-free metadata for the type-35 reply that failed startup.
+    pub fn module_statistics_failure(&self) -> Option<ModuleStatisticsFailure> {
+        self.module_statistics_failure
     }
 
     /// Rebuilds the device has forced since this session was last `Connected`.
@@ -521,19 +583,41 @@ impl DeviceStartupRuntime {
     }
 
     fn observe_module_stats(&mut self, payload: &[u8]) -> DeviceStartupAction {
-        let message: pa::ModuleStatsMessage =
-            match self.decode_or_fail(payload, DeviceStartupError::ModuleStatisticsDataError) {
-                Ok(message) => message,
-                Err(action) => return action,
-            };
-        if message.action != pa::message_action::Enum::Update as i32 {
-            return self.fail(DeviceStartupError::ModuleStatisticsDataError);
-        }
-        if message.stats.is_empty()
+        let message = match pa::ModuleStatsMessage::decode(payload) {
+            Ok(message) => message,
+            Err(_) => {
+                self.module_statistics_failure = Some(ModuleStatisticsFailure {
+                    kind: ModuleStatisticsFailureKind::DecodeFailure,
+                    payload_bytes: payload.len(),
+                    action: None,
+                    collection_counts: None,
+                });
+                return self.fail(DeviceStartupError::ModuleStatisticsDataError);
+            }
+        };
+        let reason = if message.action != pa::message_action::Enum::Update as i32 {
+            Some(ModuleStatisticsFailureKind::NonUpdateAction)
+        } else if message.stats.is_empty()
             && message.core_stats.is_empty()
             && message.size_relations.is_empty()
             && message.valid_id.is_empty()
         {
+            Some(ModuleStatisticsFailureKind::EmptyStatistics)
+        } else {
+            None
+        };
+        if let Some(kind) = reason {
+            self.module_statistics_failure = Some(ModuleStatisticsFailure {
+                kind,
+                payload_bytes: payload.len(),
+                action: Some(message.action),
+                collection_counts: Some([
+                    message.stats.len(),
+                    message.core_stats.len(),
+                    message.size_relations.len(),
+                    message.valid_id.len(),
+                ]),
+            });
             return self.fail(DeviceStartupError::ModuleStatisticsDataError);
         }
         self.phase = DeviceStartupPhase::Booting;
@@ -588,12 +672,14 @@ impl DeviceStartupRuntime {
     }
 
     fn fail(&mut self, error: DeviceStartupError) -> DeviceStartupAction {
+        self.failure_phase.get_or_insert(self.phase);
         self.phase = DeviceStartupPhase::Failed;
         self.error = Some(error);
         DeviceStartupAction::Failed(error)
     }
 
     fn invalidate(&mut self, error: DeviceStartupError) -> DeviceStartupAction {
+        self.failure_phase.get_or_insert(self.phase);
         self.phase = DeviceStartupPhase::Invalid;
         self.error = Some(error);
         DeviceStartupAction::Invalid(error)
@@ -871,6 +957,16 @@ impl DeviceLifecycleRuntime {
     /// Returns the current startup phase.
     pub fn phase(&self) -> DeviceStartupPhase {
         self.startup.phase()
+    }
+
+    /// See [`DeviceStartupRuntime::failure_phase`].
+    pub fn failure_phase(&self) -> Option<DeviceStartupPhase> {
+        self.startup.failure_phase()
+    }
+
+    /// See [`DeviceStartupRuntime::module_statistics_failure`].
+    pub fn module_statistics_failure(&self) -> Option<ModuleStatisticsFailure> {
+        self.startup.module_statistics_failure()
     }
 
     /// Returns `false` once startup has become `Invalid` or `Failed`.
@@ -1190,6 +1286,114 @@ mod tests {
             ..Default::default()
         }
         .encode_to_vec()
+    }
+
+    #[test]
+    fn module_stats_diagnostics_distinguish_failures_without_retaining_content() {
+        let malformed = b"\xffprivate-payload-canary".to_vec();
+        let non_update = pa::ModuleStatsMessage {
+            action: pa::message_action::Enum::Read as i32,
+            stats: vec![pa::ModuleStatsItem {
+                id: 987_654,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let empty = pa::ModuleStatsMessage {
+            action: pa::message_action::Enum::Update as i32,
+            ..Default::default()
+        }
+        .encode_to_vec();
+        for (payload, kind, action, counts) in [
+            (
+                malformed,
+                ModuleStatisticsFailureKind::DecodeFailure,
+                None,
+                None,
+            ),
+            (
+                non_update,
+                ModuleStatisticsFailureKind::NonUpdateAction,
+                Some(3),
+                Some([1, 0, 0, 0]),
+            ),
+            (
+                empty,
+                ModuleStatisticsFailureKind::EmptyStatistics,
+                Some(1),
+                Some([0; 4]),
+            ),
+        ] {
+            let (mut runtime, _) = DeviceStartupRuntime::start(7, "session");
+            enter_building(&mut runtime);
+            runtime.observe(profile::MESSAGE_TYPE_MODEL_REPO, &valid_model_repo(), 0);
+            assert_eq!(runtime.phase(), DeviceStartupPhase::Initializing);
+            assert_eq!(
+                runtime.observe(profile::MESSAGE_TYPE_MODULE_STATS, &payload, 0),
+                DeviceStartupAction::Failed(DeviceStartupError::ModuleStatisticsDataError)
+            );
+            let diagnostic = runtime.module_statistics_failure().unwrap();
+            assert_eq!(diagnostic.kind, kind);
+            assert_eq!(diagnostic.payload_bytes, payload.len());
+            assert_eq!(diagnostic.action, action);
+            assert_eq!(diagnostic.collection_counts, counts);
+            assert_eq!(
+                runtime.failure_phase(),
+                Some(DeviceStartupPhase::Initializing)
+            );
+            assert_eq!(runtime.phase(), DeviceStartupPhase::Failed);
+            let text = diagnostic.to_string();
+            assert!(!text.contains("private-payload-canary"));
+            assert!(!text.contains("987654"));
+            // A late valid reply must neither recover the failed session nor erase its reason.
+            assert_eq!(
+                runtime.observe(profile::MESSAGE_TYPE_MODULE_STATS, &valid_module_stats(), 1),
+                DeviceStartupAction::Wait
+            );
+            assert_eq!(runtime.module_statistics_failure(), Some(diagnostic));
+        }
+        let (fresh, _) = DeviceStartupRuntime::start(7, "another session");
+        assert_eq!(fresh.module_statistics_failure(), None);
+        assert_eq!(fresh.failure_phase(), None);
+    }
+
+    #[test]
+    fn module_stats_diagnostics_do_not_change_nonempty_update_acceptance() {
+        for message in [
+            pa::ModuleStatsMessage {
+                stats: vec![pa::ModuleStatsItem::default()],
+                ..Default::default()
+            },
+            pa::ModuleStatsMessage {
+                core_stats: vec![pa::ModuleStatsItem::default()],
+                ..Default::default()
+            },
+            pa::ModuleStatsMessage {
+                size_relations: vec![pa::ModuleStatsSizeRelation::default()],
+                ..Default::default()
+            },
+            pa::ModuleStatsMessage {
+                valid_id: vec![pa::ModuleStatsValidModelId::default()],
+                ..Default::default()
+            },
+        ] {
+            let (mut runtime, _) = DeviceStartupRuntime::start(7, "session");
+            enter_building(&mut runtime);
+            runtime.observe(profile::MESSAGE_TYPE_MODEL_REPO, &valid_model_repo(), 0);
+            let payload = pa::ModuleStatsMessage {
+                action: 1,
+                ..message
+            }
+            .encode_to_vec();
+            assert!(matches!(
+                runtime.observe(35, &payload, 0),
+                DeviceStartupAction::Send(_)
+            ));
+            assert_eq!(runtime.phase(), DeviceStartupPhase::Booting);
+            assert_eq!(runtime.module_statistics_failure(), None);
+            assert_eq!(runtime.failure_phase(), None);
+        }
     }
 
     /// Drive one Building -> Initializing -> Booting -> Connected staged boot,

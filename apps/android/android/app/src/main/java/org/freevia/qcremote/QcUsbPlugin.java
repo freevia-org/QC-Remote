@@ -1944,7 +1944,7 @@ public class QcUsbPlugin extends Plugin {
         String detail = error.getMessage();
         if (detail == null || detail.trim().isEmpty()) detail = "Unexpected USB connection error.";
         if (detail.contains("Protocol(ModuleStatisticsDataError)"))
-            return "USB opened, but the Quad Cortex startup statistics could not be read, so synchronization stopped. Check the cable and power, then tap Retry. If it happens again, share Diagnostics and your CorOS version with support.";
+            return "USB opened, but the Quad Cortex startup statistics could not be read, so synchronization stopped. Startup phase: initializing (module statistics). Check the cable and power, then tap Retry. If it happens again, share Diagnostics and your CorOS version with support.";
         if (detail.contains("interface") || detail.contains("USB reader is still stopping"))
             return detail + " Disconnect other USB/audio apps that may be using the Quad Cortex, then retry.";
         if (detail.contains("did not answer after"))
@@ -2049,6 +2049,10 @@ public class QcUsbPlugin extends Plugin {
         }
         result.put("device", device == null || device.getProductName() == null ? getContext().getString(R.string.device_name) : device.getProductName());
         QcUsbDiagnostics.Snapshot counters = usbDiagnostics.snapshot();
+        if (counters.startupFailure != null) {
+            result.put("lastStartupFailure", counters.startupFailure.detail);
+            result.put("lastStartupFailureSessionEpoch", counters.startupFailure.sessionEpoch);
+        }
         result.put("sessionEpoch", counters.sessionEpoch);
         result.put("messagesReceived", counters.messagesReceived);
         result.put("messagesReceivedByType", messageCountsJson(counters.messagesReceivedByType));
@@ -2481,6 +2485,7 @@ public class QcUsbPlugin extends Plugin {
     private void drainLifecycle() {
         long generation = connectionGeneration.get();
         if (connection == null) return;
+        final long diagnosticEpoch = usbDiagnostics.snapshot().sessionEpoch;
         try {
             QcNativeStateDecoder.LifecycleBatch batch;
             while ((batch = stateDecoder.lifecycleNextBatch(
@@ -2500,6 +2505,14 @@ public class QcUsbPlugin extends Plugin {
             }
             QcNativeStateDecoder.LifecycleStatus status = stateDecoder.lifecyclePoll(monotonicMillis());
             if (status.error != null) {
+                QcUsbDiagnostics.StartupFailure failure = usbDiagnostics.startupFailed(diagnosticEpoch, status.error);
+                if (failure != null) {
+                    JSObject diagnostic = new JSObject();
+                    diagnostic.put("sessionEpoch", failure.sessionEpoch);
+                    diagnostic.put("detail", failure.detail);
+                    // This is a local event, not a QC/relay request or a retained event queue.
+                    notifyListeners("qcStartupFailure", diagnostic);
+                }
                 lastError = "QC lifecycle " + status.phase + ": " + status.error;
                 if (flight != null) flight.event("startup-" + status.phase);
                 synchronized (this) {

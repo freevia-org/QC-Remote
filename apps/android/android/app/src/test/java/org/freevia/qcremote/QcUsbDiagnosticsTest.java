@@ -12,6 +12,23 @@ import java.util.concurrent.TimeUnit;
 import org.junit.Test;
 
 public class QcUsbDiagnosticsTest {
+    @Test public void startupFailureSurvivesRetryWithoutAcceptingStaleAttemptOrMutatingSnapshots() {
+        QcUsbDiagnostics diagnostics = new QcUsbDiagnostics();
+        long firstEpoch = diagnostics.beginSession();
+        diagnostics.startupFailed(firstEpoch, "startup phase=initializing; type 35 decode-failure");
+        QcUsbDiagnostics.Snapshot first = diagnostics.snapshot();
+        assertEquals(null, diagnostics.startupFailed(firstEpoch, "duplicate failure"));
+        long retryEpoch = diagnostics.beginSession();
+        assertEquals(firstEpoch, diagnostics.snapshot().startupFailure.sessionEpoch);
+        diagnostics.startupFailed(firstEpoch, "stale callback");
+        assertEquals(first.startupFailure.detail, diagnostics.snapshot().startupFailure.detail);
+        diagnostics.startupFailed(retryEpoch, "startup phase=initializing; type 35 empty-statistics");
+        assertEquals(retryEpoch, diagnostics.snapshot().startupFailure.sessionEpoch);
+        assertEquals("startup phase=initializing; type 35 empty-statistics", diagnostics.snapshot().startupFailure.detail);
+        assertEquals("startup phase=initializing; type 35 decode-failure", first.startupFailure.detail);
+        assertEquals(0, diagnostics.snapshot().messagesReceived);
+    }
+
     @Test public void immutableSnapshotKeepsReportAndMessageUnitsDistinctAcrossSessions() {
         QcUsbDiagnostics diagnostics = new QcUsbDiagnostics();
         long firstEpoch = diagnostics.beginSession();
