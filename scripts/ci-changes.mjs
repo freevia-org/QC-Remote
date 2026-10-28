@@ -103,8 +103,8 @@ export const CLOUD_ONLY_GLOBS = [
   'services/qc-remote-cloud/README.md',
 ];
 
-// What linux-broker.yml mirrors as `pull_request.paths-ignore`: a path none of
-// the native jobs and workflows can observe.
+// Safe paths for the default-run classifier; automatic workflow triggers are
+// disabled, but CI still uses these sets to select jobs during explicit runs.
 export const NATIVE_SKIP_GLOBS = [...SAFE_GLOBS, ...CLOUD_ONLY_GLOBS];
 
 export const CLOUD_PACKAGE_JSON = 'services/qc-remote-cloud/package.json';
