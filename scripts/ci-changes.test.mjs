@@ -149,7 +149,7 @@ test('ios and macOS builds drop only the qc-ui source globs from their path filt
   }
 });
 
-test('macOS builds do not trigger on legal records and run every lane on the Apple Silicon pool', () => {
+test('macOS builds do not trigger on legal records and run every lane on the local Apple Silicon runner', () => {
   const text = workflow('macos-build.yml');
   for (const entry of ['THIRD_PARTY-NOTICES.md', 'legal/**', 'LICENSE', 'LICENSE-MIT', 'LICENSE-APACHE', 'LICENSES/**']) {
     assert.equal(
@@ -158,11 +158,10 @@ test('macOS builds do not trigger on legal records and run every lane on the App
       `macos-build.yml still lists ${entry}`,
     );
   }
-  // x86_64 is cross-built on macos-26 and its binaries run under Rosetta 2;
-  // the macos-26-intel pool was about five times slower and queued for up to
-  // an hour. Pull requests run native ARM64 tests and the x86_64 package;
+  // x86_64 is cross-built on the local Apple Silicon MacMini and its binaries
+  // run under Rosetta 2. Pull requests run native ARM64 tests and the x86_64 package;
   // master and manual builds run both lanes for both architectures.
-  assert.match(text, /^ {4}runs-on: macos-26$/m);
+  assert.match(text, /^ {4}runs-on: qc-remote-macmini$/m);
   assert.doesNotMatch(text, /macos-\d+-intel/);
   const matrix = text.match(/^ {8}include: \$\{\{ fromJSON\(github\.event_name == 'pull_request' && '(.*?)' \|\| '(.*?)'\) \}\}$/m);
   assert.ok(matrix, 'the lane matrix must depend on the event');
