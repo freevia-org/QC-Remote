@@ -196,6 +196,13 @@ test("the mobile control deck follows the QC layout in portrait and four-across 
   assert.match(deviceDisplay, /presentation="display"/, "the phone shows the shared display frame without the hardware panel");
 });
 
+test("a failed USB attempt clears the synthetic opening screen before showing its error", () => {
+  const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const failurePath = appSource.slice(appSource.indexOf("    } catch (error) {", appSource.indexOf("const attemptUsbConnection")), appSource.indexOf("    } finally {", appSource.indexOf("const attemptUsbConnection")));
+  assert.match(failurePath, /if \(isConnectingPlaceholder\(snapshotRef\.current\)\) setSnapshot\(IDLE_PLACEHOLDER_SNAPSHOT\)/);
+  assert.ok(failurePath.indexOf("setSnapshot(IDLE_PLACEHOLDER_SNAPSHOT)") < failurePath.indexOf("transitionConnection(awaitingPermission"), "the placeholder is cleared before the final disconnected/error state is published");
+});
+
 test("tapping a live Grid block opens the shared parameter editor and commits over USB", () => {
   const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
   const displayModel = readFileSync(new URL("../../../packages/typescript/qc-ui/src/qc-device-display.tsx", import.meta.url), "utf8");
