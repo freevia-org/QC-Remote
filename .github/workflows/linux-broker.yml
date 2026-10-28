@@ -14,57 +14,48 @@ permissions:
 
 # Dispatch with `build_linux_draft` disabled to run the checks. Then dispatch
 # again with it enabled to build a release draft from the same commit; the
-# release job verifies that the checks already passed.
+# release job verifies that all checks, including the hosted AppArmor probe,
+# already passed.
 concurrency:
   group: linux-broker-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
-  # The same classifier ci.yml uses, for the one case paths-ignore cannot
-  # express: a services/qc-remote-cloud/package.json diff that changes only
-  # non-lifecycle scripts (decided by reading the file before and after). Any
-  # error or skip makes both jobs below run.
-  changes:
-    name: Select Linux jobs
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      native: ${{ steps.filter.outputs.native }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 2
-      - id: filter
-        run: node scripts/ci-changes.mjs
-
   native-linux:
     name: Headless broker on native Linux
-    # `changes` runs on pull requests only; on push it is skipped, which runs this job.
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.build_linux_draft) && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && !inputs.build_linux_draft }}
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install isolated tray probe dependencies
+      - name: Verify preinstalled isolated tray probe dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes apparmor-utils bubblewrap dbus-daemon gir1.2-glib-2.0 python3-gi
+          for package in apparmor-utils bubblewrap dbus-daemon gir1.2-glib-2.0 python3-gi; do
+            if ! dpkg-query -W -f='${Status}\n' "$package" 2>/dev/null | grep -Fxq 'install ok installed'; then
+              echo "::error::Required runner package is missing: $package"
+              exit 1
+            fi
+          done
       # No rustfmt: formatting is platform independent, and ci.yml's `Rust
       # workspace` job checks it under the same change filter.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy
-      # Saved by the master push run and restored by pull requests, which do not
-      # write their own copy (a pull request cache is readable only by that pull
-      # request and would push master's caches out of the 10 GB budget).
+      # Master-only dispatches save this cache; validation on other refs reads it
+      # without pushing branch-local copies into the shared cache budget.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: linux-broker
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Build the standalone Linux broker
         run: cargo build --locked -p qc-device-broker --bin qc-device-broker --features linux-tray
+      - name: Upload broker for the hosted AppArmor startup probe
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qc-device-broker-linux-tray
+          path: target/debug/qc-device-broker
+          if-no-files-found: error
+          retention-days: 1
       # These real subprocess tests start disconnected; authentication/status,
       # election, filesystem modes, crash recovery and shutdown need no QC.
       # --probe, --verify-live and --auto-connect are deliberately absent.
@@ -79,10 +70,34 @@ jobs:
         run: ./target/debug/qc-device-broker --self-check
       - name: Test tray startup probe cleanup fixtures
         run: dbus-run-session -- python3 -m unittest scripts.test_linux_tray_startup -v
+      - name: Test Debian package verification and cleanup
+        run: python3 -m unittest scripts.test_package_linux_deb
+      - name: Test Cargo test-executable selection
+        run: python3 -m unittest scripts.test_select_cargo_test_executable
+
+  linux-tray-startup-probe:
+    name: Disconnected tray startup under AppArmor
+    needs: native-linux
+    if: ${{ !cancelled() && !inputs.build_linux_draft }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install isolated tray probe dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes apparmor-utils bubblewrap dbus-daemon gir1.2-glib-2.0 python3-gi
+      - name: Download broker built by the Linux runner
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: qc-device-broker-linux-tray
+          path: ${{ runner.temp }}/linux-tray-probe
       - name: Probe disconnected tray startup lifecycle
         run: |
+          broker="${RUNNER_TEMP}/linux-tray-probe/qc-device-broker"
+          chmod +x "$broker"
           report="${RUNNER_TEMP}/tray-startup-runtime-probe.json"
-          python3 scripts/run-linux-tray-probe.py --broker target/debug/qc-device-broker --report "$report" || {
+          python3 scripts/run-linux-tray-probe.py --broker "$broker" --report "$report" || {
             probe_status=$?
             if [[ -f "$report" ]]; then
               cat "$report"
@@ -91,29 +106,26 @@ jobs:
             fi
             exit "$probe_status"
           }
-      - name: Test Debian package verification and cleanup
-        run: python3 -m unittest scripts.test_package_linux_deb
-      - name: Test Cargo test-executable selection
-        run: python3 -m unittest scripts.test_select_cargo_test_executable
 
   linux-desktop-host:
     name: Linux Tauri host and resident tray
-    # `changes` runs on pull requests only; on push it is skipped, which runs this job.
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.build_linux_draft) && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
-    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && !inputs.build_linux_draft }}
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 45
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Tauri, tray and Secret Service development libraries
+      - name: Verify preinstalled Tauri, tray and Secret Service development libraries
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            build-essential curl file libayatana-appindicator3-dev libdbus-1-dev \
-            libgtk-3-dev libsecret-1-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev \
-            libxdo-dev pkg-config
+          for package in build-essential curl file libayatana-appindicator3-dev libdbus-1-dev \
+              libgtk-3-dev libsecret-1-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev \
+              libxdo-dev pkg-config; do
+            if ! dpkg-query -W -f='${Status}\n' "$package" 2>/dev/null | grep -Fxq 'install ok installed'; then
+              echo "::error::Required runner package is missing: $package"
+              exit 1
+            fi
+          done
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -180,9 +192,9 @@ jobs:
       attestations: write
       checks: read
     steps:
-      # The two check jobs are not repeated for a release build. This step is the
+      # The check jobs are not repeated for a release build. This step is the
       # replacement: the exact commit being released must already carry a
-      # successful result for both from a checks-only dispatch of this workflow
+      # successful result for each from a checks-only dispatch of this workflow
       # (GitHub Actions app only). Re-run the failed jobs of that run, or merge
       # first, if it does not; nothing is built until it does.
       - name: Require the checks-only result for this exact commit
@@ -193,7 +205,11 @@ jobs:
             echo "::error::The Linux release package is built from refs/heads/master only (got $GITHUB_REF)."
             exit 1
           fi
-          required=("Headless broker on native Linux" "Linux Tauri host and resident tray")
+          required=(
+            "Headless broker on native Linux"
+            "Linux Tauri host and resident tray"
+            "Disconnected tray startup under AppArmor"
+          )
           runs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100"             --jq '.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "success") | .name')
           for name in "${required[@]}"; do
             if ! grep -Fxq "$name" <<<"$runs"; then

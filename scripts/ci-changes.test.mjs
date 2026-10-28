@@ -202,13 +202,15 @@ test('macOS, iOS and Linux broker build caches are saved from master only', () =
   }
 });
 
-test('the Linux release job verifies the push CI result instead of repeating it, and caches cargo', () => {
+test('Linux checks use the local runner and release requires the hosted AppArmor probe', () => {
   const text = workflow('linux-broker.yml');
   const release = text.slice(text.indexOf('\n  linux-preview-release:'));
   assert.doesNotMatch(release, /^    needs:/m, 'the release job must not re-run the two check jobs');
-  assert.match(release, /name: Require the push CI result for this exact commit/);
+  assert.match(release, /name: Require the checks-only result for this exact commit/);
   assert.match(release, /Headless broker on native Linux/);
   assert.match(release, /Linux Tauri host and resident tray/);
+  assert.match(release, /Disconnected tray startup under AppArmor/);
+  assert.match(release, /^ {4}runs-on: ubuntu-24\.04$/m);
   assert.match(release, /^      checks: read$/m);
   assert.match(release, /Swatinem\/rust-cache@[0-9a-f]{40} # v[\d.]+\n\s+with:\n\s+workspaces: apps\/windows\/src-tauri -> target/);
   for (const [job, name] of [
@@ -221,16 +223,20 @@ test('the Linux release job verifies the push CI result instead of repeating it,
     const end = rest.slice(1).search(/^ {2}[a-z][a-z0-9-]*:\s*$/m);
     const body = end === -1 ? rest : rest.slice(0, end + 1);
     assert.ok(body.startsWith(`  ${job}:\n    name: ${name}\n`), job);
-    assert.match(body, /^    needs: changes$/m, job);
-    // Never run on dispatch; on a pull request only when the classifier says native.
-    assert.match(
-      body,
-      /^    if: \$\{\{ !cancelled\(\) && github\.event_name != 'workflow_dispatch' && \(github\.event_name != 'pull_request' \|\| needs\.changes\.result != 'success' \|\| needs\.changes\.outputs\.native != 'false'\) \}\}$/m,
-      job,
-    );
+    assert.match(body, /^    if: \$\{\{ !cancelled\(\) && !inputs\.build_linux_draft \}\}$/m, job);
+    assert.match(body, /^    runs-on: qc-remote-i5-linux$/m, job);
+    assert.match(body, /^      - name: Verify preinstalled /m, job);
+    assert.match(body, /dpkg-query -W/);
+    assert.doesNotMatch(body, /apt-get/);
   }
-  assert.match(text, /^  changes:\n    name: Select Linux jobs\n    if: github\.event_name == 'pull_request'\n/m);
-  assert.match(text, /^        run: node scripts\/ci-changes\.mjs$/m);
+  assert.doesNotMatch(text, /^  changes:\s*$/m, 'manual-only workflow does not need the PR path classifier');
+  const probe = text.slice(text.indexOf('\n  linux-tray-startup-probe:\n'), text.indexOf('\n  linux-desktop-host:\n'));
+  assert.match(probe, /^    name: Disconnected tray startup under AppArmor$/m);
+  assert.match(probe, /^    needs: native-linux$/m);
+  assert.match(probe, /^    runs-on: ubuntu-24\.04$/m);
+  assert.match(probe, /actions\/download-artifact@[0-9a-f]{40} # v[\d.]+/);
+  assert.match(probe, /scripts\/run-linux-tray-probe\.py/);
+  assert.match(probe, /sudo apt-get install/);
 });
 
 test('CI result aggregates every other CI job so one required context cannot deadlock', () => {
