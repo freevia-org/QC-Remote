@@ -41,6 +41,9 @@ test('dispatch helper validates trusted PR metadata before fetching objects', ()
   assert.match(helper, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(helper, /new Set\(\['OWNER', 'MEMBER', 'COLLABORATOR'\]\)/);
   assert.match(helper, /pr\.user\?\.type === 'Bot'/);
+  assert.match(helper, /DCO check skipped for trusted PR author/);
+  assert.ok(helper.indexOf("if (pr.base?.repo?.full_name !== repository || pr.base?.ref !== 'master')") < helper.indexOf('const trusted = new Set('), 'stacked PRs remain rejected before the trusted-author exemption');
+  assert.ok(helper.indexOf('const trusted = new Set(') < helper.indexOf("execFileSync('git', [\n      'fetch'"), 'trusted authors are exempted before fetching PR objects');
   assert.match(helper, /refs\/pull\/\$\{number\}\/head:refs\/remotes\/pull\/\$\{number\}\/head/);
   assert.match(helper, /git', \['cat-file', '-e'/);
   assert.match(helper, /scripts\/verify-dco\.mjs/);
