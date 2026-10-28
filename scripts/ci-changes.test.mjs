@@ -128,24 +128,19 @@ test('doubt runs the native jobs', () => {
   assert.equal(classify(undefined).native, true);
 });
 
-test('linux-broker.yml paths-ignore mirrors the native-skip globs exactly', () => {
-  const block = workflow('linux-broker.yml').match(/^  pull_request:\n    paths-ignore:\n((?:      - .*\n)+)/m);
-  assert.ok(block, 'linux-broker.yml must declare pull_request paths-ignore');
-  const globs = block[1]
-    .trim()
-    .split('\n')
-    .map((line) => line.replace(/^\s*- /, '').replace(/^["']|["']$/g, ''));
-  assert.deepEqual(globs, NATIVE_SKIP_GLOBS);
+test('Linux broker checks are manual-only and have no pull-request path filter', () => {
+  const text = workflow('linux-broker.yml');
+  assert.match(text, /^  workflow_dispatch:\s*$/m);
+  assert.doesNotMatch(text, /^  (?:pull_request|push):\s*$/m);
+  assert.doesNotMatch(text, /^    paths-ignore:\s*$/m);
 });
 
-test('ios and macOS builds drop only the qc-ui source globs from their path filters', () => {
-  const qcUi = SAFE_GLOBS.filter((entry) => entry.startsWith('packages/typescript/qc-ui/'));
+test('iOS and macOS build workflows are manual-only without stale path filters', () => {
   for (const name of ['ios.yml', 'macos-build.yml']) {
     const text = workflow(name);
-    for (const glob of qcUi) {
-      const lines = text.split('\n').filter((line) => line.trim() === `- "!${glob}"`);
-      assert.equal(lines.length, 2, `${name} must negate ${glob} for pull_request and push`);
-    }
+    assert.match(text, /^  workflow_dispatch:\s*$/m, name);
+    assert.doesNotMatch(text, /^  (?:pull_request|push):\s*$/m, name);
+    assert.doesNotMatch(text, /^    paths-ignore:\s*$/m, name);
   }
 });
 
