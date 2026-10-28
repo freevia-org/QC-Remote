@@ -37,7 +37,7 @@ jobs:
       # Master and manual builds run both lanes for both architectures.
       matrix:
         include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"lane":"tests","target":"aarch64-apple-darwin"},{"lane":"package","target":"x86_64-apple-darwin"}]' || '[{"lane":"tests","target":"aarch64-apple-darwin"},{"lane":"tests","target":"x86_64-apple-darwin"},{"lane":"package","target":"aarch64-apple-darwin"},{"lane":"package","target":"x86_64-apple-darwin"}]') }}
-    runs-on: macos-26
+    runs-on: qc-remote-macmini
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
