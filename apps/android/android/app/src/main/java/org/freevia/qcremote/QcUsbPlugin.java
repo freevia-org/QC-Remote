@@ -677,7 +677,9 @@ public class QcUsbPlugin extends Plugin {
         keepalive.schedule(() -> {
             synchronized (this) {
                 if (recoveryGeneration != automaticReconnectGeneration.get() || relayAdmissionGuard.isTerminal()) return;
-                if (isReady()) return;
+                // A transport can be open while the preset/setlist seed has
+                // not arrived. A timed-out recovery must keep retrying then.
+                if (isReady() && stateDecoder.sessionSynchronized() && currentSetlist != null) return;
                 UsbDevice candidate = findQuadCortex();
                 long now = monotonicMillis();
                 // Re-arm on every path that is not "already connected". Returning
@@ -1772,13 +1774,22 @@ public class QcUsbPlugin extends Plugin {
             call.reject("No Quad Cortex was found over USB.", "DEVICE_NOT_FOUND");
             return;
         }
+        CompletableFuture<org.json.JSONObject> reconnect = reconnectInFlight;
+        if (reconnect != null) {
+            awaitReconnectForConnect(call, candidate, reconnect);
+            return;
+        }
         if (isReady() && device != null
             && device.getDeviceId() == candidate.getDeviceId()) {
             resolveConnected(call, candidate);
             return;
         }
         if (connecting && !clearStaleConnectingLatch()) {
-            call.reject("The Quad Cortex USB connection is already starting.", "CONNECT_IN_PROGRESS");
+            // Recovery can start after the first snapshot above. Join that
+            // attempt too; only a separate explicit open is an overlap error.
+            reconnect = reconnectInFlight;
+            if (reconnect != null) awaitReconnectForConnect(call, candidate, reconnect);
+            else call.reject("The Quad Cortex USB connection is already starting.", "CONNECT_IN_PROGRESS");
             return;
         }
         if (manager.hasPermission(candidate)) {
@@ -1807,6 +1818,32 @@ public class QcUsbPlugin extends Plugin {
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
         manager.requestPermission(candidate, permissionIntent);
+    }
+
+    /** A deliberate Connect shares the native recovery already opening this device.
+     * The recovery future has the READY_WAIT_TIMEOUT_MS deadline registered in
+     * relayReconnect(), so this call settles with that attempt instead of
+     * reporting a transient CONNECT_IN_PROGRESS as a connection failure. */
+    private void awaitReconnectForConnect(
+        PluginCall call, UsbDevice candidate, CompletableFuture<org.json.JSONObject> reconnect
+    ) {
+        reconnect.whenComplete((ignored, error) -> {
+            if (error != null) {
+                Throwable cause = unwrapCompletion(error);
+                String message = cause.getMessage() == null
+                    ? "The Quad Cortex USB connection did not finish." : cause.getMessage();
+                String code = cause instanceof RelayException
+                    ? ((RelayException) cause).code : "USB_CONNECT_FAILED";
+                call.reject(message, code);
+                return;
+            }
+            if (!isReady() || device == null || device.getDeviceId() != candidate.getDeviceId()
+                || !stateDecoder.sessionSynchronized() || currentSetlist == null) {
+                call.reject("The Quad Cortex USB connection did not finish for this device.", "USB_CONNECT_FAILED");
+                return;
+            }
+            resolveConnected(call, candidate);
+        });
     }
 
     /** Release a `connecting` flag that no live attempt is holding.
@@ -2028,21 +2065,31 @@ public class QcUsbPlugin extends Plugin {
     }
 
     private void openAndHandshake(UsbDevice candidate, PluginCall call) {
-        final long connectionIntent;
+        long intent = 0;
+        CompletableFuture<org.json.JSONObject> reconnect = null;
         synchronized (this) {
-            if (isReady() && device != null
+            reconnect = reconnectInFlight;
+            if (reconnect == null && isReady() && device != null
                 && device.getDeviceId() == candidate.getDeviceId()) {
                 resolveConnected(call, candidate);
                 return;
             }
             if (connecting) {
-                call.reject("The Quad Cortex USB connection is already starting.", "CONNECT_IN_PROGRESS");
-                return;
+                if (reconnect == null) {
+                    call.reject("The Quad Cortex USB connection is already starting.", "CONNECT_IN_PROGRESS");
+                    return;
+                }
+            } else if (reconnect == null) {
+                connecting = true;
+                connectingSinceMs = monotonicMillis();
+                intent = automaticReconnectGeneration.incrementAndGet();
             }
-            connecting = true;
-            connectingSinceMs = monotonicMillis();
-            connectionIntent = automaticReconnectGeneration.incrementAndGet();
         }
+        if (reconnect != null) {
+            awaitReconnectForConnect(call, candidate, reconnect);
+            return;
+        }
+        final long connectionIntent = intent;
         submitRelayTask(commandIo, CURRENT_RELAY_DEADLINE.get(), () -> {
             try {
                 openDeviceAndHandshake(candidate, null, relayAdmissionGuard.epoch(), connectionIntent);
