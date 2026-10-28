@@ -323,11 +323,9 @@ jobs:
         run: |
           node --test scripts/verify-public-history.test.mjs
           node scripts/verify-public-history.mjs --base "$QC_BASE_SHA" --head "$QC_HEAD_SHA" --identity "$QC_IDENTITY"
-      # The `DCO sign-off` job itself lives in dco.yml (a pull_request_target
-      # workflow, so a pull request cannot edit or skip it). These tests cover
-      # its checker and pin that workflow's safety properties; here they run on
-      # the pull request's own copy, so they are an early signal, not the
-      # enforcement.
+      # The DCO check is manually dispatched from master with a PR number.
+      # These tests validate the checker and the safe metadata-only workflow;
+      # this copy runs from the manually selected ref as an early signal.
       - name: DCO checker and workflow safety tests
         run: node --test scripts/verify-dco.test.mjs scripts/verify-workflows.test.mjs
       # The change classifier that decides which jobs run, and the workflow
