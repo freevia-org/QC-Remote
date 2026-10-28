@@ -1823,7 +1823,10 @@ public class QcUsbPlugin extends Plugin {
         }
         if (isReady() && device != null
             && device.getDeviceId() == candidate.getDeviceId()) {
-            publishConnectionProgress(requestId, "ready", "Quad Cortex is already connected and synchronized.", null);
+            boolean synchronizedSession = stateDecoder.sessionSynchronized() && currentSetlist != null;
+            publishConnectionProgress(requestId, synchronizedSession ? "ready" : "synchronizing",
+                synchronizedSession ? "Quad Cortex is already connected and synchronized."
+                    : "USB is already open. Waiting for the Quad Cortex state to synchronize…", null);
             resolveConnected(call, candidate);
             return;
         }
@@ -2160,7 +2163,10 @@ public class QcUsbPlugin extends Plugin {
             reconnect = reconnectInFlight;
             if (reconnect == null && isReady() && device != null
                 && device.getDeviceId() == candidate.getDeviceId()) {
-                publishConnectionProgress(requestId, "ready", "Quad Cortex is already connected and synchronized.", null);
+                boolean synchronizedSession = stateDecoder.sessionSynchronized() && currentSetlist != null;
+                publishConnectionProgress(requestId, synchronizedSession ? "ready" : "synchronizing",
+                    synchronizedSession ? "Quad Cortex is already connected and synchronized."
+                        : "USB is already open. Waiting for the Quad Cortex state to synchronize…", null);
                 resolveConnected(call, candidate);
                 return;
             }

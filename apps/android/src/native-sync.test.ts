@@ -186,6 +186,16 @@ test("Android USB recovery progress follows background retries for the active Co
   assert.match(appProgress, /nextAttempt < currentAttempt[\s\S]*usbProgressOrder\[progress\.phase\] < usbProgressOrder\[current\.phase\]/);
   assert.match(servicesSource, /attempt\?: number;[\s\S]*phase: "searching"[\s\S]*\| "disconnected"/);
 });
+
+test("Android reports transport readiness separately from synchronized device state", () => {
+  const connect = javaSource.slice(javaSource.indexOf("    public void connect(PluginCall call)"), javaSource.indexOf("    /** A deliberate Connect shares"));
+  const openAndHandshake = javaSource.slice(javaSource.indexOf("    private void openAndHandshake(UsbDevice candidate, PluginCall call,"), javaSource.indexOf("    private void openDeviceAndHandshake("));
+  for (const fastPath of [connect, openAndHandshake]) {
+    assert.match(fastPath, /boolean synchronizedSession = stateDecoder\.sessionSynchronized\(\) && currentSetlist != null;/);
+    assert.match(fastPath, /synchronizedSession \? "ready" : "synchronizing"/);
+    assert.match(fastPath, /USB is already open\. Waiting for the Quad Cortex state to synchronize/);
+  }
+});
 const rustRuntimeSource = readFileSync(new URL("../../../packages/rust/quadcortex/src/device/mod.rs", import.meta.url), "utf8");
 const rustRuntimeRequestSource = readFileSync(new URL("../../../packages/rust/quadcortex/src/device/request.rs", import.meta.url), "utf8");
 const rustHostMidiSource = readFileSync(new URL("../../../packages/rust/quadcortex/src/device/request/host_midi.rs", import.meta.url), "utf8");
