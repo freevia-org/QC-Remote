@@ -8,7 +8,7 @@ import { formFactors, skins } from "@qc-remote/form-factors";
 import { QC_BRAND, QC_COLORS, QC_LEGAL, QC_LEGAL_DOCUMENTS, QC_VISUAL_ASSETS } from "@qc-remote/theme";
 import { captureGatewaySession, useDeviceObservationPolicy, ControlAccessSelect, consumeQcNativeStateFrame, corosFixtureConfiguration, createGridRepairCoordinator, refreshGridSnapshotOnce, createQcDeviceDisplay, QcDeviceDisplay, QcDeviceDisplayOverlay, createDemoDeviceSession, demoLibraryCounts, IDLE_PLACEHOLDER_SNAPSHOT, connectingPlaceholderSnapshot, isConnectingPlaceholder, parseDemoLibraryText, usePresetMidiOutWorkflow, qcConnectionIndicatorPhase, qcLaneControlPanelBindings, qcParameterEditorBindings, qcRelayPresentation, QcHardwareSwitch, QcMasterVolumeKnob, qcHardwareSwitchGestureKey, QcUiIcon, readControlAccessMode, refreshGridSnapshot, serializeDemoLibrary, useBlockEditorSession, useContinuousControlWorkflow, useDeviceSettingsWorkflow, useExpressionAssignment, useIoEqWorkflows, useLooperXWorkflow, useModesConfigurationWorkflow, useNativeStateRecovery, usePublicRelayWorkflow, useQcConnectionWorkflow, useQcController, useQcCpuTelemetry, useQcDeviceUndo, useQcDeviceViews, useQcScreenFollow, useQcFollowSetting, consumeQcDisplayStates, useQcScreenDestination, useQcLiveState, useQcSurfaceActions, useQcWorkflows, useTempoWorkflow, useTunerWorkflow, useWriteHealth, virtualDeviceStoreOf, writeControlAccessMode, writeQcScreenFollowSetting } from "@qc-remote/ui";
 import { CorOsProductionScreenAudit } from "@qc-remote/ui/dev";
-import { androidGatewayTransport, acceptAndroidGatewayBrokerTarget, readAndroidGatewayTarget, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage } from "./native-services";
+import { androidGatewayTransport, acceptAndroidGatewayBrokerTarget, readAndroidGatewayTarget, androidUsbRuntimeDiagnostics, createAndroidQcTransport, publicRelay, QcUsbNative, ScreenWakeNative, subscribeRelayState, virtualDeviceStorage, type AndroidUsbConnectionProgress } from "./native-services";
 import { useAndroidPrompts } from "./use-android-prompts";
 import { useAndroidSessionBlocks } from "./use-android-session-blocks";
 import { OwnedAttemptLatch } from "./owned-attempt-latch.ts";
@@ -33,6 +33,26 @@ const androidKeepScreenAwakeStorageKey = "qc-control.android-keep-screen-awake-v
 const screenDimAfterMs = 90_000;
 const legacyControlAccessModeKey = "qc-control.device-access-mode-v1";
 const storedControlAccessMode = (): ControlAccessMode => readControlAccessMode(window.localStorage, [legacyControlAccessModeKey]);
+type UsbConnectionProgressView = { phase: AndroidUsbConnectionProgress["phase"] | "idle"; message: string; requestId?: string; attempt?: number; errorCode?: string };
+const usbProgressLabels: Record<UsbConnectionProgressView["phase"], string> = {
+  idle: "Device not connected",
+  disconnected: "Device disconnected",
+  searching: "Finding device",
+  permission: "Permission needed",
+  opening: "Opening connection",
+  claiming: "Claiming device interface",
+  reader: "Starting device reader",
+  handshake: "Communicating with device",
+  synchronizing: "Reading device state",
+  ready: "Device ready",
+  error: "Connection needs attention"
+};
+const usbProgressOrder: Record<UsbConnectionProgressView["phase"], number> = {
+  idle: -1, searching: 0, permission: 1, opening: 2, claiming: 3, reader: 4,
+  handshake: 5, synchronizing: 6, ready: 100, error: 101, disconnected: 102
+};
+const usbProgressIsActive = (phase: UsbConnectionProgressView["phase"]) =>
+  ["searching", "opening", "claiming", "reader", "handshake", "synchronizing"].includes(phase);
 function AppMark({ onClick }: { onClick: () => void }) {
   return <button type="button" className="app-mark" onClick={onClick} aria-label={`About ${QC_BRAND.appName}`}><img src={QC_VISUAL_ASSETS.appIcon.url} alt="" /></button>;
 }
@@ -132,6 +152,9 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
   const usbRetryRequested = useRef(false);
   const resumeHardwareInFlight = useRef(false);
   const [notice, setNotice] = useState(iosPlatform ? "Sign in to QC Remote Cloud to connect to your paired host." : "Connect the Quad Cortex by USB. Use REMOTE to let an AI app control it.");
+  const [usbProgress, setUsbProgress] = useState<UsbConnectionProgressView>(() => ({ phase: "idle", message: iosPlatform ? "Sign in to reach the Quad Cortex through your paired QC Remote host." : "Connect the Quad Cortex by USB, then tap Connect." }));
+  const usbProgressRequestSequence = useRef(0);
+  const activeUsbProgressRequest = useRef<string | null>(null);
   const [gridRefreshPending, setGridRefreshPending] = useState(false);
   const [usbWritesQuarantined, setUsbWritesQuarantined] = useState(false);
   const { observe: observeWriteHealth } = useWriteHealth({
@@ -155,7 +178,10 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
   const [browserRelayPairingPending, setBrowserRelayPairingPending] = useState(false);
   const remotePresentation = qcRelayPresentation(relayWorkflow.status, Boolean(browserRelayPairing));
   const usbIndicatorPhase = qcConnectionIndicatorPhase(mobileIndicatorConnection(connection), hardwareConnected && !demoActive, null, { actionRequired: usbWritesQuarantined });
-  const usbStatusText = hostDemoActive ? "Paired-host demo ready" : usbIndicatorPhase === "ready"
+  const usbProgressActive = usbProgressIsActive(usbProgress.phase);
+  const usbStatusText = usbProgress.phase === "error" || usbProgress.phase === "permission" || usbProgress.phase === "disconnected"
+    ? usbProgress.message
+    : hostDemoActive ? "Paired-host demo ready" : usbIndicatorPhase === "ready"
     ? "Quad Cortex ready"
     : usbIndicatorPhase === "syncing"
       ? "Quad Cortex synchronizing"
@@ -491,6 +517,11 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       return;
     }
     usbRetryRequested.current = false;
+    const requestId = `qcr-usb-${Date.now()}-${++usbProgressRequestSequence.current}`;
+    activeUsbProgressRequest.current = requestId;
+    setUsbProgress(iosPlatform
+      ? { requestId, phase: "opening", message: "Checking the paired QC Remote host…" }
+      : { requestId, phase: "searching", message: "Checking for the Quad Cortex over USB…" });
     const fromDemo = activeSourceRef.current === "virtual";
     const attempt = connectionAttempts.begin();
     clearPhysicalContext(); resetCommands(); setHardwareConnected(false);
@@ -516,20 +547,28 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       // and asking as well showed two prompts for one plug. The system's grant
       // comes back as a fresh availability event, which retries this.
       if (observationPolicy.readTarget) {
+        setUsbProgress({ requestId, phase: "opening", message: "Checking the paired host connection…" });
         const ready = await applyRemoteObservation(() => appOperationMounted.current && attempt.current());
         usbSessionReady.current = ready;
+        setUsbProgress({ requestId, phase: ready ? "ready" : "error", message: ready ? "The paired host is connected and its current device state is synchronized." : "The paired host did not provide a synchronized Quad Cortex state. Check the host connection and retry.", ...(!ready ? { errorCode: "HOST_STATE_UNAVAILABLE" } : {}) });
         if (announce && attempt.current()) setNotice(ready ? "Paired-host device refreshed." : "The paired host has no available device. Your sign-in is saved.");
         return;
       }
-      const result = await QcUsbNative.connect({ allowPermissionPrompt: announce });
+      const result = await QcUsbNative.connect({ allowPermissionPrompt: announce, requestId });
       if (!attempt.current()) return;
       if (!iosPlatform) {
+        setUsbProgress({ requestId, phase: "synchronizing", message: "USB is open. Reading the current preset and device state…" });
         const ready = await applyNativeObservation(() => appOperationMounted.current && attempt.current());
         usbSessionReady.current = ready;
         if (!ready && attempt.current()) {
           setHardwareConnected(false); transitionConnection("absent");
+          setUsbProgress({ requestId, phase: "error", message: "USB connected, but the Quad Cortex did not provide a complete current-state read. The device is not ready; check the cable and retry.", errorCode: "STATE_NOT_SYNCHRONIZED" });
+          if (announce) setNotice("USB connected, but device state could not be synchronized. Check the connection and retry.");
           void startDemoDeviceRef.current("No synchronized physical Quad Cortex was available.");
-        } else if (announce && attempt.current()) setNotice("Quad Cortex connected directly over USB.");
+        } else if (attempt.current()) {
+          setUsbProgress({ requestId, phase: "ready", message: "Quad Cortex connected over USB. Current preset and device state are synchronized." });
+          if (announce) setNotice("Quad Cortex connected and synchronized over USB.");
+        }
         return;
       }
       usbSessionReady.current = true;
@@ -539,6 +578,9 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       if (result.synchronized) presetSynchronized.current = true;
       transitionConnection(presetSynchronized.current ? "connected" : "syncing");
       if (!presetSynchronized.current && isConnectingPlaceholder(snapshotRef.current)) setSnapshot(connectingPlaceholderSnapshot("synchronizing"));
+      setUsbProgress(presetSynchronized.current
+        ? { requestId, phase: "ready", message: "The paired host connected and synchronized the Quad Cortex." }
+        : { requestId, phase: "synchronizing", message: "Connected to the paired host. Waiting for the current device state…" });
       if (announce) setNotice(iosPlatform ? "Connected to the Quad Cortex through your paired QC Remote host." : "Quad Cortex connected directly over USB.");
     } catch (error) {
       if (!attempt.current()) return;
@@ -548,14 +590,22 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       // lie as reporting a live session dead. Stay on "absent" until the
       // permission lands, which arrives as another availability event.
       const awaitingPermission = (error as { code?: string } | null)?.code === "USB_PERMISSION_REQUIRED";
-      transitionConnection(awaitingPermission ? "absent" : "error");
-      const primary = error instanceof Error ? error.message : "Could not connect to the Quad Cortex.";
-      if (announce) {
-        try {
-          const diagnostics = await usbDiagnostics();
-          if (attempt.current()) setNotice(`${primary} ${diagnostics}`);
-        } catch { if (attempt.current()) setNotice(primary); }
-      }
+      const errorCode = (error as { code?: string } | null)?.code;
+      const detail = error instanceof Error ? error.message : "Could not connect to the Quad Cortex.";
+      const primary = iosPlatform
+        ? (errorCode === "HOST_STATE_UNAVAILABLE"
+          ? "The paired host did not provide the Quad Cortex state. Check that it is connected and synchronized, then retry."
+          : detail || "Could not connect through the paired QC Remote host.")
+        : errorCode === "DEVICE_NOT_FOUND"
+          ? "No Quad Cortex detected. Check that it is powered on and connected by USB."
+          : errorCode === "USB_PERMISSION_REQUIRED"
+            ? "Android needs USB permission. Tap Connect and approve the system prompt."
+            : errorCode === "USB_PERMISSION_DENIED"
+              ? "USB permission was denied. Tap Connect and allow QC Remote to access the Quad Cortex."
+              : detail;
+      transitionConnection(awaitingPermission ? "absent" : "error", primary);
+      setUsbProgress({ requestId, phase: awaitingPermission ? "permission" : "error", message: primary, ...(errorCode ? { errorCode } : {}) });
+      if (announce) setNotice(primary);
       if (fromDemo && attempt.current() && observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current(primary);
     } finally {
       const released = connectAttemptLatch.current.release(latchOwner);
@@ -590,11 +640,24 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
           resetSessionBlocks();
           resetCommands();
           if (activeSourceRef.current !== "virtual") {
+            activeUsbProgressRequest.current = null;
+            setUsbProgress({ phase: "disconnected", message: iosPlatform ? "The paired host connection ended. Check that QC Remote is running on the host, then reconnect." : "USB connection ended. Check the cable and power, then tap Connect to retry." });
             transitionConnection("absent");
             if (observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current("The Quad Cortex was disconnected.");
           }
         }
       }),
+      ...(!iosPlatform ? [QcUsbNative.addListener("qcConnectionProgress", (progress) => {
+        if (cancelled || progress.requestId !== activeUsbProgressRequest.current) return;
+        setUsbProgress(current => {
+          if (current.requestId !== progress.requestId) return current;
+          const nextAttempt = progress.attempt ?? 0;
+          const currentAttempt = current.attempt ?? 0;
+          if (nextAttempt < currentAttempt
+              || (nextAttempt === currentAttempt && usbProgressOrder[progress.phase] < usbProgressOrder[current.phase])) return current;
+          return progress;
+        });
+      })] : []),
       QcUsbNative.addListener("qcStateBatch", (frame) => {
         if (cancelled) return;
         setHardwareConnected(true);
@@ -650,6 +713,7 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       if (!devices.length) {
         setHardwareConnected(false);
         if (activeSourceRef.current !== "virtual") {
+          setUsbProgress({ phase: "disconnected", message: "No Quad Cortex detected. Connect its USB cable and make sure the unit is powered on." });
           transitionConnection("absent");
           if (observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current("No Quad Cortex was found.");
         }
@@ -658,7 +722,9 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       void attemptUsbConnection();
     }).catch((error) => {
       if (!cancelled && scanAttempt.current()) {
-        transitionConnection("error");
+        const detail = error instanceof Error ? error.message : "USB discovery failed unexpectedly.";
+        setUsbProgress({ phase: "error", message: `Could not check the USB connection: ${detail}`, errorCode: "USB_SCAN_FAILED" });
+        transitionConnection("error", detail);
         if (observationPolicy.mode !== "on-demand") void startDemoDeviceRef.current(error instanceof Error ? error.message : "USB discovery failed.");
       }
     });
@@ -1177,7 +1243,10 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       <div className="mobile-brand"><AppMark onClick={() => setWorkflowPanel("about")} /><span><strong>{QC_BRAND.appName}</strong><small>v{appVersion}</small></span></div>
       <div className="connection-pills">
         <button className={`connection-pill phase-${remotePresentation.phase}`} onClick={() => void openRemoteStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "remote"} aria-label={`REMOTE ${remotePresentation.state}; open remote access details`}><i /> REMOTE</button>
-        <button className={`connection-pill phase-${usbIndicatorPhase}`} onClick={() => void openUsbStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "usb"} aria-label={`${demoActive ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}; open device connection details`}><i /> {demoActive ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}</button>
+        <button className={`connection-pill phase-${usbProgress.phase === "error" ? "error" : usbProgress.phase === "permission" ? "action-required" : usbProgressActive ? "syncing" : usbIndicatorPhase}`} onClick={() => void openUsbStatusPanel()} aria-haspopup="dialog" aria-expanded={workflowPanel === "usb"} aria-busy={usbProgressActive} aria-label={`${demoActive ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}: ${usbProgressLabels[usbProgress.phase]}. ${usbProgress.message} Open device connection details`}>
+          <i /> <span>{demoActive ? "LOCAL DEMO" : hostDemoActive ? "HOST DEMO" : iosPlatform ? "HOST" : "USB"}</span>
+          {usbProgressActive && <span className="connection-pill-progress" role="progressbar" aria-label={usbProgressLabels[usbProgress.phase]} aria-valuetext={usbProgress.message}><span /></span>}
+        </button>
       </div>
     </header>
 
@@ -1204,7 +1273,14 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
       {(() => { const led = mobileLed(4, { active: false, assigned: false, color: QC_COLORS.hardware.whiteLed }); return <div className="mobile-down-control"><QcHardwareSwitch gestureContextKey={hardwareSwitchGestureKey} role="bank:down" label={<span className="mobile-down-glyph"><QcUiIcon kind="up" /></span>} ariaLabel="Next preset" active={led.active} assigned={led.assigned} accent={led.color} onContactChange={(pressed) => handleModeChordContact("bankDown", pressed)} onTap={() => { if (!controlTapSuppressed("bankDown")) pressSurfaceSwitch("bank:down"); }} onAction={handleSurfaceAction} /></div>; })()}
       <div className="mobile-tempo-control"><QcHardwareSwitch gestureContextKey={hardwareSwitchGestureKey} role="tempo" label="" ariaLabel="TEMPO" readout={`${snapshot.tempo}`} active={parameterLeds ? parameterLeds[9].active : snapshot.tempoLedEnabled} assigned={parameterLeds ? parameterLeds[9].assigned : snapshot.tempoLedEnabled} accent={parameterLeds ? parameterLeds[9].color : QC_COLORS.device.tempoLed} pulseBpm={!parameterLeds && snapshot.tempoLedEnabled ? snapshot.tempo : undefined} pulseEpochMs={!parameterLeds ? snapshot.tempoPulseEpochMs : undefined} holdDelayMs={holdDelayMs} onContactChange={(pressed) => handleModeChordContact("tempo", pressed)} onTap={() => { if (!controlTapSuppressed("tempo")) pressSurfaceSwitch("tempo"); }} onDoubleTap={() => openTempoOrTuner("double-tap")} onHold={() => openTempoOrTuner("hold")} onAction={handleSurfaceAction} /></div>
     </nav>
-    <div className="mobile-status-notice" role="status">{notice}</div>
+    <div className={`mobile-status-notice phase-${usbProgress.phase}`} role="status" aria-live="polite">
+      <div className="mobile-usb-status-line"><i className={`panel-status-dot phase-${usbProgress.phase === "ready" ? "ready" : usbProgress.phase === "error" ? "error" : usbProgress.phase === "permission" ? "action-required" : usbProgress.phase === "disconnected" || usbProgress.phase === "idle" ? "idle" : "syncing"}`} />
+        <span><strong>{usbProgressLabels[usbProgress.phase]}</strong><small>{usbProgress.message}</small></span>
+        {(usbProgress.phase === "error" || usbProgress.phase === "disconnected") && native && <button type="button" onClick={() => void connectUsb()} disabled={usbBusy}>{usbBusy ? "Connecting…" : "Retry"}</button>}
+      </div>
+      {usbProgressActive && <div className="mobile-usb-progress-track" role="progressbar" aria-label={usbProgressLabels[usbProgress.phase]} aria-valuetext={usbProgress.message}><span /></div>}
+      {notice && notice !== usbProgress.message && <small className="mobile-status-notice-detail">{notice}</small>}
+    </div>
 
 
     {workflowPanel && <div className="mobile-workflow-backdrop" role="presentation" onClick={() => setWorkflowPanel(null)}>
@@ -1216,12 +1292,13 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
             <button type="button" aria-pressed={!demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void (demoActive ? resumeHardwareDevice() : openUsbStatusPanel())}><i className={`panel-status-dot phase-${demoActive ? hardwareConnected ? "ready" : "idle" : usbIndicatorPhase}`} />{hostDemoActive ? "Host demo" : "Quad Cortex"}<small>{iosPlatform ? "Remote host" : "USB"}</small></button>
             <button type="button" className="demo-device-tab" aria-pressed={demoActive} disabled={!native || usbBusy || devicePending || demoPending} onClick={() => { if (!demoActive) void startDemoDevice(); }}>LOCAL DEMO{demoPending && <small>Opening…</small>}</button>
           </div>
-          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${demoActive ? "demo" : usbIndicatorPhase}`} />{demoActive ? "Demo device ready" : usbStatusText}</span>{!demoActive && <button type="button" disabled={!native || usbBusy} onClick={() => void connectUsb().then(openUsbStatusPanel)}>{hardwareConnected ? "Reconnect" : iosPlatform ? "Refresh host" : "Connect"}</button>}{demoActive && !hardwareConnected && <button type="button" disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void resumeHardwareDevice()}>{iosPlatform ? "Connect to host" : "Connect Quad Cortex"}</button>}</div>
+          <div className={`mobile-usb-progress phase-${usbProgress.phase}`} role="status" aria-live="polite"><span><i className={`panel-status-dot phase-${usbProgress.phase === "ready" ? "ready" : usbProgress.phase === "error" ? "error" : usbProgress.phase === "permission" ? "action-required" : usbProgress.phase === "disconnected" || usbProgress.phase === "idle" ? "idle" : "syncing"}`} /><strong>{usbProgressLabels[usbProgress.phase]}</strong></span><p>{usbProgress.message}</p>{usbProgressActive && <div className="mobile-usb-progress-track" role="progressbar" aria-label={usbProgressLabels[usbProgress.phase]} aria-valuetext={usbProgress.message}><span /></div>}</div>
+          <div className="mobile-connection-summary"><span><i className={`panel-status-dot phase-${demoActive ? "demo" : usbIndicatorPhase}`} />{demoActive ? "Demo device ready" : usbStatusText}</span>{!demoActive && <button type="button" disabled={!native || usbBusy} onClick={() => { void openUsbStatusPanel(); void connectUsb(); }}>{hardwareConnected ? "Reconnect" : iosPlatform ? "Refresh host" : usbProgress.phase === "error" || usbProgress.phase === "disconnected" ? "Retry connect" : "Connect"}</button>}{demoActive && !hardwareConnected && <button type="button" disabled={!native || usbBusy || devicePending || demoPending} onClick={() => void resumeHardwareDevice()}>{iosPlatform ? "Connect to host" : "Connect Quad Cortex"}</button>}</div>
           <dl className="mobile-connection-details">
-            <div><dt>Connection</dt><dd>{demoActive ? "Local simulation · no hardware changes" : connection.detail || (hardwareConnected ? (iosPlatform ? "The Quad Cortex is connected through your paired QC Remote host." : "The Quad Cortex is connected directly over USB.") : (iosPlatform ? "Sign in to reach the Quad Cortex through a paired QC Remote host." : "No Quad Cortex is connected directly over USB."))}</dd></div>
+            <div><dt>Connection</dt><dd>{demoActive ? "Local simulation · no hardware changes" : connection.detail || (hardwareConnected ? (iosPlatform ? "The Quad Cortex is connected through your paired QC Remote host." : "The Quad Cortex is connected directly over USB.") : usbProgress.message || (iosPlatform ? "Sign in to reach the Quad Cortex through a paired QC Remote host." : "No Quad Cortex is connected directly over USB."))}</dd></div>
             <div><dt>Current preset</dt><dd>{demoActive ? `${snapshot.presetLocation} · ${snapshot.presetName}` : hardwareConnected ? `${snapshot.presetLocation} · ${snapshot.presetName}` : "Not synchronized"}</dd></div>
             {!demoActive && snapshot.gridLayoutComplete === false && <div><dt>Grid</dt><dd role="status">{gridRefreshPending ? "Refreshing the current preset… Grid editing is paused." : "Grid layout is incomplete. Grid editing is paused until a fresh current-preset read succeeds."}</dd></div>}
-            <div><dt>Status</dt><dd>{usbPanelDetail}</dd></div>
+            <div><dt>{iosPlatform ? "Connection diagnostics" : "USB diagnostics"}</dt><dd>{usbPanelDetail}</dd></div>
           </dl>
           <div className="mobile-panel-actions"><button disabled={!sessionReady || devicePending || demoPending} onClick={() => { setWorkflowPanel(null); void deviceViews.open("info"); }}>Device information</button></div>
           {native && !iosPlatform && <><label className="mobile-setting-toggle"><input type="checkbox" checked={internetForwarding === true} disabled={internetForwarding === undefined || internetForwardingPending} onChange={(event) => void changeInternetForwarding(event.target.checked)} /> Allow the Quad Cortex to use this device’s Internet connection</label><p>Forwards the connected Quad Cortex’s cloud and update requests. Turning this off cancels active transfers.</p></>}

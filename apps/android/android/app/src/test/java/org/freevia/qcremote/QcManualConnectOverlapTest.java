@@ -32,7 +32,7 @@ public final class QcManualConnectOverlapTest {
         String connect = between(source, "    @PluginMethod\n    public void connect(PluginCall call)", "    /** A deliberate Connect shares");
         String await = between(source, "    private void awaitReconnectForConnect(", "    /** Release a `connecting` flag");
         String stale = between(source, "    private boolean clearStaleConnectingLatch()", "    /** Refuse an outstanding prompt");
-        String open = between(source, "    private void openAndHandshake(UsbDevice candidate, PluginCall call)", "    private void openDeviceAndHandshake(");
+        String open = between(source, "    private void openAndHandshake(UsbDevice candidate, PluginCall call,", "    private void openDeviceAndHandshake(");
         output = Files.createTempDirectory("qc-manual-connect-overlap-");
         boolean complete = false;
         try {
@@ -85,7 +85,7 @@ public final class QcManualConnectOverlapTest {
 import java.util.*; import java.util.concurrent.*; import java.util.concurrent.atomic.*;
 public final class ManualConnectHarness {
   volatile boolean connecting, ready, synchronizedSession;
-  volatile long connectingSinceMs; volatile CompletableFuture<org.json.JSONObject> reconnectInFlight;
+  volatile long connectingSinceMs; volatile String pendingConnectRequestId, activeConnectionProgressRequestId; volatile int connectionProgressAttempt; volatile CompletableFuture<org.json.JSONObject> reconnectInFlight;
   final UsbDevice candidate = new UsbDevice(1), replacement = new UsbDevice(2);
   UsbDevice device; Object currentSetlist; PluginCall pendingConnect; String lastError;
   final Manager manager = new Manager(); final Decoder stateDecoder = new Decoder();
@@ -99,8 +99,9 @@ public final class ManualConnectHarness {
   boolean isReady() { if (onReadyCheck != null) { Runnable action = onReadyCheck; onReadyCheck = null; action.run(); } return ready; }
   UsbDevice findQuadCortex() { return candidate; }
   void resolveConnected(PluginCall call, UsbDevice selected) { call.resolve(selected); }
+  void notifyListeners(String event, JSObject progress, boolean retainUntilConsumed) {}
   void closeConnection() { ready = false; device = null; }
-  void openDeviceAndHandshake(UsbDevice selected, Object ignored, long epoch, long intent) {
+  void openDeviceAndHandshake(UsbDevice selected, Object ignored, long epoch, long intent, String requestId) {
     device = selected; ready = true; synchronizedSession = true; currentSetlist = new Object();
   }
   void submitRelayTask(Object executor, Object deadline, Runnable action) { queued.add(action); }
@@ -164,6 +165,7 @@ public final class ManualConnectHarness {
   static final class UsbDevice { final int id; UsbDevice(int id) { this.id = id; } int getDeviceId() { return id; } }
   static final class PluginCall { String code; boolean resolved; UsbDevice selected; org.json.JSONObject getData() { return new org.json.JSONObject(); } void resolve(UsbDevice device) { resolved = true; selected = device; } void reject(String message, String code) { this.code = code; } void reject(String message, String code, Exception ignored) { this.code = code; } }
   static final class RelayException extends RuntimeException { final String code; RelayException(String code, String message) { super(message); this.code = code; } }
+  static final class JSObject { JSObject put(String key, Object value) { return this; } }
   static final class Context { String getPackageName() { return "test"; } }
   static final class Intent { Intent(String ignored) {} Intent setPackage(String ignored) { return this; } }
   static final class PendingIntent { static final int FLAG_UPDATE_CURRENT = 1, FLAG_IMMUTABLE = 2; static PendingIntent getBroadcast(Context ignored, int request, Intent intent, int flags) { return new PendingIntent(); } }
