@@ -14,7 +14,7 @@ concurrency:
 jobs:
   npm-audit:
     name: npm dependencies
-    runs-on: ubuntu-latest
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,7 +31,7 @@ jobs:
 
   rustsec:
     name: RustSec (${{ matrix.directory }})
-    runs-on: ubuntu-latest
+    runs-on: qc-remote-i5-linux
     timeout-minutes: 15
     permissions:
       contents: read
