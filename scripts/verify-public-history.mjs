@@ -24,12 +24,11 @@
 // the push run, which is the point where the identity rules are enforced for
 // good.
 //
-// One already-published commit is exempt from one identity finding:
-// 2badc68ea4d30f53fc98ae9e000c70df109d0970 may carry a Co-authored-by trailer
-// (see publishedIdentityExceptions below). The exemption is that full commit
-// SHA and that exact finding text, in whole-history and range mode alike. Every
-// other finding on that commit, and the same finding on any other commit, still
-// fails as usual.
+// A small number of already-published commits are exempt from one exact,
+// individually recorded identity finding (see publishedIdentityExceptions
+// below). Each exemption is tied to the full immutable commit SHA and exact
+// finding text in whole-history and range mode alike. Every other finding on
+// those commits, and the same finding on any other commit, still fails.
 //
 // Usage:
 //   node scripts/verify-public-history.mjs
@@ -85,6 +84,10 @@ export const allowedPublisherEmails = ['info@freevia.org'];
 export const publishedIdentityExceptions = new Map([
   [
     '2badc68ea4d30f53fc98ae9e000c70df109d0970',
+    new Set(['commit message contains a Co-authored-by trailer']),
+  ],
+  [
+    'db44c774a284c0f189e23cbdfd0ff9265b7ae400',
     new Set(['commit message contains a Co-authored-by trailer']),
   ],
 ]);

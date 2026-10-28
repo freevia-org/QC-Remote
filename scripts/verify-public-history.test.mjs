@@ -190,12 +190,20 @@ test('whole-history mode fails on a Co-authored-by trailer', () => {
   });
 });
 
-test('the published squash exception is exact and cannot weaken later history', () => {
-  const publishedCommit = '2badc68ea4d30f53fc98ae9e000c70df109d0970';
+test('published identity exceptions are exact and cannot weaken later history', () => {
+  const publishedCommits = [
+    '2badc68ea4d30f53fc98ae9e000c70df109d0970',
+    'db44c774a284c0f189e23cbdfd0ff9265b7ae400',
+  ];
   const trailerFinding = 'commit message contains a Co-authored-by trailer';
-  assert.equal(publishedIdentityExceptions.size, 1);
-  assert.equal(isPublishedIdentityException(publishedCommit, trailerFinding), true);
-  assert.equal(isPublishedIdentityException(publishedCommit, 'author email is not a noreply identity'), false);
+  assert.equal(publishedIdentityExceptions.size, publishedCommits.length);
+  for (const publishedCommit of publishedCommits) {
+    assert.equal(isPublishedIdentityException(publishedCommit, trailerFinding), true);
+    assert.equal(
+      isPublishedIdentityException(publishedCommit, 'author email is not a noreply identity'),
+      false,
+    );
+  }
   assert.equal(isPublishedIdentityException('0'.repeat(40), trailerFinding), false);
 });
 
