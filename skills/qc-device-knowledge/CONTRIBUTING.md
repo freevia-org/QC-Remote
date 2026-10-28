@@ -51,15 +51,15 @@ accepted. To fix a commit you forgot to sign, `git commit --amend -s`; for a
 series, `git rebase --signoff <base>`.
 
 Every commit in a pull request from an outside contributor must carry the
-trailer. The `DCO sign-off` CI job fails a pull request whose commits lack a
-`Signed-off-by:` trailer matching the commit author's name and email. Merge
-commits are not exempt, because a conflict resolution exists only in the merge:
-if you merge the base branch into yours, sign the merge (`git merge --signoff`)
-or rebase instead. GitHub's web "Update branch" button creates a merge commit
-without a sign-off and will fail the check, so rebase or merge locally with
-`--signoff`.
+trailer. The DCO check is manual so CI does not start automatically on pull
+request events. Before merging an outside contribution, a maintainer must
+dispatch the `DCO` workflow from `master` with the pull request number. It
+checks every commit added by the PR for a `Signed-off-by:` trailer matching the
+commit author's name and email. Merge commits are not exempt, because a conflict
+resolution exists only in the merge: sign the merge (`git merge --signoff`) or
+rebase instead.
 
-Maintainers are exempt: the CI job is skipped for pull requests whose author
+Maintainers are exempt: the check is skipped for pull requests whose author
 GitHub reports as the repository owner, an organisation member or a
 collaborator (`OWNER`, `MEMBER` or `COLLABORATOR`), and for pull requests opened
 by a bot account (such as Dependabot). Everyone else, including contributors
@@ -68,11 +68,12 @@ on the pull request author as reported by GitHub, not on commit contents.
 Anyone later added as a collaborator becomes exempt from then on, and
 membership that GitHub does not report as `MEMBER` is checked rather than
 exempted. A commit pushed by someone else onto a maintainer's or bot's pull
-request branch needs write access to that branch, which is accepted. The job is
-defined in `.github/workflows/dco.yml` and runs from the base branch, so a pull
-request cannot change or skip it, nor add an exemption for itself. It can only
-check that the trailer is there and names the author; whether the name is a
-real one is for the maintainers to judge. The requirement applies from the first
+request branch needs write access to that branch, which is accepted. The workflow
+is defined in `.github/workflows/dco.yml` and runs from `master`; it reads PR
+metadata through GitHub's API and fetches the head as Git objects only, so it
+never runs code from the pull request. It can only check that the trailer is
+there and names the author; whether the name is real is for the maintainers to
+judge. The requirement applies from the first
 outside contribution onward and is not retroactive: the commits the publisher,
 Freevia EOOD, made before that, including the initial public release, carry no
 sign-off and are released by the copyright holder directly.
