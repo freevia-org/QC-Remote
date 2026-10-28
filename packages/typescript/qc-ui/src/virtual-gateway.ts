@@ -1240,6 +1240,9 @@ function currentValue(state: VirtualParameterState, parameterIndex: number, scen
 }
 
 function writeValue(state: VirtualParameterState, parameterIndex: number, scene: number, value: number): void {
+  // These computed writes are numeric indexes, not attacker-provided property names:
+  // parameterIndex is bounded by assertInteger and scene is a bounded integer.
+  // In particular, neither value can be the string "__proto__" or another prototype key.
   assertInteger(parameterIndex, 0, PARAMETER_INDEX_LIMIT, "parameterIndex");
   if (!Number.isInteger(scene) || scene < 0 || scene >= QC_SCENE_COUNT) throw new Error("scene must be a valid scene index");
   const scenes = state.sceneValues?.[parameterIndex];

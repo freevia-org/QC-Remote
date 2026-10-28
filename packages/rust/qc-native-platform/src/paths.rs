@@ -135,11 +135,10 @@ fn unsafe_component_hint(metadata: &std::fs::Metadata) -> String {
     let mode = metadata.mode() & 0o7777;
     if mode & 0o020 != 0 && mode & 0o002 == 0 {
         format!(
-            " (mode {mode:04o}, group {}: group-write is accepted only on your own directories in your private group; run chmod g-w on it)",
-            metadata.gid()
+            " (mode {mode:04o}: group-write is accepted only on your own directories in your private group; run chmod g-w on it)"
         )
     } else {
-        format!(" (mode {mode:04o}, owner uid {})", metadata.uid())
+        format!(" (mode {mode:04o})")
     }
 }
 
