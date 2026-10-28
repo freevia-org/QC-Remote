@@ -201,6 +201,26 @@ impl SessionDriver {
         self.failure.as_ref()
     }
 
+    /// Failure text for native status and copied diagnostics. Only fixed labels,
+    /// the startup phase and numeric type-35 metadata are added to the error code.
+    /// Raw reply contents and decoder error strings are never included.
+    pub fn failure_message(&self) -> Option<String> {
+        let failure = self.failure.as_ref()?;
+        let phase = self
+            .lifecycle
+            .failure_phase()
+            .unwrap_or_else(|| match failure {
+                SessionFailure::StartupTimeout(phase) => *phase,
+                _ => self.phase(),
+            });
+        let mut message = format!("{failure:?}; startup phase={}", phase.as_str());
+        if let Some(statistics) = self.lifecycle.module_statistics_failure() {
+            use std::fmt::Write;
+            let _ = write!(message, "; {statistics}");
+        }
+        Some(message)
+    }
+
     /// The latest synchronization result: `None` before post-boot initialization
     /// finishes, then whether the device state is synchronized. A failure sets
     /// it to `Some(false)`; an in-session rebuild does so only if a result had
@@ -580,6 +600,30 @@ mod tests {
         );
         assert_eq!(driver.phase(), DeviceStartupPhase::Connected);
         assert_eq!(driver.synchronization(), None);
+    }
+
+    #[test]
+    fn module_stats_diagnostics_survive_driver_failure_and_keep_writes_blocked() {
+        let mut driver = SessionDriver::start(7, "session".into(), 0);
+        submitted(&mut driver, &[52], 0);
+        driver.observe(52, &reset_reply("session"), 10);
+        submitted(&mut driver, &[10], 10);
+        driver.observe(10, &version(), 20);
+        submitted(&mut driver, &[26, 49], 20);
+        submitted(&mut driver, &[49, 51], 20);
+        driver.observe(51, &model_repo(), 30);
+        submitted(&mut driver, &[35], 30);
+        driver.observe(35, &[8, 1], 40); // UPDATE with no statistics collections.
+        assert_eq!(
+            driver.failure(),
+            Some(&SessionFailure::Protocol(
+                DeviceStartupError::ModuleStatisticsDataError
+            ))
+        );
+        assert_eq!(driver.failure_message().as_deref(), Some(
+            "Protocol(ModuleStatisticsDataError); startup phase=initializing; type 35 empty-statistics; payloadBytes=2; action=1; stats=0, coreStats=0, sizeRelations=0, validId=0"));
+        assert!(!driver.is_active());
+        assert!(driver.next_batch(41, 0).is_none());
     }
 
     #[test]

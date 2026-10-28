@@ -20,6 +20,7 @@ import { createControlAccessChange, controlAccessPresentation } from "./control-
 import { openOwnedLooper } from "./open-owned-looper.ts";
 import { attachNativeDemoProvider } from "./demo-provider-bridge.ts";
 import { mobileIndicatorConnection, refreshMobileTarget } from "./mobile-target-binding.ts";
+import { retainStartupFailure, startupFailureReport, type AndroidStartupFailure } from "./android-startup-failure.ts";
 import appPackage from "../package.json";
 import { qcStreamRestartClearsBulkOperation } from "@qc-remote/ui";
 
@@ -192,6 +193,7 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
         : "Quad Cortex disconnected";
   const [workflowPanel, setWorkflowPanel] = useState<"usb" | "remote" | "about" | "display" | "privacy" | "legal" | "notices" | null>(null);
   const [usbPanelDetail, setUsbPanelDetail] = useState(iosPlatform ? "Checking remote host status…" : "Checking direct USB status…");
+  const [lastStartupFailure, setLastStartupFailure] = useState<AndroidStartupFailure | null>(null);
   const screenDestination = useQcScreenDestination();
   const mobileScreenView = screenDestination.view;
   const setMobileScreenView = screenDestination.setView;
@@ -664,6 +666,8 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
               || (nextAttempt === currentAttempt && usbProgressOrder[progress.phase] < usbProgressOrder[current.phase])) return current;
           return progress;
         });
+      }), QcUsbNative.addListener("qcStartupFailure", (failure) => {
+        if (!cancelled) setLastStartupFailure(current => retainStartupFailure(current, failure));
       })] : []),
       QcUsbNative.addListener("qcStateBatch", (frame) => {
         if (cancelled) return;
@@ -812,7 +816,21 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
     const endpoint = result.interfaceId >= 0 ? ` Interface ${result.interfaceId}, input endpoint 0x${result.inputEndpointAddress.toString(16)}, max packet ${result.inputMaxPacketSize}; ${result.readAttempts} read polls (${result.negativeReads} negative); ${result.reportBytes}-byte output framing.` : "";
     const midi = result.midiAvailable ? ` USB-MIDI interface ${result.midiInterfaceId}, output endpoint 0x${result.midiOutputEndpointAddress.toString(16)}; MIDI queue ${result.lastMidiQueueDelayMs} ms (max ${result.maxMidiQueueDelayMs} ms).` : " USB-MIDI output unavailable.";
     const problem = result.lastError ? ` Last error: ${result.lastError}` : "";
+    if (result.lastStartupFailure !== undefined && result.lastStartupFailureSessionEpoch !== undefined) {
+      const failure = { sessionEpoch: result.lastStartupFailureSessionEpoch, detail: result.lastStartupFailure };
+      setLastStartupFailure(current => retainStartupFailure(current, failure));
+    }
     return `USB ${result.connected ? "connected" : "not connected"}: ${traffic}${last}${errors}${stalls}${catalog}${stateAge}.${endpoint}${midi}${problem}`;
+  };
+
+  const copyUsbDiagnostics = async () => {
+    try {
+      // Copy the displayed report; do not trigger a device or relay request.
+      await navigator.clipboard.writeText([usbPanelDetail, startupFailureReport(lastStartupFailure)].filter(Boolean).join("\n"));
+      if (appOperationMounted.current) setNotice("Connection diagnostics copied.");
+    } catch {
+      if (appOperationMounted.current) setNotice("Could not copy connection diagnostics. Select the status text to copy it manually.");
+    }
   };
 
   // This remains separate from connection recovery: reads still work while writes are paused.
@@ -1308,8 +1326,9 @@ export function App({ appVersion = appPackage.version }: { appVersion?: string }
             <div><dt>Current preset</dt><dd>{demoActive ? `${snapshot.presetLocation} · ${snapshot.presetName}` : hardwareConnected ? `${snapshot.presetLocation} · ${snapshot.presetName}` : "Not synchronized"}</dd></div>
             {!demoActive && snapshot.gridLayoutComplete === false && <div><dt>Grid</dt><dd role="status">{gridRefreshPending ? "Refreshing the current preset… Grid editing is paused." : "Grid layout is incomplete. Grid editing is paused until a fresh current-preset read succeeds."}</dd></div>}
             <div><dt>{iosPlatform ? "Connection diagnostics" : "USB diagnostics"}</dt><dd>{usbPanelDetail}</dd></div>
+            {!iosPlatform && lastStartupFailure && <div><dt>Last startup failure</dt><dd>{startupFailureReport(lastStartupFailure)}</dd></div>}
           </dl>
-          <div className="mobile-panel-actions"><button disabled={!sessionReady || devicePending || demoPending} onClick={() => { setWorkflowPanel(null); void deviceViews.open("info"); }}>Device information</button></div>
+          <div className="mobile-panel-actions"><button disabled={!sessionReady || devicePending || demoPending} onClick={() => { setWorkflowPanel(null); void deviceViews.open("info"); }}>Device information</button><button type="button" onClick={() => void copyUsbDiagnostics()}>Copy diagnostics</button></div>
           {native && !iosPlatform && <><label className="mobile-setting-toggle"><input type="checkbox" checked={internetForwarding === true} disabled={internetForwarding === undefined || internetForwardingPending} onChange={(event) => void changeInternetForwarding(event.target.checked)} /> Allow the Quad Cortex to use this device’s Internet connection</label><p>Forwards the connected Quad Cortex’s cloud and update requests. Turning this off cancels active transfers.</p></>}
           {demoActive && <div className="mobile-panel-actions"><button disabled={devicePending || demoPending} onClick={() => void copyDemoLibrary()}>Copy library</button><button disabled={devicePending || demoPending} onClick={() => void pasteDemoLibrary()}>Paste library</button><button className="danger" disabled={devicePending || demoPending} onClick={stopDemoDevice}>Stop demo</button></div>}
         </div>}

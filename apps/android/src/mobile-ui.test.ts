@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { startRelayReportingFailure } from "./relay-start.ts";
+import { retainStartupFailure, startupFailureReport } from "./android-startup-failure.ts";
+
+test("startup diagnostics update from local events and reject older sessions across retry", () => {
+  const first = retainStartupFailure(null, { sessionEpoch: 7, detail: "startup phase=initializing; type 35 decode-failure" });
+  assert.match(startupFailureReport(first), /session 7; may precede the current retry/);
+  const retry = retainStartupFailure(first, { sessionEpoch: 8, detail: "startup phase=initializing; type 35 empty-statistics" });
+  assert.equal(retry?.sessionEpoch, 8);
+  assert.match(startupFailureReport(retry), /empty-statistics/);
+  assert.equal(retainStartupFailure(retry, { sessionEpoch: 7, detail: "late stale callback" }), retry);
+  assert.equal(retainStartupFailure(retry, { sessionEpoch: 8, detail: "duplicate" }), retry);
+  assert.equal(retainStartupFailure(retry, { sessionEpoch: Number.NaN, detail: "invalid epoch" }), retry);
+  assert.equal(retainStartupFailure(retry, { sessionEpoch: 9, detail: "x".repeat(513) }), retry);
+  assert.equal(startupFailureReport(null), "");
+});
 
 test("actual Android prompt hook cancels replacement and unmount, and refuses retained old callbacks", async (t) => {
   const { build } = await import("esbuild");

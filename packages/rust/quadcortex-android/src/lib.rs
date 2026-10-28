@@ -229,7 +229,7 @@ fn lifecycle_status(owner: &mut SessionRuntime, now_ms: u64) -> Result<String, S
     serde_json::to_string(&serde_json::json!({
         "phase": runtime.phase().as_str(),
         "sessionValidated": runtime.session_validated(),
-        "error": runtime.failure().map(|failure| format!("{failure:?}")),
+        "error": runtime.failure_message(),
     }))
     .map_err(|error| error.to_string())
 }
@@ -3734,9 +3734,57 @@ mod tests {
             owner.lifecycle = Some(runtime);
             serde_json::from_str(&lifecycle_status(&mut owner, 1).unwrap()).unwrap()
         };
-        assert_eq!(status["error"], "Dispatch");
+        assert_eq!(status["error"], "Dispatch; startup phase=sessionValidating");
         assert!(!native.lock_transport().is_connected());
         unregister_handle(value);
+    }
+
+    #[test]
+    fn module_stats_failure_status_reaches_android_with_safe_reason_and_original_phase() {
+        use prost::Message;
+        use quadcortex::device::session::DispatchOutcome;
+        use quadcortex::proto::cortex_protobuf_v2 as pa;
+
+        fn submit(runtime: &mut SessionDriver, now: u64) {
+            let batch = runtime.next_batch(now, 0).unwrap();
+            assert!(runtime.dispatched(&batch.ticket, DispatchOutcome::Accepted));
+        }
+        let mut runtime = SessionDriver::start(7, "session".into(), 0);
+        submit(&mut runtime, 0);
+        runtime.observe(52, &commands::reset_comms(7, "session").payload, 1);
+        submit(&mut runtime, 1);
+        let version = pa::VersionMessage {
+            action: 1,
+            device_type: Some(pa::version_message::DeviceTypeOneOf::DeviceType(
+                pa::version_message::DeviceType::Qc as i32,
+            )),
+            cortex_control_version_valid: Some(
+                pa::version_message::CortexControlVersionValid::CortexControlVersionValid(true),
+            ),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        runtime.observe(10, &version, 2);
+        submit(&mut runtime, 2);
+        submit(&mut runtime, 2);
+        let model_repo = pa::ModelRepoMessage {
+            action: 1,
+            model_repo_payload: Some(pa::model_repo_message::ModelRepoPayload::ModelRepoPayload(
+                br#"<Models><Category name="Drive"><Model id="1" name="private-model-canary" /></Category></Models>"#.to_vec())),
+            ..Default::default()
+        }.encode_to_vec();
+        runtime.observe(51, &model_repo, 3);
+        submit(&mut runtime, 3);
+        runtime.observe(35, b"\xffprivate-payload-canary", 4);
+        let mut owner = SessionRuntime::new(0);
+        owner.lifecycle = Some(runtime);
+        let status: Value =
+            serde_json::from_str(&lifecycle_status(&mut owner, 5).unwrap()).unwrap();
+        assert_eq!(status["phase"], "failed");
+        let error = status["error"].as_str().unwrap();
+        assert_eq!(error, "Protocol(ModuleStatisticsDataError); startup phase=initializing; type 35 decode-failure; payloadBytes=23");
+        assert!(!error.contains("private-payload-canary"));
+        assert!(!error.contains("private-model-canary"));
     }
 
     #[test]
