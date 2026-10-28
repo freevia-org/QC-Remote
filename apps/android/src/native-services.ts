@@ -16,6 +16,14 @@ export type QcUsbDevice = {
   interfaces: number;
 };
 
+export type AndroidUsbConnectionProgress = {
+  requestId: string;
+  attempt?: number;
+  phase: "searching" | "permission" | "opening" | "claiming" | "reader" | "handshake" | "synchronizing" | "ready" | "error" | "disconnected";
+  message: string;
+  errorCode?: string;
+};
+
 export type AndroidUsbDiagnostics = {
   connected: boolean; phase: string; synchronized: boolean; device: string;
   messagesReceived: number; messagesSent: number; messagesReceivedByType?: Record<string, number>;
@@ -39,12 +47,13 @@ interface QcUsbNativePlugin {
   internetForwarding(): Promise<{ enabled: boolean }>;
   setInternetForwarding(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
   scan(): Promise<{ devices: QcUsbDevice[]; connected: boolean; synchronized: boolean }>;
-  connect(options?: { allowPermissionPrompt?: boolean }): Promise<{ connected: boolean; synchronized: boolean; name: string; deviceId: number }>;
+  connect(options?: { allowPermissionPrompt?: boolean; requestId?: string }): Promise<{ connected: boolean; synchronized: boolean; name: string; deviceId: number }>;
   disconnect(): Promise<void>;
   diagnostics(): Promise<AndroidUsbDiagnostics>;
   gatewayInvoke<T>(options: { method: string; params?: Record<string, unknown>; expectedState?: Record<string, unknown>; expectedBrokerTarget?: AndroidDemoRequest["brokerTarget"]; requireAcceptedBrokerTarget?: boolean }): Promise<T>;
   addListener(eventName: "qcStateBatch", listener: (frame: NativeStateFrame<QcStateUpdate>) => void): Promise<PluginListenerHandle>;
   addListener(eventName: "qcConnection", listener: (status: { state: "available" | "disconnected"; name?: string }) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: "qcConnectionProgress", listener: (progress: AndroidUsbConnectionProgress) => void): Promise<PluginListenerHandle>;
 }
 
 export interface AndroidDemoRequest {

@@ -174,6 +174,18 @@ const presetResultSource = readFileSync(new URL("../../../packages/rust/quadcort
 const androidPresetSource = readFileSync(new URL("../../../packages/rust/quadcortex-android/src/preset_workflow.rs", import.meta.url), "utf8");
 const presetSaveSource = readFileSync(new URL("../../../packages/rust/quadcortex/src/device/preset_save.rs", import.meta.url), "utf8");
 const rustAndroidSource = readFileSync(new URL("../../../packages/rust/quadcortex-android/src/lib.rs", import.meta.url), "utf8");
+
+test("Android USB recovery progress follows background retries for the active Connect request", () => {
+  const connect = javaSource.slice(javaSource.indexOf("    public void connect(PluginCall call)"), javaSource.indexOf("    /** A deliberate Connect shares"));
+  const reconnect = javaSource.slice(javaSource.indexOf("    private CompletableFuture<org.json.JSONObject> relayReconnect(\n        String detail, String backupOrigin, Long recoveryGeneration"), javaSource.indexOf("    private void resolvePendingReady()"));
+  const appProgress = appSource.slice(appSource.indexOf('QcUsbNative.addListener("qcConnectionProgress"'), appSource.indexOf('QcUsbNative.addListener("qcStateBatch"'));
+  assert.match(connect, /activeConnectionProgressRequestId = requestId;[\s\S]*connectionProgressAttempt = 0;/);
+  assert.match(javaSource, /int attempt = \+\+connectionProgressAttempt;[\s\S]{0,300}publishConnectionProgress\(requestId, "searching"/);
+  assert.match(reconnect, /recoveryGeneration == null \? null : activeConnectionProgressRequestId/);
+  assert.match(reconnect, /openDeviceAndHandshake\(candidate, pending, relayAdmissionGuard\.epoch\(\), connectionIntent, requestId\)/);
+  assert.match(appProgress, /nextAttempt < currentAttempt[\s\S]*usbProgressOrder\[progress\.phase\] < usbProgressOrder\[current\.phase\]/);
+  assert.match(servicesSource, /attempt\?: number;[\s\S]*phase: "searching"[\s\S]*\| "disconnected"/);
+});
 const rustRuntimeSource = readFileSync(new URL("../../../packages/rust/quadcortex/src/device/mod.rs", import.meta.url), "utf8");
 const rustRuntimeRequestSource = readFileSync(new URL("../../../packages/rust/quadcortex/src/device/request.rs", import.meta.url), "utf8");
 const rustHostMidiSource = readFileSync(new URL("../../../packages/rust/quadcortex/src/device/request/host_midi.rs", import.meta.url), "utf8");
@@ -229,7 +241,7 @@ test("USB attachment connects automatically and reports synchronization separate
   assert.match(appSource, /if \(state === "available"\)[\s\S]{0,120}attemptUsbConnection\(\)/);
   assert.match(
     appSource,
-    /if \(!devices\.length\) \{\s*setHardwareConnected\(false\);\s*if \(activeSourceRef\.current !== "virtual"\) \{\s*transitionConnection\("absent"\);\s*if \(observationPolicy\.mode !== "on-demand"\) void startDemoDeviceRef\.current\("No Quad Cortex was found\."\);/,
+    /if \(!devices\.length\) \{[\s\S]{0,800}?setHardwareConnected\(false\);[\s\S]{0,800}?if \(activeSourceRef\.current !== "virtual"\) \{[\s\S]{0,800}?transitionConnection\("absent"\);[\s\S]{0,800}?if \(observationPolicy\.mode !== "on-demand"\) void startDemoDeviceRef\.current\("No Quad Cortex was found\."\);/,
     "an empty local scan may fall back to demo; a paired-host scan never opens the phone-local demo",
   );
   assert.match(appSource, /state\.kind === "preset"[\s\S]*usbSessionReady\.current[\s\S]*transitionConnection\("connected"\)/);
@@ -245,7 +257,8 @@ test("reset session tears down the Android epoch and waits for a new authoritati
   assert.match(generatedGatewaySource, /case "device\.resetSession": return "RECONNECT"/);
   assert.match(javaSource, /"device\.resetSession"\.equals\(method\) \? "Communication session reset"/);
   assert.match(javaSource, /if \(reconnectInFlight != null\) return reconnectInFlight/);
-  assert.match(javaSource, /openDeviceAndHandshake\(candidate, pending, relayAdmissionGuard\.epoch\(\), connectionIntent\)/);
+  assert.match(javaSource, /String requestId = recoveryGeneration == null \? null : activeConnectionProgressRequestId/);
+  assert.match(javaSource, /openDeviceAndHandshake\(candidate, pending, relayAdmissionGuard\.epoch\(\), connectionIntent, requestId\)/);
   assert.match(javaSource, /private void openDeviceAndHandshake[\s\S]*synchronized \(this\)[\s\S]*claimBackupRecovery\(ready\.backupOrigin\)[\s\S]*closeConnection\(preservedOperation\)/);
   assert.match(javaSource, /closeConnection\(QcPendingOperations\.Entry<\?> preservedOperation\)\s*\{\s*closeConnection\(preservedOperation, true\);\s*\}/);
   assert.match(javaSource, /closeConnection\(\s*QcPendingOperations\.Entry<\?> preservedOperation, boolean sendDisconnectCommands\s*\)\s*\{[\s\S]*?connectionGeneration\.incrementAndGet\(\);\s*UsbRequest\[\] inputRequests/);
@@ -1006,7 +1019,7 @@ test("Android reconnects on attachment and recovers an unexpected reader exit", 
   assert.doesNotMatch(javaSource, /scheduleAutomaticReconnect\("Quad Cortex USB reattached"\)/);
   assert.match(
     javaSource,
-    /systemGrantedAttachment[\s\S]{0,900}pendingConnect[\s\S]{0,220}openAndHandshake\(candidate, waiting\)/,
+    /systemGrantedAttachment[\s\S]{0,900}pendingConnect[\s\S]{0,220}openAndHandshake\(candidate, waiting, requestId\)/,
     "the system attachment grant must complete a connect request that was waiting behind its dialog",
   );
   assert.match(appSource, /if \(state === "available"\)[\s\S]{0,120}attemptUsbConnection\(\)/);

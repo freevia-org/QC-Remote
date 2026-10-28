@@ -45,6 +45,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .connection-pill.phase-demo i { background: var(--qc-palette-bf85ff); box-shadow: 0 0 7px var(--qc-palette-bf85ff); }
 .connection-pill.phase-action-required i { background: var(--qc-app-status-action-required); box-shadow: 0 0 7px var(--qc-app-status-action-required); }
 .connection-pill.phase-error i { background: var(--qc-app-status-error); box-shadow: 0 0 7px var(--qc-app-status-error); }
+.connection-pill-progress { width: 22px; height: 3px; position: relative; overflow: hidden; border-radius: 3px; background: var(--qc-palette-394049); }
+.connection-pill-progress > span, .mobile-usb-progress-track > span { position: absolute; inset: 0 auto 0 0; width: 38%; border-radius: inherit; background: var(--qc-app-status-syncing); animation: usb-progress-sweep 1.1s ease-in-out infinite alternate; }
+@keyframes usb-progress-sweep { from { transform: translateX(0); } to { transform: translateX(165%); } }
 /* The scene-editing entry point (see App.tsx's header comment): same visual
    recipe as .connection-pill, minus the status LED, since it is not a
    connection indicator. */
@@ -131,6 +134,18 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .panel-status-dot.phase-demo { background: var(--qc-palette-bf85ff); box-shadow: 0 0 7px var(--qc-palette-bf85ff); }
 .panel-status-dot.phase-action-required { background: var(--qc-app-status-action-required); box-shadow: 0 0 7px var(--qc-app-status-action-required); }
 .panel-status-dot.phase-error { background: var(--qc-app-status-error); box-shadow: 0 0 7px var(--qc-app-status-error); }
+.mobile-usb-progress { display: grid; gap: 5px; padding: 9px 10px; border: 1px solid var(--qc-palette-29323a); border-radius: 9px; background: var(--qc-palette-0c1014); }
+.mobile-usb-progress > span { display: flex; align-items: center; gap: 8px; color: var(--qc-palette-e0e4e7); font-size: 12px; }
+.mobile-usb-progress p { margin: 0; color: var(--qc-palette-aeb7bf); font-size: 11px; overflow-wrap: anywhere; }
+.mobile-usb-progress.phase-error { border-color: var(--qc-app-status-error); }
+.mobile-usb-progress.phase-permission { border-color: var(--qc-app-status-action-required); }
+.mobile-usb-progress-track { position: relative; width: 100%; height: 4px; overflow: hidden; border-radius: 4px; background: var(--qc-palette-29323a); }
+.mobile-usb-progress-track > span { width: 28%; }
+.mobile-usb-status-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mobile-usb-status-line > span { min-width: 0; display: grid; gap: 1px; flex: 1 1 auto; }
+.mobile-usb-status-line strong { color: var(--qc-palette-e0e4e7); font-size: 11px; }
+.mobile-usb-status-line small { color: var(--qc-palette-aab5ae); font-size: 10px; line-height: 1.3; overflow-wrap: anywhere; }
+.mobile-usb-status-line > button { flex: 0 0 auto; min-height: 30px; padding: 3px 9px; border: 1px solid var(--qc-palette-3a424b); border-radius: 8px; background: var(--qc-app-control); color: var(--qc-palette-d8dce0); }
 .mobile-connection-summary { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .mobile-connection-summary > span { min-width: 0; display: inline-flex; align-items: center; gap: 8px; color: var(--qc-palette-e0e4e7); font-size: 12px; font-weight: 700; }
 .mobile-connection-summary > button { flex: 0 0 auto; }
@@ -206,4 +221,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .quick-controls button { min-height: 44px; }
   .mobile-screen { --qc-display-max-height: 36vh; }
 }
-.mobile-status-notice { min-height: 32px; padding: 7px 10px; overflow: hidden; border: 1px solid var(--qc-palette-23272c); border-radius: 10px; background: var(--qc-palette-0d0f12cc); color: var(--qc-palette-aab5ae); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; }
+.mobile-status-notice { min-height: 32px; display: grid; align-content: center; gap: 5px; padding: 7px 10px; overflow: hidden; border: 1px solid var(--qc-palette-23272c); border-radius: 10px; background: var(--qc-palette-0d0f12cc); color: var(--qc-palette-aab5ae); font-size: 11px; line-height: 1.35; }
+.mobile-status-notice.phase-error { border-color: var(--qc-app-status-error); }
+.mobile-status-notice.phase-permission { border-color: var(--qc-app-status-action-required); }
+.mobile-status-notice-detail { color: var(--qc-palette-7f8993); font-size: 9px; overflow-wrap: anywhere; }
