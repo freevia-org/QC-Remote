@@ -6,46 +6,6 @@ name: macOS desktop build
 # "Third-party notices drift check" job in ci.yml verifies them.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - .github/workflows/macos-build.yml
-      - scripts/package-macos-ci*
-      - scripts/build-macos-broker-menu.sh
-      - apps/windows/**
-      - contracts/**
-      - packages/rust/**
-      - packages/typescript/**
-      - "!packages/typescript/qc-ui/**/*.ts"
-      - "!packages/typescript/qc-ui/**/*.tsx"
-      - "!packages/typescript/qc-ui/**/*.css"
-      - "!packages/typescript/qc-ui/**/*.md"
-      - services/device-broker/**
-      - services/rust-mcp/**
-      - package.json
-      - package-lock.json
-      - Cargo.toml
-      - Cargo.lock
-  push:
-    branches:
-      - master
-    paths:
-      - .github/workflows/macos-build.yml
-      - scripts/package-macos-ci*
-      - scripts/build-macos-broker-menu.sh
-      - apps/windows/**
-      - contracts/**
-      - packages/rust/**
-      - packages/typescript/**
-      - "!packages/typescript/qc-ui/**/*.ts"
-      - "!packages/typescript/qc-ui/**/*.tsx"
-      - "!packages/typescript/qc-ui/**/*.css"
-      - "!packages/typescript/qc-ui/**/*.md"
-      - services/device-broker/**
-      - services/rust-mcp/**
-      - package.json
-      - package-lock.json
-      - Cargo.toml
-      - Cargo.lock
 
 permissions:
   contents: read

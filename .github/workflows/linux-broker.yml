@@ -1,37 +1,6 @@
 name: Linux device broker
 
 on:
-  pull_request:
-    paths-ignore:
-      - "packages/typescript/qc-ui/**/*.ts"
-      - "packages/typescript/qc-ui/**/*.tsx"
-      - "packages/typescript/qc-ui/**/*.css"
-      - "packages/typescript/qc-ui/**/*.md"
-      - "docs/**"
-      - "*.md"
-      - "legal/**"
-      - "LICENSE"
-      - "LICENSE-MIT"
-      - "LICENSE-APACHE"
-      - "LICENSES/**"
-      - "skills/qc-device-knowledge/LICENSE"
-      - "skills/qc-device-knowledge/LICENSE-MIT"
-      - "skills/qc-device-knowledge/LICENSE-APACHE"
-      - "skills/qc-device-knowledge/LICENSES/**"
-      - "skills/qc-device-knowledge/legal/**"
-      - "skills/qc-device-knowledge/THIRD_PARTY-NOTICES.md"
-      - "services/qc-remote-cloud/src/**/*.ts"
-      - "services/qc-remote-cloud/tests/**/*.ts"
-      - "services/qc-remote-cloud/scripts/**/*.mjs"
-      - "services/qc-remote-cloud/wrangler.jsonc"
-      - "services/qc-remote-cloud/wrangler.*.jsonc"
-      - "services/qc-remote-cloud/worker-configuration.d.ts"
-      - "services/qc-remote-cloud/tsconfig.json"
-      - "services/qc-remote-cloud/tsconfig.*.json"
-      - "services/qc-remote-cloud/vitest.*.config.ts"
-      - "services/qc-remote-cloud/README.md"
-  push:
-    branches: [master]
   workflow_dispatch:
     inputs:
       build_linux_draft:
@@ -43,10 +12,9 @@ on:
 permissions:
   contents: read
 
-# On a workflow_dispatch release build the two check jobs below are skipped and
-# the release job verifies that the very same commit already passed them in this
-# workflow's push or pull request run (see "Require the push CI result"), instead
-# of repeating 6 to 8 minutes of identical builds and tests.
+# Dispatch with `build_linux_draft` disabled to run the checks. Then dispatch
+# again with it enabled to build a release draft from the same commit; the
+# release job verifies that the checks already passed.
 concurrency:
   group: linux-broker-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -74,7 +42,7 @@ jobs:
     name: Headless broker on native Linux
     # `changes` runs on pull requests only; on push it is skipped, which runs this job.
     needs: changes
-    if: ${{ !cancelled() && github.event_name != 'workflow_dispatch' && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.build_linux_draft) && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -132,7 +100,7 @@ jobs:
     name: Linux Tauri host and resident tray
     # `changes` runs on pull requests only; on push it is skipped, which runs this job.
     needs: changes
-    if: ${{ !cancelled() && github.event_name != 'workflow_dispatch' && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
+    if: ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || !inputs.build_linux_draft) && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.native != 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -214,10 +182,10 @@ jobs:
     steps:
       # The two check jobs are not repeated for a release build. This step is the
       # replacement: the exact commit being released must already carry a
-      # successful result for both from this workflow's push or pull request run
+      # successful result for both from a checks-only dispatch of this workflow
       # (GitHub Actions app only). Re-run the failed jobs of that run, or merge
       # first, if it does not; nothing is built until it does.
-      - name: Require the push CI result for this exact commit
+      - name: Require the checks-only result for this exact commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -229,7 +197,7 @@ jobs:
           runs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?per_page=100"             --jq '.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "success") | .name')
           for name in "${required[@]}"; do
             if ! grep -Fxq "$name" <<<"$runs"; then
-              echo "::error::No successful '$name' check run exists for $GITHUB_SHA. Wait for or re-run the push CI of this commit, then dispatch again."
+              echo "::error::No successful '$name' check run exists for $GITHUB_SHA. Dispatch this workflow with build_linux_draft disabled, then dispatch again to build the release."
               exit 1
             fi
             echo "ok: '$name' passed on $GITHUB_SHA"

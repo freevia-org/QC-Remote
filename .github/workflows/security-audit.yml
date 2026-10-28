@@ -1,36 +1,12 @@
 name: Dependency security audit
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - "package.json"
-      - "package-lock.json"
-      - "**/gradle.lockfile"
-      - "**/*.gradle"
-      - "**/*.gradle.kts"
-      - ".github/workflows/security-audit.yml"
-  pull_request:
-    paths:
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - "package.json"
-      - "package-lock.json"
-      - "**/gradle.lockfile"
-      - "**/*.gradle"
-      - "**/*.gradle.kts"
-      - ".github/workflows/security-audit.yml"
-  schedule:
-    - cron: "17 4 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Superseded pull request runs are cancelled; runs for master and manual or
-# scheduled dispatches are never cancelled.
+# Manual dispatches are never cancelled.
 concurrency:
   group: security-audit-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

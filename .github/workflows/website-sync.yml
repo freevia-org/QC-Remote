@@ -1,32 +1,12 @@
 name: Website sync
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - README.md
-      - docs/USER-GUIDE.md
-      - scripts/check-website-sync.mjs
-      - scripts/website-sync-contract.mjs
-      - scripts/website-sync-contract.test.mjs
-      - .github/workflows/website-sync.yml
-  pull_request:
-    paths:
-      - README.md
-      - docs/USER-GUIDE.md
-      - scripts/check-website-sync.mjs
-      - scripts/website-sync-contract.mjs
-      - scripts/website-sync-contract.test.mjs
-      - .github/workflows/website-sync.yml
-  schedule:
-    - cron: '17 6 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Superseded pull request runs are cancelled; runs for master and manual or
-# scheduled dispatches are never cancelled.
+# Manual dispatches are never cancelled.
 concurrency:
   group: website-sync-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
